@@ -432,6 +432,302 @@ function findNewNode(from, to) {
   return (_b = result[0]) == null ? void 0 : _b.node;
 }
 
+// packages/isomorphic/stringUtils.ts
+function escapeWithQuotes(text, char = "'") {
+  const stringified = JSON.stringify(text);
+  const escapedText = stringified.substring(1, stringified.length - 1).replace(/\\"/g, '"');
+  if (char === "'")
+    return char + escapedText.replace(/[']/g, "\\'") + char;
+  if (char === '"')
+    return char + escapedText.replace(/["]/g, '\\"') + char;
+  if (char === "`")
+    return char + escapedText.replace(/[`]/g, "\\`") + char;
+  throw new Error("Invalid escape char");
+}
+function toTitleCase(name) {
+  return name.charAt(0).toUpperCase() + name.substring(1);
+}
+function toSnakeCase(name) {
+  return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/([A-Z])([A-Z][a-z])/g, "$1_$2").toLowerCase();
+}
+function quoteCSSAttributeValue(text) {
+  return `"${text.replace(/["\\]/g, (char) => "\\" + char)}"`;
+}
+var normalizedWhitespaceCache;
+function cacheNormalizedWhitespaces() {
+  normalizedWhitespaceCache = /* @__PURE__ */ new Map();
+}
+function normalizeWhiteSpace(text) {
+  let result = normalizedWhitespaceCache == null ? void 0 : normalizedWhitespaceCache.get(text);
+  if (result === void 0) {
+    result = text.replace(/[\u200b\u00ad]/g, "").trim().replace(/\s+/g, " ");
+    normalizedWhitespaceCache == null ? void 0 : normalizedWhitespaceCache.set(text, result);
+  }
+  return result;
+}
+function normalizeEscapedRegexQuotes(source) {
+  return source.replace(/(^|[^\\])(\\\\)*\\(['"`])/g, "$1$2$3");
+}
+function escapeRegexForSelector(re) {
+  if (re.unicode || re.unicodeSets)
+    return String(re);
+  return String(re).replace(/(^|[^\\])(\\\\)*(["'`])/g, "$1$2\\$3").replace(/>>/g, "\\>\\>");
+}
+function escapeForTextSelector(text, exact) {
+  if (typeof text !== "string")
+    return escapeRegexForSelector(text);
+  return `${JSON.stringify(text)}${exact ? "s" : "i"}`;
+}
+function escapeForAttributeSelector(value, exact) {
+  if (typeof value !== "string")
+    return escapeRegexForSelector(value);
+  return `"${value.replace(/\\/g, "\\\\").replace(/["]/g, '\\"')}"${exact ? "s" : "i"}`;
+}
+function trimString(input, cap, suffix = "") {
+  if (input.length <= cap)
+    return input;
+  const chars = [...input];
+  if (chars.length > cap)
+    return chars.slice(0, cap - suffix.length).join("") + suffix;
+  return chars.join("");
+}
+function trimStringWithEllipsis(input, cap) {
+  return trimString(input, cap, "\u2026");
+}
+function truncateDataUrl(url) {
+  if (!url.startsWith("data:"))
+    return url;
+  const comma = url.indexOf(",");
+  if (comma === -1)
+    return url;
+  return url.slice(0, comma + 1) + "\u2026";
+}
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function longestCommonSubstring(s1, s2) {
+  const n = s1.length;
+  const m = s2.length;
+  let maxLen = 0;
+  let endingIndex = 0;
+  const dp = Array(n + 1).fill(null).map(() => Array(m + 1).fill(0));
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      if (s1[i - 1] === s2[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+        if (dp[i][j] > maxLen) {
+          maxLen = dp[i][j];
+          endingIndex = i;
+        }
+      }
+    }
+  }
+  return s1.slice(endingIndex - maxLen, endingIndex);
+}
+var ansiRegex = new RegExp("([\\u001B\\u009B][[\\]()#?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)|(?:(?:\\d{0,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-ntqry=><~])))", "g");
+
+// packages/isomorphic/yaml.ts
+function yamlEscapeKeyIfNeeded(str) {
+  if (!yamlStringNeedsQuotes(str))
+    return str;
+  return `'` + str.replace(/'/g, `''`) + `'`;
+}
+function yamlEscapeValueIfNeeded(str) {
+  if (!yamlStringNeedsQuotes(str))
+    return str;
+  return '"' + str.replace(/[\\"\x00-\x1f\x7f-\x9f]/g, (c) => {
+    switch (c) {
+      case "\\":
+        return "\\\\";
+      case '"':
+        return '\\"';
+      case "\b":
+        return "\\b";
+      case "\f":
+        return "\\f";
+      case "\n":
+        return "\\n";
+      case "\r":
+        return "\\r";
+      case "	":
+        return "\\t";
+      default:
+        const code = c.charCodeAt(0);
+        return "\\x" + code.toString(16).padStart(2, "0");
+    }
+  }) + '"';
+}
+function yamlStringNeedsQuotes(str) {
+  if (str.length === 0)
+    return true;
+  if (/^\s|\s$/.test(str))
+    return true;
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(str))
+    return true;
+  if (/^-/.test(str))
+    return true;
+  if (/[\n:](\s|$)/.test(str))
+    return true;
+  if (/\s#/.test(str))
+    return true;
+  if (/[\n\r]/.test(str))
+    return true;
+  if (/^[&*\],?!>|@"'#%]/.test(str))
+    return true;
+  if (/[{}`]/.test(str))
+    return true;
+  if (/^\[/.test(str))
+    return true;
+  if (!isNaN(Number(str)) || ["y", "n", "yes", "no", "true", "false", "on", "off", "null"].includes(str.toLowerCase()))
+    return true;
+  return false;
+}
+
+// packages/isomorphic/ariaSnapshotRenderer.ts
+function renderAriaSnapshotAsYaml(snapshot, options = {}) {
+  const lines = [];
+  const includeText = options.convertStringsToRegex ? textContributesInfo : () => true;
+  const renderString = options.convertStringsToRegex ? convertToBestGuessRegex : (str) => str;
+  const visitText = (text, depth) => {
+    const escaped = yamlEscapeValueIfNeeded(renderString(text));
+    if (escaped)
+      lines.push(indent(depth) + "- text: " + escaped);
+  };
+  const createKey = (node) => {
+    let key = node.role;
+    if (node.name && node.name.length <= 900) {
+      const name = renderString(node.name);
+      if (name) {
+        const isRegex = options.convertStringsToRegex && name !== node.name;
+        key += " " + (isRegex ? name : JSON.stringify(name));
+      }
+    }
+    if (node.checked === "mixed")
+      key += ` [checked=mixed]`;
+    if (node.checked === true)
+      key += ` [checked]`;
+    if (node.disabled)
+      key += ` [disabled]`;
+    if (node.expanded)
+      key += ` [expanded]`;
+    if (node.active)
+      key += ` [active]`;
+    if (node.invalid === "grammar" || node.invalid === "spelling")
+      key += ` [invalid=${node.invalid}]`;
+    if (node.invalid === true)
+      key += ` [invalid]`;
+    if (node.level)
+      key += ` [level=${node.level}]`;
+    if (node.pressed === "mixed")
+      key += ` [pressed=mixed]`;
+    if (node.pressed === true)
+      key += ` [pressed]`;
+    if (node.selected === true)
+      key += ` [selected]`;
+    if (node.ariaHidden)
+      key += ` [aria-hidden]`;
+    if (node.ref) {
+      key += ` [ref=${node.ref}]`;
+      if (node.cursor === "pointer")
+        key += " [cursor=pointer]";
+    }
+    if (node.box)
+      key += ` [box=${node.box.x},${node.box.y},${node.box.width},${node.box.height}]`;
+    return key;
+  };
+  const visit = (node, depth) => {
+    var _a, _b;
+    if (node.role === "text") {
+      visitText(node.text || "", depth);
+      return;
+    }
+    (_a = options.lineToNode) == null ? void 0 : _a.set(lines.length, node);
+    const escapedKey = indent(depth) + "- " + yamlEscapeKeyIfNeeded(createKey(node));
+    const props = [];
+    if (node.url !== void 0)
+      props.push(["url", node.url]);
+    if (node.placeholder !== void 0)
+      props.push(["placeholder", node.placeholder]);
+    if (node.text === void 0 && !props.length && !((_b = node.children) == null ? void 0 : _b.length)) {
+      lines.push(escapedKey);
+    } else if (node.text !== void 0 && !props.length) {
+      if (includeText(node, node.text))
+        lines.push(escapedKey + ": " + yamlEscapeValueIfNeeded(renderString(node.text)));
+      else
+        lines.push(escapedKey);
+    } else {
+      lines.push(escapedKey + ":");
+      for (const [name, value] of props)
+        lines.push(indent(depth + 1) + "- /" + name + ": " + yamlEscapeValueIfNeeded(value));
+      if (node.text !== void 0) {
+        visitText(includeText(node, node.text) ? node.text : "", depth + 1);
+      } else {
+        for (const child of node.children || []) {
+          if (typeof child === "string")
+            visitText(includeText(node, child) ? child : "", depth + 1);
+          else
+            visit(child, depth + 1);
+        }
+      }
+    }
+  };
+  for (const node of snapshot)
+    visit(node, 0);
+  return lines.join("\n");
+}
+function indent(depth) {
+  return "  ".repeat(depth);
+}
+function convertToBestGuessRegex(text) {
+  const dynamicContent = [
+    // 550e8400-e29b-41d4-a716-446655440000
+    { regex: /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/, replacement: "[0-9a-fA-F-]+" },
+    // 2mb
+    { regex: /\b[\d,.]+[bkmBKM]+\b/, replacement: "[\\d,.]+[bkmBKM]+" },
+    // 2ms, 20s
+    { regex: /\b\d+[hmsp]+\b/, replacement: "\\d+[hmsp]+" },
+    { regex: /\b[\d,.]+[hmsp]+\b/, replacement: "[\\d,.]+[hmsp]+" },
+    // Do not replace single digits with regex by default.
+    // 2+ digits: [Issue 22, 22.3, 2.33, 2,333]
+    { regex: /\b\d+,\d+\b/, replacement: "\\d+,\\d+" },
+    { regex: /\b\d+\.\d{2,}\b/, replacement: "\\d+\\.\\d+" },
+    { regex: /\b\d{2,}\.\d+\b/, replacement: "\\d+\\.\\d+" },
+    { regex: /\b\d{2,}\b/, replacement: "\\d+" }
+  ];
+  let pattern = "";
+  let lastIndex = 0;
+  const combinedRegex = new RegExp(dynamicContent.map((r) => "(" + r.regex.source + ")").join("|"), "g");
+  text.replace(combinedRegex, (match, ...args) => {
+    const offset = args[args.length - 2];
+    const groups = args.slice(0, -2);
+    pattern += escapeRegExp(text.slice(lastIndex, offset));
+    for (let i = 0; i < groups.length; i++) {
+      if (groups[i]) {
+        const { replacement } = dynamicContent[i];
+        pattern += replacement;
+        break;
+      }
+    }
+    lastIndex = offset + match.length;
+    return match;
+  });
+  if (!pattern)
+    return text;
+  pattern += escapeRegExp(text.slice(lastIndex));
+  return String(new RegExp(pattern));
+}
+function textContributesInfo(node, text) {
+  if (!text.length)
+    return false;
+  if (!node.name)
+    return true;
+  const substr = text.length <= 200 && node.name.length <= 200 ? longestCommonSubstring(text, node.name) : "";
+  let filtered = text;
+  while (substr && filtered.includes(substr))
+    filtered = filtered.replace(substr, "");
+  return filtered.trim().length / text.length > 0.1;
+}
+
 // packages/isomorphic/cssTokenizer.ts
 var between = function(num, first, last) {
   return num >= first && num <= last;
@@ -1580,6 +1876,7 @@ var kNestedSelectorNames = /* @__PURE__ */ new Set(["internal:has", "internal:ha
 var kNestedSelectorNamesWithDistance = /* @__PURE__ */ new Set(["left-of", "right-of", "above", "below", "near"]);
 var customCSSNames = /* @__PURE__ */ new Set(["not", "is", "where", "has", "scope", "light", "visible", "text", "text-matches", "text-is", "has-text", "above", "below", "right-of", "left-of", "near", "nth-match"]);
 function parseSelector(selector) {
+  var _a;
   const parsedStrings = parseSelectorString(selector);
   const parts = [];
   for (const part of parsedStrings.parts) {
@@ -1613,8 +1910,15 @@ function parseSelector(selector) {
       const nested = { name: part.name, source: part.body, body: { parsed: parseSelector(innerSelector), distance } };
       const lastFrame = [...nested.body.parsed.parts].reverse().find((part2) => part2.name === "internal:control" && part2.body === "enter-frame");
       const lastFrameIndex = lastFrame ? nested.body.parsed.parts.indexOf(lastFrame) : -1;
-      if (lastFrameIndex !== -1 && selectorPartsEqual(nested.body.parsed.parts.slice(0, lastFrameIndex + 1), parts.slice(0, lastFrameIndex + 1)))
+      const outerParts = ((_a = parts[0]) == null ? void 0 : _a.name) === "internal:control" && parts[0].body === "any-frame" ? parts.slice(1) : parts;
+      if (lastFrameIndex !== -1 && selectorPartsEqual(nested.body.parsed.parts.slice(0, lastFrameIndex + 1), outerParts.slice(0, lastFrameIndex + 1))) {
         nested.body.parsed.parts.splice(0, lastFrameIndex + 1);
+        if (nested.body.parsed.capture !== void 0) {
+          if (nested.body.parsed.capture <= lastFrameIndex)
+            throw new InvalidSelectorError(`Can not capture the selector before diving into the frame. Only use * after the last frame has been selected`);
+          nested.body.parsed.capture -= lastFrameIndex + 1;
+        }
+      }
       parts.push(nested);
       continue;
     }
@@ -1892,100 +2196,6 @@ function parseAttributeSelector(selector, allowUnquotedStrings) {
   return result;
 }
 
-// packages/isomorphic/stringUtils.ts
-function escapeWithQuotes(text, char = "'") {
-  const stringified = JSON.stringify(text);
-  const escapedText = stringified.substring(1, stringified.length - 1).replace(/\\"/g, '"');
-  if (char === "'")
-    return char + escapedText.replace(/[']/g, "\\'") + char;
-  if (char === '"')
-    return char + escapedText.replace(/["]/g, '\\"') + char;
-  if (char === "`")
-    return char + escapedText.replace(/[`]/g, "\\`") + char;
-  throw new Error("Invalid escape char");
-}
-function toTitleCase(name) {
-  return name.charAt(0).toUpperCase() + name.substring(1);
-}
-function toSnakeCase(name) {
-  return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/([A-Z])([A-Z][a-z])/g, "$1_$2").toLowerCase();
-}
-function quoteCSSAttributeValue(text) {
-  return `"${text.replace(/["\\]/g, (char) => "\\" + char)}"`;
-}
-var normalizedWhitespaceCache;
-function cacheNormalizedWhitespaces() {
-  normalizedWhitespaceCache = /* @__PURE__ */ new Map();
-}
-function normalizeWhiteSpace(text) {
-  let result = normalizedWhitespaceCache == null ? void 0 : normalizedWhitespaceCache.get(text);
-  if (result === void 0) {
-    result = text.replace(/[\u200b\u00ad]/g, "").trim().replace(/\s+/g, " ");
-    normalizedWhitespaceCache == null ? void 0 : normalizedWhitespaceCache.set(text, result);
-  }
-  return result;
-}
-function normalizeEscapedRegexQuotes(source) {
-  return source.replace(/(^|[^\\])(\\\\)*\\(['"`])/g, "$1$2$3");
-}
-function escapeRegexForSelector(re) {
-  if (re.unicode || re.unicodeSets)
-    return String(re);
-  return String(re).replace(/(^|[^\\])(\\\\)*(["'`])/g, "$1$2\\$3").replace(/>>/g, "\\>\\>");
-}
-function escapeForTextSelector(text, exact) {
-  if (typeof text !== "string")
-    return escapeRegexForSelector(text);
-  return `${JSON.stringify(text)}${exact ? "s" : "i"}`;
-}
-function escapeForAttributeSelector(value, exact) {
-  if (typeof value !== "string")
-    return escapeRegexForSelector(value);
-  return `"${value.replace(/\\/g, "\\\\").replace(/["]/g, '\\"')}"${exact ? "s" : "i"}`;
-}
-function trimString(input, cap, suffix = "") {
-  if (input.length <= cap)
-    return input;
-  const chars = [...input];
-  if (chars.length > cap)
-    return chars.slice(0, cap - suffix.length).join("") + suffix;
-  return chars.join("");
-}
-function trimStringWithEllipsis(input, cap) {
-  return trimString(input, cap, "\u2026");
-}
-function truncateDataUrl(url) {
-  if (!url.startsWith("data:"))
-    return url;
-  const comma = url.indexOf(",");
-  if (comma === -1)
-    return url;
-  return url.slice(0, comma + 1) + "\u2026";
-}
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function longestCommonSubstring(s1, s2) {
-  const n = s1.length;
-  const m = s2.length;
-  let maxLen = 0;
-  let endingIndex = 0;
-  const dp = Array(n + 1).fill(null).map(() => Array(m + 1).fill(0));
-  for (let i = 1; i <= n; i++) {
-    for (let j = 1; j <= m; j++) {
-      if (s1[i - 1] === s2[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
-        if (dp[i][j] > maxLen) {
-          maxLen = dp[i][j];
-          endingIndex = i;
-        }
-      }
-    }
-  }
-  return s1.slice(endingIndex - maxLen, endingIndex);
-}
-var ansiRegex = new RegExp("([\\u001B\\u009B][[\\]()#?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)|(?:(?:\\d{0,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-ntqry=><~])))", "g");
-
 // packages/isomorphic/locatorGenerators.ts
 function asLocator(lang, selector, isFrameLocator = false) {
   return asLocators(lang, selector, isFrameLocator, 1)[0];
@@ -2017,7 +2227,11 @@ function innerAsLocators(factory, parsed, isFrameLocator = false, maxOutputSize 
       continue;
     }
     if (part.name === "visible") {
-      tokens.push([factory.generateLocator(base, "visible", part.body), factory.generateLocator(base, "default", `visible=${part.body}`)]);
+      const tokenList = [];
+      if (part.body === "true")
+        tokenList.push(factory.generateLocator(base, "visible", ""));
+      tokenList.push(factory.generateLocator(base, "filter-visible", part.body), factory.generateLocator(base, "default", `visible=${part.body}`));
+      tokens.push(tokenList);
       continue;
     }
     if (part.name === "internal:text") {
@@ -2073,16 +2287,13 @@ function innerAsLocators(factory, parsed, isFrameLocator = false, maxOutputSize 
       const attrSelector = parseAttributeSelector(part.body, true);
       const options = { attrs: [] };
       for (const attr of attrSelector.attributes) {
-        if (attr.name === "name") {
-          if (options.exact !== void 0 && options.exact !== attr.caseSensitive)
-            throw new Error(`Conflicting exactness in internal:role selector: ${stringifySelector({ parts: [part] })}`);
-          options.exact = attr.caseSensitive;
-          options.name = attr.value;
-        } else if (attr.name === "description") {
-          if (options.exact !== void 0 && options.exact !== attr.caseSensitive)
-            throw new Error(`Conflicting exactness in internal:role selector: ${stringifySelector({ parts: [part] })}`);
-          options.exact = attr.caseSensitive;
-          options.description = attr.value;
+        if (attr.name === "name" || attr.name === "description") {
+          if (typeof attr.value === "string") {
+            if (options.exact !== void 0 && options.exact !== attr.caseSensitive)
+              throw new Error(`Conflicting exactness in internal:role selector: ${stringifySelector({ parts: [part] })}`);
+            options.exact = attr.caseSensitive;
+          }
+          options[attr.name] = attr.value;
         } else {
           if (attr.name === "level" && typeof attr.value === "string")
             attr.value = +attr.value;
@@ -2115,6 +2326,11 @@ function innerAsLocators(factory, parsed, isFrameLocator = false, maxOutputSize 
         tokens.push([factory.generateLocator(base, "title", text, { exact })]);
         continue;
       }
+    }
+    if (part.name === "internal:control" && part.body === "any-frame") {
+      tokens.push([factory.generateLocator(base, "any-frame", "")]);
+      nextBase = "frame-locator";
+      continue;
     }
     if (part.name === "internal:control" && part.body === "enter-frame") {
       const lastTokens = tokens[tokens.length - 1];
@@ -2181,7 +2397,7 @@ function combineTokens(factory, tokens, maxOutputSize) {
 }
 function detectExact(text) {
   let exact = false;
-  const match = text.match(/^\/(.*)\/([igm]*)$/);
+  const match = text.match(/^\/(.*)\/([dgimsuvy]*)$/);
   if (match)
     return { text: new RegExp(match[1], match[2]) };
   if (text.endsWith('"')) {
@@ -2212,6 +2428,8 @@ var JavaScriptLocatorFactory = class {
         return `frameLocator(${this.quote(body)})`;
       case "frame":
         return `contentFrame()`;
+      case "any-frame":
+        return `frameLocator()`;
       case "nth":
         return `nth(${body})`;
       case "first":
@@ -2219,6 +2437,8 @@ var JavaScriptLocatorFactory = class {
       case "last":
         return `last()`;
       case "visible":
+        return `visible()`;
+      case "filter-visible":
         return `filter({ visible: ${body === "true" ? "true" : "false"} })`;
       case "role":
         const attrs = [];
@@ -2305,6 +2525,8 @@ var PythonLocatorFactory = class {
         return `frame_locator(${this.quote(body)})`;
       case "frame":
         return `content_frame`;
+      case "any-frame":
+        return `frame_locator()`;
       case "nth":
         return `nth(${body})`;
       case "first":
@@ -2312,6 +2534,8 @@ var PythonLocatorFactory = class {
       case "last":
         return `last`;
       case "visible":
+        return `visible`;
+      case "filter-visible":
         return `filter(visible=${body === "true" ? "True" : "False"})`;
       case "role":
         const attrs = [];
@@ -2367,7 +2591,7 @@ var PythonLocatorFactory = class {
     return locators.join(".");
   }
   regexToString(body) {
-    const suffix = body.flags.includes("i") ? ", re.IGNORECASE" : "";
+    const suffix = regexFlagsSuffix(body, "re", regexFlagNames.python);
     return `re.compile(r"${normalizeEscapedRegexQuotes(body.source).replace(/\\\//, "/").replace(/"/g, '\\"')}"${suffix})`;
   }
   toCallWithExact(method, body, exact) {
@@ -2416,6 +2640,8 @@ var JavaLocatorFactory = class {
         return `frameLocator(${this.quote(body)})`;
       case "frame":
         return `contentFrame()`;
+      case "any-frame":
+        return `frameLocator()`;
       case "nth":
         return `nth(${body})`;
       case "first":
@@ -2423,6 +2649,8 @@ var JavaLocatorFactory = class {
       case "last":
         return `last()`;
       case "visible":
+        return `visible()`;
+      case "filter-visible":
         return `filter(new ${clazz}.FilterOptions().setVisible(${body === "true" ? "true" : "false"}))`;
       case "role":
         const attrs = [];
@@ -2474,7 +2702,7 @@ var JavaLocatorFactory = class {
     return locators.join(".");
   }
   regexToString(body) {
-    const suffix = body.flags.includes("i") ? ", Pattern.CASE_INSENSITIVE" : "";
+    const suffix = regexFlagsSuffix(body, "Pattern", regexFlagNames.java);
     return `Pattern.compile(${this.quote(normalizeEscapedRegexQuotes(body.source))}${suffix})`;
   }
   toCallWithExact(clazz, method, body, exact) {
@@ -2511,6 +2739,8 @@ var CSharpLocatorFactory = class {
         return `FrameLocator(${this.quote(body)})`;
       case "frame":
         return `ContentFrame`;
+      case "any-frame":
+        return `FrameLocator()`;
       case "nth":
         return `Nth(${body})`;
       case "first":
@@ -2518,6 +2748,8 @@ var CSharpLocatorFactory = class {
       case "last":
         return `Last`;
       case "visible":
+        return `Visible`;
+      case "filter-visible":
         return `Filter(new() { Visible = ${body === "true" ? "true" : "false"} })`;
       case "role":
         const attrs = [];
@@ -2569,7 +2801,7 @@ var CSharpLocatorFactory = class {
     return locators.join(".");
   }
   regexToString(body) {
-    const suffix = body.flags.includes("i") ? ", RegexOptions.IgnoreCase" : "";
+    const suffix = regexFlagsSuffix(body, "RegexOptions", regexFlagNames.csharp);
     return `new Regex(${this.quote(normalizeEscapedRegexQuotes(body.source))}${suffix})`;
   }
   toCallWithExact(method, body, exact) {
@@ -2624,6 +2856,15 @@ var generators = {
   csharp: CSharpLocatorFactory,
   jsonl: JsonlLocatorFactory
 };
+var regexFlagNames = {
+  python: { i: "IGNORECASE", m: "MULTILINE", s: "DOTALL" },
+  java: { i: "CASE_INSENSITIVE", m: "MULTILINE", s: "DOTALL" },
+  csharp: { i: "IgnoreCase", m: "Multiline", s: "Singleline" }
+};
+function regexFlagsSuffix(body, flagsEnum, names) {
+  const flags = [...body.flags].filter((flag) => flag in names).map((flag) => `${flagsEnum}.${names[flag]}`);
+  return flags.length ? `, ${flags.join(" | ")}` : "";
+}
 function isRegExp(obj) {
   return obj instanceof RegExp;
 }
@@ -2677,63 +2918,6 @@ function getByRoleSelector(role, options = {}) {
   if (options.pressed !== void 0)
     props.push(["pressed", String(options.pressed)]);
   return `internal:role=${role}${props.map(([n, v]) => `[${n}=${v}]`).join("")}`;
-}
-
-// packages/isomorphic/yaml.ts
-function yamlEscapeKeyIfNeeded(str) {
-  if (!yamlStringNeedsQuotes(str))
-    return str;
-  return `'` + str.replace(/'/g, `''`) + `'`;
-}
-function yamlEscapeValueIfNeeded(str) {
-  if (!yamlStringNeedsQuotes(str))
-    return str;
-  return '"' + str.replace(/[\\"\x00-\x1f\x7f-\x9f]/g, (c) => {
-    switch (c) {
-      case "\\":
-        return "\\\\";
-      case '"':
-        return '\\"';
-      case "\b":
-        return "\\b";
-      case "\f":
-        return "\\f";
-      case "\n":
-        return "\\n";
-      case "\r":
-        return "\\r";
-      case "	":
-        return "\\t";
-      default:
-        const code = c.charCodeAt(0);
-        return "\\x" + code.toString(16).padStart(2, "0");
-    }
-  }) + '"';
-}
-function yamlStringNeedsQuotes(str) {
-  if (str.length === 0)
-    return true;
-  if (/^\s|\s$/.test(str))
-    return true;
-  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(str))
-    return true;
-  if (/^-/.test(str))
-    return true;
-  if (/[\n:](\s|$)/.test(str))
-    return true;
-  if (/\s#/.test(str))
-    return true;
-  if (/[\n\r]/.test(str))
-    return true;
-  if (/^[&*\],?!>|@"'#%]/.test(str))
-    return true;
-  if (/[{}`]/.test(str))
-    return true;
-  if (/^\[/.test(str))
-    return true;
-  if (!isNaN(Number(str)) || ["y", "n", "yes", "no", "true", "false", "on", "off", "null"].includes(str.toLowerCase()))
-    return true;
-  return false;
 }
 
 // packages/injected/src/ariaSnapshotDistiller.ts
@@ -2968,17 +3152,27 @@ function computeElementStyleVisibilityVisible(element, style) {
   style = style != null ? style : getElementComputedStyle(element);
   if (!style)
     return true;
-  if (Element.prototype.checkVisibility && globalOptions.browserNameForWorkarounds !== "webkit") {
-    if (!element.checkVisibility())
-      return false;
-  } else {
-    const detailsOrSummary = element.closest("details,summary");
-    if (detailsOrSummary !== element && (detailsOrSummary == null ? void 0 : detailsOrSummary.nodeName) === "DETAILS" && !detailsOrSummary.open)
-      return false;
-  }
+  if (!element.checkVisibility() && !isWebKitListBoxOptionVisible(element, style))
+    return false;
   if (style.visibility !== "visible")
     return false;
   return true;
+}
+function isListBoxSelect(select) {
+  return select.multiple || select.size > 1;
+}
+function isWebKitListBoxOptionVisible(element, style) {
+  var _a;
+  if (globalOptions.browserNameForWorkarounds !== "webkit" || element.nodeName !== "OPTION" || style.display === "none")
+    return false;
+  const select = element.closest("select");
+  if (!select || !isListBoxSelect(select))
+    return false;
+  for (let e = element.parentElement; e && e !== select; e = e.parentElement) {
+    if (((_a = getElementComputedStyle(e)) == null ? void 0 : _a.display) === "none")
+      return false;
+  }
+  return isElementStyleVisibilityVisible(select);
 }
 function computeBox(element) {
   const style = getElementComputedStyle(element);
@@ -3002,11 +3196,17 @@ function computeBox(element) {
 function isElementVisible(element) {
   return computeBox(element).visible;
 }
+var kTextNodeRange = /* @__PURE__ */ Symbol("playwrightTextNodeRange");
 function isVisibleTextNode(node) {
-  const range = node.ownerDocument.createRange();
+  var _a;
+  const document = node.ownerDocument;
+  const range = (_a = document[kTextNodeRange]) != null ? _a : document[kTextNodeRange] = document.createRange();
   range.selectNode(node);
   const rect = range.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0;
+  const result = rect.width > 0 && rect.height > 0;
+  range.setStart(document, 0);
+  range.collapse(true);
+  return result;
 }
 function elementSafeTagName(element) {
   const tagName = element.tagName;
@@ -3159,7 +3359,7 @@ var kImplicitRoleByTagName = {
   "PROGRESS": () => "progressbar",
   "SEARCH": () => "search",
   "SECTION": (e) => hasExplicitAccessibleName(e) ? "region" : null,
-  "SELECT": (e) => e.hasAttribute("multiple") || e.size > 1 ? "listbox" : "combobox",
+  "SELECT": (e) => isListBoxSelect(e) ? "listbox" : "combobox",
   "STRONG": () => "strong",
   "SUB": () => "subscript",
   "SUP": () => "superscript",
@@ -3501,14 +3701,16 @@ function allowsNameFromContent(role, targetDescendant) {
 function computeAccessibleNameComposite(element, includeHidden, collectElements) {
   const elementProhibitsNaming = ["caption", "code", "definition", "deletion", "emphasis", "generic", "insertion", "mark", "paragraph", "presentation", "strong", "subscript", "suggestion", "superscript", "term", "time"].includes(getAriaRole(element) || "");
   if (elementProhibitsNaming)
-    return emptyCompositeString();
+    return { ...emptyCompositeString(), derivedFromContent: false };
+  const outDerivedFromContent = { value: false };
   const result = getTextAlternativeInternal(element, {
     includeHidden,
     collectElements,
+    outDerivedFromContent,
     visitedElements: /* @__PURE__ */ new Set(),
     embeddedInTargetElement: "self"
   });
-  return { text: asFlatString(result.text), elements: result.elements };
+  return { text: asFlatString(result.text), elements: result.elements, derivedFromContent: outDerivedFromContent.value };
 }
 function getElementAccessibleName(element, includeHidden) {
   const cache = includeHidden ? cacheAccessibleNameHidden : cacheAccessibleName;
@@ -3546,18 +3748,19 @@ function getElementAccessibleDescription(element, includeHidden) {
   const cache = includeHidden ? cacheAccessibleDescriptionHidden : cacheAccessibleDescription;
   let accessibleDescription = cache == null ? void 0 : cache.get(element);
   if (accessibleDescription === void 0) {
-    accessibleDescription = "";
+    accessibleDescription = { text: "", derivedFromContent: false };
     if (element.hasAttribute("aria-describedby")) {
       const describedBy = getIdRefs(element, element.getAttribute("aria-describedby"));
-      accessibleDescription = asFlatString(describedBy.map((ref) => getTextAlternativeInternal(ref, {
+      accessibleDescription.text = asFlatString(describedBy.map((ref) => getTextAlternativeInternal(ref, {
         includeHidden,
         visitedElements: /* @__PURE__ */ new Set(),
         embeddedInDescribedBy: { element: ref, hidden: isElementHiddenForAria(ref) }
       }).text).join(" "));
+      accessibleDescription.derivedFromContent = describedBy.some((ref) => ref === element || element.contains(ref));
     } else if (element.hasAttribute("aria-description")) {
-      accessibleDescription = asFlatString(element.getAttribute("aria-description") || "");
+      accessibleDescription.text = asFlatString(element.getAttribute("aria-description") || "");
     } else {
-      accessibleDescription = asFlatString(element.getAttribute("title") || "");
+      accessibleDescription.text = asFlatString(element.getAttribute("title") || "");
     }
     cache == null ? void 0 : cache.set(element, accessibleDescription);
   }
@@ -3616,6 +3819,9 @@ function getElementAccessibleErrorMessage(element) {
   }
   return accessibleErrorMessage;
 }
+function insideTargetElement(options) {
+  return options.embeddedInTargetElement === "self" || options.embeddedInTargetElement === "descendant";
+}
 function getTextAlternativeInternal(element, options) {
   var _a, _b, _c, _d, _e;
   if (options.visitedElements.has(element))
@@ -3641,8 +3847,11 @@ function getTextAlternativeInternal(element, options) {
       embeddedInLabel: void 0,
       embeddedInNativeTextAlternative: void 0
     })), " ", options.collectElements);
-    if (accessibleName.text)
+    if (accessibleName.text) {
+      if (options.outDerivedFromContent && insideTargetElement(options) && (labelledBy || []).some((ref) => ref === element || element.contains(ref)))
+        options.outDerivedFromContent.value = true;
       return accessibleName;
+    }
   }
   const role = getAriaRole(element) || "";
   const tagName = elementSafeTagName(element);
@@ -3650,7 +3859,7 @@ function getTextAlternativeInternal(element, options) {
     const isOwnLabel = [...element.labels || []].includes(element);
     const isOwnLabelledBy = (labelledBy || []).includes(element);
     if (!isOwnLabel && !isOwnLabelledBy) {
-      if (role === "textbox") {
+      if (role === "textbox" || role === "searchbox") {
         options.visitedElements.add(element);
         if (tagName === "INPUT" || tagName === "TEXTAREA")
           return compositeString(element.value, element, options.collectElements);
@@ -3830,6 +4039,8 @@ function getTextAlternativeInternal(element, options) {
     const accessibleName = innerAccumulatedElementText(element, childOptions);
     const maybeTrimmedAccessibleName = options.embeddedInTargetElement === "self" ? trimFlatString(accessibleName.text) : accessibleName.text;
     if (maybeTrimmedAccessibleName) {
+      if (options.outDerivedFromContent && insideTargetElement(options) && trimFlatString(accessibleName.text))
+        options.outDerivedFromContent.value = true;
       (_e = accessibleName.elements) == null ? void 0 : _e.add(element);
       return accessibleName;
     }
@@ -4148,9 +4359,6 @@ function toInternalOptions(options) {
   if (options.mode === "autoexpect") {
     return { visibility: "ariaAndVisible", refs: "none", renderBoxes };
   }
-  if (options.mode === "codegen") {
-    return { visibility: "aria", refs: "none", renderStringsAsRegex: true, renderBoxes };
-  }
   return { visibility: "aria", refs: "none", renderBoxes };
 }
 function generateAriaTree(rootElement, publicOptions) {
@@ -4165,6 +4373,7 @@ function generateAriaTree(rootElement, publicOptions) {
   };
   setAriaNodeElement(snapshot.root, rootElement);
   const visit = (ariaNode, node, parentElementVisible) => {
+    var _a;
     if (visited.has(node))
       return;
     visited.add(node);
@@ -4197,6 +4406,8 @@ function generateAriaTree(rootElement, publicOptions) {
       }
     }
     const childAriaNode = visible ? toAriaNode(element, options, nameSourceElements) : null;
+    if (childAriaNode && ((_a = element.getAttribute("aria-hidden")) == null ? void 0 : _a.toLowerCase()) === "true")
+      childAriaNode.props["aria-hidden"] = "true";
     let elementInfo;
     if (childAriaNode) {
       if (childAriaNode.ref) {
@@ -4378,11 +4589,12 @@ function cachedRegex(template) {
 function matchesExpectAriaTemplate(rootElement, template) {
   const snapshot = generateAriaTree(rootElement, { mode: "default" });
   const matches = matchesNodeDeep(snapshot.root, template, false, false);
+  const { json } = renderAriaTreeAsJSON(snapshot, { mode: "default" });
   return {
     matches,
     received: {
-      raw: renderAriaTree(snapshot, { mode: "default" }).text,
-      regex: renderAriaTree(snapshot, { mode: "codegen" }).text
+      raw: renderAriaSnapshotAsYaml(json),
+      regex: renderAriaSnapshotAsYaml(json, { convertStringsToRegex: true })
     }
   };
 }
@@ -4471,157 +4683,72 @@ function matchesNodeDeep(root, template, collectAll, isDeepEqual) {
   visit(root, null);
   return results;
 }
-function indent(depth) {
-  return "  ".repeat(depth);
-}
-function renderAriaTree(ariaSnapshot, publicOptions) {
+function renderAriaTreeAsJSON(ariaSnapshot, publicOptions) {
   const options = toInternalOptions(publicOptions);
-  const lines = [];
   const iframeDepths = {};
-  const includeText = options.renderStringsAsRegex ? textContributesInfo : () => true;
-  const renderString = options.renderStringsAsRegex ? convertToBestGuessRegex : (str) => str;
-  const nodesToRender = ariaSnapshot.root.role === "fragment" ? ariaSnapshot.root.children : [ariaSnapshot.root];
-  const visitText = (text, depth) => {
-    if (publicOptions.depth && depth > publicOptions.depth)
-      return;
-    const escaped = yamlEscapeValueIfNeeded(renderString(text));
-    if (escaped)
-      lines.push(indent(depth) + "- text: " + escaped);
-  };
-  const createKey = (ariaNode, renderCursorPointer) => {
-    let key = ariaNode.role;
-    if (ariaNode.name && ariaNode.name.length <= 900) {
-      const name = renderString(ariaNode.name);
-      if (name) {
-        const stringifiedName = name.startsWith("/") && name.endsWith("/") ? name : JSON.stringify(name);
-        key += " " + stringifiedName;
-      }
-    }
-    if (ariaNode.checked === "mixed")
-      key += ` [checked=mixed]`;
-    if (ariaNode.checked === true)
-      key += ` [checked]`;
+  const visit = (ariaNode, depth, renderCursorPointer) => {
+    if (ariaNode.role === "iframe" && ariaNode.ref)
+      iframeDepths[ariaNode.ref] = depth;
+    const node = { role: ariaNode.role };
+    if (ariaNode.name)
+      node.name = ariaNode.name;
+    if (ariaNode.checked === "mixed" || ariaNode.checked === true)
+      node.checked = ariaNode.checked;
     if (ariaNode.disabled)
-      key += ` [disabled]`;
+      node.disabled = true;
     if (ariaNode.expanded)
-      key += ` [expanded]`;
+      node.expanded = true;
     if (ariaNode.active && options.renderActive)
-      key += ` [active]`;
-    if (ariaNode.invalid === "grammar" || ariaNode.invalid === "spelling")
-      key += ` [invalid=${ariaNode.invalid}]`;
-    if (ariaNode.invalid === true)
-      key += ` [invalid]`;
+      node.active = true;
+    if (ariaNode.invalid)
+      node.invalid = ariaNode.invalid;
     if (ariaNode.level)
-      key += ` [level=${ariaNode.level}]`;
-    if (ariaNode.pressed === "mixed")
-      key += ` [pressed=mixed]`;
-    if (ariaNode.pressed === true)
-      key += ` [pressed]`;
+      node.level = ariaNode.level;
+    if (ariaNode.pressed === "mixed" || ariaNode.pressed === true)
+      node.pressed = ariaNode.pressed;
     if (ariaNode.selected === true)
-      key += ` [selected]`;
+      node.selected = true;
     if (ariaNode.ref) {
-      key += ` [ref=${ariaNode.ref}]`;
+      node.ref = ariaNode.ref;
       if (renderCursorPointer && hasPointerCursor(ariaNode))
-        key += " [cursor=pointer]";
+        node.cursor = "pointer";
     }
     if (options.renderBoxes) {
       const element = ariaNodeElement(ariaNode);
       if (element) {
         const r = element.getBoundingClientRect();
-        key += ` [box=${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.width)},${Math.round(r.height)}]`;
+        node.box = { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
       }
     }
-    return key;
-  };
-  const getSingleTextChild = (ariaNode) => {
-    return ariaNode.children.length === 1 && typeof ariaNode.children[0] === "string" && !Object.keys(ariaNode.props).length ? ariaNode.children[0] : void 0;
-  };
-  const visit = (ariaNode, depth, renderCursorPointer) => {
-    if (publicOptions.depth && depth > publicOptions.depth)
-      return;
-    if (ariaNode.role === "iframe" && ariaNode.ref)
-      iframeDepths[ariaNode.ref] = depth;
-    const escapedKey = indent(depth) + "- " + yamlEscapeKeyIfNeeded(createKey(ariaNode, renderCursorPointer));
-    const singleTextChild = getSingleTextChild(ariaNode);
+    if (ariaNode.props.url !== void 0)
+      node.url = ariaNode.props.url;
+    if (ariaNode.props.placeholder !== void 0)
+      node.placeholder = ariaNode.props.placeholder;
+    if (ariaNode.props["aria-hidden"] !== void 0)
+      node.ariaHidden = true;
+    const singleTextChild = ariaNode.children.length === 1 && typeof ariaNode.children[0] === "string" ? ariaNode.children[0] : void 0;
     const isAtDepthLimit = !!publicOptions.depth && depth === publicOptions.depth;
-    const hasNoChildren = !singleTextChild && (!ariaNode.children.length || isAtDepthLimit);
-    if (hasNoChildren && !Object.keys(ariaNode.props).length) {
-      lines.push(escapedKey);
-    } else if (singleTextChild !== void 0) {
-      const shouldInclude = includeText(ariaNode, singleTextChild);
-      if (shouldInclude)
-        lines.push(escapedKey + ": " + yamlEscapeValueIfNeeded(renderString(singleTextChild)));
-      else
-        lines.push(escapedKey);
-    } else {
-      lines.push(escapedKey + ":");
-      for (const [name, value] of Object.entries(ariaNode.props))
-        lines.push(indent(depth + 1) + "- /" + name + ": " + yamlEscapeValueIfNeeded(value));
+    if (singleTextChild !== void 0) {
+      node.text = singleTextChild;
+    } else if (!isAtDepthLimit && ariaNode.children.length) {
       const inCursorPointer = !!ariaNode.ref && renderCursorPointer && hasPointerCursor(ariaNode);
-      for (const child of ariaNode.children) {
+      node.children = ariaNode.children.map((child) => {
         if (typeof child === "string")
-          visitText(includeText(ariaNode, child) ? child : "", depth + 1);
-        else
-          visit(child, depth + 1, renderCursorPointer && !inCursorPointer);
-      }
+          return child;
+        return visit(child, depth + 1, renderCursorPointer && !inCursorPointer);
+      });
     }
+    return node;
   };
+  const json = [];
+  const nodesToRender = ariaSnapshot.root.role === "fragment" ? ariaSnapshot.root.children : [ariaSnapshot.root];
   for (const nodeToRender of nodesToRender) {
     if (typeof nodeToRender === "string")
-      visitText(nodeToRender, 0);
+      json.push({ role: "text", text: nodeToRender });
     else
-      visit(nodeToRender, 0, !!options.renderCursorPointer);
+      json.push(visit(nodeToRender, 0, !!options.renderCursorPointer));
   }
-  return { text: lines.join("\n"), iframeDepths };
-}
-function convertToBestGuessRegex(text) {
-  const dynamicContent = [
-    // 550e8400-e29b-41d4-a716-446655440000
-    { regex: /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/, replacement: "[0-9a-fA-F-]+" },
-    // 2mb
-    { regex: /\b[\d,.]+[bkmBKM]+\b/, replacement: "[\\d,.]+[bkmBKM]+" },
-    // 2ms, 20s
-    { regex: /\b\d+[hmsp]+\b/, replacement: "\\d+[hmsp]+" },
-    { regex: /\b[\d,.]+[hmsp]+\b/, replacement: "[\\d,.]+[hmsp]+" },
-    // Do not replace single digits with regex by default.
-    // 2+ digits: [Issue 22, 22.3, 2.33, 2,333]
-    { regex: /\b\d+,\d+\b/, replacement: "\\d+,\\d+" },
-    { regex: /\b\d+\.\d{2,}\b/, replacement: "\\d+\\.\\d+" },
-    { regex: /\b\d{2,}\.\d+\b/, replacement: "\\d+\\.\\d+" },
-    { regex: /\b\d{2,}\b/, replacement: "\\d+" }
-  ];
-  let pattern = "";
-  let lastIndex = 0;
-  const combinedRegex = new RegExp(dynamicContent.map((r) => "(" + r.regex.source + ")").join("|"), "g");
-  text.replace(combinedRegex, (match, ...args) => {
-    const offset = args[args.length - 2];
-    const groups = args.slice(0, -2);
-    pattern += escapeRegExp(text.slice(lastIndex, offset));
-    for (let i = 0; i < groups.length; i++) {
-      if (groups[i]) {
-        const { replacement } = dynamicContent[i];
-        pattern += replacement;
-        break;
-      }
-    }
-    lastIndex = offset + match.length;
-    return match;
-  });
-  if (!pattern)
-    return text;
-  pattern += escapeRegExp(text.slice(lastIndex));
-  return String(new RegExp(pattern));
-}
-function textContributesInfo(node, text) {
-  if (!text.length)
-    return false;
-  if (!node.name)
-    return true;
-  const substr = text.length <= 200 && node.name.length <= 200 ? longestCommonSubstring(text, node.name) : "";
-  let filtered = text;
-  while (substr && filtered.includes(substr))
-    filtered = filtered.replace(substr, "");
-  return filtered.trim().length / text.length > 0.1;
+  return { json, iframeDepths };
 }
 var elementSymbol = /* @__PURE__ */ Symbol("element");
 function ariaNodeElement(ariaNode) {
@@ -4636,16 +4763,17 @@ function findNewElement(from, to) {
 }
 
 // packages/injected/src/highlight.css?inline
-var highlight_default = ":host{font-size:13px;font-family:system-ui,Ubuntu,Droid Sans,sans-serif;color:#333;color-scheme:light}svg{position:absolute;height:0}x-pw-tooltip{backdrop-filter:blur(5px);background-color:#fff;border-radius:6px;box-shadow:0 .5rem 1.2rem #0000004d;display:none;font-size:12.8px;font-weight:400;left:0;line-height:1.5;max-width:600px;position:absolute;top:0;padding:0;flex-direction:column;overflow:hidden}x-pw-tooltip-line{display:flex;max-width:600px;padding:6px;user-select:none;cursor:pointer}x-pw-tooltip-footer{display:flex;max-width:600px;padding:6px;user-select:none;color:#777}x-pw-dialog{background-color:#fff;pointer-events:auto;border-radius:6px;box-shadow:0 .5rem 1.2rem #0000004d;display:flex;flex-direction:column;position:absolute;z-index:10;font-size:13px}x-pw-dialog:not(.autosize){width:400px;height:150px}x-pw-dialog-body{display:flex;flex-direction:column;flex:auto}x-pw-dialog-body label{margin:5px 8px;display:flex;flex-direction:row;align-items:center}x-pw-highlight{position:absolute;top:0;left:0;width:0;height:0}x-pw-action-point{position:absolute;width:20px;height:20px;background:red;border-radius:10px;margin:-10px 0 0 -10px;z-index:2}x-pw-action-cursor{position:absolute;width:18px;height:22px;pointer-events:none;z-index:4;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))}x-pw-action-cursor svg{width:100%;height:100%;position:static}x-pw-title{position:absolute;backdrop-filter:blur(5px);background-color:#00000080;color:#fff;border-radius:6px;padding:6px;font-size:24px;line-height:1.4;white-space:nowrap;user-select:none;z-index:3}x-pw-user-overlays,x-pw-user-overlay{position:absolute;inset:0}@keyframes pw-fade-out{0%{opacity:1}to{opacity:0}}x-pw-separator{height:1px;margin:6px 9px;background:#949494e5}x-pw-tool-gripper{height:28px;width:24px;margin:2px 0;cursor:grab}x-pw-tool-gripper:active{cursor:grabbing}x-pw-tool-gripper>x-div{width:16px;height:16px;margin:6px 4px;clip-path:url(#icon-gripper);background-color:#555}x-pw-tools-list>label{display:flex;align-items:center;margin:0 10px;user-select:none}x-pw-tools-list{display:flex;width:100%;border-bottom:1px solid #dddddd}x-pw-tool-item{pointer-events:auto;height:28px;width:28px;border-radius:3px}x-pw-tool-item:not(.disabled){cursor:pointer}x-pw-tool-item:not(.disabled):hover{background-color:#dbdbdb}x-pw-tool-item.toggled{background-color:#8acae480}x-pw-tool-item.toggled:not(.disabled):hover{background-color:#8acae4c4}x-pw-tool-item>x-div{width:16px;height:16px;margin:6px;background-color:#3a3a3a}x-pw-tool-item.disabled>x-div{background-color:#61616180;cursor:default}x-pw-tool-item.record.toggled{background-color:transparent}x-pw-tool-item.record.toggled:not(.disabled):hover{background-color:#dbdbdb}x-pw-tool-item.record.toggled>x-div{background-color:#a1260d}x-pw-tool-item.record.disabled.toggled>x-div{opacity:.8}x-pw-tool-item.accept>x-div{background-color:#388a34}x-pw-tool-item.record>x-div{clip-path:url(#icon-circle-large-filled)}x-pw-tool-item.record.toggled>x-div{clip-path:url(#icon-stop-circle)}x-pw-tool-item.pick-locator>x-div{clip-path:url(#icon-inspect)}x-pw-tool-item.text>x-div{clip-path:url(#icon-whole-word)}x-pw-tool-item.visibility>x-div{clip-path:url(#icon-eye)}x-pw-tool-item.value>x-div{clip-path:url(#icon-symbol-constant)}x-pw-tool-item.snapshot>x-div{clip-path:url(#icon-gist)}x-pw-tool-item.accept>x-div{clip-path:url(#icon-check)}x-pw-tool-item.cancel>x-div{clip-path:url(#icon-close)}x-pw-tool-item.succeeded>x-div{clip-path:url(#icon-pass);background-color:#388a34!important}x-pw-overlay{position:absolute;top:0;max-width:min-content;z-index:2147483647;background:transparent;pointer-events:auto}x-pw-overlay x-pw-tools-list{background-color:#fffd;box-shadow:#0000001a 0 5px 5px;border-radius:3px;border-bottom:none}x-pw-overlay x-pw-tool-item{margin:2px}textarea.text-editor{font-family:system-ui,Ubuntu,Droid Sans,sans-serif;flex:auto;border:none;margin:6px 10px;color:#333;outline:1px solid transparent!important;resize:none;padding:0;font-size:13px}textarea.text-editor.does-not-match{outline:1px solid red!important}x-div{display:block}x-spacer{flex:auto}*{box-sizing:border-box}*[hidden]{display:none!important}x-locator-editor{flex:none;width:100%;height:60px;padding:4px;border-bottom:1px solid #dddddd;outline:1px solid transparent}x-locator-editor.does-not-match{outline:1px solid red}.CodeMirror{width:100%!important;height:100%!important}x-pw-action-list{flex:auto;display:flex;flex-direction:column;user-select:none}x-pw-action-item{padding:6px 10px;cursor:pointer;overflow:hidden}x-pw-action-item:hover{background-color:#f2f2f2}x-pw-action-item:last-child{border-bottom-left-radius:6px;border-bottom-right-radius:6px}\n";
+var highlight_default = ":host{font-size:13px;font-family:system-ui,Ubuntu,Droid Sans,sans-serif;color:#333;color-scheme:light}svg{position:absolute;height:0}x-pw-tooltip{backdrop-filter:blur(5px);background-color:#fff;border-radius:6px;box-shadow:0 .5rem 1.2rem #0000004d;display:none;font-size:12.8px;font-weight:400;left:0;line-height:1.5;max-width:600px;position:absolute;top:0;padding:0;flex-direction:column;overflow:hidden}x-pw-tooltip-line{display:flex;max-width:600px;padding:6px;user-select:none;cursor:pointer}x-pw-tooltip-footer{display:flex;max-width:600px;padding:6px;user-select:none;color:#777}x-pw-dialog{background-color:#fff;pointer-events:auto;border-radius:6px;box-shadow:0 .5rem 1.2rem #0000004d;display:flex;flex-direction:column;position:absolute;z-index:10;font-size:13px}x-pw-dialog:not(.autosize){width:400px;height:150px}x-pw-dialog-body{display:flex;flex-direction:column;flex:auto}x-pw-dialog-body label{margin:5px 8px;display:flex;flex-direction:row;align-items:center}x-pw-highlight{position:absolute;top:0;left:0;width:0;height:0}x-pw-action-point{position:absolute;width:20px;height:20px;background:red;border-radius:10px;margin:-10px 0 0 -10px;z-index:2}x-pw-screencast-highlight,x-pw-screencast-point,x-pw-title{animation:pw-fade-out var(--pw-fade-duration) ease-out var(--pw-fade-delay, 0ms) forwards}x-pw-screencast-highlight,x-pw-screencast-point{position:absolute;pointer-events:none}x-pw-screencast-highlight{z-index:1}x-pw-screencast-point{width:0;height:0;overflow:visible;translate:-50% -50%;z-index:2}x-pw-action-cursor{position:absolute;width:14px;height:21px;pointer-events:none;z-index:4;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.35))}x-pw-action-cursor svg{width:100%;height:100%;position:static;overflow:visible}x-pw-title{position:absolute;backdrop-filter:blur(5px);background-color:#00000080;color:#fff;border-radius:6px;padding:6px;font-size:24px;line-height:1.4;white-space:nowrap;user-select:none;z-index:3}x-pw-user-overlays,x-pw-user-overlay{position:absolute;inset:0}@keyframes pw-fade-out{0%{opacity:1}to{opacity:0}}x-pw-separator{height:1px;margin:6px 9px;background:#949494e5}x-pw-tool-gripper{height:28px;width:24px;margin:2px 0;cursor:grab}x-pw-tool-gripper:active{cursor:grabbing}x-pw-tool-gripper>x-div{width:16px;height:16px;margin:6px 4px;clip-path:url(#icon-gripper);background-color:#555}x-pw-tools-list>label{display:flex;align-items:center;margin:0 10px;user-select:none}x-pw-tools-list{display:flex;width:100%;border-bottom:1px solid #dddddd}x-pw-tool-item{pointer-events:auto;height:28px;width:28px;border-radius:3px}x-pw-tool-item:not(.disabled){cursor:pointer}x-pw-tool-item:not(.disabled):hover{background-color:#dbdbdb}x-pw-tool-item.toggled{background-color:#8acae480}x-pw-tool-item.toggled:not(.disabled):hover{background-color:#8acae4c4}x-pw-tool-item>x-div{width:16px;height:16px;margin:6px;background-color:#3a3a3a}x-pw-tool-item.disabled>x-div{background-color:#61616180;cursor:default}x-pw-tool-item.record.toggled{background-color:transparent}x-pw-tool-item.record.toggled:not(.disabled):hover{background-color:#dbdbdb}x-pw-tool-item.record.toggled>x-div{background-color:#a1260d}x-pw-tool-item.record.disabled.toggled>x-div{opacity:.8}x-pw-tool-item.accept>x-div{background-color:#388a34}x-pw-tool-item.record>x-div{clip-path:url(#icon-circle-large-filled)}x-pw-tool-item.record.toggled>x-div{clip-path:url(#icon-stop-circle)}x-pw-tool-item.pick-locator>x-div{clip-path:url(#icon-inspect)}x-pw-tool-item.text>x-div{clip-path:url(#icon-whole-word)}x-pw-tool-item.visibility>x-div{clip-path:url(#icon-eye)}x-pw-tool-item.value>x-div{clip-path:url(#icon-symbol-constant)}x-pw-tool-item.snapshot>x-div{clip-path:url(#icon-gist)}x-pw-tool-item.accept>x-div{clip-path:url(#icon-check)}x-pw-tool-item.cancel>x-div{clip-path:url(#icon-close)}x-pw-tool-item.succeeded>x-div{clip-path:url(#icon-pass);background-color:#388a34!important}x-pw-overlay{position:absolute;top:0;max-width:min-content;z-index:2147483647;background:transparent;pointer-events:auto}x-pw-overlay x-pw-tools-list{background-color:#fffd;box-shadow:#0000001a 0 5px 5px;border-radius:3px;border-bottom:none}x-pw-overlay x-pw-tool-item{margin:2px}textarea.text-editor{font-family:system-ui,Ubuntu,Droid Sans,sans-serif;flex:auto;border:none;margin:6px 10px;color:#333;outline:1px solid transparent!important;resize:none;padding:0;font-size:13px}textarea.text-editor.does-not-match{outline:1px solid red!important}x-div{display:block}x-spacer{flex:auto}*{box-sizing:border-box}*[hidden]{display:none!important}x-locator-editor{flex:none;width:100%;height:60px;padding:4px;border-bottom:1px solid #dddddd;outline:1px solid transparent}x-locator-editor.does-not-match{outline:1px solid red}.CodeMirror{width:100%!important;height:100%!important}x-pw-action-list{flex:auto;display:flex;flex-direction:column;user-select:none}x-pw-action-item{padding:6px 10px;cursor:pointer;overflow:hidden}x-pw-action-item:hover{background-color:#f2f2f2}x-pw-action-item:last-child{border-bottom-left-radius:6px;border-bottom-right-radius:6px}\n";
 
 // packages/injected/src/highlight.ts
 var Highlight = class {
   constructor(injectedScript) {
     this._renderedEntries = [];
+    this._screencastDecorations = [];
     this._userOverlays = /* @__PURE__ */ new Map();
     this._userOverlayHidden = false;
     this._language = "javascript";
-    this._elementHighlightSelectors = /* @__PURE__ */ new Map();
+    this._elementHighlights = [];
     this._injectedScript = injectedScript;
     const document = injectedScript.document;
     this._isUnderTest = injectedScript.isUnderTest;
@@ -4663,8 +4791,6 @@ var Highlight = class {
     this._glassPaneElement.style.pointerEvents = "none";
     this._glassPaneElement.style.display = "flex";
     this._glassPaneElement.style.backgroundColor = "transparent";
-    this._actionPointElement = document.createElement("x-pw-action-point");
-    this._actionPointElement.setAttribute("hidden", "true");
     this._actionCursorElement = document.createElement("x-pw-action-cursor");
     this._actionCursorElement.style.visibility = "hidden";
     this._actionCursorElement.appendChild(this._createCursorSvg(document));
@@ -4682,7 +4808,6 @@ var Highlight = class {
       styleElement.textContent = highlight_default;
       this._glassPaneShadow.appendChild(styleElement);
     }
-    this._glassPaneShadow.appendChild(this._actionPointElement);
     this._glassPaneShadow.appendChild(this._actionCursorElement);
     this._glassPaneShadow.appendChild(this._titleElement);
     this._glassPaneShadow.appendChild(this._userOverlayContainer);
@@ -4701,16 +4826,12 @@ var Highlight = class {
   setLanguage(language) {
     this._language = language;
   }
-  addElementHighlight(selector, cssStyle) {
-    const key = stringifySelector(selector);
-    this._elementHighlightSelectors.set(key, { selector, cssStyle });
-    this._ensureElementHighlightRaf();
-  }
-  removeElementHighlight(selector) {
-    const key = stringifySelector(selector);
-    if (!this._elementHighlightSelectors.delete(key))
-      return;
-    if (this._elementHighlightSelectors.size === 0) {
+  setElementHighlights(highlights) {
+    const hadHighlights = this._elementHighlights.length > 0;
+    this._elementHighlights = highlights;
+    if (this._elementHighlights.length) {
+      this._ensureElementHighlightRaf();
+    } else if (hadHighlights) {
       if (this._rafRequest) {
         this._injectedScript.utils.builtins.cancelAnimationFrame(this._rafRequest);
         this._rafRequest = void 0;
@@ -4723,13 +4844,19 @@ var Highlight = class {
       return;
     const tick = () => {
       const entries = [];
-      for (const { selector, cssStyle } of this._elementHighlightSelectors.values()) {
-        const elements = this._injectedScript.querySelectorAll(selector, this._injectedScript.document.documentElement);
-        const locator = asLocator(this._language, stringifySelector(selector));
+      const glassPanes = [...this._injectedScript.document.querySelectorAll("x-pw-glass")];
+      for (const { selector, cssStyle } of this._elementHighlights) {
+        let elements = [];
+        try {
+          elements = this._injectedScript.querySelectorAll(selector, this._injectedScript.document.documentElement);
+        } catch {
+        }
+        elements = elements.filter((element) => !glassPanes.some((pane) => this._injectedScript.utils.isInsideScope(pane, element)));
+        const locator = selector.parts.some((part) => part.name === "aria-template") ? void 0 : asLocator(this._language, stringifySelector(selector));
         const color = elements.length > 1 ? "#f6b26b7f" : "#6fa8dc7f";
         for (let i = 0; i < elements.length; ++i) {
           const suffix = elements.length > 1 ? ` [${i + 1} of ${elements.length}]` : "";
-          entries.push({ element: elements[i], color, tooltipText: locator + suffix, cssStyle });
+          entries.push({ element: elements[i], color, tooltipText: locator === void 0 ? void 0 : locator + suffix, cssStyle });
         }
       }
       this.updateHighlight(entries);
@@ -4742,27 +4869,69 @@ var Highlight = class {
       this._injectedScript.utils.builtins.cancelAnimationFrame(this._rafRequest);
       this._rafRequest = void 0;
     }
-    this._elementHighlightSelectors.clear();
+    this._elementHighlights = [];
+    this._clearUserOverlayTimer();
     this._glassPaneElement.remove();
   }
-  showActionPoint(x, y, fadeDuration) {
+  showActionPoint(x, y) {
+    if (!this._actionPointElement) {
+      this._actionPointElement = this._injectedScript.document.createElement("x-pw-action-point");
+      this._glassPaneShadow.appendChild(this._actionPointElement);
+    }
     this._actionPointElement.style.top = y + "px";
     this._actionPointElement.style.left = x + "px";
     this._actionPointElement.hidden = false;
-    if (fadeDuration)
-      this._actionPointElement.style.animation = `pw-fade-out ${fadeDuration}ms ease-out forwards`;
-    else
-      this._actionPointElement.style.animation = "";
   }
   hideActionPoint() {
-    this._actionPointElement.hidden = true;
+    if (this._actionPointElement)
+      this._actionPointElement.hidden = true;
+  }
+  showScreencastHighlight(box, style, fadeDuration) {
+    const element = this._createScreencastDecoration("x-pw-screencast-highlight", style, fadeDuration);
+    element.style.left = box.x + "px";
+    element.style.top = box.y + "px";
+    element.style.width = box.width + "px";
+    element.style.height = box.height + "px";
+  }
+  showScreencastPoint(x, y, style, fadeDuration) {
+    const element = this._createScreencastDecoration("x-pw-screencast-point", style, fadeDuration);
+    element.style.left = x + "px";
+    element.style.top = y + "px";
+  }
+  hideScreencastDecorations() {
+    for (const element of this._screencastDecorations)
+      element.remove();
+    this._screencastDecorations = [];
+  }
+  _createScreencastDecoration(name, style, fadeDuration) {
+    const element = this._injectedScript.document.createElement(name);
+    element.style.cssText = style;
+    if (fadeDuration)
+      element.style.setProperty("--pw-fade-duration", fadeDuration + "ms");
+    this._glassPaneShadow.appendChild(element);
+    this._screencastDecorations.push(element);
+    return element;
   }
   moveActionCursor(x, y, fadeDuration) {
-    const moveDuration = fadeDuration ? Math.max(80, Math.min(fadeDuration * 0.6, 400)) : 0;
-    this._actionCursorElement.style.transition = `top ${moveDuration}ms ease, left ${moveDuration}ms ease`;
-    this._actionCursorElement.style.left = x + "px";
-    this._actionCursorElement.style.top = y + "px";
-    this._actionCursorElement.style.visibility = "visible";
+    var _a;
+    const element = this._actionCursorElement;
+    const from = element.getBoundingClientRect();
+    const wasVisible = element.style.visibility === "visible";
+    (_a = this._actionCursorAnimation) == null ? void 0 : _a.cancel();
+    this._actionCursorAnimation = void 0;
+    element.style.left = x + "px";
+    element.style.top = y + "px";
+    element.style.visibility = "visible";
+    const dx = from.left - x;
+    const dy = from.top - y;
+    if (!wasVisible || !fadeDuration || Math.hypot(dx, dy) < 1)
+      return;
+    const duration = Math.max(80, Math.min(fadeDuration * 0.6, 400));
+    this._actionCursorAnimation = element.animate(cursorPathKeyframes(dx, dy, x + y + dx + dy), { duration, easing: "cubic-bezier(0.5, 0, 0.3, 1)" });
+  }
+  restoreActionCursor(x, y) {
+    if (this._actionCursorElement.style.visibility !== "visible")
+      this.moveActionCursor(x, y);
   }
   hideActionCursor() {
     this._actionCursorElement.style.visibility = "hidden";
@@ -4770,30 +4939,26 @@ var Highlight = class {
   _createCursorSvg(document) {
     const svgNs = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(svgNs, "svg");
-    svg.setAttribute("viewBox", "0 0 18 22");
+    svg.setAttribute("viewBox", "0 0 12 18");
     const path = document.createElementNS(svgNs, "path");
-    path.setAttribute("d", "M1 1 L1 17 L5.5 13 L8 20.5 L11 19.5 L8.5 12 L15 12 Z");
-    path.setAttribute("fill", "white");
-    path.setAttribute("stroke", "black");
-    path.setAttribute("stroke-width", "1.5");
+    path.setAttribute("d", "M0 0 L0 15.8 L3.9 12.4 L6.6 18.6 L8.9 17.6 L6.2 11.4 L11.2 11.4 Z");
+    path.setAttribute("fill", "black");
+    path.setAttribute("stroke", "white");
+    path.setAttribute("stroke-width", "1.6");
     path.setAttribute("stroke-linejoin", "round");
+    path.setAttribute("paint-order", "stroke");
     svg.appendChild(path);
     return svg;
   }
-  showActionTitle(text, fadeDuration, position, fontSize) {
+  showActionTitle(text, fadeDuration, position, style) {
     this._titleElement.textContent = text;
     this._titleElement.hidden = false;
+    this._titleElement.style.cssText = style != null ? style : "";
     if (fadeDuration) {
       const fadeTime = fadeDuration / 4;
-      this._titleElement.style.animation = `pw-fade-out ${fadeTime}ms ease-out ${fadeDuration - fadeTime}ms forwards`;
-    } else {
-      this._titleElement.style.animation = "";
+      this._titleElement.style.setProperty("--pw-fade-duration", fadeTime + "ms");
+      this._titleElement.style.setProperty("--pw-fade-delay", fadeDuration - fadeTime + "ms");
     }
-    this._titleElement.style.top = "";
-    this._titleElement.style.bottom = "";
-    this._titleElement.style.left = "";
-    this._titleElement.style.right = "";
-    this._titleElement.style.transform = "";
     switch (position) {
       case "top-left":
         this._titleElement.style.top = "6px";
@@ -4823,8 +4988,6 @@ var Highlight = class {
         this._titleElement.style.right = "6px";
         break;
     }
-    if (fontSize)
-      this._titleElement.style.fontSize = fontSize + "px";
   }
   hideActionTitle() {
     this._titleElement.hidden = true;
@@ -4844,6 +5007,7 @@ var Highlight = class {
     this._userOverlays.set(id, element);
     this._userOverlayContainer.appendChild(element);
     this._userOverlayContainer.hidden = this._userOverlayHidden;
+    this._ensureUserOverlayTimer();
     return id;
   }
   getUserOverlay(id) {
@@ -4855,8 +5019,26 @@ var Highlight = class {
       element.remove();
       this._userOverlays.delete(id);
     }
-    if (this._userOverlays.size === 0)
+    if (this._userOverlays.size === 0) {
       this._userOverlayContainer.hidden = true;
+      this._clearUserOverlayTimer();
+    }
+  }
+  // Elements that enter the top layer later paint above the glass pane, so keep re-promoting it while overlays are showing.
+  _ensureUserOverlayTimer() {
+    if (this._userOverlayTimer !== void 0)
+      return;
+    const tick = () => {
+      this.install();
+      this._userOverlayTimer = this._injectedScript.utils.builtins.setTimeout(tick, 500);
+    };
+    this._userOverlayTimer = this._injectedScript.utils.builtins.setTimeout(tick, 500);
+  }
+  _clearUserOverlayTimer() {
+    if (this._userOverlayTimer === void 0)
+      return;
+    this._injectedScript.utils.builtins.clearTimeout(this._userOverlayTimer);
+    this._userOverlayTimer = void 0;
   }
   setUserOverlaysVisible(visible) {
     this._userOverlayHidden = !visible;
@@ -4893,7 +5075,7 @@ var Highlight = class {
         lineElement.textContent = entry.tooltipText;
         tooltipElement.appendChild(lineElement);
       }
-      this._renderedEntries.push({ targetElement: entry.element, box: toDOMRect(entry.box), color: entry.color, borderColor: entry.borderColor, fadeDuration: entry.fadeDuration, cssStyle: entry.cssStyle, tooltipElement, highlightElement });
+      this._renderedEntries.push({ targetElement: entry.element, box: toDOMRect(entry.box), color: entry.color, cssStyle: entry.cssStyle, tooltipElement, highlightElement });
     }
     for (const entry of this._renderedEntries) {
       if (!entry.box && !entry.targetElement)
@@ -4917,10 +5099,6 @@ var Highlight = class {
       entry.highlightElement.style.width = box.width + "px";
       entry.highlightElement.style.height = box.height + "px";
       entry.highlightElement.style.display = "block";
-      if (entry.borderColor)
-        entry.highlightElement.style.border = "2px solid " + entry.borderColor;
-      if (entry.fadeDuration)
-        entry.highlightElement.style.animation = `pw-fade-out ${entry.fadeDuration}ms ease-out forwards`;
       if (entry.cssStyle)
         entry.highlightElement.style.cssText += ";" + entry.cssStyle;
       if (this._isUnderTest)
@@ -5003,6 +5181,32 @@ var Highlight = class {
     this._glassPaneElement.removeEventListener("click", handler);
   }
 };
+function cursorPathKeyframes(dx, dy, seed) {
+  const random = (salt) => {
+    const value = Math.sin(seed * 12.9898 + salt * 78.233) * 43758.5453;
+    return value - Math.floor(value);
+  };
+  const distance = Math.hypot(dx, dy);
+  const normalX = -dy / distance;
+  const normalY = dx / distance;
+  const side = random(1) < 0.5 ? -1 : 1;
+  const startBow = side * distance * (0.03 + 0.03 * random(2));
+  const endBow = side * distance * (0.01 + 0.02 * random(3));
+  const c1x = dx * 2 / 3 + normalX * startBow;
+  const c1y = dy * 2 / 3 + normalY * startBow;
+  const c2x = dx / 3 + normalX * endBow;
+  const c2y = dy / 3 + normalY * endBow;
+  const keyframes = [];
+  const steps = 30;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    const px = u * u * u * dx + 3 * u * u * t * c1x + 3 * u * t * t * c2x;
+    const py = u * u * u * dy + 3 * u * u * t * c1y + 3 * u * t * t * c2y;
+    keyframes.push({ transform: `translate(${px}px, ${py}px)` });
+  }
+  return keyframes;
+}
 function toDOMRect(box) {
   if (!box)
     return void 0;
@@ -5071,8 +5275,10 @@ function matchesAttributePart(value, attr) {
   if (attr.op === "<truthy>")
     return !!objValue;
   if (attr.op === "=") {
-    if (attrValue instanceof RegExp)
+    if (attrValue instanceof RegExp) {
+      attrValue.lastIndex = 0;
       return typeof objValue === "string" && !!objValue.match(attrValue);
+    }
     return objValue === attrValue;
   }
   if (typeof objValue !== "string" || typeof attrValue !== "string")
@@ -5141,10 +5347,13 @@ function elementMatchesText(cache, element, matcher) {
     return "selfAndChildren";
   return "self";
 }
-function getElementLabels(textCache, element) {
-  const labels = getAriaLabelledByElements(element);
-  if (labels)
+function getElementLabels(textCache, element, options) {
+  let labels = getAriaLabelledByElements(element);
+  if (labels) {
+    if (options == null ? void 0 : options.skipRefsInsideElement)
+      labels = labels.filter((label) => label !== element && !element.contains(label));
     return labels.map((label) => elementText(textCache, label));
+  }
   const ariaLabel = element.getAttribute("aria-label");
   if (ariaLabel !== null && !!ariaLabel.trim())
     return [{ full: ariaLabel, normalized: normalizeWhiteSpace(ariaLabel), immediate: [ariaLabel] }];
@@ -5284,7 +5493,7 @@ function queryRole(scope, options, internal) {
         return;
     }
     if (options.description !== void 0) {
-      const accessibleDescription = normalizeWhiteSpace(getElementAccessibleDescription(element, !!options.includeHidden));
+      const accessibleDescription = normalizeWhiteSpace(getElementAccessibleDescription(element, !!options.includeHidden).text);
       if (typeof options.description === "string")
         options.description = normalizeWhiteSpace(options.description);
       if (internal && !options.descriptionExact && options.descriptionOp === "=")
@@ -5717,7 +5926,10 @@ var textMatchesEngine = {
     if (args.length === 0 || typeof args[0] !== "string" || args.length > 2 || args.length === 2 && typeof args[1] !== "string")
       throw new Error(`"text-matches" engine expects a regexp body and optional regexp flags`);
     const re = new RegExp(args[0], args.length === 2 ? args[1] : void 0);
-    const matcher = (elementText2) => re.test(elementText2.full);
+    const matcher = (elementText2) => {
+      re.lastIndex = 0;
+      return re.test(elementText2.full);
+    };
     return elementMatchesText(evaluator._cacheText, element, matcher) === "self";
   }
 };
@@ -5854,9 +6066,9 @@ function generateSelector(injectedScript, targetElement, options) {
   beginAriaCaches();
   beginDOMCaches();
   try {
-    let selectors = [];
+    let targetTokens;
     if (options.forTextExpect) {
-      let targetTokens = cssFallback(injectedScript, targetElement.ownerDocument.documentElement, options);
+      targetTokens = cssFallback(injectedScript, targetElement.ownerDocument.documentElement, options);
       for (let element = targetElement; element; element = parentElementOrShadowHost(element)) {
         const tokens = generateSelectorFor(cache, injectedScript, element, { ...options, noText: true });
         if (!tokens)
@@ -5867,41 +6079,18 @@ function generateSelector(injectedScript, targetElement, options) {
           break;
         }
       }
-      selectors = [joinTokens(targetTokens)];
     } else {
       if (!targetElement.matches("input,textarea,select") && !targetElement.isContentEditable) {
         const interactiveParent = closestCrossShadow(targetElement, "button,select,input,[role=button],[role=checkbox],[role=radio],a,[role=link]", options.root);
         if (interactiveParent && isElementVisible(interactiveParent))
           targetElement = interactiveParent;
       }
-      if (options.multiple) {
-        const withText = generateSelectorFor(cache, injectedScript, targetElement, options);
-        const withoutText = generateSelectorFor(cache, injectedScript, targetElement, { ...options, noText: true });
-        let tokens = [withText, withoutText];
-        cache.allowText.clear();
-        cache.disallowText.clear();
-        if (withText && hasCSSIdToken(withText))
-          tokens.push(generateSelectorFor(cache, injectedScript, targetElement, { ...options, noCSSId: true }));
-        if (withoutText && hasCSSIdToken(withoutText))
-          tokens.push(generateSelectorFor(cache, injectedScript, targetElement, { ...options, noText: true, noCSSId: true }));
-        tokens = tokens.filter(Boolean);
-        if (!tokens.length) {
-          const css = cssFallback(injectedScript, targetElement, options);
-          tokens.push(css);
-          if (hasCSSIdToken(css))
-            tokens.push(cssFallback(injectedScript, targetElement, { ...options, noCSSId: true }));
-        }
-        selectors = [...new Set(tokens.map((t) => joinTokens(t)))];
-      } else {
-        const targetTokens = generateSelectorFor(cache, injectedScript, targetElement, options) || cssFallback(injectedScript, targetElement, options);
-        selectors = [joinTokens(targetTokens)];
-      }
+      targetTokens = generateSelectorFor(cache, injectedScript, targetElement, options) || cssFallback(injectedScript, targetElement, options);
     }
-    const selector = selectors[0];
+    const selector = joinTokens(targetTokens);
     const parsedSelector = injectedScript.parseSelector(selector);
     return {
       selector,
-      selectors,
       elements: injectedScript.querySelectorAll(parsedSelector, (_a = options.root) != null ? _a : targetElement.ownerDocument)
     };
   } finally {
@@ -5924,10 +6113,8 @@ function generateSelectorFor(cache, injectedScript, targetElement, options) {
       result = candidate;
   };
   const candidates = [];
-  if (!options.noText) {
-    for (const candidate of buildTextCandidates(injectedScript, targetElement, !options.isRecursive))
-      candidates.push({ candidate, isTextCandidate: true });
-  }
+  for (const candidate of buildTextCandidates(injectedScript, targetElement, !options.isRecursive, options))
+    candidates.push({ candidate, isTextCandidate: true });
   for (const token of buildNoTextCandidates(injectedScript, targetElement, options)) {
     if (options.omitInternalEngines && token.engine.startsWith("internal:"))
       continue;
@@ -5984,11 +6171,9 @@ function buildNoTextCandidates(injectedScript, element, options) {
       if (!testIdAttributeNames.includes(attr) && element.getAttribute(attr))
         candidates.push({ engine: "css", selector: `[${attr}=${quoteCSSAttributeValue(element.getAttribute(attr))}]`, score: kOtherTestIdScore });
     }
-    if (!options.noCSSId) {
-      const idAttr = element.getAttribute("id");
-      if (idAttr && !isGuidLike(idAttr))
-        candidates.push({ engine: "css", selector: makeSelectorForId(idAttr), score: kCSSIdScore });
-    }
+    const idAttr = element.getAttribute("id");
+    if (idAttr && !isGuidLike(idAttr))
+      candidates.push({ engine: "css", selector: makeSelectorForId(idAttr), score: kCSSIdScore });
     candidates.push({ engine: "css", selector: escapeNodeName(element), score: kCSSTagNameScore });
   }
   if (element.nodeName === "IFRAME" || element.nodeName === "FRAME") {
@@ -6015,7 +6200,7 @@ function buildNoTextCandidates(injectedScript, element, options) {
         candidates.push({ engine: "internal:attr", selector: `[placeholder=${escapeForAttributeSelector(alternative.text, false)}]`, score: kPlaceholderScore - alternative.scoreBonus });
     }
   }
-  const labels = getElementLabels(injectedScript._evaluator._cacheText, element);
+  const labels = getElementLabels(injectedScript._evaluator._cacheText, element, { skipRefsInsideElement: options.noText });
   for (const label of labels) {
     const labelText = label.normalized;
     candidates.push({ engine: "internal:label", selector: escapeForTextSelector(labelText, true), score: kLabelScoreExact });
@@ -6036,23 +6221,25 @@ function buildNoTextCandidates(injectedScript, element, options) {
   penalizeScoreForLength([candidates]);
   return candidates;
 }
-function buildTextCandidates(injectedScript, element, isTargetNode) {
+function buildTextCandidates(injectedScript, element, isTargetNode, options) {
   if (element.nodeName === "SELECT")
     return [];
   const candidates = [];
-  const title = element.getAttribute("title");
-  if (title) {
-    candidates.push([{ engine: "internal:attr", selector: `[title=${escapeForAttributeSelector(title, true)}]`, score: kTitleScoreExact }]);
-    for (const alternative of suitableTextAlternatives(title))
-      candidates.push([{ engine: "internal:attr", selector: `[title=${escapeForAttributeSelector(alternative.text, false)}]`, score: kTitleScore - alternative.scoreBonus }]);
+  if (!options.noText) {
+    const title = element.getAttribute("title");
+    if (title) {
+      candidates.push([{ engine: "internal:attr", selector: `[title=${escapeForAttributeSelector(title, true)}]`, score: kTitleScoreExact }]);
+      for (const alternative of suitableTextAlternatives(title))
+        candidates.push([{ engine: "internal:attr", selector: `[title=${escapeForAttributeSelector(alternative.text, false)}]`, score: kTitleScore - alternative.scoreBonus }]);
+    }
+    const alt = element.getAttribute("alt");
+    if (alt && ["APPLET", "AREA", "IMG", "INPUT"].includes(element.nodeName)) {
+      candidates.push([{ engine: "internal:attr", selector: `[alt=${escapeForAttributeSelector(alt, true)}]`, score: kAltTextScoreExact }]);
+      for (const alternative of suitableTextAlternatives(alt))
+        candidates.push([{ engine: "internal:attr", selector: `[alt=${escapeForAttributeSelector(alternative.text, false)}]`, score: kAltTextScore - alternative.scoreBonus }]);
+    }
   }
-  const alt = element.getAttribute("alt");
-  if (alt && ["APPLET", "AREA", "IMG", "INPUT"].includes(element.nodeName)) {
-    candidates.push([{ engine: "internal:attr", selector: `[alt=${escapeForAttributeSelector(alt, true)}]`, score: kAltTextScoreExact }]);
-    for (const alternative of suitableTextAlternatives(alt))
-      candidates.push([{ engine: "internal:attr", selector: `[alt=${escapeForAttributeSelector(alternative.text, false)}]`, score: kAltTextScore - alternative.scoreBonus }]);
-  }
-  const text = elementText(injectedScript._evaluator._cacheText, element).normalized;
+  const text = options.noText ? "" : elementText(injectedScript._evaluator._cacheText, element).normalized;
   const textAlternatives = text ? suitableTextAlternatives(text) : [];
   if (text) {
     if (isTargetNode) {
@@ -6071,13 +6258,15 @@ function buildTextCandidates(injectedScript, element, isTargetNode) {
   }
   const ariaRole = getAriaRole(element);
   if (ariaRole && !["none", "presentation"].includes(ariaRole)) {
-    const ariaName = getElementAccessibleNameText(element, false);
+    const accessibleName = getElementAccessibleName(element, false);
+    const ariaName = options.noText && accessibleName.derivedFromContent ? "" : accessibleName.text;
+    const accessibleDescription = getElementAccessibleDescription(element, false);
+    const ariaDescription = options.noText && accessibleDescription.derivedFromContent ? "" : accessibleDescription.text;
     if (ariaName && !ariaName.match(/^\p{Co}+$/u)) {
       const roleToken = { engine: "internal:role", selector: `${ariaRole}[name=${escapeForAttributeSelector(ariaName, true)}]`, score: kRoleWithNameScoreExact };
       candidates.push([roleToken]);
       for (const alternative of suitableTextAlternatives(ariaName))
         candidates.push([{ engine: "internal:role", selector: `${ariaRole}[name=${escapeForAttributeSelector(alternative.text, false)}]`, score: kRoleWithNameScore - alternative.scoreBonus }]);
-      const ariaDescription = getElementAccessibleDescription(element, false);
       if (ariaDescription) {
         candidates.push([{ engine: "internal:role", selector: `${ariaRole}[name=${escapeForAttributeSelector(ariaName, true)}][description=${escapeForAttributeSelector(ariaDescription, true)}]`, score: kRoleWithNameScoreExact + 1 }]);
         for (const alternative of suitableTextAlternatives(ariaName))
@@ -6085,12 +6274,11 @@ function buildTextCandidates(injectedScript, element, isTargetNode) {
       }
     } else {
       const roleToken = { engine: "internal:role", selector: `${ariaRole}`, score: kRoleWithoutNameScore };
-      const ariaDescription = getElementAccessibleDescription(element, false);
       if (ariaDescription)
         candidates.push([{ engine: "internal:role", selector: `${ariaRole}[description=${escapeForAttributeSelector(ariaDescription, true)}]`, score: kRoleWithoutNameScore + 1 }]);
       for (const alternative of textAlternatives)
         candidates.push([roleToken, { engine: "internal:has-text", selector: escapeForTextSelector(alternative.text, false), score: kTextScore - alternative.scoreBonus }]);
-      if (isTargetNode && text.length <= 80) {
+      if (!options.noText && isTargetNode && text.length <= 80) {
         const re = new RegExp("^" + escapeRegExp(text) + "$");
         candidates.push([roleToken, { engine: "internal:has-text", selector: escapeForTextSelector(re, false), score: kTextScoreRegex }]);
       }
@@ -6101,9 +6289,6 @@ function buildTextCandidates(injectedScript, element, isTargetNode) {
 }
 function makeSelectorForId(id) {
   return /^[a-zA-Z][a-zA-Z0-9\-\_]+$/.test(id) ? "#" + id : `[id=${quoteCSSAttributeValue(id)}]`;
-}
-function hasCSSIdToken(tokens) {
-  return tokens.some((token) => token.engine === "css" && (token.selector.startsWith("#") || token.selector.startsWith('[id="')));
 }
 function cssFallback(injectedScript, targetElement, options) {
   var _a;
@@ -6129,7 +6314,7 @@ function cssFallback(injectedScript, targetElement, options) {
   }
   for (let element = targetElement; element && element !== root; element = parentElementOrShadowHost(element)) {
     let bestTokenForLevel = "";
-    if (element.id && !options.noCSSId) {
+    if (element.id) {
       const token = makeSelectorForId(element.id);
       const selector = uniqueCSSSelector(token);
       if (selector)
@@ -6332,6 +6517,7 @@ var _Locator = class _Locator {
     self.getByTitle = (text, options2) => self.locator(getByTitleSelector(text, options2));
     self.getByRole = (role, options2 = {}) => self.locator(getByRoleSelector(role, options2));
     self.filter = (options2) => new _Locator(injectedScript, selector, options2);
+    self.visible = () => new _Locator(injectedScript, selector, { visible: true });
     self.first = () => self.locator("nth=0");
     self.last = () => self.locator("nth=-1");
     self.nth = (index) => self.locator(`nth=${index}`);
@@ -6360,6 +6546,7 @@ var ConsoleAPI = class {
       ...new Locator(this._injectedScript, "")
     };
     delete this._injectedScript.window.playwright.filter;
+    delete this._injectedScript.window.playwright.visible;
     delete this._injectedScript.window.playwright.first;
     delete this._injectedScript.window.playwright.last;
     delete this._injectedScript.window.playwright.nth;
@@ -6448,6 +6635,20 @@ function isArrayBuffer(obj) {
     return false;
   }
 }
+function isMap(obj) {
+  try {
+    return obj instanceof Map || Object.prototype.toString.call(obj) === "[object Map]";
+  } catch (error) {
+    return false;
+  }
+}
+function isSet(obj) {
+  try {
+    return obj instanceof Set || Object.prototype.toString.call(obj) === "[object Set]";
+  } catch (error) {
+    return false;
+  }
+}
 var typedArrayConstructors = {
   i8: Int8Array,
   ui8: Uint8Array,
@@ -6528,6 +6729,20 @@ function parseEvaluationResultValue(value, handles = [], refs = /* @__PURE__ */ 
       }
       return result;
     }
+    if ("m" in value) {
+      const result = /* @__PURE__ */ new Map();
+      refs.set(value.id, result);
+      for (const { k, v } of value.m)
+        result.set(parseEvaluationResultValue(k, handles, refs), parseEvaluationResultValue(v, handles, refs));
+      return result;
+    }
+    if ("s" in value) {
+      const result = /* @__PURE__ */ new Set();
+      refs.set(value.id, result);
+      for (const item of value.s)
+        result.add(parseEvaluationResultValue(item, handles, refs));
+      return result;
+    }
     if ("h" in value)
       return handles[value.h];
     if ("fn" in value) {
@@ -6541,8 +6756,8 @@ function parseEvaluationResultValue(value, handles = [], refs = /* @__PURE__ */ 
   }
   return value;
 }
-function serializeAsCallArgument(value, handleSerializer) {
-  return serialize(value, handleSerializer, { visited: /* @__PURE__ */ new Map(), lastId: 0 });
+function serializeAsCallArgument(value, handleSerializer, options = {}) {
+  return serialize(value, handleSerializer, { visited: /* @__PURE__ */ new Map(), lastId: 0, extendedSerialization: options.extendedSerialization });
 }
 function serialize(value, handleSerializer, visitorInfo) {
   if (value && typeof value === "object") {
@@ -6609,6 +6824,36 @@ ${value.stack}`;
   const id = visitorInfo.visited.get(value);
   if (id)
     return { ref: id };
+  if (visitorInfo.extendedSerialization) {
+    if (isMap(value)) {
+      const m = [];
+      const id2 = ++visitorInfo.lastId;
+      visitorInfo.visited.set(value, id2);
+      const iterator = value.entries();
+      const next = (/* @__PURE__ */ new Map()).entries().next;
+      while (true) {
+        const entry = next.call(iterator);
+        if (entry.done)
+          break;
+        m.push({ k: serialize(entry.value[0], handleSerializer, visitorInfo), v: serialize(entry.value[1], handleSerializer, visitorInfo) });
+      }
+      return { m, id: id2 };
+    }
+    if (isSet(value)) {
+      const s = [];
+      const id2 = ++visitorInfo.lastId;
+      visitorInfo.visited.set(value, id2);
+      const iterator = value.values();
+      const next = (/* @__PURE__ */ new Set()).values().next;
+      while (true) {
+        const entry = next.call(iterator);
+        if (entry.done)
+          break;
+        s.push(serialize(entry.value, handleSerializer, visitorInfo));
+      }
+      return { s, id: id2 };
+    }
+  }
   if (Array.isArray(value)) {
     const a = [];
     const id2 = ++visitorInfo.lastId;
@@ -6668,7 +6913,8 @@ var UtilityScript = class {
         performance: global.performance,
         Intl: global.Intl,
         Date: global.Date,
-        AbortSignal: global.AbortSignal
+        AbortSignal: global.AbortSignal,
+        Temporal: global.Temporal
       };
     }
     if (this.isUnderTest)
@@ -6831,6 +7077,7 @@ var InjectedScript = class {
     this._engines.set("internal:role", createRoleEngine(true));
     this._engines.set("internal:describe", this._createDescribeEngine());
     this._engines.set("aria-ref", this._createAriaRefEngine());
+    this._engines.set("aria-template", this._createAriaTemplateEngine());
     for (const { name, source } of options.customEngines)
       this._engines.set(name, this.eval(source));
     this._stableRafCount = options.stableRafCount;
@@ -6891,24 +7138,49 @@ var InjectedScript = class {
     return new Set(result.map((r) => r.element));
   }
   ariaSnapshot(node, options) {
-    return this.ariaSnapshotWithRefs(node, options).text;
+    const { json } = this.ariaSnapshotJSON(node, options);
+    return renderAriaSnapshotAsYaml(json, { convertStringsToRegex: options.mode === "codegen" });
   }
-  ariaSnapshotWithRefs(node, options) {
+  ariaSnapshotJSON(node, options) {
     if (node.nodeType !== Node.ELEMENT_NODE)
       throw this.createStacklessError("Can only capture aria snapshot of Element nodes.");
     options = { ...options, refPrefix: this._frameSeq && options.mode === "ai" ? "f" + this._frameSeq : "" };
     const ariaSnapshot = generateAriaTree(node, options);
-    const rendered = renderAriaTree(ariaSnapshot, options);
+    const rendered = renderAriaTreeAsJSON(ariaSnapshot, options);
     this._lastAriaSnapshotForQuery = ariaSnapshot;
-    return { text: rendered.text, iframeRefs: ariaSnapshot.iframeRefs, iframeDepths: rendered.iframeDepths };
+    return { json: rendered.json, iframeRefs: ariaSnapshot.iframeRefs, iframeDepths: rendered.iframeDepths };
   }
   ariaSnapshotForRecorder() {
     const tree = generateAriaTree(this.document.body, { mode: "ai" });
-    const { text: ariaSnapshot } = renderAriaTree(tree, { mode: "ai" });
-    return { ariaSnapshot, refs: tree.refs };
+    const { json } = renderAriaTreeAsJSON(tree, { mode: "ai" });
+    return { ariaSnapshot: renderAriaSnapshotAsYaml(json), refs: tree.refs };
   }
   ariaSnapshotForExpectFailure(element, options) {
-    return renderAriaTree(generateAriaTree(element, options), options).text;
+    const { json } = renderAriaTreeAsJSON(generateAriaTree(element, options), options);
+    return renderAriaSnapshotAsYaml(json);
+  }
+  documentContent(includeShadow) {
+    let content = "";
+    if (this.document.doctype)
+      content = new XMLSerializer().serializeToString(this.document.doctype);
+    const root = this.document.documentElement;
+    if (!root)
+      return content;
+    if (!includeShadow)
+      return content + root.outerHTML;
+    const shadowRoots = [];
+    const collectShadowRoots = (node) => {
+      for (const element of node.querySelectorAll("*")) {
+        if (element.shadowRoot) {
+          shadowRoots.push(element.shadowRoot);
+          collectShadowRoots(element.shadowRoot);
+        }
+      }
+    };
+    collectShadowRoots(this.document);
+    const emptyRoot = root.cloneNode(false).outerHTML;
+    const endTagIndex = emptyRoot.lastIndexOf("</");
+    return content + emptyRoot.slice(0, endTagIndex) + root.getHTML({ shadowRoots }) + emptyRoot.slice(endTagIndex);
   }
   getAllElementsMatchingExpectAriaTemplate(document, template) {
     return getAllElementsMatchingExpectAriaTemplate(document.documentElement, template);
@@ -7086,6 +7358,8 @@ var InjectedScript = class {
       queryAll(root, body) {
         if (body === "enter-frame")
           return [];
+        if (body === "any-frame")
+          return [];
         if (body === "return-empty")
           return [];
         if (body === "component") {
@@ -7191,7 +7465,7 @@ var InjectedScript = class {
     }
     return element;
   }
-  async checkElementStates(node, states) {
+  async checkElementStates(node, states, frameVisible) {
     if (states.includes("stable")) {
       const stableResult = await this._checkElementIsStable(node);
       if (stableResult === false)
@@ -7201,7 +7475,7 @@ var InjectedScript = class {
     }
     for (const state of states) {
       if (state !== "stable") {
-        const result = this.elementState(node, state);
+        const result = this.elementState(node, state, frameVisible);
         if (result.received === "error:notconnected")
           return "error:notconnected";
         if (!result.matches)
@@ -7262,7 +7536,17 @@ var InjectedScript = class {
     };
     return { queryAll };
   }
-  elementState(node, state) {
+  _createAriaTemplateEngine() {
+    const queryAll = (root, body) => {
+      const template = JSON.parse(body);
+      const rootElement = root.nodeType === 9 ? root.documentElement : root;
+      if (!rootElement)
+        return [];
+      return getAllElementsMatchingExpectAriaTemplate(rootElement, template);
+    };
+    return { queryAll };
+  }
+  elementState(node, state, frameVisible) {
     const element = this.retarget(node, ["visible", "hidden"].includes(state) ? "none" : "follow-label");
     if (!element || !element.isConnected) {
       if (state === "hidden")
@@ -7270,7 +7554,7 @@ var InjectedScript = class {
       return { matches: false, received: "error:notconnected" };
     }
     if (state === "visible" || state === "hidden") {
-      const visible = isElementVisible(element);
+      const visible = !!frameVisible && isElementVisible(element);
       return {
         matches: state === "visible" ? visible : !visible,
         received: visible ? "visible" : "hidden"
@@ -7504,9 +7788,8 @@ var InjectedScript = class {
           elements.unshift(singleElement);
         }
       }
-      if (elements[0] && elements[0].shadowRoot === root && elements[1] === singleElement) {
+      if (elements[0] && elements[1] === singleElement && roots.slice(index).some((r) => r.host === elements[0]))
         elements.shift();
-      }
       const innerElement = elements[0];
       if (!innerElement)
         break;
@@ -7791,46 +8074,46 @@ var InjectedScript = class {
     highlight.addMaskedElements(elements, color);
   }
   _ensureHighlight() {
-    if (!this._highlight) {
+    if (!this._highlight)
       this._highlight = new Highlight(this);
-      this._highlight.install();
-    }
+    this._highlight.install();
     return this._highlight;
   }
-  addHighlight(selector, style) {
+  setHighlights(highlights) {
+    if (!highlights.length && !this._highlight)
+      return;
     const highlight = this._ensureHighlight();
-    highlight.addElementHighlight(selector, style);
-  }
-  removeHighlight(selector) {
-    const highlight = this._ensureHighlight();
-    highlight.removeElementHighlight(selector);
+    highlight.setElementHighlights(highlights);
   }
   setScreencastAnnotation(annotation) {
-    var _a;
+    var _a, _b, _c, _d;
     const highlight = this._ensureHighlight();
+    highlight.hideScreencastDecorations();
     if (!annotation) {
-      highlight.updateHighlight([]);
-      highlight.hideActionPoint();
       highlight.hideActionTitle();
-      highlight.hideActionCursor();
       return;
     }
     const fadeDuration = (_a = annotation.duration) != null ? _a : 500;
-    if (annotation.box) {
-      highlight.updateHighlight([{
-        box: annotation.box,
-        color: "rgba(0, 128, 255, 0.15)",
-        borderColor: "rgba(0, 128, 255, 0.6)",
-        fadeDuration
-      }]);
-    }
+    if (annotation.box && ((_b = annotation.style) == null ? void 0 : _b.highlight))
+      highlight.showScreencastHighlight(annotation.box, annotation.style.highlight, fadeDuration);
     if (annotation.point) {
-      if (annotation.cursor !== "none")
+      if (annotation.cursor !== "none") {
+        if (annotation.lastCursorPoint)
+          highlight.restoreActionCursor(annotation.lastCursorPoint.x, annotation.lastCursorPoint.y);
         highlight.moveActionCursor(annotation.point.x, annotation.point.y, fadeDuration);
-      highlight.showActionPoint(annotation.point.x, annotation.point.y, fadeDuration);
+      }
+      if ((_c = annotation.style) == null ? void 0 : _c.point)
+        highlight.showScreencastPoint(annotation.point.x, annotation.point.y, annotation.style.point, fadeDuration);
     }
     if (annotation.actionTitle)
-      highlight.showActionTitle(annotation.actionTitle, fadeDuration, annotation.position, annotation.fontSize);
+      highlight.showActionTitle(annotation.actionTitle, fadeDuration, annotation.position, (_d = annotation.style) == null ? void 0 : _d.title);
+  }
+  restoreScreencastCursor(point) {
+    this._ensureHighlight().restoreActionCursor(point.x, point.y);
+  }
+  hideScreencastCursor() {
+    var _a;
+    (_a = this._highlight) == null ? void 0 : _a.hideActionCursor();
   }
   addUserOverlay(id, html) {
     const highlight = this._ensureHighlight();
@@ -7899,19 +8182,19 @@ var InjectedScript = class {
     addHitTargetInterceptorListeners();
     this.onGlobalListenersRemoved.add(addHitTargetInterceptorListeners);
   }
-  async expect(element, options, elements) {
+  async expect(element, options, elements, frameVisible) {
     const isArray = options.expression === "to.have.count" || options.expression.endsWith(".array");
-    const core = isArray ? this.expectArray(elements, options) : await this.expectSingleElement(element, options);
-    const ariaSnapshot = core.matches !== options.isNot ? void 0 : this._ariaSnapshotForExpect(element, options);
+    const core = isArray ? this.expectArray(elements, options) : await this.expectSingleElement(element, options, frameVisible);
+    const ariaSnapshot = core.matches !== options.isNot ? void 0 : this._ariaSnapshotForExpect(element, options, frameVisible);
     if (core.received === void 0 && ariaSnapshot === void 0)
       return { matches: core.matches };
     return { matches: core.matches, received: { value: core.received, ariaSnapshot } };
   }
-  _ariaSnapshotForExpect(element, options) {
+  _ariaSnapshotForExpect(element, options, frameVisible) {
     const expression = options.expression;
     if (expression === "to.have.count" || expression.endsWith(".array") || expression === "to.match.aria")
       return void 0;
-    if (isElementVisible(element) && expression !== "to.have.title" && expression !== "to.have.url") {
+    if (frameVisible && isElementVisible(element) && expression !== "to.have.title" && expression !== "to.have.url") {
       const isContainment = expression === "to.have.text";
       return this.ariaSnapshotForExpectFailure(element, { mode: "default", depth: isContainment ? void 0 : 1 });
     }
@@ -7919,7 +8202,7 @@ var InjectedScript = class {
       return void 0;
     return this.ariaSnapshotForExpectFailure(this.document.body, { mode: "default" });
   }
-  async expectSingleElement(element, options) {
+  async expectSingleElement(element, options, frameVisible) {
     var _a, _b;
     const expression = options.expression;
     {
@@ -7973,9 +8256,9 @@ var InjectedScript = class {
           received: focused ? "focused" : "inactive"
         };
       } else if (expression === "to.be.hidden") {
-        result = this.elementState(element, "hidden");
+        result = this.elementState(element, "hidden", frameVisible);
       } else if (expression === "to.be.visible") {
-        result = this.elementState(element, "visible");
+        result = this.elementState(element, "visible", frameVisible);
       } else if (expression === "to.be.attached") {
         result = {
           matches: true,
@@ -8069,7 +8352,7 @@ var InjectedScript = class {
           element,
           false
           /* includeHidden */
-        );
+        ).text;
       } else if (expression === "to.have.accessible.error.message") {
         received = getElementAccessibleErrorMessage(element);
       } else if (expression === "to.have.role") {
@@ -8143,8 +8426,12 @@ function oneLine(s) {
 }
 function createAttributeMatcher(part) {
   const { value, caseSensitive } = part;
-  if (value instanceof RegExp)
-    return (s) => !!s.match(value);
+  if (value instanceof RegExp) {
+    return (s) => {
+      value.lastIndex = 0;
+      return !!s.match(value);
+    };
+  }
   if (caseSensitive)
     return (s) => s === value;
   const lowerCaseValue = value.toLowerCase();
@@ -8167,7 +8454,11 @@ function createTextMatcher(selector, internal) {
   if (selector[0] === "/" && selector.lastIndexOf("/") > 0) {
     const lastSlash = selector.lastIndexOf("/");
     const re = new RegExp(selector.substring(1, lastSlash), selector.substring(lastSlash + 1));
-    return { matcher: (elementText2) => re.test(elementText2.full), kind: "regex" };
+    const matcher = (elementText2) => {
+      re.lastIndex = 0;
+      return re.test(elementText2.full);
+    };
+    return { matcher, kind: "regex" };
   }
   const unquote = internal ? JSON.parse.bind(JSON) : cssUnquote;
   let strict = false;
@@ -8220,8 +8511,10 @@ var ExpectedTextMatcher = class {
       return text === this._string;
     if (this._substring !== void 0)
       return text.includes(this._substring);
-    if (this._regex)
+    if (this._regex) {
+      this._regex.lastIndex = 0;
       return !!this._regex.test(text);
+    }
     return false;
   }
   matchesClassList(injectedScript, classList, partial) {

@@ -71,7 +71,7 @@ const { chromium } = await import(
   pathToFileURL(
     path.join(
       root,
-      "node_modules/.pnpm/playwright-core@1.62.1/node_modules/playwright-core/index.mjs",
+      "node_modules/.pnpm/playwright-core@1.64.1/node_modules/playwright-core/index.mjs",
     ),
   ).href
 );
