@@ -32,7 +32,7 @@ import {
 import {
   ANTIGRAVITY_DRIVER_KIND,
   BROWSER_SIGN_IN_DRIVERS,
-  BROWSER_SIGN_IN_LABEL,
+  browserSignInLabel,
   buildClaudeAuthLoginCommand,
   buildClaudeSetupTokenCommand,
   buildCodexLoginCommand,
@@ -1467,7 +1467,7 @@ export function ProviderInstanceCard({
       });
     }
     if (driverKind !== null && BROWSER_SIGN_IN_DRIVERS.has(String(driverKind))) {
-      return BROWSER_SIGN_IN_LABEL;
+      return browserSignInLabel(String(driverKind));
     }
     return null;
   }, [driverKind, instance.config, isCommunityAgent]);

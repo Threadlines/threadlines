@@ -14,6 +14,7 @@ export const ACP_REGISTRY_BUILT_IN_AGENT_IDS: ReadonlySet<string> = new Set([
   "cursor",
   "opencode",
   "antigravity-acp",
+  "grok-build",
 ]);
 
 const INSTANCE_ID_PREFIX = "acp_";

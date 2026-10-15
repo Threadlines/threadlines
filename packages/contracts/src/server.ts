@@ -237,7 +237,7 @@ export const ServerProviderAccountTokenUsage = Schema.Struct({
 export type ServerProviderAccountTokenUsage = typeof ServerProviderAccountTokenUsage.Type;
 
 export const ServerProviderAccountUsage = Schema.Struct({
-  source: Schema.Literals(["codex-rate-limits", "claude-oauth-usage"]),
+  source: Schema.Literals(["codex-rate-limits", "claude-oauth-usage", "grok-billing"]),
   checkedAt: IsoDateTime,
   primaryLimitId: Schema.optional(TrimmedNonEmptyString),
   rateLimitResetCredits: Schema.optional(ServerProviderRateLimitResetCredits),

@@ -22,15 +22,21 @@ export const CURSOR_DRIVER_KIND = "cursor";
 export const FX_DRIVER_KIND = "fx";
 export const OPENCODE_DRIVER_KIND = "opencode";
 export const ANTIGRAVITY_DRIVER_KIND = "antigravity";
+export const GROK_DRIVER_KIND = "grok";
 
 /**
  * Drivers whose sign-in runs in the browser, inside the agent itself, with no
- * terminal command (Antigravity's Google sign-in). They also sign out.
+ * terminal command (Antigravity's Google sign-in, Grok's xAI sign-in).
  */
-export const BROWSER_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([ANTIGRAVITY_DRIVER_KIND]);
+export const BROWSER_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([
+  ANTIGRAVITY_DRIVER_KIND,
+  GROK_DRIVER_KIND,
+]);
 
-/** What a browser sign-in is called where a command would be shown. */
-export const BROWSER_SIGN_IN_LABEL = "Sign in with Google";
+/** What a driver's browser sign-in is called where a command would be shown. */
+export function browserSignInLabel(driver: string): string {
+  return driver === GROK_DRIVER_KIND ? "Sign in with Grok" : "Sign in with Google";
+}
 
 export const CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
