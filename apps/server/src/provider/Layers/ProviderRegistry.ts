@@ -33,6 +33,7 @@ import {
 import { randomUUID } from "node:crypto";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
@@ -398,6 +399,9 @@ const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
 // after `ProviderInstanceRegistry` rebuilds an instance (e.g. because
 // its settings changed), a fresh source rides the new PubSub instead
 // of a closed one.
+/** How long a sync waits for a new instance's first snapshot. */
+const FIRST_SNAPSHOT_WAIT = Duration.seconds(10);
+
 const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource => ({
   instanceId: instance.instanceId,
   driverKind: instance.driverKind,
@@ -840,7 +844,13 @@ export const ProviderRegistryLive = Layer.effect(
           }
         }
         yield* Effect.yieldNow;
-        yield* Effect.forEach(firstApplied, Deferred.await, { discard: true });
+        // Bounded: a source that never opens must not hold up every later
+        // reconcile; its fiber still applies the snapshot when it comes.
+        yield* Effect.forEach(
+          firstApplied,
+          (applied) => Deferred.await(applied).pipe(Effect.timeoutOption(FIRST_SNAPSHOT_WAIT)),
+          { discard: true },
+        );
 
         // Snapshot current state without starting a probe. Managed providers
         // launch their startup refresh independently, so this closes the

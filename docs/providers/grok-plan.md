@@ -595,8 +595,12 @@ Decisions that differ from the plan above:
   shared managed provider: an enrichment published at its check's own
   `checkedAt`, so the registry, reading a new instance and streaming it at
   once, could keep the plain copy. Enrichments are now dated after the check.
-  One failing run with that fix in place stayed unexplained (traced runs all
-  passed); it affects every opt-in provider and is a follow-up.
+  The other cause: the registry forked a provider's change stream and then
+  read its snapshot, but a stream subscribes only when first pulled, so an
+  update in between was lost. Managed providers now offer `streamSnapshots`
+  (joined under the lock that orders every change and its publish: the
+  current snapshot, then every change), and the registry follows it with one
+  fiber. 3 of 5 first switch-ons failed before; 3 of 3 showed Install after.
 
 Sol review, round 2 (2026-10-15): fixed the account-removal sign-out
 inheriting `GROK_AUTH_PATH`/`GROK_AUTH`, steer-vs-prompt preview matching,
