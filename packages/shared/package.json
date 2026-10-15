@@ -278,6 +278,10 @@
     "./envFlag": {
       "types": "./src/envFlag.ts",
       "import": "./src/envFlag.ts"
+    },
+    "./workflowScript": {
+      "types": "./src/workflowScript.ts",
+      "import": "./src/workflowScript.ts"
     }
   },
   "scripts": {
