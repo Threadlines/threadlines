@@ -147,6 +147,7 @@ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const FX_DRIVER_KIND = ProviderDriverKind.make("fx");
 const ANTIGRAVITY_DRIVER_KIND = ProviderDriverKind.make("antigravity");
+const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const ACP_REGISTRY_DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 
 /**
@@ -154,6 +155,12 @@ const ACP_REGISTRY_DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
  * marks as current on a new account. Effort is a separate option.
  */
 export const DEFAULT_ANTIGRAVITY_MODEL = "gemini-3.8-flash";
+
+/**
+ * Offline Grok fallback. The live catalog Grok lists at `initialize` (or in
+ * the session) replaces it as soon as the provider probe succeeds.
+ */
+export const DEFAULT_GROK_MODEL = "grok-4.7";
 
 /**
  * Offline fx fallback. fx routes through Vercel AI Gateway by default; the
@@ -194,6 +201,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
   [FX_DRIVER_KIND]: DEFAULT_FX_MODEL,
   [ANTIGRAVITY_DRIVER_KIND]: DEFAULT_ANTIGRAVITY_MODEL,
+  [GROK_DRIVER_KIND]: DEFAULT_GROK_MODEL,
 };
 
 /** Per-provider text generation model defaults. */
@@ -206,6 +214,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
   [FX_DRIVER_KIND]: DEFAULT_FX_MODEL,
   [ANTIGRAVITY_DRIVER_KIND]: DEFAULT_ANTIGRAVITY_MODEL,
+  [GROK_DRIVER_KIND]: DEFAULT_GROK_MODEL,
 };
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
@@ -284,6 +293,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
   [OPENCODE_DRIVER_KIND]: {},
   [FX_DRIVER_KIND]: {},
   [ANTIGRAVITY_DRIVER_KIND]: {},
+  [GROK_DRIVER_KIND]: {},
 };
 
 // ── Provider display names ────────────────────────────────────────────
@@ -295,6 +305,7 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [OPENCODE_DRIVER_KIND]: "OpenCode",
   [FX_DRIVER_KIND]: "fx",
   [ANTIGRAVITY_DRIVER_KIND]: "Antigravity",
+  [GROK_DRIVER_KIND]: "Grok",
   // Each community agent shows under its own name; this names the kind.
   [ACP_REGISTRY_DRIVER_KIND]: "Community agent",
 };

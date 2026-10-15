@@ -14,6 +14,7 @@ import type {
   ProviderDriverKind,
   ProviderInteractionMode,
   ProviderOptionSelection,
+  ProviderRuntimeEvent,
   ProviderUserInputAnswers,
   RuntimeMode,
   ServerProvider,
@@ -111,10 +112,37 @@ export interface AcpModelOptionMapping {
   ) => ReadonlyArray<AcpConfigUpdate>;
 }
 
+/**
+ * A runtime event an extension derives from the agent's own messages: its
+ * background tasks and subagents. The adapter stamps it and names the thread.
+ */
+export type AcpExtensionRuntimeEvent = ProviderRuntimeEvent extends infer Event
+  ? Event extends {
+      readonly type:
+        | "task.started"
+        | "task.progress"
+        | "task.completed"
+        | "task.snapshot.updated"
+        | "subagent.metadata.updated";
+    }
+    ? Omit<Event, "eventId" | "createdAt" | "provider" | "threadId" | "raw">
+    : never
+  : never;
+
+/** How the agent says a turn ended, from its own notices. */
+export interface AcpTurnOutcome {
+  readonly state: "completed" | "failed" | "cancelled";
+  readonly stopReason?: string;
+  /** The agent's own words for a failure, shown instead of a bare RPC error. */
+  readonly errorMessage?: string;
+}
+
 /** Runtime hooks handed to a vendor's extension registration. */
 export interface AcpExtensionContext {
   readonly threadId: ThreadId;
   readonly acp: AcpSessionRuntimeShape;
+  /** This session's id once it has opened; updates for other ids are a subagent's. */
+  readonly sessionId: () => string | undefined;
   readonly activeTurnId: () => TurnId | undefined;
   readonly logNative: (method: string, payload: unknown) => Effect.Effect<void>;
   /** Opens a user-input request and waits for the answer. */
@@ -133,6 +161,27 @@ export interface AcpExtensionContext {
     readonly payload: unknown;
     readonly plan: AcpPlanUpdate;
   }) => Effect.Effect<void>;
+  readonly emitRuntimeEvent: (input: {
+    readonly method: string;
+    readonly payload: unknown;
+    readonly event: AcpExtensionRuntimeEvent;
+  }) => Effect.Effect<void>;
+  /**
+   * The agent started a turn of its own (see `agentTurns`): opens it now
+   * rather than on its first output. Nothing happens while a turn runs.
+   */
+  readonly beginAgentTurn: (input: {
+    readonly method: string;
+    readonly payload: unknown;
+  }) => Effect.Effect<void>;
+  /** The agent's own turn ended: closes it once its output is out. */
+  readonly endAgentTurn: (input: {
+    readonly method: string;
+    readonly payload: unknown;
+    readonly outcome: AcpTurnOutcome;
+  }) => Effect.Effect<void>;
+  /** How the running prompt ended, by the agent's notice; a failed prompt shows its words. */
+  readonly reportPromptOutcome: (outcome: AcpTurnOutcome) => Effect.Effect<void>;
 }
 
 export interface AcpProviderExtensions {
@@ -142,6 +191,11 @@ export interface AcpProviderExtensions {
   readonly register: (
     context: AcpExtensionContext,
   ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
+}
+
+/** What an agent process is started for. A chat session carries its thread's runtime mode. */
+export interface AcpLaunch {
+  readonly runtimeMode?: RuntimeMode;
 }
 
 /** What a descriptor's `detect` hook is handed. */
@@ -173,7 +227,29 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     settings: Settings,
     cwd: string,
     environment?: NodeJS.ProcessEnv,
+    launch?: AcpLaunch,
   ) => AcpSpawnInput | Effect.Effect<AcpSpawnInput, EffectAcpErrors.AcpError, Scope.Scope>;
+  /** `_meta` sent with `initialize` (Grok asks a GUI client to say what it is). */
+  readonly initializeMeta?: Readonly<Record<string, unknown>>;
+  /** `_meta` sent with `session/cancel`. */
+  readonly cancelMeta?: Readonly<Record<string, unknown>>;
+  /** `_meta` for one turn's `session/prompt` (Grok echoes a `promptId` on its updates). */
+  readonly promptMeta?: (turnId: TurnId) => Readonly<Record<string, unknown>>;
+  /**
+   * The agent starts turns of its own between prompts, waking when its
+   * background work finishes. Its output then is live: it opens a turn
+   * instead of being dropped as replayed history. The extension ends the
+   * turn (`endAgentTurn`); a sent message or a long quiet ends it too.
+   */
+  readonly agentTurns?: boolean;
+  /**
+   * The `session/set_mode` mode for a turn's interaction mode, for an agent
+   * that switches modes without listing them (Grok: `plan`, `default`).
+   * Sent before every turn; the agent takes a repeat as a no-op.
+   */
+  readonly sessionModeForTurn?: (
+    interactionMode: ProviderInteractionMode | undefined,
+  ) => string | undefined;
   /**
    * The sign-in URL when an agent prints one on stderr. Outside a sign-in
    * flow such a line fails the process at once instead of waiting on a
@@ -212,6 +288,12 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly classifyPermissionRequest?: (
     request: EffectAcpSchema.RequestPermissionRequest,
   ) => AcpPermissionQuestion | undefined;
+  /**
+   * A permission option whose "always" outlives the session (Grok's
+   * `always-allow` saves a grant for the whole project). Never offered or
+   * chosen; "Accept for session" then appears only for a real session grant.
+   */
+  readonly isLastingPermissionOption?: (option: EffectAcpSchema.PermissionOption) => boolean;
   /** A risk the agent attached to a permission option, shown with the approval. */
   readonly permissionOptionWarning?: (
     option: EffectAcpSchema.PermissionOption,

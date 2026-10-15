@@ -88,6 +88,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   options: AcpPatchedProtocolOptions,
 ): Effect.fn.Return<AcpPatchedProtocol, never, Scope.Scope> {
   const parser = parserFactory.makeUnsafe();
+  const protocolScope = yield* Scope.Scope;
   const serverQueue = yield* Queue.unbounded<RpcMessage.FromClientEncoded>();
   const clientQueue = yield* Queue.unbounded<RpcMessage.FromServerEncoded>();
   const notificationQueue = yield* Queue.unbounded<AcpIncomingNotification>();
@@ -313,8 +314,12 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     }
 
     if (!options.serverRequestMethods.has(message.tag)) {
+      // A handler can wait on a person (a question card), so it runs beside
+      // the reader: every later message, including the answer to our own
+      // requests, must not wait for it. It ends with the protocol's scope.
       return handleExtRequest(message).pipe(
         Effect.catch(() => respondWithError(message.id, AcpError.AcpRequestError.internalError())),
+        Effect.forkIn(protocolScope),
         Effect.asVoid,
       );
     }

@@ -227,6 +227,49 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("keeps reading the agent while an extension request waits for its answer", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const answer = yield* Deferred.make<void>();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        onExtRequest: () => Deferred.await(answer).pipe(Effect.as({ ok: true })),
+      });
+
+      // The agent asks something a person must answer, then keeps talking.
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(ExtRequest, {
+          jsonrpc: "2.0",
+          id: 7,
+          method: "x/test",
+          params: { hello: "world" },
+          headers: [],
+        }),
+      );
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(SessionUpdateNotification, {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: "session-1",
+            update: { sessionUpdate: "plan", entries: [] },
+          },
+        }),
+      );
+      const update = yield* transport.incoming.pipe(Stream.runHead);
+      assert.equal(update._tag === "Some" ? update.value._tag : undefined, "SessionUpdate");
+
+      yield* Deferred.succeed(answer, undefined);
+      assert.deepEqual(
+        yield* Schema.decodeEffect(Schema.fromJsonString(ExtResponse))(yield* Queue.take(output)),
+        { jsonrpc: "2.0", id: 7, result: { ok: true } },
+      );
+    }),
+  );
+
   it.effect("preserves zero-valued ids for inbound core client requests", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();

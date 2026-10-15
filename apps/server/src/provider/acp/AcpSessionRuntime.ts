@@ -37,6 +37,8 @@ function formatConfigOptionValue(value: string | boolean): string {
 }
 
 const FORCE_KILL_AFTER = Duration.seconds(3);
+/** How long teardown waits on `session/close` before the process is ended anyway. */
+const SESSION_CLOSE_TIMEOUT = Duration.seconds(3);
 
 /** Short option lists (effort, mode) are worth spelling out in a rejection. */
 const MAX_LISTED_CONFIG_OPTION_VALUES = 8;
@@ -77,6 +79,10 @@ export interface AcpSessionRuntimeOptions {
   readonly cwd: string;
   readonly resumeSessionId?: string;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
+  /** `_meta` sent with `initialize`. */
+  readonly initializeMeta?: Readonly<Record<string, unknown>>;
+  /** `_meta` sent with `session/cancel`. */
+  readonly cancelMeta?: Readonly<Record<string, unknown>>;
   readonly clientInfo: {
     readonly name: string;
     readonly version: string;
@@ -118,6 +124,11 @@ export interface AcpSessionRuntimeOptions {
    * `config_option_update`s replace the option list.
    */
   readonly sessionControls?: "mapped" | "native";
+  /**
+   * Output outside a prompt is live once the session has opened (an agent
+   * that starts turns of its own), not replayed history to drop.
+   */
+  readonly liveOutsidePrompt?: boolean;
 }
 
 export interface AcpSessionRequestLogEvent {
@@ -159,6 +170,13 @@ export interface AcpSessionRuntimeShape {
   readonly handleUnknownExtNotification: EffectAcpClient.AcpClientShape["handleUnknownExtNotification"];
   readonly handleExtRequest: EffectAcpClient.AcpClientShape["handleExtRequest"];
   readonly handleExtNotification: EffectAcpClient.AcpClientShape["handleExtNotification"];
+  /**
+   * Updates for another session on this connection (a subagent's), which
+   * never reach this session's events.
+   */
+  readonly handleForeignSessionUpdate: (
+    handler: (notification: EffectAcpSchema.SessionNotification) => Effect.Effect<void>,
+  ) => Effect.Effect<void>;
   readonly start: () => Effect.Effect<AcpSessionRuntimeStartResult, EffectAcpErrors.AcpError>;
   readonly getEvents: () => Stream.Stream<AcpSessionRuntimeEvent, never>;
   /**
@@ -402,21 +420,37 @@ const makeAcpSessionRuntime = (
     const acp = yield* Effect.service(EffectAcpClient.AcpClient).pipe(Effect.provide(acpContext));
 
     // `session/load` replays the conversation as ordinary updates; only
-    // updates produced by a prompt we sent are live content.
+    // updates produced by a prompt we sent are live content, or, for an agent
+    // that starts turns of its own, anything after the session opened.
     const promptInFlightRef = yield* Ref.make(false);
+    const liveOutsidePromptRef = yield* Ref.make(false);
+    // This session's id once known; updates for any other id are a subagent's.
+    const ownSessionIdRef = yield* Ref.make<string | undefined>(options.resumeSessionId);
+    const foreignUpdateHandlerRef = yield* Ref.make<
+      ((notification: EffectAcpSchema.SessionNotification) => Effect.Effect<void>) | undefined
+    >(undefined);
     // A resumed session restarts segment numbering at 0 in this process, so
     // its items would collide with the ones persisted by the previous run.
     const itemIdScope = options.resumeSessionId ? `:r${Date.now().toString(36)}` : "";
     yield* acp.handleSessionUpdate((notification) =>
-      handleSessionUpdate({
-        queue: eventQueue,
-        modeStateRef,
-        toolCallsRef,
-        assistantSegmentRef,
-        promptInFlightRef,
-        itemIdScope,
-        params: notification,
-        ...(nativeControls ? { configOptionsRef } : {}),
+      Effect.gen(function* () {
+        const ownSessionId = yield* Ref.get(ownSessionIdRef);
+        if (ownSessionId !== undefined && String(notification.sessionId) !== ownSessionId) {
+          const handler = yield* Ref.get(foreignUpdateHandlerRef);
+          if (handler) yield* handler(notification);
+          return;
+        }
+        yield* handleSessionUpdate({
+          queue: eventQueue,
+          modeStateRef,
+          toolCallsRef,
+          assistantSegmentRef,
+          promptInFlightRef,
+          liveOutsidePromptRef,
+          itemIdScope,
+          params: notification,
+          ...(nativeControls ? { configOptionsRef } : {}),
+        });
       }),
     );
 
@@ -617,6 +651,7 @@ const makeAcpSessionRuntime = (
         protocolVersion: 1,
         clientCapabilities: initializeClientCapabilities,
         clientInfo: options.clientInfo,
+        ...(options.initializeMeta ? { _meta: { ...options.initializeMeta } } : {}),
       } satisfies EffectAcpSchema.InitializeRequest;
 
       const initializeResult = yield* runLoggedRequest(
@@ -724,6 +759,8 @@ const makeAcpSessionRuntime = (
         yield* Ref.set(legacyModelStateRef, sessionSetupResult.models ?? undefined);
       }
 
+      yield* Ref.set(ownSessionIdRef, sessionId);
+      if (options.liveOutsidePrompt) yield* Ref.set(liveOutsidePromptRef, true);
       const nextState = {
         sessionId,
         initializeResult,
@@ -733,6 +770,24 @@ const makeAcpSessionRuntime = (
       } satisfies AcpStartedState;
       return nextState;
     });
+
+    // A session the agent can close is closed before the process ends, so
+    // the agent stops what it runs for it (Grok's background shells live in
+    // process groups of their own and would outlive a bare kill).
+    yield* Scope.addFinalizer(
+      runtimeScope,
+      Effect.gen(function* () {
+        const state = yield* Ref.get(startStateRef);
+        if (state._tag !== "Started") return;
+        const close = state.result.initializeResult.agentCapabilities?.sessionCapabilities?.close;
+        if (close === undefined || close === null) return;
+        const payload = { sessionId: state.result.sessionId };
+        yield* runLoggedRequest("session/close", payload, acp.agent.closeSession(payload)).pipe(
+          Effect.timeout(SESSION_CLOSE_TIMEOUT),
+          Effect.ignore,
+        );
+      }),
+    );
 
     const start = Effect.gen(function* () {
       const deferred = yield* Deferred.make<
@@ -782,6 +837,7 @@ const makeAcpSessionRuntime = (
       handleUnknownExtNotification: acp.handleUnknownExtNotification,
       handleExtRequest: acp.handleExtRequest,
       handleExtNotification: acp.handleExtNotification,
+      handleForeignSessionUpdate: (handler) => Ref.set(foreignUpdateHandlerRef, handler),
       start: () => start,
       getEvents: () => Stream.fromQueue(eventQueue),
       flushEvents: Effect.gen(function* () {
@@ -822,7 +878,12 @@ const makeAcpSessionRuntime = (
           }),
         ),
       cancel: getStartedState.pipe(
-        Effect.flatMap((started) => acp.agent.cancel({ sessionId: started.sessionId })),
+        Effect.flatMap((started) =>
+          acp.agent.cancel({
+            sessionId: started.sessionId,
+            ...(options.cancelMeta ? { _meta: { ...options.cancelMeta } } : {}),
+          }),
+        ),
       ),
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(
@@ -904,6 +965,7 @@ const handleSessionUpdate = ({
   toolCallsRef,
   assistantSegmentRef,
   promptInFlightRef,
+  liveOutsidePromptRef,
   itemIdScope,
   params,
   configOptionsRef,
@@ -913,6 +975,7 @@ const handleSessionUpdate = ({
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly promptInFlightRef: Ref.Ref<boolean>;
+  readonly liveOutsidePromptRef: Ref.Ref<boolean>;
   /** Suffix keeping item ids unique across resumes (segment numbering restarts per process). */
   readonly itemIdScope: string;
   readonly params: EffectAcpSchema.SessionNotification;
@@ -929,9 +992,9 @@ const handleSessionUpdate = ({
         current === undefined ? current : updateModeState(current, parsed.modeId!),
       );
     }
-    const promptInFlight = yield* Ref.get(promptInFlightRef);
+    const live = (yield* Ref.get(promptInFlightRef)) || (yield* Ref.get(liveOutsidePromptRef));
     for (const event of parsed.events) {
-      if (!promptInFlight && isPromptContentEvent(event)) {
+      if (!live && isPromptContentEvent(event)) {
         // History replay after session/load (or stray output between
         // turns): the transcript already holds it, so it must not be
         // appended to the latest message again.

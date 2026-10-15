@@ -91,6 +91,7 @@ import type {
   AcpExtensionContext,
   AcpProviderDescriptor,
   AcpProviderSettings,
+  AcpTurnOutcome,
 } from "./AcpProviderDescriptor.ts";
 import {
   applyAcpModelSelection,
@@ -115,6 +116,12 @@ const ACP_RESUME_VERSION = 1 as const;
  * conversation in a fresh one.
  */
 const ACP_CANCEL_DEADLINE = Duration.seconds(15);
+/**
+ * An agent's own turn (see `agentTurns`) that has gone this long without
+ * output is closed here, in case its end notice never comes.
+ */
+const ACP_AGENT_TURN_QUIET_LIMIT = Duration.minutes(5);
+const ACP_AGENT_TURN_QUIET_CHECK = Duration.seconds(30);
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
@@ -175,6 +182,14 @@ interface AcpSessionContext {
   pendingContextPreamble: string | undefined;
   /** Held while a turn starts, so concurrent sends queue instead of racing. */
   readonly turnStartLock: Semaphore.Semaphore;
+  /** The active turn is one the agent started itself; settled when it ends. */
+  agentTurn: { readonly turnId: TurnId; readonly ended: Deferred.Deferred<void> } | undefined;
+  /** When the agent's own turn last produced anything (ms since epoch). */
+  agentTurnLastActivityMs: number;
+  /** The turn each running tool call started in, for updates that land after it. */
+  readonly toolCallTurns: Map<string, TurnId>;
+  /** How the agent said the running prompt ended, from its own notice. */
+  promptOutcome: AcpTurnOutcome | undefined;
   stopped: boolean;
 }
 
@@ -510,6 +525,105 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         );
       });
 
+    /** Clears what a turn accumulates, for a turn starting now. */
+    const resetTurnState = (ctx: AcpSessionContext) => {
+      ctx.lastPlanFingerprint = undefined;
+      ctx.activeTurnText = "";
+      ctx.lastProviderStatus = undefined;
+      ctx.cancelledTurnId = undefined;
+      ctx.planMarkdown = undefined;
+      ctx.promptOutcome = undefined;
+    };
+
+    /**
+     * Opens a turn the agent started itself (`agentTurns`): its wake-up
+     * after background work, opened on the extension's notice or on the
+     * first output that arrives while no turn runs, the way Claude's
+     * synthetic turns open.
+     */
+    const openAgentTurn = (ctx: AcpSessionContext, raw: { method: string; payload: unknown }) =>
+      Effect.gen(function* () {
+        if (ctx.stopped || ctx.activeTurnId !== undefined) return;
+        const turnId = TurnId.make(crypto.randomUUID());
+        ctx.activeTurnId = turnId;
+        ctx.agentTurn = { turnId, ended: yield* Deferred.make<void>() };
+        ctx.agentTurnLastActivityMs = Date.now();
+        resetTurnState(ctx);
+        ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
+        yield* offerRuntimeEvent({
+          type: "turn.started",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId: ctx.threadId,
+          turnId,
+          payload: {},
+          raw: {
+            source: extensionSource ?? "acp.jsonrpc",
+            method: raw.method,
+            payload: raw.payload,
+          },
+        });
+        yield* watchAgentTurnQuiet(ctx, turnId).pipe(Effect.forkIn(ctx.scope));
+      });
+
+    /** Closes the agent's own turn once every update queued before the end is out. */
+    const closeAgentTurn = (ctx: AcpSessionContext, outcome: AcpTurnOutcome) =>
+      Effect.gen(function* () {
+        const agentTurn = ctx.agentTurn;
+        if (agentTurn === undefined) return;
+        yield* ctx.acp.flushEvents;
+        if (ctx.agentTurn !== agentTurn) return;
+        yield* closeReasoning(ctx);
+        ctx.agentTurn = undefined;
+        if (ctx.activeTurnId === agentTurn.turnId) ctx.activeTurnId = undefined;
+        ctx.session = { ...ctx.session, activeTurnId: undefined, updatedAt: yield* nowIso };
+        yield* offerRuntimeEvent({
+          type: "turn.completed",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId: ctx.threadId,
+          turnId: agentTurn.turnId,
+          payload: {
+            state: outcome.state,
+            stopReason: outcome.stopReason ?? null,
+            ...(outcome.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
+          },
+        });
+        yield* Deferred.succeed(agentTurn.ended, undefined);
+      });
+
+    /** Closes an agent turn whose end notice never came, after a long quiet. */
+    const watchAgentTurnQuiet = (ctx: AcpSessionContext, turnId: TurnId) =>
+      Effect.gen(function* () {
+        while (ctx.agentTurn?.turnId === turnId) {
+          yield* Effect.sleep(ACP_AGENT_TURN_QUIET_CHECK);
+          if (ctx.agentTurn?.turnId !== turnId) return;
+          if (
+            Date.now() - ctx.agentTurnLastActivityMs >=
+            Duration.toMillis(ACP_AGENT_TURN_QUIET_LIMIT)
+          ) {
+            yield* closeAgentTurn(ctx, { state: "completed" });
+            return;
+          }
+        }
+      });
+
+    /**
+     * The turn an update belongs to: for a tool call that started in an
+     * earlier turn (a background shell), that turn; else the active one;
+     * else, for an agent that starts its own turns, a new agent turn.
+     */
+    const turnForOutput = (ctx: AcpSessionContext, toolCallId?: string) =>
+      Effect.gen(function* () {
+        if (ctx.agentTurn !== undefined) ctx.agentTurnLastActivityMs = Date.now();
+        const earlier = toolCallId === undefined ? undefined : ctx.toolCallTurns.get(toolCallId);
+        if (earlier !== undefined) return earlier;
+        if (ctx.activeTurnId !== undefined) return ctx.activeTurnId;
+        if (!descriptor.agentTurns) return undefined;
+        yield* openAgentTurn(ctx, { method: "session/update", payload: {} });
+        return ctx.activeTurnId;
+      });
+
     const requireSession = (
       threadId: ThreadId,
     ): Effect.Effect<AcpSessionContext, ProviderAdapterSessionNotFoundError> => {
@@ -746,6 +860,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "threadlines", version: "0.0.0" },
             mcpServers,
+            runtimeMode: input.runtimeMode,
+            ...(descriptor.agentTurns ? { liveOutsidePrompt: true } : {}),
             ...acpNativeLoggers,
           }).pipe(
             Effect.provideService(Scope.Scope, sessionScope),
@@ -801,6 +917,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           const extensionContext: AcpExtensionContext = {
             threadId: input.threadId,
             acp,
+            sessionId: () => parseAcpResumeCursor(ctx?.session.resumeCursor)?.sessionId,
             activeTurnId: () => ctx?.activeTurnId,
             logNative: (method, payload) => logNative(input.threadId, method, payload),
             requestUserInput,
@@ -834,6 +951,33 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     request.method,
                   )
                 : Effect.void,
+            emitRuntimeEvent: (request) =>
+              Effect.gen(function* () {
+                const event = {
+                  ...request.event,
+                  ...(yield* makeEventStamp()),
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  ...(extensionSource
+                    ? {
+                        raw: {
+                          source: extensionSource,
+                          method: request.method,
+                          payload: request.payload,
+                        },
+                      }
+                    : {}),
+                } as ProviderRuntimeEvent;
+                yield* offerRuntimeEvent(event);
+              }),
+            beginAgentTurn: (request) => (ctx ? openAgentTurn(ctx, request) : Effect.void),
+            endAgentTurn: (request) => (ctx ? closeAgentTurn(ctx, request.outcome) : Effect.void),
+            reportPromptOutcome: (outcome) =>
+              Effect.sync(() => {
+                if (ctx && ctx.activeTurnId !== undefined && ctx.agentTurn === undefined) {
+                  ctx.promptOutcome = outcome;
+                }
+              }),
           };
 
           const started = yield* Effect.gen(function* () {
@@ -868,11 +1012,17 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   );
                   if (planMarkdown !== undefined && ctx) ctx.planMarkdown = planMarkdown;
                 }
+                // Options whose "always" outlives the session are never ours to pick.
+                const offered = descriptor.isLastingPermissionOption
+                  ? params.options.filter(
+                      (option) => !descriptor.isLastingPermissionOption!(option),
+                    )
+                  : params.options;
                 // Full access answers each request once: an "always" option
                 // would leave a standing rule behind in the agent's own store.
                 // A request with no "once" to give goes to the user instead.
                 if (input.runtimeMode === "full-access" || planFileWrite) {
-                  const once = acpPermissionOptionId("accept", params.options);
+                  const once = acpPermissionOptionId("accept", offered);
                   if (once !== undefined) return selected(once);
                 }
                 const requestId = ApprovalRequestId.make(crypto.randomUUID());
@@ -880,7 +1030,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 const decision = yield* Deferred.make<ProviderApprovalDecision>();
                 pendingApprovals.set(requestId, { decision, kind: permissionRequest.kind });
                 const warningFor = (kind: EffectAcpSchema.PermissionOption["kind"]) => {
-                  const option = params.options.find((candidate) => candidate.kind === kind);
+                  const option = offered.find((candidate) => candidate.kind === kind);
                   return option ? descriptor.permissionOptionWarning?.(option) : undefined;
                 };
                 const acceptForSessionWarning = warningFor("allow_always");
@@ -894,7 +1044,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                           : {}),
                       }
                     : undefined;
-                const availableDecisions = acpAvailableDecisions(params.options);
+                const availableDecisions = acpAvailableDecisions(offered);
                 yield* offerRuntimeEvent(
                   makeAcpRequestOpenedEvent({
                     stamp: yield* makeEventStamp(),
@@ -930,7 +1080,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 );
                 return resolved === "cancel"
                   ? { outcome: { outcome: "cancelled" as const } }
-                  : selected(acpPermissionOptionId(resolved, params.options));
+                  : selected(acpPermissionOptionId(resolved, offered));
               }),
             );
             return yield* acp.start();
@@ -997,6 +1147,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 ? renderThreadContextSeed(input.contextSeed)
                 : undefined,
             turnStartLock: yield* Semaphore.make(1),
+            agentTurn: undefined,
+            agentTurnLastActivityMs: 0,
+            toolCallTurns: new Map(),
+            promptOutcome: undefined,
             stopped: false,
           };
 
@@ -1053,24 +1207,31 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     return;
                   case "ReasoningDelta":
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
+                    yield* turnForOutput(ctx);
                     yield* appendReasoning(ctx, event.text, event.rawPayload);
                     return;
                   case "AssistantItemStarted":
-                  case "AssistantItemCompleted":
+                  case "AssistantItemCompleted": {
                     yield* closeReasoning(ctx);
+                    const turnId =
+                      event._tag === "AssistantItemStarted"
+                        ? yield* turnForOutput(ctx)
+                        : ctx.activeTurnId;
                     yield* offerRuntimeEvent(
                       makeAcpAssistantItemEvent({
                         stamp: yield* makeEventStamp(),
                         provider: PROVIDER,
                         threadId: ctx.threadId,
-                        turnId: ctx.activeTurnId,
+                        turnId,
                         itemId: event.itemId,
                         lifecycle:
                           event._tag === "AssistantItemStarted" ? "item.started" : "item.completed",
                       }),
                     );
                     return;
+                  }
                   case "PlanUpdated":
+                    yield* turnForOutput(ctx);
                     yield* closeReasoning(ctx);
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* emitPlanUpdate(
@@ -1093,12 +1254,22 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     const changes = descriptor.diffEvidence
                       ? acpDiffFileChanges(event.toolCall, ctx.cwdRoots, path)
                       : [];
+                    const toolCallId = event.toolCall.toolCallId;
+                    const turnId = yield* turnForOutput(ctx, toolCallId);
+                    if (
+                      event.toolCall.status === "completed" ||
+                      event.toolCall.status === "failed"
+                    ) {
+                      ctx.toolCallTurns.delete(toolCallId);
+                    } else if (turnId !== undefined) {
+                      ctx.toolCallTurns.set(toolCallId, turnId);
+                    }
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
                         stamp: yield* makeEventStamp(),
                         provider: PROVIDER,
                         threadId: ctx.threadId,
-                        turnId: ctx.activeTurnId,
+                        turnId,
                         toolCall:
                           changes.length > 0
                             ? { ...event.toolCall, data: { ...event.toolCall.data, changes } }
@@ -1117,6 +1288,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     ) {
                       return;
                     }
+                    yield* turnForOutput(ctx);
                     yield* closeReasoning(ctx);
                     if (ctx.activeTurnText.length < PLAN_GATE_SCAN_MAX_CHARS) {
                       ctx.activeTurnText += event.text;
@@ -1217,6 +1389,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             threadId: input.threadId,
           });
         }
+        // A message sent while the agent runs a turn of its own ends that
+        // turn here; the agent takes the message after it, as Claude does.
+        if (ctx.agentTurn !== undefined) {
+          yield* closeAgentTurn(ctx, { state: "completed" });
+        }
         const turnId = TurnId.make(crypto.randomUUID());
         const turnModelSelection =
           input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
@@ -1293,12 +1470,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           modelSelection:
             model === undefined ? undefined : { model, options: turnModelSelection?.options },
         });
+        const turnModeId = descriptor.sessionModeForTurn?.(input.interactionMode);
+        const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
+        if (turnModeId !== undefined && sessionId !== undefined) {
+          yield* ctx.acp
+            .request("session/set_mode", { sessionId, modeId: turnModeId })
+            .pipe(
+              Effect.mapError((cause) =>
+                mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_mode", cause),
+              ),
+            );
+        }
         ctx.activeTurnId = turnId;
-        ctx.lastPlanFingerprint = undefined;
-        ctx.activeTurnText = "";
-        ctx.lastProviderStatus = undefined;
-        ctx.cancelledTurnId = undefined;
-        ctx.planMarkdown = undefined;
+        resetTurnState(ctx);
         ctx.pendingContextPreamble = undefined;
         ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
 
@@ -1312,7 +1496,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         });
 
         const runPrompt = Effect.gen(function* () {
-          const exit = yield* Effect.exit(ctx.acp.prompt({ prompt: promptParts }));
+          const promptMeta = descriptor.promptMeta?.(turnId);
+          const exit = yield* Effect.exit(
+            ctx.acp.prompt({
+              prompt: promptParts,
+              ...(promptMeta ? { _meta: { ...promptMeta } } : {}),
+            }),
+          );
           // Deltas travel through the notification fiber; make sure every one
           // queued before the prompt returned is out before the turn closes.
           yield* ctx.acp.flushEvents;
@@ -1380,8 +1570,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }
           const failure = Cause.squash(exit.cause);
           yield* notifyAuthRequired(failure);
-          const detail =
-            failure instanceof Error
+          const reportedFailure =
+            ctx.promptOutcome?.state === "failed" ? ctx.promptOutcome.errorMessage : undefined;
+          const detail = reportedFailure
+            ? reportedFailure
+            : failure instanceof Error
               ? mapAcpToAdapterError(
                   PROVIDER,
                   input.threadId,
@@ -1465,11 +1658,20 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             ),
           ),
         );
-        if (turnId !== undefined && promptFiber !== undefined) {
-          yield* Fiber.await(promptFiber).pipe(
+        // The agent's own turn has no prompt to wait on; its end notice
+        // settles it, and the same deadline applies.
+        const agentTurn = ctx.agentTurn?.turnId === turnId ? ctx.agentTurn : undefined;
+        const settled =
+          agentTurn !== undefined
+            ? Deferred.await(agentTurn.ended)
+            : promptFiber !== undefined
+              ? Fiber.await(promptFiber).pipe(Effect.asVoid)
+              : undefined;
+        if (turnId !== undefined && settled !== undefined) {
+          yield* settled.pipe(
             Effect.timeoutOption(ACP_CANCEL_DEADLINE),
-            Effect.flatMap((settled) =>
-              Option.isSome(settled) ? Effect.void : recycleStuckTurn(ctx, turnId),
+            Effect.flatMap((outcome) =>
+              Option.isSome(outcome) ? Effect.void : recycleStuckTurn(ctx, turnId),
             ),
             Effect.forkIn(adapterScope),
           );
