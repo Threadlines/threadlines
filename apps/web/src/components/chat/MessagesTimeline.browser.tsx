@@ -1209,7 +1209,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("summarizes the turn's subagents on the activity row and opens the panel from it", async () => {
+  it("summarizes a settled turn's working subagents beside the anchor and opens the panel from it", async () => {
     const onOpenAgentsPanel = vi.fn();
     const screen = await renderTimeline(
       <MessagesTimeline
@@ -1223,8 +1223,8 @@ describe("MessagesTimeline", () => {
             buildTurnSubagent("agent-3", "completed"),
             buildTurnSubagent("agent-4", "waiting"),
             buildTurnSubagent("agent-stopped", "interrupted"),
-            // A different turn's agent must not be counted on this row.
-            { ...buildTurnSubagent("agent-5", "running"), turnId: TurnId.make("turn-other") },
+            // A different turn's finished agent must not be counted with these.
+            { ...buildTurnSubagent("agent-5", "completed"), turnId: TurnId.make("turn-other") },
           ],
         }}
       />,
@@ -1235,6 +1235,12 @@ describe("MessagesTimeline", () => {
         name: "5 subagents · 2 running · 1 done · 1 stopped · 1 needs you. Open the agents panel.",
       });
       await expect.element(summary).toBeVisible();
+      // While its agents work, the turn's count sits beside "Agents working",
+      // and only there.
+      expect(
+        document.querySelector("[data-turn-working-anchor='true']")?.contains(summary.element()),
+      ).toBe(true);
+      expect(document.querySelectorAll("[data-turn-agents-summary='true']")).toHaveLength(1);
 
       await summary.click();
       expect(onOpenAgentsPanel).toHaveBeenCalledWith(null);
@@ -1435,6 +1441,72 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("moves a finished turn's agent count beside the working anchor while its agents run", async () => {
+    // The turn answered but its three agents are still going: the count sits
+    // once, beside "Agents working", not on the answer's footer as well. When
+    // the last one lands the anchor leaves and the count is back on the footer.
+    const timelineEntries = [
+      buildUserTimelineEntry("Review the tech stack"),
+      ...buildOverflowingWorkTimelineEntries().slice(0, 2),
+      {
+        id: "entry-answer",
+        kind: "message" as const,
+        createdAt: "2026-04-13T12:05:00.000Z",
+        message: {
+          id: "answer" as never,
+          role: "assistant" as const,
+          text: "The three researchers are still running.",
+          turnId: ACTIVITY_ROW_TURN_ID,
+          createdAt: "2026-04-13T12:05:00.000Z",
+          completedAt: "2026-04-13T12:05:10.000Z",
+          streaming: false,
+        },
+      },
+    ];
+    const agents = ["agent-1", "agent-2", "agent-3"];
+    const props = { ...buildProps(), timelineEntries, onOpenAgentsPanel: vi.fn() };
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...props}
+        turnAgents={{ subagents: agents.map((id) => buildTurnSubagent(id, "running")) }}
+      />,
+    );
+    const trackers = () => [...document.querySelectorAll("[data-turn-agents-summary='true']")];
+    const footer = () => document.querySelector("[data-turn-footer='true']");
+
+    try {
+      await expect.element(page.getByText("Agents working...")).toBeVisible();
+      const anchor = document.querySelector("[data-turn-working-anchor='true']");
+      expect(trackers()).toHaveLength(1);
+      expect(anchor?.contains(trackers()[0] ?? null)).toBe(true);
+      expect(trackers()[0]?.getAttribute("aria-label")).toBe("3 subagents. Open the agents panel.");
+      expect(footer()?.textContent).toContain("Worked for");
+      expect(footer()?.querySelector("[data-turn-agents-summary='true']")).toBeNull();
+
+      // Settled agents leave the live state; the thread's history keeps them.
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          turnAgents={{
+            subagents: [],
+            history: agents.map((id) => ({
+              item: buildTurnSubagent(id, "completed"),
+              resultBody: null,
+            })),
+          }}
+        />,
+      );
+      await expect.element(page.getByText("Agents working...")).not.toBeInTheDocument();
+      expect(trackers()).toHaveLength(1);
+      expect(footer()?.contains(trackers()[0] ?? null)).toBe(true);
+      expect(trackers()[0]?.getAttribute("aria-label")).toBe(
+        "3 subagents · 3 done. Open the agents panel.",
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps one stable, visually distinct status row per live agent", async () => {
     const onOpenAgentsPanel = vi.fn();
     const props = buildProps();
@@ -1588,7 +1660,10 @@ describe("MessagesTimeline", () => {
     );
 
     try {
-      const receipt = page.getByRole("button", { name: "Open Reviewer transcript" });
+      // Named by its task, as its live line named it.
+      const receipt = page.getByRole("button", {
+        name: "Open Review the router wiring transcript",
+      });
       await expect.element(receipt).toBeVisible();
       // A receipt, not a card: the full report stays in the rail.
       expect(document.querySelector("[data-subagent-result-body='true']")).toBeNull();

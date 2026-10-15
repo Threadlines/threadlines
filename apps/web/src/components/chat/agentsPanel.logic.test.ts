@@ -569,6 +569,36 @@ describe("formatLiveAgentStatusRows", () => {
     });
   });
 
+  it("tells agents of one kind apart by their task, keeping a name the provider gave", () => {
+    const generalPurpose = (objective: string | null, nickname?: string) =>
+      buildSubagent({
+        id: `agent-${objective ?? nickname}`,
+        label: "general-purpose",
+        role: "general-purpose",
+        objective,
+        ...(nickname ? { nickname } : {}),
+      });
+    const roster = formatLiveAgentStatusRows(
+      [
+        generalPurpose("Research Effect 4 stable upgrade"),
+        generalPurpose("Research build/test toolchain upgrades", "Pauli"),
+        generalPurpose("audit_auth_flow"),
+        // A whole prompt is not a name.
+        generalPurpose("Read the composer.\nCount every listener it registers."),
+        generalPurpose(null),
+      ],
+      5,
+    );
+
+    expect(roster.rows.map((row) => row.name)).toEqual([
+      "Research Effect 4 stable upgrade",
+      "Pauli",
+      "Audit auth flow",
+      "General purpose",
+      "General purpose",
+    ]);
+  });
+
   it("words a reported step the way the conversation words steps", () => {
     const withStep = (step: string) =>
       buildSubagent({
