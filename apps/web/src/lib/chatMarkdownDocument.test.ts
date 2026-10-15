@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { repairStreamingMarkdownTail, splitMarkdownBlocks } from "./ChatMarkdown.tsx";
+import { repairStreamingMarkdownTail, splitMarkdownBlocks } from "./chatMarkdownDocument";
 import {
   parseCodexInlineVisualizations,
   stripCodexInlineVisualizationDirectives,
-} from "../lib/codexInlineVisualization";
+} from "./codexInlineVisualization";
 
 describe("splitMarkdownBlocks", () => {
   it("returns no blocks for empty text", () => {

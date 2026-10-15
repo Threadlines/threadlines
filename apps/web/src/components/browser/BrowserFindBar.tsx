@@ -1,5 +1,6 @@
-import { ChevronDownIcon, ChevronUpIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+
+import { FindBar } from "../FindBar";
 
 import type { PreviewWebview } from "./PreviewTabFrame";
 
@@ -12,9 +13,6 @@ interface FoundInPageEvent extends Event {
     finalUpdate: boolean;
   };
 }
-
-const FIND_BUTTON_CLASS_NAME =
-  "inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent hover:text-foreground";
 
 /**
  * Find-in-page for the preview, in the corner of the page it searches.
@@ -96,64 +94,29 @@ export function BrowserFindBar({
   };
 
   return (
-    <div
-      className="absolute top-2 right-2 z-20 flex items-center gap-1 rounded-md border border-border bg-background py-1 pr-1 pl-2"
-      data-testid="browser-find-bar"
-    >
-      <input
-        ref={inputRef}
-        value={query}
-        onChange={(event) => search(event.target.value)}
-        onKeyDown={(event) => {
-          // Enter walks forward through the matches; shift walks back.
-          if (event.key === "Enter") {
-            event.preventDefault();
-            step(!event.shiftKey);
-          } else if (event.key === "Escape") {
-            event.preventDefault();
-            onClose();
-          }
-        }}
-        placeholder="Find in page"
-        className="h-6 w-44 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
-        data-testid="browser-find-input"
-      />
-      {query === "" ? null : (
-        <span
-          className="shrink-0 font-mono text-[10px] text-muted-foreground"
-          data-testid="browser-find-tally"
-        >
-          {tally === null ? "…" : `${tally.matches === 0 ? 0 : tally.active}/${tally.matches}`}
-        </span>
-      )}
-      <span className="h-3.5 w-px shrink-0 bg-border" />
-      <button
-        type="button"
-        aria-label="Previous match"
-        data-testid="browser-find-previous"
-        className={FIND_BUTTON_CLASS_NAME}
-        onClick={() => step(false)}
-      >
-        <ChevronUpIcon className="size-3.5" />
-      </button>
-      <button
-        type="button"
-        aria-label="Next match"
-        data-testid="browser-find-next"
-        className={FIND_BUTTON_CLASS_NAME}
-        onClick={() => step(true)}
-      >
-        <ChevronDownIcon className="size-3.5" />
-      </button>
-      <button
-        type="button"
-        aria-label="Close find"
-        data-testid="browser-find-close"
-        className={FIND_BUTTON_CLASS_NAME}
-        onClick={onClose}
-      >
-        <XIcon className="size-3.5" />
-      </button>
-    </div>
+    <FindBar
+      query={query}
+      onQueryChange={search}
+      onStep={(direction) => step(direction === 1)}
+      onClose={onClose}
+      tally={
+        query === ""
+          ? null
+          : tally === null
+            ? { kind: "pending" }
+            : {
+                kind: "matches",
+                current: tally.matches === 0 ? 0 : tally.active,
+                total: tally.matches,
+              }
+      }
+      placeholder="Find in page"
+      inputRef={inputRef}
+      testIdPrefix="browser-find"
+      className="absolute top-2 right-2 z-20"
+      // The page finds on its own clock: a step taken before its count
+      // arrives still walks from the first match.
+      canStep={query !== ""}
+    />
   );
 }

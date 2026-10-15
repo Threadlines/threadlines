@@ -69,7 +69,8 @@ import { isElectron } from "../../env";
 import { useBrowserProfilePartition } from "../../lib/browserProfiles";
 import { useTheme } from "../../hooks/useTheme";
 import { copyTextToClipboard } from "../../lib/clipboard";
-import { cn } from "../../lib/utils";
+import { cn, isMacPlatform } from "../../lib/utils";
+import { resolveFindShortcutOwner } from "../../lib/findShortcutOwner";
 import {
   Menu,
   MenuGroup,
@@ -94,6 +95,16 @@ import { noteBrowserUserIntent } from "./browserFocusGuard";
 import { completeUrl } from "./urlCompletion";
 import { type AgentActivity } from "./previewAutomationHost";
 import { hostOf, normalizePreviewUrl } from "./previewUrl";
+
+/** Cmd (Ctrl off a Mac) with the key and nothing else. */
+function isPlainModShortcut(event: KeyboardEvent): boolean {
+  const mac = isMacPlatform(navigator.platform);
+  return (
+    (mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey) &&
+    !event.altKey &&
+    !event.shiftKey
+  );
+}
 
 export function BrowserPanel({
   threadRef,
@@ -567,11 +578,16 @@ export function BrowserPanel({
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.defaultPrevented) {
+      if (event.defaultPrevented || !isPlainModShortcut(event)) {
         return;
       }
       const key = event.key.toLowerCase();
       if (key === "f") {
+        // The chat has a find of its own: the page's answers only where the
+        // reader is in the panel, or where the chat's cannot open.
+        if (resolveFindShortcutOwner() !== "browser") {
+          return;
+        }
         event.preventDefault();
         openFindBar();
       } else if (key === "l") {
@@ -850,6 +866,7 @@ export function BrowserPanel({
       className="@container/browser flex min-w-0 flex-col border-l border-border bg-rail"
       style={{ flex: `${flexGrow} 1 0%` }}
       data-testid="browser-panel"
+      data-find-region="browser"
       aria-label="Browser preview"
       onPointerDownCapture={() => {
         markBrowserUserControlled(threadRef);

@@ -130,6 +130,7 @@ import {
   resolveAssistantMessageCopyState,
   shouldCollapseUserMessage,
   stretchDurationMs,
+  timelineMessageView,
   timelineRowTurnIds,
   type StableMessagesTimelineRowsState,
   type TurnSummary,
@@ -171,10 +172,14 @@ import { findSearchTextHighlightSpans } from "../../lib/searchTextHighlight";
 
 import {
   buildInlineTerminalContextText,
-  formatInlineTerminalContextLabel,
-  textContainsInlineTerminalContextLabels,
+  splitUserMessageText,
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
+import {
+  finiteScrollMetric,
+  revealTimelineRow,
+  scrollRectIntoTimelineView,
+} from "./timelineReveal";
 import {
   WorkingAnchorDots,
   isWaitingOnUserState,
@@ -203,7 +208,10 @@ import {
   useRoomAgentNames,
 } from "../../rooms";
 import { RoomReviewTag } from "./RoomReviewTag";
-import { type SideAnswerView } from "./sideAnswers";
+import { foldedAnsweringSideTurnIds, type SideAnswerView } from "./sideAnswers";
+import { ChatFind } from "./chatFind/ChatFind";
+import type { ChatFindRowContext } from "./chatFind/chatFindRows";
+import { useChatFindStore } from "../../chatFindStore";
 import { detailEntranceRef, rowEntranceRef } from "./timelineEntrance";
 import { providerInstanceShowsBadge } from "../../providerInstances";
 
@@ -263,6 +271,8 @@ interface TimelineRowSharedState {
   onRunMcpAuthReconnect?: (action: McpAuthReconnectAction) => void;
   searchTargetMessageId: MessageId | null;
   searchTargetQuery: string;
+  /** Times find in chat asked each folded row to open, to show a match. */
+  findOpenRequests: ReadonlyMap<string, number>;
   activeSearchTargetMessageId: MessageId | null;
   proposedPlanState: TimelineProposedPlanState | null;
   turnAgents: TimelineTurnAgentsState | null;
@@ -415,10 +425,6 @@ type TimelineScrollEvent = {
     };
   };
 };
-
-function finiteScrollMetric(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
 
 function getTimelineScrollMetrics(event: TimelineScrollEvent) {
   const nativeEvent = event.nativeEvent;
@@ -666,20 +672,11 @@ const REVEAL_ATTEMPTS = 3;
 /** Puts a drawn row at REVEAL_VIEW_POSITION, correcting a scroll that aimed by
  *  guessed row heights. */
 function settleRevealedRow(list: LegendListRef | null, row: HTMLElement): void {
-  const scrollableNode = list?.getScrollableNode?.();
-  if (!list || !scrollableNode) {
-    return;
-  }
-  const viewportRect = scrollableNode.getBoundingClientRect();
-  const targetTop = viewportRect.top + viewportRect.height * REVEAL_VIEW_POSITION;
-  const rowTop = row.getBoundingClientRect().top;
-  if (Math.abs(rowTop - targetTop) < 4) {
-    return;
-  }
-  const currentOffset = finiteScrollMetric(scrollableNode.scrollTop) ?? 0;
-  void list.scrollToOffset({
-    offset: Math.max(0, currentOffset + rowTop - targetTop),
-    animated: false,
+  scrollRectIntoTimelineView(list, row.getBoundingClientRect(), {
+    viewPosition: REVEAL_VIEW_POSITION,
+    topInsetPx: 0,
+    bottomInsetPx: 0,
+    always: true,
   });
 }
 
@@ -688,24 +685,14 @@ function revealTimelineSearchMatch(
   messageRow: HTMLElement,
   query: string,
 ): void {
-  const scrollableNode = list?.getScrollableNode?.();
   const matchRect = findFirstTimelineSearchMatchRect(messageRow, query);
-  if (!list || !scrollableNode || !matchRect) {
+  if (!matchRect) {
     return;
   }
-
-  const viewportRect = scrollableNode.getBoundingClientRect();
-  const safeTop = viewportRect.top + THREAD_SEARCH_TARGET_VIEWPORT_MARGIN_PX;
-  const safeBottom = viewportRect.bottom - THREAD_SEARCH_TARGET_VIEWPORT_MARGIN_PX;
-  if (matchRect.top >= safeTop && matchRect.bottom <= safeBottom) {
-    return;
-  }
-
-  const targetTop = viewportRect.top + viewportRect.height * THREAD_SEARCH_TARGET_VIEWPORT_POSITION;
-  const currentOffset = finiteScrollMetric(scrollableNode.scrollTop) ?? 0;
-  void list.scrollToOffset({
-    offset: Math.max(0, currentOffset + matchRect.top - targetTop),
-    animated: false,
+  scrollRectIntoTimelineView(list, matchRect, {
+    viewPosition: THREAD_SEARCH_TARGET_VIEWPORT_POSITION,
+    topInsetPx: THREAD_SEARCH_TARGET_VIEWPORT_MARGIN_PX,
+    bottomInsetPx: THREAD_SEARCH_TARGET_VIEWPORT_MARGIN_PX,
   });
 }
 
@@ -715,6 +702,17 @@ function revealTimelineSearchMatch(
 
 const EMPTY_SIDE_ANSWERS: ReadonlyArray<SideAnswerView> = [];
 const NO_EXPANDED_SIDE_ANSWERS: ReadonlySet<SideTurnId> = new Set();
+const NO_FIND_OPEN_REQUESTS: ReadonlyMap<string, number> = new Map();
+/** Keys that scroll the list when it has focus. */
+const SCROLL_KEYS: ReadonlySet<string> = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  " ",
+]);
 const EMPTY_AGENT_REQUESTS: ReadonlyArray<OrchestrationAgentRequest> = [];
 /** Rows past either edge of the screen whose turns count as in view, so an
  *  older turn's steps are on their way before the reader reaches it. */
@@ -910,26 +908,25 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           : roomAgents?.get(roomAgentKey(agent)),
     [agentModelLabeler, hasTeammates, ownAgentLabels, roomAgents],
   );
-  const rawRows = useMemo(
-    () =>
-      deriveMessagesTimelineRows({
-        timelineEntries,
-        isWorking,
-        liveAgentCount,
-        liveAgentTrackerKeys: parseLiveAgentTrackerSignature(liveAgentKeysSignature),
-        isWaitingOnBackgroundTasks,
-        awaitedTasks,
-        activeStatusLabel,
-        activeTurnInProgress,
-        activeTurnId: activeTurnId ?? null,
-        activeTurnStartedAt,
-        turnDiffSummaryByAssistantMessageId,
-        revertTurnCountByUserMessageId,
-        sideAnswers,
-        expandedSideTurnIds,
-        workingParticipantId,
-        roomAgentNames,
-      }),
+  const rowsInput = useMemo<Parameters<typeof deriveMessagesTimelineRows>[0]>(
+    () => ({
+      timelineEntries,
+      isWorking,
+      liveAgentCount,
+      liveAgentTrackerKeys: parseLiveAgentTrackerSignature(liveAgentKeysSignature),
+      isWaitingOnBackgroundTasks,
+      awaitedTasks,
+      activeStatusLabel,
+      activeTurnInProgress,
+      activeTurnId: activeTurnId ?? null,
+      activeTurnStartedAt,
+      turnDiffSummaryByAssistantMessageId,
+      revertTurnCountByUserMessageId,
+      sideAnswers,
+      expandedSideTurnIds,
+      workingParticipantId,
+      roomAgentNames,
+    }),
     [
       workingParticipantId,
       roomAgentNames,
@@ -949,7 +946,32 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       revertTurnCountByUserMessageId,
     ],
   );
+  const rawRows = useMemo(() => deriveMessagesTimelineRows(rowsInput), [rowsInput]);
   const rows = useStableRows(rawRows);
+  // Find in chat searches the rows as drawn, plus answers still being written
+  // under a folded side question: they open where they already sit.
+  const findOpen = useChatFindStore((state) => state.open);
+  const findRows = useMemo(() => {
+    const folded = findOpen ? foldedAnsweringSideTurnIds(sideAnswers, expandedSideTurnIds) : [];
+    return folded.length === 0
+      ? rows
+      : deriveMessagesTimelineRows({
+          ...rowsInput,
+          expandedSideTurnIds: new Set([...expandedSideTurnIds, ...folded]),
+        });
+  }, [expandedSideTurnIds, findOpen, rows, rowsInput, sideAnswers]);
+  // How many times find asked each folded row to open: each ask opens it,
+  // even after the reader folded it again.
+  const [findOpenRequests, setFindOpenRequests] =
+    useState<ReadonlyMap<string, number>>(NO_FIND_OPEN_REQUESTS);
+  const onFindOpenRow = useCallback((rowId: string) => {
+    setFindOpenRequests((current) => new Map(current).set(rowId, (current.get(rowId) ?? 0) + 1));
+  }, []);
+  const onFindOpenSideExchange = useCallback((sideTurnId: SideTurnId) => {
+    setExpandedSideTurnIds((current) =>
+      current.has(sideTurnId) ? current : new Set([...current, sideTurnId]),
+    );
+  }, []);
   // Read by the list's viewability callback, which the list keeps across renders.
   const visibleTurnReportRef = useRef({ rows, onVisibleTurnIdsChange });
   useEffect(() => {
@@ -1140,10 +1162,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     setActiveSearchTargetMessageId(searchTarget.messageId);
 
-    let cancelled = false;
     let highlightCleanup: (() => void) | null = null;
     let highlightTimerId: number | null = null;
-    const frameIds: number[] = [];
     const stopHighlight = () => {
       highlightCleanup?.();
       highlightCleanup = null;
@@ -1156,82 +1176,29 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         highlightTimerId = window.setTimeout(stopHighlight, THREAD_SEARCH_TARGET_HIGHLIGHT_MS);
       }
     };
-    const findAndHighlight = (remainingRenderAttempts: number, remainingScrollAttempts: number) => {
-      const frameId = window.requestAnimationFrame(() => {
-        if (cancelled) {
-          return;
-        }
-        const container = timelineContainerRef.current;
-        const messageRow = container
-          ? findRenderedTimelineMessageRow(container, searchTarget.messageId)
-          : null;
-        if (!messageRow && remainingRenderAttempts > 1) {
-          findAndHighlight(remainingRenderAttempts - 1, remainingScrollAttempts);
-          return;
-        }
-        if (!messageRow && remainingScrollAttempts > 1) {
-          scrollToTarget(remainingScrollAttempts - 1);
-          return;
-        }
-        if (messageRow) {
-          highlightCleanup = applyTimelineSearchTextHighlight(
-            messageRow,
-            searchTarget.query,
-            () => {
-              revealTimelineSearchMatch(listRef.current, messageRow, searchTarget.query);
-            },
-          );
-        }
-        scheduleStopHighlight();
-      });
-      frameIds.push(frameId);
-    };
-
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    function scrollToTarget(remainingScrollAttempts: number): void {
-      const frameId = window.requestAnimationFrame(() => {
-        if (cancelled) {
-          return;
-        }
-        const currentList = listRef.current;
-        if (!currentList) {
-          if (remainingScrollAttempts > 1) {
-            scrollToTarget(remainingScrollAttempts - 1);
-          } else {
-            scheduleStopHighlight();
-          }
-          return;
-        }
-        void currentList
-          .scrollToIndex({
-            index: searchTargetRowIndex,
-            animated: !prefersReducedMotion,
-            viewPosition: 0.35,
-          })
-          .then(
-            () => {
-              if (!cancelled) {
-                findAndHighlight(THREAD_SEARCH_TARGET_RENDER_ATTEMPTS, remainingScrollAttempts);
-              }
-            },
-            () => {
-              if (!cancelled && remainingScrollAttempts > 1) {
-                scrollToTarget(remainingScrollAttempts - 1);
-              } else if (!cancelled) {
-                scheduleStopHighlight();
-              }
-            },
-          );
-      });
-      frameIds.push(frameId);
-    }
-    scrollToTarget(THREAD_SEARCH_TARGET_SCROLL_ATTEMPTS);
+    const cancelReveal = revealTimelineRow({
+      getList: () => listRef.current,
+      resolveIndex: () => searchTargetRowIndex,
+      findRow: () => {
+        const container = timelineContainerRef.current;
+        return container ? findRenderedTimelineMessageRow(container, searchTarget.messageId) : null;
+      },
+      viewPosition: 0.35,
+      animated: () => !prefersReducedMotion,
+      scrollAttempts: THREAD_SEARCH_TARGET_SCROLL_ATTEMPTS,
+      renderAttempts: THREAD_SEARCH_TARGET_RENDER_ATTEMPTS,
+      onRow: (messageRow) => {
+        highlightCleanup = applyTimelineSearchTextHighlight(messageRow, searchTarget.query, () => {
+          revealTimelineSearchMatch(listRef.current, messageRow, searchTarget.query);
+        });
+        scheduleStopHighlight();
+      },
+      onGiveUp: scheduleStopHighlight,
+    });
 
     return () => {
-      cancelled = true;
-      for (const frameId of frameIds) {
-        window.cancelAnimationFrame(frameId);
-      }
+      cancelReveal();
       if (highlightTimerId !== null) {
         window.clearTimeout(highlightTimerId);
       }
@@ -1246,6 +1213,39 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     searchTargetRowIndex,
     setAutoStickToBottomState,
   ]);
+
+  // A command-palette jump takes the reader somewhere else: an open find bar
+  // would describe matches they are no longer looking at.
+  useEffect(() => {
+    if (searchTarget) useChatFindStore.getState().close();
+  }, [searchTarget]);
+
+  // A find jump holds the reader where it put them: a match on the last row
+  // leaves the list at its end, and the scroll that gets there must not turn
+  // following back on and carry the match away with new output. Held until
+  // the bar closes or the reader scrolls (any wheel, scroll key, scrollbar
+  // drag or touch), after which following works as it always does.
+  const findHoldsPositionRef = useRef(false);
+  useEffect(() => {
+    if (!findOpen) findHoldsPositionRef.current = false;
+  }, [findOpen]);
+  const onFindStopFollowing = useCallback(() => {
+    findHoldsPositionRef.current = true;
+    clearUserScrollLockTimer();
+    setAutoStickToBottomState(false);
+    onIsAtEndChange(false);
+  }, [clearUserScrollLockTimer, onIsAtEndChange, setAutoStickToBottomState]);
+
+  const findRowContext = useMemo<ChatFindRowContext>(
+    () => ({
+      cwd: markdownCwd,
+      skills,
+      visualizations: activeThreadId !== null,
+      providerAuthReconnect: providerAuthReconnect != null,
+      sideAnswerRequests,
+    }),
+    [activeThreadId, markdownCwd, providerAuthReconnect, sideAnswerRequests, skills],
+  );
 
   const enableAutoStickIfAtEnd = useCallback(() => {
     // A touch owns the list until it comes to rest: a finger that pauses is
@@ -1321,37 +1321,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       // The list aims by guessed heights for rows it has not drawn, and older
       // steps loading on the way can move the row: once there, the row is put
       // where it was meant to go, or found again and aimed at anew.
-      const attempt = (remaining: number) => {
-        const index = rowsForRevealRef.current.findIndex(
-          (row) => row.kind === "message" && row.message.id === messageId,
-        );
-        if (index < 0) {
-          return;
-        }
-        void listRef.current
-          ?.scrollToIndex({
-            index,
-            animated: !prefersReducedMotion && remaining === REVEAL_ATTEMPTS,
-            viewPosition: REVEAL_VIEW_POSITION,
-          })
-          .then(() => {
-            window.requestAnimationFrame(() => {
-              const container = timelineContainerRef.current;
-              const row = container ? findRenderedTimelineMessageRow(container, messageId) : null;
-              if (row) {
-                settleRevealedRow(listRef.current, row);
-              } else if (remaining > 1) {
-                attempt(remaining - 1);
-              }
-            });
-          });
-      };
-      attempt(REVEAL_ATTEMPTS);
+      revealTimelineRow({
+        getList: () => listRef.current,
+        resolveIndex: () =>
+          rowsForRevealRef.current.findIndex(
+            (row) => row.kind === "message" && row.message.id === messageId,
+          ),
+        findRow: () => {
+          const container = timelineContainerRef.current;
+          return container ? findRenderedTimelineMessageRow(container, messageId) : null;
+        },
+        viewPosition: REVEAL_VIEW_POSITION,
+        animated: (attemptsLeft) => !prefersReducedMotion && attemptsLeft === REVEAL_ATTEMPTS,
+        scrollAttempts: REVEAL_ATTEMPTS,
+        renderAttempts: 1,
+        onRow: (row) => settleRevealedRow(listRef.current, row),
+      });
     },
     [listRef, markUserScrollIntent],
   );
 
   const stickToBottomNow = useCallback(() => {
+    findHoldsPositionRef.current = false;
     clearUserScrollLockTimer();
     setAutoStickToBottomState(true);
     onIsAtEndChange(true);
@@ -1457,7 +1448,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       // Pointer devices never hit this because one wheel notch clears the
       // tolerance outright. The lock timer re-checks once scrolling settles,
       // and a touch re-checks once its glide comes to rest.
-      if (nextIsAtEnd && userScrollLockTimerRef.current === null && !touchScrollActiveRef.current) {
+      if (
+        nextIsAtEnd &&
+        userScrollLockTimerRef.current === null &&
+        !touchScrollActiveRef.current &&
+        !findHoldsPositionRef.current
+      ) {
         setAutoStickToBottomState(true);
       }
       onIsAtEndChange(nextIsAtEnd);
@@ -1545,6 +1541,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleWheelCapture = useCallback(
     (event: ReactWheelEvent) => {
+      findHoldsPositionRef.current = false;
       if (event.deltaY < 0 && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) {
         markUserScrollIntent({ notifyAwayFromEnd: true });
       }
@@ -1556,6 +1553,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     (event: ReactPointerEvent) => {
       const targetBounds = event.currentTarget.getBoundingClientRect();
       if (event.clientX >= targetBounds.right - SCROLLBAR_POINTER_GUTTER_PX) {
+        findHoldsPositionRef.current = false;
         markUserScrollIntent();
       }
     },
@@ -1579,6 +1577,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleTouchStartCapture = useCallback(
     (event: ReactTouchEvent) => {
+      findHoldsPositionRef.current = false;
       touchStartYRef.current = event.touches[0]?.clientY ?? null;
       touchReleasedAtRef.current = null;
       touchEndedAtBottomRef.current = isTimelineListAtEnd(listRef.current);
@@ -1631,6 +1630,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent) => {
+      if (SCROLL_KEYS.has(event.key)) {
+        findHoldsPositionRef.current = false;
+      }
       if (
         event.key === "ArrowUp" ||
         event.key === "PageUp" ||
@@ -1652,7 +1654,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   useEffect(() => {
     const wasActiveTurnInProgress = previousActiveTurnInProgressRef.current;
     previousActiveTurnInProgressRef.current = activeTurnInProgress;
-    if (!wasActiveTurnInProgress || activeTurnInProgress || !hasRows || searchTargetRowIndex >= 0) {
+    if (
+      !wasActiveTurnInProgress ||
+      activeTurnInProgress ||
+      !hasRows ||
+      searchTargetRowIndex >= 0 ||
+      findHoldsPositionRef.current
+    ) {
       return;
     }
     if (!autoStickToBottomRef.current && !isTimelineListAtEnd(listRef.current)) {
@@ -1871,6 +1879,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       ...(onRunMcpAuthReconnect ? { onRunMcpAuthReconnect } : {}),
       searchTargetMessageId: searchTarget?.messageId ?? null,
       searchTargetQuery: searchTarget?.query ?? "",
+      findOpenRequests,
       activeSearchTargetMessageId,
       proposedPlanState,
       turnAgents,
@@ -1913,6 +1922,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onRunMcpAuthReconnect,
       searchTarget?.messageId,
       searchTarget?.query,
+      findOpenRequests,
       activeSearchTargetMessageId,
       proposedPlanState,
       turnAgents,
@@ -1969,88 +1979,102 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     <TimelineRowCtx value={sharedState}>
       <TimelineAgentLabelCtx value={resolveAgentLabel}>
         <TimelineRowActivityCtx value={activityState}>
-          <div
-            ref={timelineContainerRef}
-            className="relative h-full"
-            onMouseUpCapture={handleTranscriptSelectionEnd}
-            onKeyUpCapture={handleTranscriptSelectionEnd}
-          >
-            <LegendList<MessagesTimelineRow>
-              key={`${routeThreadKey}:${legendListEpoch}`}
-              ref={assignLegendListRef}
-              data={rows}
-              keyExtractor={keyExtractor}
-              renderItem={renderItem}
-              estimatedItemSize={90}
-              getEstimatedItemSize={getEstimatedItemSize}
-              initialScrollAtEnd={searchTargetRowIndex < 0}
-              {...(searchTargetRowIndex >= 0
-                ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
-                : {})}
-              maintainScrollAtEnd={
-                searchTargetRowIndex < 0 &&
-                ((autoStickToBottom && !touchScrollActive) || stickToBottomRequestPending)
-                  ? MAINTAIN_SCROLL_AT_END
-                  : false
-              }
-              maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
-              // Anchoring and bottom-following both adjust for streamed line wraps.
-              // Use anchoring only while reading above the tail to avoid overshoot.
-              maintainVisibleContentPosition={
-                !autoStickToBottom && !stickToBottomRequestPending ? HOLD_READING_POSITION : false
-              }
-              onScroll={handleScroll}
-              {...(onVisibleTurnIdsChange
-                ? { onViewableItemsChanged: handleViewableItemsChanged }
-                : {})}
-              onWheelCapture={handleWheelCapture}
-              onPointerDownCapture={handlePointerDownCapture}
-              onTouchStartCapture={handleTouchStartCapture}
-              onTouchMoveCapture={handleTouchMoveCapture}
-              onTouchEndCapture={handleTouchEndCapture}
-              onTouchCancelCapture={handleTouchEndCapture}
-              onKeyDownCapture={handleKeyDownCapture}
-              data-chat-messages-list="true"
-              className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
-              ListHeaderComponent={TIMELINE_LIST_HEADER}
-              ListFooterComponent={TIMELINE_LIST_FOOTER}
-            />
-            {/* Dissolve rows into the background at the viewport's bottom edge so
+          <div className="relative h-full">
+            <div
+              ref={timelineContainerRef}
+              className="relative h-full"
+              onMouseUpCapture={handleTranscriptSelectionEnd}
+              onKeyUpCapture={handleTranscriptSelectionEnd}
+            >
+              <LegendList<MessagesTimelineRow>
+                key={`${routeThreadKey}:${legendListEpoch}`}
+                ref={assignLegendListRef}
+                data={rows}
+                keyExtractor={keyExtractor}
+                renderItem={renderItem}
+                estimatedItemSize={90}
+                getEstimatedItemSize={getEstimatedItemSize}
+                initialScrollAtEnd={searchTargetRowIndex < 0}
+                {...(searchTargetRowIndex >= 0
+                  ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
+                  : {})}
+                maintainScrollAtEnd={
+                  searchTargetRowIndex < 0 &&
+                  ((autoStickToBottom && !touchScrollActive) || stickToBottomRequestPending)
+                    ? MAINTAIN_SCROLL_AT_END
+                    : false
+                }
+                maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
+                // Anchoring and bottom-following both adjust for streamed line wraps.
+                // Use anchoring only while reading above the tail to avoid overshoot.
+                maintainVisibleContentPosition={
+                  !autoStickToBottom && !stickToBottomRequestPending ? HOLD_READING_POSITION : false
+                }
+                onScroll={handleScroll}
+                {...(onVisibleTurnIdsChange
+                  ? { onViewableItemsChanged: handleViewableItemsChanged }
+                  : {})}
+                onWheelCapture={handleWheelCapture}
+                onPointerDownCapture={handlePointerDownCapture}
+                onTouchStartCapture={handleTouchStartCapture}
+                onTouchMoveCapture={handleTouchMoveCapture}
+                onTouchEndCapture={handleTouchEndCapture}
+                onTouchCancelCapture={handleTouchEndCapture}
+                onKeyDownCapture={handleKeyDownCapture}
+                data-chat-messages-list="true"
+                className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
+                ListHeaderComponent={TIMELINE_LIST_HEADER}
+                ListFooterComponent={TIMELINE_LIST_FOOTER}
+              />
+              {/* Dissolve rows into the background at the viewport's bottom edge so
               scrolled-under content fades out instead of hard-clipping right
               above the composer. */}
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
-            />
-            {transcriptNoteHighlightRects && transcriptNoteHighlightRects.length > 0 ? (
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-0 overflow-hidden"
-              >
-                {transcriptNoteHighlightRects.map((rect) => (
-                  <div
-                    key={`${rect.top}:${rect.left}:${rect.width}`}
-                    className="transcript-note-highlight absolute"
-                    style={{
-                      left: rect.left,
-                      top: rect.top,
-                      width: rect.width,
-                      height: rect.height,
-                    }}
-                  />
-                ))}
-              </div>
-            ) : null}
-            {transcriptSelection && onAddTranscriptHighlightContext ? (
-              <TranscriptSelectionPopover
-                state={transcriptSelection}
-                onCopyDismiss={dismissTranscriptSelection}
-                onOpenNote={openTranscriptSelectionNote}
-                onNoteChange={updateTranscriptSelectionNote}
-                onSubmitNote={submitTranscriptSelectionNote}
-                onCancel={dismissTranscriptSelection}
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
               />
-            ) : null}
+              {transcriptNoteHighlightRects && transcriptNoteHighlightRects.length > 0 ? (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 overflow-hidden"
+                >
+                  {transcriptNoteHighlightRects.map((rect) => (
+                    <div
+                      key={`${rect.top}:${rect.left}:${rect.width}`}
+                      className="transcript-note-highlight absolute"
+                      style={{
+                        left: rect.left,
+                        top: rect.top,
+                        width: rect.width,
+                        height: rect.height,
+                      }}
+                    />
+                  ))}
+                </div>
+              ) : null}
+              {transcriptSelection && onAddTranscriptHighlightContext ? (
+                <TranscriptSelectionPopover
+                  state={transcriptSelection}
+                  onCopyDismiss={dismissTranscriptSelection}
+                  onOpenNote={openTranscriptSelectionNote}
+                  onNoteChange={updateTranscriptSelectionNote}
+                  onSubmitNote={submitTranscriptSelectionNote}
+                  onCancel={dismissTranscriptSelection}
+                />
+              ) : null}
+            </div>
+            {/* Beside the list rather than in it: the bar's own keys and its count
+              changing are not the transcript's. */}
+            <ChatFind
+              rows={rows}
+              findRows={findRows}
+              rowContext={findRowContext}
+              listRef={listRef}
+              containerRef={timelineContainerRef}
+              onOpenRow={onFindOpenRow}
+              onOpenSideExchange={onFindOpenSideExchange}
+              onStopFollowing={onFindStopFollowing}
+            />
           </div>
         </TimelineRowActivityCtx>
       </TimelineAgentLabelCtx>
@@ -2481,24 +2505,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       data-thread-search-target={isActiveSearchTarget ? "true" : undefined}
     >
       {row.kind === "work" ? <WorkGroupSection row={row} /> : null}
-      {row.kind === "message" && row.message.role === "user" ? (
-        row.message.fromThread !== undefined ? (
-          <ThreadMessageTimelineRow row={row} origin={row.message.fromThread} />
-        ) : row.message.fromAgent === undefined ? (
-          <UserTimelineRow row={row} />
-        ) : row.message.requestKind === "invite" ? (
-          <InviteMessageTimelineRow row={row} />
-        ) : row.message.requestKind === "reply" &&
-          row.message.requestId !== undefined &&
-          ctx.sideAnswerRequests.has(row.message.requestId) ? (
-          <SideAnswerReplyTimelineRow row={row} />
-        ) : (
-          <AgentMessageTimelineRow row={row} />
-        )
-      ) : null}
-      {row.kind === "message" && row.message.role === "assistant" ? (
-        <AssistantTimelineRow row={row} />
-      ) : null}
+      {row.kind === "message" ? <MessageTimelineRow row={row} /> : null}
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "page" && ctx.activeThreadId !== null ? (
@@ -2515,6 +2522,28 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
     </div>
   );
 });
+
+function MessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  switch (timelineMessageView(row.message, ctx.sideAnswerRequests)) {
+    case "assistant":
+      return <AssistantTimelineRow row={row} />;
+    case "thread-message":
+      return row.message.fromThread !== undefined ? (
+        <ThreadMessageTimelineRow row={row} origin={row.message.fromThread} />
+      ) : null;
+    case "user":
+      return <UserTimelineRow row={row} />;
+    case "invite":
+      return <InviteMessageTimelineRow row={row} />;
+    case "side-answer-reply":
+      return <SideAnswerReplyTimelineRow row={row} />;
+    case "agent-message":
+      return <AgentMessageTimelineRow row={row} />;
+    case null:
+      return null;
+  }
+}
 
 function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fork-context" }> }) {
   const ctx = use(TimelineRowCtx);
@@ -2724,6 +2753,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             }}
             skills={ctx.skills}
             forceExpanded={ctx.searchTargetMessageId === row.message.id}
+            findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
             searchHighlightQuery={
               ctx.activeSearchTargetMessageId === row.message.id ? ctx.searchTargetQuery : undefined
             }
@@ -2817,6 +2847,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
         agentLine?.placement === "single" ? "text-foreground/80" : "text-muted-foreground"
       }
       forceExpanded={ctx.searchTargetMessageId === message.id}
+      findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
       searchHighlightQuery={
         ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
       }
@@ -2954,6 +2985,7 @@ function ThreadMessageTimelineRow({
           skills={ctx.skills}
           bodyClassName="text-foreground/80"
           forceExpanded={ctx.searchTargetMessageId === message.id}
+          findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
           searchHighlightQuery={
             ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
           }
@@ -3000,7 +3032,9 @@ function InviteMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
       </div>
       {message.invite !== undefined ? (
         <div className="border-l border-border pl-3">
-          <p className="text-sm text-muted-foreground">{message.invite.reason}</p>
+          <p className="text-sm text-muted-foreground" data-chat-find-body="">
+            {message.invite.reason}
+          </p>
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground/70">
             <span className="min-w-0 truncate">
               {message.invite.billing.label}
@@ -3367,6 +3401,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                 data-transcript-message-id={row.message.id}
                 data-transcript-message-role="assistant"
                 data-transcript-message-streaming={row.message.streaming ? "true" : undefined}
+                data-chat-find-body=""
               >
                 <ChatMarkdown
                   text={messageText}
@@ -3540,6 +3575,7 @@ function ProposedPlanTimelineRow({
     <div className="min-w-0 px-1 py-0.5">
       <ProposedPlanCard
         planMarkdown={proposedPlan.planMarkdown}
+        findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
         environmentId={ctx.activeThreadEnvironmentId}
         threadId={ctx.activeThreadId ?? undefined}
         cwd={ctx.markdownCwd}
@@ -4907,12 +4943,21 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   transcriptMessage?: { id: MessageId; role: TranscriptHighlightSourceRole } | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   forceExpanded?: boolean | undefined;
+  /** Bumped each time find in chat opens it to show a match; it opens as a
+   *  click would, and the reader can fold it again. */
+  findOpenRequest?: number | undefined;
   searchHighlightQuery?: string | undefined;
   footer?: ReactNode;
   /** Overrides the text's classes (its color, for an agent's quieter message). */
   bodyClassName?: string | undefined;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const findOpenRequest = props.findOpenRequest ?? 0;
+  const [expanded, setExpanded] = useState(findOpenRequest > 0);
+  const [seenFindOpenRequest, setSeenFindOpenRequest] = useState(findOpenRequest);
+  if (findOpenRequest !== seenFindOpenRequest) {
+    setSeenFindOpenRequest(findOpenRequest);
+    if (findOpenRequest > 0) setExpanded(true);
+  }
   const hasVisibleBody =
     props.text.trim().length > 0 ||
     props.terminalContexts.length > 0 ||
@@ -4933,6 +4978,8 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           data-user-message-collapsed={isCollapsed ? "true" : "false"}
           data-user-message-collapsible={canCollapse ? "true" : "false"}
           data-user-message-fade={isCollapsed ? "true" : "false"}
+          data-chat-find-body=""
+          data-chat-find-folded={isCollapsed ? "" : undefined}
           style={isCollapsed ? COLLAPSED_MESSAGE_FADE_STYLE : undefined}
         >
           <UserMessageBody
@@ -5018,9 +5065,11 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     "whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground",
     props.className,
   );
+  // Quoted context the message carries, not the message's own words: find in
+  // chat reads past it.
   const transcriptHighlightNodes =
     props.transcriptHighlights.length > 0 ? (
-      <div className="mb-1.5 flex flex-wrap gap-1.5">
+      <div className="mb-1.5 flex flex-wrap gap-1.5" data-chat-find-ignore>
         {props.transcriptHighlights.map((context) => (
           <UserMessageTranscriptHighlightInlineLabel
             key={`user-transcript-highlight:${context.sourceRole}:${context.sourceMessageId}:${context.selectedText}:${context.note}`}
@@ -5031,93 +5080,42 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     ) : null;
 
   if (props.terminalContexts.length > 0) {
-    const hasEmbeddedInlineLabels = textContainsInlineTerminalContextLabels(
-      props.text,
-      props.terminalContexts,
-    );
-    const inlinePrefix = buildInlineTerminalContextText(props.terminalContexts);
-    const inlineNodes: ReactNode[] = [];
-
-    if (hasEmbeddedInlineLabels) {
-      let cursor = 0;
-
-      for (const context of props.terminalContexts) {
-        const label = formatInlineTerminalContextLabel(context.header);
-        const matchIndex = props.text.indexOf(label, cursor);
-        if (matchIndex === -1) {
-          inlineNodes.length = 0;
-          break;
-        }
-        if (matchIndex > cursor) {
-          inlineNodes.push(
-            <span key={`user-terminal-context-inline-before:${context.header}:${cursor}`}>
-              <SkillInlineText
-                text={props.text.slice(cursor, matchIndex)}
-                skills={props.skills}
-                searchHighlightQuery={props.searchHighlightQuery}
-              />
-            </span>,
-          );
-        }
-        inlineNodes.push(
-          <UserMessageTerminalContextInlineLabel
-            key={`user-terminal-context-inline:${context.header}`}
-            context={context}
-          />,
-        );
-        cursor = matchIndex + label.length;
-      }
-
-      if (inlineNodes.length > 0) {
-        if (cursor < props.text.length) {
-          inlineNodes.push(
-            <span key={`user-message-terminal-context-inline-rest:${cursor}`}>
-              <SkillInlineText
-                text={props.text.slice(cursor)}
-                skills={props.skills}
-                searchHighlightQuery={props.searchHighlightQuery}
-              />
-            </span>,
-          );
-        }
-
-        return (
-          <>
-            {transcriptHighlightNodes}
-            <div className={textClassName}>{inlineNodes}</div>
-          </>
-        );
-      }
-    }
-
-    for (const context of props.terminalContexts) {
-      inlineNodes.push(
-        <UserMessageTerminalContextInlineLabel
-          key={`user-terminal-context-inline:${context.header}`}
-          context={context}
-        />,
-      );
-      inlineNodes.push(
-        <span key={`user-terminal-context-inline-space:${context.header}`} aria-hidden="true">
-          {" "}
-        </span>,
-      );
-    }
-
-    if (props.text.length > 0) {
-      inlineNodes.push(
-        <span key="user-message-terminal-context-inline-text">
-          <SkillInlineText
-            text={props.text}
-            skills={props.skills}
-            searchHighlightQuery={props.searchHighlightQuery}
-          />
-        </span>,
-      );
-    } else if (inlinePrefix.length === 0) {
+    const { embedded, pieces } = splitUserMessageText(props.text, props.terminalContexts);
+    if (
+      !embedded &&
+      props.text.length === 0 &&
+      buildInlineTerminalContextText(props.terminalContexts).length === 0
+    ) {
       return null;
     }
-
+    const inlineNodes = pieces.flatMap((piece): ReactNode[] =>
+      piece.kind === "text"
+        ? [
+            <span key={`user-message-text:${piece.start}`}>
+              <SkillInlineText
+                text={piece.text}
+                skills={props.skills}
+                searchHighlightQuery={props.searchHighlightQuery}
+              />
+            </span>,
+          ]
+        : [
+            <UserMessageTerminalContextInlineLabel
+              key={`user-terminal-context-inline:${piece.context.header}`}
+              context={piece.context}
+            />,
+            ...(embedded
+              ? []
+              : [
+                  <span
+                    key={`user-terminal-context-inline-space:${piece.context.header}`}
+                    aria-hidden="true"
+                  >
+                    {" "}
+                  </span>,
+                ]),
+          ],
+    );
     return (
       <>
         {transcriptHighlightNodes}

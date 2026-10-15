@@ -58,6 +58,8 @@ import {
 } from "../environmentApi";
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
 import { toMarkdownFileUrlHref } from "../markdown-links";
+import { readDrawnBlocks } from "./chat/chatFind/chatFindDom";
+import { findableMarkdownBlocks } from "./chat/chatFind/chatFindText";
 
 const CHAT_MARKDOWN_ENVIRONMENT_ID = EnvironmentId.make("environment-chat-markdown-browser");
 const CHAT_MARKDOWN_THREAD_ID = ThreadId.make("thread-chat-markdown-browser");
@@ -983,4 +985,129 @@ describe("ChatMarkdown", () => {
       await screen.unmount();
     }
   });
+});
+
+/**
+ * Find in chat counts matches from a model of what ChatMarkdown draws
+ * (chatFindText) and paints them on what it actually drew (chatFindDom). The
+ * two must agree block for block, or the count and the highlights drift
+ * apart. This renders documents covering what the renderer turns into
+ * something else and compares the model with the drawn text.
+ */
+describe("find in chat reads what ChatMarkdown draws", () => {
+  const normalize = (blocks: ReadonlyArray<string>) =>
+    blocks.map((block) => block.replace(/\s+/g, " ").trim());
+
+  const corpus: ReadonlyArray<{ readonly name: string; readonly text: string }> = [
+    {
+      name: "prose, emphasis, entities and escapes",
+      text: "Plain *em* and **strong** and ~~struck~~ text.\n\nAT&amp;T and \\*stars\\* and a\nsoft break.\n\nLine one  \nline two after a hard break.",
+    },
+    {
+      name: "links and chips",
+      text: [
+        "See [the docs](https://example.com/guide) and <https://example.com/bare>.",
+        "",
+        "Open [the reader](/repo/src/reader.ts), `src/writer.ts:12` and `src/a/index.ts` beside `src/b/index.ts`.",
+        "",
+        "Merged [Fix the flake](https://github.com/acme/app/pull/12) and https://github.com/acme/app/pull/13 too.",
+        "",
+        "Plain `inline code` and `http://localhost:5173/app` and http://localhost:3000 bare.",
+      ].join("\n"),
+    },
+    {
+      name: "lists, quotes, headings and tables",
+      text: [
+        "# Heading one",
+        "",
+        "- tight item",
+        "- tight item with **bold**",
+        "  - nested item",
+        "",
+        "1. loose item",
+        "",
+        "   second paragraph of the loose item",
+        "",
+        "2. another loose item",
+        "",
+        "> quoted line",
+        "> still quoted",
+        "",
+        "| Step | Result |",
+        "| --- | --- |",
+        "| build | ok |",
+        "| test | `3 failed` |",
+        "",
+        "---",
+        "",
+        "## Heading two",
+      ].join("\n"),
+    },
+    {
+      name: "code and raw HTML",
+      text: [
+        "```ts",
+        "export function answer(): number {",
+        "  return 42;",
+        "}",
+        "```",
+        "",
+        "Inline <b>tags</b> stay as text, and so does a block:",
+        "",
+        "<div>",
+        "block html",
+        "</div>",
+      ].join("\n"),
+    },
+    {
+      name: "images and skills",
+      text: [
+        "A remote image ![a flow diagram](https://example.invalid/flow.png) in a sentence.",
+        "",
+        "Run $review-pr next, then $unknown-skill.",
+        "",
+        "Example <!-- $review-pr --> end.",
+      ].join("\n"),
+    },
+  ];
+
+  for (const document of corpus) {
+    it(`agrees on ${document.name}`, async () => {
+      const skills = [{ name: "review-pr", displayName: "Review PR" }];
+      const screen = await renderWithQueryClient(
+        <div data-timeline-row-id="row">
+          <div data-chat-find-body="">
+            <ChatMarkdown
+              text={document.text}
+              cwd="/repo"
+              environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+              threadId={CHAT_MARKDOWN_THREAD_ID}
+              skills={skills}
+            />
+          </div>
+        </div>,
+      );
+      try {
+        const expected = normalize(
+          findableMarkdownBlocks({
+            text: document.text,
+            cwd: "/repo",
+            skills,
+            isStreaming: false,
+            visualizations: true,
+          }),
+        );
+        expect(expected.length).toBeGreaterThan(1);
+        const row = window.document.querySelector('[data-timeline-row-id="row"]')!;
+        // Code highlights and failed images land a few frames late.
+        await vi.waitFor(() => {
+          expect(normalize(readDrawnBlocks(row).map((block) => block.text))).toEqual(expected);
+        });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(normalize(readDrawnBlocks(row).map((block) => block.text))).toEqual(expected);
+      } finally {
+        await screen.unmount();
+      }
+    });
+  }
 });

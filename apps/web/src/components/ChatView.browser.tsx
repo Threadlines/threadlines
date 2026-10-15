@@ -2414,6 +2414,36 @@ async function waitForServerConfigToApply(): Promise<void> {
   await waitForLayout();
 }
 
+const CHAT_FIND_KEYBINDING = {
+  command: "chat.find",
+  shortcut: {
+    key: "f",
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    modKey: true,
+  },
+  whenAst: {
+    type: "not",
+    node: { type: "identifier", name: "terminalFocus" },
+  },
+} as const;
+
+/** Cmd+F (Ctrl+F off a Mac), pressed where the reader's focus is. */
+function pressChatFindShortcut(target: HTMLElement): void {
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "f",
+      metaKey: useMetaForMod,
+      ctrlKey: !useMetaForMod,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
 function dispatchChatNewShortcut(): void {
   const useMetaForMod = isMacPlatform(navigator.platform);
   window.dispatchEvent(
@@ -10040,6 +10070,85 @@ describe("ChatView timeline estimator parity (full app)", () => {
         (path) => UUID_ROUTE_RE.test(path),
         "Route should have changed to a new draft thread UUID from the command palette.",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens find in chat from the composer with its shortcut, and gives focus back", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-find-in-chat-test" as MessageId,
+        targetText: "the zeppelin question",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [CHAT_FIND_KEYBINDING],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      await waitForLayout();
+      const input = await vi.waitFor(() => {
+        pressChatFindShortcut(composerEditor);
+        const field = document.querySelector<HTMLInputElement>('[data-testid="chat-find-input"]');
+        expect(field).not.toBeNull();
+        return field!;
+      });
+      await vi.waitFor(() => expect(document.activeElement).toBe(input));
+
+      await userEvent.fill(page.getByTestId("chat-find-input"), "zeppelin");
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="chat-find-tally"]')?.textContent).toBe(
+          "1 of 1",
+        );
+        expect(
+          document.querySelector('[data-message-id="msg-user-find-in-chat-test"]'),
+        ).not.toBeNull();
+      });
+
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="chat-find-bar"]')).toBeNull();
+        expect(document.activeElement).toBe(composerEditor);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens find in chat from the command palette", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-find-from-palette-test" as MessageId,
+        targetText: "find from the palette",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [CHAT_FIND_KEYBINDING],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      const palette = page.getByTestId("command-palette");
+      await expect.element(palette.getByText("Find in chat", { exact: true })).toBeInTheDocument();
+      await palette.getByText("Find in chat", { exact: true }).click();
+      await vi.waitFor(() => {
+        const field = document.querySelector('[data-testid="chat-find-input"]');
+        expect(field).not.toBeNull();
+        expect(document.activeElement).toBe(field);
+      });
     } finally {
       await mounted.cleanup();
     }

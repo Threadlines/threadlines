@@ -169,6 +169,27 @@ export function planSideExchanges(input: {
   });
 }
 
+/**
+ * The user's side questions still being answered with the answer folded to
+ * its status line. Opening one only adds its steps and answer under the
+ * question: an answer being written is never published elsewhere, so it
+ * opens where it already sits. Find in chat searches these answers there.
+ */
+export function foldedAnsweringSideTurnIds(
+  views: ReadonlyArray<SideAnswerView>,
+  expanded: ReadonlySet<SideTurnId>,
+): SideTurnId[] {
+  return views
+    .filter(
+      (view) =>
+        view.askedBy === null &&
+        view.answer !== null &&
+        (view.state === "answering" || view.state === "stopping") &&
+        !expanded.has(view.sideTurnId),
+    )
+    .map((view) => view.sideTurnId);
+}
+
 /** The times the working agent's steps break at, sorted, so no exchange
  *  lands inside a group of them. */
 export function sideExchangeBreaks(plans: ReadonlyArray<SideExchangePlan>): number[] {
