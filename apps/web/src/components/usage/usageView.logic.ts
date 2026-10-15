@@ -52,8 +52,8 @@ export const USAGE_PROVIDER_SHORT_LABELS: Record<UsageProviderKind, string> = {
 
 /**
  * The brand hues, defined in `index.css` for both themes. xAI's mark is
- * black and white like OpenAI's, so Grok takes the neutral mid grey, which
- * stays apart from Codex's near-black (near-white in dark).
+ * black and white like OpenAI's, so Grok takes a neutral of its own, apart
+ * from Codex's near-black (near-white in dark) and the "Other models" grey.
  *
  * Held as CSS variables rather than utility classes because the page paints
  * them into inline styles for bars and meters.
@@ -61,7 +61,7 @@ export const USAGE_PROVIDER_SHORT_LABELS: Record<UsageProviderKind, string> = {
 export const USAGE_PROVIDER_COLORS: Record<UsageProviderKind, string> = {
   claude: "var(--provider-claude)",
   codex: "var(--provider-codex)",
-  grok: "var(--usage-model-other)",
+  grok: "var(--provider-grok)",
 };
 
 /** Reading order for legends and rows: the same order every time. */
