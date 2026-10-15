@@ -572,6 +572,14 @@ Decisions that differ from the plan above:
   server's environment), as Claude and Codex read their main folders: an
   account folder with sessions of its own isn't counted.
 
+- **Grok's own turns: one edge left.** Its turn starts and ends arrive as
+  notices beside the update stream. A turn it starts after a prompt's answer
+  waits for that prompt's turn to close, and gets its own output. One that
+  starts before the answer arrives, or a second one inside the same few
+  milliseconds of closing, shares the earlier turn. The full fix carries
+  turn boundaries through the event queue in order with the updates, for
+  every ACP agent; pitched as a follow-up.
+
 Sol review, round 2 (2026-10-15): fixed the account-removal sign-out
 inheriting `GROK_AUTH_PATH`/`GROK_AUTH`, steer-vs-prompt preview matching,
 forks keeping a following wake-up turn, prompt positions lost when an idle
@@ -581,3 +589,8 @@ API key keeping their sign-in, unknown rewind answers counting as success,
 steering dropping file notes, and a failed resume dropping the new
 session's early updates (all ACP agents). Not changed: usage history for
 independent Grok folders (above), and folder trust (flagged for Will).
+Round 3 fixed a wake-up that starts as a prompt's turn closes (above), a
+stop losing the last prompt's position, a steer from an earlier turn taken
+for the next prompt, stale overlay links when an account's folder drops a
+file (kept when the user re-pointed them), and the continuation key before
+Grok makes its sessions folder. Round 4 (narrow) left the edge above.

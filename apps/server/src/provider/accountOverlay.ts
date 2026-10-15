@@ -212,13 +212,17 @@ export const relinkSplitHardLink = Effect.fn("accountOverlay.relinkSplitHardLink
 
 /**
  * What an overlay made: every link (so a link the user made in a folder they
- * chose is never replaced) and which of them are Windows hard links
- * (re-linked after an atomic save splits them).
+ * chose is never replaced), which of them are Windows hard links (re-linked
+ * after an atomic save splits them), and where each link pointed (so one the
+ * user has since pointed elsewhere is never removed).
  */
 const OVERLAY_STATE_FILE = ".threadlines-overlay.json";
 const OverlayState = Schema.Struct({
   linked: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   hardLinked: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  targets: Schema.Record(Schema.String, Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
 });
 const decodeOverlayState = Schema.decodeUnknownOption(Schema.fromJsonString(OverlayState));
 
@@ -304,8 +308,11 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
   const previouslyHardLinked = new Set(
     previousState?._tag === "Some" ? previousState.value.hardLinked : [],
   );
+  const previousTargets: Readonly<Record<string, string>> =
+    previousState?._tag === "Some" ? previousState.value.targets : {};
   const linked = new Set<string>();
   const hardLinked = new Set<string>();
+  const targets: Record<string, string> = {};
   const kept: string[] = [];
   let sharesMainHistory = false;
 
@@ -323,6 +330,7 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
       continue;
     }
     linked.add(entryName);
+    targets[entryName] = path.join(mainDir, entryName);
     if (entryName === input.historyEntry) sharesMainHistory = true;
   }
 
@@ -332,10 +340,23 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
       .pipe(Effect.orElseSucceed(() => false));
     if (!mainHasFile) {
       // A link this overlay made, to a file the main folder no longer has
-      // (or to a main folder it no longer follows), goes. A copy of the
-      // account's own stays.
+      // (or to a main folder it no longer follows), goes: while it still
+      // points where the overlay pointed it, or at nothing. The account's
+      // own copy, and a link the user pointed elsewhere, stay.
       if (previouslyLinked.has(entryName)) {
-        yield* removeLinkIfPresent({ fileSystem, accountPath: accountDir, entryName });
+        const linkPath = path.join(accountDir, entryName);
+        const state = yield* readLinkState(fileSystem, linkPath);
+        const made = previousTargets[entryName];
+        const unchanged =
+          state._tag === "Symlink" &&
+          made !== undefined &&
+          path.resolve(accountDir, state.target) === made;
+        const dangling =
+          state._tag === "Symlink" &&
+          !(yield* fileSystem.exists(linkPath).pipe(Effect.orElseSucceed(() => false)));
+        if (unchanged || dangling) {
+          yield* removeLinkIfPresent({ fileSystem, accountPath: accountDir, entryName });
+        }
       }
       continue;
     }
@@ -360,6 +381,7 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
       continue;
     }
     linked.add(entryName);
+    targets[entryName] = path.join(mainDir, entryName);
     if (result.kind === "hardLink") hardLinked.add(entryName);
   }
 
@@ -371,11 +393,22 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
   }
   const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) =>
     a.size === b.size && [...a].every((name) => b.has(name));
-  if (!sameSet(linked, previouslyLinked) || !sameSet(hardLinked, previouslyHardLinked)) {
+  const sameTargets =
+    Object.keys(targets).length === Object.keys(previousTargets).length &&
+    Object.entries(targets).every(([name, target]) => previousTargets[name] === target);
+  if (
+    !sameSet(linked, previouslyLinked) ||
+    !sameSet(hardLinked, previouslyHardLinked) ||
+    !sameTargets
+  ) {
     yield* fileSystem
       .writeFileString(
         statePath,
-        JSON.stringify({ linked: [...linked].toSorted(), hardLinked: [...hardLinked].toSorted() }),
+        JSON.stringify({
+          linked: [...linked].toSorted(),
+          hardLinked: [...hardLinked].toSorted(),
+          targets,
+        }),
       )
       .pipe(mapFsError(`Could not write '${statePath}'.`));
   }
