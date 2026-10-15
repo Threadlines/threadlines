@@ -6,7 +6,52 @@ const notarizeAfterSign = require("../apps/desktop/resources/notarize-after-sign
   isNonRetryableSubmitError(error: unknown): boolean;
   formatNonRetryableSubmitFailure(error: unknown): string;
   redactNotarySecrets(value: string): string;
+  runStaplerWithRetries(
+    action: string,
+    appPath: string,
+    options: {
+      attempts: number;
+      run: (action: string, appPath: string) => void;
+      wait: (seconds: number) => void;
+    },
+  ): void;
 };
+
+const staplerDrop = () => new Error("Command failed: xcrun stapler validate (Error 68)");
+
+it("retries a stapler action until Apple's lookup answers", () => {
+  const calls: string[] = [];
+  const waits: number[] = [];
+  let failuresLeft = 2;
+
+  notarizeAfterSign.runStaplerWithRetries("validate", "/tmp/Threadlines.app", {
+    attempts: 4,
+    run: (action, appPath) => {
+      calls.push(`${action} ${appPath}`);
+      if (failuresLeft-- > 0) throw staplerDrop();
+    },
+    wait: (seconds) => waits.push(seconds),
+  });
+
+  expect(calls).toEqual(Array(3).fill("validate /tmp/Threadlines.app"));
+  expect(waits).toEqual([30, 30]);
+});
+
+it("fails the build when a stapler action fails on every attempt", () => {
+  let calls = 0;
+
+  expect(() =>
+    notarizeAfterSign.runStaplerWithRetries("staple", "/tmp/Threadlines.app", {
+      attempts: 3,
+      run: () => {
+        calls += 1;
+        throw staplerDrop();
+      },
+      wait: () => {},
+    }),
+  ).toThrow(/Error 68/u);
+  expect(calls).toBe(3);
+});
 
 it("treats Apple notarization agreement failures as non-retryable", () => {
   const error = new Error(
