@@ -39,6 +39,7 @@ import {
   sideExchangeBreaks,
   type SideAnswerView,
 } from "./sideAnswers";
+import { NO_LIVE_AGENT_TRACKER_KEYS, type LiveAgentTrackerKeys } from "./agentsPanel.logic";
 
 /** What a finished turn's footer says under its last message. */
 export interface TurnSummary {
@@ -212,6 +213,10 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         label: string;
         /** What the agent is thinking right now, in its own summary's words. */
         thought: string | null;
+        /** Trackers this row took over from turns whose agents still work
+         *  (takeLiveAgentTrackers); empty when none do. */
+        trackerTurnIds: TurnId[];
+        trackerAgentSpawnIds: string[];
       }
     | {
         /** A side answer's state line: answering (with Stop), or how it ended
@@ -378,6 +383,8 @@ export function deriveMessagesTimelineRows(input: {
    *  anchor stays up for them after the turn settles, so a background agent's
    *  live line keeps one home at the tail instead of vanishing. */
   liveAgentCount?: number | undefined;
+  /** What a turn's tracker can name those agents by (liveAgentTrackerSignature). */
+  liveAgentTrackerKeys?: LiveAgentTrackerKeys | undefined;
   /** The turn settled but provider background work will wake it again. */
   isWaitingOnBackgroundTasks?: boolean | undefined;
   /** What that work is, when the server described it (describedAwaitedTasks). */
@@ -614,11 +621,15 @@ export function deriveMessagesTimelineRows(input: {
   if (input.isWorking) {
     markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null, input.activeTurnStartedAt);
   }
-  const rows = settleFinishedTurns(nextRows, {
+  const settledRows = settleFinishedTurns(nextRows, {
     isWorking: input.isWorking,
     activeTurnId: input.activeTurnId ?? null,
     turnRequestedAts,
   });
+  const { rows, tracker } =
+    input.isWorking || liveAgentCount > 0
+      ? takeLiveAgentTrackers(settledRows, input.liveAgentTrackerKeys ?? NO_LIVE_AGENT_TRACKER_KEYS)
+      : { rows: settledRows, tracker: NO_TAKEN_TRACKER };
   if (input.isWorking) {
     // The working row is the turn's one fixed anchor: it renders for the whole
     // turn, whatever the tail is, so the live node, the timer, and the agent
@@ -635,6 +646,7 @@ export function deriveMessagesTimelineRows(input: {
         input.roomAgentNames,
       ),
       thought: resolveLiveThought(visibleTimelineEntries),
+      ...tracker,
     });
   } else if (liveAgentCount > 0) {
     // The turn settled but agents it delegated to are still going: the anchor
@@ -656,6 +668,7 @@ export function deriveMessagesTimelineRows(input: {
           ? "Agent working"
           : "Agents working",
       thought: null,
+      ...tracker,
     });
   } else if (input.isWaitingOnBackgroundTasks) {
     // The turn settled but a background task (a command, an agent) will wake
@@ -669,6 +682,7 @@ export function deriveMessagesTimelineRows(input: {
       createdAt: null,
       label: waitingOn ? `Waiting on ${waitingOn}` : "Waiting",
       thought: null,
+      ...tracker,
     });
   }
 
@@ -677,6 +691,59 @@ export function deriveMessagesTimelineRows(input: {
     input.isWorking,
     input.workingParticipantId ?? null,
   );
+}
+
+interface TakenTracker {
+  readonly trackerTurnIds: TurnId[];
+  readonly trackerAgentSpawnIds: string[];
+}
+
+const NO_TAKEN_TRACKER: TakenTracker = { trackerTurnIds: [], trackerAgentSpawnIds: [] };
+
+/**
+ * The working row takes the tracker of every turn whose agents still work,
+ * from the footer under the turn's answer or from the group that carries it.
+ * While any of a turn's agents run, its count sits on the "Agents working"
+ * row with the agents' live lines, not twice; when the last one lands, the
+ * working row leaves and the count is back on its turn.
+ */
+function takeLiveAgentTrackers(
+  rows: MessagesTimelineRow[],
+  keys: LiveAgentTrackerKeys,
+): { rows: MessagesTimelineRow[]; tracker: TakenTracker } {
+  if (keys.turnIds.size === 0 && keys.spawnCallIds.size === 0) {
+    return { rows, tracker: NO_TAKEN_TRACKER };
+  }
+  const turnIds = new Set<TurnId>();
+  const spawnIds = new Set<string>();
+  const take = (tracker: TurnSummary | Extract<MessagesTimelineRow, { kind: "work" }>) => {
+    const tracksLiveAgent =
+      tracker.trackerTurnIds.some((turnId) => keys.turnIds.has(turnId)) ||
+      tracker.trackerAgentSpawnIds.some((spawnId) => keys.spawnCallIds.has(spawnId));
+    if (tracksLiveAgent) {
+      tracker.trackerTurnIds.forEach((turnId) => turnIds.add(turnId));
+      tracker.trackerAgentSpawnIds.forEach((spawnId) => spawnIds.add(spawnId));
+    }
+    return tracksLiveAgent;
+  };
+  const taken = rows.map((row): MessagesTimelineRow => {
+    if (row.kind === "work" && take(row)) {
+      return { ...row, trackerTurnIds: [], trackerAgentSpawnIds: [] };
+    }
+    if (row.kind === "message" && row.turnSummary !== null && take(row.turnSummary)) {
+      return {
+        ...row,
+        turnSummary: { ...row.turnSummary, trackerTurnIds: [], trackerAgentSpawnIds: [] },
+      };
+    }
+    return row;
+  });
+  return turnIds.size === 0 && spawnIds.size === 0
+    ? { rows, tracker: NO_TAKEN_TRACKER }
+    : {
+        rows: taken,
+        tracker: { trackerTurnIds: [...turnIds], trackerAgentSpawnIds: [...spawnIds] },
+      };
 }
 
 const NO_EXPANDED_SIDE_ANSWERS: ReadonlySet<SideTurnId> = new Set();
@@ -1860,12 +1927,16 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   }
 
   switch (a.kind) {
-    case "working":
+    case "working": {
+      const bw = b as typeof a;
       return (
-        a.createdAt === (b as typeof a).createdAt &&
-        a.label === (b as typeof a).label &&
-        a.thought === (b as typeof a).thought
+        a.createdAt === bw.createdAt &&
+        a.label === bw.label &&
+        a.thought === bw.thought &&
+        sameIds(a.trackerTurnIds, bw.trackerTurnIds) &&
+        sameIds(a.trackerAgentSpawnIds, bw.trackerAgentSpawnIds)
       );
+    }
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
@@ -1900,12 +1971,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.liveStartedAt === bw.liveStartedAt &&
         a.inActiveExchange === bw.inActiveExchange &&
         a.folded === bw.folded &&
-        a.trackerTurnIds.length === bw.trackerTurnIds.length &&
-        a.trackerTurnIds.every((turnId, index) => turnId === bw.trackerTurnIds[index]) &&
-        a.trackerAgentSpawnIds.length === bw.trackerAgentSpawnIds.length &&
-        a.trackerAgentSpawnIds.every(
-          (spawnId, index) => spawnId === bw.trackerAgentSpawnIds[index],
-        ) &&
+        sameIds(a.trackerTurnIds, bw.trackerTurnIds) &&
+        sameIds(a.trackerAgentSpawnIds, bw.trackerAgentSpawnIds) &&
         Equal.equals(a.groupedEntries, bw.groupedEntries) &&
         Equal.equals(a.agentAnchorEntries, bw.agentAnchorEntries)
       );
@@ -1939,11 +2006,13 @@ function isTurnSummaryUnchanged(a: TurnSummary | null, b: TurnSummary | null): b
     a.editedFileCount === b.editedFileCount &&
     a.checks?.passed === b.checks?.passed &&
     a.checks?.failed === b.checks?.failed &&
-    a.trackerTurnIds.length === b.trackerTurnIds.length &&
-    a.trackerTurnIds.every((turnId, index) => turnId === b.trackerTurnIds[index]) &&
-    a.trackerAgentSpawnIds.length === b.trackerAgentSpawnIds.length &&
-    a.trackerAgentSpawnIds.every((spawnId, index) => spawnId === b.trackerAgentSpawnIds[index])
+    sameIds(a.trackerTurnIds, b.trackerTurnIds) &&
+    sameIds(a.trackerAgentSpawnIds, b.trackerAgentSpawnIds)
   );
+}
+
+function sameIds(a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
 const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;

@@ -40,7 +40,7 @@ import { useQueries } from "@tanstack/react-query";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import {
   deriveTimelineEntries,
-  formatSubagentDisplayName,
+  formatSubagentListName,
   isActiveSubagentStatus,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
@@ -50,6 +50,9 @@ import {
 import {
   formatLiveAgentStatusRows,
   formatSubagentReceiptSummary,
+  liveAgentTrackerSignature,
+  mergeSubagentLists,
+  parseLiveAgentTrackerSignature,
   selectTurnAgents,
   summarizeTurnAgents,
   type LiveAgentStatusRoster,
@@ -871,6 +874,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       (turnAgents?.subagents ?? []).filter((item) => isActiveSubagentStatus(item.status)).length,
     [turnAgents?.subagents],
   );
+  const liveAgentKeysSignature = useMemo(
+    () => liveAgentTrackerSignature(turnAgents?.subagents ?? []),
+    [turnAgents?.subagents],
+  );
   const [expandedSideTurnIds, setExpandedSideTurnIds] =
     useState<ReadonlySet<SideTurnId>>(NO_EXPANDED_SIDE_ANSWERS);
   const onToggleSideAnswer = useCallback((sideTurnId: SideTurnId) => {
@@ -909,6 +916,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         timelineEntries,
         isWorking,
         liveAgentCount,
+        liveAgentTrackerKeys: parseLiveAgentTrackerSignature(liveAgentKeysSignature),
         isWaitingOnBackgroundTasks,
         awaitedTasks,
         activeStatusLabel,
@@ -930,6 +938,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       timelineEntries,
       isWorking,
       liveAgentCount,
+      liveAgentKeysSignature,
       isWaitingOnBackgroundTasks,
       awaitedTasks,
       activeStatusLabel,
@@ -3567,7 +3576,8 @@ function SubagentReceiptTimelineRow({
   row: Extract<TimelineRow, { kind: "subagent-result" }>;
 }) {
   const ctx = use(TimelineRowCtx);
-  const displayName = formatSubagentDisplayName(row.result);
+  // Named as its live line named it, so the agent keeps one name as it lands.
+  const displayName = formatSubagentListName(row.result);
   const summary = formatSubagentReceiptSummary(row.result.body);
   const agentThreadId = row.result.agentThreadId;
   const meta = [row.result.model, formatTimestamp(row.createdAt, ctx.timestampFormat)]
@@ -3657,8 +3667,21 @@ function SubagentReceiptTimelineRow({
  *  agent thinks out loud, its newest thought sits under the word. */
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
   const { turnAgents, onOpenAgentsPanel } = use(TimelineRowCtx);
+  const { isWorking } = use(TimelineRowActivityCtx);
   const liveSubagents = turnAgents?.subagents ?? [];
-  const agentSummary = summarizeTurnAgents(liveSubagents);
+  const takenAgents = useTurnAgents(row.trackerTurnIds, row.trackerAgentSpawnIds);
+  // Its count covers the turns whose trackers it took over, plus what the live
+  // state holds: every agent of the running turn, or once the turn settled,
+  // only the ones still working. A finished turn's settled agents keep their
+  // count on its footer.
+  const agentSummary = summarizeTurnAgents(
+    mergeSubagentLists(
+      isWorking
+        ? liveSubagents
+        : liveSubagents.filter((item) => isActiveSubagentStatus(item.status)),
+      takenAgents,
+    ),
+  );
   const liveAgentRoster = formatLiveAgentStatusRows(liveSubagents);
   const liveAgentCount = liveSubagents.filter((item) => isActiveSubagentStatus(item.status)).length;
   const dotsState = workingDotsStateForLabel(row.label, liveAgentCount);
@@ -4243,7 +4266,9 @@ function WorkEntryExtras({ entry }: { entry: TimelineWorkEntry }) {
 }
 
 /** A flat, stable mini-roster for the live agents on this turn. Accent stays on
- *  the status dot; the neutral name and quieter action remain easy to separate. */
+ *  the status dot; the neutral name and quieter action remain easy to separate.
+ *  The rows share one grid, so the name column fits the longest name (often a
+ *  task, formatSubagentListName) up to a cap and the steps line up beside it. */
 function LiveAgentRoster({ roster }: { roster: LiveAgentStatusRoster }) {
   const { onOpenAgentsPanel } = use(TimelineRowCtx);
   if (roster.rows.length === 0 || !onOpenAgentsPanel) {
@@ -4251,12 +4276,16 @@ function LiveAgentRoster({ roster }: { roster: LiveAgentStatusRoster }) {
   }
 
   return (
-    <div ref={detailEntranceRef} className="ml-1 min-w-0" data-turn-live-agent-roster="true">
+    <div
+      ref={detailEntranceRef}
+      className="ml-1 grid min-w-0 grid-cols-[0.375rem_fit-content(min(16rem,45%))_minmax(0,1fr)] gap-x-1.5"
+      data-turn-live-agent-roster="true"
+    >
       {roster.rows.map((row) => (
         <button
           key={row.id}
           type="button"
-          className="group/live-agent grid w-full min-w-0 cursor-pointer grid-cols-[0.375rem_minmax(0,7rem)_minmax(0,1fr)] items-center gap-x-1.5 text-left text-[11px] leading-4 outline-none focus-ring"
+          className="group/live-agent col-span-full grid min-w-0 cursor-pointer grid-cols-subgrid items-center gap-x-1.5 text-left text-[11px] leading-4 outline-none focus-ring"
           data-turn-live-agent-status="true"
           data-turn-live-agent-state={row.status}
           title={`${row.name}: ${row.step}`}
@@ -4287,7 +4316,7 @@ function LiveAgentRoster({ roster }: { roster: LiveAgentStatusRoster }) {
       {roster.hiddenCount > 0 ? (
         <button
           type="button"
-          className="ml-3 block cursor-pointer text-[10px] leading-4 text-muted-foreground/45 outline-none transition-colors duration-150 hover:text-muted-foreground/75 focus-ring"
+          className="col-span-full ml-3 cursor-pointer text-left text-[10px] leading-4 text-muted-foreground/45 outline-none transition-colors duration-150 hover:text-muted-foreground/75 focus-ring"
           data-turn-live-agent-overflow="true"
           aria-label={`Open ${roster.hiddenCount.toLocaleString()} more active ${roster.hiddenCount === 1 ? "subagent" : "subagents"}`}
           onClick={() => onOpenAgentsPanel(null)}
@@ -4313,10 +4342,25 @@ function useTurnAgentTracker(
   trackerTurnIds: ReadonlyArray<TurnId>,
   trackerAgentSpawnIds: ReadonlyArray<string> = [],
 ): TurnAgentTracker {
+  const turnSubagents = useTurnAgents(trackerTurnIds, trackerAgentSpawnIds);
+  return {
+    // An empty selection summarizes to null on its own, so a turn that ran no
+    // agents has no tracker whether or not the thread has agent state at all.
+    summary: summarizeTurnAgents(turnSubagents),
+    liveRoster: formatLiveAgentStatusRows(turnSubagents),
+  };
+}
+
+/** The agents a tracker names: its turns' agents, or a turnless group's by
+ *  spawn id, the live record first and the thread's history after it. */
+function useTurnAgents(
+  trackerTurnIds: ReadonlyArray<TurnId>,
+  trackerAgentSpawnIds: ReadonlyArray<string> = [],
+): ReadonlyArray<SubagentProgressItem> {
   const { turnAgents } = use(TimelineRowCtx);
   const turnIds = useMemo(() => new Set(trackerTurnIds), [trackerTurnIds]);
   const spawnCallIds = useMemo(() => new Set(trackerAgentSpawnIds), [trackerAgentSpawnIds]);
-  const turnSubagents = useMemo(
+  return useMemo(
     () =>
       turnAgents
         ? selectTurnAgents({
@@ -4328,17 +4372,12 @@ function useTurnAgentTracker(
         : [],
     [turnAgents, turnIds, spawnCallIds],
   );
-  return {
-    // An empty selection summarizes to null on its own, so a turn that ran no
-    // agents has no tracker whether or not the thread has agent state at all.
-    summary: summarizeTurnAgents(turnSubagents),
-    liveRoster: formatLiveAgentStatusRows(turnSubagents),
-  };
 }
 
-/** The clickable turn-agents chip: one segment bar per agent plus the count,
+/** The clickable turn-agents chip: one status dot per agent plus the count,
  *  shared by the settled receipt and the live working row so the tracker looks
- *  the same wherever it renders. */
+ *  the same wherever it renders. The dots are the live roster's, so the chip
+ *  and the agents' live lines read as the same agents. */
 function TurnAgentTrackerButton({
   summary,
   onOpen,
@@ -4354,12 +4393,12 @@ function TurnAgentTrackerButton({
       data-turn-agents-summary="true"
       onClick={onOpen}
     >
-      <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
+      <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-[3px]">
         {summary.segments.map((segment) => (
           <span
             key={segment.id}
             className={cn(
-              "block h-1 w-[22px] rounded-full",
+              "block size-1.5 rounded-full",
               segment.status === "running" && "bg-primary-graph",
               segment.status === "waiting" && "bg-amber-500",
               segment.status === "failed" && "bg-destructive",

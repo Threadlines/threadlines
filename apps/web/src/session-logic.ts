@@ -456,6 +456,39 @@ export function formatSubagentDisplayName(input: {
   return "Subagent";
 }
 
+const MAX_SUBAGENT_TASK_NAME_LENGTH = 120;
+
+/**
+ * What a list of agents calls each one, where several run side by side (the
+ * live roster, the header's faces, a finished agent's receipt). An agent the
+ * provider named (a Codex nickname) keeps its name. Otherwise its task, when
+ * it was given one short enough to read as a title ("Research Effect 4 stable
+ * upgrade"), tells it apart from others of its kind ("General purpose"). An
+ * objective that is a whole prompt (several lines, or longer than a title)
+ * falls back to the display name; a lone slug (`auth_audit`) reads as words.
+ */
+export function formatSubagentListName(input: {
+  label: string;
+  nickname?: string | null;
+  role?: string | null;
+  objective: string | null;
+}): string {
+  const nickname = asTrimmedString(input.nickname);
+  if (nickname) {
+    return nickname;
+  }
+  const objective = input.objective?.trim() ?? "";
+  if (objective.length > 0 && !/[\r\n]/u.test(objective)) {
+    const title = objective.replace(/\s+/gu, " ");
+    if (title.length <= MAX_SUBAGENT_TASK_NAME_LENGTH) {
+      return /^[\p{L}\p{N}]+(?:[_-][\p{L}\p{N}]+)+$/u.test(title)
+        ? (formatSubagentNameToken(title) ?? title)
+        : title;
+    }
+  }
+  return formatSubagentDisplayName(input);
+}
+
 export function shouldShowSubagentDisplayChip(input: {
   label: string;
   nickname?: string | null;
