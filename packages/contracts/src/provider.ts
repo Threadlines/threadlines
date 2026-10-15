@@ -191,6 +191,24 @@ export const ProviderSessionStartInput = Schema.Struct({
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
+/**
+ * The part of `input` a person typed into Threadlines' composer, kept apart
+ * from the context the server put in front of it (a room catch-up, a
+ * resumed or forked history, child-thread notes). `input` is always the whole
+ * text, so a driver that ignores this field behaves as before. A driver that
+ * can tell its provider which words are the user's own (Claude's human
+ * origin, which also gates its "ultracode" keyword) sends `context` and
+ * `text` apart and marks only `text` as the person's. Absent whenever an
+ * agent, another thread or automation wrote the message, or the user sent it
+ * as plain text.
+ */
+export const ProviderTypedInput = Schema.Struct({
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  /** What the server put in front of `text`. Absent: `input` is `text`. */
+  context: Schema.optional(Schema.String),
+});
+export type ProviderTypedInput = typeof ProviderTypedInput.Type;
+
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
   messageId: Schema.optional(MessageId),
@@ -201,6 +219,8 @@ export const ProviderSendTurnInput = Schema.Struct({
     Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
   ),
   skills: Schema.optional(ChatSkillReferenceList),
+  /** See ProviderTypedInput. */
+  typed: Schema.optional(ProviderTypedInput),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
   telemetryContext: Schema.optional(
@@ -230,6 +250,8 @@ export const ProviderSteerTurnInput = Schema.Struct({
     Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
   ),
   skills: Schema.optional(ChatSkillReferenceList),
+  /** See ProviderTypedInput. */
+  typed: Schema.optional(ProviderTypedInput),
 });
 export type ProviderSteerTurnInput = typeof ProviderSteerTurnInput.Type;
 

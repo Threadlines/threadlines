@@ -282,6 +282,10 @@
     "./workflowScript": {
       "types": "./src/workflowScript.ts",
       "import": "./src/workflowScript.ts"
+    },
+    "./workflowRuns": {
+      "types": "./src/workflowRuns.ts",
+      "import": "./src/workflowRuns.ts"
     }
   },
   "scripts": {

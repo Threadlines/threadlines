@@ -297,6 +297,14 @@ import {
 } from "./server.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
+  WorkflowReadAgentTranscriptInput,
+  WorkflowReadRunFileInput,
+  WorkflowReadRunFileResult,
+  WorkflowRequestError,
+  WorkflowSaveCommandInput,
+  WorkflowSaveCommandResult,
+} from "./workflow.ts";
+import {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
   SourceControlDiscoveryResult,
@@ -451,6 +459,9 @@ export const WS_METHODS = {
   serverResolveBackgroundRuns: "server.resolveBackgroundRuns",
   serverStopBackgroundRun: "server.stopBackgroundRun",
   serverReadBackgroundRunOutput: "server.readBackgroundRunOutput",
+  serverReadWorkflowRunFile: "server.readWorkflowRunFile",
+  serverReadWorkflowAgentTranscript: "server.readWorkflowAgentTranscript",
+  serverSaveWorkflowCommand: "server.saveWorkflowCommand",
   serverGetProviderExtensions: "server.getProviderExtensions",
   serverStartProviderExtensionMcpOAuth: "server.startProviderExtensionMcpOAuth",
   serverGetProviderExtensionOperationStatus: "server.getProviderExtensionOperationStatus",
@@ -704,6 +715,27 @@ export const WsServerReadBackgroundRunOutputRpc = Rpc.make(
     success: ServerReadBackgroundRunOutputResult,
   },
 );
+
+export const WsServerReadWorkflowRunFileRpc = Rpc.make(WS_METHODS.serverReadWorkflowRunFile, {
+  payload: WorkflowReadRunFileInput,
+  success: WorkflowReadRunFileResult,
+  error: WorkflowRequestError,
+});
+
+export const WsServerReadWorkflowAgentTranscriptRpc = Rpc.make(
+  WS_METHODS.serverReadWorkflowAgentTranscript,
+  {
+    payload: WorkflowReadAgentTranscriptInput,
+    success: ProviderSubagentTranscriptResult,
+    error: ProviderSubagentTranscriptError,
+  },
+);
+
+export const WsServerSaveWorkflowCommandRpc = Rpc.make(WS_METHODS.serverSaveWorkflowCommand, {
+  payload: WorkflowSaveCommandInput,
+  success: WorkflowSaveCommandResult,
+  error: WorkflowRequestError,
+});
 
 export const WsServerGetProviderExtensionsRpc = Rpc.make(WS_METHODS.serverGetProviderExtensions, {
   payload: ProviderExtensionsInventoryInput,
@@ -1584,6 +1616,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerResolveBackgroundRunsRpc,
   WsServerStopBackgroundRunRpc,
   WsServerReadBackgroundRunOutputRpc,
+  WsServerReadWorkflowRunFileRpc,
+  WsServerReadWorkflowAgentTranscriptRpc,
+  WsServerSaveWorkflowCommandRpc,
   WsServerGetProviderExtensionsRpc,
   WsServerStartProviderExtensionMcpOAuthRpc,
   WsServerGetProviderExtensionOperationStatusRpc,
