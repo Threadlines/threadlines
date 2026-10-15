@@ -5,7 +5,7 @@ import { BROWSER_SIGN_IN_DRIVERS } from "./providerAuthCommands.ts";
 export const PROVIDER_AUTH_RECONNECT_COMMANDS = {
   claudeAgent: "claude auth login",
   codex: "codex login",
-  cursor: "agent login",
+  cursor: "cursor-agent login",
   fx: "fx login",
   opencode: "opencode auth login --standalone",
 } as const;

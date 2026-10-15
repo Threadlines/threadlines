@@ -75,7 +75,7 @@ export function makeAcpProviderMaintenanceResolver<Settings extends AcpProviderS
             platform,
             ...(options?.env ? { env: options.env } : {}),
           }));
-      // The updater is the agent's own CLI (`agent update`); find it where a
+      // The updater is the agent's own CLI (`cursor-agent update`); find it where a
       // session would, including installer dirs a stale server PATH misses.
       const update = descriptor.maintenance.update;
       const maintenance = update
