@@ -563,8 +563,16 @@ Decisions that differ from the plan above:
   (`_x.ai/session/fork`), opens the copy, and rewinds it to the boundary; a
   boundary it can't place exactly (no position, or a Grok wake-up turn right
   after it) fails the native fork and the thread is seeded from a recap.
-  The response shapes are read from the binary and still need a live look
-  (`zzLiveGrokRewind.test.ts`, not committed).
+  Live-verified on Grok 1.0.52 with X Premium (2026-10-15): points come as
+  `rewind_points[{prompt_index, prompt_preview}]` with the preview being the
+  prompt's first line; a steer adds no point; `rewind/execute` needs
+  `force: true` (without it: `success: false`, `error: null`) and drops the
+  target prompt and everything after it; `session/fork` takes
+  `{sourceSessionId, sourceCwd, newCwd, targetPromptIndex}` and copies
+  through that prompt, inclusive, so a fork needs no rewind of the copy. A
+  revert of message 2 of 3 left Grok remembering only the first; a fork
+  before message 4 knew only the first; Stop settled in 0.2 s; plan mode
+  gave a plan card and wrote nothing.
 - **Check key asks xAI** (`GET /v1/models`, free) before Grok's own pick
   (`defaultAuthMethodId`); a run right after a method or key change waits
   for the instance rebuild (`builtFrom`).
@@ -579,6 +587,16 @@ Decisions that differ from the plan above:
   milliseconds of closing, shares the earlier turn. The full fix carries
   turn boundaries through the event queue in order with the updates, for
   every ACP agent; pitched as a follow-up.
+
+- **Setup on a fresh install, live (temp HOME):** tile, one-click Install
+  (no `~/.local/bin` links), then Sign in with Grok, Ready. Seen there, in a
+  first switch-on of a provider that isn't installed: the row sometimes kept
+  "Install guide" until the next refresh. One cause found and fixed in the
+  shared managed provider: an enrichment published at its check's own
+  `checkedAt`, so the registry, reading a new instance and streaming it at
+  once, could keep the plain copy. Enrichments are now dated after the check.
+  One failing run with that fix in place stayed unexplained (traced runs all
+  passed); it affects every opt-in provider and is a follow-up.
 
 Sol review, round 2 (2026-10-15): fixed the account-removal sign-out
 inheriting `GROK_AUTH_PATH`/`GROK_AUTH`, steer-vs-prompt preview matching,

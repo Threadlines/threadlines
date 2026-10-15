@@ -167,34 +167,50 @@ const program = Effect.gen(function* () {
     Effect.sleep(scenario === "wake-now" ? "60 millis" : "0 millis").pipe(
       Effect.andThen(() => rewindAnswer(method, params)),
     );
+  // As Grok 1.0.52 answers: snake_case points whose preview is the prompt's
+  // first line; a rewind that needs `force`; a fork that copies through a
+  // prompt, inclusive.
   const rewindAnswer = (method: string, params: unknown) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       const request = params as {
-        readonly sessionId: string;
+        readonly sessionId?: string;
+        readonly sourceSessionId?: string;
+        readonly sourceCwd?: string;
         readonly targetPromptIndex?: number;
-        readonly cwd?: string;
+        readonly force?: boolean;
       };
-      const prompts = promptsBySession.get(request.sessionId) ?? [];
+      if (method === "_x.ai/session/fork") {
+        if (!request.sourceSessionId || !request.sourceCwd) {
+          return yield* AcpError.AcpRequestError.invalidParams("missing field `sourceSessionId`");
+        }
+        const source = promptsBySession.get(request.sourceSessionId) ?? [];
+        const copied =
+          request.targetPromptIndex === undefined
+            ? [...source]
+            : source.slice(0, request.targetPromptIndex + 1);
+        const newSessionId = `${request.sourceSessionId}-fork-${promptsBySession.size}`;
+        promptsBySession.set(newSessionId, copied);
+        saveStore();
+        return { newSessionId, parentSessionId: request.sourceSessionId };
+      }
+      const prompts = promptsBySession.get(request.sessionId ?? "") ?? [];
       if (method === "_x.ai/rewind/points") {
         return {
-          rewindPoints: prompts.map((prompt, promptIndex) => ({
-            promptIndex,
-            promptPreview: prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt,
-            hasFileChanges: false,
+          rewind_points: prompts.map((prompt, prompt_index) => ({
+            prompt_index,
+            prompt_preview: prompt.split("\n")[0],
+            has_file_changes: false,
           })),
         };
       }
-      if (method === "_x.ai/rewind/execute") {
-        const target = request.targetPromptIndex ?? prompts.length;
-        const promptText = prompts[target];
-        prompts.splice(target);
-        saveStore();
-        return { success: promptText !== undefined, targetPromptIndex: target, promptText };
+      const target = request.targetPromptIndex ?? prompts.length;
+      const promptText = prompts[target];
+      if (request.force !== true || promptText === undefined) {
+        return { success: false, target_prompt_index: target, prompt_text: null, error: null };
       }
-      const newSessionId = `${request.sessionId}-fork-${promptsBySession.size}`;
-      promptsBySession.set(newSessionId, [...prompts]);
+      prompts.splice(target);
       saveStore();
-      return { newSessionId };
+      return { success: true, target_prompt_index: target, prompt_text: promptText, error: null };
     });
   yield* agent.handleUnknownExtRequest((method, params) =>
     method === "_x.ai/rewind/points" ||

@@ -251,6 +251,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+type AcpRawRequest = (
+  method: string,
+  payload: unknown,
+) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
+
 /**
  * One Threadlines turn on a session, and where its prompt sits in the
  * agent's own history once the agent has said (see `conversationHistory`).
@@ -500,7 +505,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
      */
     const historyBySession = new Map<
       string,
-      { readonly history: ReadonlyArray<AcpHistoryEntry>; readonly newest: number | undefined }
+      {
+        readonly history: ReadonlyArray<AcpHistoryEntry>;
+        readonly newest: number | undefined;
+        readonly cwd: string;
+      }
     >();
     const adapterScope = yield* Scope.Scope;
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
@@ -524,6 +533,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       historyBySession.set(sessionId, {
         history: ctx.history.map((entry) => ({ ...entry })),
         newest: ctx.newestPosition,
+        cwd: ctx.session.cwd ?? "",
       });
     };
 
@@ -977,10 +987,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           const resumed = parseAcpResumeCursor(input.resumeCursor);
           const resumeSessionId = resumed?.sessionId;
           // A native fork opens on the agent's copy of the source conversation,
-          // rewound to the boundary. One it can't make exactly fails here, and
-          // the caller seeds the thread from its transcript instead.
+          // up to the boundary. One it can't make exactly (a boundary it can't
+          // place, or one before the first prompt) fails here, and the caller
+          // seeds the thread from its transcript instead.
           const conversationHistory = descriptor.conversationHistory;
-          let forkRewind: number | undefined;
+          let forkSession:
+            | ((request: AcpRawRequest) => Effect.Effect<string, EffectAcpErrors.AcpError>)
+            | undefined;
           let forkNewest: number | undefined;
           if (input.forkFrom !== undefined) {
             const source = historyBySession.get(input.forkFrom.providerThreadId);
@@ -988,17 +1001,25 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               conversationHistory === undefined
                 ? "unknown"
                 : forkRewindPosition(source?.history, input.forkFrom);
-            if (rewindTo === "unknown") {
+            if (conversationHistory === undefined || rewindTo === "unknown" || rewindTo === 0) {
               return yield* new ProviderAdapterValidationError({
                 provider: PROVIDER,
                 operation: "startSession",
                 issue: "This conversation can't be forked at that turn.",
               });
             }
-            forkRewind = rewindTo;
-            // The copy lists the source's prompts, up to the rewind.
-            forkNewest =
-              rewindTo === undefined ? source?.newest : rewindTo > 0 ? rewindTo - 1 : undefined;
+            const throughPosition = rewindTo === undefined ? undefined : rewindTo - 1;
+            const sourceSessionId = input.forkFrom.providerThreadId;
+            forkSession = (request) =>
+              conversationHistory.fork({
+                request,
+                sessionId: sourceSessionId,
+                sourceCwd: source?.cwd || cwd,
+                cwd,
+                throughPosition,
+              });
+            // The copy lists the source's prompts, up to the boundary.
+            forkNewest = throughPosition ?? source?.newest;
           }
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
@@ -1074,13 +1095,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
-            ...(input.forkFrom !== undefined && conversationHistory !== undefined
-              ? {
-                  forkFrom: {
-                    sessionId: input.forkFrom.providerThreadId,
-                    fork: conversationHistory.fork,
-                  },
-                }
+            ...(forkSession !== undefined
+              ? { forkSession }
               : resumeSessionId
                 ? { resumeSessionId }
                 : {}),
@@ -1318,16 +1334,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
             ),
           );
-
-          if (forkRewind !== undefined && conversationHistory !== undefined) {
-            yield* conversationHistory
-              .rewind({ acp, sessionId: started.sessionId, position: forkRewind })
-              .pipe(
-                Effect.mapError((error) =>
-                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/fork", error),
-                ),
-              );
-          }
 
           yield* applyRequestedSessionConfiguration({
             runtime: acp,

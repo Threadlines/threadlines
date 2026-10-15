@@ -221,8 +221,8 @@ export interface AcpConversationHistory {
     readonly position: number;
   }) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   /**
-   * Copies a stored session's whole conversation into a new session, before
-   * any session is open on the process; resolves the copy's id.
+   * Copies a stored session's conversation into a new session, before any
+   * session is open on the process; resolves the copy's id.
    */
   readonly fork: (input: {
     readonly request: (
@@ -230,7 +230,11 @@ export interface AcpConversationHistory {
       payload: unknown,
     ) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
     readonly sessionId: string;
+    /** The folder the source session ran in, where the agent keeps it. */
+    readonly sourceCwd: string;
     readonly cwd: string;
+    /** Copies the prompts up to and including this position; every one when absent. */
+    readonly throughPosition: number | undefined;
   }) => Effect.Effect<string, EffectAcpErrors.AcpError>;
 }
 

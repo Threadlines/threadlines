@@ -80,20 +80,12 @@ export interface AcpSessionRuntimeOptions {
   readonly resumeSessionId?: string;
   /**
    * Open the session on a copy of another stored session's conversation:
-   * `fork` makes the copy before any session is open and names it. A copy
+   * this makes the copy before any session is open and names it. A copy
    * that can't be opened fails the start rather than opening a new session.
    */
-  readonly forkFrom?: {
-    readonly sessionId: string;
-    readonly fork: (input: {
-      readonly request: (
-        method: string,
-        payload: unknown,
-      ) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
-      readonly sessionId: string;
-      readonly cwd: string;
-    }) => Effect.Effect<string, EffectAcpErrors.AcpError>;
-  };
+  readonly forkSession?: (
+    request: (method: string, payload: unknown) => Effect.Effect<unknown, EffectAcpErrors.AcpError>,
+  ) => Effect.Effect<string, EffectAcpErrors.AcpError>;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   /** `_meta` sent with `initialize`. */
   readonly initializeMeta?: Readonly<Record<string, unknown>>;
@@ -735,13 +727,10 @@ const makeAcpSessionRuntime = (
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse;
       let resumeFailure: string | undefined;
-      const forkedSessionId = options.forkFrom
-        ? yield* options.forkFrom.fork({
-            request: (method, payload) =>
-              runLoggedRequest(method, payload, acp.raw.request(method, payload)),
-            sessionId: options.forkFrom.sessionId,
-            cwd: options.cwd,
-          })
+      const forkedSessionId = options.forkSession
+        ? yield* options.forkSession((method, payload) =>
+            runLoggedRequest(method, payload, acp.raw.request(method, payload)),
+          )
         : undefined;
       const reopenSessionId = forkedSessionId ?? options.resumeSessionId;
       if (reopenSessionId) {

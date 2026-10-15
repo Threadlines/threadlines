@@ -512,8 +512,9 @@ export const GROK_ACP_DESCRIPTOR: AcpProviderDescriptor<GrokSettings> = {
     grokContinuationKey(settings.accountFolder, environment),
   sessionModeForTurn: (interactionMode) => (interactionMode === "plan" ? "plan" : "default"),
   // Grok's own rewind (`/rewind`) by its prompt numbering, the conversation
-  // only: Threadlines restores the files. A fork copies the whole session,
-  // then rewinds the copy to the turn it forks at.
+  // only: Threadlines restores the files. Without `force` Grok declines
+  // (`success: false`, no error) where its picker would ask to confirm. A
+  // fork copies the session up to a prompt, inclusive (Grok 1.0.52).
   conversationHistory: {
     promptPosition: ({ acp, sessionId, promptText, after }) =>
       acp
@@ -525,6 +526,7 @@ export const GROK_ACP_DESCRIPTOR: AcpProviderDescriptor<GrokSettings> = {
           sessionId,
           targetPromptIndex: position,
           mode: "conversation_only",
+          force: true,
         })
         .pipe(
           Effect.flatMap((result) =>
@@ -537,8 +539,13 @@ export const GROK_ACP_DESCRIPTOR: AcpProviderDescriptor<GrokSettings> = {
                 ),
           ),
         ),
-    fork: ({ request, sessionId, cwd }) =>
-      request("_x.ai/session/fork", { sessionId, cwd }).pipe(
+    fork: ({ request, sessionId, sourceCwd, cwd, throughPosition }) =>
+      request("_x.ai/session/fork", {
+        sourceSessionId: sessionId,
+        sourceCwd,
+        newCwd: cwd,
+        ...(throughPosition !== undefined ? { targetPromptIndex: throughPosition } : {}),
+      }).pipe(
         Effect.flatMap((result) => {
           const forked = grokForkedSessionId(result);
           return forked

@@ -285,19 +285,19 @@ describe("Grok protocol mapping", () => {
     expect(grokAskUserQuestionReply(request, {})).toEqual({ outcome: "cancelled" });
   });
 
-  it("places a sent prompt among Grok's rewind points by its text, never at a later steer", () => {
+  it("places a sent prompt among Grok's rewind points by the head Grok previews", () => {
+    // Grok 1.0.52's own shape: the preview is the prompt's first line.
     const points = {
-      rewindPoints: [
-        { promptIndex: 0, promptPreview: "Fix tests" },
-        { promptIndex: 1, promptPreview: "Fix tests in auth only" },
-        { promptIndex: 2, promptPreview: "Refactor the session loader so it…" },
-        { promptIndex: 3, promptPreview: "Refactor the session loader so it…" },
+      rewind_points: [
+        { prompt_index: 0, prompt_preview: "Fix tests" },
+        { prompt_index: 1, prompt_preview: "Fix tests in auth only" },
+        { prompt_index: 2, prompt_preview: "Refactor the session loader" },
+        { prompt_index: 3, prompt_preview: "Refactor the session loader" },
       ],
     };
-    // A steer that starts like the prompt is not the prompt.
     expect(grokPromptPosition(points, "Fix tests", undefined)).toEqual({ position: 0, newest: 3 });
-    // A cut preview matches its head: the first after the last placed turn.
-    const long = "Refactor the session loader so it retries once";
+    // A prompt of several lines matches its first line, after the last placed turn.
+    const long = "Refactor the session loader\n\nso it retries once";
     expect(grokPromptPosition(points, long, 1).position).toBe(2);
     // The same head twice, with nothing to order them by, is no answer.
     expect(grokPromptPosition(points, long, undefined).position).toBeUndefined();
@@ -564,10 +564,13 @@ describe("Grok sessions", () => {
       const rewinds = (yield* grok.frames())
         .filter((frame) => frame.method === "_x.ai/rewind/execute")
         .map((frame) => frame.params);
-      expect(rewinds).toEqual([
-        { sessionId: "grok-session-1", targetPromptIndex: 1, mode: "conversation_only" },
-        { sessionId: "grok-session-1", targetPromptIndex: 1, mode: "conversation_only" },
-      ]);
+      const rewind = {
+        sessionId: "grok-session-1",
+        targetPromptIndex: 1,
+        mode: "conversation_only",
+        force: true,
+      };
+      expect(rewinds).toEqual([rewind, rewind]);
     }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
   );
 
@@ -591,6 +594,14 @@ describe("Grok sessions", () => {
       yield* fork("grok-fork", second!);
       const [fourth] = yield* sendAll(grok, ThreadId.make("grok-fork"), [["fourth", "f1"]]);
       expect(replyTo(grok.events, fourth!)).toBe("remembers: first | fourth");
+      // Grok copies through the prompt before the boundary, from where the source ran.
+      const forked = (yield* grok.frames()).find((frame) => frame.method === "_x.ai/session/fork");
+      expect(forked?.params).toEqual({
+        sourceSessionId: "grok-session-1",
+        sourceCwd: process.cwd(),
+        newCwd: process.cwd(),
+        targetPromptIndex: 0,
+      });
       // The source keeps its whole conversation.
       const [fifth] = yield* sendAll(grok, grok.threadId, [["fifth", "m4"]]);
       expect(replyTo(grok.events, fifth!)).toBe("remembers: first | second | third | fifth");

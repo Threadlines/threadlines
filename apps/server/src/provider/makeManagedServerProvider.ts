@@ -1,4 +1,5 @@
 import type { ServerProvider } from "@threadlines/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -15,6 +16,13 @@ import { ServerSettingsError } from "@threadlines/contracts";
 interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
   readonly enrichmentGeneration: number;
+}
+
+/** `now`, or a millisecond past `base` when the clock hasn't moved past it. */
+function laterThan(base: string, now: string): string {
+  if (now > base) return now;
+  const baseMs = Date.parse(base);
+  return Number.isFinite(baseMs) ? new Date(baseMs + 1).toISOString() : now;
 }
 
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
@@ -71,14 +79,23 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     generation: number,
     enrich: (current: ServerProvider) => ServerProvider,
   ) {
+    const now = DateTime.formatIso(yield* DateTime.now);
     const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
       if (state.enrichmentGeneration !== generation) {
         return [null, state] as const;
       }
-      const nextSnapshot = enrich(state.snapshot);
-      if (Equal.equals(state.snapshot, nextSnapshot)) {
+      const enriched = enrich(state.snapshot);
+      if (Equal.equals(state.snapshot, enriched)) {
         return [null, state] as const;
       }
+      // Later than the snapshot it builds on: the registry keeps the newer of
+      // two snapshots by `checkedAt`, and a copy of the plain one that reaches
+      // it second (a newly added instance is read and streamed at once) would
+      // otherwise replace this one, losing what the enrichment added.
+      const nextSnapshot =
+        enriched.checkedAt > state.snapshot.checkedAt
+          ? enriched
+          : { ...enriched, checkedAt: laterThan(state.snapshot.checkedAt, now) };
       return [
         nextSnapshot,
         {
