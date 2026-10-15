@@ -212,6 +212,11 @@ export interface AcpSessionRuntimeShape {
    */
   readonly flushEvents: Effect.Effect<void>;
   /**
+   * Ends the reply being streamed outside a prompt (an agent's own turn):
+   * text after it starts a new message. Prompts end theirs themselves.
+   */
+  readonly closeAssistantSegment: Effect.Effect<void>;
+  /**
    * What the agent answered to `initialize`, as soon as it has: still there
    * when the session is then refused (an agent that wants a sign-in first
    * lists its sign-in methods here).
@@ -768,6 +773,9 @@ const makeAcpSessionRuntime = (
           const failure = Cause.squash(resumed.cause);
           resumeFailure =
             failure instanceof Error && failure.message ? failure.message : "unknown error";
+          // The replacement session's id is unknown until it answers; its
+          // early updates (its controls) must not be dropped as a stranger's.
+          yield* Ref.set(ownSessionIdRef, undefined);
           const createPayload = {
             cwd: options.cwd,
             mcpServers,
@@ -893,6 +901,10 @@ const makeAcpSessionRuntime = (
         const acknowledge = yield* Deferred.make<void>();
         yield* Queue.offer(eventQueue, { _tag: "EventStreamBarrier", acknowledge });
         yield* Deferred.await(acknowledge).pipe(Effect.timeout(EVENT_FLUSH_TIMEOUT), Effect.ignore);
+      }),
+      closeAssistantSegment: closeActiveAssistantSegment({
+        queue: eventQueue,
+        assistantSegmentRef,
       }),
       getInitializeResult: Ref.get(initializeResultRef),
       getModeState: Ref.get(modeStateRef),

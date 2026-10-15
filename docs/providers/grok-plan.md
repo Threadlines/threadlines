@@ -549,8 +549,35 @@ Decisions that differ from the plan above:
 - **No extra tool-output cap.** In-progress tool updates only reach the
   thread when their title or summary changes, and the activity projection
   already compacts stored payloads.
-- **API key billing runs in its own sign-in-free `GROK_HOME`** (laid over
-  `~/.grok` like an account), because Grok prefers a stored sign-in to a key.
-- **Revert and fork wait for a live look** at Grok's rewind points: they are
-  numbered by Grok's own prompt history, and whether its own wake-up turns
-  count there decides how a Threadlines turn count maps onto them.
+- **API key billing runs in its own sign-in-free `GROK_HOME`**, laid over
+  the folder the instance would otherwise use (an account's, or `~/.grok`),
+  because Grok prefers a stored sign-in to a key. Instances share a
+  continuation key when their real `sessions` folder is the same.
+- **Revert and fork map by message, not by turn count.** Each turn records
+  where its prompt sits among `_x.ai/rewind/points` (matched by the
+  preview's text, first after the previous turn's position), asked once the
+  turn has ended; the positions ride in the ACP resume cursor (last 200
+  turns) and are saved when a session stops. A revert rewinds to the first
+  reverted message's prompt (`_x.ai/rewind/execute`, `conversation_only`;
+  only `success: true` counts). A fork copies the session
+  (`_x.ai/session/fork`), opens the copy, and rewinds it to the boundary; a
+  boundary it can't place exactly (no position, or a Grok wake-up turn right
+  after it) fails the native fork and the thread is seeded from a recap.
+  The response shapes are read from the binary and still need a live look
+  (`zzLiveGrokRewind.test.ts`, not committed).
+- **Check key asks xAI** (`GET /v1/models`, free) before Grok's own pick
+  (`defaultAuthMethodId`); a run right after a method or key change waits
+  for the instance rebuild (`builtFrom`).
+- **Usage history reads `~/.grok/sessions` only** (with `GROK_HOME` from the
+  server's environment), as Claude and Codex read their main folders: an
+  account folder with sessions of its own isn't counted.
+
+Sol review, round 2 (2026-10-15): fixed the account-removal sign-out
+inheriting `GROK_AUTH_PATH`/`GROK_AUTH`, steer-vs-prompt preview matching,
+forks keeping a following wake-up turn, prompt positions lost when an idle
+session is reaped, two wake-up replies sharing one message id, a wake-up
+lost while the position was being asked, signed-in accounts switched to an
+API key keeping their sign-in, unknown rewind answers counting as success,
+steering dropping file notes, and a failed resume dropping the new
+session's early updates (all ACP agents). Not changed: usage history for
+independent Grok folders (above), and folder trust (flagged for Will).

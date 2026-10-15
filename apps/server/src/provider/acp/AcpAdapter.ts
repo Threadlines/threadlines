@@ -129,6 +129,8 @@ const ACP_AGENT_TURN_QUIET_CHECK = Duration.seconds(30);
  * list only.
  */
 const ACP_HISTORY_CURSOR_LIMIT = 200;
+/** How long asking the agent where a prompt landed may take before it goes unanswered. */
+const ACP_HISTORY_POSITION_TIMEOUT = Duration.seconds(5);
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
@@ -302,10 +304,11 @@ function forkRewindPosition(
   }
   const index = history.findIndex((entry) => entry.turnId === boundary.lastTurnId);
   if (index < 0) return "unknown";
-  // The agent's own turns right after it stay with it: they have no prompt
-  // to rewind to.
-  const next = history.slice(index + 1).find((entry) => entry.agentTurn !== true);
+  const next = history[index + 1];
   if (next === undefined) return undefined;
+  // The agent's own turn right after it has no prompt to rewind to: the copy
+  // would keep it, beyond the fork's boundary.
+  if (next.agentTurn === true) return "unknown";
   return next.position ?? "unknown";
 }
 
@@ -496,11 +499,22 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       Effect.gen(function* () {
         const history = descriptor.conversationHistory;
         const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
-        const entry = ctx.history.find((candidate) => candidate.turnId === turnId);
+        const index = ctx.history.findIndex((candidate) => candidate.turnId === turnId);
+        const entry = ctx.history[index];
         if (history === undefined || sessionId === undefined || entry === undefined) return;
+        const earlier = ctx.history
+          .slice(0, index)
+          .flatMap((candidate) => (candidate.position === undefined ? [] : [candidate.position]));
         const position = yield* history
-          .promptPosition({ acp: ctx.acp, sessionId, promptText })
+          .promptPosition({
+            acp: ctx.acp,
+            sessionId,
+            promptText,
+            after: earlier.length > 0 ? Math.max(...earlier) : undefined,
+          })
           .pipe(
+            Effect.timeoutOption(ACP_HISTORY_POSITION_TIMEOUT),
+            Effect.map(Option.getOrUndefined),
             Effect.catch((cause) =>
               Effect.logWarning("acp.history.position-unavailable", {
                 provider: PROVIDER,
@@ -692,6 +706,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       Effect.gen(function* () {
         const agentTurn = ctx.agentTurn;
         if (agentTurn === undefined) return;
+        // Its reply ends with it: the next turn's text is a message of its own.
+        yield* ctx.acp.closeAssistantSegment;
         yield* ctx.acp.flushEvents;
         if (ctx.agentTurn !== agentTurn) return;
         yield* closeReasoning(ctx);
@@ -1680,6 +1696,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const promptText = promptParts
           .flatMap((part) => (part.type === "text" ? [part.text] : []))
           .join("\n");
+        let promptReachedAgent = false;
 
         yield* offerRuntimeEvent({
           type: "turn.started",
@@ -1703,11 +1720,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           yield* ctx.acp.flushEvents;
           // A turn that ends mid-thought (or on one) still settles its row.
           yield* closeReasoning(ctx);
-          // Where the prompt landed, known before the turn reads as ended so a
-          // revert right after it can rewind the agent too.
-          if (Exit.isSuccess(exit) || !Cause.hasInterruptsOnly(exit.cause)) {
-            yield* recordPromptPosition(ctx, turnId, promptText);
-          }
+          promptReachedAgent = Exit.isSuccess(exit) || !Cause.hasInterruptsOnly(exit.cause);
           if (Exit.isSuccess(exit)) {
             const result = exit.value;
             ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
@@ -1805,7 +1818,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             }),
           ),
         );
-        ctx.promptFiber = yield* Effect.forkIn(runPrompt, ctx.scope);
+        ctx.promptFiber = yield* Effect.forkIn(
+          runPrompt.pipe(
+            // Once the turn reads as ended (so a wake-up right after it opens
+            // a turn of its own), where its prompt landed, for a revert or
+            // fork. The next turn and a revert wait for it.
+            Effect.andThen(
+              Effect.suspend(() =>
+                promptReachedAgent ? recordPromptPosition(ctx, turnId, promptText) : Effect.void,
+              ),
+            ),
+          ),
+          ctx.scope,
+        );
 
         return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
       });
@@ -1901,7 +1926,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               input.attachments,
               "turn/steer",
             );
-            yield* descriptor.steer!({ acp: ctx.acp, sessionId, text, content }).pipe(
+            // The text of every block: a file travels as a note naming its path.
+            const steerText = content
+              .flatMap((block) => (block.type === "text" ? [block.text] : []))
+              .join("\n\n");
+            yield* descriptor.steer!({ acp: ctx.acp, sessionId, text: steerText, content }).pipe(
               Effect.mapError((cause) =>
                 mapAcpToAdapterError(PROVIDER, input.threadId, "turn/steer", cause),
               ),
@@ -1964,6 +1993,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }
         ctx.turns.splice(Math.max(0, ctx.turns.length - numTurns));
         const conversationHistory = descriptor.conversationHistory;
+        // The last turn's prompt position may still be on its way.
+        if (ctx.activeTurnId === undefined && ctx.promptFiber !== undefined) {
+          yield* Fiber.await(ctx.promptFiber).pipe(
+            Effect.timeoutOption(ACP_HISTORY_POSITION_TIMEOUT),
+          );
+        }
         const target = options?.targetUserMessageId;
         const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
         const index =

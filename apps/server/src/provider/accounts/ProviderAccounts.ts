@@ -52,6 +52,7 @@ import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { removeLinkIfPresent } from "../accountOverlay.ts";
 import { antigravityInstancePaths } from "../antigravity/AntigravityProfile.ts";
+import { grokProcessEnvironment } from "../acp/GrokAcpSupport.ts";
 import { resolveGrokBinary } from "../grok/GrokBinary.ts";
 import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
 import { claudeInstanceBaseEnvironment, resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
@@ -358,9 +359,14 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
         ...(isClaude ? { accountFolder: folder } : { shadowHomePath: folder }),
       });
       if (!command) return;
+      // Grok's environment for the folder: never a GROK_AUTH_PATH or
+      // GROK_AUTH from the server, which would point the sign-out at another
+      // sign-in (the terminal's).
       const baseEnv = isClaude
         ? claudeInstanceBaseEnvironment({ accountFolder: folder })
-        : process.env;
+        : record.driver === "grok"
+          ? grokProcessEnvironment({ accountFolder: folder, authMethod: "subscription" })
+          : process.env;
       const env: NodeJS.ProcessEnv = { ...baseEnv, ...command.env };
       if (isClaude) delete env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
       const result = yield* spawnAndCollect(

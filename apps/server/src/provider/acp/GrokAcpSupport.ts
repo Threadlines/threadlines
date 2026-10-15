@@ -515,10 +515,10 @@ export const GROK_ACP_DESCRIPTOR: AcpProviderDescriptor<GrokSettings> = {
   // only: Threadlines restores the files. A fork copies the whole session,
   // then rewinds the copy to the turn it forks at.
   conversationHistory: {
-    promptPosition: ({ acp, sessionId, promptText }) =>
+    promptPosition: ({ acp, sessionId, promptText, after }) =>
       acp
         .request("_x.ai/rewind/points", { sessionId })
-        .pipe(Effect.map((points) => grokPromptPosition(points, promptText))),
+        .pipe(Effect.map((points) => grokPromptPosition(points, promptText, after))),
     rewind: ({ acp, sessionId, position }) =>
       acp
         .request("_x.ai/rewind/execute", {

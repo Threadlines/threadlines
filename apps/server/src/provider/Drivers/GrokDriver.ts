@@ -52,41 +52,38 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
   create: (input) =>
     Effect.gen(function* () {
       const environment = mergeProviderInstanceEnvironment(input.environment);
-      // Grok prefers a stored sign-in to an API key, so an instance billed by
-      // key runs in a folder with no sign-in: one of its own, laid over the
-      // main Grok folder like an account's (shared setup and sessions).
-      const config =
-        input.config.authMethod === "api-key" && !input.config.accountFolder.trim()
-          ? {
-              ...input.config,
-              accountFolder: join(
-                (yield* ServerConfig).stateDir,
-                "grok",
-                "api-key",
-                input.instanceId,
-              ),
-            }
-          : input.config;
+      const failed = (cause: { readonly message: string }) =>
+        new ProviderDriverError({
+          driver: GROK_ACP_DESCRIPTOR.driverKind,
+          instanceId: input.instanceId,
+          detail: cause.message,
+          cause,
+        });
       // An account folder is laid over the main Grok folder before anything
       // runs in it, so the first turn sees the user's setup and writes its
       // conversation where the main instance can resume it.
-      const accountFolder = config.accountFolder.trim();
+      const accountFolder = input.config.accountFolder.trim();
+      const home = accountFolder ? expandHomePath(accountFolder) : grokMainHome(environment);
       if (accountFolder) {
         yield* materializeGrokAccountFolder({
           mainDir: grokMainHome(environment),
-          accountDir: expandHomePath(accountFolder),
-        }).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderDriverError({
-                driver: GROK_ACP_DESCRIPTOR.driverKind,
-                instanceId: input.instanceId,
-                detail: cause.message,
-                cause,
-              }),
-          ),
+          accountDir: home,
+        }).pipe(Effect.mapError(failed));
+      }
+      // Grok prefers a stored sign-in to an API key, so an instance billed by
+      // key runs in a folder of its own with no sign-in, laid over the folder
+      // it would otherwise use: the same setup and conversations, and no
+      // sign-in there (an account's own, or the terminal's) to beat the key.
+      const apiKeyHome = join((yield* ServerConfig).stateDir, "grok", "api-key", input.instanceId);
+      if (input.config.authMethod === "api-key") {
+        yield* materializeGrokAccountFolder({ mainDir: home, accountDir: apiKeyHome }).pipe(
+          Effect.mapError(failed),
         );
       }
+      const config =
+        input.config.authMethod === "api-key"
+          ? { ...input.config, accountFolder: apiKeyHome }
+          : input.config;
       const instance = yield* acpDriver.create({ ...input, config });
       const built = signInKey(input.config, input.environment);
       return {

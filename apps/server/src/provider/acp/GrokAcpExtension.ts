@@ -497,45 +497,53 @@ const GrokRewindPoints = Schema.Struct({
 });
 const decodeGrokRewindPoints = Schema.decodeUnknownOption(GrokRewindPoints);
 
-const comparableText = (text: string) =>
-  text
-    .replace(/\s+/gu, " ")
-    .replace(/(?:…|\.\.\.)$/u, "")
-    .trim();
+const comparableText = (text: string) => text.replace(/\s+/gu, " ").trim();
+const TRUNCATION = /(?:…|\.\.\.)$/u;
 
 /**
  * Where a prompt Threadlines sent sits among `_x.ai/rewind/points` (one per
- * prompt Grok was sent), by its text: the newest point whose preview is the
- * prompt's head. Never just the newest point: a wake-up or an interjection
- * can be newer than the prompt.
+ * prompt Grok was sent), by its text: a point whose preview is the whole
+ * prompt, or its head when cut short. Of those, the first one after `after`
+ * (the newest position an earlier turn holds): a message steered into the
+ * turn or Grok's own wake-up comes after the turn's prompt, never before it.
+ * Several matches with nothing to order them by is no answer.
  */
-export function grokPromptPosition(points: unknown, promptText: string): number | undefined {
+export function grokPromptPosition(
+  points: unknown,
+  promptText: string,
+  after: number | undefined,
+): number | undefined {
   const decoded = decodeGrokRewindPoints(points);
   if (decoded._tag === "None") return undefined;
   const sent = comparableText(promptText);
   if (!sent) return undefined;
-  const candidates = (decoded.value.rewindPoints ?? decoded.value.rewind_points ?? []).flatMap(
-    (point) => {
+  const matches = (decoded.value.rewindPoints ?? decoded.value.rewind_points ?? [])
+    .flatMap((point) => {
       const position = point.promptIndex ?? point.prompt_index;
-      const preview = comparableText(point.promptPreview ?? point.prompt_preview ?? "");
-      return typeof position === "number" && Number.isInteger(position) && position >= 0 && preview
-        ? [{ position, preview }]
-        : [];
-    },
-  );
-  const matches = candidates.filter(
-    ({ preview }) => sent.startsWith(preview) || preview.startsWith(sent),
-  );
-  return matches.length > 0 ? Math.max(...matches.map(({ position }) => position)) : undefined;
+      const raw = comparableText(point.promptPreview ?? point.prompt_preview ?? "");
+      if (typeof position !== "number" || !Number.isInteger(position) || position < 0 || !raw) {
+        return [];
+      }
+      const cut = TRUNCATION.test(raw);
+      const preview = cut ? raw.replace(TRUNCATION, "").trimEnd() : raw;
+      const same = cut ? preview.length > 0 && sent.startsWith(preview) : sent === preview;
+      return same && (after === undefined || position > after) ? [position] : [];
+    })
+    .toSorted((left, right) => left - right);
+  if (after === undefined && matches.length > 1) return undefined;
+  return matches[0];
 }
 
 const GrokRewindResult = Schema.Struct({ success: Schema.optional(Schema.NullOr(Schema.Boolean)) });
 const decodeGrokRewindResult = Schema.decodeUnknownOption(GrokRewindResult);
 
-/** Whether `_x.ai/rewind/execute` says it rewound; a bare answer counts. */
+/**
+ * Whether `_x.ai/rewind/execute` says it rewound. Only a plain yes counts:
+ * an answer in another shape must not read as a rewind that never happened.
+ */
 export function grokRewound(result: unknown): boolean {
   const decoded = decodeGrokRewindResult(result);
-  return decoded._tag === "Some" && decoded.value.success !== false;
+  return decoded._tag === "Some" && decoded.value.success === true;
 }
 
 const GrokForkResult = Schema.Struct({ newSessionId: Schema.String });

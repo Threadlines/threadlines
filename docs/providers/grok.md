@@ -105,7 +105,8 @@ folder and its sign-in.
 - **Revert and fork.** Reverting a turn restores your files and rewinds Grok's conversation to
   before that message, so Grok forgets what was reverted. Forking a chat copies Grok's conversation
   up to the fork point. When Grok can't place a message (one sent before this version of
-  Threadlines), a revert says Grok still remembers, and a fork starts from a recap of the chat.
+  Threadlines), a revert says Grok still remembers, and a fork starts from a recap of the chat. So
+  does a fork from a reply that Grok followed with one of its own.
 
 ## Not Supported Yet
 

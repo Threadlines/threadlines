@@ -72,21 +72,16 @@ export const materializeGrokAccountFolder = (input: {
 
 /**
  * Threads resume natively between instances that keep one conversation
- * store: an account whose `sessions` links to the main folder shares the
- * main instance's key; a folder with sessions of its own has its own.
+ * store: the key is the real `sessions` folder, so an account (or an API-key
+ * profile) whose `sessions` links to another folder's shares its key.
  */
 export function grokContinuationKey(accountFolder: string, environment: NodeJS.ProcessEnv): string {
-  const mainHome = grokMainHome(environment);
   const folder = expandHomePath(accountFolder.trim());
-  if (!folder) return `grok:home:${mainHome}`;
-  const realSessions = (home: string) => {
-    try {
-      return realpathSync(join(home, "sessions"));
-    } catch {
-      return join(home, "sessions");
-    }
-  };
-  return realSessions(resolve(folder)) === realSessions(mainHome)
-    ? `grok:home:${mainHome}`
-    : `grok:home:${resolve(folder)}`;
+  const home = folder ? resolve(folder) : grokMainHome(environment);
+  const sessions = join(home, "sessions");
+  try {
+    return `grok:sessions:${realpathSync(sessions)}`;
+  } catch {
+    return `grok:sessions:${sessions}`;
+  }
 }

@@ -207,6 +207,8 @@ export interface AcpConversationHistory {
     readonly sessionId: string;
     /** The prompt's text as sent, context preamble and all. */
     readonly promptText: string;
+    /** The newest position an earlier turn of the session holds, when one does. */
+    readonly after: number | undefined;
   }) => Effect.Effect<number | undefined, EffectAcpErrors.AcpError>;
   /** Forgets the prompt at this position and everything after it. */
   readonly rewind: (input: {
@@ -290,6 +292,7 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly steer?: (input: {
     readonly acp: AcpSessionRuntimeShape;
     readonly sessionId: string;
+    /** Every text block of `content`: the message and any file's note. */
     readonly text: string;
     readonly content: ReadonlyArray<EffectAcpSchema.ContentBlock>;
   }) => Effect.Effect<void, EffectAcpErrors.AcpError>;

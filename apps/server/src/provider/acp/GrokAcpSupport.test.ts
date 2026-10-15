@@ -26,6 +26,7 @@ import {
   emptyGrokBackgroundWork,
   grokAskUserQuestionReply,
   grokBackgroundChange,
+  grokPromptPosition,
 } from "./GrokAcpExtension.ts";
 import {
   GROK_ACP_DESCRIPTOR,
@@ -282,6 +283,24 @@ describe("Grok protocol mapping", () => {
       annotations: { "Anything else?": { notes: "Use tabs" } },
     });
     expect(grokAskUserQuestionReply(request, {})).toEqual({ outcome: "cancelled" });
+  });
+
+  it("places a sent prompt among Grok's rewind points by its text, never at a later steer", () => {
+    const points = {
+      rewindPoints: [
+        { promptIndex: 0, promptPreview: "Fix tests" },
+        { promptIndex: 1, promptPreview: "Fix tests in auth only" },
+        { promptIndex: 2, promptPreview: "Refactor the session loader so it…" },
+        { promptIndex: 3, promptPreview: "Refactor the session loader so it…" },
+      ],
+    };
+    // A steer that starts like the prompt is not the prompt.
+    expect(grokPromptPosition(points, "Fix tests", undefined)).toBe(0);
+    // A cut preview matches its head: the first after the last placed turn.
+    const long = "Refactor the session loader so it retries once";
+    expect(grokPromptPosition(points, long, 1)).toBe(2);
+    // The same head twice, with nothing to order them by, is no answer.
+    expect(grokPromptPosition(points, long, undefined)).toBeUndefined();
   });
 
   it("tracks a subagent and a background shell, and lets a snapshot drop a killed shell", () => {
@@ -578,6 +597,24 @@ describe("Grok sessions", () => {
 
       const refused = yield* fork("grok-fork-2", "never-seen").pipe(Effect.flip);
       expect(refused.message).toContain("can't be forked");
+    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("gives back-to-back wake-ups each a message of their own", () =>
+    Effect.gen(function* () {
+      const grok = yield* startGrok("wake-twice");
+      yield* grok.adapter.sendTurn({ threadId: grok.threadId, input: "spawn", attachments: [] });
+      yield* grok.waitFor((events) => completedTurns(events).length === 3);
+      const [, first, second] = completedTurns(grok.events);
+      const itemsOf = (turnId: TurnId | undefined) =>
+        new Set(
+          grok.events.flatMap((event) =>
+            event.type === "content.delta" && event.turnId === turnId ? [event.itemId] : [],
+          ),
+        );
+      const firstItems = itemsOf(first?.turnId);
+      expect(firstItems.size).toBe(1);
+      for (const itemId of itemsOf(second?.turnId)) expect(firstItems.has(itemId)).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
   );
 

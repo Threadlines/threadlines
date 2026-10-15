@@ -276,7 +276,7 @@ const program = Effect.gen(function* () {
       } else if (scenario === "error") {
         yield* turnEnded(promptId, "error", "Grok's model is overloaded. Try again soon.");
         return yield* AcpError.AcpRequestError.internalError("Internal error");
-      } else if (scenario === "wake") {
+      } else if (scenario === "wake" || scenario === "wake-twice") {
         yield* sessionNotice({
           sessionUpdate: "subagent_spawned",
           subagent_id: "sub-1",
@@ -308,14 +308,20 @@ const program = Effect.gen(function* () {
             output: "SUBAGENT_DONE",
             will_wake: true,
           });
-          const wakeId = "subagent-completed-sub-1";
-          yield* agent.client.extNotification("_x.ai/queue/changed", {
-            sessionId,
-            entries: [],
-            runningPromptId: wakeId,
-          });
-          yield* say("The subagent said SUBAGENT_DONE.", wakeId);
-          yield* turnEnded(wakeId, "end_turn");
+          // Text-only wake-ups, one right after the other.
+          for (const [index, text] of (scenario === "wake-twice"
+            ? ["The subagent said SUBAGENT_DONE.", "Nothing else to do."]
+            : ["The subagent said SUBAGENT_DONE."]
+          ).entries()) {
+            const wakeId = `subagent-completed-sub-1-${index}`;
+            yield* agent.client.extNotification("_x.ai/queue/changed", {
+              sessionId,
+              entries: [],
+              runningPromptId: wakeId,
+            });
+            yield* say(text, wakeId);
+            yield* turnEnded(wakeId, "end_turn");
+          }
         }).pipe(Effect.forkDetach);
       } else if (scenario === "remember") {
         // What this session remembers, oldest first, as its reply.
