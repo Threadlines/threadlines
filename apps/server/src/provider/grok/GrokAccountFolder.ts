@@ -78,10 +78,15 @@ export const materializeGrokAccountFolder = (input: {
 export function grokContinuationKey(accountFolder: string, environment: NodeJS.ProcessEnv): string {
   const folder = expandHomePath(accountFolder.trim());
   const home = folder ? resolve(folder) : grokMainHome(environment);
-  const sessions = join(home, "sessions");
-  try {
-    return `grok:sessions:${realpathSync(sessions)}`;
-  } catch {
-    return `grok:sessions:${sessions}`;
-  }
+  const real = (target: string) => {
+    try {
+      return realpathSync(target);
+    } catch {
+      return undefined;
+    }
+  };
+  // No `sessions` yet: the folder Grok will make it in, by its real path, so
+  // a linked GROK_HOME keys the same before and after the first chat.
+  const sessions = real(join(home, "sessions")) ?? join(real(home) ?? home, "sessions");
+  return `grok:sessions:${sessions}`;
 }

@@ -201,6 +201,21 @@ interface AcpSessionContext {
   readonly toolCallTurns: Map<string, TurnId>;
   /** How the agent said the running prompt ended, from its own notice. */
   promptOutcome: AcpTurnOutcome | undefined;
+  /**
+   * Set from a prompt's answer until its turn has closed. What the reader
+   * gets after the prompt's last update waits for it, so a turn the agent
+   * starts right after the prompt gets its own output.
+   */
+  promptClosing: Deferred.Deferred<void> | undefined;
+  /** The agent's own turn, begun (and maybe ended) while a prompt's turn closed. */
+  pendingAgentTurn:
+    | {
+        readonly raw: { readonly method: string; readonly payload: unknown };
+        outcome?: AcpTurnOutcome;
+      }
+    | undefined;
+  /** The newest position the agent has listed, so a later prompt is placed after it. */
+  newestPosition: number | undefined;
   stopped: boolean;
 }
 
@@ -261,25 +276,40 @@ function parseHistoryEntry(raw: unknown): AcpHistoryEntry | undefined {
   };
 }
 
-export function parseAcpResumeCursor(
-  raw: unknown,
-): { sessionId: string; history: ReadonlyArray<AcpHistoryEntry> } | undefined {
+export function parseAcpResumeCursor(raw: unknown):
+  | {
+      sessionId: string;
+      history: ReadonlyArray<AcpHistoryEntry>;
+      newestPosition: number | undefined;
+    }
+  | undefined {
   if (!isRecord(raw)) return undefined;
   if (raw.schemaVersion !== ACP_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
   const history = Array.isArray(raw.history)
     ? raw.history.flatMap((entry) => parseHistoryEntry(entry) ?? [])
     : [];
-  return { sessionId: raw.sessionId.trim(), history };
+  const newest = raw.newestPosition;
+  return {
+    sessionId: raw.sessionId.trim(),
+    history,
+    newestPosition:
+      typeof newest === "number" && Number.isInteger(newest) && newest >= 0 ? newest : undefined,
+  };
 }
 
-function makeAcpResumeCursor(sessionId: string, history: ReadonlyArray<AcpHistoryEntry>) {
+function makeAcpResumeCursor(
+  sessionId: string,
+  history: ReadonlyArray<AcpHistoryEntry>,
+  newestPosition: number | undefined,
+) {
   return {
     schemaVersion: ACP_RESUME_VERSION,
     sessionId,
     ...(history.length > 0
       ? { history: history.slice(-ACP_HISTORY_CURSOR_LIMIT).map((entry) => ({ ...entry })) }
       : {}),
+    ...(newestPosition !== undefined ? { newestPosition } : {}),
   };
 }
 
@@ -468,7 +498,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
      * Each agent session's turn history by its id, kept after the session
      * stops: a fork of it finds its boundary here.
      */
-    const historyBySession = new Map<string, ReadonlyArray<AcpHistoryEntry>>();
+    const historyBySession = new Map<
+      string,
+      { readonly history: ReadonlyArray<AcpHistoryEntry>; readonly newest: number | undefined }
+    >();
     const adapterScope = yield* Scope.Scope;
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
@@ -484,28 +517,39 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const recordHistory = (ctx: AcpSessionContext) => {
       const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
       if (sessionId === undefined) return;
-      ctx.session = { ...ctx.session, resumeCursor: makeAcpResumeCursor(sessionId, ctx.history) };
-      historyBySession.set(
-        sessionId,
-        ctx.history.map((entry) => ({ ...entry })),
-      );
+      ctx.session = {
+        ...ctx.session,
+        resumeCursor: makeAcpResumeCursor(sessionId, ctx.history, ctx.newestPosition),
+      };
+      historyBySession.set(sessionId, {
+        history: ctx.history.map((entry) => ({ ...entry })),
+        newest: ctx.newestPosition,
+      });
     };
 
     /**
      * Asks the agent where the prompt this turn sent sits in its history,
      * once the turn has ended, for a later revert or fork to rewind to.
      */
-    const recordPromptPosition = (ctx: AcpSessionContext, turnId: TurnId, promptText: string) =>
+    const recordPromptPosition = (
+      ctx: AcpSessionContext,
+      turnId: TurnId,
+      promptText: string,
+      newestBefore: number | undefined,
+    ) =>
       Effect.gen(function* () {
         const history = descriptor.conversationHistory;
         const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
         const index = ctx.history.findIndex((candidate) => candidate.turnId === turnId);
         const entry = ctx.history[index];
         if (history === undefined || sessionId === undefined || entry === undefined) return;
+        // Everything the agent had listed before this prompt went out is
+        // older than it: an earlier turn's prompt, or what was steered in.
         const earlier = ctx.history
           .slice(0, index)
           .flatMap((candidate) => (candidate.position === undefined ? [] : [candidate.position]));
-        const position = yield* history
+        if (newestBefore !== undefined) earlier.push(newestBefore);
+        const placed = yield* history
           .promptPosition({
             acp: ctx.acp,
             sessionId,
@@ -523,8 +567,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               }).pipe(Effect.as(undefined)),
             ),
           );
-        if (position === undefined) return;
-        entry.position = position;
+        if (placed === undefined) return;
+        if (placed.newest !== undefined) {
+          ctx.newestPosition = Math.max(ctx.newestPosition ?? placed.newest, placed.newest);
+        }
+        if (placed.position !== undefined) entry.position = placed.position;
         recordHistory(ctx);
       });
 
@@ -676,6 +723,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
      */
     const openAgentTurn = (ctx: AcpSessionContext, raw: { method: string; payload: unknown }) =>
       Effect.gen(function* () {
+        // Begun as a prompt's turn closes: it opens once that turn has.
+        if (ctx.promptClosing !== undefined && ctx.agentTurn === undefined) {
+          ctx.pendingAgentTurn ??= { raw };
+          return;
+        }
         if (ctx.stopped || ctx.activeTurnId !== undefined) return;
         const turnId = TurnId.make(crypto.randomUUID());
         ctx.activeTurnId = turnId;
@@ -705,7 +757,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const closeAgentTurn = (ctx: AcpSessionContext, outcome: AcpTurnOutcome) =>
       Effect.gen(function* () {
         const agentTurn = ctx.agentTurn;
-        if (agentTurn === undefined) return;
+        if (agentTurn === undefined) {
+          if (ctx.pendingAgentTurn !== undefined) ctx.pendingAgentTurn.outcome = outcome;
+          return;
+        }
         // Its reply ends with it: the next turn's text is a message of its own.
         yield* ctx.acp.closeAssistantSegment;
         yield* ctx.acp.flushEvents;
@@ -926,14 +981,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           // the caller seeds the thread from its transcript instead.
           const conversationHistory = descriptor.conversationHistory;
           let forkRewind: number | undefined;
+          let forkNewest: number | undefined;
           if (input.forkFrom !== undefined) {
+            const source = historyBySession.get(input.forkFrom.providerThreadId);
             const rewindTo =
               conversationHistory === undefined
                 ? "unknown"
-                : forkRewindPosition(
-                    historyBySession.get(input.forkFrom.providerThreadId),
-                    input.forkFrom,
-                  );
+                : forkRewindPosition(source?.history, input.forkFrom);
             if (rewindTo === "unknown") {
               return yield* new ProviderAdapterValidationError({
                 provider: PROVIDER,
@@ -942,6 +996,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               });
             }
             forkRewind = rewindTo;
+            // The copy lists the source's prompts, up to the rewind.
+            forkNewest =
+              rewindTo === undefined ? source?.newest : rewindTo > 0 ? rewindTo - 1 : undefined;
           }
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
@@ -1281,12 +1338,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           });
 
           // A resumed conversation keeps the turn history its cursor carried.
-          const history =
+          const keepsHistory =
             resumed !== undefined &&
             started.sessionId === resumed.sessionId &&
-            started.resumeFailure === undefined
-              ? resumed.history.map((entry) => ({ ...entry }))
-              : [];
+            started.resumeFailure === undefined;
+          const history = keepsHistory ? resumed.history.map((entry) => ({ ...entry })) : [];
+          const resumedNewestPosition = keepsHistory ? resumed.newestPosition : forkNewest;
           const now = yield* nowIso;
           // ACP passes an HTTP server only to an agent that says it speaks
           // HTTP MCP (see supportedMcpServers); without that, it has no room
@@ -1302,7 +1359,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             cwd,
             model: boundModelSelection?.model,
             threadId: input.threadId,
-            resumeCursor: makeAcpResumeCursor(started.sessionId, history),
+            resumeCursor: makeAcpResumeCursor(started.sessionId, history, resumedNewestPosition),
             ...(roomToolsRequested ? { roomTools: roomToolsAttached } : {}),
             ...(started.resumeFailure !== undefined ? { resumeFailed: true } : {}),
             createdAt: now,
@@ -1340,6 +1397,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             agentTurnLastActivityMs: 0,
             toolCallTurns: new Map(),
             promptOutcome: undefined,
+            promptClosing: undefined,
+            pendingAgentTurn: undefined,
+            newestPosition: resumedNewestPosition,
             stopped: false,
           };
 
@@ -1347,9 +1407,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             Stream.mapEffect(acp.getEvents(), (event) =>
               Effect.gen(function* () {
                 switch (event._tag) {
-                  case "EventStreamBarrier":
+                  case "EventStreamBarrier": {
                     yield* Deferred.succeed(event.acknowledge, undefined);
+                    // Past a prompt's last update, what follows belongs to a
+                    // later turn: it waits until the prompt's turn has closed
+                    // (and a turn the agent began meanwhile has opened).
+                    const closing = ctx.promptClosing;
+                    if (closing !== undefined) yield* Deferred.await(closing);
                     return;
+                  }
                   case "SessionStatus":
                     if (event.message === ctx.lastProviderStatus) {
                       return;
@@ -1696,7 +1762,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const promptText = promptParts
           .flatMap((part) => (part.type === "text" ? [part.text] : []))
           .join("\n");
-        let promptReachedAgent = false;
+        const newestBefore = ctx.newestPosition;
 
         yield* offerRuntimeEvent({
           type: "turn.started",
@@ -1715,12 +1781,17 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               ...(promptMeta ? { _meta: { ...promptMeta } } : {}),
             }),
           );
+          ctx.promptClosing = yield* Deferred.make<void>();
           // Deltas travel through the notification fiber; make sure every one
           // queued before the prompt returned is out before the turn closes.
           yield* ctx.acp.flushEvents;
           // A turn that ends mid-thought (or on one) still settles its row.
           yield* closeReasoning(ctx);
-          promptReachedAgent = Exit.isSuccess(exit) || !Cause.hasInterruptsOnly(exit.cause);
+          // Where the prompt landed, known before the turn reads as ended,
+          // so a revert or a stop right after it keeps it.
+          if (Exit.isSuccess(exit) || !Cause.hasInterruptsOnly(exit.cause)) {
+            yield* recordPromptPosition(ctx, turnId, promptText, newestBefore);
+          }
           if (Exit.isSuccess(exit)) {
             const result = exit.value;
             ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
@@ -1811,26 +1882,25 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           });
         }).pipe(
           Effect.ensuring(
-            Effect.sync(() => {
+            Effect.gen(function* () {
               if (ctx.activeTurnId === turnId) {
                 ctx.activeTurnId = undefined;
+              }
+              const closing = ctx.promptClosing;
+              const pending = ctx.pendingAgentTurn;
+              ctx.promptClosing = undefined;
+              ctx.pendingAgentTurn = undefined;
+              // A turn the agent began while this one closed opens before the
+              // reader goes on to its output, and closes if it already ended.
+              if (pending !== undefined && !ctx.stopped) yield* openAgentTurn(ctx, pending.raw);
+              if (closing !== undefined) yield* Deferred.succeed(closing, undefined);
+              if (pending?.outcome !== undefined && !ctx.stopped) {
+                yield* closeAgentTurn(ctx, pending.outcome);
               }
             }),
           ),
         );
-        ctx.promptFiber = yield* Effect.forkIn(
-          runPrompt.pipe(
-            // Once the turn reads as ended (so a wake-up right after it opens
-            // a turn of its own), where its prompt landed, for a revert or
-            // fork. The next turn and a revert wait for it.
-            Effect.andThen(
-              Effect.suspend(() =>
-                promptReachedAgent ? recordPromptPosition(ctx, turnId, promptText) : Effect.void,
-              ),
-            ),
-          ),
-          ctx.scope,
-        );
+        ctx.promptFiber = yield* Effect.forkIn(runPrompt, ctx.scope);
 
         return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
       });
@@ -2027,6 +2097,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           );
         if (rewound) {
           ctx.history.splice(index);
+          // The agent now lists only the prompts before this one.
+          ctx.newestPosition = position > 0 ? position - 1 : undefined;
           recordHistory(ctx);
         }
         return { threadId, turns: ctx.turns, conversationRolledBack: rewound };

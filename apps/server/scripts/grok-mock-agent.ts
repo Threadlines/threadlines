@@ -162,6 +162,12 @@ const program = Effect.gen(function* () {
   );
   yield* agent.handleCancel(() => Effect.void);
   const rewindRequest = (method: string, params: unknown) =>
+    // `wake-now` answers slowly, holding the prompt's turn open while its
+    // wake-up starts.
+    Effect.sleep(scenario === "wake-now" ? "60 millis" : "0 millis").pipe(
+      Effect.andThen(() => rewindAnswer(method, params)),
+    );
+  const rewindAnswer = (method: string, params: unknown) =>
     Effect.sync(() => {
       const request = params as {
         readonly sessionId: string;
@@ -276,7 +282,7 @@ const program = Effect.gen(function* () {
       } else if (scenario === "error") {
         yield* turnEnded(promptId, "error", "Grok's model is overloaded. Try again soon.");
         return yield* AcpError.AcpRequestError.internalError("Internal error");
-      } else if (scenario === "wake" || scenario === "wake-twice") {
+      } else if (scenario === "wake" || scenario === "wake-twice" || scenario === "wake-now") {
         yield* sessionNotice({
           sessionUpdate: "subagent_spawned",
           subagent_id: "sub-1",
@@ -290,7 +296,7 @@ const program = Effect.gen(function* () {
         // After the prompt returns: the subagent works on its own session,
         // finishes, and Grok wakes in a turn of its own.
         yield* Effect.gen(function* () {
-          yield* Effect.sleep("150 millis");
+          yield* Effect.sleep(scenario === "wake-now" ? "5 millis" : "150 millis");
           yield* say(
             "child output that must stay out of the thread",
             "child-prompt",

@@ -295,12 +295,12 @@ describe("Grok protocol mapping", () => {
       ],
     };
     // A steer that starts like the prompt is not the prompt.
-    expect(grokPromptPosition(points, "Fix tests", undefined)).toBe(0);
+    expect(grokPromptPosition(points, "Fix tests", undefined)).toEqual({ position: 0, newest: 3 });
     // A cut preview matches its head: the first after the last placed turn.
     const long = "Refactor the session loader so it retries once";
-    expect(grokPromptPosition(points, long, 1)).toBe(2);
+    expect(grokPromptPosition(points, long, 1).position).toBe(2);
     // The same head twice, with nothing to order them by, is no answer.
-    expect(grokPromptPosition(points, long, undefined)).toBeUndefined();
+    expect(grokPromptPosition(points, long, undefined).position).toBeUndefined();
   });
 
   it("tracks a subagent and a background shell, and lets a snapshot drop a killed shell", () => {
@@ -597,6 +597,17 @@ describe("Grok sessions", () => {
 
       const refused = yield* fork("grok-fork-2", "never-seen").pipe(Effect.flip);
       expect(refused.message).toContain("can't be forked");
+    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("opens Grok's own turn even when it starts as the prompt's turn closes", () =>
+    Effect.gen(function* () {
+      const grok = yield* startGrok("wake-now");
+      yield* grok.adapter.sendTurn({ threadId: grok.threadId, input: "spawn", attachments: [] });
+      yield* grok.waitFor((events) => completedTurns(events).length === 2);
+      const [userTurn, agentTurn] = completedTurns(grok.events);
+      expect(replyTo(grok.events, userTurn!.turnId!)).toBe("ROOT_DONE");
+      expect(replyTo(grok.events, agentTurn!.turnId!)).toBe("The subagent said SUBAGENT_DONE.");
     }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
   );
 

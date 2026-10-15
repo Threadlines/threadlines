@@ -330,7 +330,15 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
     const mainHasFile = yield* fileSystem
       .exists(path.join(mainDir, entryName))
       .pipe(Effect.orElseSucceed(() => false));
-    if (!mainHasFile) continue;
+    if (!mainHasFile) {
+      // A link this overlay made, to a file the main folder no longer has
+      // (or to a main folder it no longer follows), goes. A copy of the
+      // account's own stays.
+      if (previouslyLinked.has(entryName)) {
+        yield* removeLinkIfPresent({ fileSystem, accountPath: accountDir, entryName });
+      }
+      continue;
+    }
     if (platform === "win32" && previouslyHardLinked.has(entryName)) {
       yield* relinkSplitHardLink({
         fileSystem,

@@ -199,17 +199,21 @@ export interface AcpProviderExtensions {
  */
 export interface AcpConversationHistory {
   /**
-   * Where the prompt a turn sent sits in the agent's history, asked once the
-   * turn has ended; `undefined` when the agent can't say for sure.
+   * Where the prompt a turn sent sits in the agent's history, asked as the
+   * turn ends (`position` is `undefined` when the agent can't say for sure),
+   * and the newest position the agent lists now.
    */
   readonly promptPosition: (input: {
     readonly acp: AcpSessionRuntimeShape;
     readonly sessionId: string;
     /** The prompt's text as sent, context preamble and all. */
     readonly promptText: string;
-    /** The newest position an earlier turn of the session holds, when one does. */
+    /** Positions up to this one were listed before the prompt went out. */
     readonly after: number | undefined;
-  }) => Effect.Effect<number | undefined, EffectAcpErrors.AcpError>;
+  }) => Effect.Effect<
+    { readonly position: number | undefined; readonly newest: number | undefined },
+    EffectAcpErrors.AcpError
+  >;
   /** Forgets the prompt at this position and everything after it. */
   readonly rewind: (input: {
     readonly acp: AcpSessionRuntimeShape;

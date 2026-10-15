@@ -504,20 +504,29 @@ const TRUNCATION = /(?:…|\.\.\.)$/u;
  * Where a prompt Threadlines sent sits among `_x.ai/rewind/points` (one per
  * prompt Grok was sent), by its text: a point whose preview is the whole
  * prompt, or its head when cut short. Of those, the first one after `after`
- * (the newest position an earlier turn holds): a message steered into the
- * turn or Grok's own wake-up comes after the turn's prompt, never before it.
- * Several matches with nothing to order them by is no answer.
+ * (the newest position listed before the prompt went out): a message
+ * steered into the turn or Grok's own wake-up comes after the turn's prompt,
+ * never before it. Several matches with nothing to order them by is no
+ * answer. Also the newest position listed, for the next prompt's `after`.
  */
 export function grokPromptPosition(
   points: unknown,
   promptText: string,
   after: number | undefined,
-): number | undefined {
+): { readonly position: number | undefined; readonly newest: number | undefined } {
   const decoded = decodeGrokRewindPoints(points);
-  if (decoded._tag === "None") return undefined;
+  if (decoded._tag === "None") return { position: undefined, newest: undefined };
+  const listed = decoded.value.rewindPoints ?? decoded.value.rewind_points ?? [];
+  const positions = listed.flatMap((point) => {
+    const position = point.promptIndex ?? point.prompt_index;
+    return typeof position === "number" && Number.isInteger(position) && position >= 0
+      ? [position]
+      : [];
+  });
+  const newest = positions.length > 0 ? Math.max(...positions) : undefined;
   const sent = comparableText(promptText);
-  if (!sent) return undefined;
-  const matches = (decoded.value.rewindPoints ?? decoded.value.rewind_points ?? [])
+  if (!sent) return { position: undefined, newest };
+  const matches = listed
     .flatMap((point) => {
       const position = point.promptIndex ?? point.prompt_index;
       const raw = comparableText(point.promptPreview ?? point.prompt_preview ?? "");
@@ -530,8 +539,8 @@ export function grokPromptPosition(
       return same && (after === undefined || position > after) ? [position] : [];
     })
     .toSorted((left, right) => left - right);
-  if (after === undefined && matches.length > 1) return undefined;
-  return matches[0];
+  if (after === undefined && matches.length > 1) return { position: undefined, newest };
+  return { position: matches[0], newest };
 }
 
 const GrokRewindResult = Schema.Struct({ success: Schema.optional(Schema.NullOr(Schema.Boolean)) });

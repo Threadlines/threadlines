@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as os from "node:os";
 import * as path from "node:path";
-import { lstat, mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -11,7 +11,7 @@ import { expect } from "vite-plus/test";
 import { grokContinuationKey, materializeGrokAccountFolder } from "./GrokAccountFolder.ts";
 
 it.live(
-  "lays an account over the main Grok folder: shared setup and sessions, its own sign-in",
+  "lays an account over the main Grok folder: shared setup and sessions, its own sign-in, no stale links",
   () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "grok-account-")));
@@ -41,6 +41,17 @@ it.live(
         ),
       );
       expect(auth).toBe("absent");
+
+      // A link it made to a file the main folder no longer has goes.
+      yield* Effect.promise(() => rm(path.join(mainHome, "config.toml")));
+      yield* materializeGrokAccountFolder({ mainDir: mainHome, accountDir: account });
+      const stale = yield* Effect.promise(() =>
+        lstat(path.join(account, "config.toml")).then(
+          () => "present",
+          () => "absent",
+        ),
+      );
+      expect(stale).toBe("absent");
 
       const environment = { GROK_HOME: mainHome };
       expect(grokContinuationKey(account, environment)).toBe(grokContinuationKey("", environment));
