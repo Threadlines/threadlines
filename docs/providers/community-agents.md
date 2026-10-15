@@ -6,7 +6,7 @@ can install and run them, but it has not tested them. Some features may not
 work with a given agent.
 
 The agents Threadlines supports itself (Claude, Codex, Cursor, OpenCode,
-Antigravity, fx) are not in this list. Use the built-in one.
+Antigravity, fx, Muse Code) are not in this list. Use the built-in one.
 
 ## What you are trusting
 

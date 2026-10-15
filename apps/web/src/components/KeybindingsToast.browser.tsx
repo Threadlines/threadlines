@@ -162,6 +162,12 @@ function createBaseServerConfig(): ServerConfig {
           gcpLocation: "",
           customModels: [],
         },
+        muse: {
+          enabled: false,
+          binaryPath: "",
+          allowApiKeyBilling: false,
+          customModels: [],
+        },
       },
     },
   };

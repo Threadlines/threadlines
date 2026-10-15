@@ -38,6 +38,7 @@ import {
   buildCodexLoginCommand,
   buildCursorLoginCommand,
   buildFxLoginCommand,
+  buildMuseLoginCommand,
   buildOpenCodeLoginCommand,
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
@@ -46,6 +47,8 @@ import {
   upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "@threadlines/shared/providerAuthCommands";
 
+import { ProviderApiKeyBillingSwitch } from "./ProviderApiKeyBilling";
+import { ProviderDataSharingSwitch } from "./ProviderDataSharing";
 import { LinkifiedText } from "../../lib/linkifiedText";
 import { cn } from "../../lib/utils";
 import {
@@ -109,6 +112,7 @@ const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const FX_DRIVER_KIND = ProviderDriverKind.make("fx");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
+const MUSE_DRIVER_KIND = ProviderDriverKind.make("muse");
 const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
   "binaryPath",
   "launchArgs",
@@ -927,6 +931,18 @@ function ProviderAccountSignInSection(props: {
           />
         ) : null}
 
+        {props.driverKind === MUSE_DRIVER_KIND && props.onSaveInstance ? (
+          <ProviderApiKeyBillingSwitch
+            instance={props.instance}
+            usingApiKey={props.liveProvider?.auth.type === "apiKey"}
+            onSave={props.onSaveInstance}
+          />
+        ) : null}
+
+        {props.liveProvider?.dataSharing && props.liveProvider.enabled ? (
+          <ProviderDataSharingSwitch provider={props.liveProvider} />
+        ) : null}
+
         {hasClaudeCredentialOverride ? (
           <div className="rounded-md border border-warning/35 bg-warning/8 px-3 py-2 text-xs leading-5 text-warning">
             <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
@@ -1457,6 +1473,11 @@ export function ProviderInstanceCard({
     }
     if (driverKind === FX_DRIVER_KIND) {
       return buildFxLoginCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+      });
+    }
+    if (driverKind === MUSE_DRIVER_KIND) {
+      return buildMuseLoginCommand({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
       });
     }

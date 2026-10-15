@@ -1,3 +1,4 @@
+import { EventId, TurnId } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
 import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
@@ -176,6 +177,165 @@ describe("shell commands", () => {
     expect(
       command("rm scratch.md", { executionState: "failed", blocked: { by: "user" } }),
     ).toMatchObject({ routine: true, tone: "neutral", label: "You declined to delete scratch.md" });
+  });
+
+  it("shows an approved command once, on its own row", () => {
+    const steps = deriveWorkLogEntries(
+      [
+        {
+          kind: "approval.requested",
+          summary: "Command approval requested",
+          tone: "approval" as const,
+          payload: { requestId: "r1", requestKind: "command", detail: "npm test" },
+        },
+        {
+          kind: "approval.resolved",
+          summary: "Approval resolved",
+          tone: "approval" as const,
+          payload: { requestId: "r1", requestKind: "command", decision: "accept" },
+        },
+        {
+          kind: "tool.completed",
+          summary: "Command",
+          tone: "tool" as const,
+          payload: {
+            itemType: "command_execution",
+            status: "completed",
+            data: { item: { command: "npm test", exitCode: 0 } },
+          },
+        },
+      ].map((activity, index) => ({
+        ...activity,
+        id: EventId.make(`activity-${index}`),
+        createdAt: `2026-09-24T02:50:0${index}.000Z`,
+        turnId: TurnId.make("turn-1"),
+      })),
+      undefined,
+    )
+      .map((workEntry) => activityStepFromWorkLogEntry(workEntry))
+      .filter((step) => step !== null);
+    expect(steps.map((step) => step.label)).toEqual(["Tests passed"]);
+  });
+
+  it("counts a turn's edited lines once when its edits carry their own counts", () => {
+    // Muse 1.4.9's shape and order: each edit reports its lines, and the
+    // turn's checkpoint list is first written while the first edit runs, so
+    // the server's order puts it between that edit's start and end.
+    const edit = (id: string, path: string, additions: number, times: ReadonlyArray<string>) => {
+      const base = {
+        itemType: "file_change",
+        toolCallId: id,
+        title: "File change",
+        detail: path,
+        data: { toolName: "edit_file", input: { path, find: "a", replace: "b" } },
+      };
+      return [
+        { kind: "tool.started", createdAt: times[0]!, payload: { ...base, status: "inProgress" } },
+        { kind: "tool.updated", createdAt: times[1]!, payload: { ...base, status: "inProgress" } },
+        {
+          kind: "tool.completed",
+          createdAt: times[2]!,
+          payload: {
+            ...base,
+            status: "completed",
+            data: { ...base.data, changes: [{ path, kind: "update", additions, deletions: 0 }] },
+          },
+        },
+      ];
+    };
+    const [startTip, updateTip, finishTip] = edit("call-1", "tip.js", 3, [
+      "2026-10-15T18:42:54.317Z",
+      "2026-10-15T18:42:54.365Z",
+      "2026-10-15T18:42:54.404Z",
+    ]);
+    const checkpointList = {
+      id: "checkpoint-files:thread-1:turn-1:1",
+      kind: "tool.completed",
+      createdAt: "2026-10-15T18:43:24.285Z",
+      payload: {
+        itemType: "file_change",
+        status: "completed",
+        title: "File change",
+        data: {
+          files: [
+            { path: "tip.js", kind: "modified", additions: 3, deletions: 0 },
+            { path: "tip.test.js", kind: "modified", additions: 1, deletions: 0 },
+          ],
+        },
+      },
+    };
+    const ordered = [
+      startTip,
+      updateTip,
+      checkpointList,
+      finishTip,
+      ...edit("call-2", "tip.test.js", 1, [
+        "2026-10-15T18:43:00.094Z",
+        "2026-10-15T18:43:00.145Z",
+        "2026-10-15T18:43:00.182Z",
+      ]),
+    ];
+    const activities = ordered.map((activity, index) => ({
+      id: EventId.make(
+        activity && "id" in activity ? (activity.id as string) : `activity-${index}`,
+      ),
+      kind: activity!.kind,
+      summary: "File change",
+      tone: "tool" as const,
+      payload: activity!.payload,
+      turnId: TurnId.make("turn-1"),
+      createdAt: activity!.createdAt,
+      eventSequence: index + 1,
+    }));
+    const edits = deriveWorkLogEntries(activities).filter(
+      (workEntry) => workEntry.itemType === "file_change",
+    );
+    // One row per edit, each with its own file; the list joins neither.
+    expect(edits.map((workEntry) => workEntry.changedFiles)).toEqual([["tip.js"], ["tip.test.js"]]);
+  });
+
+  it("keeps the files only the checkpoint knows about when edits carry counts", () => {
+    const activities = [
+      {
+        id: "edit-a",
+        kind: "tool.completed",
+        payload: {
+          itemType: "file_change",
+          toolCallId: "call-a",
+          status: "completed",
+          title: "File change",
+          detail: "a.ts",
+          data: { changes: [{ path: "a.ts", kind: "update", additions: 2, deletions: 1 }] },
+        },
+      },
+      {
+        // A command deleted b.ts: only the checkpoint list has it.
+        id: "checkpoint-files:thread-1:turn-1:1",
+        kind: "tool.completed",
+        payload: {
+          itemType: "file_change",
+          status: "completed",
+          title: "File change",
+          data: {
+            files: [
+              { path: "a.ts", kind: "modified", additions: 2, deletions: 1 },
+              { path: "b.ts", kind: "deleted", additions: 0, deletions: 9 },
+            ],
+          },
+        },
+      },
+    ].map((activity, index) => ({
+      ...activity,
+      id: EventId.make(activity.id),
+      summary: "File change",
+      tone: "tool" as const,
+      turnId: TurnId.make("turn-1"),
+      createdAt: `2026-09-24T02:50:0${index}.000Z`,
+    }));
+    const edits = deriveWorkLogEntries(activities).filter(
+      (workEntry) => workEntry.itemType === "file_change",
+    );
+    expect(edits.map((workEntry) => workEntry.changedFiles)).toEqual([["a.ts"], ["b.ts"]]);
   });
 
   it("recognizes a rerun of the same check", () => {

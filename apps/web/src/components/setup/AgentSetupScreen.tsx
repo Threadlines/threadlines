@@ -53,6 +53,7 @@ import {
   SourceControlToolProgress,
 } from "../settings/CompactVersionAdvisory";
 import { GitHubSignInAction, GitHubSignInStatus } from "../settings/GitHubSignInAction";
+import { ProviderDataSharingSetupChoice } from "../settings/ProviderDataSharing";
 import { ProviderInstallAction } from "../settings/ProviderInstallAction";
 import {
   buildProviderEnablementPatch,
@@ -77,6 +78,7 @@ import {
   deriveInitialPicks,
   deriveSetupAgents,
   describeFoundAgents,
+  hasOpenSetupChoice,
   setupEnablementChanges,
   stepAfterAgents,
   type SetupAgent,
@@ -253,6 +255,16 @@ function SetupAgentRow({
       break;
     case "ready":
       actions = <ReadyLabel />;
+      // A provider that trades training data for usage asks once, here.
+      if (agent.snapshot && hasOpenSetupChoice(agent)) {
+        return (
+          <SetupAgentRowFrame agent={agent} updateControls={updateControls} actions={actions}>
+            <div className="pb-3 pl-9 pr-1">
+              <ProviderDataSharingSetupChoice provider={agent.snapshot} />
+            </div>
+          </SetupAgentRowFrame>
+        );
+      }
       break;
     case "problem":
       actions = updateControls.candidate ? (

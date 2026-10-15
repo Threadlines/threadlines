@@ -5,6 +5,7 @@ import {
   CodexSettings,
   CursorSettings,
   FxSettings,
+  MuseSettings,
   OpenCodeSettings,
   AntigravitySettings,
   ProviderDriverKind,
@@ -17,6 +18,7 @@ import {
   CursorIcon,
   FxIcon,
   type Icon,
+  MuseIcon,
   OpenAI,
   OpenCodeIcon,
 } from "../Icons";
@@ -87,6 +89,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     icon: AntigravityIcon,
     settingsSchema: AntigravitySettings,
     needs: "Google account or Gemini API key",
+  },
+  {
+    value: ProviderDriverKind.make("muse"),
+    label: "Muse Code",
+    icon: MuseIcon,
+    settingsSchema: MuseSettings,
+    needs: "Meta account with a Muse plan",
   },
 ];
 

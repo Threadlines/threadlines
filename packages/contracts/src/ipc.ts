@@ -150,6 +150,8 @@ import type {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
   ServerProcessResourceHistoryResult,
+  ServerProviderDataSharingSetInput,
+  ServerProviderDataSharingSetResult,
   ServerProviderRateLimitResetCreditConsumeInput,
   ServerProviderRateLimitResetCreditConsumeResult,
   ServerProviderUpdateBlockerResolutionResult,
@@ -1268,6 +1270,10 @@ export interface LocalApi {
     consumeProviderRateLimitResetCredit: (
       input: ServerProviderRateLimitResetCreditConsumeInput,
     ) => Promise<ServerProviderRateLimitResetCreditConsumeResult>;
+    /** Saves a provider's data-sharing choice (Muse Code's Contributor mode). */
+    setProviderDataSharing: (
+      input: ServerProviderDataSharingSetInput,
+    ) => Promise<ServerProviderDataSharingSetResult>;
     updateProvider: (input: ServerProviderUpdateInput) => Promise<ServerProviderUpdatedPayload>;
     /** Creates an extra account (instance + private folder) on the server. */
     addProviderAccount: (input: ProviderAccountAddInput) => Promise<ProviderAccountAddResult>;
