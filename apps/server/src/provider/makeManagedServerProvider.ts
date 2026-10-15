@@ -60,6 +60,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   readonly retryDelay?: Duration.Input;
 }): Effect.fn.Return<ServerProviderShape, ServerSettingsError, Scope.Scope> {
   const refreshSemaphore = yield* Semaphore.make(1);
+  // Held while the snapshot changes and the change is published, and while
+  // a subscriber joins: each subscriber sees the changes in the order they
+  // happened, and one that joins misses none (`streamSnapshots`).
+  const publishLock = yield* Semaphore.make(1);
   const changesPubSub = yield* Effect.acquireRelease(
     PubSub.unbounded<ServerProvider>(),
     PubSub.shutdown,
@@ -80,34 +84,38 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     enrich: (current: ServerProvider) => ServerProvider,
   ) {
     const now = DateTime.formatIso(yield* DateTime.now);
-    const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
-      if (state.enrichmentGeneration !== generation) {
-        return [null, state] as const;
-      }
-      const enriched = enrich(state.snapshot);
-      if (Equal.equals(state.snapshot, enriched)) {
-        return [null, state] as const;
-      }
-      // Later than the snapshot it builds on: the registry keeps the newer of
-      // two snapshots by `checkedAt`, and a copy of the plain one that reaches
-      // it second (a newly added instance is read and streamed at once) would
-      // otherwise replace this one, losing what the enrichment added.
-      const nextSnapshot =
-        enriched.checkedAt > state.snapshot.checkedAt
-          ? enriched
-          : { ...enriched, checkedAt: laterThan(state.snapshot.checkedAt, now) };
-      return [
-        nextSnapshot,
-        {
-          ...state,
-          snapshot: nextSnapshot,
-        },
-      ] as const;
-    });
-    if (snapshotToPublish === null) {
-      return;
-    }
-    yield* PubSub.publish(changesPubSub, snapshotToPublish);
+    yield* publishLock.withPermits(1)(
+      Effect.gen(function* () {
+        const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
+          if (state.enrichmentGeneration !== generation) {
+            return [null, state] as const;
+          }
+          const enriched = enrich(state.snapshot);
+          if (Equal.equals(state.snapshot, enriched)) {
+            return [null, state] as const;
+          }
+          // Later than the snapshot it builds on: the registry keeps the newer of
+          // two snapshots by `checkedAt`, and a copy of the plain one that reaches
+          // it second (a newly added instance is read and streamed at once) would
+          // otherwise replace this one, losing what the enrichment added.
+          const nextSnapshot =
+            enriched.checkedAt > state.snapshot.checkedAt
+              ? enriched
+              : { ...enriched, checkedAt: laterThan(state.snapshot.checkedAt, now) };
+          return [
+            nextSnapshot,
+            {
+              ...state,
+              snapshot: nextSnapshot,
+            },
+          ] as const;
+        });
+        if (snapshotToPublish === null) {
+          return;
+        }
+        yield* PubSub.publish(changesPubSub, snapshotToPublish);
+      }),
+    );
   });
 
   const restartSnapshotEnrichment = Effect.fn("restartSnapshotEnrichment")(function* (
@@ -149,23 +157,28 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     }
 
     const checkedSnapshot = yield* input.checkProvider;
-    const [nextSnapshot, nextGeneration] = yield* Ref.modify(snapshotStateRef, (state) => {
-      const generation = input.enrichSnapshot
-        ? state.enrichmentGeneration + 1
-        : state.enrichmentGeneration;
-      const snapshot = input.reconcileSnapshot
-        ? input.reconcileSnapshot(state.snapshot, checkedSnapshot)
-        : checkedSnapshot;
-      return [
-        [snapshot, generation] as const,
-        {
-          snapshot,
-          enrichmentGeneration: generation,
-        },
-      ] as const;
-    });
+    const [nextSnapshot, nextGeneration] = yield* publishLock.withPermits(1)(
+      Effect.gen(function* () {
+        const changed = yield* Ref.modify(snapshotStateRef, (state) => {
+          const generation = input.enrichSnapshot
+            ? state.enrichmentGeneration + 1
+            : state.enrichmentGeneration;
+          const snapshot = input.reconcileSnapshot
+            ? input.reconcileSnapshot(state.snapshot, checkedSnapshot)
+            : checkedSnapshot;
+          return [
+            [snapshot, generation] as const,
+            {
+              snapshot,
+              enrichmentGeneration: generation,
+            },
+          ] as const;
+        });
+        yield* PubSub.publish(changesPubSub, changed[0]);
+        return changed;
+      }),
+    );
     yield* Ref.set(settingsRef, nextSettings);
-    yield* PubSub.publish(changesPubSub, nextSnapshot);
     yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
     return nextSnapshot;
   });
@@ -218,23 +231,28 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const patchSnapshot = Effect.fn("patchSnapshot")(function* (
     patch: (current: ServerProvider) => ServerProvider | null,
   ) {
-    const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
-      const nextSnapshot = patch(state.snapshot);
-      if (nextSnapshot === null || nextSnapshot === state.snapshot) {
-        return [null, state] as const;
-      }
-      return [
-        nextSnapshot,
-        {
-          ...state,
-          snapshot: nextSnapshot,
-        },
-      ] as const;
-    });
+    const snapshotToPublish = yield* publishLock.withPermits(1)(
+      Effect.gen(function* () {
+        const patched = yield* Ref.modify(snapshotStateRef, (state) => {
+          const nextSnapshot = patch(state.snapshot);
+          if (nextSnapshot === null || nextSnapshot === state.snapshot) {
+            return [null, state] as const;
+          }
+          return [
+            nextSnapshot,
+            {
+              ...state,
+              snapshot: nextSnapshot,
+            },
+          ] as const;
+        });
+        if (patched !== null) yield* PubSub.publish(changesPubSub, patched);
+        return patched;
+      }),
+    );
     if (snapshotToPublish === null) {
       return;
     }
-    yield* PubSub.publish(changesPubSub, snapshotToPublish);
     if (input.shouldRetrySnapshot) {
       yield* reconcileSnapshotRetry(snapshotToPublish);
     }
@@ -266,6 +284,19 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     refresh: refreshSnapshot().pipe(Effect.tapError(Effect.logError), Effect.orDie),
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
+    },
+    // Joined under the publish lock: the snapshot read here is the newest,
+    // and every change after it is in the subscription, in order.
+    get streamSnapshots() {
+      return Stream.unwrap(
+        publishLock.withPermits(1)(
+          Effect.gen(function* () {
+            const subscription = yield* PubSub.subscribe(changesPubSub);
+            const { snapshot } = yield* Ref.get(snapshotStateRef);
+            return Stream.concat(Stream.make(snapshot), Stream.fromSubscription(subscription));
+          }),
+        ),
+      );
     },
     patchSnapshot,
   } satisfies ServerProviderShape;

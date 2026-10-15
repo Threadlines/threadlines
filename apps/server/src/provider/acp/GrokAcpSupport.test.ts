@@ -298,8 +298,9 @@ describe("Grok protocol mapping", () => {
     expect(grokPromptPosition(points, "Fix tests", undefined)).toEqual({ position: 0, newest: 3 });
     // A prompt of several lines matches its first line, after the last placed turn.
     const long = "Refactor the session loader\n\nso it retries once";
-    expect(grokPromptPosition(points, long, 1).position).toBe(2);
-    // The same head twice, with nothing to order them by, is no answer.
+    expect(grokPromptPosition(points, long, 2).position).toBe(3);
+    // Two unplaced prompts that open alike (an earlier lookup failed) are no answer.
+    expect(grokPromptPosition(points, long, 1).position).toBeUndefined();
     expect(grokPromptPosition(points, long, undefined).position).toBeUndefined();
   });
 

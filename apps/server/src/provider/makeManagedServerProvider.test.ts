@@ -348,6 +348,36 @@ describe("makeManagedServerProvider", () => {
       ),
   );
 
+  it.effect("opens a late subscriber on the newest snapshot, then the changes after it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // The check and its enrichment finish before anyone follows the provider.
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Effect.succeed(refreshedSnapshot),
+          enrichSnapshot: ({ publishSnapshot }) => publishSnapshot(enrichedSnapshot),
+          refreshInterval: "1 hour",
+        });
+        while ((yield* provider.getSnapshot).models !== enrichedSnapshot.models) {
+          yield* Effect.yieldNow;
+        }
+        const followed = yield* Stream.take(provider.streamSnapshots!, 2).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* provider.patchSnapshot((current) => ({ ...current, message: "patched" }));
+        const [opened, changed] = Array.from(yield* Fiber.join(followed));
+        assert.deepStrictEqual(opened, enrichedSnapshot);
+        assert.strictEqual(changed!.message, "patched");
+      }),
+    ),
+  );
+
   it.effect("ignores stale enrichment callbacks after a newer refresh advances generation", () =>
     Effect.scoped(
       Effect.gen(function* () {

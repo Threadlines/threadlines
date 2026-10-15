@@ -504,11 +504,10 @@ const TRUNCATION = /(?:…|\.\.\.)$/u;
  * Where a prompt Threadlines sent sits among `_x.ai/rewind/points` (one per
  * prompt Grok was sent; a message steered into a turn adds none), by its
  * text: Grok's preview is the prompt's head (its first line, Grok 1.0.52),
- * so a point matches when the sent text starts with it. Of those, the first
- * one after `after` (the newest position listed before the prompt went out):
- * Grok's own wake-up comes after the turn's prompt, never before it. Several
- * matches with nothing to order them by is no answer. Also the newest
- * position listed, for the next prompt's `after`.
+ * so a point after `after` (the newest position listed before the prompt
+ * went out) matches when the sent text starts with it. Exactly one match is
+ * the answer; none or several is no answer. Also the newest position
+ * listed, for the next prompt's `after`.
  */
 export function grokPromptPosition(
   points: unknown,
@@ -539,7 +538,9 @@ export function grokPromptPosition(
         : [];
     })
     .toSorted((left, right) => left - right);
-  if (after === undefined && matches.length > 1) return { position: undefined, newest };
+  // Two candidates mean one wasn't accounted for (an earlier turn's lookup
+  // failed and both prompts open alike): placing either could rewind too far.
+  if (matches.length > 1) return { position: undefined, newest };
   return { position: matches[0], newest };
 }
 
