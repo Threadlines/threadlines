@@ -7,6 +7,8 @@ const path = require("node:path");
 const DEFAULT_TIMEOUT_SECONDS = 45 * 60;
 const DEFAULT_POLL_SECONDS = 30;
 const MAX_CONSECUTIVE_POLL_ERRORS = 8;
+const DEFAULT_STAPLE_ATTEMPTS = 4;
+const STAPLE_RETRY_SECONDS = 30;
 const NON_RETRYABLE_SUBMIT_PATTERNS = [
   /HTTP status code:\s*(401|403)\b/u,
   /A required agreement is missing or has expired/u,
@@ -199,10 +201,41 @@ function waitForAccepted(submissionId) {
   );
 }
 
+function runStapler(action, appPath) {
+  execFileSync("xcrun", ["stapler", action, appPath], { stdio: "inherit" });
+}
+
+/**
+ * Runs one `xcrun stapler` action, retrying any failure. Both `staple` and
+ * `validate` look the ticket up on Apple's CloudKit service, which drops
+ * connections now and then (NSURLError -1005, stapler Error 68) and can lag
+ * just after a submission is accepted. A real problem with the app fails every
+ * attempt, so it still fails the build.
+ */
+function runStaplerWithRetries(action, appPath, options) {
+  const { attempts, run = runStapler, wait = sleep } = options;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      run(action, appPath);
+      return;
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      console.warn(
+        `[threadlines-notary] stapler ${action} failed (attempt ${attempt}/${attempts}); retrying in ${STAPLE_RETRY_SECONDS} seconds.`,
+      );
+      wait(STAPLE_RETRY_SECONDS);
+    }
+  }
+}
+
 function staple(appPath) {
+  const attempts = readPositiveIntEnv(
+    "THREADLINES_NOTARY_STAPLE_ATTEMPTS",
+    DEFAULT_STAPLE_ATTEMPTS,
+  );
   console.log(`[threadlines-notary] Stapling ${appPath}...`);
-  execFileSync("xcrun", ["stapler", "staple", appPath], { stdio: "inherit" });
-  execFileSync("xcrun", ["stapler", "validate", appPath], { stdio: "inherit" });
+  runStaplerWithRetries("staple", appPath, { attempts });
+  runStaplerWithRetries("validate", appPath, { attempts });
 }
 
 module.exports = async function notarizeAfterSign(context) {
@@ -225,3 +258,4 @@ module.exports = async function notarizeAfterSign(context) {
 module.exports.isNonRetryableSubmitError = isNonRetryableSubmitError;
 module.exports.formatNonRetryableSubmitFailure = formatNonRetryableSubmitFailure;
 module.exports.redactNotarySecrets = redactNotarySecrets;
+module.exports.runStaplerWithRetries = runStaplerWithRetries;
