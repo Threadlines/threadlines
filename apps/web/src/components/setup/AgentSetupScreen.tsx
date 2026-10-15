@@ -455,11 +455,11 @@ function SourceControlRows({ environmentId }: { readonly environmentId: Environm
 
 function SectionLabel({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 border-b border-border/60 px-1 pb-1.5">
-      <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55">
+    <div className="mb-2 flex items-baseline justify-between gap-3 px-1">
+      <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
         {children}
       </span>
-      {aside ? <span className="text-[11.5px] text-muted-foreground/62">{aside}</span> : null}
+      {aside ? <span className="text-[11.5px] text-muted-foreground">{aside}</span> : null}
     </div>
   );
 }
