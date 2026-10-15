@@ -2710,7 +2710,9 @@ describe("GeneralSettingsPanel observability", () => {
     // Off, but still where it was: a wrong click is one click to undo.
     expect(sitsUnderNotInUse()).toBe(false);
 
-    await userEvent.unhover(codexRow().parentElement!);
+    // Onto the page's lede, above the list. A plain unhover can leave the
+    // pointer over a lower row once the list is long, and the row never lets go.
+    await userEvent.hover(page.getByText(/^Agents run on this computer/));
     await vi.waitFor(() => {
       expect(sitsUnderNotInUse()).toBe(true);
     });

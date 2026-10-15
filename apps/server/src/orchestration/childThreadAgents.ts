@@ -20,8 +20,8 @@ import { inviteBilling, inviteProviderName } from "./agentInvites.ts";
 
 /**
  * Drivers known to honor plan mode: Codex (its plan collaboration mode),
- * Claude (permission mode `plan`), OpenCode (its plan agent) and Antigravity
- * (`/plan`). Cursor and fx plan only if their ACP agent happens to offer a
+ * Claude (permission mode `plan`), OpenCode (its plan agent), Antigravity
+ * (`/plan`) and Muse Code (a read-only host). Cursor and fx plan only if their ACP agent happens to offer a
  * plan session mode, which is unknown until a session starts, so they are
  * left out while the asking thread plans.
  */
@@ -30,6 +30,8 @@ export const PLAN_MODE_DRIVERS: ReadonlySet<string> = new Set([
   "claudeAgent",
   "opencode",
   "antigravity",
+  // A read-only host whose answer is the plan.
+  "muse",
 ]);
 
 /** The provider's name, as the agent and the approval card see it. */

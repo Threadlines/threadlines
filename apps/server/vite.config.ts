@@ -4,6 +4,8 @@ import { defineConfig, mergeConfig } from "vite-plus";
 import baseConfig from "../../vite.config.ts";
 
 const bundledPackagePrefixes = [
+  // Muse Code's protocol client: ESM with no dependencies of its own.
+  "@muse-code/",
   // OpenCode 2's client (with its schema and protocol packages): bundled so a
   // packed server never installs the client's own copy of effect.
   "@opencode/",

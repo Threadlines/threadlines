@@ -17,6 +17,7 @@ import {
   type OrchestrationBackgroundTaskKind,
   type OrchestrationLatestTurn,
   type OrchestrationSubagent,
+  CHECKPOINT_FILES_ACTIVITY_ID_PREFIX,
   type OrchestrationThreadActivity,
   type OrchestrationThreadDiffStat,
   type OrchestrationProposedPlanId,
@@ -95,6 +96,12 @@ export const PROVIDER_OPTIONS: Array<{
   { value: ProviderDriverKind.make("cursor"), label: "Cursor", available: true },
   { value: ProviderDriverKind.make("opencode"), label: "OpenCode", available: true },
   { value: ProviderDriverKind.make("antigravity"), label: "Antigravity", available: true },
+  {
+    value: ProviderDriverKind.make("muse"),
+    label: "Muse Code",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
 ];
 
 export interface WorkLogImagePreview {
@@ -2889,6 +2896,11 @@ export function deriveWorkLogEntries(
           "[ede_diagnostic]",
         ),
     )
+    // The approval card shows a request while it is open (from the raw
+    // activities), and the call's own row shows what came of it. As entries
+    // they would read as extra runs, or merge into an edit's row.
+    .filter((activity) => activity.kind !== "approval.requested")
+    .filter((activity) => activity.kind !== "approval.resolved")
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "subagent.result")
     .filter((activity) => activity.kind !== "subagent.metadata")
@@ -2920,7 +2932,9 @@ export function deriveWorkLogEntries(
     collapseBrowserReceipts(
       markBlockedSteps(
         foldCommandTaskCompletions(
-          collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
+          collapseDerivedWorkLogEntries(dropCountedCheckpointFileSummaries(entries)).filter(
+            shouldKeepDerivedWorkLogEntry,
+          ),
         ),
         denials,
       ),
@@ -3579,6 +3593,49 @@ function formatNaturalList(values: ReadonlyArray<string>): string {
   if (values.length <= 1) return values[0] ?? "page";
   if (values.length === 2) return `${values[0]} and ${values[1]}`;
   return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
+}
+
+/**
+ * Trims a turn's checkpoint file list to the files the turn's own edits did
+ * not count (Muse, OpenCode and Antigravity edits carry their line counts):
+ * summed with them, every line would count twice. Files only the checkpoint
+ * knows about (a deletion by a command, a generated file) stay, and a turn
+ * whose edits carry no counts (Claude) keeps the whole list. Runs before steps
+ * merge: the list can land between an edit's start and end.
+ */
+function dropCountedCheckpointFileSummaries(
+  entries: ReadonlyArray<DerivedWorkLogEntry>,
+): DerivedWorkLogEntry[] {
+  const isCheckpointList = (entry: DerivedWorkLogEntry) =>
+    entry.id.startsWith(CHECKPOINT_FILES_ACTIVITY_ID_PREFIX);
+  const pathKey = (path: string) => path.replaceAll("\\", "/").replace(/^(?:\.\/)+/u, "");
+  const countedByTurn = new Map<string | null, Set<string>>();
+  for (const entry of entries) {
+    if (isCheckpointList(entry) || entry.itemType !== "file_change") continue;
+    for (const stat of entry.changedFileStats ?? []) {
+      const turn = entry.turnId ?? null;
+      const counted = countedByTurn.get(turn) ?? new Set<string>();
+      counted.add(pathKey(stat.path));
+      countedByTurn.set(turn, counted);
+    }
+  }
+  return entries.flatMap((entry) => {
+    const counted = isCheckpointList(entry) ? countedByTurn.get(entry.turnId ?? null) : undefined;
+    if (!counted) return [entry];
+    const changedFiles = (entry.changedFiles ?? []).filter((path) => !counted.has(pathKey(path)));
+    const changedFileStats = (entry.changedFileStats ?? []).filter(
+      (stat) => !counted.has(pathKey(stat.path)),
+    );
+    if (changedFiles.length === 0 && changedFileStats.length === 0) return [];
+    const { changedFiles: _files, changedFileStats: _stats, ...rest } = entry;
+    return [
+      {
+        ...rest,
+        ...(changedFiles.length > 0 ? { changedFiles } : {}),
+        ...(changedFileStats.length > 0 ? { changedFileStats } : {}),
+      },
+    ];
+  });
 }
 
 function shouldKeepDerivedWorkLogEntry(entry: DerivedWorkLogEntry): boolean {
