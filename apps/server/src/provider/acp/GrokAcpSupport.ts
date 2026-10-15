@@ -18,16 +18,20 @@
 import {
   GrokSettings,
   ProviderDriverKind,
+  type ServerProviderAccountUsage,
   type ServerProviderAuth,
   type ServerProviderModel,
 } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { expandHomePath } from "../../pathExpansion.ts";
+import { grokContinuationKey } from "../grok/GrokAccountFolder.ts";
 import {
   detectGrokBinary,
   GROK_INSTALL,
@@ -111,7 +115,7 @@ export function grokProcessEnvironment(
   const env: NodeJS.ProcessEnv = { ...environment };
   const accountFolder = settings.accountFolder.trim();
   if (accountFolder) {
-    env.GROK_HOME = accountFolder;
+    env.GROK_HOME = expandHomePath(accountFolder);
     for (const name of GROK_ACCOUNT_OVERRIDE_VARIABLES) delete env[name];
   }
   if (settings.authMethod !== "api-key") {
@@ -283,6 +287,69 @@ export function grokModelsFromModelState(
   });
 }
 
+// ── Usage ─────────────────────────────────────────────────────────────
+
+const GrokBilling = Schema.Struct({
+  config: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        creditUsagePercent: Schema.optional(Schema.NullOr(Schema.Number)),
+        currentPeriod: Schema.optional(
+          Schema.NullOr(
+            Schema.Struct({
+              type: Schema.optional(Schema.NullOr(Schema.String)),
+              end: Schema.optional(Schema.NullOr(Schema.String)),
+            }),
+          ),
+        ),
+      }),
+    ),
+  ),
+  subscription_tier: Schema.optional(Schema.NullOr(Schema.String)),
+});
+const decodeGrokBilling = Schema.decodeUnknownOption(GrokBilling);
+
+const WEEK_MINS = 7 * 24 * 60;
+const MONTH_MINS = 30 * 24 * 60;
+
+/**
+ * The plan's usage from `_x.ai/billing`: one window, weekly or monthly, as a
+ * percent of the plan's credits. No percent yet means nothing metered so far
+ * (a new period), which reads as 0% rather than as unknown.
+ */
+export function grokAccountUsage(
+  billing: unknown,
+  checkedAt: string,
+): ServerProviderAccountUsage | undefined {
+  const decoded = decodeGrokBilling(billing);
+  if (decoded._tag === "None") return undefined;
+  const config = decoded.value.config;
+  const period = config?.currentPeriod;
+  if (!config || !period) return undefined;
+  const usedPercent = Math.min(100, Math.max(0, Math.round(config.creditUsagePercent ?? 0)));
+  const resetsAt = period.end ? Date.parse(period.end) : Number.NaN;
+  const monthly = period.type?.toUpperCase().includes("MONTH") === true;
+  const tier = decoded.value.subscription_tier?.trim();
+  return {
+    source: "grok-billing",
+    checkedAt,
+    primaryLimitId: "grok",
+    limits: [
+      {
+        limitId: "grok",
+        ...(tier ? { planType: tier } : {}),
+        primary: {
+          usedPercent,
+          remainingPercent: 100 - usedPercent,
+          ...(Number.isFinite(resetsAt) && resetsAt > 0 ? { resetsAt } : {}),
+          windowDurationMins: monthly ? MONTH_MINS : WEEK_MINS,
+          checkedAt,
+        },
+      },
+    ],
+  };
+}
+
 // ── Status probe ──────────────────────────────────────────────────────
 
 const GROK_INITIALIZE_META = { clientType: "extension" } as const;
@@ -331,7 +398,13 @@ export const probeGrok = Effect.fn("probeGrok")(function* (
       _meta: GROK_INITIALIZE_META,
     });
     const info = yield* acp.request("_x.ai/auth/info", {}).pipe(Effect.option);
-    return { initialize, info };
+    // The plan's meter, read through Grok so it sends its own headers and
+    // renews the token. A key bills per token: there is no plan to meter.
+    const billing =
+      settings.authMethod === "api-key"
+        ? undefined
+        : yield* acp.request("_x.ai/billing", {}).pipe(Effect.option);
+    return { initialize, info, billing };
   }).pipe(Effect.scoped, Effect.timeoutOption(GROK_PROBE_TIMEOUT), Effect.result);
 
   if (outcome._tag === "Failure") {
@@ -352,7 +425,7 @@ export const probeGrok = Effect.fn("probeGrok")(function* (
       message: "Grok took too long to start. It will be checked again.",
     };
   }
-  const { initialize, info } = outcome.success.value;
+  const { initialize, info, billing } = outcome.success.value;
   const meta = decodeGrokInitializeResult(initialize).pipe((decoded) =>
     decoded._tag === "Some" ? (decoded.value._meta ?? undefined) : undefined,
   );
@@ -375,6 +448,10 @@ export const probeGrok = Effect.fn("probeGrok")(function* (
       }
     : { status: "unauthenticated" };
   const blocked = account?.userBlockedReason?.trim();
+  const accountUsage =
+    signedIn && billing?._tag === "Some"
+      ? grokAccountUsage(billing.value, DateTime.formatIso(yield* DateTime.now))
+      : undefined;
   return {
     installed: true,
     version: meta?.agentVersion?.trim() || null,
@@ -386,6 +463,7 @@ export const probeGrok = Effect.fn("probeGrok")(function* (
         ? { message: GROK_SIGNED_OUT_MESSAGE }
         : {}),
     models: grokModelsFromModelState(meta?.modelState),
+    ...(accountUsage ? { accountUsage } : {}),
   };
 });
 
@@ -426,7 +504,35 @@ export const GROK_ACP_DESCRIPTOR: AcpProviderDescriptor<GrokSettings> = {
     return { promptId, requestId: promptId };
   },
   agentTurns: true,
+  continuationKey: (settings, environment) =>
+    grokContinuationKey(settings.accountFolder, environment),
   sessionModeForTurn: (interactionMode) => (interactionMode === "plan" ? "plan" : "default"),
+  // Grok queues a mid-turn message into the running turn (`interject`, 1.0.14+).
+  steer: ({ acp, sessionId, text, content }) =>
+    acp
+      .request("_x.ai/interject", {
+        sessionId,
+        text,
+        ...(content.some((block) => block.type !== "text") ? { content } : {}),
+      })
+      .pipe(Effect.asVoid),
+  // Every update carries the context fill so far; the window is the model's.
+  contextUsage: {
+    usedTokens: (notification) => {
+      const total = notification._meta?.totalTokens;
+      return typeof total === "number" && Number.isFinite(total) && total >= 0
+        ? Math.round(total)
+        : undefined;
+    },
+    windowTokens: (setup) => {
+      const models = setup.models;
+      const current = models?.availableModels.find(
+        (model) => model.modelId === models.currentModelId,
+      );
+      const window = current?._meta?.totalContextTokens;
+      return typeof window === "number" && window > 0 ? window : undefined;
+    },
+  },
   // Grok's only session-scoped "always" is the edit prompt's; its shell, monitor
   // and MCP `always-allow` save a grant for the whole project.
   isLastingPermissionOption: (option) =>

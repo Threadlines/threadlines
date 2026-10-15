@@ -74,7 +74,14 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * parsing is worth roughly an order of magnitude on a 30-day window.
  */
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  return provider === "claude" ? line.includes('"usage"') : line.includes('"token_count"');
+  switch (provider) {
+    case "claude":
+      return line.includes('"usage"');
+    case "codex":
+      return line.includes('"token_count"');
+    case "grok":
+      return line.includes('"turn_completed"');
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -328,4 +335,146 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     // rollout, so they need no global dedup.
     dedupeKey: null,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Grok Build                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/** Grok reports cost in integer ticks: 1 USD = 10^10 ticks. */
+const GROK_COST_TICKS_PER_DOLLAR = 10_000_000_000;
+
+interface GrokUsageTotals {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly reasoningTokens: number;
+  readonly costUsdTicks: number | null;
+}
+
+function readGrokUsageTotals(value: unknown): GrokUsageTotals | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const ticks = record["costUsdTicks"];
+  return {
+    inputTokens: int(record["inputTokens"]),
+    outputTokens: int(record["outputTokens"]),
+    cachedReadTokens: int(record["cachedReadTokens"]),
+    cacheCreationTokens: int(record["cacheCreationTokens"]),
+    reasoningTokens: int(record["reasoningTokens"]),
+    costUsdTicks: typeof ticks === "number" && Number.isFinite(ticks) && ticks >= 0 ? ticks : null,
+  };
+}
+
+/** Grok counts cached input inside `inputTokens`, as Codex does. */
+function grokTotals(totals: GrokUsageTotals): UsageTokenTotals {
+  return {
+    uncachedInputTokens: Math.max(
+      0,
+      totals.inputTokens - totals.cachedReadTokens - totals.cacheCreationTokens,
+    ),
+    cachedInputTokens: totals.cachedReadTokens,
+    cacheCreationTokens: totals.cacheCreationTokens,
+    outputTokens: totals.outputTokens,
+    reasoningTokens: Math.min(totals.outputTokens, totals.reasoningTokens),
+  };
+}
+
+const grokTicksToUsd = (ticks: number | null) =>
+  ticks === null ? null : ticks / GROK_COST_TICKS_PER_DOLLAR;
+
+/**
+ * Parses one line of a Grok Build session log (`sessions/<cwd>/<id>/updates.jsonl`).
+ *
+ * Usage lands on `turn_completed` updates, with a per-model breakdown under
+ * `usage.modelUsage`; each model becomes its own record. A model without its
+ * own cost gets a token-share slice of what the turn's total cost leaves.
+ */
+export function parseGrokLine(line: string): readonly UsageRecord[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+  const record = parsed as Record<string, unknown>;
+  const params = record["params"];
+  if (typeof params !== "object" || params === null) return [];
+  const paramsRecord = params as Record<string, unknown>;
+  const update = paramsRecord["update"];
+  if (typeof update !== "object" || update === null) return [];
+  const updateRecord = update as Record<string, unknown>;
+  if (updateRecord["sessionUpdate"] !== "turn_completed") return [];
+  const usage = readGrokUsageTotals(updateRecord["usage"]);
+  if (usage === null) return [];
+
+  const sessionId = typeof paramsRecord["sessionId"] === "string" ? paramsRecord["sessionId"] : "";
+  const promptId = typeof updateRecord["prompt_id"] === "string" ? updateRecord["prompt_id"] : null;
+  const meta = paramsRecord["_meta"];
+  const agentTimestampMs =
+    typeof meta === "object" && meta !== null
+      ? (meta as Record<string, unknown>)["agentTimestampMs"]
+      : undefined;
+  const outerTimestamp = record["timestamp"];
+  const timestampMs =
+    typeof agentTimestampMs === "number" && Number.isFinite(agentTimestampMs)
+      ? agentTimestampMs
+      : typeof outerTimestamp === "number" && Number.isFinite(outerTimestamp)
+        ? outerTimestamp > 1e12
+          ? outerTimestamp
+          : outerTimestamp * 1000
+        : null;
+  if (timestampMs === null) return [];
+
+  const make = (model: string, totals: UsageTokenTotals, costUsd: number | null): UsageRecord => ({
+    provider: "grok",
+    timestampMs,
+    model,
+    sessionId,
+    totals,
+    cacheCreation1hTokens: 0,
+    reportedCostUsd: costUsd,
+    // Without a prompt id two same-moment turns can't be told apart.
+    dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:${model}`,
+  });
+
+  const byModel = updateRecord["usage"] as Record<string, unknown>;
+  const modelUsage = byModel["modelUsage"];
+  const entries: Array<{ readonly model: string; readonly totals: GrokUsageTotals }> = [];
+  if (typeof modelUsage === "object" && modelUsage !== null) {
+    for (const [model, raw] of Object.entries(modelUsage as Record<string, unknown>)) {
+      const totals = model.length > 0 ? readGrokUsageTotals(raw) : null;
+      if (totals !== null) entries.push({ model, totals });
+    }
+  }
+  if (entries.length === 0) {
+    const totals = grokTotals(usage);
+    return totalTokens(totals) === 0
+      ? []
+      : [make("grok", totals, grokTicksToUsd(usage.costUsdTicks))];
+  }
+
+  const turnCostUsd = grokTicksToUsd(usage.costUsdTicks);
+  let ownCostUsd = 0;
+  let untickedTokens = 0;
+  for (const entry of entries) {
+    const tokens = totalTokens(grokTotals(entry.totals));
+    if (tokens === 0) continue;
+    if (entry.totals.costUsdTicks !== null)
+      ownCostUsd += grokTicksToUsd(entry.totals.costUsdTicks) ?? 0;
+    else untickedTokens += tokens;
+  }
+  const leftoverUsd = turnCostUsd === null ? null : Math.max(0, turnCostUsd - ownCostUsd);
+  return entries.flatMap((entry) => {
+    const totals = grokTotals(entry.totals);
+    const tokens = totalTokens(totals);
+    if (tokens === 0) return [];
+    const ownCost = grokTicksToUsd(entry.totals.costUsdTicks);
+    const cost =
+      ownCost ??
+      (leftoverUsd !== null && untickedTokens > 0 ? leftoverUsd * (tokens / untickedTokens) : null);
+    return [make(entry.model, totals, cost)];
+  });
 }

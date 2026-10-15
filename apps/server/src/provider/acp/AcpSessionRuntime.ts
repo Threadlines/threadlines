@@ -129,6 +129,16 @@ export interface AcpSessionRuntimeOptions {
    * that starts turns of its own), not replayed history to drop.
    */
   readonly liveOutsidePrompt?: boolean;
+  /** Context fill carried on the agent's own updates (see `AcpProviderDescriptor.contextUsage`). */
+  readonly contextUsage?: {
+    readonly usedTokens: (notification: EffectAcpSchema.SessionNotification) => number | undefined;
+    readonly windowTokens?: (
+      setup:
+        | EffectAcpSchema.NewSessionResponse
+        | EffectAcpSchema.LoadSessionResponse
+        | EffectAcpSchema.ResumeSessionResponse,
+    ) => number | undefined;
+  };
 }
 
 export interface AcpSessionRequestLogEvent {
@@ -426,6 +436,7 @@ const makeAcpSessionRuntime = (
     const liveOutsidePromptRef = yield* Ref.make(false);
     // This session's id once known; updates for any other id are a subagent's.
     const ownSessionIdRef = yield* Ref.make<string | undefined>(options.resumeSessionId);
+    const contextWindowRef = yield* Ref.make<number | undefined>(undefined);
     const foreignUpdateHandlerRef = yield* Ref.make<
       ((notification: EffectAcpSchema.SessionNotification) => Effect.Effect<void>) | undefined
     >(undefined);
@@ -439,6 +450,16 @@ const makeAcpSessionRuntime = (
           const handler = yield* Ref.get(foreignUpdateHandlerRef);
           if (handler) yield* handler(notification);
           return;
+        }
+        const contextUsage = options.contextUsage;
+        const usedTokens = contextUsage?.usedTokens(notification);
+        if (usedTokens !== undefined) {
+          const maxTokens = yield* Ref.get(contextWindowRef);
+          yield* Queue.offer(eventQueue, {
+            _tag: "ContextUsage",
+            usedTokens,
+            ...(maxTokens !== undefined ? { maxTokens } : {}),
+          });
         }
         yield* handleSessionUpdate({
           queue: eventQueue,
@@ -760,6 +781,7 @@ const makeAcpSessionRuntime = (
       }
 
       yield* Ref.set(ownSessionIdRef, sessionId);
+      yield* Ref.set(contextWindowRef, options.contextUsage?.windowTokens?.(sessionSetupResult));
       if (options.liveOutsidePrompt) yield* Ref.set(liveOutsidePromptRef, true);
       const nextState = {
         sessionId,

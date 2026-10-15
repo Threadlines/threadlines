@@ -39,6 +39,7 @@ export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> e
   | "authenticateTimeoutMs"
   | "cancelMeta"
   | "clientCapabilities"
+  | "contextUsage"
   | "initializeMeta"
   | "sessionControls"
   | "spawn"
@@ -121,6 +122,7 @@ export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
           : {}),
         ...(descriptor.initializeMeta ? { initializeMeta: descriptor.initializeMeta } : {}),
         ...(descriptor.cancelMeta ? { cancelMeta: descriptor.cancelMeta } : {}),
+        ...(descriptor.contextUsage ? { contextUsage: descriptor.contextUsage } : {}),
       }).pipe(
         Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner)),
       ),

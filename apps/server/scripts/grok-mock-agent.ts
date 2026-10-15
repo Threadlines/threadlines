@@ -10,6 +10,7 @@ import { appendFileSync } from "node:fs";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as EffectAcpAgent from "effect-acp/agent";
 import * as AcpError from "effect-acp/errors";
@@ -49,7 +50,8 @@ const configOptions = () => [
 
 const program = Effect.gen(function* () {
   const agent = yield* EffectAcpAgent.AcpAgent;
-  const meta = (promptId: string) => ({ promptId, eventId: `${promptId}-e` });
+  const interjected = yield* Deferred.make<string>();
+  const meta = (promptId: string) => ({ promptId, eventId: `${promptId}-e`, totalTokens: 1234 });
   const say = (text: string, promptId: string, target = sessionId) =>
     agent.client.sessionUpdate({
       sessionId: target,
@@ -101,7 +103,16 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleCreateSession(() =>
-    Effect.succeed({ sessionId, configOptions: configOptions() }),
+    Effect.succeed({
+      sessionId,
+      configOptions: configOptions(),
+      models: {
+        currentModelId: "grok-4.7",
+        availableModels: [
+          { modelId: "grok-4.7", name: "Grok 4.7", _meta: { totalContextTokens: 500_000 } },
+        ],
+      },
+    }),
   );
   yield* agent.handleResumeSession(() => Effect.succeed({ configOptions: configOptions() }));
   yield* agent.handleCloseSession(() =>
@@ -115,14 +126,18 @@ const program = Effect.gen(function* () {
     }),
   );
   yield* agent.handleCancel(() => Effect.void);
-  yield* agent.handleUnknownExtRequest((method) =>
-    method === "session/set_mode" || method === "_x.ai/auth/info"
-      ? Effect.succeed(
-          method === "_x.ai/auth/info"
-            ? { methodId: "cached_token", email: "grok@example.com" }
-            : {},
+  yield* agent.handleUnknownExtRequest((method, params) =>
+    method === "_x.ai/interject"
+      ? Deferred.succeed(interjected, String((params as { text?: unknown }).text)).pipe(
+          Effect.as({ status: "queued" }),
         )
-      : Effect.fail(AcpError.AcpRequestError.methodNotFound(method)),
+      : method === "session/set_mode" || method === "_x.ai/auth/info"
+        ? Effect.succeed(
+            method === "_x.ai/auth/info"
+              ? { methodId: "cached_token", email: "grok@example.com" }
+              : {},
+          )
+        : Effect.fail(AcpError.AcpRequestError.methodNotFound(method)),
   );
   yield* agent.handleUnknownExtNotification(() => Effect.void);
 
@@ -185,6 +200,9 @@ const program = Effect.gen(function* () {
               ],
         });
         yield* say(`permission ${JSON.stringify(permission.outcome)}`, promptId);
+      } else if (scenario === "steer") {
+        yield* say("working", promptId);
+        yield* say(`steered: ${yield* Deferred.await(interjected)}`, promptId);
       } else if (scenario === "error") {
         yield* turnEnded(promptId, "error", "Grok's model is overloaded. Try again soon.");
         return yield* AcpError.AcpRequestError.internalError("Internal error");

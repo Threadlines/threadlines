@@ -247,6 +247,35 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    * that switches modes without listing them (Grok: `plan`, `default`).
    * Sent before every turn; the agent takes a repeat as a no-op.
    */
+  /**
+   * The key threads resume across instances by: instances that keep one
+   * conversation store share it (Grok accounts linking `sessions`). Defaults
+   * to one key per instance.
+   */
+  readonly continuationKey?: (settings: Settings, environment: NodeJS.ProcessEnv) => string;
+  /**
+   * Adds a message to the running turn (Grok's `_x.ai/interject`). With it a
+   * message sent mid-turn steers the turn instead of waiting for it.
+   */
+  readonly steer?: (input: {
+    readonly acp: AcpSessionRuntimeShape;
+    readonly sessionId: string;
+    readonly text: string;
+    readonly content: ReadonlyArray<EffectAcpSchema.ContentBlock>;
+  }) => Effect.Effect<void, EffectAcpErrors.AcpError>;
+  /**
+   * The context fill an agent reports on its own updates rather than with
+   * ACP's `usage_update` (Grok's `_meta.totalTokens`), and its window size.
+   */
+  readonly contextUsage?: {
+    readonly usedTokens: (notification: EffectAcpSchema.SessionNotification) => number | undefined;
+    readonly windowTokens?: (
+      setup:
+        | EffectAcpSchema.NewSessionResponse
+        | EffectAcpSchema.LoadSessionResponse
+        | EffectAcpSchema.ResumeSessionResponse,
+    ) => number | undefined;
+  };
   readonly sessionModeForTurn?: (
     interactionMode: ProviderInteractionMode | undefined,
   ) => string | undefined;

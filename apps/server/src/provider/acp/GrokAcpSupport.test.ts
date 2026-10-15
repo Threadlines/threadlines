@@ -28,6 +28,7 @@ import {
 import {
   GROK_ACP_DESCRIPTOR,
   GROK_MODEL_OPTION_MAPPING,
+  grokAccountUsage,
   grokProcessEnvironment,
   grokSpawnArgs,
 } from "./GrokAcpSupport.ts";
@@ -200,6 +201,36 @@ describe("Grok protocol mapping", () => {
     ).toEqual([{ configId: "reasoning_effort", value: "low" }]);
   });
 
+  it("reads the plan's weekly meter, with nothing metered yet as 0%", () => {
+    const usage = grokAccountUsage(
+      {
+        config: {
+          creditUsagePercent: 41.6,
+          currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", end: "2026-10-20T00:00:00Z" },
+        },
+        subscription_tier: "SuperGrok",
+      },
+      "2026-10-15T12:00:00.000Z",
+    );
+    expect(usage?.limits[0]).toMatchObject({
+      planType: "SuperGrok",
+      primary: {
+        usedPercent: 42,
+        remainingPercent: 58,
+        resetsAt: Date.parse("2026-10-20T00:00:00Z"),
+        windowDurationMins: 7 * 24 * 60,
+      },
+    });
+    const fresh = grokAccountUsage(
+      { config: { currentPeriod: { type: "USAGE_PERIOD_TYPE_MONTHLY" } } },
+      "2026-10-15T12:00:00.000Z",
+    );
+    expect(fresh?.limits[0]?.primary).toMatchObject({
+      usedPercent: 0,
+      windowDurationMins: 30 * 24 * 60,
+    });
+  });
+
   it("answers a question with the chosen labels, typed text as Grok's Other, and nothing as cancelled", () => {
     const request = {
       questions: [
@@ -281,6 +312,37 @@ describe("Grok sessions", () => {
         "hello from grok",
       );
       expect(completedTurns(grok.events)[0]).toMatchObject({ payload: { state: "completed" } });
+    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("steers a running turn and shows Grok's context fill against the model's window", () =>
+    Effect.gen(function* () {
+      const grok = yield* startGrok("steer");
+      expect(grok.adapter.capabilities.activeTurnSteering).toBe("supported");
+      const started = yield* grok.adapter.sendTurn({
+        threadId: grok.threadId,
+        input: "go",
+        attachments: [],
+      });
+      yield* grok.waitFor((events) => events.some((event) => event.type === "content.delta"));
+      const steered = yield* grok.adapter.steerTurn!({
+        threadId: grok.threadId,
+        expectedTurnId: started.turnId,
+        input: "also check the tests",
+      });
+      expect(steered.turnId).toBe(started.turnId);
+      yield* grok.waitFor((events) => completedTurns(events).length === 1);
+      const text = grok.events
+        .flatMap((event) => (event.type === "content.delta" ? [event.payload.delta] : []))
+        .join("");
+      expect(text).toContain("steered: also check the tests");
+      const usage = grok.events.find((event) => event.type === "thread.token-usage.updated");
+      expect(
+        usage?.type === "thread.token-usage.updated" ? usage.payload.usage : undefined,
+      ).toEqual({
+        usedTokens: 1234,
+        maxTokens: 500_000,
+      });
     }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
   );
 

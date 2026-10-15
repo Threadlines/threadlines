@@ -4,6 +4,7 @@ import {
   initialCodexScanState,
   parseClaudeLine,
   parseCodexLine,
+  parseGrokLine,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -252,6 +253,70 @@ describe("parseCodexLine", () => {
 
       expect(record).not.toBeNull();
     });
+  });
+});
+
+describe("parseGrokLine", () => {
+  // A `turn_completed` line as Grok 1.0.41 writes it to `updates.jsonl`.
+  const turnCompleted = (usage: Record<string, unknown>) =>
+    JSON.stringify({
+      method: "_x.ai/session/update",
+      params: {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "turn_completed",
+          prompt_id: "p1",
+          stop_reason: "end_turn",
+          usage,
+        },
+        _meta: { agentTimestampMs: 1_790_321_083_824 },
+      },
+    });
+
+  it("reads one record per model, cached input split out and cost from ticks", () => {
+    const records = parseGrokLine(
+      turnCompleted({
+        inputTokens: 44_685,
+        outputTokens: 167,
+        cachedReadTokens: 23_424,
+        reasoningTokens: 102,
+        costUsdTicks: 250_000_000,
+        modelUsage: {
+          "grok-4.7-build": {
+            inputTokens: 44_685,
+            outputTokens: 167,
+            cachedReadTokens: 23_424,
+            reasoningTokens: 102,
+          },
+        },
+      }),
+    );
+    expect(records).toEqual([
+      expect.objectContaining({
+        provider: "grok",
+        model: "grok-4.7-build",
+        timestampMs: 1_790_321_083_824,
+        totals: {
+          uncachedInputTokens: 21_261,
+          cachedInputTokens: 23_424,
+          cacheCreationTokens: 0,
+          outputTokens: 167,
+          reasoningTokens: 102,
+        },
+        reportedCostUsd: 0.025,
+        dedupeKey: "s1:p1:grok-4.7-build",
+      }),
+    ]);
+  });
+
+  it("ignores every other update", () => {
+    expect(
+      parseGrokLine(
+        JSON.stringify({
+          params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk" } },
+        }),
+      ),
+    ).toEqual([]);
   });
 });
 

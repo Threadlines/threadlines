@@ -316,6 +316,13 @@ export function buildProviderSignOutCommand(input: {
       env: claudeAuthEnvironment(input),
     };
   }
+  // An extra Grok account's folder is its GROK_HOME (`shadowHomePath` here).
+  if (input.driver === GROK_DRIVER_KIND) {
+    const grokHome = input.shadowHomePath?.trim();
+    return grokHome
+      ? { file: binaryPath || "grok", args: ["logout"], env: { GROK_HOME: grokHome } }
+      : null;
+  }
   return null;
 }
 

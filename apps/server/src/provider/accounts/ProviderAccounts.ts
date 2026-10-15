@@ -52,6 +52,7 @@ import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { removeLinkIfPresent } from "../accountOverlay.ts";
 import { antigravityInstancePaths } from "../antigravity/AntigravityProfile.ts";
+import { resolveGrokBinary } from "../grok/GrokBinary.ts";
 import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
 import { claudeInstanceBaseEnvironment, resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../Drivers/CodexHomeLayout.ts";
@@ -222,6 +223,16 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
         }
         case "antigravity":
           return [antigravityInstancePaths(serverConfig.stateDir, instanceId).profileDir];
+        case "grok": {
+          const accountFolder = readConfigString(instance.config, "accountFolder");
+          if (accountFolder) return [path.resolve(expandHomePath(accountFolder))];
+          const grokHome = environment.GROK_HOME?.trim();
+          return [
+            grokHome
+              ? path.resolve(expandHomePath(grokHome))
+              : path.join(NodeOS.homedir(), ".grok"),
+          ];
+        }
         default:
           return [];
       }
@@ -338,7 +349,11 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
       }
       const command = buildProviderSignOutCommand({
         driver: record.driver,
-        binaryPath: record.binaryPath,
+        // Grok's installer folder may not be on the server's PATH.
+        binaryPath:
+          record.driver === "grok"
+            ? resolveGrokBinary(record.binaryPath, process.env)
+            : record.binaryPath,
         homePath: record.homePath,
         ...(isClaude ? { accountFolder: folder } : { shadowHomePath: folder }),
       });

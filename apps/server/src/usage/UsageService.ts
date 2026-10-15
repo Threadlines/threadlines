@@ -45,6 +45,7 @@ import {
   resolveClaudeMainConfigDir,
 } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
+import { grokMainHome } from "../provider/grok/GrokAccountFolder.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { hourStartOf, UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
@@ -265,9 +266,17 @@ export const make = Effect.gen(function* () {
     // `auth.json`, and `sessions` is a symlink back to the shared directory.
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
 
+    // The main Grok folder: extra accounts link their `sessions` back to it.
+    // Grok is opt-in, so it is a source only once it has kept a conversation.
+    const grokSessions = path.join(grokMainHome(process.env), "sessions");
+    const grokUsed = yield* fileSystem
+      .exists(grokSessions)
+      .pipe(Effect.catchCause(() => Effect.succeed(false)));
+
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
+      ...(grokUsed ? [{ provider: "grok" as const, dir: grokSessions }] : []),
     ];
   });
 
@@ -406,7 +415,9 @@ export const make = Effect.gen(function* () {
       }
 
       walkedRoots.push(dir);
-      const files = yield* Effect.promise(() => listTranscriptFiles(dir, windowStartMs));
+      const files = yield* Effect.promise(() =>
+        listTranscriptFiles(dir, windowStartMs, provider === "grok" ? "updates.jsonl" : undefined),
+      );
       let scannedFiles = 0;
       let skippedFiles = 0;
       // Distinct per directory. Buckets carry per-cell session counts, but a

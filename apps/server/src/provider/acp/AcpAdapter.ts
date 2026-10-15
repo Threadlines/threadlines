@@ -1365,6 +1365,55 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }).pipe(Effect.scoped),
       );
 
+    /**
+     * A message as ACP content: its text, then each attachment (an image's
+     * bytes, or a note naming a file the agent reads from disk: ACP prompt
+     * input has no document type, see buildFileAttachmentNote).
+     */
+    const promptContent = (
+      text: string | undefined,
+      attachments: Parameters<AcpAdapterShape["sendTurn"]>[0]["attachments"],
+      method: string,
+    ) =>
+      Effect.gen(function* () {
+        const parts: Array<EffectAcpSchema.ContentBlock> = [];
+        if (text !== undefined) parts.push({ type: "text", text });
+        for (const attachment of attachments ?? []) {
+          const attachmentPath = resolveAttachmentPath({
+            attachmentsDir: serverConfig.attachmentsDir,
+            attachment,
+          });
+          if (!attachmentPath) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method,
+              detail: `Invalid attachment id '${attachment.id}'.`,
+            });
+          }
+          if (attachment.type === "file") {
+            parts.push({ type: "text", text: buildFileAttachmentNote(attachment, attachmentPath) });
+            continue;
+          }
+          const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method,
+                  detail: cause.message,
+                  cause,
+                }),
+            ),
+          );
+          parts.push({
+            type: "image",
+            data: Buffer.from(bytes).toString("base64"),
+            mimeType: attachment.mimeType,
+          });
+        }
+        return parts;
+      });
+
     // The turn id is returned as soon as `session/prompt` is dispatched —
     // orchestration marks the turn accepted from that result, so it must
     // land before the streamed items and the completion, exactly as the
@@ -1408,51 +1457,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           contextPreamble !== undefined
             ? withContextSeedPreamble(contextPreamble, userText)
             : userText;
-        const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (seededText.length > 0 || planMode) {
-          promptParts.push({
-            type: "text",
-            text: planMode ? `${planMode.promptPrefix}${seededText}` : seededText,
-          });
-        }
-        for (const attachment of input.attachments ?? []) {
-          const attachmentPath = resolveAttachmentPath({
-            attachmentsDir: serverConfig.attachmentsDir,
-            attachment,
-          });
-          if (!attachmentPath) {
-            return yield* new ProviderAdapterRequestError({
-              provider: PROVIDER,
-              method: "session/prompt",
-              detail: `Invalid attachment id '${attachment.id}'.`,
-            });
-          }
-          if (attachment.type === "file") {
-            // ACP prompt input has no document type; the agent reads the
-            // staged file from disk instead (see buildFileAttachmentNote).
-            promptParts.push({
-              type: "text",
-              text: buildFileAttachmentNote(attachment, attachmentPath),
-            });
-            continue;
-          }
-          const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapterRequestError({
-                  provider: PROVIDER,
-                  method: "session/prompt",
-                  detail: cause.message,
-                  cause,
-                }),
-            ),
-          );
-          promptParts.push({
-            type: "image",
-            data: Buffer.from(bytes).toString("base64"),
-            mimeType: attachment.mimeType,
-          });
-        }
+        const promptParts = yield* promptContent(
+          seededText.length > 0 || planMode
+            ? planMode
+              ? `${planMode.promptPrefix}${seededText}`
+              : seededText
+            : undefined,
+          input.attachments,
+          "session/prompt",
+        );
 
         if (promptParts.length === 0) {
           return yield* new ProviderAdapterValidationError({
@@ -1678,6 +1691,38 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }
       });
 
+    /** A message sent mid-turn, added to the running turn (`descriptor.steer`). */
+    const steerTurn: AcpAdapterShape["steerTurn"] = descriptor.steer
+      ? (input) =>
+          Effect.gen(function* () {
+            const ctx = yield* requireSession(input.threadId);
+            const turnId = ctx.activeTurnId;
+            const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
+            if (turnId === undefined || turnId !== input.expectedTurnId || !sessionId) {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/steer",
+                detail:
+                  turnId === undefined
+                    ? `No active ${descriptor.presentation.displayName} turn is available to steer.`
+                    : `Expected active turn '${input.expectedTurnId}' but ${descriptor.presentation.displayName} is running '${turnId}'.`,
+              });
+            }
+            const text = input.input?.trim() ?? "";
+            const content = yield* promptContent(
+              text.length > 0 ? text : undefined,
+              input.attachments,
+              "turn/steer",
+            );
+            yield* descriptor.steer!({ acp: ctx.acp, sessionId, text, content }).pipe(
+              Effect.mapError((cause) =>
+                mapAcpToAdapterError(PROVIDER, input.threadId, "turn/steer", cause),
+              ),
+            );
+            return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
+          })
+      : undefined;
+
     const respondToRequest: AcpAdapterShape["respondToRequest"] = (threadId, requestId, decision) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
@@ -1754,9 +1799,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session", conversationRollback: "none" },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        conversationRollback: "none",
+        ...(descriptor.steer ? { activeTurnSteering: "supported" as const } : {}),
+      },
       startSession,
       sendTurn,
+      ...(steerTurn ? { steerTurn } : {}),
       interruptTurn,
       readThread,
       rollbackThread,

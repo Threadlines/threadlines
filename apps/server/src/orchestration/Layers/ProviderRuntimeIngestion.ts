@@ -904,6 +904,7 @@ const PER_ITEM_DIFF_EVIDENCE_PROVIDERS: ReadonlySet<string> = new Set([
   "opencode",
   // Exact old/new text on every finished edit (ACP `diff` content).
   "antigravity",
+  "grok",
 ]);
 
 function providerThreadIdFromEvent(event: ProviderRuntimeEvent): string | undefined {
