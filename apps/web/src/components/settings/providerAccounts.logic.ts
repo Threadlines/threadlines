@@ -55,6 +55,12 @@ export function accountFormCopy(driver: string, agentName: string): AccountFormC
         submitLabel: "Sign in with Google",
         startsSignIn: true,
       };
+    case "grok":
+      return {
+        note: "It gets its own Grok sign-in, separate from the one your terminal uses.",
+        submitLabel: "Sign in with Grok",
+        startsSignIn: true,
+      };
     default:
       return {
         note: `It keeps its own sign-ins and chat history, separate from ${agentName}'s shared ones.`,
@@ -72,8 +78,9 @@ export function addAccountMenuLabel(agentName: string): string {
 /**
  * Whether removing this account deletes a folder Threadlines made (and signs
  * it out), which decides what the confirmation says. Antigravity keeps every
- * account in a profile Threadlines owns. The server re-checks before deleting
- * anything; this only picks the words.
+ * account in a profile Threadlines owns; Grok keeps an account's sign-in in
+ * its folder, so deleting the folder is its sign-out. The server re-checks
+ * before deleting anything; this only picks the words.
  */
 export function isThreadlinesAccountFolder(input: {
   readonly instanceId: string;

@@ -27,6 +27,10 @@ describe("accountFormCopy", () => {
   it("goes straight to sign-in only for agents that sign in to an account", () => {
     expect(accountFormCopy("claudeAgent", "Claude").startsSignIn).toBe(true);
     expect(accountFormCopy("antigravity", "Antigravity").submitLabel).toBe("Sign in with Google");
+    expect(accountFormCopy("grok", "Grok")).toMatchObject({
+      submitLabel: "Sign in with Grok",
+      startsSignIn: true,
+    });
     expect(accountFormCopy("opencode", "OpenCode")).toMatchObject({
       submitLabel: "Add account",
       startsSignIn: false,

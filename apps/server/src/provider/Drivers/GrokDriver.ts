@@ -10,10 +10,12 @@
  */
 import { join } from "node:path";
 
-import { GrokSettings } from "@threadlines/contracts";
+import { GrokSettings, type ProviderInstanceEnvironment } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
@@ -23,13 +25,26 @@ import { GROK_ACP_DESCRIPTOR } from "../acp/GrokAcpSupport.ts";
 import { grokMainHome, materializeGrokAccountFolder } from "../grok/GrokAccountFolder.ts";
 import { makeGrokAuthFlows } from "../grok/GrokAuth.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import {
+  mergeProviderInstanceEnvironment,
+  providerInstanceEnvironmentKey,
+} from "../ProviderInstanceEnvironment.ts";
 import type { ProviderDriver } from "../ProviderDriver.ts";
 
 export type GrokDriverEnv = AcpProviderDriverEnv;
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
+const decodeGrokSettingsOption = Schema.decodeUnknownOption(GrokSettings);
 const acpDriver = makeAcpProviderDriver(GROK_ACP_DESCRIPTOR);
+
+/** What a sign-in or key check runs with: the binary, method, folder and variables. */
+const signInKey = (settings: GrokSettings, environment: ProviderInstanceEnvironment | undefined) =>
+  JSON.stringify([
+    settings.binaryPath,
+    settings.authMethod,
+    settings.accountFolder.trim(),
+    providerInstanceEnvironmentKey(environment),
+  ]);
 
 export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
   ...acpDriver,
@@ -73,15 +88,25 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         );
       }
       const instance = yield* acpDriver.create({ ...input, config });
+      const built = signInKey(input.config, input.environment);
       return {
         ...instance,
-        authFlows: makeGrokAuthFlows({
-          descriptor: GROK_ACP_DESCRIPTOR,
-          settings: { ...config, enabled: input.enabled },
-          environment,
-          childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
-          fileSystem: yield* FileSystem.FileSystem,
-        }),
+        authFlows: {
+          ...makeGrokAuthFlows({
+            descriptor: GROK_ACP_DESCRIPTOR,
+            settings: { ...config, enabled: input.enabled },
+            environment,
+            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+            fileSystem: yield* FileSystem.FileSystem,
+            httpClient: yield* HttpClient.HttpClient,
+          }),
+          // A run started right after a method or key change waits for this
+          // build to be replaced, so it never checks the old key.
+          builtFrom: (entry) => {
+            const decoded = decodeGrokSettingsOption(entry.config ?? {});
+            return Option.isSome(decoded) && signInKey(decoded.value, entry.environment) === built;
+          },
+        },
       };
     }),
 };

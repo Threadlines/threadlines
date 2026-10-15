@@ -506,3 +506,51 @@ chose xAI's installer, so it stays rejected.
 
 Size: about Antigravity's (#374, 73 files) plus the generic background-work
 core [i].
+
+## As built (2026-10-15, in progress)
+
+Branch `feat/grok-build-provider`, on top of PR #461 (the Stop and Cursor
+fixes).
+
+Generic ACP core (every ACP agent can use these; Grok is the first):
+
+- Extension requests run beside the protocol reader, so a question card
+  never stalls the agent's other messages (Cursor's `ask_question` did).
+- The descriptor sees the runtime mode at launch, and can add `_meta` to
+  `initialize`, `session/cancel` and each `session/prompt`.
+- Agent turns (`agentTurns`): output after the session opened is live, not
+  replay; a turn opens on the extension's notice or on first output, and
+  closes on the agent's end notice, on the user's next message, on Stop (same
+  15 s deadline as a prompt), or after 15 quiet minutes. A tool call that
+  started in an earlier turn keeps reporting to that turn.
+- Updates for another session id (a subagent's) never reach the thread.
+- Extensions can emit task and subagent events, report how the running prompt
+  ended (a failed turn shows the agent's own words), and mark permission
+  options whose "always" outlives the session (never offered or chosen).
+- `session/close` before the process ends, for agents that advertise it.
+- Steering (`descriptor.steer`), per-turn session mode
+  (`sessionModeForTurn`), a context fill read from the agent's own updates
+  (`contextUsage`), and a continuation key shared by instances that keep one
+  conversation store (`continuationKey`).
+
+Decisions that differ from the plan above:
+
+- **Folder trust: off (`GROK_FOLDER_TRUST=0`).** Grok spawns its trust
+  question just before it answers `session/new`, so it can land on either
+  side of the first prompt, and a session only opens when the first message
+  is sent: the first turn in every new project would run without the repo's
+  AGENTS.md. Opening a project in Threadlines trusts it, as it does for Claude
+  and Codex. Flag for Will.
+- **Stop keeps background shells.** Grok's cancel can't kill them (only
+  `session/close` does), and Claude's background shells also outlive Stop in
+  Threadlines. `session/close` at session end stops them.
+- **No prompt hang guard.** Recordings show `session/prompt` answers right
+  after `prompt_complete`.
+- **No extra tool-output cap.** In-progress tool updates only reach the
+  thread when their title or summary changes, and the activity projection
+  already compacts stored payloads.
+- **API key billing runs in its own sign-in-free `GROK_HOME`** (laid over
+  `~/.grok` like an account), because Grok prefers a stored sign-in to a key.
+- **Revert and fork wait for a live look** at Grok's rewind points: they are
+  numbered by Grok's own prompt history, and whether its own wake-up turns
+  count there decides how a Threadlines turn count maps onto them.

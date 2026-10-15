@@ -480,3 +480,71 @@ export function grokBackgroundChange(
   }
   return undefined;
 }
+
+// ── Rewind and fork ───────────────────────────────────────────────────
+
+const OptionalCount = Schema.optional(Schema.NullOr(Schema.Number));
+
+const GrokRewindPoint = Schema.Struct({
+  promptIndex: OptionalCount,
+  prompt_index: OptionalCount,
+  promptPreview: OptionalText,
+  prompt_preview: OptionalText,
+});
+const GrokRewindPoints = Schema.Struct({
+  rewindPoints: Schema.optional(Schema.NullOr(Schema.Array(GrokRewindPoint))),
+  rewind_points: Schema.optional(Schema.NullOr(Schema.Array(GrokRewindPoint))),
+});
+const decodeGrokRewindPoints = Schema.decodeUnknownOption(GrokRewindPoints);
+
+const comparableText = (text: string) =>
+  text
+    .replace(/\s+/gu, " ")
+    .replace(/(?:…|\.\.\.)$/u, "")
+    .trim();
+
+/**
+ * Where a prompt Threadlines sent sits among `_x.ai/rewind/points` (one per
+ * prompt Grok was sent), by its text: the newest point whose preview is the
+ * prompt's head. Never just the newest point: a wake-up or an interjection
+ * can be newer than the prompt.
+ */
+export function grokPromptPosition(points: unknown, promptText: string): number | undefined {
+  const decoded = decodeGrokRewindPoints(points);
+  if (decoded._tag === "None") return undefined;
+  const sent = comparableText(promptText);
+  if (!sent) return undefined;
+  const candidates = (decoded.value.rewindPoints ?? decoded.value.rewind_points ?? []).flatMap(
+    (point) => {
+      const position = point.promptIndex ?? point.prompt_index;
+      const preview = comparableText(point.promptPreview ?? point.prompt_preview ?? "");
+      return typeof position === "number" && Number.isInteger(position) && position >= 0 && preview
+        ? [{ position, preview }]
+        : [];
+    },
+  );
+  const matches = candidates.filter(
+    ({ preview }) => sent.startsWith(preview) || preview.startsWith(sent),
+  );
+  return matches.length > 0 ? Math.max(...matches.map(({ position }) => position)) : undefined;
+}
+
+const GrokRewindResult = Schema.Struct({ success: Schema.optional(Schema.NullOr(Schema.Boolean)) });
+const decodeGrokRewindResult = Schema.decodeUnknownOption(GrokRewindResult);
+
+/** Whether `_x.ai/rewind/execute` says it rewound; a bare answer counts. */
+export function grokRewound(result: unknown): boolean {
+  const decoded = decodeGrokRewindResult(result);
+  return decoded._tag === "Some" && decoded.value.success !== false;
+}
+
+const GrokForkResult = Schema.Struct({ newSessionId: Schema.String });
+const decodeGrokForkResult = Schema.decodeUnknownOption(GrokForkResult);
+
+/** The copy `_x.ai/session/fork` made, by id. */
+export function grokForkedSessionId(result: unknown): string | undefined {
+  const decoded = decodeGrokForkResult(result);
+  return decoded._tag === "Some" && decoded.value.newSessionId.trim()
+    ? decoded.value.newSessionId.trim()
+    : undefined;
+}

@@ -13,6 +13,7 @@ import { Link } from "@tanstack/react-router";
 import {
   type AntigravityAuthMethod,
   ACP_REGISTRY_DRIVER_KIND,
+  type GrokAuthMethod,
   isProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
@@ -26,7 +27,6 @@ import {
 import {
   ANTIGRAVITY_KEY_ENV_NAMES,
   antigravityAuthMethodInfo,
-  antigravityNextStep,
   readAntigravitySignInSetup,
 } from "@threadlines/shared/antigravitySignIn";
 import {
@@ -42,6 +42,7 @@ import {
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
   deriveClaudeLongLivedOAuthTokenState,
+  GROK_DRIVER_KIND,
   sanitizeClaudeLongLivedOAuthTokenInput,
   upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "@threadlines/shared/providerAuthCommands";
@@ -70,6 +71,8 @@ import { toastManager } from "../ui/toast";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import { AntigravitySignInMethods } from "./AntigravitySignInMethods";
+import { GrokSignInMethods } from "./GrokSignInMethods";
+import { GROK_API_KEY_ENV_NAME, readGrokSignInSetup } from "./grokSignIn.logic";
 import { ProviderConnectFlow } from "./ProviderConnectFlow";
 import type { DriverOption } from "./providerDriverMeta";
 import {
@@ -101,6 +104,7 @@ import {
   offAgentAction,
 } from "./agentStatus";
 import { ProviderUpdatePopover } from "./ProviderUpdatePopover";
+import { signInMethodNeeds, signInNextStep } from "./useSignInNextStep";
 import type { ProviderUpdateControls } from "./useProviderUpdateRunner";
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -741,11 +745,14 @@ export function claudeAuthCapabilityBadge(
   }
 }
 
+interface SignInFlowCopy {
+  readonly description: string;
+  readonly runningHint: string;
+  readonly again: string;
+}
+
 /** How the Account tab words Antigravity's sign-in or check, per method. */
-const ANTIGRAVITY_FLOW_COPY: Record<
-  AntigravityAuthMethod,
-  { readonly description: string; readonly runningHint: string; readonly again: string }
-> = {
+const ANTIGRAVITY_FLOW_COPY: Record<AntigravityAuthMethod, SignInFlowCopy> = {
   "oauth-personal": {
     description: "Signs in with your Google account.",
     runningHint: "Finish signing in on Google's page in your browser.",
@@ -769,6 +776,67 @@ const ANTIGRAVITY_FLOW_COPY: Record<
   },
 };
 
+/** How the Account tab words Grok's sign-in or key check, per method. */
+const GROK_FLOW_COPY: Record<GrokAuthMethod, SignInFlowCopy> = {
+  subscription: {
+    description: "Signs in with your xAI account.",
+    runningHint: "Approve the sign-in on Grok's page in your browser.",
+    again: "Sign in again",
+  },
+  "api-key": {
+    description: "Asks xAI whether it accepts the key.",
+    runningHint: "Checking the key with xAI…",
+    again: "Check again",
+  },
+};
+
+/** The sign-in wording of an agent with a method choice; `null` for the rest. */
+function signInFlowCopy(
+  driverKind: ProviderDriverKind | null,
+  instance: ProviderInstanceConfig,
+): SignInFlowCopy | null {
+  switch (driverKind) {
+    case ANTIGRAVITY_DRIVER_KIND:
+      return ANTIGRAVITY_FLOW_COPY[readAntigravitySignInSetup(instance).method];
+    case GROK_DRIVER_KIND:
+      return GROK_FLOW_COPY[readGrokSignInSetup(instance).method];
+    default:
+      return null;
+  }
+}
+
+/**
+ * The Sign out a browser sign-in offers, in its own words, or `null` where
+ * there is none: Antigravity's key methods, and Grok outside an extra
+ * account (`~/.grok` holds the terminal's sign-in too, so Threadlines never
+ * signs it out) or on an API key.
+ */
+function browserSignOutCopy(
+  driverKind: ProviderDriverKind | null,
+  instance: ProviderInstanceConfig,
+): { readonly command: string; readonly description: string } | null {
+  switch (driverKind) {
+    case ANTIGRAVITY_DRIVER_KIND:
+      return antigravityAuthMethodInfo(readAntigravitySignInSetup(instance).method).browser
+        ? {
+            command: "Sign out of Google",
+            description: "Ends this Google sign-in for Antigravity on this computer.",
+          }
+        : null;
+    case GROK_DRIVER_KIND: {
+      const setup = readGrokSignInSetup(instance);
+      return setup.ownFolder && setup.method === "subscription"
+        ? {
+            command: "Sign out of Grok",
+            description: "Ends this Grok sign-in for this account's folder.",
+          }
+        : null;
+    }
+    default:
+      return null;
+  }
+}
+
 function ProviderAccountSignInSection(props: {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind | null;
@@ -788,29 +856,23 @@ function ProviderAccountSignInSection(props: {
 }) {
   const authBadge = providerAuthBadge(props.liveProvider?.auth);
   const needsSignIn = authBadge.variant === "warning";
-  // Antigravity's sign-in follows its method: a browser sign-in, or a check
-  // of a key or Google Cloud project.
-  const antigravitySetup =
-    props.driverKind === ANTIGRAVITY_DRIVER_KIND
-      ? readAntigravitySignInSetup(props.instance)
-      : null;
-  const antigravityStep = antigravitySetup
-    ? antigravityNextStep({
-        setup: antigravitySetup,
-        ...(props.liveProvider ? { snapshot: props.liveProvider } : {}),
-      })
-    : null;
-  const antigravityCopy = antigravitySetup ? ANTIGRAVITY_FLOW_COPY[antigravitySetup.method] : null;
-  const usesGoogleSignIn =
-    antigravitySetup === null || antigravityAuthMethodInfo(antigravitySetup.method).browser;
+  // Antigravity's and Grok's sign-in follow their method: a browser sign-in,
+  // or a check of a key (or a Google Cloud project).
+  const methodStep = signInNextStep({
+    driverKind: props.driverKind,
+    instance: props.instance,
+    snapshot: props.liveProvider,
+  });
+  const methodCopy = signInFlowCopy(props.driverKind, props.instance);
   const isClaude = props.driverKind === CLAUDE_DRIVER_KIND;
   // OpenCode's sign-in opens on a menu of providers to connect, in the
   // terminal itself, so the terminal shows from the start.
   const signInStartsInTerminal = props.driverKind === OPENCODE_DRIVER_KIND;
-  // Antigravity signs in through a Google page, inside the agent: no
-  // terminal, and it can sign out.
+  // Antigravity and Grok sign in through a page, inside the agent: no
+  // terminal. Where they can sign out, `signOut` says so.
   const browserSignIn =
     props.driverKind !== null && BROWSER_SIGN_IN_DRIVERS.has(String(props.driverKind));
+  const signOut = browserSignIn ? browserSignOutCopy(props.driverKind, props.instance) : null;
   const hasClaudeCredentialOverride =
     isClaude && hasClaudeCredentialOverrideEnvironment(props.environment);
   const claudeLongLivedTokenConfigured =
@@ -830,8 +892,15 @@ function ProviderAccountSignInSection(props: {
       description="Shows whether this provider is ready and signs it back in without leaving settings."
     >
       <div className="grid gap-4">
-        {antigravitySetup && props.onSaveInstance ? (
+        {props.onSaveInstance && props.driverKind === ANTIGRAVITY_DRIVER_KIND ? (
           <AntigravitySignInMethods
+            instanceId={props.instanceId}
+            instance={props.instance}
+            idPrefix={props.idPrefix}
+            onSave={props.onSaveInstance}
+          />
+        ) : props.onSaveInstance && props.driverKind === GROK_DRIVER_KIND ? (
+          <GrokSignInMethods
             instanceId={props.instanceId}
             instance={props.instance}
             idPrefix={props.idPrefix}
@@ -847,14 +916,16 @@ function ProviderAccountSignInSection(props: {
           <p className="text-xs text-muted-foreground">
             Install {props.displayName} first, then sign in here.
           </p>
-        ) : antigravityStep?.kind === "settings" && needsSignIn ? (
+        ) : methodStep?.kind === "settings" && needsSignIn ? (
           // Only a field above can fix it: no button that would just fail.
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
             <Badge variant={authBadge.variant} size="sm">
               {authBadge.label}
             </Badge>
-            {props.liveProvider?.message ? (
-              <span className="min-w-0 text-muted-foreground">{props.liveProvider.message}</span>
+            {(methodStep.hint ?? props.liveProvider?.message) ? (
+              <span className="min-w-0 text-muted-foreground">
+                {methodStep.hint ?? props.liveProvider?.message}
+              </span>
             ) : null}
           </div>
         ) : (
@@ -863,10 +934,10 @@ function ProviderAccountSignInSection(props: {
             flow="login"
             displayName={props.displayName}
             actionLabel={
-              antigravityStep && antigravityCopy
+              methodStep && methodCopy
                 ? needsSignIn
-                  ? antigravityStep.label
-                  : antigravityCopy.again
+                  ? methodStep.label
+                  : methodCopy.again
                 : needsSignIn
                   ? "Sign in"
                   : "Sign in again"
@@ -877,8 +948,8 @@ function ProviderAccountSignInSection(props: {
             runningHint={
               signInStartsInTerminal
                 ? "Pick a provider in the terminal below, then finish any step it opens in your browser."
-                : antigravityCopy
-                  ? antigravityCopy.runningHint
+                : methodCopy
+                  ? methodCopy.runningHint
                   : undefined
             }
             buttonVariant={needsSignIn ? "default" : "ghost"}
@@ -887,8 +958,8 @@ function ProviderAccountSignInSection(props: {
                 ? "Signing in covers both chat and usage."
                 : signInStartsInTerminal
                   ? "Connects a model provider, such as an OpenCode Go plan or your ChatGPT account, to OpenCode."
-                  : antigravityCopy
-                    ? antigravityCopy.description
+                  : methodCopy
+                    ? methodCopy.description
                     : undefined
             }
             statusRow={
@@ -911,19 +982,17 @@ function ProviderAccountSignInSection(props: {
           />
         )}
 
-        {browserSignIn &&
-        usesGoogleSignIn &&
-        props.liveProvider?.auth.status === "authenticated" ? (
+        {signOut && props.liveProvider?.auth.status === "authenticated" ? (
           <ProviderConnectFlow
             instanceId={props.instanceId}
             flow="logout"
             displayName={props.displayName}
             actionLabel="Sign out"
-            command="Sign out of Google"
+            command={signOut.command}
             surface="browser"
             buttonVariant="ghost"
             runningHint="Signing out…"
-            description="Ends this Google sign-in for Antigravity on this computer."
+            description={signOut.description}
           />
         ) : null}
 
@@ -1471,16 +1540,9 @@ export function ProviderInstanceCard({
     }
     return null;
   }, [driverKind, instance.config, isCommunityAgent]);
-  // Antigravity's next step follows its sign-in method: some can only be
-  // fixed on the Account tab (a missing key or project).
-  const antigravitySetup =
-    driverKind === ANTIGRAVITY_DRIVER_KIND ? readAntigravitySignInSetup(instance) : null;
-  const antigravityRowStep = antigravitySetup
-    ? antigravityNextStep({
-        setup: antigravitySetup,
-        ...(liveProvider ? { snapshot: liveProvider } : {}),
-      })
-    : null;
+  // Antigravity's and Grok's next step follows the sign-in method: some can
+  // only be fixed on the Account tab (a missing key or project).
+  const methodRowStep = signInNextStep({ driverKind, instance, snapshot: liveProvider });
   // A community agent whose sign-in Threadlines can't run: the Account tab
   // says how the agent does it.
   const communityRowStep =
@@ -1500,7 +1562,9 @@ export function ProviderInstanceCard({
         ? new Set<string>([CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV])
         : driverKind === ANTIGRAVITY_DRIVER_KIND
           ? new Set<string>(ANTIGRAVITY_KEY_ENV_NAMES)
-          : undefined,
+          : driverKind === GROK_DRIVER_KIND
+            ? new Set<string>([GROK_API_KEY_ENV_NAME])
+            : undefined,
     [driverKind],
   );
 
@@ -1640,10 +1704,7 @@ export function ProviderInstanceCard({
       : agentStatus.kind === "needsSignIn" || agentStatus.kind === "notInstalled"
         ? "warning"
         : "none";
-  const needs =
-    antigravitySetup && antigravitySetup.method !== "oauth-personal"
-      ? antigravityAuthMethodInfo(antigravitySetup.method).name
-      : (driverOption?.needs ?? "");
+  const needs = signInMethodNeeds(driverKind, instance) ?? driverOption?.needs ?? "";
   // Healthy rows say who is signed in and nothing more; a broken one keeps the
   // first sentence of the server's diagnosis.
   // Without an Install button the full guide (with its link) is the only way
@@ -1725,7 +1786,7 @@ export function ProviderInstanceCard({
         view={providerInstallView}
         statusClassName="max-w-64"
       />
-    ) : showRowSignIn && (antigravityRowStep?.kind === "settings" || communityRowStep) ? (
+    ) : showRowSignIn && (methodRowStep?.kind === "settings" || communityRowStep) ? (
       <Button
         size="xs"
         onClick={() => {
@@ -1733,11 +1794,11 @@ export function ProviderInstanceCard({
           onExpandedChange(true);
         }}
       >
-        {communityRowStep?.label ?? antigravityRowStep?.label}
+        {communityRowStep?.label ?? methodRowStep?.label}
       </Button>
     ) : showRowSignIn ? (
       <ProviderSignInAction
-        {...(antigravityRowStep ? { label: antigravityRowStep.label } : {})}
+        {...(methodRowStep ? { label: methodRowStep.label } : {})}
         instanceId={instanceId}
         displayName={displayName}
         autoStart={autoSignIn}

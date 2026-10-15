@@ -8,9 +8,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   GrokSettings,
+  MessageId,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
   ThreadId,
+  type TurnId,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -52,7 +54,7 @@ async function makeGrokMock() {
     "utf8",
   );
   await chmod(wrapper, 0o755);
-  return { wrapper, log: path.join(dir, "frames.jsonl") };
+  return { wrapper, log: path.join(dir, "frames.jsonl"), store: path.join(dir, "sessions.json") };
 }
 
 async function readFrames(file: string): Promise<ReadonlyArray<Record<string, unknown>>> {
@@ -74,7 +76,12 @@ const startGrok = (
       GROK_ACP_DESCRIPTOR,
       decodeGrokSettings({ enabled: true, binaryPath: mock.wrapper }),
       {
-        environment: { ...process.env, GROK_MOCK_SCENARIO: scenario, GROK_MOCK_LOG: mock.log },
+        environment: {
+          ...process.env,
+          GROK_MOCK_SCENARIO: scenario,
+          GROK_MOCK_LOG: mock.log,
+          GROK_MOCK_STORE: mock.store,
+        },
       },
     );
     const events: Array<ProviderRuntimeEvent> = [];
@@ -108,6 +115,35 @@ const startGrok = (
 
 const completedTurns = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
   events.filter((event) => event.type === "turn.completed");
+
+const replyTo = (events: ReadonlyArray<ProviderRuntimeEvent>, turnId: TurnId) =>
+  events
+    .flatMap((event) =>
+      event.type === "content.delta" && event.turnId === turnId ? [event.payload.delta] : [],
+    )
+    .join("");
+
+/** Sends each message in turn on a `remember` mock, waiting out each turn. */
+const sendAll = (
+  grok: Effect.Success<ReturnType<typeof startGrok>>,
+  threadId: ThreadId,
+  messages: ReadonlyArray<readonly [input: string, messageId: string]>,
+) =>
+  Effect.gen(function* () {
+    const turnIds: Array<TurnId> = [];
+    for (const [input, messageId] of messages) {
+      const before = completedTurns(grok.events).length;
+      const started = yield* grok.adapter.sendTurn({
+        threadId,
+        input,
+        attachments: [],
+        messageId: MessageId.make(messageId),
+      });
+      yield* grok.waitFor((events) => completedTurns(events).length === before + 1);
+      turnIds.push(started.turnId);
+    }
+    return turnIds;
+  });
 
 describe("Grok launch", () => {
   it("puts the runtime mode on the command line, top-level flags before `agent`", () => {
@@ -471,6 +507,78 @@ describe("Grok sessions", () => {
           ["task.completed", "completed"],
         ]);
       }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("rewinds Grok to the reverted message, and still can after a restart", () =>
+    Effect.gen(function* () {
+      const grok = yield* startGrok("remember");
+      const revert = (messageId: string) =>
+        grok.adapter
+          .rollbackThread(grok.threadId, 1, { targetUserMessageId: MessageId.make(messageId) })
+          .pipe(Effect.map((snapshot) => snapshot.conversationRolledBack));
+      yield* sendAll(grok, grok.threadId, [
+        ["first", "m1"],
+        ["second", "m2"],
+        ["third", "m3"],
+      ]);
+      expect(yield* revert("m2")).toBe(true);
+      const [again] = yield* sendAll(grok, grok.threadId, [["again", "m4"]]);
+      expect(replyTo(grok.events, again!)).toBe("remembers: first | again");
+      // A message Grok never placed: only Threadlines' turn list is trimmed.
+      expect(yield* revert("unknown")).toBe(false);
+
+      // The resume cursor keeps where each prompt sits.
+      const cursor = (yield* grok.adapter.listSessions()).find(
+        (session) => session.threadId === grok.threadId,
+      )?.resumeCursor;
+      yield* grok.adapter.stopSession(grok.threadId);
+      yield* grok.adapter.startSession({
+        threadId: grok.threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: cursor,
+      });
+      expect(yield* revert("m4")).toBe(true);
+      const [later] = yield* sendAll(grok, grok.threadId, [["later", "m5"]]);
+      expect(replyTo(grok.events, later!)).toBe("remembers: first | later");
+      const rewinds = (yield* grok.frames())
+        .filter((frame) => frame.method === "_x.ai/rewind/execute")
+        .map((frame) => frame.params);
+      expect(rewinds).toEqual([
+        { sessionId: "grok-session-1", targetPromptIndex: 1, mode: "conversation_only" },
+        { sessionId: "grok-session-1", targetPromptIndex: 1, mode: "conversation_only" },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("forks Grok's conversation at a turn, and refuses a turn it can't place", () =>
+    Effect.gen(function* () {
+      const grok = yield* startGrok("remember");
+      expect(grok.adapter.capabilities.nativeThreadFork).toBe("supported");
+      const [, second] = yield* sendAll(grok, grok.threadId, [
+        ["first", "m1"],
+        ["second", "m2"],
+        ["third", "m3"],
+      ]);
+      const fork = (threadId: string, beforeTurnId: string) =>
+        grok.adapter.startSession({
+          threadId: ThreadId.make(threadId),
+          provider: ProviderDriverKind.make("grok"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          forkFrom: { providerThreadId: "grok-session-1", beforeTurnId },
+        });
+      yield* fork("grok-fork", second!);
+      const [fourth] = yield* sendAll(grok, ThreadId.make("grok-fork"), [["fourth", "f1"]]);
+      expect(replyTo(grok.events, fourth!)).toBe("remembers: first | fourth");
+      // The source keeps its whole conversation.
+      const [fifth] = yield* sendAll(grok, grok.threadId, [["fifth", "m4"]]);
+      expect(replyTo(grok.events, fifth!)).toBe("remembers: first | second | third | fifth");
+
+      const refused = yield* fork("grok-fork-2", "never-seen").pipe(Effect.flip);
+      expect(refused.message).toContain("can't be forked");
+    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
   );
 
   it.live("closes the session before the process ends", () =>

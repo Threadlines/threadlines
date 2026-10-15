@@ -29,6 +29,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import * as EffectAcpErrors from "effect-acp/errors";
 
 import { expandHomePath } from "../../pathExpansion.ts";
 import { grokContinuationKey } from "../grok/GrokAccountFolder.ts";
@@ -59,11 +60,14 @@ import {
   grokAskUserQuestionReply,
   grokBackgroundChange,
   GrokExitPlanModeRequest,
+  grokForkedSessionId,
   grokOwnPromptOutcome,
   grokPlanMarkdown,
   GrokPromptComplete,
   grokPromptId,
+  grokPromptPosition,
   GrokQueueChanged,
+  grokRewound,
   GrokSessionNotification,
   grokTurnEndFromUpdate,
   grokUserInputQuestions,
@@ -507,6 +511,44 @@ export const GROK_ACP_DESCRIPTOR: AcpProviderDescriptor<GrokSettings> = {
   continuationKey: (settings, environment) =>
     grokContinuationKey(settings.accountFolder, environment),
   sessionModeForTurn: (interactionMode) => (interactionMode === "plan" ? "plan" : "default"),
+  // Grok's own rewind (`/rewind`) by its prompt numbering, the conversation
+  // only: Threadlines restores the files. A fork copies the whole session,
+  // then rewinds the copy to the turn it forks at.
+  conversationHistory: {
+    promptPosition: ({ acp, sessionId, promptText }) =>
+      acp
+        .request("_x.ai/rewind/points", { sessionId })
+        .pipe(Effect.map((points) => grokPromptPosition(points, promptText))),
+    rewind: ({ acp, sessionId, position }) =>
+      acp
+        .request("_x.ai/rewind/execute", {
+          sessionId,
+          targetPromptIndex: position,
+          mode: "conversation_only",
+        })
+        .pipe(
+          Effect.flatMap((result) =>
+            grokRewound(result)
+              ? Effect.void
+              : Effect.fail(
+                  EffectAcpErrors.AcpRequestError.internalError(
+                    "Grok didn't rewind the conversation.",
+                  ),
+                ),
+          ),
+        ),
+    fork: ({ request, sessionId, cwd }) =>
+      request("_x.ai/session/fork", { sessionId, cwd }).pipe(
+        Effect.flatMap((result) => {
+          const forked = grokForkedSessionId(result);
+          return forked
+            ? Effect.succeed(forked)
+            : Effect.fail(
+                EffectAcpErrors.AcpRequestError.internalError("Grok didn't fork the conversation."),
+              );
+        }),
+      ),
+  },
   // Grok queues a mid-turn message into the running turn (`interject`, 1.0.14+).
   steer: ({ acp, sessionId, text, content }) =>
     acp

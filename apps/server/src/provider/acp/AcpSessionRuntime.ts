@@ -78,6 +78,22 @@ export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  /**
+   * Open the session on a copy of another stored session's conversation:
+   * `fork` makes the copy before any session is open and names it. A copy
+   * that can't be opened fails the start rather than opening a new session.
+   */
+  readonly forkFrom?: {
+    readonly sessionId: string;
+    readonly fork: (input: {
+      readonly request: (
+        method: string,
+        payload: unknown,
+      ) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
+      readonly sessionId: string;
+      readonly cwd: string;
+    }) => Effect.Effect<string, EffectAcpErrors.AcpError>;
+  };
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   /** `_meta` sent with `initialize`. */
   readonly initializeMeta?: Readonly<Record<string, unknown>>;
@@ -714,9 +730,18 @@ const makeAcpSessionRuntime = (
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse;
       let resumeFailure: string | undefined;
-      if (options.resumeSessionId) {
+      const forkedSessionId = options.forkFrom
+        ? yield* options.forkFrom.fork({
+            request: (method, payload) =>
+              runLoggedRequest(method, payload, acp.raw.request(method, payload)),
+            sessionId: options.forkFrom.sessionId,
+            cwd: options.cwd,
+          })
+        : undefined;
+      const reopenSessionId = forkedSessionId ?? options.resumeSessionId;
+      if (reopenSessionId) {
         const reopenPayload = {
-          sessionId: options.resumeSessionId,
+          sessionId: reopenSessionId,
           cwd: options.cwd,
           mcpServers,
         } satisfies EffectAcpSchema.LoadSessionRequest & EffectAcpSchema.ResumeSessionRequest;
@@ -735,8 +760,10 @@ const makeAcpSessionRuntime = (
             : runLoggedRequest("session/load", reopenPayload, acp.agent.loadSession(reopenPayload))
         ).pipe(Effect.exit);
         if (Exit.isSuccess(resumed)) {
-          sessionId = options.resumeSessionId;
+          sessionId = reopenSessionId;
           sessionSetupResult = resumed.value;
+        } else if (forkedSessionId !== undefined) {
+          return yield* Effect.failCause(resumed.cause);
         } else {
           const failure = Cause.squash(resumed.cause);
           resumeFailure =

@@ -6,7 +6,7 @@
  * core react to. `GROK_MOCK_SCENARIO` picks the prompt's behaviour; every
  * frame the client sends is appended to `GROK_MOCK_LOG` as JSON lines.
  */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -22,6 +22,34 @@ const childSessionId = "grok-child-1";
 
 let model = "grok-4.7";
 let effort = "high";
+/** The session prompts and updates go to: a resumed or forked one once opened. */
+let currentSessionId = sessionId;
+/**
+ * Each session's prompts, by position: what `_x.ai/rewind/points` lists.
+ * Kept in `GROK_MOCK_STORE` when set, so every process sees every session,
+ * as Grok's sessions folder does.
+ */
+const storePath = process.env.GROK_MOCK_STORE;
+const promptsBySession = new Map<string, Array<string>>(
+  Object.entries(
+    (() => {
+      try {
+        return storePath
+          ? (JSON.parse(readFileSync(storePath, "utf8")) as Record<string, Array<string>>)
+          : {};
+      } catch {
+        return {};
+      }
+    })(),
+  ),
+);
+if (!promptsBySession.has(sessionId)) promptsBySession.set(sessionId, []);
+const saveStore = () => {
+  if (storePath) writeFileSync(storePath, JSON.stringify(Object.fromEntries(promptsBySession)));
+};
+
+const textOf = (prompt: ReadonlyArray<{ readonly type: string; readonly text?: string }>) =>
+  prompt.flatMap((block) => (block.type === "text" && block.text ? [block.text] : [])).join("\n");
 
 const configOptions = () => [
   {
@@ -52,13 +80,13 @@ const program = Effect.gen(function* () {
   const agent = yield* EffectAcpAgent.AcpAgent;
   const interjected = yield* Deferred.make<string>();
   const meta = (promptId: string) => ({ promptId, eventId: `${promptId}-e`, totalTokens: 1234 });
-  const say = (text: string, promptId: string, target = sessionId) =>
+  const say = (text: string, promptId: string, target = currentSessionId) =>
     agent.client.sessionUpdate({
       sessionId: target,
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
       _meta: meta(promptId),
     });
-  const sessionNotice = (update: Record<string, unknown>, target = sessionId) =>
+  const sessionNotice = (update: Record<string, unknown>, target = currentSessionId) =>
     agent.client.extNotification("_x.ai/session_notification", { sessionId: target, update });
   const turnEnded = (promptId: string, stopReason: string, agentResult: unknown = null) =>
     sessionNotice({
@@ -114,7 +142,14 @@ const program = Effect.gen(function* () {
       },
     }),
   );
-  yield* agent.handleResumeSession(() => Effect.succeed({ configOptions: configOptions() }));
+  yield* agent.handleResumeSession((request) =>
+    promptsBySession.has(request.sessionId)
+      ? Effect.sync(() => {
+          currentSessionId = request.sessionId;
+          return { configOptions: configOptions() };
+        })
+      : Effect.fail(AcpError.AcpRequestError.resourceNotFound(request.sessionId)),
+  );
   yield* agent.handleCloseSession(() =>
     Effect.succeed({ _meta: { "x.ai/closeOutcome": "closed" } }),
   );
@@ -126,18 +161,51 @@ const program = Effect.gen(function* () {
     }),
   );
   yield* agent.handleCancel(() => Effect.void);
+  const rewindRequest = (method: string, params: unknown) =>
+    Effect.sync(() => {
+      const request = params as {
+        readonly sessionId: string;
+        readonly targetPromptIndex?: number;
+        readonly cwd?: string;
+      };
+      const prompts = promptsBySession.get(request.sessionId) ?? [];
+      if (method === "_x.ai/rewind/points") {
+        return {
+          rewindPoints: prompts.map((prompt, promptIndex) => ({
+            promptIndex,
+            promptPreview: prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt,
+            hasFileChanges: false,
+          })),
+        };
+      }
+      if (method === "_x.ai/rewind/execute") {
+        const target = request.targetPromptIndex ?? prompts.length;
+        const promptText = prompts[target];
+        prompts.splice(target);
+        saveStore();
+        return { success: promptText !== undefined, targetPromptIndex: target, promptText };
+      }
+      const newSessionId = `${request.sessionId}-fork-${promptsBySession.size}`;
+      promptsBySession.set(newSessionId, [...prompts]);
+      saveStore();
+      return { newSessionId };
+    });
   yield* agent.handleUnknownExtRequest((method, params) =>
-    method === "_x.ai/interject"
-      ? Deferred.succeed(interjected, String((params as { text?: unknown }).text)).pipe(
-          Effect.as({ status: "queued" }),
-        )
-      : method === "session/set_mode" || method === "_x.ai/auth/info"
-        ? Effect.succeed(
-            method === "_x.ai/auth/info"
-              ? { methodId: "cached_token", email: "grok@example.com" }
-              : {},
+    method === "_x.ai/rewind/points" ||
+    method === "_x.ai/rewind/execute" ||
+    method === "_x.ai/session/fork"
+      ? rewindRequest(method, params)
+      : method === "_x.ai/interject"
+        ? Deferred.succeed(interjected, String((params as { text?: unknown }).text)).pipe(
+            Effect.as({ status: "queued" }),
           )
-        : Effect.fail(AcpError.AcpRequestError.methodNotFound(method)),
+        : method === "session/set_mode" || method === "_x.ai/auth/info"
+          ? Effect.succeed(
+              method === "_x.ai/auth/info"
+                ? { methodId: "cached_token", email: "grok@example.com" }
+                : {},
+            )
+          : Effect.fail(AcpError.AcpRequestError.methodNotFound(method)),
   );
   yield* agent.handleUnknownExtNotification(() => Effect.void);
 
@@ -146,8 +214,10 @@ const program = Effect.gen(function* () {
       const promptId = String(
         (request._meta as Record<string, unknown> | undefined)?.promptId ?? "",
       );
+      promptsBySession.get(currentSessionId)?.push(textOf(request.prompt));
+      saveStore();
       yield* agent.client.extNotification("_x.ai/queue/changed", {
-        sessionId,
+        sessionId: currentSessionId,
         entries: [],
         runningPromptId: promptId,
       });
@@ -247,13 +317,19 @@ const program = Effect.gen(function* () {
           yield* say("The subagent said SUBAGENT_DONE.", wakeId);
           yield* turnEnded(wakeId, "end_turn");
         }).pipe(Effect.forkDetach);
+      } else if (scenario === "remember") {
+        // What this session remembers, oldest first, as its reply.
+        yield* say(
+          `remembers: ${(promptsBySession.get(currentSessionId) ?? []).join(" | ")}`,
+          promptId,
+        );
       } else {
         yield* say("hello from grok", promptId);
       }
 
       yield* turnEnded(promptId, "end_turn");
       yield* agent.client.extNotification("_x.ai/session/prompt_complete", {
-        sessionId,
+        sessionId: currentSessionId,
         promptId,
         stopReason: "end_turn",
         agentResult: null,

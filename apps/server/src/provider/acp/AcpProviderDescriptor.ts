@@ -193,6 +193,41 @@ export interface AcpProviderExtensions {
   ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
 }
 
+/**
+ * An agent's rewind and fork, by its own numbering of the prompts it was
+ * sent (see `AcpProviderDescriptor.conversationHistory`).
+ */
+export interface AcpConversationHistory {
+  /**
+   * Where the prompt a turn sent sits in the agent's history, asked once the
+   * turn has ended; `undefined` when the agent can't say for sure.
+   */
+  readonly promptPosition: (input: {
+    readonly acp: AcpSessionRuntimeShape;
+    readonly sessionId: string;
+    /** The prompt's text as sent, context preamble and all. */
+    readonly promptText: string;
+  }) => Effect.Effect<number | undefined, EffectAcpErrors.AcpError>;
+  /** Forgets the prompt at this position and everything after it. */
+  readonly rewind: (input: {
+    readonly acp: AcpSessionRuntimeShape;
+    readonly sessionId: string;
+    readonly position: number;
+  }) => Effect.Effect<void, EffectAcpErrors.AcpError>;
+  /**
+   * Copies a stored session's whole conversation into a new session, before
+   * any session is open on the process; resolves the copy's id.
+   */
+  readonly fork: (input: {
+    readonly request: (
+      method: string,
+      payload: unknown,
+    ) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
+    readonly sessionId: string;
+    readonly cwd: string;
+  }) => Effect.Effect<string, EffectAcpErrors.AcpError>;
+}
+
 /** What an agent process is started for. A chat session carries its thread's runtime mode. */
 export interface AcpLaunch {
   readonly runtimeMode?: RuntimeMode;
@@ -243,11 +278,6 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    */
   readonly agentTurns?: boolean;
   /**
-   * The `session/set_mode` mode for a turn's interaction mode, for an agent
-   * that switches modes without listing them (Grok: `plan`, `default`).
-   * Sent before every turn; the agent takes a repeat as a no-op.
-   */
-  /**
    * The key threads resume across instances by: instances that keep one
    * conversation store share it (Grok accounts linking `sessions`). Defaults
    * to one key per instance.
@@ -276,6 +306,18 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
         | EffectAcpSchema.ResumeSessionResponse,
     ) => number | undefined;
   };
+  /**
+   * The agent's own conversation history, so a revert makes it forget the
+   * reverted turns and a fork copies its conversation (Grok's `_x.ai/rewind/*`
+   * and `_x.ai/session/fork`). Files stay Threadlines' to restore. Without it
+   * a revert trims only Threadlines' turn list, and the agent remembers.
+   */
+  readonly conversationHistory?: AcpConversationHistory;
+  /**
+   * The `session/set_mode` mode for a turn's interaction mode, for an agent
+   * that switches modes without listing them (Grok: `plan`, `default`).
+   * Sent before every turn; the agent takes a repeat as a no-op.
+   */
   readonly sessionModeForTurn?: (
     interactionMode: ProviderInteractionMode | undefined,
   ) => string | undefined;

@@ -1943,7 +1943,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.rollback_turns": input.numTurns,
         "provider.rollback_target_user_message_id": input.targetUserMessageId ?? "",
       });
-      yield* routed.adapter.rollbackThread(
+      const rolledBack = yield* routed.adapter.rollbackThread(
         routed.threadId,
         input.numTurns,
         input.targetUserMessageId !== undefined
@@ -1964,7 +1964,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         turns: input.numTurns,
       });
       return {
-        conversationRolledBack: routed.adapter.capabilities.conversationRollback !== "none",
+        conversationRolledBack:
+          rolledBack.conversationRolledBack ??
+          routed.adapter.capabilities.conversationRollback !== "none",
       };
     }).pipe(
       withMetrics({

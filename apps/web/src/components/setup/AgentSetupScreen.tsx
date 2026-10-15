@@ -292,7 +292,7 @@ function SetupSignInAgentRow({
         <>
           <ProviderSignInInlineStatus view={view} className="max-w-56" />
           {isBrowserFlow && !controller.isActive ? (
-            // Keys and Google Cloud sign-ins are chosen on the Account tab.
+            // API keys and the other sign-in methods are chosen on the Account tab.
             <Link
               to="/settings/providers"
               search={{ instance: String(agent.row.instanceId) }}

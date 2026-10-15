@@ -2277,6 +2277,63 @@ describe("GeneralSettingsPanel observability", () => {
     });
   });
 
+  it("switches Grok to an xAI API key in one save, with no Sign out for the shared login", async () => {
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockResolvedValue(DEFAULT_SERVER_SETTINGS);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { updateSettings },
+      shell: { openExternal: vi.fn().mockResolvedValue(undefined) },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          instanceId: ProviderInstanceId.make("grok"),
+          driver: ProviderDriverKind.make("grok"),
+          displayName: "Grok",
+          version: "1.0.52",
+          auth: { status: "authenticated", type: "subscription", label: "Grok subscription" },
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await openProviderDetails("Grok");
+    await expect
+      .element(page.getByRole("radio", { name: /Grok subscription/ }))
+      .toHaveAttribute("aria-checked", "true");
+    await expect.element(page.getByRole("button", { name: "Sign in again" })).toBeVisible();
+    // The default Grok shares ~/.grok with the terminal: Threadlines never signs it out.
+    expect(page.getByRole("button", { name: "Sign out" }).elements()).toHaveLength(0);
+
+    await page.getByRole("radio", { name: /xAI API key/ }).click();
+    const switchButton = page.getByRole("button", { name: "Switch to xAI API key" });
+    await expect.element(switchButton).toBeDisabled();
+    await page.getByLabelText("xAI API key").fill("xai-test-key-0007");
+    await switchButton.click();
+
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledTimes(1);
+    });
+    const saved =
+      updateSettings.mock.calls[0]![0].providerInstances?.[ProviderInstanceId.make("grok")];
+    expect(saved?.config).toMatchObject({ authMethod: "api-key" });
+    expect(saved?.environment).toEqual([
+      { name: "XAI_API_KEY", value: "xai-test-key-0007", sensitive: true },
+    ]);
+  });
+
   it("opens the shared reset-credit picker from provider settings", async () => {
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
@@ -2710,7 +2767,9 @@ describe("GeneralSettingsPanel observability", () => {
     // Off, but still where it was: a wrong click is one click to undo.
     expect(sitsUnderNotInUse()).toBe(false);
 
-    await userEvent.unhover(codexRow().parentElement!);
+    // Off the list, onto the usage row above it. (`unhover` points at the
+    // middle of the page, which a long enough list covers.)
+    await page.getByTestId("settings-usage-link").hover();
     await vi.waitFor(() => {
       expect(sitsUnderNotInUse()).toBe(true);
     });

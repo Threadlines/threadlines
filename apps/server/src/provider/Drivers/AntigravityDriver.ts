@@ -35,23 +35,23 @@ import {
   writeAntigravityProfileSettings,
 } from "../antigravity/AntigravitySignInMethod.ts";
 import { makeLaunchGate } from "../managedRuntime/LaunchGate.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import {
+  mergeProviderInstanceEnvironment,
+  providerInstanceEnvironmentKey,
+} from "../ProviderInstanceEnvironment.ts";
 import {
   type AntigravityRuntime,
   makeAntigravityRuntime,
 } from "../antigravity/AntigravityRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import type { ProviderDriver } from "../ProviderDriver.ts";
-import { AntigravitySettings, type ProviderInstanceEnvironment } from "@threadlines/contracts";
+import { AntigravitySettings } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 
 export type AntigravityDriverEnv = AcpProviderDriverEnv;
 
 const decodeAntigravitySettings = Schema.decodeSync(AntigravitySettings);
 const decodeAntigravitySettingsOption = Schema.decodeUnknownOption(AntigravitySettings);
-const environmentKey = (environment: ProviderInstanceEnvironment | undefined) =>
-  JSON.stringify((environment ?? []).map((variable) => [variable.name, variable.value]));
-
 /**
  * One runtime per install root in this process, shared by every instance:
  * its locks then serialize their installs, prunes, and leases.
@@ -119,7 +119,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       });
       const instance = yield* makeAcpProviderDriver(descriptor).create(input);
       const fingerprint = antigravityCredentialFingerprint(signIn);
-      const builtEnvironment = environmentKey(input.environment);
+      const builtEnvironment = providerInstanceEnvironmentKey(input.environment);
       const authFlows = makeAntigravityAuthFlows({
         descriptor: makeAntigravityDescriptor({
           paths,
@@ -144,7 +144,8 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           // The sign-in settings and every variable (ADC paths included)
           // match what this build was created from.
           builtFrom: (entry) => {
-            if (environmentKey(entry.environment) !== builtEnvironment) return false;
+            if (providerInstanceEnvironmentKey(entry.environment) !== builtEnvironment)
+              return false;
             const decoded = decodeAntigravitySettingsOption(entry.config ?? {});
             return (
               Option.isSome(decoded) &&
