@@ -18,6 +18,7 @@ import {
   type TerminalCommandInputState,
 } from "@threadlines/shared/terminalCommandTracker";
 import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as Equal from "effect/Equal";
@@ -77,6 +78,17 @@ const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
 const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 2_000;
 const SUBPROCESS_IDLE_CONFIRMATION_POLLS = 3;
+// A command that keeps running is checked less and less often, up to this
+// many poll intervals apart. Each check reads the whole process table (a
+// PowerShell process on Windows), so a long-running dev server must not
+// cost one every two seconds. Typing into the terminal, or its output going
+// quiet for this share of an interval, checks again at the next tick.
+const SUBPROCESS_POLL_BACKOFF_MAX_FACTOR = 15;
+const SUBPROCESS_OUTPUT_QUIET_FACTOR = 0.75;
+// A shell that reports finished commands through its prompt (PowerShell) is
+// polled only to name a command recalled from history, and gives up after
+// this many polls: a cmdlet runs inside the shell and has no process to find.
+const MARKER_COMMAND_LOOKUP_MAX_POLLS = 3;
 const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
 const DEFAULT_OPEN_COLS = 120;
@@ -188,6 +200,7 @@ interface TerminalSessionState {
   commandGeneration: number;
   subprocessPollingArmed: boolean;
   consecutiveSubprocessIdlePolls: number;
+  subprocessPoll: SubprocessPollSchedule;
   commandCompletionMarkersEnabled: boolean;
   /** True once the shell rendered its first prompt marker after spawn. */
   startupPromptMarkerSeen: boolean;
@@ -224,6 +237,16 @@ interface ActiveCommandRun {
   outputClipped: boolean;
   /** The wrapper's start marker arrived: what follows is the command's output. */
   outputStarted: boolean;
+}
+
+/** When the process-table poll next looks at a terminal, and why sooner. */
+interface SubprocessPollSchedule {
+  delayMs: number;
+  nextPollAtMs: number;
+  lastOutputAtMs: number;
+  outputSincePoll: boolean;
+  /** Polls spent looking for the name of a command recalled from history. */
+  commandLookupPolls: number;
 }
 
 interface PendingHistoryControlSequence {
@@ -1092,6 +1115,7 @@ function createSessionState(input: {
   readonly cols: number;
   readonly rows: number;
   readonly env: Record<string, string> | undefined;
+  readonly subprocessPoll: SubprocessPollSchedule;
 }): TerminalSessionState {
   return {
     threadId: input.threadId,
@@ -1120,6 +1144,7 @@ function createSessionState(input: {
     commandGeneration: 0,
     subprocessPollingArmed: false,
     consecutiveSubprocessIdlePolls: 0,
+    subprocessPoll: input.subprocessPoll,
     commandCompletionMarkersEnabled: false,
     startupPromptMarkerSeen: false,
     terminalCommandInputState: createTerminalCommandInputState(),
@@ -1195,6 +1220,31 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         ));
     const subprocessPollIntervalMs =
       options.subprocessPollIntervalMs ?? DEFAULT_SUBPROCESS_POLL_INTERVAL_MS;
+    const subprocessPollMaxDelayMs = subprocessPollIntervalMs * SUBPROCESS_POLL_BACKOFF_MAX_FACTOR;
+    const subprocessOutputQuietMs = subprocessPollIntervalMs * SUBPROCESS_OUTPUT_QUIET_FACTOR;
+    const freshSubprocessPollSchedule = (): SubprocessPollSchedule => ({
+      delayMs: subprocessPollIntervalMs,
+      nextPollAtMs: 0,
+      lastOutputAtMs: 0,
+      outputSincePoll: false,
+      commandLookupPolls: 0,
+    });
+    // Whether a poll can still tell anything about this terminal. Where the
+    // prompt reports finished commands, a poll cannot end the activity; it
+    // can only name a command whose text the server did not see.
+    const needsSubprocessPoll = (
+      session: TerminalSessionState,
+    ): session is TerminalSessionState & { pid: number } =>
+      session.status === "running" &&
+      Number.isInteger(session.pid) &&
+      session.subprocessPollingArmed &&
+      (!session.commandCompletionMarkersEnabled ||
+        (session.runningSubprocessCommand === null &&
+          session.subprocessPoll.commandLookupPolls < MARKER_COMMAND_LOOKUP_MAX_POLLS));
+    const subprocessPollDue = (session: TerminalSessionState, nowMs: number) =>
+      nowMs >= session.subprocessPoll.nextPollAtMs ||
+      (session.subprocessPoll.outputSincePoll &&
+        nowMs - session.subprocessPoll.lastOutputAtMs >= subprocessOutputQuietMs);
     const processKillGraceMs = options.processKillGraceMs ?? DEFAULT_PROCESS_KILL_GRACE_MS;
     const processTree = options.processTree ?? defaultProcessTreeControl;
     const maxRetainedInactiveSessions =
@@ -1824,6 +1874,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     ) {
       while (true) {
         const updatedAt = yield* nowIso;
+        const nowMs = yield* Clock.currentTimeMillis;
         const action: DrainProcessEventAction = yield* Effect.sync(() => {
           if (session.pid !== expectedPid || !session.process || session.status !== "running") {
             session.pendingProcessEvents = [];
@@ -1847,6 +1898,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           }
 
           if (nextEvent.type === "output") {
+            session.subprocessPoll.lastOutputAtMs = nowMs;
+            session.subprocessPoll.outputSincePoll = true;
             const sanitized = sanitizeTerminalHistoryChunk(
               session.pendingHistoryControlSequence,
               nextEvent.data,
@@ -2489,18 +2542,54 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       }
     });
 
+    // After a poll: back off while nothing changes, and stay quick while a
+    // command is starting or an exit is being confirmed.
+    const rescheduleSubprocessPoll = (
+      session: TerminalSessionState,
+      before: { readonly running: boolean; readonly command: string | null },
+      nowMs: number,
+    ) => {
+      const schedule = session.subprocessPoll;
+      const settled =
+        session.hasRunningSubprocess === before.running &&
+        session.runningSubprocessCommand === before.command &&
+        session.consecutiveSubprocessIdlePolls === 0;
+      schedule.delayMs = settled
+        ? Math.min(schedule.delayMs * 2, subprocessPollMaxDelayMs)
+        : subprocessPollIntervalMs;
+      schedule.nextPollAtMs = nowMs + schedule.delayMs;
+      // Output that arrived while the process table was being read (an exit
+      // and its prompt, say) still asks for the next look.
+      if (schedule.lastOutputAtMs < nowMs) {
+        schedule.outputSincePoll = false;
+      }
+      if (session.commandCompletionMarkersEnabled) {
+        schedule.commandLookupPolls += 1;
+      }
+    };
+
     const pollSubprocessActivity = Effect.fn("terminal.pollSubprocessActivity")(function* () {
       const state = yield* readManagerState;
+      const nowMs = yield* Clock.currentTimeMillis;
       const sessionsNeedingSubprocessCheck = [...state.sessions.values()].filter(
         (session): session is TerminalSessionState & { pid: number } =>
-          session.status === "running" &&
-          Number.isInteger(session.pid) &&
-          session.subprocessPollingArmed,
+          needsSubprocessPoll(session) && subprocessPollDue(session, nowMs),
       );
 
       if (sessionsNeedingSubprocessCheck.length === 0) {
         return;
       }
+      const before = new Map(
+        sessionsNeedingSubprocessCheck.map((session) => [
+          session,
+          { running: session.hasRunningSubprocess, command: session.runningSubprocessCommand },
+        ]),
+      );
+      const reschedulePolled = Effect.sync(() => {
+        for (const [session, previous] of before) {
+          rescheduleSubprocessPoll(session, previous, nowMs);
+        }
+      });
 
       if (subprocessChecker) {
         const checkSubprocessActivity = Effect.fn("terminal.checkSubprocessActivity")(function* (
@@ -2531,6 +2620,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           concurrency: "unbounded",
           discard: true,
         });
+        yield* reschedulePolled;
         return;
       }
 
@@ -2567,6 +2657,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       );
 
       if (Option.isNone(subprocessActivityByPid)) {
+        yield* reschedulePolled;
         return;
       }
 
@@ -2585,14 +2676,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           discard: true,
         },
       );
+      yield* reschedulePolled;
     });
 
     const hasSessionsNeedingSubprocessCheck = readManagerState.pipe(
-      Effect.map((state) =>
-        [...state.sessions.values()].some(
-          (session) => session.status === "running" && session.subprocessPollingArmed,
-        ),
-      ),
+      Effect.map((state) => [...state.sessions.values()].some(needsSubprocessPoll)),
     );
 
     yield* Effect.forever(
@@ -2661,6 +2749,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               cols,
               rows,
               env: input.env,
+              subprocessPoll: freshSubprocessPollSchedule(),
             });
 
             const createdSession = session;
@@ -2781,6 +2870,9 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       }
       const result = applyTerminalInputData(session.terminalCommandInputState, input.data);
       session.terminalCommandInputState = result.state;
+      // Input (Ctrl+C included) may end or start a command: look again soon.
+      session.subprocessPoll.delayMs = subprocessPollIntervalMs;
+      session.subprocessPoll.nextPollAtMs = 0;
       const waitingInsert =
         session.commandRun?.mode === "insert" && session.commandRun.phase === "waiting"
           ? session.commandRun
@@ -2805,6 +2897,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.commandGeneration += 1;
         session.subprocessPollingArmed = true;
         session.consecutiveSubprocessIdlePolls = 0;
+        session.subprocessPoll = freshSubprocessPollSchedule();
         if (session.commandCompletionMarkersEnabled && session.pid !== null) {
           // PowerShell runs cmdlets and pipelines inside the shell process, so
           // there may never be a child process to discover. Treat submission as
@@ -2886,6 +2979,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               cols,
               rows,
               env: input.env,
+              subprocessPoll: freshSubprocessPollSchedule(),
             });
             const createdSession = session;
             yield* modifyManagerState((state) => {
@@ -2967,6 +3061,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             cols,
             rows,
             env: input.env,
+            subprocessPoll: freshSubprocessPollSchedule(),
           });
           session.commandRun = {
             runId: input.runId,
