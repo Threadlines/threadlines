@@ -1,8 +1,11 @@
+import * as NodeOS from "node:os";
+
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import {
@@ -26,6 +29,8 @@ interface WindowsProbeOptions {
 
 export interface DesktopShellEnvironmentShape {
   readonly installIntoProcess: Effect.Effect<void, never>;
+  /** True once `installIntoProcess` got PATH from the user's shell. */
+  readonly prepared: Effect.Effect<boolean>;
 }
 
 export class DesktopShellEnvironment extends Context.Service<
@@ -88,6 +93,18 @@ const mergePaths = (
   }
 
   return entries.length > 0 ? Option.some(entries.join(delimiter)) : Option.none();
+};
+
+/**
+ * The account's own login shell, for when SHELL is unset. The backend skips
+ * its probe once this one answers, so both must try the same shells.
+ */
+const readAccountLoginShell = (): Option.Option<string> => {
+  try {
+    return trimNonEmpty(NodeOS.userInfo().shell);
+  } catch {
+    return Option.none();
+  }
 };
 
 const listLoginShellCandidates = (config: ShellEnvironmentConfig): ReadonlyArray<string> => {
@@ -231,7 +248,7 @@ const readWindowsEnvironment = Effect.fn("desktop.shellEnvironment.readWindowsEn
 const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWindowsEnvironment")(
   function* (
     config: ShellEnvironmentConfig,
-  ): Effect.fn.Return<void, never, ChildProcessSpawner.ChildProcessSpawner> {
+  ): Effect.fn.Return<boolean, never, ChildProcessSpawner.ChildProcessSpawner> {
     // Each probe is a PowerShell launch costing hundreds of milliseconds, and
     // startup waits on this before the window, so run them side by side.
     const [noProfile, profile] = yield* Effect.all(
@@ -257,13 +274,14 @@ const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWin
     if (!config.env.FNM_MULTISHELL_PATH && profile.FNM_MULTISHELL_PATH) {
       config.env.FNM_MULTISHELL_PATH = profile.FNM_MULTISHELL_PATH;
     }
+    return Option.isSome(trimNonEmpty(profile.PATH)) || Option.isSome(trimNonEmpty(noProfile.PATH));
   },
 );
 
 const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosixEnvironment")(
   function* (
     config: ShellEnvironmentConfig,
-  ): Effect.fn.Return<void, never, ChildProcessSpawner.ChildProcessSpawner> {
+  ): Effect.fn.Return<boolean, never, ChildProcessSpawner.ChildProcessSpawner> {
     const shellEnvironment: EnvironmentPatch = {};
 
     for (const shell of listLoginShellCandidates(config)) {
@@ -301,19 +319,21 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
         config.env[name] = shellEnvironment[name];
       }
     }
+    return Option.isSome(trimNonEmpty(shellEnvironment.PATH)) || Option.isSome(launchctlPath);
   },
 );
 
+/** Installs the shell's environment into `config.env`; true when a probe answered with PATH. */
 const installShellEnvironment = (
   config: ShellEnvironmentConfig,
-): Effect.Effect<void, never, ChildProcessSpawner.ChildProcessSpawner> => {
+): Effect.Effect<boolean, never, ChildProcessSpawner.ChildProcessSpawner> => {
   if (config.platform === "win32") {
     return installWindowsEnvironment(config);
   }
   if (config.platform === "darwin" || config.platform === "linux") {
     return installPosixEnvironment(config);
   }
-  return Effect.void;
+  return Effect.succeed(false);
 };
 
 export const layer = Layer.effect(
@@ -321,15 +341,18 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const preparedRef = yield* Ref.make(false);
     return DesktopShellEnvironment.of({
       installIntoProcess: installShellEnvironment({
         env: process.env,
         platform: environment.platform,
-        userShell: Option.none(),
+        userShell: readAccountLoginShell(),
       }).pipe(
+        Effect.flatMap((prepared) => Ref.set(preparedRef, prepared)),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.withSpan("desktop.shellEnvironment.installIntoProcess"),
       ),
+      prepared: Ref.get(preparedRef),
     });
   }),
 );

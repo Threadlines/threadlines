@@ -103,6 +103,7 @@ function runShellEnvironment(input: {
   const program = Effect.gen(function* () {
     const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
     yield* shellEnvironment.installIntoProcess;
+    return yield* shellEnvironment.prepared;
   }).pipe(
     Effect.provide(
       DesktopShellEnvironment.layer.pipe(
@@ -123,7 +124,7 @@ describe("DesktopShellEnvironment", () => {
       };
       const commands: ChildProcess.Command[] = [];
 
-      yield* runShellEnvironment({
+      const prepared = yield* runShellEnvironment({
         env,
         platform: "darwin",
         handler: (command) => {
@@ -136,11 +137,22 @@ describe("DesktopShellEnvironment", () => {
         },
       });
 
+      // The backend this starts can skip its own probe.
+      assert.equal(prepared, true);
       assert.equal(commands.length, 1);
       assert.equal(commands[0]?._tag === "StandardCommand" ? commands[0].command : "", "/bin/zsh");
       assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin:/Users/test/.local/bin");
       assert.equal(env.SSH_AUTH_SOCK, "/tmp/secretive.sock");
       assert.equal(env.HOMEBREW_PREFIX, "/opt/homebrew");
+    }),
+  );
+
+  it.effect("reports nothing prepared when no shell answers", () =>
+    Effect.gen(function* () {
+      const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin" };
+      const prepared = yield* runShellEnvironment({ env, platform: "darwin", handler: () => "" });
+      assert.equal(prepared, false);
+      assert.equal(env.PATH, "/usr/bin");
     }),
   );
 
