@@ -123,6 +123,19 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * Stop one background task of a running session (see
+   * ProviderAdapter.stopBackgroundTask). Never starts or recovers a runtime,
+   * and never reaches a session on another provider instance than the one
+   * named: a task belongs to the runtime that started it. Resolves to whether
+   * a running task was asked to stop.
+   */
+  readonly stopBackgroundTask: (input: {
+    readonly threadId: ThreadId;
+    readonly taskId: string;
+    readonly providerInstanceId?: ProviderInstanceId;
+  }) => Effect.Effect<boolean, ProviderServiceError>;
+
+  /**
    * One provider instance's plugins or skills changed from Settings; tells its live sessions (see
    * ProviderAdapter.noteExtensionsChanged). Does nothing for drivers that notice on their own.
    */

@@ -219,6 +219,17 @@ export interface ProviderAdapterShape<TError> {
   readonly releaseBackgroundCommands?: (threadId: ThreadId) => Effect.Effect<void, TError>;
 
   /**
+   * Stop one background task of a live session (a workflow run) and leave the
+   * turn and the session running. Resolves to whether a running task by that
+   * id was asked to stop; its end arrives through the task's own events.
+   * Drivers whose providers can not stop a task on its own omit it.
+   */
+  readonly stopBackgroundTask?: (
+    threadId: ThreadId,
+    taskId: string,
+  ) => Effect.Effect<boolean, TError>;
+
+  /**
    * Plugins or skills changed outside the sessions, from Settings. Drivers whose live sessions do
    * not notice such changes on their own apply them, no later than each session's next turn.
    * Drivers whose runtime watches for changes itself omit it.
