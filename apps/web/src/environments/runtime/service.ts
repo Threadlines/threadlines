@@ -49,6 +49,7 @@ import { projectQueryKeys } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { pullRequestQueryKeys } from "~/lib/pullRequestsReactQuery";
 import { getPrimaryKnownEnvironment } from "../primary";
+import { isLoopbackHostname } from "../primary/target";
 import {
   bootstrapRemoteBearerSession,
   fetchRemoteEnvironmentDescriptor,
@@ -213,15 +214,35 @@ export function prewarmThreadJumpTargets(refs: ReadonlyArray<ScopedThreadRef>): 
 }
 
 /**
+ * The environment whose server runs on this machine (reached over loopback),
+ * if any: the desktop app's own, or a local `threadlines` opened in a
+ * browser. A primary environment reached by hostname is remote like any
+ * saved one.
+ */
+function readLocalEnvironmentId(): EnvironmentId | null {
+  const primary = getPrimaryKnownEnvironment();
+  if (!primary?.environmentId) {
+    return null;
+  }
+  try {
+    return isLoopbackHostname(new URL(primary.target.httpBaseUrl).hostname)
+      ? primary.environmentId
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Prewarms these threads one at a time when the page is idle and nothing in
  * the foreground is loading. They stay retained until the cancel runs. Only
- * this computer's own threads take part: over a remote or relayed connection
+ * this machine's own threads take part: over a network or relayed connection
  * a detail is too costly to fetch on speculation, so those load on intent.
  */
 export function requestIdleThreadDetailPrewarm(refs: ReadonlyArray<ScopedThreadRef>): () => void {
-  const primaryEnvironmentId = getPrimaryKnownEnvironment()?.environmentId;
+  const localEnvironmentId = readLocalEnvironmentId();
   return threadDetails.requestIdlePrewarm(
-    primaryEnvironmentId ? refs.filter((ref) => ref.environmentId === primaryEnvironmentId) : [],
+    localEnvironmentId ? refs.filter((ref) => ref.environmentId === localEnvironmentId) : [],
   );
 }
 

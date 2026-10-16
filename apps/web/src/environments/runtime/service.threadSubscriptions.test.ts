@@ -1082,10 +1082,13 @@ describe("retainThreadDetailSubscription", () => {
     await vi.advanceTimersByTimeAsync(250);
     expect(subscribedThreadIds()).toEqual([firstId, secondId]);
 
-    // The second never answers either; cancelling its request frees the slot.
+    // The second never answers either; cancelling its request frees the slot
+    // and closes the load, since nothing else wanted it.
     await vi.advanceTimersByTimeAsync(1_000);
     expect(subscribedThreadIds()).toEqual([firstId, secondId]);
+    const unsubscribesBefore = mockThreadUnsubscribe.mock.calls.length;
     cancelTop();
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(unsubscribesBefore + 1);
     await vi.advanceTimersByTimeAsync(250);
     expect(subscribedThreadIds()).toEqual([firstId, secondId, thirdId]);
 
@@ -1263,10 +1266,11 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
-  it("lets held warm threads through as soon as their environment reconnects", async () => {
+  it("lets held warm threads through when their own environment reconnects", async () => {
     const environmentId = EnvironmentId.make("env-remote");
     const launchThreadId = ThreadId.make("thread-launch");
     const runningThreadId = ThreadId.make("thread-running");
+    const localRunningThreadId = ThreadId.make("thread-local-running");
     const record = {
       environmentId,
       label: "Remote env",
@@ -1290,6 +1294,11 @@ describe("retainThreadDetailSubscription", () => {
     const stop = startEnvironmentConnectionService(new QueryClient(), {
       foregroundThreadRef: scopeThreadRef(environmentId, launchThreadId),
     });
+    // This computer's own running thread waits for the remote launch chat.
+    mockCreateEnvironmentConnection.mock.calls[0]?.[0].syncShellSnapshot(
+      makeShellSnapshot([{ threadId: localRunningThreadId, sessionStatus: "running" }]),
+      EnvironmentId.make("env-1"),
+    );
     savedEnvironmentRegistryListener?.();
     await vi.waitFor(() => {
       expect(
@@ -1305,6 +1314,7 @@ describe("retainThreadDetailSubscription", () => {
       ]),
       environmentId,
     );
+    // A first connection is not a reconnect: nothing held went out with it.
     expect(subscribedThreadIds()).toEqual([launchThreadId]);
 
     await disconnectSavedEnvironment(environmentId);
@@ -1315,6 +1325,139 @@ describe("retainThreadDetailSubscription", () => {
       expect(subscribedThreadIds()).toEqual([launchThreadId, launchThreadId, runningThreadId]);
     });
 
+    // The local one waits on for the launch chat's detail.
+    deliverThreadSnapshot(launchThreadId);
+    expect(subscribedThreadIds()).toEqual([
+      launchThreadId,
+      launchThreadId,
+      runningThreadId,
+      localRunningThreadId,
+    ]);
+
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+  it("keeps two intent loads in flight even when opening one evicts from a full cache", async () => {
+    const {
+      prewarmThreadJumpTargets,
+      resetEnvironmentServiceForTests,
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+    } = await import("./service");
+    const environmentId = EnvironmentId.make("env-1");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    for (let index = 0; index < 32; index += 1) {
+      retainThreadDetailSubscription(environmentId, ThreadId.make(`thread-cached-${index}`))();
+    }
+    mockSubscribeThread.mockClear();
+    const jumpIds = [1, 2, 3, 4].map((index) => ThreadId.make(`thread-jump-${index}`));
+    const release = prewarmThreadJumpTargets(
+      jumpIds.map((threadId) => scopeThreadRef(environmentId, threadId)),
+    );
+    await vi.advanceTimersByTimeAsync(250);
+    expect(subscribedThreadIds()).toEqual(jumpIds.slice(0, 2));
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("closes a speculative load once every intent on it has ended", async () => {
+    const {
+      bindThreadRowIntentPrewarm,
+      prewarmThreadJumpTargets,
+      resetEnvironmentServiceForTests,
+      startEnvironmentConnectionService,
+    } = await import("./service");
+    const threadRef = scopeThreadRef(EnvironmentId.make("env-1"), ThreadId.make("thread-both"));
+    const row = createThreadRow(scopedThreadKey(threadRef));
+    const target = createPointerTarget();
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const unbind = bindThreadRowIntentPrewarm(target);
+    target.dispatch("pointerover", row);
+    await vi.advanceTimersByTimeAsync(100);
+    const releaseJump = prewarmThreadJumpTargets([threadRef]);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+
+    target.dispatch("pointerout", row);
+    expect(mockThreadUnsubscribe).not.toHaveBeenCalled();
+    releaseJump();
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
+
+    unbind();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("holds idle prewarm while the launch chat is still waiting for its environment", async () => {
+    const {
+      requestIdleThreadDetailPrewarm,
+      resetEnvironmentServiceForTests,
+      startEnvironmentConnectionService,
+    } = await import("./service");
+    const localEnvironmentId = EnvironmentId.make("env-1");
+    const topThreadId = ThreadId.make("thread-top");
+
+    // The launch chat lives on a computer that has not connected yet.
+    const stop = startEnvironmentConnectionService(new QueryClient(), {
+      foregroundThreadRef: scopeThreadRef(
+        EnvironmentId.make("env-remote"),
+        ThreadId.make("thread-launch"),
+      ),
+    });
+    mockCreateEnvironmentConnection.mock.calls[0]?.[0].syncShellSnapshot(
+      makeShellSnapshot([{ threadId: topThreadId }]),
+      localEnvironmentId,
+    );
+    const cancelPrewarm = requestIdleThreadDetailPrewarm([
+      scopeThreadRef(localEnvironmentId, topThreadId),
+    ]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockSubscribeThread).not.toHaveBeenCalled();
+
+    // A launch chat that never connects stops counting after a few seconds.
+    await vi.advanceTimersByTimeAsync(4_500);
+    expect(subscribedThreadIds()).toEqual([topThreadId]);
+
+    cancelPrewarm();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("does not prewarm idle threads from a primary environment reached over the network", async () => {
+    mockGetPrimaryKnownEnvironment.mockReturnValue({
+      id: "env-1",
+      label: "Primary environment",
+      source: "window-origin",
+      target: {
+        httpBaseUrl: "https://box.example.test/",
+        wsBaseUrl: "wss://box.example.test/",
+      },
+      environmentId: EnvironmentId.make("env-1"),
+    });
+    const {
+      requestIdleThreadDetailPrewarm,
+      resetEnvironmentServiceForTests,
+      startEnvironmentConnectionService,
+    } = await import("./service");
+    const environmentId = EnvironmentId.make("env-1");
+    const topThreadId = ThreadId.make("thread-top");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    mockCreateEnvironmentConnection.mock.calls[0]?.[0].syncShellSnapshot(
+      makeShellSnapshot([{ threadId: topThreadId }]),
+      environmentId,
+    );
+    const cancelPrewarm = requestIdleThreadDetailPrewarm([
+      scopeThreadRef(environmentId, topThreadId),
+    ]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockSubscribeThread).not.toHaveBeenCalled();
+
+    cancelPrewarm();
     stop();
     await resetEnvironmentServiceForTests();
   });

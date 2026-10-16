@@ -92,8 +92,15 @@ type ThreadDetailSubscriptionEntry = {
   readonly refsByPriority: Record<ThreadDetailPriority, number>;
   lastAccessedAt: number;
   evictionTimeoutId: ReturnType<typeof setTimeout> | null;
+  readonly createdAt: number;
   /** When the current stream opened; null while it waits for a connection. */
   attachedAt: number | null;
+  /**
+   * Opened only on speculation (intent or idle prewarm) and never wanted by a
+   * chat or as a warm thread. Let go before its detail arrived, it is closed
+   * rather than cached, so the server stops sending a history no one asked for.
+   */
+  speculative: boolean;
   /**
    * The stream has the thread's detail: a snapshot arrived, or it opened
    * with a resume cursor from an earlier snapshot (a resume may send nothing
@@ -116,8 +123,6 @@ type IntentRequest = {
   readonly ref: ScopedThreadRef;
   state: "queued" | "loading" | "held" | "ended";
   release: (() => void) | null;
-  /** This request opened the stream, so ending it while it loads closes it. */
-  openedStream: boolean;
   timeoutId: ReturnType<typeof setTimeout> | null;
 };
 
@@ -252,6 +257,8 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
   const entriesAwaitingShell = new Set<ThreadDetailSubscriptionEntry>();
   let shellWaitCapTimeoutId: ReturnType<typeof setTimeout> | null = null;
   let shellWaitOver = false;
+  let evaluatingScheduling = false;
+  let evaluateSchedulingAgain = false;
 
   const isEntrySettled = (entry: ThreadDetailSubscriptionEntry | undefined): boolean =>
     entry === undefined || entry.failed || entry.hydrated;
@@ -357,7 +364,9 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
     environmentId: EnvironmentId,
     threadId: ThreadId,
     key: string,
+    speculative: boolean,
   ): ThreadDetailSubscriptionEntry {
+    const now = Date.now();
     const entry: ThreadDetailSubscriptionEntry = {
       key,
       environmentId,
@@ -367,9 +376,11 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
       unsubscribeConnectionListener: null,
       refCount: 0,
       refsByPriority: { foreground: 0, intent: 0, idle: 0 },
-      lastAccessedAt: Date.now(),
+      lastAccessedAt: now,
       evictionTimeoutId: null,
+      createdAt: now,
       attachedAt: null,
+      speculative,
       hydrated: false,
       failed: false,
     };
@@ -580,14 +591,15 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
   }
 
   function startIntent(request: IntentRequest): void {
-    request.openedStream = !entries.has(request.key);
-    request.release = retain(request.ref.environmentId, request.ref.threadId, "intent");
-    if (isEntrySettled(entries.get(request.key))) {
-      request.state = "held";
-      return;
-    }
+    // Counted before retaining: a retain can evict, and the evaluation that
+    // follows must see this slot taken.
     request.state = "loading";
     loadingIntents.add(request);
+    request.release = retain(request.ref.environmentId, request.ref.threadId, "intent");
+    if (isEntrySettled(entries.get(request.key))) {
+      settleIntent(request);
+      return;
+    }
     request.timeoutId = setTimeout(() => {
       request.timeoutId = null;
       settleIntent(request);
@@ -607,9 +619,9 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
   }
 
   /**
-   * Ends one intent. Loaded, it lingers `graceMs` so the click that follows
-   * finds it; still loading, it is cancelled, and a stream it opened that no
-   * one else wants is closed so the server stops sending it.
+   * Ends one intent. If its thread's detail has arrived it lingers `graceMs`,
+   * so the click that follows finds it; otherwise it is let go at once, which
+   * closes a speculative load no one else wants (see `speculative`).
    */
   function endIntent(request: IntentRequest, graceMs: number): void {
     const state = request.state;
@@ -621,30 +633,17 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
       }
       return;
     }
-    const release = request.release ?? NOOP;
-    request.release = null;
-    if (state === "held") {
-      releaseLater(release, graceMs);
-      return;
-    }
-    if (state !== "loading") {
-      return;
-    }
     loadingIntents.delete(request);
     if (request.timeoutId !== null) {
       clearTimeout(request.timeoutId);
       request.timeoutId = null;
     }
-    release();
-    const entry = entries.get(request.key);
-    if (
-      request.openedStream &&
-      entry &&
-      entry.refCount === 0 &&
-      !entry.hydrated &&
-      !isNonIdleThread(entry.environmentId, entry.threadId)
-    ) {
-      disposeByKey(request.key);
+    const release = request.release ?? NOOP;
+    request.release = null;
+    if (entries.get(request.key)?.hydrated) {
+      releaseLater(release, graceMs);
+    } else {
+      release();
     }
   }
 
@@ -675,10 +674,11 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
       if (entry.refsByPriority.foreground + entry.refsByPriority.intent === 0) {
         continue;
       }
-      if (entry.attachedAt === null || isEntrySettled(entry)) {
+      if (isEntrySettled(entry)) {
         continue;
       }
-      const expiresAt = entry.attachedAt + PREWARM_SLOT_TIMEOUT_MS;
+      // Still waiting for a connection or a shell counts too, from creation.
+      const expiresAt = (entry.attachedAt ?? entry.createdAt) + PREWARM_SLOT_TIMEOUT_MS;
       if (expiresAt > now) {
         nextExpiry = Math.min(nextExpiry, expiresAt);
       }
@@ -736,14 +736,31 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
     });
   }
 
-  /** Re-checks every waiting decision; runs after anything that can unblock one. */
+  /**
+   * Re-checks every waiting decision; runs after anything that can unblock
+   * one. Not re-entrant: a call made while it runs (a retain that evicts, a
+   * dispose) makes it go round once more instead, so no queue decides on
+   * state another is halfway through changing.
+   */
   function evaluateScheduling(): void {
-    evaluateBootGate();
-    pumpIntents();
-    if (activeIdlePrewarm && isEntrySettled(entries.get(activeIdlePrewarm.request.key))) {
-      finishActiveIdlePrewarm();
+    if (evaluatingScheduling) {
+      evaluateSchedulingAgain = true;
+      return;
     }
-    pumpIdlePrewarm();
+    evaluatingScheduling = true;
+    try {
+      do {
+        evaluateSchedulingAgain = false;
+        evaluateBootGate();
+        pumpIntents();
+        if (activeIdlePrewarm && isEntrySettled(entries.get(activeIdlePrewarm.request.key))) {
+          finishActiveIdlePrewarm();
+        }
+        pumpIdlePrewarm();
+      } while (evaluateSchedulingAgain);
+    } finally {
+      evaluatingScheduling = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -762,7 +779,10 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
   ): () => void {
     const key = scopedThreadKey(scopeThreadRef(environmentId, threadId));
     const existing = entries.get(key);
-    const entry = existing ?? createEntry(environmentId, threadId, key);
+    const entry = existing ?? createEntry(environmentId, threadId, key, priority !== "foreground");
+    if (priority === "foreground") {
+      entry.speculative = false;
+    }
     clearEviction(entry);
     entry.refCount += 1;
     entry.refsByPriority[priority] += 1;
@@ -785,8 +805,17 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
       entry.refsByPriority[priority] = Math.max(0, entry.refsByPriority[priority] - 1);
       entry.lastAccessedAt = Date.now();
       if (entry.refCount === 0) {
-        reconcileEvictionState(entry);
-        evictIdleToCapacity();
+        if (
+          entry.speculative &&
+          !entry.hydrated &&
+          entries.get(entry.key) === entry &&
+          !isNonIdleThread(entry.environmentId, entry.threadId)
+        ) {
+          disposeByKey(entry.key);
+        } else {
+          reconcileEvictionState(entry);
+          evictIdleToCapacity();
+        }
       }
       evaluateScheduling();
     };
@@ -795,20 +824,26 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
   /** Opens a warm thread's stream; held back during launch. */
   function ensureWarm(environmentId: EnvironmentId, threadId: ThreadId): void {
     const ref = scopeThreadRef(environmentId, threadId);
-    const key = scopedThreadKey(ref);
+    if (bootGate && !entries.has(scopedThreadKey(ref))) {
+      holdWarmUntilForegroundLoads(bootGate, ref);
+      return;
+    }
+    openWarm(environmentId, threadId);
+  }
+
+  function openWarm(environmentId: EnvironmentId, threadId: ThreadId): void {
+    const key = scopedThreadKey(scopeThreadRef(environmentId, threadId));
     const existing = entries.get(key);
     if (existing) {
+      // A warm thread is wanted for itself, so it is no longer speculation.
+      existing.speculative = false;
       clearEviction(existing);
       existing.lastAccessedAt = Date.now();
       ensureAttached(existing);
       return;
     }
-    if (bootGate) {
-      holdWarmUntilForegroundLoads(bootGate, ref);
-      return;
-    }
 
-    ensureAttached(createEntry(environmentId, threadId, key));
+    ensureAttached(createEntry(environmentId, threadId, key, false));
     evictIdleToCapacity();
   }
 
@@ -837,7 +872,6 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
       ref,
       state: "queued",
       release: null,
-      openedStream: false,
       timeoutId: null,
     }));
     queuedIntents.push(...requests);
@@ -910,9 +944,9 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
   /**
    * Re-opens an environment's streams after it (re)connects. Mounted chats
    * go first, then intent, then the rest by recency, so a reconnect never
-   * queues the chat on screen behind background threads. Warm threads still
-   * held from launch go out now too: their wait was for the connection that
-   * just got replaced.
+   * queues the chat on screen behind background threads. This
+   * environment's warm threads still held from launch go out now too: their
+   * wait was for the connection that just got replaced.
    */
   function attachForEnvironment(environmentId: EnvironmentId): void {
     const environmentEntries = [...entries.values()]
@@ -927,10 +961,18 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
     for (const entry of environmentEntries) {
       attach(entry);
     }
-    if (bootGate && bootGate.heldWarms.size > 0) {
-      openBootGate();
-      evaluateScheduling();
+    if (bootGate) {
+      for (const [key, ref] of bootGate.heldWarms) {
+        if (ref.environmentId !== environmentId) {
+          continue;
+        }
+        bootGate.heldWarms.delete(key);
+        if (isNonIdleThread(ref.environmentId, ref.threadId)) {
+          openWarm(ref.environmentId, ref.threadId);
+        }
+      }
     }
+    evaluateScheduling();
   }
 
   function detachForEnvironment(environmentId: EnvironmentId): void {
