@@ -169,11 +169,14 @@ export interface ClaudeWorkflowLaunch {
   readonly scriptPath?: string;
 }
 
-/** The structured `tool_use_result` of a `Workflow` call that launched. */
+/** The structured `tool_use_result` of a `Workflow` call that launched. A
+ *  script that failed to compile comes back `async_launched` with an `error`
+ *  and no task behind it, so it is not a launch (Claude skips it too). */
 export function claudeWorkflowLaunch(value: unknown): ClaudeWorkflowLaunch | undefined {
   const result = record(value);
   if (!result) return undefined;
   if (result.status !== "async_launched" || result.taskType !== "local_workflow") return undefined;
+  if (typeof result.error === "string") return undefined;
   const taskId = clip(result.taskId, 200);
   if (taskId === undefined) return undefined;
   const runId = clip(result.runId, 200);
@@ -241,6 +244,8 @@ interface RunState {
   startReported: boolean;
   ended: boolean;
   hiddenScript: boolean;
+  /** `hiddenScript` as last sent; undefined until phases were sent. */
+  sentHiddenScript: boolean | undefined;
   /** Entries as last sent. */
   readonly sentPhases: Map<number, string>;
   readonly sentAgents: Map<number, string>;
@@ -281,6 +286,7 @@ export class ClaudeWorkflowRunTracker {
         startReported: false,
         ended: false,
         hiddenScript: false,
+        sentHiddenScript: undefined,
         sentPhases: new Map(),
         sentAgents: new Map(),
         sentAgentStates: new Map(),
@@ -455,7 +461,12 @@ export class ClaudeWorkflowRunTracker {
       if (state.sentPhases.get(phase.index) !== key) phases.push(phase);
     }
     const agents: Array<WorkflowAgent> = [];
-    let stateChanged = phases.length > 0;
+    // Whether Claude withholds the script is a guess until an agent shows its
+    // instructions (a script may name its own phase "phase 1"); a corrected
+    // guess goes out like any state change.
+    const hiddenScriptChanged =
+      state.sentHiddenScript !== undefined && state.hiddenScript !== state.sentHiddenScript;
+    let stateChanged = phases.length > 0 || hiddenScriptChanged;
     for (const agent of state.agents.values()) {
       if (state.sentAgents.get(agent.index) === agentKey(agent)) continue;
       agents.push(agent);
@@ -463,12 +474,20 @@ export class ClaudeWorkflowRunTracker {
     }
     const tokensChanged = state.totalTokens !== state.sentTotalTokens;
     const toolCallsChanged = state.totalToolCalls !== state.sentTotalToolCalls;
-    if (phases.length === 0 && agents.length === 0 && !tokensChanged && !toolCallsChanged) {
+    if (
+      phases.length === 0 &&
+      agents.length === 0 &&
+      !tokensChanged &&
+      !toolCallsChanged &&
+      !hiddenScriptChanged
+    ) {
       return undefined;
     }
     if (!force && !stateChanged && nowMs - state.lastSentAtMs < WORKFLOW_PROGRESS_INTERVAL_MS) {
       return undefined;
     }
+    const sendHiddenScript = phases.length > 0 || hiddenScriptChanged;
+    if (sendHiddenScript) state.sentHiddenScript = state.hiddenScript;
     for (const phase of phases) state.sentPhases.set(phase.index, JSON.stringify(phase));
     for (const agent of agents) {
       state.sentAgents.set(agent.index, agentKey(agent));
@@ -487,7 +506,7 @@ export class ClaudeWorkflowRunTracker {
       ...(toolCallsChanged && state.totalToolCalls !== undefined
         ? { totalToolCalls: state.totalToolCalls }
         : {}),
-      ...(phases.length > 0 ? { hiddenScript: state.hiddenScript } : {}),
+      ...(sendHiddenScript ? { hiddenScript: state.hiddenScript } : {}),
     };
   }
 }
