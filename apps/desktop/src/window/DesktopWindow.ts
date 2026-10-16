@@ -1,4 +1,9 @@
-import type { DesktopMenuActionPayload, DesktopPreviewOpenTab } from "@threadlines/contracts";
+import type {
+  DesktopMenuActionPayload,
+  DesktopPreviewOpenTab,
+  DesktopPreviewPopup,
+  DesktopPreviewSiteAllowed,
+} from "@threadlines/contracts";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Context from "effect/Context";
@@ -22,6 +27,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
+import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
@@ -32,6 +38,17 @@ import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as PreviewSession from "../preview/PreviewSession.ts";
 import { isPreviewPartition } from "../preview/previewPartitions.ts";
+import * as PreviewAutomation from "../preview/PreviewAutomation.ts";
+import {
+  isSignInPopupRequest,
+  MAX_SIGN_IN_POPUPS,
+  setUpSignInPopup,
+  signInPopupWindowOptions,
+  siteOf,
+  type SignInPopupAnswer,
+  type SignInPopupWindowOptions,
+} from "../preview/signInPopups.ts";
+import { makeWindowOpenBudget } from "../preview/windowOpenBudget.ts";
 
 const TITLEBAR_HEIGHT = 40;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
@@ -453,6 +470,8 @@ const make = Effect.gen(function* () {
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
   const state = yield* DesktopState.DesktopState;
   const previewSession = yield* PreviewSession.PreviewSession;
+  const previewAutomation = yield* PreviewAutomation.PreviewAutomation;
+  const electronDialog = yield* ElectronDialog.ElectronDialog;
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
   const runSyncExit = Effect.runSyncExitWith(context);
@@ -815,6 +834,43 @@ const make = Effect.gen(function* () {
       showEditContextMenu(window.webContents, () => false, params);
     });
 
+    const windowOpenBudget = makeWindowOpenBudget();
+
+    // The question a sign-in pop-up asks before it opens a site the project has
+    // not allowed. A sheet on the pop-up, where the user is looking; the panel's
+    // approval line is behind it. Taken back, it closes as if cancelled.
+    const askAboutPopupSite = (
+      popup: Electron.BrowserWindow,
+      site: string,
+      openerSite: string,
+      signal: AbortSignal,
+    ): Effect.Effect<SignInPopupAnswer> =>
+      electronDialog
+        .showMessageBox(
+          {
+            type: "question",
+            message: `Open ${site}?`,
+            detail: `${openerSite === "" ? "This page" : openerSite} wants to show this site in a sign-in window. Allowing it remembers the site for this project.`,
+            buttons: ["Allow Site", "Allow All Sites", "Not Now"],
+            defaultId: 0,
+            // Escape, or the window going away, is a no.
+            cancelId: 2,
+            noLink: true,
+          },
+          popup,
+        )
+        .pipe(
+          Effect.map(({ response }): SignInPopupAnswer =>
+            response === 0 ? "allowSite" : response === 1 ? "allowAllSites" : "decline",
+          ),
+          Effect.raceFirst(
+            Effect.callback<SignInPopupAnswer>((resume) => {
+              const withdraw = () => resume(Effect.succeed("decline"));
+              if (signal.aborted) withdraw();
+              else signal.addEventListener("abort", withdraw, { once: true });
+            }),
+          ),
+        );
     window.webContents.on("did-attach-webview", (_event, guest) => {
       // Browser shortcuts pressed inside a guest page never reach the
       // renderer: the guest keeps its keystrokes, and the application menu's
@@ -866,8 +922,87 @@ const make = Effect.gen(function* () {
         };
         window.webContents.send(IpcChannels.PREVIEW_OPEN_TAB_CHANNEL, request);
       };
-      guest.setWindowOpenHandler(({ url, disposition }) => {
-        openInTab(url, disposition === "background-tab");
+      const openInTabWithinBudget = (url: string, background: boolean) => {
+        if (
+          Option.isSome(ElectronShell.parseSafeExternalUrl(url)) &&
+          windowOpenBudget.take(guest.session)
+        ) {
+          openInTab(url, background);
+        }
+      };
+
+      // The one exception: a sign-in pop-up gets a real window, so it can send
+      // its result back to the page. See `signInPopups.ts`.
+      const openSignInPopup = (requested: SignInPopupWindowOptions, url: string) => {
+        const created = runSyncExit(
+          electronWindow.create(signInPopupWindowOptions(requested, window)),
+        );
+        if (Exit.isFailure(created)) {
+          throw new Error(`Could not open the sign-in window: ${String(created.cause)}`);
+        }
+        const popup = created.value;
+        setUpSignInPopup(popup, url, {
+          guard: (contents, onRefused) => {
+            if (
+              Exit.isFailure(
+                runSyncExit(previewAutomation.guardPopup(guest.id, contents, onRefused)),
+              )
+            ) {
+              // Its page is gone, and with it the sites it may visit.
+              popup.destroy();
+            }
+          },
+          ask: (popupWindow, site, signal) =>
+            runPromise(askAboutPopupSite(popupWindow, site, siteOf(guest.getURL()), signal)),
+          allow: (site, allowAll) => {
+            runSyncExit(previewAutomation.allowSite(guest.id, site, allowAll));
+            if (window.webContents.isDestroyed()) return;
+            const allowed: DesktopPreviewSiteAllowed = {
+              webContentsId: guest.id,
+              host: site,
+              allowAll,
+            };
+            window.webContents.send(IpcChannels.PREVIEW_SITE_ALLOWED_CHANNEL, allowed);
+          },
+          openInTab: openInTabWithinBudget,
+          showContextMenu: (contents, params) =>
+            showEditContextMenu(
+              contents,
+              () => contents.isDestroyed(),
+              params,
+              (link) => openInTab(link, true),
+            ),
+          report: (popupId, requestedUrl, open) => {
+            if (window.webContents.isDestroyed()) return;
+            const event: DesktopPreviewPopup = {
+              webContentsId: guest.id,
+              popupId,
+              url: requestedUrl,
+              open,
+            };
+            window.webContents.send(IpcChannels.PREVIEW_POPUP_CHANNEL, event);
+          },
+        });
+        return popup.webContents;
+      };
+
+      guest.setWindowOpenHandler((details) => {
+        if (isSignInPopupRequest(details)) {
+          const openForProfile = window
+            .getChildWindows()
+            .filter((child) => !child.isDestroyed() && child.webContents.session === guest.session);
+          if (
+            openForProfile.length >= MAX_SIGN_IN_POPUPS ||
+            !windowOpenBudget.take(guest.session)
+          ) {
+            return { action: "deny" };
+          }
+          return {
+            action: "allow",
+            createWindow: (options) => openSignInPopup(options, details.url),
+          };
+        }
+        openInTabWithinBudget(details.url, details.disposition === "background-tab");
         return { action: "deny" };
       });
 

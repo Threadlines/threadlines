@@ -15,6 +15,7 @@ import {
   type LifecyclePage,
   type PageRunState,
 } from "./browserLifecyclePlan";
+import { signInPopupsOf } from "./signInPopups";
 
 /**
  * Carries out `planBrowserLifecycle` against the real pages.
@@ -222,7 +223,11 @@ export async function runBrowserLifecycleCheck(now = Date.now()): Promise<void> 
         drawn: page.drawn,
         state: runStateByPage.get(key) ?? "active",
         inFlight: activity?.inFlight ?? 0,
-        awaitingUser: questions.some((question) => question.tabId === tab.id),
+        // A sign-in pop-up it opened waits on the user too, and the page must
+        // be awake and in memory to hear back from it.
+        awaitingUser:
+          questions.some((question) => question.tabId === tab.id) ||
+          signInPopupsOf(webContentsId).length > 0,
         lastAgentAt: activity?.lastAgentAt ?? 0,
         lastShownAt: lastShownAtByPage.get(key) ?? now,
         memoryKb: webContentsId === null ? null : (shareByWebContents.get(webContentsId) ?? null),
@@ -253,7 +258,9 @@ export async function runBrowserLifecycleCheck(now = Date.now()): Promise<void> 
       // Seen since the snapshot -- shown and hidden again while an earlier
       // step awaited the desktop -- is not idle either.
       (lastShownAtByPage.get(page.key) ?? 0) <= page.lastShownAt &&
-      !isPageShown(page.threadRef, page.tabId)
+      !isPageShown(page.threadRef, page.tabId) &&
+      // Nor is one that opened a sign-in pop-up since: it waits on the user.
+      signInPopupsOf(webContentsIdOf(page.threadRef, page.tabId)).length === 0
     );
   };
   for (const key of plan.background) {

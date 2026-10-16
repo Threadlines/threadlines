@@ -26,6 +26,7 @@ import * as Electron from "electron";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { isAppWindow } from "../electron/ElectronWindow.ts";
 import { isPreviewPartition } from "./previewPartitions.ts";
 import { isPreviewPermissionAllowed } from "./previewPermissions.ts";
 
@@ -109,24 +110,30 @@ function configurePreviewSession(previewSession: Electron.Session): void {
 }
 
 /**
- * Guest pages running in this session.
+ * Whether a page runs in this session.
  *
  * Compared by storage path as well as identity: every preview partition is
  * persistent, so the path names the partition even if Electron ever hands out
  * a second wrapper for the same session.
  */
+function runsIn(contents: Electron.WebContents, previewSession: Electron.Session): boolean {
+  const pageSession = contents.session;
+  return (
+    pageSession === previewSession ||
+    (previewSession.storagePath !== null && pageSession.storagePath === previewSession.storagePath)
+  );
+}
+
+/** Guest pages running in this session. */
 function previewGuestsIn(previewSession: Electron.Session): Electron.WebContents[] {
-  return Electron.webContents.getAllWebContents().filter((contents) => {
-    if (contents.isDestroyed() || contents.getType() !== "webview") {
-      return false;
-    }
-    const guestSession = contents.session;
-    return (
-      guestSession === previewSession ||
-      (previewSession.storagePath !== null &&
-        guestSession.storagePath === previewSession.storagePath)
+  return Electron.webContents
+    .getAllWebContents()
+    .filter(
+      (contents) =>
+        !contents.isDestroyed() &&
+        contents.getType() === "webview" &&
+        runsIn(contents, previewSession),
     );
-  });
 }
 
 export const make = Effect.sync(() => {
@@ -161,6 +168,14 @@ export const make = Effect.sync(() => {
     Effect.sync(() => {
       for (const guest of previewGuestsIn(previewSession)) {
         guest.reload();
+      }
+      // A sign-in pop-up is mid-way through signing in to what was just
+      // cleared. Reloading it would carry on with a flow its opener no longer
+      // matches, so it goes: destroyed, since a page can refuse a close.
+      for (const window of Electron.BrowserWindow.getAllWindows()) {
+        if (!isAppWindow(window) && runsIn(window.webContents, previewSession)) {
+          window.destroy();
+        }
       }
     });
 

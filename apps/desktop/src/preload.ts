@@ -161,6 +161,28 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(IpcChannels.PREVIEW_OPEN_TAB_CHANNEL, wrappedListener);
     };
   },
+  onPreviewPopup: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, popup: unknown) => {
+      if (typeof popup !== "object" || popup === null) return;
+      listener(popup as Parameters<typeof listener>[0]);
+    };
+
+    ipcRenderer.on(IpcChannels.PREVIEW_POPUP_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.PREVIEW_POPUP_CHANNEL, wrappedListener);
+    };
+  },
+  onPreviewSiteAllowed: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, allowed: unknown) => {
+      if (typeof allowed !== "object" || allowed === null) return;
+      listener(allowed as Parameters<typeof listener>[0]);
+    };
+
+    ipcRenderer.on(IpcChannels.PREVIEW_SITE_ALLOWED_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.PREVIEW_SITE_ALLOWED_CHANNEL, wrappedListener);
+    };
+  },
   onPreviewUserControl: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, control: unknown) => {
       if (typeof control !== "object" || control === null) return;

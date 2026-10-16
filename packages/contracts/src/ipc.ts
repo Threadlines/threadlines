@@ -522,6 +522,35 @@ export const DesktopPreviewOpenTabSchema = Schema.Struct({
 export type DesktopPreviewOpenTab = typeof DesktopPreviewOpenTabSchema.Type;
 
 /**
+ * A sign-in pop-up a page opened, or one that closed. These get a real window
+ * outside the panel, so the page can hear back from it; the panel learns of
+ * them here, since the page that opened one is waiting on the user.
+ */
+export const DesktopPreviewPopupSchema = Schema.Struct({
+  /** The page that opened it. */
+  webContentsId: Schema.Number,
+  popupId: Schema.Number,
+  /** The address the page asked for: `about:blank` when it sets one later. */
+  url: Schema.String,
+  open: Schema.Boolean,
+});
+export type DesktopPreviewPopup = typeof DesktopPreviewPopupSchema.Type;
+
+/**
+ * A site the user allowed from a sign-in pop-up's own question. The pop-up has
+ * already gone there; the panel records the answer for the page's project, as
+ * if it had come from the approval bar.
+ */
+export const DesktopPreviewSiteAllowedSchema = Schema.Struct({
+  /** The page in the panel that opened the pop-up. */
+  webContentsId: Schema.Number,
+  host: Schema.String,
+  /** "Allow All Sites": the project now lets pages and agents visit any site. */
+  allowAll: Schema.Boolean,
+});
+export type DesktopPreviewSiteAllowed = typeof DesktopPreviewSiteAllowedSchema.Type;
+
+/**
  * The in-app browser keeps one profile per project: its own cookies, storage
  * and cache. The desktop names the partition; the renderer only asks for it.
  */
@@ -1205,6 +1234,10 @@ export interface DesktopBridge {
   ) => () => void;
   /** Fires when a page asked for a new tab or window; see `DesktopPreviewOpenTabSchema`. */
   onPreviewOpenTab?: (listener: (request: DesktopPreviewOpenTab) => void) => () => void;
+  /** Fires when a page's sign-in pop-up opens or closes; see `DesktopPreviewPopupSchema`. */
+  onPreviewPopup?: (listener: (event: DesktopPreviewPopup) => void) => () => void;
+  /** Fires when the user allows a site from a sign-in pop-up's question. */
+  onPreviewSiteAllowed?: (listener: (event: DesktopPreviewSiteAllowed) => void) => () => void;
   /** Fires for genuine keyboard, pointer, or wheel input inside a guest page. */
   onPreviewUserControl?: (listener: (event: DesktopPreviewUserControl) => void) => () => void;
   /** Fires for browser gestures the renderer cannot see itself: the mouse's
