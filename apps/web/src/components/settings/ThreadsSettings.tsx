@@ -2,6 +2,7 @@ import { InfoIcon, PlusIcon, XIcon } from "lucide-react";
 import {
   type AgentInvitesMode,
   type AgentThreadsMode,
+  type ClaudeWorkflowSize,
   type ModelSelection,
   type NewThreadRoomAgent,
   ProviderDriverKind,
@@ -64,6 +65,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <AgentThreadsRow />
         <AgentPagesRow />
         <ClaudeArtifactsRow />
+        <ClaudeWorkflowSizeRow />
         <CommandRequestsRow />
       </SettingsSection>
 
@@ -453,6 +455,74 @@ function ClaudeArtifactsRow() {
           onCheckedChange={(checked) => updateSettings({ enableClaudeArtifacts: Boolean(checked) })}
           aria-label="Enable Claude artifacts"
         />
+      }
+    />
+  );
+}
+
+const CLAUDE_WORKFLOW_SIZE_LABELS: Record<ClaudeWorkflowSize, string> = {
+  default: "Claude's default",
+  small: "Small",
+  medium: "Medium",
+  large: "Large",
+  unrestricted: "Any",
+};
+
+/** What each size aims for, in Claude's own terms. */
+const CLAUDE_WORKFLOW_SIZE_NOTES: Record<ClaudeWorkflowSize, string> = {
+  default:
+    "How many agents Claude aims for in a workflow. Its default is fewer than 10, or 5 on the Pro plan.",
+  small: "Claude aims for fewer than 5 agents in a workflow.",
+  medium: "Claude aims for fewer than 10 agents in a workflow.",
+  large: "Claude aims for fewer than 50 agents in a workflow.",
+  unrestricted: "Claude sizes each workflow to the task, with no limit on agents.",
+};
+
+function isClaudeWorkflowSize(value: unknown): value is ClaudeWorkflowSize {
+  return typeof value === "string" && Object.hasOwn(CLAUDE_WORKFLOW_SIZE_LABELS, value);
+}
+
+/**
+ * How many agents Claude aims for when it writes a workflow (Ultracode, or a
+ * request for one), for every Claude account. A setting of this computer's
+ * server, read before each message, so running threads follow it from their
+ * next message.
+ */
+function ClaudeWorkflowSizeRow() {
+  const size = useSettings((settings) => settings.claudeWorkflowSize);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Claude workflow size"
+      description={CLAUDE_WORKFLOW_SIZE_NOTES[size]}
+      resetAction={
+        size !== "default" ? (
+          <SettingResetButton
+            label="Claude workflow size"
+            onClick={() => updateSettings({ claudeWorkflowSize: "default" })}
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={size}
+          onValueChange={(value) => {
+            if (isClaudeWorkflowSize(value)) {
+              updateSettings({ claudeWorkflowSize: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Claude workflow size">
+            <SelectValue>{CLAUDE_WORKFLOW_SIZE_LABELS[size]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {Object.entries(CLAUDE_WORKFLOW_SIZE_LABELS).map(([value, label]) => (
+              <SelectItem key={value} value={value}>
+                {label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
       }
     />
   );

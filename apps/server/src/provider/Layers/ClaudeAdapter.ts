@@ -33,6 +33,7 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   type ClaudeSettings,
+  type ClaudeWorkflowSize,
   EventId,
   MessageId,
   type ModelCapabilities,
@@ -631,6 +632,12 @@ export interface ClaudeAdapterLiveOptions {
    * the setting off stop a running session's next upload. Absent: as started.
    */
   readonly artifactsAllowed?: Effect.Effect<boolean>;
+  /**
+   * How many agents Claude aims for in a workflow (Settings › Threads). Read
+   * when a session starts and before each turn, so a change applies from the
+   * next message without a restart. Absent: Claude's own default.
+   */
+  readonly workflowSize?: Effect.Effect<ClaudeWorkflowSize>;
 }
 
 /**
@@ -872,28 +879,39 @@ function getEffectiveClaudeAgentEffort(effort: string | null | undefined): Claud
 }
 
 /** Session option knobs that map to the SDK's flag-settings layer. Derived
- *  from the model selection at session start and re-derived per turn so
- *  changes apply in-session via `applyFlagSettings` instead of a restart. */
+ *  from the model selection and the workflow size setting at session start
+ *  and re-derived per turn so changes apply in-session via
+ *  `applyFlagSettings` instead of a restart. */
 interface ClaudeFlagSettingsSnapshot {
   readonly effortLevel: ClaudeSdkEffort | null;
   readonly alwaysThinkingEnabled: boolean | null;
   readonly fastMode: boolean;
   readonly ultracode: boolean;
+  /** Whether the model's Claude Code takes a workflow size: the ones with
+   *  the Ultracode switch. */
+  readonly workflowSizeSupported: boolean;
   /** Null: Claude's own default (and a size set in its settings files) stands. */
   readonly workflowSizeGuideline: ClaudeWorkflowSizeGuideline | null;
 }
 
-type ClaudeWorkflowSizeGuideline = "small" | "medium" | "large" | "unrestricted";
+type ClaudeWorkflowSizeGuideline = Exclude<ClaudeWorkflowSize, "default">;
 
-function claudeWorkflowSizeGuideline(value: unknown): ClaudeWorkflowSizeGuideline | null {
-  return value === "small" || value === "medium" || value === "large" || value === "unrestricted"
-    ? value
-    : null;
+/** The size as Claude takes it, where it takes one. */
+function withWorkflowSize(
+  snapshot: ClaudeFlagSettingsSnapshot,
+  workflowSize: ClaudeWorkflowSize,
+): ClaudeFlagSettingsSnapshot {
+  return {
+    ...snapshot,
+    workflowSizeGuideline:
+      snapshot.workflowSizeSupported && workflowSize !== "default" ? workflowSize : null,
+  };
 }
 
 function deriveClaudeFlagSettings(
   modelSelection: ModelSelection | undefined,
   capabilities: ModelCapabilities,
+  workflowSize: ClaudeWorkflowSize,
 ): ClaudeFlagSettingsSnapshot {
   // Resolving every option together lets a selection saved with the old
   // "ultracode" effort level land as Extra High plus the Ultracode switch.
@@ -906,13 +924,17 @@ function deriveClaudeFlagSettings(
   const effortValue = currentValue("effort");
   const effort = typeof effortValue === "string" ? effortValue : null;
   const thinking = currentValue("thinking");
-  return {
-    effortLevel: getEffectiveClaudeAgentEffort(effort),
-    alwaysThinkingEnabled: typeof thinking === "boolean" ? thinking : null,
-    fastMode: currentValue("fastMode") === true,
-    ultracode: isClaudeUltracodeEffort(effort) || currentValue("ultracode") === true,
-    workflowSizeGuideline: claudeWorkflowSizeGuideline(currentValue("workflowSize")),
-  };
+  return withWorkflowSize(
+    {
+      effortLevel: getEffectiveClaudeAgentEffort(effort),
+      alwaysThinkingEnabled: typeof thinking === "boolean" ? thinking : null,
+      fastMode: currentValue("fastMode") === true,
+      ultracode: isClaudeUltracodeEffort(effort) || currentValue("ultracode") === true,
+      workflowSizeSupported: descriptors.some((descriptor) => descriptor.id === "ultracode"),
+      workflowSizeGuideline: null,
+    },
+    workflowSize,
+  );
 }
 
 function claudeFlagSettingsEqual(
@@ -924,6 +946,7 @@ function claudeFlagSettingsEqual(
     left.alwaysThinkingEnabled === right.alwaysThinkingEnabled &&
     left.fastMode === right.fastMode &&
     left.ultracode === right.ultracode &&
+    left.workflowSizeSupported === right.workflowSizeSupported &&
     left.workflowSizeGuideline === right.workflowSizeGuideline
   );
 }
@@ -3437,6 +3460,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   options?: ClaudeAdapterLiveOptions,
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("claudeAgent");
+  const currentWorkflowSize =
+    options?.workflowSize ?? Effect.succeed<ClaudeWorkflowSize>("default");
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
@@ -7702,7 +7727,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         apiModelId,
       ]);
       const fallbackModelIds = splitClaudeFallbackModelOption(fallbackModel);
-      const flagSettings = deriveClaudeFlagSettings(modelSelection, modelCapabilities);
+      const flagSettings = deriveClaudeFlagSettings(
+        modelSelection,
+        modelCapabilities,
+        yield* currentWorkflowSize,
+      );
       const effectiveEffort = flagSettings.effortLevel;
       // Every mode names its permission mode. Since SDK 0.3.286 an omitted
       // one is left to the CLI, which applies the user's or project's
@@ -8197,12 +8226,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
     }
 
-    // Apply option changes (effort, thinking, fast mode, ultracode) to the
-    // running query instead of restarting the session. Best-effort: a failed
-    // apply must not block the user's turn, and an un-updated snapshot means
-    // the next turn retries.
-    if (modelSelection !== undefined) {
-      const desiredFlagSettings = deriveClaudeFlagSettings(modelSelection, modelCapabilities);
+    // Apply option changes (effort, thinking, fast mode, ultracode, and the
+    // workflow size from Settings) to the running query instead of
+    // restarting the session. Best-effort: a failed apply must not block the
+    // user's turn, and an un-updated snapshot means the next turn retries.
+    {
+      const workflowSize = yield* currentWorkflowSize;
+      const desiredFlagSettings =
+        modelSelection !== undefined
+          ? deriveClaudeFlagSettings(modelSelection, modelCapabilities, workflowSize)
+          : withWorkflowSize(context.currentFlagSettings, workflowSize);
       if (!claudeFlagSettingsEqual(desiredFlagSettings, context.currentFlagSettings)) {
         const applyFlagSettings = context.query.applyFlagSettings?.bind(context.query);
         if (applyFlagSettings === undefined) {

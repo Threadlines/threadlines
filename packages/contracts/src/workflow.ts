@@ -183,6 +183,21 @@ export const OrchestrationWorkflowRun = Schema.Struct({
 export type OrchestrationWorkflowRun = typeof OrchestrationWorkflowRun.Type;
 
 /**
+ * How many agents Claude aims for when it writes a workflow (Claude's
+ * `workflowSizeGuideline`). `default` sends nothing, so Claude's own default
+ * stands (fewer than 10 agents, 5 on Pro), and so does a size set in Claude's
+ * settings files. `unrestricted` is "Any": Claude sizes it to the task.
+ */
+export const ClaudeWorkflowSize = Schema.Literals([
+  "default",
+  "small",
+  "medium",
+  "large",
+  "unrestricted",
+]);
+export type ClaudeWorkflowSize = typeof ClaudeWorkflowSize.Type;
+
+/**
  * The few facts the sidebar and other thread-list surfaces show about a
  * running workflow, carried on the session's awaited background tasks so they
  * need no thread detail.

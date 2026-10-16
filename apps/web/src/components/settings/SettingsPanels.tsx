@@ -440,6 +440,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(!roomsEnabledFor(settings) ? ["Rooms"] : []),
       ...(settings.enableAgentPages === false ? ["Agent pages"] : []),
       ...(settings.enableClaudeArtifacts === true ? ["Claude artifacts"] : []),
+      ...(settings.claudeWorkflowSize !== DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize
+        ? ["Claude workflow size"]
+        : []),
       ...(settings.enableCommandRequests === false ? ["Command requests"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
       ...(agentThreadsMode(settings) !== "ask" ? ["Agents can start threads"] : []),
@@ -468,6 +471,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableRooms,
       settings.enableAgentPages,
       settings.enableClaudeArtifacts,
+      settings.claudeWorkflowSize,
       settings.enableCommandRequests,
       settings.agentInvites,
       settings.agentThreads,
@@ -525,6 +529,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       enableRooms: true,
       enableAgentPages: true,
       enableClaudeArtifacts: false,
+      claudeWorkflowSize: DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize,
       enableCommandRequests: true,
       agentInvites: "ask",
       agentThreads: "ask",

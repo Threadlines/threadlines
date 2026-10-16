@@ -17,6 +17,7 @@ import type {
 import {
   ApprovalRequestId,
   ClaudeSettings,
+  type ClaudeWorkflowSize,
   MessageId,
   ProviderDriverKind,
   ProviderItemId,
@@ -326,6 +327,7 @@ function makeHarness(config?: {
   readonly environment?: NodeJS.ProcessEnv;
   readonly onChatAuthStateChanged?: ClaudeAdapterLiveOptions["onChatAuthStateChanged"];
   readonly resolveModelMetadata?: ClaudeAdapterLiveOptions["resolveModelMetadata"];
+  readonly workflowSize?: ClaudeAdapterLiveOptions["workflowSize"];
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -356,6 +358,7 @@ function makeHarness(config?: {
       ? { onChatAuthStateChanged: config.onChatAuthStateChanged }
       : {}),
     ...(config?.resolveModelMetadata ? { resolveModelMetadata: config.resolveModelMetadata } : {}),
+    ...(config?.workflowSize ? { workflowSize: config.workflowSize } : {}),
   };
 
   return {
@@ -1481,41 +1484,53 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("sends the chosen workflow size at start, and clears it when set back", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      const selection = (workflowSize: string) =>
-        createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5-5", [
-          { id: "workflowSize", value: workflowSize },
+  it.effect(
+    "sends the workflow size from Settings at start, and a changed one on the next turn",
+    () => {
+      let workflowSize: ClaudeWorkflowSize = "large";
+      const harness = makeHarness({ workflowSize: Effect.sync(() => workflowSize) });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const selection = createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5-5",
+          [],
+        );
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: selection,
+          runtimeMode: "full-access",
+        });
+
+        assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
+          workflowSizeGuideline: "large",
+        });
+
+        // Set back to Claude's default in Settings: null, so Claude's own size
+        // (or its settings files') applies again, without a restart. A turn
+        // that names no model still carries it, and keeps the other options.
+        workflowSize = "default";
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "hello",
+          attachments: [],
+        });
+        assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+          {
+            effortLevel: harness.getLastCreateQueryInput()?.options.effort ?? null,
+            alwaysThinkingEnabled: null,
+            fastMode: null,
+            ultracode: null,
+            workflowSizeGuideline: null,
+          },
         ]);
-      const session = yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        modelSelection: selection("large"),
-        runtimeMode: "full-access",
-      });
-
-      assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
-        workflowSizeGuideline: "large",
-      });
-
-      // "Default" sends null, so Claude's own size (or its settings files') applies again.
-      yield* adapter.sendTurn({
-        threadId: session.threadId,
-        input: "hello",
-        modelSelection: selection("auto"),
-        attachments: [],
-      });
-      assert.deepEqual(
-        harness.query.applyFlagSettingsCalls.map((call) => call.workflowSizeGuideline),
-        [null],
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
       );
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
+    },
+  );
 
   it.effect("ignores claude fast mode for non-opus models", () => {
     const harness = makeHarness();

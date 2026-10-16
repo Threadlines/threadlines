@@ -6,7 +6,6 @@ import {
   type ScopedThreadRef,
   type ServerProviderModel,
 } from "@threadlines/contracts";
-import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
 import {
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
@@ -139,83 +138,12 @@ function getBinaryServiceTierToggle(
   };
 }
 
-/** Claude's workflow size, drawn as its own control under the switches. */
-const WORKFLOW_SIZE_OPTION_ID = "workflowSize";
-
 function getRenderedSelectDescriptors(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
 ): ReadonlyArray<SelectProviderOptionDescriptor> {
   return descriptors.filter(
     (descriptor): descriptor is SelectProviderOptionDescriptor =>
-      descriptor.type === "select" &&
-      descriptor.id !== WORKFLOW_SIZE_OPTION_ID &&
-      getBinaryServiceTierToggle(descriptor) === null,
-  );
-}
-
-function getWorkflowSizeDescriptor(
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
-): SelectProviderOptionDescriptor | null {
-  return (
-    descriptors.find(
-      (descriptor): descriptor is SelectProviderOptionDescriptor =>
-        descriptor.type === "select" && descriptor.id === WORKFLOW_SIZE_OPTION_ID,
-    ) ?? null
-  );
-}
-
-/** What each size aims for, in Claude's own terms. */
-const WORKFLOW_SIZE_NOTES: Readonly<Record<string, string>> = {
-  auto: "Claude's default: fewer than 10 agents, 5 on Pro.",
-  small: "Aims for fewer than 5 agents.",
-  medium: "Aims for fewer than 10 agents.",
-  large: "Aims for fewer than 50 agents.",
-  unrestricted: "No limit: Claude sizes it to the task.",
-};
-
-/**
- * How many agents Claude aims for when it writes a workflow. "Default" is
- * not a segment (it sends nothing); with it, no segment is chosen, and a
- * chosen size offers the way back.
- */
-function WorkflowSizeControl({
-  descriptor,
-  onChange,
-}: {
-  descriptor: SelectProviderOptionDescriptor;
-  onChange: (value: string) => void;
-}) {
-  const current = getDescriptorStringValue(descriptor) ?? "auto";
-  const sizes = descriptor.options.filter((option) => option.id !== "auto");
-  return (
-    <div className="px-2 pt-1.5 pb-2" data-workflow-size-control="true">
-      <div className="pb-1 text-[12px] text-muted-foreground">{descriptor.label}</div>
-      <SegmentedControl
-        size="sm"
-        value={current}
-        onValueChange={onChange}
-        aria-label={descriptor.label}
-        className="w-full"
-      >
-        {sizes.map((option) => (
-          <SegmentedControlItem key={option.id} value={option.id} className="flex-1">
-            {option.label}
-          </SegmentedControlItem>
-        ))}
-      </SegmentedControl>
-      <div className="flex min-w-0 items-center gap-1.5 pt-1 text-[11.5px] text-muted-foreground">
-        <span className="min-w-0 truncate">{WORKFLOW_SIZE_NOTES[current] ?? ""}</span>
-        {current !== "auto" ? (
-          <button
-            type="button"
-            className="shrink-0 rounded-sm text-foreground/80 outline-none hover:text-foreground focus-ring"
-            onClick={() => onChange("auto")}
-          >
-            Use default
-          </button>
-        ) : null}
-      </div>
-    </div>
+      descriptor.type === "select" && getBinaryServiceTierToggle(descriptor) === null,
   );
 }
 
@@ -469,7 +397,6 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     omitOptionIds,
   });
   const switchControls = getTraitSwitchControls(descriptors);
-  const workflowSizeDescriptor = getWorkflowSizeDescriptor(descriptors);
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
     updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
   };
@@ -573,12 +500,6 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
             })}
           </MenuGroup>
         </div>
-      ) : null}
-      {workflowSizeDescriptor ? (
-        <WorkflowSizeControl
-          descriptor={workflowSizeDescriptor}
-          onChange={(value) => handleSelectChange(workflowSizeDescriptor, value)}
-        />
       ) : null}
     </>
   );
