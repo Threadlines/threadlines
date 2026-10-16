@@ -37,6 +37,10 @@ import {
   PtySpawnError,
 } from "../Services/PTY.ts";
 import { makeTerminalManagerWithOptions, type TerminalProcessTreeControl } from "./Manager.ts";
+import {
+  SERVER_ADDED_VARIABLE,
+  WORKING_FOLDER_LOOKUP_VARIABLE,
+} from "@threadlines/shared/windowsCommandLookup";
 
 class WaitForConditionError extends Data.TaggedError("WaitForConditionError")<{
   readonly message: string;
@@ -1551,6 +1555,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       setEnv("T3CODE_PORT", "3773");
       setEnv("VITE_DEV_SERVER_URL", "http://localhost:5173");
       setEnv("TEST_TERMINAL_KEEP", "keep-me");
+      // What the server sets on itself on Windows: terminals get the user's lookup back.
+      setEnv(WORKING_FOLDER_LOOKUP_VARIABLE, "1");
+      setEnv(SERVER_ADDED_VARIABLE, "1");
 
       try {
         const { manager, ptyAdapter } = yield* createManager();
@@ -1565,6 +1572,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         expect(spawnInput.env.T3CODE_PORT).toBeUndefined();
         expect(spawnInput.env.VITE_DEV_SERVER_URL).toBeUndefined();
         expect(spawnInput.env.TEST_TERMINAL_KEEP).toBe("keep-me");
+        expect(spawnInput.env[WORKING_FOLDER_LOOKUP_VARIABLE]).toBeUndefined();
       } finally {
         restoreEnv();
       }

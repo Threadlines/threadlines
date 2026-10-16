@@ -1,14 +1,9 @@
-// @effect-diagnostics nodeBuiltinImport:off
-import { win32 as WindowsPath } from "node:path";
-
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { resolveCommandPath } from "@threadlines/shared/shell";
+import { resolveCommandOutsideWorkingFolder } from "@threadlines/shared/shell";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
-
-type Environment = Readonly<Record<string, string | undefined>>;
 
 /**
  * The command as the server should start it (@threadlines/shared/windowsCommandLookup):
@@ -16,7 +11,7 @@ type Environment = Readonly<Record<string, string | undefined>>;
  * programs as they would outside Threadlines. A command run through a shell
  * is left as it is: there cmd.exe looks up the command for us, and so does
  * the batch launcher it runs. Null when the command would only be found in
- * the working folder (see {@link programOnPath}).
+ * the working folder (resolveCommandOutsideWorkingFolder).
  */
 export function withChildEnvironment(
   command: ChildProcess.Command,
@@ -34,27 +29,10 @@ export function withChildEnvironment(
   if (options.shell) return command;
   const env = options.extendEnv ? { ...process.env, ...options.env } : (options.env ?? process.env);
   const childEnv = withUsualCommandLookup(env);
-  const program = platform === "win32" ? programOnPath(command.command, childEnv) : command.command;
+  const program = resolveCommandOutsideWorkingFolder(command.command, childEnv, platform);
   if (program === null) return null;
   if (childEnv === env && program === command.command) return command;
   return ChildProcess.make(program, command.args, { ...options, env: childEnv, extendEnv: false });
-}
-
-/**
- * Windows skips the working folder for the server's lookups, but still
- * searches relative PATH entries such as `.` against it. When PATH has one, a
- * bare command is taken from the full-path entries instead, trying `.com` then
- * `.exe` as Windows does, and null when only a relative entry could hold it.
- */
-function programOnPath(command: string, env: Environment): string | null {
-  if (command.includes("\\") || command.includes("/")) return command;
-  const path = Object.entries(env).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "";
-  const hasRelativeEntry = path.split(";").some((entry) => {
-    const trimmed = entry.trim().replace(/^"|"$/gu, "");
-    return trimmed.length > 0 && !WindowsPath.isAbsolute(trimmed);
-  });
-  if (!hasRelativeEntry) return command;
-  return resolveCommandPath(command, { platform: "win32", env: { ...env, PATHEXT: ".COM;.EXE" } });
 }
 
 /**

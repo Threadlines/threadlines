@@ -53,6 +53,7 @@ import {
 } from "../providerSnapshot.ts";
 import { detectProviderBinary } from "../providerDetection.ts";
 import {
+  claudeSdkExecutable,
   makeClaudeEnvironment,
   resolveClaudeConfigDir,
   resolveClaudeHomePath,
@@ -1331,6 +1332,7 @@ const probeClaudeCapabilities = (
     const renewalDue = yield* isRenewalDue;
     const stopAfterRenewal = stopClaudeCliAfterSignInRenewal({ renewalDue, isRenewalDue, stop });
     return yield* Effect.tryPromise(async () => {
+      const executable = claudeSdkExecutable(claudeSettings.binaryPath, claudeEnvironment);
       const q = claudeQuery({
         // Never yield — we only need initialization data, not a conversation.
         // This prevents any prompt from reaching the Anthropic API.
@@ -1340,7 +1342,7 @@ const probeClaudeCapabilities = (
         })(),
         options: {
           persistSession: false,
-          pathToClaudeCodeExecutable: claudeSettings.binaryPath,
+          pathToClaudeCodeExecutable: executable,
           abortController: abort,
           settingSources: ["user", "project", "local"],
           mcpServers: {},
@@ -1508,11 +1510,12 @@ export const refreshClaudeOAuthCredential = (
       : Effect.succeed(false);
     const renewalDue = yield* isRenewalDue;
     return yield* Effect.tryPromise(async () => {
+      const executable = claudeSdkExecutable(claudeSettings.binaryPath, claudeEnvironment);
       const q = claudeQuery({
         prompt: CREDENTIAL_REFRESH_PROMPT,
         options: {
           persistSession: false,
-          pathToClaudeCodeExecutable: claudeSettings.binaryPath,
+          pathToClaudeCodeExecutable: executable,
           abortController: abort,
           // No filesystem settings, hooks, or MCP servers (claude.ai
           // connectors load even without settings): this run exists only to

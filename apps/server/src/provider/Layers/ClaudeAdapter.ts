@@ -142,7 +142,7 @@ import {
   roomSideKindOf,
   roomToolsFor,
 } from "../../mcp/roomToolAccess.ts";
-import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { claudeSdkExecutable, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   ensureClaudeSessionTranscript,
   readClaudeTranscriptWorktreePath,
@@ -7263,7 +7263,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ),
         );
 
-      const claudeBinaryPath = claudeSettings.binaryPath;
+      const claudeBinaryPath = yield* Effect.try({
+        try: () => claudeSdkExecutable(claudeSettings.binaryPath, claudeEnvironment),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: toMessage(cause, "Claude was not found on PATH."),
+            cause,
+          }),
+      });
       const extraArgs = {
         // Claude hides its thinking unless asked, which leaves the working row
         // with nothing to say for minutes. Display only: whether Claude thinks

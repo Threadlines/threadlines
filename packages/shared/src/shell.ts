@@ -265,7 +265,9 @@ export function readEnvironmentFromWindowsShell(
       ? optionsOrExecFile
       : (maybeExecFile ?? (execFileSync as ExecFileSyncLike));
   const args = windowsEnvironmentProbeArgs(names, options);
-  for (const shell of WINDOWS_SHELL_CANDIDATES) {
+  for (const candidate of WINDOWS_SHELL_CANDIDATES) {
+    const shell = resolveCommandOutsideWorkingFolder(candidate);
+    if (shell === null) continue;
     try {
       return extractWindowsEnvironment(execFile(shell, args, WINDOWS_PROBE_EXEC_OPTIONS), names);
     } catch {
@@ -314,7 +316,9 @@ export async function readEnvironmentFromWindowsShellAsync(
     return {};
   }
   const args = windowsEnvironmentProbeArgs(names, options);
-  for (const shell of WINDOWS_SHELL_CANDIDATES) {
+  for (const candidate of WINDOWS_SHELL_CANDIDATES) {
+    const shell = resolveCommandOutsideWorkingFolder(candidate);
+    if (shell === null) continue;
     try {
       const output = await new Promise<string>((resolve, reject) => {
         execFileAsync(shell, args, WINDOWS_PROBE_EXEC_OPTIONS, (error, stdout) =>
@@ -555,6 +559,31 @@ export function isCommandAvailable(
   options: CommandAvailabilityOptions = {},
 ): boolean {
   return resolveCommandPath(command, options) !== null;
+}
+
+/**
+ * A bare command as the server should start it on Windows. Windows already
+ * skips the working folder for the server's lookups
+ * (@threadlines/shared/windowsCommandLookup), but still searches PATH entries
+ * that resolve against it: relative ones such as `.`, and an empty `""`. When
+ * PATH has one, the command is taken from the other entries, trying `.com`
+ * then `.exe` as Windows does, and null means only such an entry could hold
+ * it. Anything else comes back as given.
+ */
+export function resolveCommandOutsideWorkingFolder(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== "win32" || command.includes("\\") || command.includes("/")) return command;
+  const path = Object.entries(env).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "";
+  const followsWorkingFolder = path.split(WINDOWS_PATH_DELIMITER).some((entry) => {
+    const trimmed = entry.trim();
+    const unquoted = stripWrappingQuotes(trimmed);
+    return unquoted.length > 0 ? !WindowsPath.isAbsolute(unquoted) : trimmed.length > 0;
+  });
+  if (!followsWorkingFolder) return command;
+  return resolveCommandPath(command, { platform, env: { ...env, PATHEXT: ".COM;.EXE" } });
 }
 
 export function resolveKnownWindowsCliDirs(env: NodeJS.ProcessEnv): ReadonlyArray<string> {
