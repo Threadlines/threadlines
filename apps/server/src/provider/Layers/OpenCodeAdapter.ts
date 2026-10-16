@@ -70,10 +70,12 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   mcpEndpointUrl,
+  mcpCommandsEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
 import { buildAgentPageInstructions } from "../../mcp/pageTools.ts";
+import { buildCommandRequestInstructions } from "../../mcp/commandTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
@@ -111,6 +113,7 @@ import {
   type OpenCodeRule,
   openCodeBrowserServerName,
   openCodeRoomServerName,
+  openCodeCommandsServerName,
   openCodePagesServerName,
   openCodeSessionGrantRules,
   openCodeSessionRules,
@@ -239,6 +242,8 @@ interface SessionContext {
   readonly roomTools: boolean;
   /** The page tools' image folder, when the session has them. */
   readonly agentPageAssetsDir: string | undefined;
+  /** The session has `ask_user_to_run`. */
+  readonly commandRequests: boolean;
   readonly runtimeMode: RuntimeMode;
   agent: string;
   model: OpenCodeModelRef | undefined;
@@ -517,6 +522,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           toolKey: ctx.toolKey,
           roomTools: ctx.roomTools,
           agentPages: ctx.agentPageAssetsDir !== undefined,
+          commandRequests: ctx.commandRequests,
         });
       });
 
@@ -1890,6 +1896,14 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 },
               ]
             : []),
+          ...(ctx.commandRequests
+            ? [
+                {
+                  name: openCodeCommandsServerName(ctx.toolKey),
+                  url: mcpCommandsEndpointUrl(serverConfig.port),
+                },
+              ]
+            : []),
         ];
         for (const server of servers) {
           yield* runOpenCode("mcp.add", (signal) =>
@@ -1931,6 +1945,13 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               buildAgentPageInstructions({
                 assetsDir: ctx.agentPageAssetsDir,
                 toolPrefix: `${openCodePagesServerName(ctx.toolKey)}_`,
+              }),
+            ]
+          : []),
+        ...(ctx.commandRequests
+          ? [
+              buildCommandRequestInstructions({
+                toolPrefix: `${openCodeCommandsServerName(ctx.toolKey)}_`,
               }),
             ]
           : []),
@@ -2174,6 +2195,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             toolKey: openCodeThreadToolKey(input.threadId),
             roomTools,
             agentPageAssetsDir,
+            commandRequests: input.commandRequests === true,
             runtimeMode: input.runtimeMode,
             agent: BUILD_AGENT,
             model,
@@ -2212,6 +2234,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             browser: true,
             room: roomTools,
             pages: agentPageAssetsDir !== undefined,
+            commands: input.commandRequests === true,
           });
           yield* Scope.addFinalizer(
             scope,

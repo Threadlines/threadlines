@@ -3147,6 +3147,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(input.resumePolicy === "required" ? { resumeRequired: true } : {}),
           ...(input.roomTools === true ? { roomTools: true } : {}),
           ...(input.agentPages === true && sideAnswer === undefined ? { agentPages: true } : {}),
+          ...(input.commandRequests === true && sideAnswer === undefined
+            ? { commandRequests: true }
+            : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }

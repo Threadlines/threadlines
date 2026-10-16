@@ -438,6 +438,19 @@ describe("other steps", () => {
     expect(step).toMatchObject({ routine: true, label: "Couldn't edit a.ts", tallies: [] });
   });
 
+  it("says the agent asked you to run a command, from Codex and Claude alike", () => {
+    const step = (detail: string) =>
+      activityStepFromWorkLogEntry(
+        entry({ itemType: "mcp_tool_call", executionState: "completed", detail }),
+      );
+    for (const detail of [
+      "threadlines_commands.ask_user_to_run: command=pnpm install",
+      "threadlines_commands · ask_user_to_run: command=pnpm install",
+    ]) {
+      expect(step(detail), detail).toMatchObject({ label: "Asked you to run a command" });
+    }
+  });
+
   it("words room tools by what the agent does in the room, from every provider", () => {
     const room = (detail: string, overrides: Partial<WorkLogEntry> = {}) =>
       activityStepFromWorkLogEntry(

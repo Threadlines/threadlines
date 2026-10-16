@@ -121,6 +121,7 @@ export function codexAppServerArgs(servers?: {
   readonly browser?: { readonly url: string; readonly serverName: string };
   readonly room?: CodexRoomServer;
   readonly pages?: { readonly url: string; readonly serverName: string };
+  readonly commands?: { readonly url: string; readonly serverName: string };
 }): ReadonlyArray<string> {
   return [
     ...CODEX_APP_SERVER_ARGS,
@@ -129,12 +130,14 @@ export function codexAppServerArgs(servers?: {
       : []),
     ...(servers?.room !== undefined ? codexRoomServerArgs(servers.room) : []),
     ...(servers?.pages !== undefined ? codexPagesServerArgs(servers.pages) : []),
+    ...(servers?.commands !== undefined ? codexPagesServerArgs(servers.commands) : []),
   ];
 }
 
 /**
- * The page tools (McpPagesServer). They never ask: a page shows only in the
- * caller's own thread. That is why they have a server of their own, since
+ * The page tools (McpPagesServer), and `ask_user_to_run` (McpCommandsServer).
+ * They never ask: a page shows only in the caller's own thread, and a command
+ * card only asks the user. That is why each has a server of its own, since
  * Codex approves per server and the browser tools must still ask.
  */
 function codexPagesServerArgs(pages: {

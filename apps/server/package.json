@@ -52,6 +52,7 @@
     "@muse-code/sdk": "1.4.9",
     "@opencode/client": "2.0.26",
     "@pierre/diffs": "catalog:",
+    "@xterm/headless": "^6.0.0",
     "effect": "catalog:",
     "node-pty": "^1.1.0",
     "tar": "^7.5.22",

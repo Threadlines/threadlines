@@ -101,6 +101,7 @@ const mainCaller = (
   agentId: "agent-test",
   browser: true,
   pages: true,
+  commands: false,
   roomTools: new Set(tools),
 });
 

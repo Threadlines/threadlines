@@ -14,6 +14,7 @@ import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../..
 import { type RoomAgentNames, roomAgentKey, roomTurnOwners } from "../../rooms";
 import {
   type OrchestrationAgentPage,
+  type OrchestrationCommandRequest,
   type MessageAgentModel,
   type MessageId,
   type OrchestrationAwaitedBackgroundTask,
@@ -205,6 +206,13 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         page: OrchestrationAgentPage;
         /** A later turn's version of a page an earlier row shows. */
         updated: boolean;
+      }
+    | {
+        /** A command an agent asked the user to run (CommandRequestRow). */
+        kind: "command-request";
+        id: string;
+        createdAt: string;
+        request: OrchestrationCommandRequest;
       }
     | {
         kind: "working";
@@ -558,6 +566,17 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         forkContext: timelineEntry.forkContext,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "command-request") {
+      nextRows.push({
+        ...UNPLACED,
+        kind: "command-request",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        request: timelineEntry.request,
       });
       continue;
     }
@@ -1668,7 +1687,13 @@ function settleTurnsAboveResponse(
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
     const turnId =
-      entry.kind === "work" ? entry.entry.turnId : entry.kind === "page" ? entry.page.turnId : null;
+      entry.kind === "work"
+        ? entry.entry.turnId
+        : entry.kind === "page"
+          ? entry.page.turnId
+          : entry.kind === "command-request"
+            ? entry.request.turnId
+            : null;
     if (turnId == null) {
       continue;
     }
@@ -1676,7 +1701,8 @@ function settleTurnsAboveResponse(
     if (anchorIndex === undefined) {
       continue;
     }
-    if (entry.kind !== "page") {
+    // Pages and command cards are part of the answer: they go right above it.
+    if (entry.kind !== "page" && entry.kind !== "command-request") {
       if (index > anchorIndex) {
         const trailing = trailingWorkByAnchorIndex.get(anchorIndex) ?? [];
         trailing.push(entry);
@@ -1950,6 +1976,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "page":
       return a.page === (b as typeof a).page && a.updated === (b as typeof a).updated;
 
+    case "command-request":
+      return a.request === (b as typeof a).request;
+
     case "side-status": {
       const bs = b as typeof a;
       return (
@@ -2171,6 +2200,9 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
     case "page":
       // Its title line, then the page at the height measured for this width.
       return AGENT_PAGE_TITLE_LINE_PX + agentPageFrameHeight(row.page, column);
+    case "command-request":
+      // Header, reason, the command's lines, the folder line and the buttons.
+      return 150 + 20 * Math.min(row.request.command.split("\n").length, 12);
     case "side-status":
       return 30;
   }

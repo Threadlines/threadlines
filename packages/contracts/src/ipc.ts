@@ -208,6 +208,9 @@ import type {
   CodexInlineVisualizationReadResult,
   AgentPageReadInput,
   AgentPageReadResult,
+  CommandRunSendOutputInput,
+  CommandRunSendOutputResult,
+  CommandRunStartInput,
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
@@ -1516,6 +1519,15 @@ export interface EnvironmentApi {
   /** Optional so newer clients can still connect to older Threadlines servers. */
   pages?: {
     read: (input: AgentPageReadInput) => Promise<AgentPageReadResult>;
+  };
+  /**
+   * Suggested commands run from the chat (docs/terminal-command-runs.md).
+   * Optional so newer clients can still connect to older servers; the
+   * environment descriptor's `commandRuns` capability says it is there.
+   */
+  commandRuns?: {
+    start: (input: CommandRunStartInput) => Promise<void>;
+    sendOutput: (input: CommandRunSendOutputInput) => Promise<CommandRunSendOutputResult>;
   };
   filesystem: {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;

@@ -69,6 +69,15 @@ export function mcpPagesEndpointUrl(port: number): string {
   return `http://127.0.0.1:${port}${MCP_PAGES_ROUTE_PATH}`;
 }
 
+/** `ask_user_to_run`'s endpoint (McpCommandsServer): its own server, so Codex
+ *  can approve its calls (they only ask the user) without approving others. */
+export const MCP_COMMANDS_ROUTE_PATH = "/mcp/commands";
+
+/** The command tool's address, on loopback for the same reason. */
+export function mcpCommandsEndpointUrl(port: number): string {
+  return `http://127.0.0.1:${port}${MCP_COMMANDS_ROUTE_PATH}`;
+}
+
 /**
  * The same endpoint, in the shape Codex takes it.
  *

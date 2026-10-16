@@ -36,6 +36,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * nobody is looking at it. Older servers only reach the thread on screen.
    */
   browserClientHosts: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server runs suggested shell commands from the chat
+   * (`commandRuns.start`). Older servers omit it; clients then show no run
+   * buttons.
+   */
+  commandRuns: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

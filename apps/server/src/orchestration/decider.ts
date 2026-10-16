@@ -30,6 +30,10 @@ import {
 } from "./messageAgentModels.ts";
 
 import { isStaleAgentPagePublication, threadHasTurn } from "@threadlines/shared/agentPages";
+import {
+  commandRunAwaitsAutoSend,
+  commandRunIdOfOutputMessage,
+} from "@threadlines/shared/commandRuns";
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { isAttachedChild } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
@@ -318,6 +322,129 @@ function childStopEvents(
       createdAt,
     ),
   ];
+}
+
+/**
+ * A message for the agent at work: steers into its turn when it can, else waits
+ * in the queue for its agent, like a message the user typed while it worked.
+ */
+function decideFollowUpSubmit(
+  targetThread: OrchestrationThread,
+  command: Extract<OrchestrationCommand, { readonly type: "thread.follow-up.submit" }>,
+): Effect.Effect<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
+  return Effect.gen(function* () {
+    // In a room only the agent at work can be steered; a message for any
+    // other agent waits for its turn in the queue.
+    const addressedAgentId =
+      command.participantId !== undefined
+        ? command.participantId
+        : sessionSlotParticipantId(targetThread.session);
+    const canSteer =
+      (command.delivery ?? "steer") === "steer" &&
+      targetThread.session?.status === "running" &&
+      targetThread.session.activeTurnId === command.turnId &&
+      addressedAgentId === sessionSlotParticipantId(targetThread.session);
+    if (!canSteer) {
+      // Queued on purpose, or a steer that arrived after its turn ended (or
+      // while another turn runs): hold it for the next turn instead of
+      // refusing it, so the message is never lost to the race.
+      const alreadyQueued = (targetThread.queuedFollowUps ?? []).some(
+        (queued) => queued.messageId === command.message.messageId,
+      );
+      if (
+        alreadyQueued ||
+        targetThread.messages.some((message) => message.id === command.message.messageId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Message '${command.message.messageId}' was already sent on thread '${command.threadId}'.`,
+        });
+      }
+      const userBase = () =>
+        withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        });
+      return withLeadingEvents(
+        [
+          ...resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
+          ...resetChildRequestsForUser(targetThread, userBase, command.createdAt),
+        ],
+        {
+          ...userBase(),
+          type: "thread.follow-up-queued",
+          payload: {
+            threadId: command.threadId,
+            followUp: {
+              messageId: command.message.messageId,
+              text: command.message.text,
+              attachments: command.message.attachments,
+              ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+              ...(command.modelSelection !== undefined
+                ? { modelSelection: command.modelSelection }
+                : {}),
+              ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
+              runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
+              interactionMode: command.interactionMode ?? targetThread.interactionMode,
+              createdAt: command.createdAt,
+            },
+          },
+        },
+      );
+    }
+    const steerBase = () =>
+      withEventBase({
+        aggregateKind: "thread",
+        aggregateId: command.threadId,
+        occurredAt: command.createdAt,
+        commandId: command.commandId,
+      });
+    return withLeadingEvents(
+      [
+        ...resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
+        ...resetChildRequestsForUser(targetThread, steerBase, command.createdAt),
+      ],
+      {
+        ...steerBase(),
+        type: "thread.follow-up-submitted",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          messageId: command.message.messageId,
+          role: "user",
+          text: command.message.text,
+          attachments: command.message.attachments,
+          ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+          // Steering goes to the agent at work.
+          ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
+          createdAt: command.createdAt,
+        },
+      },
+    );
+  });
+}
+
+/**
+ * Stop: command output that would have gone to an agent by itself is held, so
+ * a command finishing later never wakes up work the user stopped. The user
+ * can still send it by hand.
+ */
+function holdCommandOutputOnStop(
+  thread: OrchestrationThread,
+  base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
+  createdAt: string,
+): ReadonlyArray<PlannedOrchestrationEvent> {
+  return (thread.commandRuns ?? []).filter(commandRunAwaitsAutoSend).map((run) => ({
+    ...base(),
+    type: "thread.command-run-updated" as const,
+    payload: {
+      threadId: thread.id,
+      progress: { runId: run.runId, autoSend: false, heldReason: "stopped" as const },
+      createdAt,
+    },
+  }));
 }
 
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
@@ -2304,96 +2431,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // In a room only the agent at work can be steered; a message for any
-      // other agent waits for its turn in the queue.
-      const addressedAgentId =
-        command.participantId !== undefined
-          ? command.participantId
-          : sessionSlotParticipantId(targetThread.session);
-      const canSteer =
-        (command.delivery ?? "steer") === "steer" &&
-        targetThread.session?.status === "running" &&
-        targetThread.session.activeTurnId === command.turnId &&
-        addressedAgentId === sessionSlotParticipantId(targetThread.session);
-      if (!canSteer) {
-        // Queued on purpose, or a steer that arrived after its turn ended (or
-        // while another turn runs): hold it for the next turn instead of
-        // refusing it, so the message is never lost to the race.
-        const alreadyQueued = (targetThread.queuedFollowUps ?? []).some(
-          (queued) => queued.messageId === command.message.messageId,
-        );
-        if (
-          alreadyQueued ||
-          targetThread.messages.some((message) => message.id === command.message.messageId)
-        ) {
-          return yield* new OrchestrationCommandInvariantError({
-            commandType: command.type,
-            detail: `Message '${command.message.messageId}' was already sent on thread '${command.threadId}'.`,
-          });
-        }
-        const userBase = () =>
-          withEventBase({
-            aggregateKind: "thread",
-            aggregateId: command.threadId,
-            occurredAt: command.createdAt,
-            commandId: command.commandId,
-          });
-        return withLeadingEvents(
-          [
-            ...resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
-            ...resetChildRequestsForUser(targetThread, userBase, command.createdAt),
-          ],
-          {
-            ...userBase(),
-            type: "thread.follow-up-queued",
-            payload: {
-              threadId: command.threadId,
-              followUp: {
-                messageId: command.message.messageId,
-                text: command.message.text,
-                attachments: command.message.attachments,
-                ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
-                ...(command.modelSelection !== undefined
-                  ? { modelSelection: command.modelSelection }
-                  : {}),
-                ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
-                runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
-                interactionMode: command.interactionMode ?? targetThread.interactionMode,
-                createdAt: command.createdAt,
-              },
-            },
-          },
-        );
-      }
-      const steerBase = () =>
-        withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        });
-      return withLeadingEvents(
-        [
-          ...resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
-          ...resetChildRequestsForUser(targetThread, steerBase, command.createdAt),
-        ],
-        {
-          ...steerBase(),
-          type: "thread.follow-up-submitted",
-          payload: {
-            threadId: command.threadId,
-            turnId: command.turnId,
-            messageId: command.message.messageId,
-            role: "user",
-            text: command.message.text,
-            attachments: command.message.attachments,
-            ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
-            // Steering goes to the agent at work.
-            ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
-            createdAt: command.createdAt,
-          },
-        },
-      );
+      return yield* decideFollowUpSubmit(targetThread, command);
     }
 
     case "thread.follow-up.unqueue": {
@@ -2548,6 +2586,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         queued.participantId === undefined ||
         queued.participantId === null ||
         activeParticipants(targetThread).some((entry) => entry.id === queued.participantId);
+      // A run's output goes only to the agent it was for: if that agent left
+      // while it waited, it is taken back and the run says why, never handed
+      // to the thread's own agent.
+      const outputRunId = commandRunIdOfOutputMessage(queued.messageId);
+      if (outputRunId !== null && !queuedParticipantPresent) {
+        const run = (targetThread.commandRuns ?? []).find((entry) => entry.runId === outputRunId);
+        return [
+          { ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } },
+          ...(run === undefined
+            ? []
+            : [
+                {
+                  ...sendBase(),
+                  type: "thread.command-run-updated" as const,
+                  payload: {
+                    threadId: command.threadId,
+                    progress: {
+                      runId: run.runId,
+                      heldReason: "agent-left" as const,
+                      outputSentAt: null,
+                      outputMessageId: null,
+                    },
+                    createdAt: command.createdAt,
+                  },
+                },
+              ]),
+        ];
+      }
       if (agentQueued && !queuedParticipantPresent) {
         return [
           { ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } },
@@ -2717,6 +2783,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const chainStop = [
         ...decideAgentChainStop(thread, base, command.createdAt),
         ...childStopEvents(readModel, thread, command, command.createdAt),
+        ...holdCommandOutputOnStop(thread, base, command.createdAt),
       ];
       const interruptEvent: PlannedOrchestrationEvent = {
         ...base(),
@@ -2945,6 +3012,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const chainStop = [
         ...decideAgentChainStop(thread, base, command.createdAt),
         ...childStopEvents(readModel, thread, command, command.createdAt),
+        ...holdCommandOutputOnStop(thread, base, command.createdAt),
       ];
       const stopEvent: PlannedOrchestrationEvent = {
         ...base(),
@@ -3369,6 +3437,266 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+    }
+
+    case "thread.command-request.create": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (!threadHasTurn(thread, command.request.turnId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `The turn that asked to run a command is no longer part of thread '${command.threadId}'.`,
+        });
+      }
+      if (
+        (thread.commandRequests ?? []).some(
+          (request) => request.requestId === command.request.requestId,
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Command request '${command.request.requestId}' already exists.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.command-requested",
+        payload: {
+          threadId: command.threadId,
+          request: command.request,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.command-request.dismiss": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        !(thread.commandRequests ?? []).some((request) => request.requestId === command.requestId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Command request '${command.requestId}' is not part of thread '${command.threadId}'.`,
+        });
+      }
+      const base = () =>
+        withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        });
+      // Skipping a request also keeps its output from going to the agent by itself.
+      const held: ReadonlyArray<PlannedOrchestrationEvent> = command.dismissed
+        ? (thread.commandRuns ?? [])
+            .filter(
+              (run) =>
+                run.source.kind === "request" &&
+                run.source.requestId === command.requestId &&
+                commandRunAwaitsAutoSend(run),
+            )
+            .map((run) => ({
+              ...base(),
+              type: "thread.command-run-updated" as const,
+              payload: {
+                threadId: command.threadId,
+                progress: { runId: run.runId, autoSend: false, heldReason: "skipped" as const },
+                createdAt: command.createdAt,
+              },
+            }))
+        : [];
+      return withLeadingEvents(held, {
+        ...base(),
+        type: "thread.command-request-dismissed",
+        payload: {
+          threadId: command.threadId,
+          requestId: command.requestId,
+          dismissed: command.dismissed,
+          createdAt: command.createdAt,
+        },
+      });
+    }
+
+    case "thread.command-run.start": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const { run } = command;
+      if ((thread.commandRuns ?? []).some((entry) => entry.runId === run.runId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Command run '${run.runId}' already exists.`,
+        });
+      }
+      // A run hangs off a card or a code block still in the thread, and takes
+      // its turn and its agent from there.
+      const sourceMatches =
+        run.source.kind === "request"
+          ? (() => {
+              const requestId = run.source.requestId;
+              const request = (thread.commandRequests ?? []).find(
+                (entry) => entry.requestId === requestId,
+              );
+              return (
+                request !== undefined &&
+                request.dismissedAt === null &&
+                request.turnId === run.turnId &&
+                request.participantId === run.participantId
+              );
+            })()
+          : (() => {
+              const messageId = run.source.messageId;
+              const message = thread.messages.findLast((entry) => entry.id === messageId);
+              return (
+                message !== undefined &&
+                message.role === "assistant" &&
+                message.turnId === run.turnId &&
+                (message.participantId ?? null) === run.participantId
+              );
+            })();
+      if (!sourceMatches) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `The command's card or message is no longer part of thread '${command.threadId}'.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.command-run-started",
+        payload: { threadId: command.threadId, run, createdAt: command.createdAt },
+      };
+    }
+
+    case "thread.command-run.update": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (!(thread.commandRuns ?? []).some((run) => run.runId === command.progress.runId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Command run '${command.progress.runId}' is not part of thread '${command.threadId}'.`,
+        });
+      }
+      const base = () =>
+        withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        });
+      const updated: PlannedOrchestrationEvent = {
+        ...base(),
+        type: "thread.command-run-updated",
+        payload: {
+          threadId: command.threadId,
+          progress: command.progress,
+          createdAt: command.createdAt,
+        },
+      };
+      // Output is recorded for the server alone; clients only learn it exists.
+      return command.output === undefined
+        ? updated
+        : [
+            updated,
+            {
+              ...base(),
+              type: "thread.command-run-output-recorded",
+              payload: {
+                threadId: command.threadId,
+                runId: command.progress.runId,
+                output: command.output,
+                createdAt: command.createdAt,
+              },
+            },
+          ];
+    }
+
+    case "thread.command-run.deliver-output": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = (thread.commandRuns ?? []).find((entry) => entry.runId === command.runId);
+      if (run === undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Command run '${command.runId}' is not part of thread '${command.threadId}'.`,
+        });
+      }
+      if (command.automatic && !commandRunAwaitsAutoSend(run)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Command run '${command.runId}' no longer sends its output by itself.`,
+        });
+      }
+      // Output goes to the agent it was meant for, never to another one.
+      if (
+        run.participantId !== null &&
+        !activeParticipants(thread).some((participant) => participant.id === run.participantId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The agent this output was for has left the room.",
+        });
+      }
+      const delivered = yield* decideFollowUpSubmit(thread, {
+        type: "thread.follow-up.submit",
+        commandId: command.commandId,
+        threadId: command.threadId,
+        turnId: thread.session?.activeTurnId ?? run.turnId,
+        message: {
+          messageId: command.message.messageId,
+          role: "user",
+          text: command.message.text,
+          attachments: [],
+        },
+        delivery: "steer",
+        participantId: run.participantId,
+        createdAt: command.createdAt,
+      });
+      return [
+        ...(Array.isArray(delivered) ? delivered : [delivered]),
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.command-run-updated",
+          payload: {
+            threadId: command.threadId,
+            progress: {
+              runId: run.runId,
+              outputSentAt: command.createdAt,
+              outputMessageId: command.message.messageId,
+            },
+            createdAt: command.createdAt,
+          },
+        },
+      ];
     }
 
     case "thread.proposed-plan.dismiss": {

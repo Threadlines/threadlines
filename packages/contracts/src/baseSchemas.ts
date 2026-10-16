@@ -59,6 +59,12 @@ export type AgentPageId = typeof AgentPageId.Type;
 /** One stored version of an agent page. */
 export const AgentPageVersionId = makeEntityId("AgentPageVersionId");
 export type AgentPageVersionId = typeof AgentPageVersionId.Type;
+/** A shell command an agent asked the user to run (`ask_user_to_run`). */
+export const CommandRequestId = makeEntityId("CommandRequestId");
+export type CommandRequestId = typeof CommandRequestId.Type;
+/** One time the user ran a suggested command, or put it in the terminal. */
+export const CommandRunId = makeEntityId("CommandRunId");
+export type CommandRunId = typeof CommandRunId.Type;
 /** One piece of work a thread's agent asked of a thread it started. */
 export const ChildRequestId = makeEntityId("ChildRequestId");
 export type ChildRequestId = typeof ChildRequestId.Type;

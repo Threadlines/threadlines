@@ -76,6 +76,10 @@ const rpcClientMock = {
   pages: {
     read: vi.fn(),
   },
+  commandRuns: {
+    start: vi.fn(),
+    sendOutput: vi.fn(),
+  },
   filesystem: {
     browse: vi.fn(),
   },

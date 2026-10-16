@@ -26,6 +26,7 @@ import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { MessageCopyButton } from "./chat/MessageCopyButton";
+import { CodeBlockRunButton, CodeBlockRunNotes } from "./chat/CommandRuns";
 import {
   type InlineMarkdownContext,
   renderSkillInlineMarkdownChildren,
@@ -188,16 +189,33 @@ function estimateHighlightedSize(html: string, code: string): number {
   return Math.max(html.length * 2, code.length * 3);
 }
 
-function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNode }) {
+/**
+ * A fenced code block: copy button, and in a settled agent reply a shell
+ * command also gets a Run (or Put in terminal) button and, under it, how its
+ * latest run went (CommandRuns.tsx).
+ */
+function MarkdownCodeBlock({
+  code,
+  language,
+  children,
+}: {
+  code: string;
+  language: string | undefined;
+  children: ReactNode;
+}) {
   return (
-    <div className="chat-markdown-codeblock leading-snug">
-      <MessageCopyButton
-        text={code}
-        ariaLabel="Copy code block"
-        size="icon-xs"
-        className="chat-markdown-copy-button"
-      />
-      {children}
+    <div className="chat-markdown-codeblock-group">
+      <div className="chat-markdown-codeblock leading-snug">
+        <CodeBlockRunButton code={code} language={language} />
+        <MessageCopyButton
+          text={code}
+          ariaLabel="Copy code block"
+          size="icon-xs"
+          className="chat-markdown-copy-button"
+        />
+        {children}
+      </div>
+      <CodeBlockRunNotes code={code} language={language} />
     </div>
   );
 }
@@ -828,7 +846,10 @@ function MarkdownPre({ node: _node, children, ...props }: MarkdownRendererProps<
     return plainBlock;
   }
   return (
-    <MarkdownCodeBlock code={codeBlock.code}>
+    <MarkdownCodeBlock
+      code={codeBlock.code}
+      language={CODE_FENCE_LANGUAGE_REGEX.exec(codeBlock.className ?? "")?.[1]}
+    >
       <CodeHighlightErrorBoundary fallback={plainBlock}>
         <ChatCodeBlock className={codeBlock.className} code={codeBlock.code} plain={plainBlock} />
       </CodeHighlightErrorBoundary>

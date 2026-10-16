@@ -75,10 +75,15 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
+  mcpCommandsEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
+import {
+  buildCommandRequestInstructions,
+  COMMANDS_MCP_SERVER_NAME,
+} from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
@@ -269,6 +274,7 @@ interface SessionContext {
   readonly runtimeMode: RuntimeMode;
   readonly roomTools: boolean;
   readonly agentPageAssetsDir: string | undefined;
+  readonly commandRequests: boolean;
   readonly managedWorktree: boolean;
   readonly mcpToken: string;
   museSessionId: string;
@@ -1707,6 +1713,9 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           ...(ctx.agentPageAssetsDir !== undefined
             ? { [PAGES_MCP_SERVER_NAME]: server(mcpPagesEndpointUrl(serverConfig.port)) }
             : {}),
+          ...(ctx.commandRequests
+            ? { [COMMANDS_MCP_SERVER_NAME]: server(mcpCommandsEndpointUrl(serverConfig.port)) }
+            : {}),
         },
       };
     };
@@ -1717,6 +1726,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         ...(ctx.agentPageAssetsDir !== undefined
           ? [buildAgentPageInstructions({ assetsDir: ctx.agentPageAssetsDir })]
           : []),
+        // Muse's own names for outside tools are not ours to guess; the bare name is unambiguous.
+        ...(ctx.commandRequests ? [buildCommandRequestInstructions({ toolPrefix: "" })] : []),
         FILE_LINK_INSTRUCTIONS,
         ...(ctx.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n");
@@ -2107,6 +2118,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         const scope = yield* Scope.make("sequential");
         return yield* Effect.gen(function* () {
           const roomTools = input.roomTools === true;
+          const commandRequests = input.commandRequests === true;
           const agentPageAssetsDir =
             input.agentPages === true
               ? yield* ensurePageAssetsDir(parseSessionKey(input.threadId).threadId).pipe(
@@ -2119,6 +2131,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             browser: true,
             room: roomTools,
             pages: agentPageAssetsDir !== undefined,
+            commands: commandRequests,
           });
           yield* Scope.addFinalizer(
             scope,
@@ -2150,6 +2163,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             runtimeMode: input.runtimeMode,
             roomTools,
             agentPageAssetsDir,
+            commandRequests,
             managedWorktree,
             mcpToken: credential.token,
             museSessionId: "",

@@ -10,6 +10,8 @@ import type {
   OrchestrationMessage,
   OrchestrationProposedPlan,
   OrchestrationAgentPage,
+  OrchestrationCommandRequest,
+  OrchestrationCommandRun,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamEvent,
@@ -81,6 +83,12 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
+import {
+  applyCommandRequestDismissed,
+  applyCommandRequested,
+  applyCommandRunProgress,
+  applyCommandRunStarted,
+} from "@threadlines/shared/commandRuns";
 import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import {
   awaitedChildRequestCount,
@@ -131,6 +139,9 @@ export interface EnvironmentState {
   agentRequestsByThreadId: Record<ThreadId, OrchestrationAgentRequestState>;
   /** Agent pages per thread (OrchestrationAgentPage); absent until a thread's detail loads. */
   pagesByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationAgentPage>>;
+  /** Suggested commands per thread (docs/terminal-command-runs.md); absent until a thread's detail loads. */
+  commandRequestsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRequest>>;
+  commandRunsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRun>>;
   /** Child threads: what each thread's agent asked of the threads it started. */
   childRequestsByThreadId: Record<ThreadId, OrchestrationChildRequestState>;
 
@@ -168,6 +179,8 @@ const initialEnvironmentState: EnvironmentState = {
   turnDiffSummaryByThreadId: {},
   agentRequestsByThreadId: {},
   pagesByThreadId: {},
+  commandRequestsByThreadId: {},
+  commandRunsByThreadId: {},
   childRequestsByThreadId: {},
   sidebarThreadSummaryById: {},
   bootstrapComplete: false,
@@ -429,6 +442,8 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     messages: thread.messages.map((message) => mapMessage(environmentId, message)),
     proposedPlans: thread.proposedPlans.map(mapProposedPlan),
     pages: thread.pages ?? [],
+    commandRequests: thread.commandRequests ?? [],
+    commandRuns: thread.commandRuns ?? [],
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
@@ -1206,6 +1221,32 @@ function writeThreadState(
   }
 
   if (
+    nextThread.commandRequests !== undefined &&
+    previousThread?.commandRequests !== nextThread.commandRequests
+  ) {
+    nextState = {
+      ...nextState,
+      commandRequestsByThreadId: {
+        ...nextState.commandRequestsByThreadId,
+        [nextThread.id]: nextThread.commandRequests,
+      },
+    };
+  }
+
+  if (
+    nextThread.commandRuns !== undefined &&
+    previousThread?.commandRuns !== nextThread.commandRuns
+  ) {
+    nextState = {
+      ...nextState,
+      commandRunsByThreadId: {
+        ...nextState.commandRunsByThreadId,
+        [nextThread.id]: nextThread.commandRuns,
+      },
+    };
+  }
+
+  if (
     nextThread.agentRequests !== undefined &&
     previousThread?.agentRequests !== nextThread.agentRequests
   ) {
@@ -1377,6 +1418,10 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedAgentRequests, ...agentRequestsByThreadId } =
     state.agentRequestsByThreadId;
   const { [threadId]: _removedPages, ...pagesByThreadId } = state.pagesByThreadId ?? {};
+  const { [threadId]: _removedCommandRequests, ...commandRequestsByThreadId } =
+    state.commandRequestsByThreadId ?? {};
+  const { [threadId]: _removedCommandRuns, ...commandRunsByThreadId } =
+    state.commandRunsByThreadId ?? {};
   const { [threadId]: _removedChildRequests, ...childRequestsByThreadId } =
     state.childRequestsByThreadId;
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
@@ -1399,6 +1444,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     turnDiffSummaryByThreadId,
     agentRequestsByThreadId,
     pagesByThreadId,
+    commandRequestsByThreadId,
+    commandRunsByThreadId,
     childRequestsByThreadId,
     sidebarThreadSummaryById,
   };
@@ -1757,6 +1804,14 @@ function syncEnvironmentShellSnapshot(
     ),
     agentRequestsByThreadId: retainThreadScopedRecord(state.agentRequestsByThreadId, nextThreadIds),
     pagesByThreadId: retainThreadScopedRecord(state.pagesByThreadId ?? {}, nextThreadIds),
+    commandRequestsByThreadId: retainThreadScopedRecord(
+      state.commandRequestsByThreadId ?? {},
+      nextThreadIds,
+    ),
+    commandRunsByThreadId: retainThreadScopedRecord(
+      state.commandRunsByThreadId ?? {},
+      nextThreadIds,
+    ),
     childRequestsByThreadId: retainThreadScopedRecord(state.childRequestsByThreadId, nextThreadIds),
     bootstrapComplete: true,
   };
@@ -2456,6 +2511,49 @@ function applyEnvironmentOrchestrationEvent(
         return pages === current ? thread : { ...thread, pages };
       });
 
+    // Suggested commands (docs/terminal-command-runs.md).
+    case "thread.command-requested":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        commandRequests: applyCommandRequested(
+          thread.commandRequests ?? [],
+          event.payload.request,
+          {
+            sequence: event.sequence,
+            occurredAt: event.occurredAt,
+          },
+        ),
+      }));
+
+    case "thread.command-request-dismissed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        commandRequests: applyCommandRequestDismissed(
+          thread.commandRequests ?? [],
+          event.payload,
+          event.occurredAt,
+        ),
+      }));
+
+    case "thread.command-run-started":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        commandRuns: applyCommandRunStarted(thread.commandRuns ?? [], event.payload.run, {
+          sequence: event.sequence,
+          occurredAt: event.occurredAt,
+        }),
+      }));
+
+    case "thread.command-run-updated":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        commandRuns: applyCommandRunProgress(
+          thread.commandRuns ?? [],
+          event.payload.progress,
+          event.occurredAt,
+        ),
+      }));
+
     case "thread.turn-diff-completed":
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const checkpoint = mapTurnDiffSummary({
@@ -2574,6 +2672,8 @@ function applyEnvironmentOrchestrationEvent(
         const messages = reverted.messages.slice(-MAX_THREAD_MESSAGES);
         // Pages go with the messages after the cut (agentPages.ts).
         const pages = retainTurnItemsAfterRevert(thread.pages ?? [], reverted);
+        const commandRequests = retainTurnItemsAfterRevert(thread.commandRequests ?? [], reverted);
+        const commandRuns = retainTurnItemsAfterRevert(thread.commandRuns ?? [], reverted);
         const proposedPlans = retainThreadProposedPlansAfterRevert(
           thread.proposedPlans,
           retainedTurnIds,
@@ -2587,6 +2687,8 @@ function applyEnvironmentOrchestrationEvent(
           messages,
           proposedPlans,
           pages,
+          commandRequests,
+          commandRuns,
           activities,
           pendingSourceProposedPlan: undefined,
           latestTurn:

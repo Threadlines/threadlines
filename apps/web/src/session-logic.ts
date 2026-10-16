@@ -6,6 +6,7 @@ import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   type OrchestrationAgentPage,
+  type OrchestrationCommandRequest,
   ApprovalRequestId,
   McpElicitation,
   isToolLifecycleItemType,
@@ -558,6 +559,12 @@ export type TimelineEntry = { eventSequence?: number | undefined } & (
       kind: "page";
       createdAt: string;
       page: OrchestrationAgentPage;
+    }
+  | {
+      id: string;
+      kind: "command-request";
+      createdAt: string;
+      request: OrchestrationCommandRequest;
     }
 );
 
@@ -5758,6 +5765,7 @@ export function deriveTimelineEntries(
   forkContexts: ForkContextEntry[] = [],
   subagentLiveEntries: SubagentLiveEntry[] = [],
   pages: ReadonlyArray<OrchestrationAgentPage> = [],
+  commandRequests: ReadonlyArray<OrchestrationCommandRequest> = [],
 ): TimelineEntry[] {
   const suppressedAssistantEchoIds = findSubagentResultEchoMessageIds(messages, subagentResults);
   const messageRows: TimelineEntry[] = messages
@@ -5817,12 +5825,21 @@ export function deriveTimelineEntries(
     ...(page.placementSequence !== undefined ? { eventSequence: page.placementSequence } : {}),
     page,
   }));
+  // A command card stands where its agent asked (docs/terminal-command-runs.md).
+  const commandRequestRows: TimelineEntry[] = commandRequests.map((request) => ({
+    id: `command-request:${request.requestId}`,
+    kind: "command-request",
+    createdAt: request.createdAt,
+    ...(request.eventSequence !== undefined ? { eventSequence: request.eventSequence } : {}),
+    request,
+  }));
   return [
     ...forkContextRows,
     ...messageRows,
     ...proposedPlanRows,
     ...workRows,
     ...pageRows,
+    ...commandRequestRows,
     ...subagentLiveRows,
     ...subagentResultRows,
   ].toSorted((a, b) => {

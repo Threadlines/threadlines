@@ -13,6 +13,7 @@ import {
 import {
   applyTerminalInputData,
   createTerminalCommandInputState,
+  normalizeSubmittedTerminalCommand,
   normalizeTerminalActivityCommand,
   type TerminalCommandInputState,
 } from "@threadlines/shared/terminalCommandTracker";
@@ -44,13 +45,25 @@ import {
   terminalSessionsTotal,
 } from "../../observability/Metrics.ts";
 import {
+  TerminalCommandRunError,
   TerminalCwdError,
   TerminalHistoryError,
   TerminalManager,
   TerminalNotRunningError,
   TerminalSessionLookupError,
+  type TerminalCommandRunInput,
+  type TerminalCommandRunUpdate,
   type TerminalManagerShape,
 } from "../Services/Manager.ts";
+import {
+  clipCommandOutput,
+  COMMAND_RUN_CAPTURE_LIMIT,
+  COMMAND_RUN_ENV,
+  parseCommandRunMarker,
+  posixCommandRunWrapper,
+  POWERSHELL_COMMAND_RUN_WRAPPER,
+  renderTerminalText,
+} from "../commandRunShell.ts";
 import {
   PtyAdapter,
   PtySpawnError,
@@ -69,6 +82,25 @@ const DEFAULT_OPEN_COLS = 120;
 const DEFAULT_OPEN_ROWS = 30;
 const TERMINAL_ENV_BLOCKLIST = new Set(["PORT", "ELECTRON_RENDERER_PORT", "ELECTRON_RUN_AS_NODE"]);
 const COMMAND_FINISHED_OSC_CONTENT = "633;D";
+/** How long an `insert` waits for a shell that never says its prompt is ready. */
+const COMMAND_INSERT_READY_FALLBACK_MS = 1_500;
+/** How long an `insert` waits for a shell that does say so (zsh, fish, PowerShell). */
+const COMMAND_INSERT_READY_TIMEOUT_MS = 15_000;
+/** Shells that announce their prompt, so an insert never types blind into them. */
+const PROMPT_SIGNALING_SHELLS: ReadonlySet<string> = new Set(["zsh", "fish", "pwsh", "powershell"]);
+/** Insert points kept per tab for "send output" after an insert. */
+const MAX_INSERT_MARKS_PER_SESSION = 20;
+/** Shells that can run a POSIX command line with `-i -c`. */
+const POSIX_RUN_SHELLS: ReadonlySet<string> = new Set([
+  "zsh",
+  "bash",
+  "sh",
+  "dash",
+  "ksh",
+  "mksh",
+  "yash",
+  "ash",
+]);
 // PowerShell cmdlets can run entirely inside the shell process. Mark prompt
 // completion directly, and repair the wrapper if prompt tooling replaces it.
 const POWERSHELL_PROMPT_HOOK =
@@ -112,6 +144,8 @@ interface ShellCandidate {
   shell: string;
   args?: string[];
   commandCompletionMarkersEnabled?: boolean;
+  /** Variables for this spawn only, never kept as the session's environment. */
+  extraEnv?: Record<string, string>;
 }
 
 interface TerminalStartInput {
@@ -158,6 +192,35 @@ interface TerminalSessionState {
   startupPromptMarkerSeen: boolean;
   terminalCommandInputState: TerminalCommandInputState;
   runtimeEnv: Record<string, string> | null;
+  /**
+   * Whether the shell's line editor is reading a line, from the bracketed
+   * paste switch it sends (`ESC[?2004h` on at a prompt, `l` off when a line
+   * is accepted). Null until the shell has sent either.
+   */
+  lineEditorActive: boolean | null;
+  /** Visible characters ever appended to history; `history` is the end of that stream. */
+  historyAppendedTotal: number;
+  /** Basename of the shell spawned last, e.g. `zsh`. */
+  shellName: string | null;
+  /** A suggested command this tab is carrying out (docs/terminal-command-runs.md). */
+  commandRun: ActiveCommandRun | null;
+  /** Where each `insert` went into this tab's history, for sending its output later. */
+  insertMarks: Map<string, number>;
+}
+
+interface ActiveCommandRun {
+  readonly runId: string;
+  readonly mode: "run" | "insert";
+  readonly command: string;
+  /** The process it belongs to; a restart spawns another, which never gets its writes. */
+  pid: number | null;
+  /** `starting` until spawned (run) or typed in (insert); then `running` or `waiting`. */
+  phase: "starting" | "running" | "waiting";
+  /** When its process started. */
+  startedAt: string | null;
+  /** A `run`'s raw output so far, end kept. */
+  output: string;
+  outputClipped: boolean;
 }
 
 interface PendingHistoryControlSequence {
@@ -174,15 +237,28 @@ type PendingProcessEvent =
   | { type: "output"; data: string; commandGeneration: number }
   | { type: "exit"; event: PtyExitEvent };
 
+/** A suggested command's run ending, decided while draining and published after. */
+interface CommandRunEnd {
+  readonly kind: "finished" | "interrupted";
+  readonly run: ActiveCommandRun;
+  readonly exitCode: number | null;
+  readonly cols: number;
+}
+
 type DrainProcessEventAction =
   | { type: "idle" }
   | {
       type: "output";
+      /** The time on this chunk's event, the same as the session's after it. */
+      createdAt: string;
       threadId: string;
       terminalId: string;
       history: string | null;
       data: string;
       commandFinished: boolean;
+      runEnd: CommandRunEnd | null;
+      /** An `insert` whose shell just reached its prompt. */
+      insertReady: string | null;
     }
   | {
       type: "exit";
@@ -191,7 +267,37 @@ type DrainProcessEventAction =
       terminalId: string;
       exitCode: number | null;
       exitSignal: number | null;
+      runEnd: CommandRunEnd | null;
     };
+
+/** `now`, or a millisecond past `previous` when the clock has not moved on. */
+function laterThan(previous: string, now: string): string {
+  if (now > previous) return now;
+  const previousMs = Date.parse(previous);
+  return Number.isFinite(previousMs) ? new Date(previousMs + 1).toISOString() : now;
+}
+
+function appendRunOutput(run: ActiveCommandRun, text: string): void {
+  if (text.length === 0) return;
+  const next = `${run.output}${text}`;
+  if (next.length > COMMAND_RUN_CAPTURE_LIMIT) {
+    run.output = next.slice(next.length - COMMAND_RUN_CAPTURE_LIMIT);
+    run.outputClipped = true;
+  } else {
+    run.output = next;
+  }
+}
+
+/** A `run` is the tab's only activity while it lasts; clear it when the run ends. */
+function clearRunActivity(session: TerminalSessionState): void {
+  session.hasRunningSubprocess = false;
+  session.runningSubprocessCommand = null;
+  session.runningSubprocessStartedAt = null;
+  session.submittedCommand = null;
+  session.subprocessPollingArmed = false;
+  session.consecutiveSubprocessIdlePolls = 0;
+  session.terminalCommandInputState = createTerminalCommandInputState();
+}
 
 interface TerminalManagerState {
   sessions: Map<string, TerminalSessionState>;
@@ -206,7 +312,10 @@ function snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
     worktreePath: session.worktreePath,
     status: session.status,
     pid: session.pid,
-    history: session.history,
+    // With the start of an escape sequence still waiting for its end, so a
+    // client drawing this snapshot gets the whole sequence once the next
+    // chunk (which only carries the rest) arrives.
+    history: `${session.history}${session.pendingHistoryControlSequence?.data ?? ""}`,
     exitCode: session.exitCode,
     exitSignal: session.exitSignal,
     updatedAt: session.updatedAt,
@@ -413,6 +522,77 @@ function resolveShellCandidates(
   ]);
 }
 
+/**
+ * Shells to spawn a `run` with, in the order a normal tab would try them. A
+ * POSIX command runs in the first POSIX shell, then execs the user's own
+ * shell so the tab carries on as usual (a fish user still ends up in fish).
+ * A PowerShell command runs in PowerShell only, on Windows.
+ */
+function planCommandRunCandidates(
+  candidates: ReadonlyArray<ShellCandidate>,
+  input: {
+    readonly dialect: "posix" | "powershell";
+    readonly command: string;
+    readonly runId: string;
+  },
+  platform: NodeJS.Platform,
+): { readonly candidates: ShellCandidate[] } | { readonly error: string } {
+  const runEnv = (shell: string) => ({
+    [COMMAND_RUN_ENV.command]: input.command,
+    [COMMAND_RUN_ENV.runId]: input.runId,
+    [COMMAND_RUN_ENV.shell]: shell,
+  });
+  const nameOf = (candidate: ShellCandidate) =>
+    basenameForPlatform(candidate.shell, platform)
+      .toLowerCase()
+      .replace(/\.exe$/, "");
+
+  if (input.dialect === "powershell") {
+    if (platform !== "win32") {
+      return { error: "PowerShell commands run only on a Windows computer." };
+    }
+    const shells = candidates.filter((candidate) =>
+      ["pwsh", "powershell"].includes(nameOf(candidate)),
+    );
+    if (shells.length === 0) {
+      return { error: "Threadlines can only run commands directly in PowerShell." };
+    }
+    return {
+      candidates: shells.map((candidate) => ({
+        shell: candidate.shell,
+        args: [
+          "-NoLogo",
+          "-NoExit",
+          "-Command",
+          `${POWERSHELL_PROMPT_HOOK}; ${POWERSHELL_COMMAND_RUN_WRAPPER}`,
+        ],
+        commandCompletionMarkersEnabled: true,
+        extraEnv: runEnv(candidate.shell),
+      })),
+    };
+  }
+
+  if (platform === "win32") {
+    return { error: "This command is written for macOS or Linux shells." };
+  }
+  const preferred = candidates[0];
+  const runners = candidates.filter((candidate) => POSIX_RUN_SHELLS.has(nameOf(candidate)));
+  if (!preferred || runners.length === 0) {
+    return { error: "Threadlines found no zsh, bash or sh to run this command in." };
+  }
+  const preferredIsPosix = POSIX_RUN_SHELLS.has(nameOf(preferred));
+  return {
+    candidates: runners.map((runner) => {
+      const after = preferredIsPosix ? runner : preferred;
+      return {
+        shell: runner.shell,
+        args: [...(runner.args ?? []), "-i", "-c", posixCommandRunWrapper(after.args ?? [])],
+        extraEnv: runEnv(after.shell),
+      };
+    }),
+  };
+}
+
 function isRetryableShellSpawnError(error: PtySpawnError): boolean {
   const queue: unknown[] = [error];
   const seen = new Set<unknown>();
@@ -489,7 +669,18 @@ function shouldStripCsiSequence(body: string, finalByte: string): boolean {
 }
 
 function shouldStripOscSequence(content: string): boolean {
-  return content === COMMAND_FINISHED_OSC_CONTENT || /^(10|11|12);(?:\?|rgb:)/.test(content);
+  return (
+    content === COMMAND_FINISHED_OSC_CONTENT ||
+    parseCommandRunMarker(content) !== null ||
+    /^(10|11|12);(?:\?|rgb:)/.test(content)
+  );
+}
+
+/** `ESC[?2004h` / `ESC[?2004l`: the shell's line editor starting or done reading a line. */
+function lineEditorSignalOf(body: string, finalByte: string): boolean | null {
+  if (finalByte !== "h" && finalByte !== "l") return null;
+  if (!body.startsWith("?") || !body.slice(1).split(";").includes("2004")) return null;
+  return finalByte === "h";
 }
 
 function stripStringTerminator(value: string): string {
@@ -543,11 +734,17 @@ function sanitizeTerminalHistoryChunk(
   visibleText: string;
   pendingControlSequence: PendingHistoryControlSequence | null;
   commandFinishedGenerations: number[];
+  /** Line editor on/off switches, in order. */
+  lineEditorSignals: boolean[];
+  /** End-of-run markers, with the length of visible text before each. */
+  runMarkers: Array<{ runId: string; exitCode: number | null; visibleOffset: number }>;
 } {
   const pendingData = pendingControlSequence?.data ?? "";
   const input = `${pendingData}${data}`;
   let visibleText = "";
   const commandFinishedGenerations: number[] = [];
+  const lineEditorSignals: boolean[] = [];
+  const runMarkers: Array<{ runId: string; exitCode: number | null; visibleOffset: number }> = [];
   let index = 0;
 
   const generationAt = (offset: number) =>
@@ -567,6 +764,8 @@ function sanitizeTerminalHistoryChunk(
             }
           : null,
       commandFinishedGenerations,
+      lineEditorSignals,
+      runMarkers,
     };
   };
 
@@ -589,6 +788,8 @@ function sanitizeTerminalHistoryChunk(
           if (isCsiFinalByte(input.charCodeAt(cursor))) {
             const sequence = input.slice(index, cursor + 1);
             const body = input.slice(index + 2, cursor);
+            const lineEditorSignal = lineEditorSignalOf(body, input[cursor] ?? "");
+            if (lineEditorSignal !== null) lineEditorSignals.push(lineEditorSignal);
             if (!shouldStripCsiSequence(body, input[cursor] ?? "")) {
               append(sequence);
             }
@@ -618,6 +819,10 @@ function sanitizeTerminalHistoryChunk(
         if (nextCodePoint === 0x5d && content === COMMAND_FINISHED_OSC_CONTENT) {
           commandFinishedGenerations.push(generationAt(index));
         }
+        const runMarker = nextCodePoint === 0x5d ? parseCommandRunMarker(content) : null;
+        if (runMarker !== null) {
+          runMarkers.push({ ...runMarker, visibleOffset: visibleText.length });
+        }
         if (nextCodePoint !== 0x5d || !shouldStripOscSequence(content)) {
           append(sequence);
         }
@@ -640,6 +845,8 @@ function sanitizeTerminalHistoryChunk(
         if (isCsiFinalByte(input.charCodeAt(cursor))) {
           const sequence = input.slice(index, cursor + 1);
           const body = input.slice(index + 1, cursor);
+          const lineEditorSignal = lineEditorSignalOf(body, input[cursor] ?? "");
+          if (lineEditorSignal !== null) lineEditorSignals.push(lineEditorSignal);
           if (!shouldStripCsiSequence(body, input[cursor] ?? "")) {
             append(sequence);
           }
@@ -663,6 +870,10 @@ function sanitizeTerminalHistoryChunk(
       const content = stripStringTerminator(input.slice(index + 1, terminatorIndex));
       if (codePoint === 0x9d && content === COMMAND_FINISHED_OSC_CONTENT) {
         commandFinishedGenerations.push(generationAt(index));
+      }
+      const runMarker = codePoint === 0x9d ? parseCommandRunMarker(content) : null;
+      if (runMarker !== null) {
+        runMarkers.push({ ...runMarker, visibleOffset: visibleText.length });
       }
       if (codePoint !== 0x9d || !shouldStripOscSequence(content)) {
         append(sequence);
@@ -865,6 +1076,57 @@ function normalizedRuntimeEnv(
   const entries = Object.entries(env);
   if (entries.length === 0) return null;
   return Object.fromEntries(entries.toSorted(([left], [right]) => left.localeCompare(right)));
+}
+
+/** A tab before its shell spawns. */
+function createSessionState(input: {
+  readonly threadId: string;
+  readonly terminalId: string;
+  readonly cwd: string;
+  readonly worktreePath: string | null;
+  readonly history: string;
+  readonly createdAt: string;
+  readonly cols: number;
+  readonly rows: number;
+  readonly env: Record<string, string> | undefined;
+}): TerminalSessionState {
+  return {
+    threadId: input.threadId,
+    terminalId: input.terminalId,
+    cwd: input.cwd,
+    worktreePath: input.worktreePath,
+    status: "starting",
+    pid: null,
+    history: input.history,
+    pendingHistoryControlSequence: null,
+    pendingProcessEvents: [],
+    pendingProcessEventIndex: 0,
+    processEventDrainRunning: false,
+    exitCode: null,
+    exitSignal: null,
+    updatedAt: input.createdAt,
+    cols: input.cols,
+    rows: input.rows,
+    process: null,
+    unsubscribeData: null,
+    unsubscribeExit: null,
+    hasRunningSubprocess: false,
+    runningSubprocessCommand: null,
+    runningSubprocessStartedAt: null,
+    submittedCommand: null,
+    commandGeneration: 0,
+    subprocessPollingArmed: false,
+    consecutiveSubprocessIdlePolls: 0,
+    commandCompletionMarkersEnabled: false,
+    startupPromptMarkerSeen: false,
+    terminalCommandInputState: createTerminalCommandInputState(),
+    runtimeEnv: normalizedRuntimeEnv(input.env),
+    lineEditorActive: null,
+    historyAppendedTotal: input.history.length,
+    shellName: null,
+    commandRun: null,
+    insertMarks: new Map(),
+  };
 }
 
 /** Inspects and signals the shell's descendant processes; injectable for tests. */
@@ -1426,6 +1688,133 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       },
     );
 
+    const commandRunListeners = new Set<
+      (update: TerminalCommandRunUpdate) => Effect.Effect<void>
+    >();
+    const publishRunUpdate = (update: TerminalCommandRunUpdate) =>
+      Effect.gen(function* () {
+        for (const listener of commandRunListeners) {
+          yield* listener(update).pipe(Effect.ignoreCause({ log: true }));
+        }
+      });
+
+    /** Renders what a `run` printed and reports how it ended, off the drain loop. */
+    const endCommandRun = (end: CommandRunEnd) =>
+      Effect.gen(function* () {
+        const at = yield* nowIso;
+        if (end.run.mode === "insert") {
+          yield* publishRunUpdate({
+            type: "interrupted",
+            runId: end.run.runId,
+            at,
+            startedAt: end.run.startedAt,
+            output: null,
+          });
+          return;
+        }
+        const rendered = yield* Effect.promise(() => renderTerminalText(end.run.output, end.cols));
+        const output = clipCommandOutput(rendered, end.run.outputClipped);
+        yield* publishRunUpdate(
+          end.kind === "finished"
+            ? {
+                type: "finished",
+                runId: end.run.runId,
+                at,
+                startedAt: end.run.startedAt,
+                exitCode: end.exitCode,
+                output,
+              }
+            : {
+                type: "interrupted",
+                runId: end.run.runId,
+                at,
+                startedAt: end.run.startedAt,
+                output,
+              },
+        );
+      }).pipe(Effect.forkIn(workerScope), Effect.asVoid);
+
+    /**
+     * Types a pending `insert` at the prompt of the process it was meant for:
+     * as a bracketed paste when the line editor is reading (so no line runs
+     * on its own), as plain text when it is one line, otherwise not at all.
+     */
+    const insertCommand = Effect.fn("terminal.insertCommand")(function* (
+      session: TerminalSessionState,
+      runId: string,
+      pid: number,
+    ) {
+      const outcome = yield* Effect.sync((): "written" | "refused" | "skipped" => {
+        const run = session.commandRun;
+        const process = session.process;
+        if (
+          run === null ||
+          run.runId !== runId ||
+          run.mode !== "insert" ||
+          run.phase !== "starting" ||
+          session.pid !== pid ||
+          process === null ||
+          session.status !== "running"
+        ) {
+          return "skipped";
+        }
+        let data: string;
+        if (session.lineEditorActive === true) {
+          data = `\u001b[200~${run.command}\u001b[201~`;
+        } else if (!run.command.includes("\n") && !run.command.includes("\t")) {
+          data = run.command;
+        } else {
+          session.commandRun = null;
+          return "refused";
+        }
+        session.terminalCommandInputState = applyTerminalInputData(
+          session.terminalCommandInputState,
+          data,
+        ).state;
+        run.phase = "waiting";
+        session.insertMarks.set(runId, session.historyAppendedTotal);
+        if (session.insertMarks.size > MAX_INSERT_MARKS_PER_SESSION) {
+          const oldest = session.insertMarks.keys().next().value;
+          if (oldest !== undefined) session.insertMarks.delete(oldest);
+        }
+        process.write(data);
+        return "written";
+      });
+      if (outcome === "skipped") return;
+      const at = yield* nowIso;
+      yield* publishRunUpdate(
+        outcome === "written"
+          ? { type: "waiting", runId, at }
+          : {
+              type: "failed",
+              runId,
+              at,
+              error: "This terminal can't take a pasted command with more than one line.",
+            },
+      );
+    });
+
+    /** An insert whose shell never reached a prompt it announced gives up. */
+    const abandonStuckInsert = Effect.fn("terminal.abandonStuckInsert")(function* (
+      session: TerminalSessionState,
+      runId: string,
+      pid: number,
+    ) {
+      const abandoned = yield* Effect.sync(() => {
+        const run = session.commandRun;
+        if (run?.runId !== runId || run.phase !== "starting" || session.pid !== pid) return false;
+        session.commandRun = null;
+        return true;
+      });
+      if (!abandoned) return;
+      yield* publishRunUpdate({
+        type: "failed",
+        runId,
+        at: yield* nowIso,
+        error: "The terminal didn't reach a prompt, so the command wasn't put in.",
+      });
+    });
+
     const drainProcessEvents = Effect.fn("terminal.drainProcessEvents")(function* (
       session: TerminalSessionState,
       expectedPid: number,
@@ -1466,7 +1855,47 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
                 `${session.history}${sanitized.visibleText}`,
                 historyLineLimit,
               );
+              session.historyAppendedTotal += sanitized.visibleText.length;
             }
+            for (const signal of sanitized.lineEditorSignals) {
+              session.lineEditorActive = signal;
+            }
+
+            // A suggested command in this tab: a `run` collects its output up
+            // to its own end marker; an `insert` waits for the first prompt.
+            let runEnd: CommandRunEnd | null = null;
+            let insertReady: string | null = null;
+            const run = session.commandRun;
+            if (run !== null && run.pid === expectedPid) {
+              const promptMarker = sanitized.commandFinishedGenerations.length > 0;
+              if (run.mode === "run" && run.phase === "running") {
+                const marker = sanitized.runMarkers.find((entry) => entry.runId === run.runId);
+                appendRunOutput(
+                  run,
+                  marker
+                    ? sanitized.visibleText.slice(0, marker.visibleOffset)
+                    : sanitized.visibleText,
+                );
+                if (marker) {
+                  runEnd = { kind: "finished", run, exitCode: marker.exitCode, cols: session.cols };
+                } else if (session.commandCompletionMarkersEnabled && promptMarker) {
+                  // PowerShell stopped the whole script (Ctrl+C) and is back at its prompt.
+                  runEnd = { kind: "interrupted", run, exitCode: null, cols: session.cols };
+                }
+                if (runEnd !== null) {
+                  session.commandRun = null;
+                  clearRunActivity(session);
+                }
+              } else if (
+                run.mode === "insert" &&
+                run.phase === "starting" &&
+                (sanitized.lineEditorSignals.includes(true) ||
+                  (session.commandCompletionMarkersEnabled && promptMarker))
+              ) {
+                insertReady = run.runId;
+              }
+            }
+
             // The first prompt marker after spawn is the shell's startup
             // prompt. Callers (e.g. the run-script flow) can submit a command
             // while PowerShell is still booting, so that marker arrives with
@@ -1490,17 +1919,43 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               session.consecutiveSubprocessIdlePolls = 0;
               session.terminalCommandInputState = createTerminalCommandInputState();
             }
-            session.updatedAt = updatedAt;
+            // The chunk's event carries the same time the snapshot now does,
+            // later than anything before it: a client that opens the tab
+            // after this chunk replays only the events its snapshot lacks.
+            const stamp = laterThan(session.updatedAt, updatedAt);
+            session.updatedAt = stamp;
 
             return {
               type: "output",
+              createdAt: stamp,
               threadId: session.threadId,
               terminalId: session.terminalId,
               history: sanitized.visibleText.length > 0 ? session.history : null,
               data: nextEvent.data,
-              commandFinished,
+              commandFinished: commandFinished || (runEnd !== null && runEnd.run.mode === "run"),
+              runEnd,
+              insertReady,
             } as const;
           }
+
+          // The shell itself ended: a `run` ends with its exit code (or as
+          // interrupted when a signal killed it); an `insert` never ran.
+          const endedRun = session.commandRun;
+          session.commandRun = null;
+          const exitSignal = Number.isInteger(nextEvent.event.signal)
+            ? nextEvent.event.signal
+            : null;
+          const runEnd: CommandRunEnd | null =
+            endedRun === null
+              ? null
+              : {
+                  kind: endedRun.mode === "run" && !exitSignal ? "finished" : "interrupted",
+                  run: endedRun,
+                  exitCode: Number.isInteger(nextEvent.event.exitCode)
+                    ? nextEvent.event.exitCode
+                    : null,
+                  cols: session.cols,
+                };
 
           const process = session.process;
           cleanupProcessHandles(session);
@@ -1526,7 +1981,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.exitSignal = Number.isInteger(nextEvent.event.signal)
             ? nextEvent.event.signal
             : null;
-          session.updatedAt = updatedAt;
+          session.updatedAt = laterThan(session.updatedAt, updatedAt);
 
           return {
             type: "exit",
@@ -1535,6 +1990,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             terminalId: session.terminalId,
             exitCode: session.exitCode,
             exitSignal: session.exitSignal,
+            runEnd,
           } as const;
         });
 
@@ -1547,7 +2003,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             yield* queuePersist(action.threadId, action.terminalId, action.history);
           }
 
-          const createdAt = yield* nowIso;
+          const createdAt = action.createdAt;
           yield* publishEvent({
             type: "output",
             threadId: action.threadId,
@@ -1565,9 +2021,18 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               command: null,
             });
           }
+          if (action.runEnd !== null) {
+            yield* endCommandRun(action.runEnd);
+          }
+          if (action.insertReady !== null) {
+            yield* insertCommand(session, action.insertReady, expectedPid);
+          }
           continue;
         }
 
+        if (action.runEnd !== null) {
+          yield* endCommandRun(action.runEnd);
+        }
         yield* clearKillFiber(action.process);
         const createdAt = yield* nowIso;
         yield* publishEvent({
@@ -1590,7 +2055,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       if (!process) return;
 
       const updatedAt = yield* nowIso;
+      const stoppedRun = session.commandRun;
       yield* modifyManagerState((state) => {
+        session.commandRun = null;
+        session.lineEditorActive = null;
         cleanupProcessHandles(session);
         session.process = null;
         session.pid = null;
@@ -1608,12 +2076,20 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.pendingProcessEvents = [];
         session.pendingProcessEventIndex = 0;
         session.processEventDrainRunning = false;
-        session.updatedAt = updatedAt;
+        session.updatedAt = laterThan(session.updatedAt, updatedAt);
         return [undefined, state] as const;
       });
 
       yield* clearKillFiber(process);
       yield* startKillEscalation(process, session.threadId, session.terminalId);
+      if (stoppedRun !== null) {
+        yield* endCommandRun({
+          kind: "interrupted",
+          run: stoppedRun,
+          exitCode: null,
+          cols: session.cols,
+        });
+      }
       yield* evictInactiveSessionsIfNeeded();
     });
 
@@ -1627,6 +2103,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       {
         process: PtyProcess;
         shellLabel: string;
+        shellName: string;
         commandCompletionMarkersEnabled: boolean;
       },
       PtySpawnError
@@ -1662,7 +2139,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           cwd: session.cwd,
           cols: session.cols,
           rows: session.rows,
-          env: spawnEnv,
+          env: candidate.extraEnv ? { ...spawnEnv, ...candidate.extraEnv } : spawnEnv,
         }),
       );
 
@@ -1670,6 +2147,9 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         return {
           process: attempt.success,
           shellLabel: formatShellCandidate(candidate),
+          shellName: basenameForPlatform(candidate.shell, platform)
+            .toLowerCase()
+            .replace(/\.exe$/, ""),
           commandCompletionMarkersEnabled: candidate.commandCompletionMarkersEnabled ?? false,
         };
       }
@@ -1686,6 +2166,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       session: TerminalSessionState,
       input: TerminalStartInput,
       eventType: "started" | "restarted",
+      /** A suggested command's own spawn plan (see planCommandRunCandidates). */
+      runCandidates?: ReadonlyArray<ShellCandidate>,
     ) {
       yield* stopProcess(session);
       yield* Effect.annotateCurrentSpan({
@@ -1698,6 +2180,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       const startingAt = yield* nowIso;
       yield* modifyManagerState((state) => {
         session.status = "starting";
+        session.lineEditorActive = null;
         session.cwd = input.cwd;
         session.worktreePath = input.worktreePath ?? null;
         session.cols = input.cols;
@@ -1718,7 +2201,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.pendingProcessEvents = [];
         session.pendingProcessEventIndex = 0;
         session.processEventDrainRunning = false;
-        session.updatedAt = startingAt;
+        session.updatedAt = laterThan(session.updatedAt, startingAt);
         return [undefined, state] as const;
       });
 
@@ -1729,7 +2212,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         increment(terminalSessionsTotal, { lifecycle: eventType }).pipe(
           Effect.andThen(
             Effect.gen(function* () {
-              const shellCandidates = resolveShellCandidates(shellResolver, platform, baseEnv);
+              const shellCandidates =
+                runCandidates !== undefined
+                  ? [...runCandidates]
+                  : resolveShellCandidates(shellResolver, platform, baseEnv);
               const terminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv, {
                 cwd: input.cwd,
                 ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
@@ -1767,21 +2253,41 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
                 session.process = ptyProcess;
                 session.pid = processPid;
                 session.status = "running";
+                session.shellName = spawnResult.shellName;
                 session.commandCompletionMarkersEnabled =
                   spawnResult.commandCompletionMarkersEnabled;
-                session.updatedAt = runningAt;
+                // Bind a pending suggested command to this process before any
+                // of its output can be drained.
+                const run = session.commandRun;
+                if (run !== null && run.pid === null) {
+                  run.pid = processPid;
+                  run.startedAt = runningAt;
+                  if (run.mode === "run") {
+                    // The command is the tab's activity from the start.
+                    run.phase = "running";
+                    session.hasRunningSubprocess = true;
+                    session.runningSubprocessCommand = normalizeSubmittedTerminalCommand(
+                      run.command,
+                    );
+                    session.runningSubprocessStartedAt = runningAt;
+                  }
+                }
+                session.updatedAt = laterThan(session.updatedAt, runningAt);
                 session.unsubscribeData = unsubscribeData;
                 session.unsubscribeExit = unsubscribeExit;
                 return [undefined, state] as const;
               });
 
-              const createdAt = yield* nowIso;
+              // Dated as of the snapshot it carries: output the shell printed
+              // before this went out is in that snapshot, so a client that
+              // opens the tab later must not replay this over its own.
+              const startedSnapshot = snapshot(session);
               yield* publishEvent({
                 type: eventType,
                 threadId: session.threadId,
                 terminalId: session.terminalId,
-                createdAt,
-                snapshot: snapshot(session),
+                createdAt: startedSnapshot.updatedAt,
+                snapshot: startedSnapshot,
               });
             }),
           ),
@@ -1819,7 +2325,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;
           session.processEventDrainRunning = false;
-          session.updatedAt = erroredAt;
+          session.updatedAt = laterThan(session.updatedAt, erroredAt);
           return [undefined, state] as const;
         });
 
@@ -1889,7 +2395,9 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           Option.isNone(liveSession) ||
           liveSession.value.status !== "running" ||
           liveSession.value.pid !== terminalPid ||
-          !liveSession.value.subprocessPollingArmed
+          !liveSession.value.subprocessPollingArmed ||
+          // A `run` reports its own activity; its wrapper shell's children are not news.
+          liveSession.value.commandRun?.mode === "run"
         ) {
           return [Option.none(), state] as const;
         }
@@ -1943,7 +2451,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           liveSession.value.submittedCommand = null;
           liveSession.value.terminalCommandInputState = createTerminalCommandInputState();
         }
-        liveSession.value.updatedAt = updatedAt;
+        liveSession.value.updatedAt = laterThan(liveSession.value.updatedAt, updatedAt);
 
         if (activityUnchanged) {
           return [Option.none(), state] as const;
@@ -2130,38 +2638,17 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             const cols = input.cols ?? DEFAULT_OPEN_COLS;
             const rows = input.rows ?? DEFAULT_OPEN_ROWS;
             const createdAt = yield* nowIso;
-            const session: TerminalSessionState = {
+            const session: TerminalSessionState = createSessionState({
               threadId: input.threadId,
               terminalId,
               cwd: input.cwd,
               worktreePath: input.worktreePath ?? null,
-              status: "starting",
-              pid: null,
               history,
-              pendingHistoryControlSequence: null,
-              pendingProcessEvents: [],
-              pendingProcessEventIndex: 0,
-              processEventDrainRunning: false,
-              exitCode: null,
-              exitSignal: null,
-              updatedAt: createdAt,
+              createdAt,
               cols,
               rows,
-              process: null,
-              unsubscribeData: null,
-              unsubscribeExit: null,
-              hasRunningSubprocess: false,
-              runningSubprocessCommand: null,
-              runningSubprocessStartedAt: null,
-              submittedCommand: null,
-              commandGeneration: 0,
-              subprocessPollingArmed: false,
-              consecutiveSubprocessIdlePolls: 0,
-              commandCompletionMarkersEnabled: false,
-              startupPromptMarkerSeen: false,
-              terminalCommandInputState: createTerminalCommandInputState(),
-              runtimeEnv: normalizedRuntimeEnv(input.env),
-            };
+              env: input.env,
+            });
 
             const createdSession = session;
             yield* modifyManagerState((state) => {
@@ -2193,8 +2680,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           const targetCols = input.cols ?? liveSession.cols;
           const targetRows = input.rows ?? liveSession.rows;
           const runtimeEnvChanged = !Equal.equals(currentRuntimeEnv, nextRuntimeEnv);
+          // A tab carrying out a suggested command is only attached to: the
+          // drawer opening it must not respawn the command's shell.
+          const carryingCommand = liveSession.commandRun !== null;
 
-          if (liveSession.cwd !== input.cwd || runtimeEnvChanged) {
+          if (!carryingCommand && (liveSession.cwd !== input.cwd || runtimeEnvChanged)) {
             yield* stopProcess(liveSession);
             liveSession.cwd = input.cwd;
             liveSession.worktreePath = input.worktreePath ?? null;
@@ -2250,7 +2740,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           if (liveSession.cols !== targetCols || liveSession.rows !== targetRows) {
             liveSession.cols = targetCols;
             liveSession.rows = targetRows;
-            liveSession.updatedAt = yield* nowIso;
+            liveSession.updatedAt = laterThan(liveSession.updatedAt, yield* nowIso);
             liveSession.process.resize(targetCols, targetRows);
           }
 
@@ -2269,8 +2759,29 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           terminalId,
         });
       }
+      if (session.commandRun?.mode === "run") {
+        // Keys typed into a running command (an answer, a password) are not a
+        // shell command line: nothing to track or show as the tab's activity.
+        session.terminalCommandInputState = createTerminalCommandInputState();
+        yield* Effect.sync(() => process.write(input.data));
+        return;
+      }
       const result = applyTerminalInputData(session.terminalCommandInputState, input.data);
       session.terminalCommandInputState = result.state;
+      const waitingInsert =
+        session.commandRun?.mode === "insert" && session.commandRun.phase === "waiting"
+          ? session.commandRun
+          : null;
+      if (waitingInsert !== null && (result.didSubmit || input.data.includes("\u0003"))) {
+        // The user ran the command they were given (or cleared it); from here
+        // the tab is theirs, so the insert is no longer followed.
+        session.commandRun = null;
+        yield* publishRunUpdate({
+          type: result.didSubmit ? "submitted" : "cancelled",
+          runId: waitingInsert.runId,
+          at: yield* nowIso,
+        });
+      }
       if (result.submittedCommand !== null) {
         session.submittedCommand = result.submittedCommand;
       }
@@ -2309,7 +2820,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       }
       session.cols = input.cols;
       session.rows = input.rows;
-      session.updatedAt = yield* nowIso;
+      session.updatedAt = laterThan(session.updatedAt, yield* nowIso);
       yield* Effect.sync(() => process.resize(input.cols, input.rows));
     });
 
@@ -2325,7 +2836,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;
           session.processEventDrainRunning = false;
-          session.updatedAt = updatedAt;
+          session.updatedAt = laterThan(session.updatedAt, updatedAt);
           yield* persistHistory(input.threadId, terminalId, session.history);
           const createdAt = yield* nowIso;
           yield* publishEvent({
@@ -2352,38 +2863,17 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             const cols = input.cols ?? DEFAULT_OPEN_COLS;
             const rows = input.rows ?? DEFAULT_OPEN_ROWS;
             const createdAt = yield* nowIso;
-            session = {
+            session = createSessionState({
               threadId: input.threadId,
               terminalId,
               cwd: input.cwd,
               worktreePath: input.worktreePath ?? null,
-              status: "starting",
-              pid: null,
               history: "",
-              pendingHistoryControlSequence: null,
-              pendingProcessEvents: [],
-              pendingProcessEventIndex: 0,
-              processEventDrainRunning: false,
-              exitCode: null,
-              exitSignal: null,
-              updatedAt: createdAt,
+              createdAt,
               cols,
               rows,
-              process: null,
-              unsubscribeData: null,
-              unsubscribeExit: null,
-              hasRunningSubprocess: false,
-              runningSubprocessCommand: null,
-              runningSubprocessStartedAt: null,
-              submittedCommand: null,
-              commandGeneration: 0,
-              subprocessPollingArmed: false,
-              consecutiveSubprocessIdlePolls: 0,
-              commandCompletionMarkersEnabled: false,
-              startupPromptMarkerSeen: false,
-              terminalCommandInputState: createTerminalCommandInputState(),
-              runtimeEnv: normalizedRuntimeEnv(input.env),
-            };
+              env: input.env,
+            });
             const createdSession = session;
             yield* modifyManagerState((state) => {
               const sessions = new Map(state.sessions);
@@ -2425,6 +2915,145 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         }),
       );
 
+    const startCommandRun: TerminalManagerShape["startCommandRun"] = (
+      input: TerminalCommandRunInput,
+    ) =>
+      withThreadLock(
+        input.threadId,
+        Effect.gen(function* () {
+          const existing = yield* getSession(input.threadId, input.terminalId);
+          if (Option.isSome(existing)) {
+            return yield* new TerminalCommandRunError({
+              message: "That terminal tab is already open.",
+            });
+          }
+          yield* assertValidCwd(input.cwd);
+          let runCandidates: ShellCandidate[] | undefined;
+          if (input.mode === "run") {
+            const plan = planCommandRunCandidates(
+              resolveShellCandidates(shellResolver, platform, baseEnv),
+              input,
+              platform,
+            );
+            if ("error" in plan) {
+              return yield* new TerminalCommandRunError({ message: plan.error });
+            }
+            runCandidates = plan.candidates;
+          }
+
+          const cols = input.cols ?? DEFAULT_OPEN_COLS;
+          const rows = input.rows ?? DEFAULT_OPEN_ROWS;
+          const createdAt = yield* nowIso;
+          const session = createSessionState({
+            threadId: input.threadId,
+            terminalId: input.terminalId,
+            cwd: input.cwd,
+            worktreePath: input.worktreePath ?? null,
+            history: "",
+            createdAt,
+            cols,
+            rows,
+            env: input.env,
+          });
+          session.commandRun = {
+            runId: input.runId,
+            mode: input.mode,
+            command: input.command,
+            pid: null,
+            phase: "starting",
+            startedAt: null,
+            output: "",
+            outputClipped: false,
+          };
+          yield* modifyManagerState((state) => {
+            const sessions = new Map(state.sessions);
+            sessions.set(toSessionKey(input.threadId, input.terminalId), session);
+            return [undefined, { ...state, sessions }] as const;
+          });
+          yield* evictInactiveSessionsIfNeeded();
+
+          yield* startSession(
+            session,
+            {
+              threadId: input.threadId,
+              terminalId: input.terminalId,
+              cwd: input.cwd,
+              worktreePath: input.worktreePath ?? null,
+              cols,
+              rows,
+              ...(input.env ? { env: input.env } : {}),
+            },
+            "started",
+            runCandidates,
+          );
+
+          const pid = session.pid;
+          if (session.status !== "running" || pid === null) {
+            if (session.commandRun?.runId === input.runId) session.commandRun = null;
+            clearRunActivity(session);
+            return yield* new TerminalCommandRunError({
+              message: "The terminal could not start.",
+            });
+          }
+          const at = yield* nowIso;
+          if (input.mode === "run") {
+            // Unless it already ended (a quick command can finish before
+            // this): its end then published the tab going idle instead.
+            if (session.commandRun?.runId === input.runId) {
+              yield* publishEvent({
+                type: "activity",
+                threadId: input.threadId,
+                terminalId: input.terminalId,
+                createdAt: at,
+                hasRunningSubprocess: true,
+                command: session.runningSubprocessCommand,
+                startedAt: session.runningSubprocessStartedAt,
+              });
+              yield* publishRunUpdate({ type: "running", runId: input.runId, at });
+            }
+            return;
+          }
+          // An insert waits for the prompt (see the drain loop); shells that
+          // never announce one get it typed after a short pause.
+          yield* (
+            PROMPT_SIGNALING_SHELLS.has(session.shellName ?? "")
+              ? Effect.sleep(COMMAND_INSERT_READY_TIMEOUT_MS).pipe(
+                  Effect.andThen(abandonStuckInsert(session, input.runId, pid)),
+                )
+              : Effect.sleep(COMMAND_INSERT_READY_FALLBACK_MS).pipe(
+                  Effect.andThen(insertCommand(session, input.runId, pid)),
+                )
+          ).pipe(Effect.forkIn(workerScope));
+        }),
+      );
+
+    const readCommandRunOutput: TerminalManagerShape["readCommandRunOutput"] = (runId) =>
+      Effect.gen(function* () {
+        const found = yield* readManagerState.pipe(
+          Effect.map((state) => {
+            for (const session of state.sessions.values()) {
+              const run = session.commandRun;
+              if (run?.runId === runId && run.mode === "run") {
+                return { raw: run.output, clipped: run.outputClipped, cols: session.cols };
+              }
+              const mark = session.insertMarks.get(runId);
+              if (mark !== undefined) {
+                const base = session.historyAppendedTotal - session.history.length;
+                return {
+                  raw: session.history.slice(Math.max(0, mark - base)),
+                  clipped: mark < base,
+                  cols: session.cols,
+                };
+              }
+            }
+            return null;
+          }),
+        );
+        if (found === null) return null;
+        const text = yield* Effect.promise(() => renderTerminalText(found.raw, found.cols));
+        return clipCommandOutput(text, found.clipped);
+      });
+
     const close: TerminalManagerShape["close"] = (input) =>
       withThreadLock(
         input.threadId,
@@ -2454,6 +3083,15 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       clear,
       restart,
       close,
+      startCommandRun,
+      readCommandRunOutput,
+      subscribeCommandRuns: (listener) =>
+        Effect.sync(() => {
+          commandRunListeners.add(listener);
+          return () => {
+            commandRunListeners.delete(listener);
+          };
+        }),
       subscribe: (listener) =>
         Effect.uninterruptible(
           Effect.gen(function* () {

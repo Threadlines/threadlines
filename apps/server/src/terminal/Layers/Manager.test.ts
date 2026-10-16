@@ -24,7 +24,11 @@ import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { expect } from "vite-plus/test";
 
-import type { TerminalManagerShape } from "../Services/Manager.ts";
+import type {
+  TerminalCommandRunInput,
+  TerminalCommandRunUpdate,
+  TerminalManagerShape,
+} from "../Services/Manager.ts";
 import {
   type PtyAdapterShape,
   type PtyExitEvent,
@@ -1684,5 +1688,189 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       assert.equal(process.killSignals[0], "SIGTERM");
       expect(process.killSignals).toContain("SIGKILL");
     }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  const commandRunInput = (
+    overrides: Partial<TerminalCommandRunInput> = {},
+  ): TerminalCommandRunInput => ({
+    threadId: "thread-1",
+    terminalId: "terminal-run",
+    runId: "run-1",
+    mode: "run",
+    dialect: "posix",
+    command: "pnpm install",
+    cwd: process.cwd(),
+    cols: 100,
+    rows: 24,
+    ...overrides,
+  });
+
+  const collectRunUpdates = (manager: TerminalManagerShape) =>
+    Effect.gen(function* () {
+      const updates = yield* Ref.make<ReadonlyArray<TerminalCommandRunUpdate>>([]);
+      yield* manager.subscribeCommandRuns((update) =>
+        Ref.update(updates, (current) => [...current, update]),
+      );
+      return updates;
+    });
+
+  it.effect("runs a command in its own tab and ends at the wrapper's marker", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+      });
+      const updates = yield* collectRunUpdates(manager);
+      yield* manager.startCommandRun(commandRunInput());
+
+      const spawn = ptyAdapter.spawnInputs[0];
+      expect(spawn?.shell).toBe("/bin/zsh");
+      expect(spawn?.args?.slice(0, 4)).toEqual(["-o", "nopromptsp", "-i", "-c"]);
+      expect(spawn?.args?.[4]).toContain(`exec "$__tl_sh" '-o' 'nopromptsp'`);
+      expect(spawn?.env).toMatchObject({
+        THREADLINES_RUN_COMMAND: "pnpm install",
+        THREADLINES_RUN_ID: "run-1",
+        THREADLINES_RUN_SHELL: "/bin/zsh",
+      });
+
+      // Opening the tab with another environment attaches; it must not respawn.
+      yield* manager.open(
+        openInput({ terminalId: "terminal-run", env: { THREADLINES_OTHER: "1" } }),
+      );
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+
+      const pty = ptyAdapter.processes[0]!;
+      pty.emitData("Progress 1/3\rProgress 3/3\r\ndone\r\n");
+      pty.emitData("\u001b]6973;run-1;0\u0007prompt % \u001b[?2004h");
+      yield* waitFor(
+        Ref.get(updates).pipe(Effect.map((list) => list.some((u) => u.type === "finished"))),
+      );
+      expect(yield* Ref.get(updates)).toEqual([
+        expect.objectContaining({ type: "running", runId: "run-1" }),
+        expect.objectContaining({
+          type: "finished",
+          runId: "run-1",
+          exitCode: 0,
+          output: "Progress 3/3\ndone",
+        }),
+      ]);
+      // The marker never reaches the terminal's history.
+      const snapshot = yield* manager.open(openInput({ terminalId: "terminal-run" }));
+      expect(snapshot.history).not.toContain("6973");
+    }),
+  );
+
+  it.effect("shows a running command as its tab's activity, also to a late subscriber", () =>
+    Effect.gen(function* () {
+      const { manager } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+      });
+      yield* manager.startCommandRun(commandRunInput({ command: "npm run dev" }));
+      const seen = yield* Ref.make<ReadonlyArray<TerminalEvent>>([]);
+      yield* manager.subscribe((event) => Ref.update(seen, (events) => [...events, event]));
+      const activity = (yield* Ref.get(seen)).find(
+        (event) => event.type === "activity" && event.terminalId === "terminal-run",
+      );
+      expect(activity).toMatchObject({
+        hasRunningSubprocess: true,
+        command: "npm run dev",
+        startedAt: expect.any(String),
+      });
+    }),
+  );
+
+  it.effect("never has a client replay output its snapshot already holds", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+      });
+      yield* manager.startCommandRun(commandRunInput({ command: "npm run dev" }));
+      const pty = ptyAdapter.processes[0]!;
+      for (const chunk of ["one\r\n", "two\r\n", "three\r\n"]) pty.emitData(chunk);
+      yield* waitFor(
+        getEvents.pipe(
+          Effect.map((events) => events.filter((event) => event.type === "output").length === 3),
+        ),
+      );
+      // A client opening the tab now writes the snapshot, then replays the
+      // events newer than it (ThreadTerminalDrawer).
+      const snapshot = yield* manager.open(openInput({ terminalId: "terminal-run" }));
+      const events = yield* getEvents;
+      expect(
+        events.filter(
+          (event) =>
+            (event.type === "output" || event.type === "started") &&
+            event.terminalId === "terminal-run" &&
+            event.createdAt > snapshot.updatedAt,
+        ),
+      ).toEqual([]);
+    }),
+  );
+
+  it.effect("ends a run as interrupted when its tab is closed", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+      });
+      const updates = yield* collectRunUpdates(manager);
+      yield* manager.startCommandRun(commandRunInput({ command: "npm run dev" }));
+      ptyAdapter.processes[0]!.emitData("ready on :3000\r\n");
+      yield* waitFor(
+        manager.readCommandRunOutput("run-1").pipe(Effect.map((out) => out === "ready on :3000")),
+      );
+      yield* manager.close({ threadId: "thread-1", terminalId: "terminal-run" });
+      yield* waitFor(
+        Ref.get(updates).pipe(Effect.map((list) => list.some((u) => u.type === "interrupted"))),
+      );
+      expect((yield* Ref.get(updates)).at(-1)).toMatchObject({
+        type: "interrupted",
+        output: "ready on :3000",
+      });
+    }),
+  );
+
+  it.effect("refuses to run a POSIX command where only PowerShell can run it", () =>
+    Effect.gen(function* () {
+      const { manager } = yield* createManager(50, {
+        platform: "win32",
+        shellResolver: () => "pwsh.exe",
+      });
+      const exit = yield* Effect.exit(manager.startCommandRun(commandRunInput()));
+      expect(Exit.isFailure(exit)).toBe(true);
+    }),
+  );
+
+  it.effect("puts a command at the prompt once the shell is ready and follows it to Enter", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+      });
+      const updates = yield* collectRunUpdates(manager);
+      yield* manager.startCommandRun(
+        commandRunInput({ mode: "insert", command: "git add .\ngit commit" }),
+      );
+      const pty = ptyAdapter.processes[0]!;
+      expect(ptyAdapter.spawnInputs[0]?.args).toEqual(["-o", "nopromptsp"]);
+      expect(pty.writes).toEqual([]);
+
+      pty.emitData("prompt % \u001b[?2004h");
+      yield* waitFor(Effect.sync(() => pty.writes.length === 1));
+      expect(pty.writes[0]).toBe("\u001b[200~git add .\ngit commit\u001b[201~");
+
+      pty.emitData("git add .\r\ngit commit");
+      yield* manager.write({ threadId: "thread-1", terminalId: "terminal-run", data: "\r" });
+      yield* waitFor(
+        Ref.get(updates).pipe(Effect.map((list) => list.some((u) => u.type === "submitted"))),
+      );
+      expect((yield* Ref.get(updates)).map((update) => update.type)).toEqual([
+        "waiting",
+        "submitted",
+      ]);
+      expect(yield* manager.readCommandRunOutput("run-1")).toBe("git add .\ngit commit");
+    }),
   );
 });

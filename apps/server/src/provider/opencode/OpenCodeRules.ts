@@ -34,6 +34,7 @@ export interface OpenCodeRule {
 const BROWSER_SERVER_PREFIX = "threadlines_b_";
 const ROOM_SERVER_PREFIX = "threadlines_r_";
 const PAGES_SERVER_PREFIX = "threadlines_p_";
+const COMMANDS_SERVER_PREFIX = "threadlines_c_";
 
 /** Short, stable, tool-name-safe key for one thread's tool servers. */
 export function openCodeThreadToolKey(threadKey: string): string {
@@ -50,6 +51,10 @@ export function openCodeRoomServerName(toolKey: string): string {
 
 export function openCodePagesServerName(toolKey: string): string {
   return `${PAGES_SERVER_PREFIX}${toolKey}`;
+}
+
+export function openCodeCommandsServerName(toolKey: string): string {
+  return `${COMMANDS_SERVER_PREFIX}${toolKey}`;
 }
 
 /** OpenCode's own wildcard: `*` is any run of characters, `?` any one. */
@@ -115,6 +120,8 @@ export function openCodeSessionRules(input: {
   readonly roomTools: boolean;
   /** The page tools: a page shows only in the caller's own thread, so they never ask. */
   readonly agentPages?: boolean;
+  /** `ask_user_to_run`: it only shows the user a card, so it never asks. */
+  readonly commandRequests?: boolean;
 }): ReadonlyArray<OpenCodeRule> {
   const mode = modeRules(input.runtimeMode);
   return [
@@ -122,6 +129,7 @@ export function openCodeSessionRules(input: {
     { action: `${BROWSER_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
     { action: `${ROOM_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
     { action: `${PAGES_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
+    { action: `${COMMANDS_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
     {
       action: `${openCodeBrowserServerName(input.toolKey)}_*`,
       resource: "*",
@@ -140,6 +148,15 @@ export function openCodeSessionRules(input: {
       ? [
           {
             action: `${openCodePagesServerName(input.toolKey)}_*`,
+            resource: "*",
+            effect: "allow",
+          } satisfies OpenCodeRule,
+        ]
+      : []),
+    ...(input.commandRequests === true
+      ? [
+          {
+            action: `${openCodeCommandsServerName(input.toolKey)}_*`,
             resource: "*",
             effect: "allow",
           } satisfies OpenCodeRule,

@@ -731,6 +731,39 @@ describe("TerminalViewport", () => {
     }
   });
 
+  it("never draws output its snapshot already holds when it arrives after the snapshot", async () => {
+    // The server published this output before it answered `open`, but this
+    // client got the snapshot (which holds it) first.
+    const environment = createEnvironmentApi({
+      history: "On branch master\r\n",
+      updatedAt: "2026-04-07T00:00:01.000Z",
+    });
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const mounted = await mountTerminalViewport({ threadRef });
+
+    try {
+      await vi.waitFor(() => {
+        expect(terminalWriteSpy).toHaveBeenCalledWith("On branch master\r\n");
+      });
+      terminalWriteSpy.mockClear();
+      const store = useTerminalStateStore.getState();
+      store.recordTerminalEvent(
+        threadRef,
+        terminalOutputEvent("On branch master\r\n\u001b[6n", "2026-04-07T00:00:01.000Z"),
+      );
+      store.recordTerminalEvent(threadRef, terminalOutputEvent("% ", "2026-04-07T00:00:01.001Z"));
+
+      await vi.waitFor(() => {
+        expect(terminalWriteSpy).toHaveBeenCalledWith("% ");
+      });
+      // Only the cursor query from the late chunk reaches the terminal, which must answer it.
+      expect(terminalWriteSpy.mock.calls.map(([data]) => data)).toEqual(["\u001b[6n", "% "]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("ignores terminal write callbacks after unmount", async () => {
     const environment = createEnvironmentApi();
     const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);

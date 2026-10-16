@@ -1168,6 +1168,7 @@ const make = Effect.gen(function* () {
           toolSettings?.enableClaudeArtifacts === true
             ? { artifacts: true }
             : {}),
+          ...(toolSettings?.enableCommandRequests !== false ? { commandRequests: true } : {}),
           runtimeMode: desiredRuntimeMode,
         })
         .pipe(

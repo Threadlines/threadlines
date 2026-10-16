@@ -128,6 +128,10 @@ export interface WsRpcClient {
   readonly pages: {
     readonly read: RpcUnaryMethod<typeof WS_METHODS.pagesRead>;
   };
+  readonly commandRuns: {
+    readonly start: RpcUnaryMethod<typeof WS_METHODS.commandRunsStart>;
+    readonly sendOutput: RpcUnaryMethod<typeof WS_METHODS.commandRunsSendOutput>;
+  };
   readonly filesystem: {
     readonly browse: RpcUnaryMethod<typeof WS_METHODS.filesystemBrowse>;
   };
@@ -552,6 +556,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.requestWithReconnectRetry((client) => client[WS_METHODS.pagesRead](input), {
           label: WS_METHODS.pagesRead,
         }),
+    },
+    // Not retried on reconnect: a start opens a terminal, a send sends a message.
+    commandRuns: {
+      start: (input) => transport.request((client) => client[WS_METHODS.commandRunsStart](input)),
+      sendOutput: (input) =>
+        transport.request((client) => client[WS_METHODS.commandRunsSendOutput](input)),
     },
     filesystem: {
       browse: (input) => transport.request((client) => client[WS_METHODS.filesystemBrowse](input)),

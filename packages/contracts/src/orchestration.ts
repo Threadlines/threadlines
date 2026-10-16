@@ -14,6 +14,8 @@ import {
   ChildRequestBatchId,
   ChildRequestId,
   CommandId,
+  CommandRequestId,
+  CommandRunId,
   EventId,
   IsoDateTime,
   MessageId,
@@ -805,6 +807,160 @@ export class AgentPageReadError extends Schema.TaggedError<AgentPageReadError>()
   },
 ) {}
 
+/**
+ * Suggested shell commands (docs/terminal-command-runs.md). The shell family a
+ * command is written for: POSIX shells (zsh, bash, sh) or PowerShell.
+ */
+export const CommandDialect = Schema.Literals(["posix", "powershell"]);
+export type CommandDialect = typeof CommandDialect.Type;
+
+/** What an agent asked with `ask_user_to_run`: a command for the user to run, and why. */
+export const CommandRequestPublication = Schema.Struct({
+  requestId: CommandRequestId,
+  turnId: TurnId,
+  /** The agent that asked, and that gets the output. Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  command: TrimmedNonEmptyString,
+  reason: TrimmedNonEmptyString,
+  dialect: CommandDialect,
+});
+export type CommandRequestPublication = typeof CommandRequestPublication.Type;
+
+export const OrchestrationCommandRequest = Schema.Struct({
+  ...CommandRequestPublication.fields,
+  /** Set while the user has skipped it. */
+  dismissedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** The event that showed the request, so the card keeps its place in the turn. */
+  eventSequence: Schema.optional(NonNegativeInt),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationCommandRequest = typeof OrchestrationCommandRequest.Type;
+
+/** `run`: started as its own process, tracked to the end. `insert`: typed in, Enter left to the user. */
+export const CommandRunMode = Schema.Literals(["run", "insert"]);
+export type CommandRunMode = typeof CommandRunMode.Type;
+
+/**
+ * `starting`: the terminal is opening. `running`: a `run` is going.
+ * `waiting`: an `insert` sits at the prompt for the user's Enter.
+ * `submitted`: the user pressed Enter on it (an insert is not tracked further).
+ * `finished`: a `run` ended (see exitCode). `cancelled`: the user cleared an
+ * insert. `interrupted`: its terminal closed, restarted or the server stopped.
+ * `failed`: it could not start (see error).
+ */
+export const CommandRunStatus = Schema.Literals([
+  "starting",
+  "running",
+  "waiting",
+  "submitted",
+  "finished",
+  "cancelled",
+  "interrupted",
+  "failed",
+]);
+export type CommandRunStatus = typeof CommandRunStatus.Type;
+
+/** Where the command came from: an agent's request card, or a code block in its reply. */
+export const CommandRunSource = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("request"), requestId: CommandRequestId }),
+  Schema.Struct({ kind: Schema.Literal("message"), messageId: MessageId }),
+]);
+export type CommandRunSource = typeof CommandRunSource.Type;
+
+/** Why output that would have gone back to the agent by itself was held. */
+export const CommandRunHoldReason = Schema.Literals(["stopped", "agent-left", "skipped"]);
+export type CommandRunHoldReason = typeof CommandRunHoldReason.Type;
+
+/** A run as the user's click started it. */
+export const CommandRunStart = Schema.Struct({
+  runId: CommandRunId,
+  terminalId: TrimmedNonEmptyString,
+  mode: CommandRunMode,
+  dialect: CommandDialect,
+  command: TrimmedNonEmptyString,
+  source: CommandRunSource,
+  /** The turn of the request or message it came from; reverts keep or drop it with that turn. */
+  turnId: TurnId,
+  /** The agent its output goes to. Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  cwd: TrimmedNonEmptyString,
+  /** The output goes to the agent by itself when the run finishes (request runs started with Run). */
+  autoSend: Schema.Boolean,
+});
+export type CommandRunStart = typeof CommandRunStart.Type;
+
+/** A change to a run. Absent fields keep their value. */
+export const CommandRunProgress = Schema.Struct({
+  runId: CommandRunId,
+  status: Schema.optional(CommandRunStatus),
+  startedAt: Schema.optional(IsoDateTime),
+  finishedAt: Schema.optional(IsoDateTime),
+  exitCode: Schema.optional(Schema.NullOr(Schema.Int)),
+  error: Schema.optional(TrimmedNonEmptyString),
+  /** The server kept the run's output (a `run` that ended), so it can still be sent. */
+  hasOutput: Schema.optional(Schema.Boolean),
+  autoSend: Schema.optional(Schema.Boolean),
+  heldReason: Schema.optional(CommandRunHoldReason),
+  /** Null: a send that was taken back before it reached the agent. */
+  outputSentAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  outputMessageId: Schema.optional(Schema.NullOr(MessageId)),
+});
+export type CommandRunProgress = typeof CommandRunProgress.Type;
+
+export const OrchestrationCommandRun = Schema.Struct({
+  ...CommandRunStart.fields,
+  status: CommandRunStatus,
+  startedAt: Schema.NullOr(IsoDateTime),
+  finishedAt: Schema.NullOr(IsoDateTime),
+  exitCode: Schema.NullOr(Schema.Int),
+  error: Schema.NullOr(TrimmedNonEmptyString),
+  hasOutput: Schema.Boolean,
+  heldReason: Schema.NullOr(CommandRunHoldReason),
+  /** When its output last went to the agent. */
+  outputSentAt: Schema.NullOr(IsoDateTime),
+  outputMessageId: Schema.NullOr(MessageId),
+  /** The event that started it. */
+  eventSequence: Schema.optional(NonNegativeInt),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationCommandRun = typeof OrchestrationCommandRun.Type;
+
+/** Starts a run from a chat button. The server checks the command again before it runs. */
+export const CommandRunStartInput = Schema.Struct({
+  threadId: ThreadId,
+  runId: CommandRunId,
+  /** A new terminal tab; refused if a terminal with this id already exists. */
+  terminalId: TrimmedNonEmptyString,
+  mode: CommandRunMode,
+  dialect: CommandDialect,
+  command: TrimmedNonEmptyString,
+  source: CommandRunSource,
+  cwd: TrimmedNonEmptyString,
+  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  cols: Schema.optional(PositiveInt),
+  rows: Schema.optional(PositiveInt),
+});
+export type CommandRunStartInput = typeof CommandRunStartInput.Type;
+
+export const CommandRunSendOutputInput = Schema.Struct({
+  threadId: ThreadId,
+  runId: CommandRunId,
+});
+export type CommandRunSendOutputInput = typeof CommandRunSendOutputInput.Type;
+
+export const CommandRunSendOutputResult = Schema.Struct({
+  messageId: MessageId,
+});
+export type CommandRunSendOutputResult = typeof CommandRunSendOutputResult.Type;
+
+export class CommandRunError extends Schema.TaggedError<CommandRunError>()("CommandRunError", {
+  message: TrimmedNonEmptyString,
+  cause: Schema.optional(Schema.Defect()),
+}) {}
+
 const SourceProposedPlanReference = Schema.Struct({
   threadId: ThreadId,
   planId: OrchestrationProposedPlanId,
@@ -1552,6 +1708,16 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationAgentPage. */
   pages: Schema.Array(OrchestrationAgentPage).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** See OrchestrationCommandRequest. */
+  commandRequests: Schema.Array(OrchestrationCommandRequest).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** See OrchestrationCommandRun. */
+  commandRuns: Schema.Array(OrchestrationCommandRun).pipe(
     Schema.optional,
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -2453,6 +2619,16 @@ const ThreadProposedPlanDismissCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Skip a command an agent asked the user to run, or bring it back. */
+const ThreadCommandRequestDismissCommand = Schema.Struct({
+  type: Schema.Literal("thread.command-request.dismiss"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CommandRequestId,
+  dismissed: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
@@ -2495,6 +2671,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
   ThreadProposedPlanDismissCommand,
+  ThreadCommandRequestDismissCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -2541,6 +2718,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
   ThreadProposedPlanDismissCommand,
+  ThreadCommandRequestDismissCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -2637,6 +2815,53 @@ const ThreadPagePublishCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   page: AgentPagePublication,
+  createdAt: IsoDateTime,
+});
+
+/** Server only: an agent asked the user to run a command (`ask_user_to_run`). */
+const ThreadCommandRequestCreateCommand = Schema.Struct({
+  type: Schema.Literal("thread.command-request.create"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  request: CommandRequestPublication,
+  createdAt: IsoDateTime,
+});
+
+/** Server only: the user started a suggested command. */
+const ThreadCommandRunStartCommand = Schema.Struct({
+  type: Schema.Literal("thread.command-run.start"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  run: CommandRunStart,
+  createdAt: IsoDateTime,
+});
+
+/** Server only: a run moved on. `output` is kept server-side, never sent to clients. */
+const ThreadCommandRunUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.command-run.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  progress: CommandRunProgress,
+  output: Schema.optional(Schema.String),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Server only: send a run's output to its agent as the user's message. Steers
+ * into that agent's turn when it is working, else waits in the queue for it,
+ * like a message the user typed. `automatic` sends happen once, and only while
+ * the run still has autoSend.
+ */
+const ThreadCommandRunDeliverOutputCommand = Schema.Struct({
+  type: Schema.Literal("thread.command-run.deliver-output"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runId: CommandRunId,
+  automatic: Schema.Boolean,
+  message: Schema.Struct({
+    messageId: MessageId,
+    text: TrimmedNonEmptyString,
+  }),
   createdAt: IsoDateTime,
 });
 
@@ -3016,6 +3241,10 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadPagePublishCommand,
+  ThreadCommandRequestCreateCommand,
+  ThreadCommandRunStartCommand,
+  ThreadCommandRunUpdateCommand,
+  ThreadCommandRunDeliverOutputCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadTurnCompleteCommand,
   ThreadTurnDiffSummaryUpdateCommand,
@@ -3104,6 +3333,11 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.goal-state-set",
   "thread.proposed-plan-upserted",
   "thread.page-published",
+  "thread.command-requested",
+  "thread.command-request-dismissed",
+  "thread.command-run-started",
+  "thread.command-run-updated",
+  "thread.command-run-output-recorded",
   "thread.turn-diff-completed",
   "thread.turn-diff-summary-updated",
   "thread.turn-completed",
@@ -3624,6 +3858,39 @@ export const ThreadPagePublishedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadCommandRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  request: CommandRequestPublication,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadCommandRequestDismissedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: CommandRequestId,
+  dismissed: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadCommandRunStartedPayload = Schema.Struct({
+  threadId: ThreadId,
+  run: CommandRunStart,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadCommandRunUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  progress: CommandRunProgress,
+  createdAt: IsoDateTime,
+});
+
+/** The output a run left, kept for sending later. Server only: never streamed to clients. */
+export const ThreadCommandRunOutputRecordedPayload = Schema.Struct({
+  threadId: ThreadId,
+  runId: CommandRunId,
+  output: Schema.String,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadDiffStatRebasedPayload = Schema.Struct({
   threadId: ThreadId,
   baselineTurnCount: NonNegativeInt,
@@ -3990,6 +4257,31 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.page-published"),
     payload: ThreadPagePublishedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.command-requested"),
+    payload: ThreadCommandRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.command-request-dismissed"),
+    payload: ThreadCommandRequestDismissedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.command-run-started"),
+    payload: ThreadCommandRunStartedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.command-run-updated"),
+    payload: ThreadCommandRunUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.command-run-output-recorded"),
+    payload: ThreadCommandRunOutputRecordedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
