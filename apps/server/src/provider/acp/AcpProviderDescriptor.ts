@@ -167,14 +167,19 @@ export interface AcpExtensionContext {
     readonly event: AcpExtensionRuntimeEvent;
   }) => Effect.Effect<void>;
   /**
-   * The agent started a turn of its own (see `agentTurns`): opens it now
-   * rather than on its first output. Nothing happens while a turn runs.
+   * The agent started a turn of its own (see `agentTurns`): it opens where
+   * this notice falls among the updates, rather than on its first output.
+   * Call it from the notification handler that saw the start, once per turn:
+   * each call ends the reply streamed so far. Nothing opens while a turn runs.
    */
   readonly beginAgentTurn: (input: {
     readonly method: string;
     readonly payload: unknown;
   }) => Effect.Effect<void>;
-  /** The agent's own turn ended: closes it once its output is out. */
+  /**
+   * The agent's own turn ended: it closes where this notice falls among the
+   * updates. Call it from the notification handler that saw the end.
+   */
   readonly endAgentTurn: (input: {
     readonly method: string;
     readonly payload: unknown;
