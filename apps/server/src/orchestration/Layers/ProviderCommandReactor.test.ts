@@ -2511,6 +2511,81 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("hands the thread to the agent picked just before a goal, instead of asking the old one", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    // The thread runs on Claude.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-goal-switch"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-goal-switch"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-4-6",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    // The user picks Codex, which the client saves on the thread, then sets a goal.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-goal-switch-model"),
+        threadId: ThreadId.make("thread-1"),
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.goal.set",
+        commandId: CommandId.make("cmd-goal-switch-set"),
+        threadId: ThreadId.make("thread-1"),
+        objective: "Ship the release",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.setThreadGoal.mock.calls.length === 1);
+    // Codex takes the thread over, seeded with its history, before the goal.
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    const handoff = harness.startSession.mock.calls[1]?.[1] as
+      | ProviderSessionStartInput
+      | undefined;
+    expect(handoff?.providerInstanceId).toBe(ProviderInstanceId.make("codex"));
+    expect(handoff?.contextSeed?.fromProvider).toBe("claudeAgent");
+    expect(harness.setThreadGoal.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
+      objective: "Ship the release",
+    });
+
+    // A later restart (an access change) keeps Codex, which holds the goal.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-goal-switch-access"),
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 3);
+    const restart = harness.startSession.mock.calls[2]?.[1] as
+      | ProviderSessionStartInput
+      | undefined;
+    expect(restart?.providerInstanceId).toBe(ProviderInstanceId.make("codex"));
+  });
+
   it("processes commands for different threads concurrently", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

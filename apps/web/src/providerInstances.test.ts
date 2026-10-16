@@ -9,8 +9,8 @@ import {
   deriveProviderInstanceEntries,
   filterMaintainedProviderInstanceEntries,
   MAINTAINED_PROVIDER_DRIVER_KINDS,
+  resolveComposerProviderSelection,
   resolveSelectableProviderInstance,
-  resolveProviderDriverKindForInstanceSelection,
 } from "./providerInstances";
 
 function provider(input: {
@@ -133,40 +133,58 @@ describe("resolveSelectableProviderInstance", () => {
   });
 });
 
-describe("resolveProviderDriverKindForInstanceSelection", () => {
-  it("maps custom provider instance ids back to their driver kind", () => {
-    const providers = [
-      provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex" }),
-      provider({
-        provider: ProviderDriverKind.make("claudeAgent"),
-        instanceId: "claude_openrouter",
-        displayName: "Claude OpenRouter",
-      }),
-    ];
-    const entries = deriveProviderInstanceEntries(providers);
+describe("resolveComposerProviderSelection", () => {
+  const codex = ProviderDriverKind.make("codex");
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const select = (
+    providers: ReadonlyArray<ServerProvider>,
+    candidates: ReadonlyArray<string | null>,
+    lockedProvider: ProviderDriverKind | null = null,
+  ) =>
+    resolveComposerProviderSelection({
+      entries: deriveProviderInstanceEntries(providers),
+      candidates,
+      lockedProvider,
+      fallbackDriverKind: codex,
+    });
 
-    expect(
-      resolveProviderDriverKindForInstanceSelection(
-        entries,
-        providers,
-        ProviderInstanceId.make("claude_openrouter"),
-      ),
-    ).toBe("claudeAgent");
+  it("moves off a saved instance that is turned off, and the agent goes with it", () => {
+    // The thread was made with Codex's default model; Codex is now off.
+    const providers = [
+      provider({ provider: codex, instanceId: "codex", enabled: false }),
+      provider({ provider: claude, instanceId: "claudeAgent" }),
+    ];
+    expect(select(providers, [null, null, "codex"])).toEqual({
+      instanceId: "claudeAgent",
+      driverKind: "claudeAgent",
+    });
   });
 
-  it("does not guess a provider kind when the instance selection is unknown", () => {
+  it("takes the user's pick first, and stays with the same agent when its instance is off", () => {
     const providers = [
-      provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex", enabled: false }),
-      provider({ provider: ProviderDriverKind.make("claudeAgent"), instanceId: "claudeAgent" }),
+      provider({ provider: codex, instanceId: "codex" }),
+      provider({ provider: claude, instanceId: "claudeAgent" }),
+      provider({ provider: claude, instanceId: "claude_work", enabled: false }),
+      provider({ provider: claude, instanceId: "claude_openrouter" }),
     ];
-    const entries = deriveProviderInstanceEntries(providers);
+    expect(select(providers, ["claude_openrouter", null, "codex"]).instanceId).toBe(
+      "claude_openrouter",
+    );
+    // Another Claude account stands in, not the first agent that is on.
+    expect(select(providers, [null, null, "claude_work"])).toEqual({
+      instanceId: "claudeAgent",
+      driverKind: "claudeAgent",
+    });
+  });
 
-    expect(
-      resolveProviderDriverKindForInstanceSelection(
-        entries,
-        providers,
-        ProviderInstanceId.make("removed_instance"),
-      ),
-    ).toBeUndefined();
+  it("keeps a thread bound to one agent on that agent", () => {
+    const providers = [
+      provider({ provider: claude, instanceId: "claudeAgent" }),
+      provider({ provider: codex, instanceId: "codex" }),
+    ];
+    expect(select(providers, ["claudeAgent", null, "codex"], codex)).toEqual({
+      instanceId: "codex",
+      driverKind: "codex",
+    });
   });
 });
