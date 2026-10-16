@@ -9,6 +9,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { type GitLaunch, resolveGitLaunch, spawnGitWithFallback } from "./vcs/gitLaunch.ts";
 import {
   collectUint8StreamText,
   type CollectedUint8StreamText,
@@ -231,34 +232,47 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
   const outputMode = input.outputMode ?? "error";
   const truncatedMarker = input.truncatedMarker ?? "";
 
-  const child = yield* spawner
-    .spawn(
+  const spawn = (launch: GitLaunch | null) => {
+    const env =
+      launch !== null && Object.keys(launch.env).length > 0
+        ? { ...input.env, ...launch.env }
+        : input.env;
+    return spawner.spawn(
       ChildProcess.make(
-        input.command,
+        launch?.command ?? input.command,
         [...input.args],
         hideWindowsConsole({
           ...((input.spawnCwd ?? input.cwd) ? { cwd: input.spawnCwd ?? input.cwd } : {}),
-          ...(input.env !== undefined
+          ...(env !== undefined
             ? {
-                env: input.env,
+                env,
                 extendEnv: true,
               }
             : {}),
           ...(input.shell !== undefined ? { shell: input.shell } : {}),
+          ...(launch?.detached ? { detached: true, windowsHide: launch.windowsHide } : {}),
         }),
       ),
-    )
-    .pipe(
-      Effect.mapError(
-        (cause) =>
-          new ProcessSpawnError({
-            command: input.command,
-            args: input.args,
-            cwd: input.cwd,
-            cause,
-          }),
-      ),
     );
+  };
+  // Git started directly (not through a shell) follows the same Windows
+  // launch rules as the git driver's own commands.
+  const gitEnv = { ...process.env, ...input.env };
+  const child = yield* (
+    input.command === "git" && !input.shell
+      ? spawnGitWithFallback(yield* resolveGitLaunch(input.args, gitEnv), gitEnv, spawn)
+      : spawn(null)
+  ).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProcessSpawnError({
+          command: input.command,
+          args: input.args,
+          cwd: input.cwd,
+          cause,
+        }),
+    ),
+  );
 
   const writeStdin =
     input.stdin === undefined

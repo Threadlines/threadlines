@@ -40,6 +40,7 @@ import { decodeJsonResult } from "@threadlines/shared/schemaJson";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { scratchIndexFileName } from "./scratchIndex.ts";
+import { resolveGitLaunch, spawnGitWithFallback } from "./gitLaunch.ts";
 import { parseGitConfigList, type GitConfigSnapshot } from "./gitConfigSnapshot.ts";
 import {
   parseRemoteNames,
@@ -1199,31 +1200,36 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.mapError(toGitCommandError(commandInput, "failed to create trace2 monitor.")),
         );
-        const child = yield* commandSpawner
-          .spawn(
-            ChildProcess.make(
-              "git",
-              commandInput.args,
-              hideWindowsConsole({
-                cwd: commandInput.cwd,
-                env: {
-                  ...process.env,
-                  // Git must never block waiting for credentials on a terminal
-                  // the server does not have; fail fast so auth errors surface
-                  // deterministically on every platform.
-                  GIT_TERMINAL_PROMPT: "0",
-                  // Skip optional index writes such as `git status` saving the
-                  // index it refreshed. Background status reads would otherwise
-                  // take `.git/index.lock` out from under an agent's own git
-                  // commands, and wake the git-dir watcher with our own echo.
-                  GIT_OPTIONAL_LOCKS: "0",
-                  ...input.env,
-                  ...trace2Monitor.env,
-                },
-              }),
+        const env: NodeJS.ProcessEnv = {
+          ...process.env,
+          // Git must never block waiting for credentials on a terminal
+          // the server does not have; fail fast so auth errors surface
+          // deterministically on every platform.
+          GIT_TERMINAL_PROMPT: "0",
+          // Skip optional index writes such as `git status` saving the
+          // index it refreshed. Background status reads would otherwise
+          // take `.git/index.lock` out from under an agent's own git
+          // commands, and wake the git-dir watcher with our own echo.
+          GIT_OPTIONAL_LOCKS: "0",
+          ...input.env,
+          ...trace2Monitor.env,
+        };
+        const child = yield* spawnGitWithFallback(
+          yield* resolveGitLaunch(commandInput.args, env),
+          env,
+          (launch) =>
+            commandSpawner.spawn(
+              ChildProcess.make(
+                launch.command,
+                commandInput.args,
+                hideWindowsConsole({
+                  cwd: commandInput.cwd,
+                  env: { ...env, ...launch.env },
+                  ...(launch.detached ? { detached: true, windowsHide: launch.windowsHide } : {}),
+                }),
+              ),
             ),
-          )
-          .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
+        ).pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
 
         const [stdout, stderr, exitCode] = yield* Effect.all(
           [
