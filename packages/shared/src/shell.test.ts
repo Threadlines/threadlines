@@ -412,7 +412,7 @@ describe("resolveCommandPath", () => {
 });
 
 describe("refreshWindowsPath", () => {
-  it("finds newly installed tools while preserving configured command precedence", () => {
+  it("finds newly installed tools while preserving configured command precedence", async () => {
     const env = { PATH: "C:\\Configured;C:\\Windows", USERPROFILE: "C:\\Users\\testuser" };
     const readEnvironment = () => ({ PATH: "c:\\windows;D:\\Installed" });
     const commandOptions = {
@@ -426,7 +426,7 @@ describe("refreshWindowsPath", () => {
       },
     };
     expect(resolveCommandPath("git", commandOptions)).toBeNull();
-    refreshWindowsPath({ env, platform: "win32", readEnvironment });
+    await refreshWindowsPath({ env, platform: "win32", readEnvironment });
     expect(resolveCommandPath("git", commandOptions)).toBe("D:\\Installed\\git.exe");
     expect(resolveCommandPath("claude", commandOptions)).toBe(
       "C:\\Users\\testuser\\.local\\bin\\claude.exe",
@@ -437,13 +437,13 @@ describe("refreshWindowsPath", () => {
       "D:\\Installed",
     ]);
     const refreshed = env.PATH;
-    refreshWindowsPath({ env, platform: "win32", readEnvironment });
+    await refreshWindowsPath({ env, platform: "win32", readEnvironment });
     expect(env.PATH).toBe(refreshed);
   });
 
-  it("keeps configured paths and known native locations when the Windows probe fails", () => {
+  it("keeps configured paths and known native locations when the Windows probe fails", async () => {
     const env = { PATH: "D:\\Configured", USERPROFILE: "C:\\Users\\testuser" };
-    refreshWindowsPath({
+    await refreshWindowsPath({
       env,
       platform: "win32",
       readEnvironment: () => {
@@ -452,6 +452,39 @@ describe("refreshWindowsPath", () => {
     });
     expect(env.PATH.split(";")).toContain("C:\\Users\\testuser\\.local\\bin");
     expect(env.PATH.split(";")[0]).toBe("D:\\Configured");
+  });
+  // Discovery refreshes PATH on every client connect; overlapping refreshes
+  // share one PowerShell run.
+  it("shares one PowerShell run between overlapping refreshes", async () => {
+    const env = { PATH: "C:\\Configured", USERPROFILE: "C:\\Users\\testuser" };
+    const pendingReads: Array<(value: Partial<Record<string, string>>) => void> = [];
+    const readEnvironment = () =>
+      new Promise<Partial<Record<string, string>>>((resolve) => {
+        pendingReads.push(resolve);
+      });
+    const finishReads = (path: string) => {
+      for (const finish of pendingReads.splice(0)) finish({ PATH: path });
+    };
+
+    const first = refreshWindowsPath({ env, platform: "win32", readEnvironment });
+    const second = refreshWindowsPath({ env, platform: "win32", readEnvironment });
+    expect(pendingReads).toHaveLength(1);
+    finishReads("D:\\Installed");
+    await Promise.all([first, second]);
+    expect(env.PATH.split(";")).toContain("D:\\Installed");
+
+    // A read that began before an installer finished may miss what it added.
+    const running = refreshWindowsPath({ env, platform: "win32", readEnvironment });
+    const afterInstall = refreshWindowsPath({
+      env,
+      platform: "win32",
+      readEnvironment,
+      afterInstall: true,
+    });
+    expect(pendingReads).toHaveLength(2);
+    finishReads("E:\\JustInstalled");
+    await Promise.all([running, afterInstall]);
+    expect(env.PATH.split(";")).toContain("E:\\JustInstalled");
   });
 });
 

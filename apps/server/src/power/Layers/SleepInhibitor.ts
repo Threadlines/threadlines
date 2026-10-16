@@ -1,11 +1,14 @@
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -128,47 +131,91 @@ const makePlatformSleepAssertionHolder = Effect.gen(function* () {
 });
 
 /**
- * Sequential core: fold one input into the state and reconcile the held
- * assertion with the desired one. Exported for tests; callers must not run
- * `handle` concurrently (the layer serializes inputs through a worker).
+ * How long the assertion outlives the last turn. Holding it costs nothing
+ * (idle sleep timers are far longer), while dropping it between the turns of
+ * a conversation would start a new helper process for each one: a PowerShell
+ * that compiles C# on Windows.
  */
-export const makeSleepInhibitionController = (holder: SleepAssertionHolder) =>
+const SLEEP_RELEASE_GRACE = Duration.minutes(5);
+
+/**
+ * Sequential core: fold one input into the state and reconcile the held
+ * assertion with the desired one. Once the last turn ends the assertion is
+ * released after `releaseGrace`, unless another turn starts first; turning
+ * the setting off or shutting down releases at once. Exported for tests.
+ */
+export const makeSleepInhibitionController = (
+  holder: SleepAssertionHolder,
+  options: { readonly releaseGrace?: Duration.Input } = {},
+) =>
   Effect.gen(function* () {
+    const releaseGrace = Duration.fromInputUnsafe(options.releaseGrace ?? SLEEP_RELEASE_GRACE);
+    const scope = yield* Effect.scope;
+    const lock = yield* Semaphore.make(1);
     const stateRef = yield* Ref.make(initialSleepInhibitionState(true));
     const inhibitedRef = yield* Ref.make(false);
+    const pendingReleaseRef = yield* Ref.make<Fiber.Fiber<void> | null>(null);
 
-    const handle = (input: SleepInhibitionInput) =>
-      Effect.gen(function* () {
-        const previous = yield* Ref.get(stateRef);
-        const state = reduceSleepInhibitionState(previous, input);
-        if (state === previous) {
-          return;
-        }
-        yield* Ref.set(stateRef, state);
+    const cancelPendingRelease = Ref.getAndSet(pendingReleaseRef, null).pipe(
+      Effect.flatMap((pending) => (pending === null ? Effect.void : Fiber.interrupt(pending))),
+    );
 
-        const desired = shouldInhibitSleep(state);
-        const inhibited = yield* Ref.get(inhibitedRef);
-        if (desired === inhibited) {
-          return;
-        }
-        if (desired) {
-          yield* holder.engage;
-          yield* Effect.logInfo("sleep inhibition engaged while turns are active", {
-            activeThreads: state.activeThreadIds.size,
-          });
-        } else {
-          yield* holder.release;
-          yield* Effect.logInfo("sleep inhibition released");
-        }
-        yield* Ref.set(inhibitedRef, desired);
-      });
-
-    const shutdown = Effect.gen(function* () {
-      const inhibited = yield* Ref.getAndSet(inhibitedRef, false);
-      if (inhibited) {
+    const releaseHeld = Effect.gen(function* () {
+      if (yield* Ref.getAndSet(inhibitedRef, false)) {
         yield* holder.release;
+        yield* Effect.logInfo("sleep inhibition released");
       }
     });
+
+    const releaseAfterGrace = Effect.sleep(releaseGrace).pipe(
+      Effect.andThen(
+        lock.withPermits(1)(
+          Effect.gen(function* () {
+            yield* Ref.set(pendingReleaseRef, null);
+            if (!shouldInhibitSleep(yield* Ref.get(stateRef))) {
+              yield* releaseHeld;
+            }
+          }),
+        ),
+      ),
+    );
+
+    const handle = (input: SleepInhibitionInput) =>
+      lock.withPermits(1)(
+        Effect.gen(function* () {
+          const previous = yield* Ref.get(stateRef);
+          const state = reduceSleepInhibitionState(previous, input);
+          if (state === previous) {
+            return;
+          }
+          yield* Ref.set(stateRef, state);
+
+          if (shouldInhibitSleep(state)) {
+            yield* cancelPendingRelease;
+            if (!(yield* Ref.get(inhibitedRef))) {
+              yield* holder.engage;
+              yield* Ref.set(inhibitedRef, true);
+              yield* Effect.logInfo("sleep inhibition engaged while turns are active", {
+                activeThreads: state.activeThreadIds.size,
+              });
+            }
+            return;
+          }
+          if (!(yield* Ref.get(inhibitedRef))) {
+            return;
+          }
+          if (!state.enabled) {
+            yield* cancelPendingRelease;
+            yield* releaseHeld;
+            return;
+          }
+          if ((yield* Ref.get(pendingReleaseRef)) === null) {
+            yield* Ref.set(pendingReleaseRef, yield* Effect.forkIn(releaseAfterGrace, scope));
+          }
+        }),
+      );
+
+    const shutdown = lock.withPermits(1)(cancelPendingRelease.pipe(Effect.andThen(releaseHeld)));
 
     return { handle, shutdown };
   });
