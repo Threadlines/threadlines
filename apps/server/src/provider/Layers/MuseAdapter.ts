@@ -75,10 +75,15 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
+  mcpCommandsEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
+import {
+  buildCommandRequestInstructions,
+  COMMANDS_MCP_SERVER_NAME,
+} from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
@@ -89,6 +94,7 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
+  steerRejectedError,
 } from "../Errors.ts";
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
@@ -135,6 +141,7 @@ import {
   MuseTokenUsageEvent,
   type MuseTurnCompleted,
   MuseTurnCompleted as MuseTurnCompletedSchema,
+  MuseTurnForegroundCompleted,
   MuseTurnRetry,
   MuseTurnStarted,
   MuseTurnStartResult,
@@ -228,6 +235,11 @@ interface ActiveTurn {
   readonly plan: boolean;
   readonly done: Deferred.Deferred<void>;
   stopRequested: boolean;
+  /**
+   * Muse reported the turn's visible work done; background checks still hold
+   * it open. A message sent now belongs to the next turn, not this one.
+   */
+  foregroundDone: boolean;
   /** The latest final-answer text, for a plan turn's proposed plan. */
   finalText: string | undefined;
   /** Patch reads still running; the turn settles after them. */
@@ -269,6 +281,7 @@ interface SessionContext {
   readonly runtimeMode: RuntimeMode;
   readonly roomTools: boolean;
   readonly agentPageAssetsDir: string | undefined;
+  readonly commandRequests: boolean;
   readonly managedWorktree: boolean;
   readonly mcpToken: string;
   museSessionId: string;
@@ -330,6 +343,7 @@ const decodeUserInputSettled = decodeWith(MuseUserInputSettled);
 const decodeTurnStarted = decodeWith(MuseTurnStarted);
 const decodeTurnCompleted = decodeWith(MuseTurnCompletedSchema);
 const decodeTurnUnqueued = decodeWith(MuseTurnUnqueued);
+const decodeTurnForegroundCompleted = decodeWith(MuseTurnForegroundCompleted);
 const decodeTurnRetry = decodeWith(MuseTurnRetry);
 const decodeTokenUsage = decodeWith(MuseTokenUsageEvent);
 const decodeContextUsage = decodeWith(MuseContextUsage);
@@ -485,6 +499,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           plan: input.plan,
           done: yield* Deferred.make<void>(),
           stopRequested: false,
+          foregroundDone: false,
           finalText: undefined,
           pendingReads: new Set(),
         };
@@ -1487,6 +1502,14 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             if (value.error?.kind === "authRequired") yield* options.onAccountChanged;
             return;
           }
+          case "turn/foregroundCompleted": {
+            const foreground = decodeTurnForegroundCompleted(params);
+            if (Option.isNone(foreground)) return;
+            if (ctx.activeTurn?.turnId === foreground.value.turnId) {
+              ctx.activeTurn.foregroundDone = true;
+            }
+            return;
+          }
           case "turn/unqueued": {
             const unqueued = decodeTurnUnqueued(params);
             if (Option.isNone(unqueued)) return;
@@ -1707,6 +1730,9 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           ...(ctx.agentPageAssetsDir !== undefined
             ? { [PAGES_MCP_SERVER_NAME]: server(mcpPagesEndpointUrl(serverConfig.port)) }
             : {}),
+          ...(ctx.commandRequests
+            ? { [COMMANDS_MCP_SERVER_NAME]: server(mcpCommandsEndpointUrl(serverConfig.port)) }
+            : {}),
         },
       };
     };
@@ -1717,6 +1743,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         ...(ctx.agentPageAssetsDir !== undefined
           ? [buildAgentPageInstructions({ assetsDir: ctx.agentPageAssetsDir })]
           : []),
+        // Muse's own names for outside tools are not ours to guess; the bare name is unambiguous.
+        ...(ctx.commandRequests ? [buildCommandRequestInstructions({ toolPrefix: "" })] : []),
         FILE_LINK_INSTRUCTIONS,
         ...(ctx.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n");
@@ -2107,6 +2135,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         const scope = yield* Scope.make("sequential");
         return yield* Effect.gen(function* () {
           const roomTools = input.roomTools === true;
+          const commandRequests = input.commandRequests === true;
           const agentPageAssetsDir =
             input.agentPages === true
               ? yield* ensurePageAssetsDir(parseSessionKey(input.threadId).threadId).pipe(
@@ -2119,6 +2148,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             browser: true,
             room: roomTools,
             pages: agentPageAssetsDir !== undefined,
+            commands: commandRequests,
           });
           yield* Scope.addFinalizer(
             scope,
@@ -2150,6 +2180,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             runtimeMode: input.runtimeMode,
             roomTools,
             agentPageAssetsDir,
+            commandRequests,
             managedWorktree,
             mcpToken: credential.token,
             museSessionId: "",
@@ -2425,23 +2456,28 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
         const turn = ctx.activeTurn;
-        if (!turn || turn.turnId !== input.expectedTurnId || turn.stopRequested) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "steerTurn",
-            issue: "No running turn to add this message to.",
-          });
-        }
+        // Steering a turn whose visible work is done reaches only its background
+        // checks, and the agent never answers: the message waits for the next turn.
+        const steerable = Effect.suspend(() =>
+          !turn || ctx.activeTurn !== turn || turn.turnId !== input.expectedTurnId
+            ? Effect.fail(steerRejectedError(PROVIDER, "Muse Code", "no-active-turn"))
+            : turn.stopRequested || turn.foregroundDone
+              ? Effect.fail(steerRejectedError(PROVIDER, "Muse Code", "turn-finishing"))
+              : Effect.succeed(turn),
+        );
+        yield* steerable;
         const content = yield* inputParts("turn/steer", input);
+        // Reading attachments can outlast the turn's visible work.
+        const live = yield* steerable;
         const result = yield* sessionCommand(ctx, "turn/steer", {
-          expectedTurnId: turn.turnId,
+          expectedTurnId: live.turnId,
           input: [
             ...(content.text ? [{ type: "text", text: content.text }] : []),
             ...content.parts,
           ],
         });
         const ack = decodeTurnStartResult(result);
-        if (Option.isSome(ack) && ack.value.turnId !== turn.turnId) {
+        if (Option.isSome(ack) && ack.value.turnId !== live.turnId) {
           return yield* new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "turn/steer",
@@ -2450,7 +2486,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         }
         return {
           threadId: input.threadId,
-          turnId: turn.turnId,
+          turnId: live.turnId,
           resumeCursor: ctx.session.resumeCursor,
         };
       });

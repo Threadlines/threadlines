@@ -282,6 +282,14 @@
     "./envFlag": {
       "types": "./src/envFlag.ts",
       "import": "./src/envFlag.ts"
+    },
+    "./shellCommandSafety": {
+      "types": "./src/shellCommandSafety.ts",
+      "import": "./src/shellCommandSafety.ts"
+    },
+    "./commandRuns": {
+      "types": "./src/commandRuns.ts",
+      "import": "./src/commandRuns.ts"
     }
   },
   "scripts": {

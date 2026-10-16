@@ -90,6 +90,7 @@ import Migration0068 from "./Migrations/068_OrchestrationEventsMaintenanceIndex.
 import Migration0069 from "./Migrations/069_ProjectionThreadPages.ts";
 import Migration0070 from "./Migrations/070_ProjectionThreadActivityKindIndexes.ts";
 import Migration0071 from "./Migrations/071_ProjectionThreadsClearSubagentCwd.ts";
+import Migration0072 from "./Migrations/072_ProjectionThreadCommands.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -173,6 +174,7 @@ export const migrationEntries = [
   [69, "ProjectionThreadPages", Migration0069],
   [70, "ProjectionThreadActivityKindIndexes", Migration0070],
   [71, "ProjectionThreadsClearSubagentCwd", Migration0071],
+  [72, "ProjectionThreadCommands", Migration0072],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

@@ -23,6 +23,8 @@ const SERVER_NPM_RUNTIME_DEPENDENCIES = new Set([
   "@effect/platform-node",
   "@effect/platform-node-shared",
   "@effect/sql-sqlite-bun",
+  // CommonJS; renders a suggested command's terminal output as text.
+  "@xterm/headless",
   "effect",
   "node-pty",
   // The archive extractor behind managed installs reads tar and tar.bz2 with these.

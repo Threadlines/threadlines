@@ -56,10 +56,12 @@ import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpEndpointUrl,
+  mcpCommandsEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
 import { PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
+import { COMMANDS_MCP_SERVER_NAME } from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
 import {
@@ -68,6 +70,7 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
+  steerRejectedError,
 } from "../Errors.ts";
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
@@ -1095,12 +1098,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           // instructions of ours, so the tool descriptions carry the rules and
           // a misplaced image's error names the thread's image folder.
           const agentPagesRequested = input.agentPages === true;
+          // `ask_user_to_run` likewise: its description carries the rules.
+          const commandRequestsRequested = input.commandRequests === true;
           const credential = reachesHost
             ? yield* mcpSessionRegistry.credentialFor({
                 sessionKey: input.threadId,
                 browser: true,
                 room: roomToolsRequested,
                 pages: agentPagesRequested,
+                commands: commandRequestsRequested,
               })
             : undefined;
           if (credential !== undefined) {
@@ -1138,6 +1144,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                           type: "http" as const,
                           name: PAGES_MCP_SERVER_NAME,
                           url: mcpPagesEndpointUrl(serverConfig.port),
+                          headers: authorization,
+                        },
+                      ]
+                    : []),
+                  ...(commandRequestsRequested
+                    ? [
+                        {
+                          type: "http" as const,
+                          name: COMMANDS_MCP_SERVER_NAME,
+                          url: mcpCommandsEndpointUrl(serverConfig.port),
                           headers: authorization,
                         },
                       ]
@@ -2118,14 +2134,18 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             const ctx = yield* requireSession(input.threadId);
             const turnId = ctx.activeTurnId;
             const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
-            if (turnId === undefined || turnId !== input.expectedTurnId || !sessionId) {
+            if (turnId === undefined) {
+              return yield* steerRejectedError(
+                PROVIDER,
+                descriptor.presentation.displayName,
+                "no-active-turn",
+              );
+            }
+            if (turnId !== input.expectedTurnId || !sessionId) {
               return yield* new ProviderAdapterRequestError({
                 provider: PROVIDER,
                 method: "turn/steer",
-                detail:
-                  turnId === undefined
-                    ? `No active ${descriptor.presentation.displayName} turn is available to steer.`
-                    : `Expected active turn '${input.expectedTurnId}' but ${descriptor.presentation.displayName} is running '${turnId}'.`,
+                detail: `Expected active turn '${input.expectedTurnId}' but ${descriptor.presentation.displayName} is running '${turnId}'.`,
               });
             }
             const text = input.input?.trim() ?? "";

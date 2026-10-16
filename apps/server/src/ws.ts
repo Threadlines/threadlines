@@ -71,6 +71,7 @@ import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoales
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
+import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import { ThreadBootstrap } from "./orchestration/Services/ThreadBootstrap.ts";
 import { ThreadSearch } from "./orchestration/Services/ThreadSearch.ts";
 import { UsageService } from "./usage/UsageService.ts";
@@ -181,6 +182,10 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.follow-up-unqueued"
       | "thread.proposed-plan-upserted"
       | "thread.page-published"
+      | "thread.command-requested"
+      | "thread.command-request-dismissed"
+      | "thread.command-run-started"
+      | "thread.command-run-updated"
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
       | "thread.turn-completed"
@@ -230,6 +235,12 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.follow-up-unqueued" ||
     event.type === "thread.proposed-plan-upserted" ||
     event.type === "thread.page-published" ||
+    // Suggested commands; a run's output (command-run-output-recorded) stays
+    // on the server and is never sent to clients.
+    event.type === "thread.command-requested" ||
+    event.type === "thread.command-request-dismissed" ||
+    event.type === "thread.command-run-started" ||
+    event.type === "thread.command-run-updated" ||
     event.type === "thread.activity-appended" ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.turn-completed" ||
@@ -332,6 +343,7 @@ const makeWsRpcLayer = (currentSession: {
       const relayHost = yield* RelayHost;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const agentPages = yield* AgentPages;
+      const commandRuns = yield* CommandRuns;
       const threadSearch = yield* ThreadSearch;
       const usage = yield* UsageService;
       const orchestrationEngine = yield* OrchestrationEngineService;
@@ -1771,6 +1783,14 @@ const makeWsRpcLayer = (currentSession: {
         [WS_METHODS.pagesRead]: (input) =>
           observeRpcEffect(WS_METHODS.pagesRead, agentPages.read(input), {
             "rpc.aggregate": "pages",
+          }),
+        [WS_METHODS.commandRunsStart]: (input) =>
+          observeRpcEffect(WS_METHODS.commandRunsStart, commandRuns.start(input), {
+            "rpc.aggregate": "commandRuns",
+          }),
+        [WS_METHODS.commandRunsSendOutput]: (input) =>
+          observeRpcEffect(WS_METHODS.commandRunsSendOutput, commandRuns.sendOutput(input), {
+            "rpc.aggregate": "commandRuns",
           }),
         [WS_METHODS.visualizationsRead]: (input) =>
           observeRpcEffect(

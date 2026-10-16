@@ -506,7 +506,7 @@ function serverLabel(server: string): string {
 }
 
 /** Threadlines' own MCP servers: the room, the browser panel, pages, and `threadlines` itself. */
-const THREADLINES_MCP_SERVER = "threadlines(?:_room|_browser|_pages)?";
+const THREADLINES_MCP_SERVER = "threadlines(?:_room|_browser|_pages|_commands)?";
 
 /**
  * An MCP call as a provider names it: `server · tool: args` (Claude's step
@@ -587,6 +587,19 @@ function mcpDraft(
     return {
       routine: !showing,
       tallies: showing ? [] : [{ tally: "tool" }],
+      icon: "tool",
+      label: wording.past,
+      liveLabel: wording.live,
+      detail: { call: `${call.server} · ${call.tool}${call.args ? `: ${call.args}` : ""}` },
+    };
+  }
+  // A command card for the user (docs/terminal-command-runs.md): the card
+  // itself shows in the chat, so the step only says it was asked.
+  if (call.server === "threadlines_commands" && tool === "ask_user_to_run") {
+    const wording = phrase("Asked you to run a command", "Asking you to run a command");
+    return {
+      routine: true,
+      tallies: [],
       icon: "tool",
       label: wording.past,
       liveLabel: wording.live,

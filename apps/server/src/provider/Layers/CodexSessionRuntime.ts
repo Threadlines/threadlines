@@ -1,10 +1,15 @@
 import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import {
   BROWSER_MCP_SERVER_NAME,
+  mcpCommandsEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
+import {
+  buildCommandRequestInstructions,
+  COMMANDS_MCP_SERVER_NAME,
+} from "../../mcp/commandTools.ts";
 import {
   buildAgentPageInstructions,
   CODEX_PAGE_RIVAL,
@@ -228,6 +233,8 @@ export interface CodexSessionRuntimeOptions {
   readonly roomTools?: boolean;
   /** Attach the page tools (ProviderSessionStartInput.agentPages). Never for a side runtime. */
   readonly agentPages?: boolean;
+  /** Attach `ask_user_to_run` (ProviderSessionStartInput.commandRequests). Never for a side runtime. */
+  readonly commandRequests?: boolean;
   readonly onRealtimeAudio?: (audio: ProviderRealtimeAudioChunk) => Effect.Effect<void>;
 }
 
@@ -622,6 +629,8 @@ function buildCodexCollaborationMode(input: {
   readonly managedWorktree?: boolean;
   /** The session has the page tools; their images go in this folder. */
   readonly agentPageAssetsDir?: string;
+  /** The session has `ask_user_to_run`. */
+  readonly commandRequests?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -648,6 +657,7 @@ function buildCodexCollaborationMode(input: {
               }),
             ]
           : []),
+        ...(input.commandRequests ? [buildCommandRequestInstructions({})] : []),
         FILE_LINK_INSTRUCTIONS,
         ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n"),
@@ -670,6 +680,8 @@ export function buildTurnStartParams(input: {
   readonly managedWorktree?: boolean;
   /** The session has the page tools; their images go in this folder. */
   readonly agentPageAssetsDir?: string;
+  /** The session has `ask_user_to_run`. */
+  readonly commandRequests?: boolean;
   /** A side answer: every turn is read-only with no approvals. */
   readonly lockdown?: boolean;
 }): Effect.Effect<
@@ -701,6 +713,7 @@ export function buildTurnStartParams(input: {
     ...(input.agentPageAssetsDir !== undefined
       ? { agentPageAssetsDir: input.agentPageAssetsDir }
       : {}),
+    ...(input.commandRequests ? { commandRequests: true } : {}),
   });
 
   return decodeCodexTurnStartParams({
@@ -1920,6 +1933,7 @@ export const makeCodexSessionRuntime = (
     // credential dies with the runtime's scope, whichever way it ends.
     const roomTools = options.roomTools === true;
     const agentPages = options.agentPages === true && lockdown === undefined;
+    const commandRequests = options.commandRequests === true && lockdown === undefined;
     const credential =
       lockdown === undefined || roomTools
         ? yield* mcpSessionRegistry.credentialFor({
@@ -1927,6 +1941,7 @@ export const makeCodexSessionRuntime = (
             browser: lockdown === undefined,
             room: roomTools,
             pages: agentPages,
+            commands: commandRequests,
             ...(lockdown !== undefined ? { sideKind: lockdown.kind } : {}),
           })
         : undefined;
@@ -1964,6 +1979,14 @@ export const makeCodexSessionRuntime = (
                   pages: {
                     url: mcpPagesEndpointUrl(options.serverPort),
                     serverName: PAGES_MCP_SERVER_NAME,
+                  },
+                }
+              : {}),
+            ...(commandRequests
+              ? {
+                  commands: {
+                    url: mcpCommandsEndpointUrl(options.serverPort),
+                    serverName: COMMANDS_MCP_SERVER_NAME,
                   },
                 }
               : {}),
@@ -2832,6 +2855,7 @@ export const makeCodexSessionRuntime = (
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
             ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
             ...(agentPageAssetsDir !== undefined ? { agentPageAssetsDir } : {}),
+            ...(commandRequests ? { commandRequests: true } : {}),
             ...(lockdown !== undefined ? { lockdown: true } : {}),
           });
           const rawResponse = yield* withCodexRequestTimeout(

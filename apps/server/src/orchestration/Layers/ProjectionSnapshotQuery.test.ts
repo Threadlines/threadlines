@@ -427,6 +427,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             },
           ],
           pages: [],
+          commandRequests: [],
+          commandRuns: [],
           activities: [
             {
               id: asEventId("activity-1"),

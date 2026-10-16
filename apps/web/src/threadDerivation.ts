@@ -37,6 +37,8 @@ const threadCache = new WeakMap<
     agentRequests: NonNullable<Thread["agentRequests"]>;
     childRequests: Thread["childRequests"];
     pages: Thread["pages"];
+    commandRequests: Thread["commandRequests"];
+    commandRuns: Thread["commandRuns"];
     thread: Thread;
   }
 >();
@@ -125,6 +127,8 @@ export function getThreadFromEnvironmentState(
   // Absent until the detail stream loads it, so the shell's counts stand meanwhile.
   const childRequests = state.childRequestsByThreadId[threadId];
   const pages = state.pagesByThreadId?.[threadId];
+  const commandRequests = state.commandRequestsByThreadId?.[threadId];
+  const commandRuns = state.commandRunsByThreadId?.[threadId];
   const cached = threadCache.get(shell);
 
   if (
@@ -137,7 +141,9 @@ export function getThreadFromEnvironmentState(
     cached.turnDiffSummaries === turnDiffSummaries &&
     cached.agentRequests === agentRequests &&
     cached.childRequests === childRequests &&
-    cached.pages === pages
+    cached.pages === pages &&
+    cached.commandRequests === commandRequests &&
+    cached.commandRuns === commandRuns
   ) {
     return cached.thread;
   }
@@ -154,6 +160,8 @@ export function getThreadFromEnvironmentState(
     agentRequests,
     ...(childRequests !== undefined ? { childRequests } : {}),
     ...(pages !== undefined ? { pages } : {}),
+    ...(commandRequests !== undefined ? { commandRequests } : {}),
+    ...(commandRuns !== undefined ? { commandRuns } : {}),
   };
 
   threadCache.set(shell, {
@@ -166,6 +174,8 @@ export function getThreadFromEnvironmentState(
     agentRequests,
     childRequests,
     pages,
+    commandRequests,
+    commandRuns,
     thread,
   });
 

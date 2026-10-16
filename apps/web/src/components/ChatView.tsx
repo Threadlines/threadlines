@@ -1,5 +1,6 @@
 import {
   type OrchestrationAgentPage,
+  type OrchestrationCommandRequest,
   type ApprovalRequestId,
   type ChatSkillReference,
   DEFAULT_MODEL,
@@ -166,6 +167,8 @@ import { ChevronDownIcon } from "lucide-react";
 import { ComposerFollowUpQueue } from "./chat/ComposerFollowUpQueue";
 import { loadChatAttachmentBlob } from "~/lib/attachmentPreviewQuery";
 import { cn, randomUUID } from "~/lib/utils";
+import { CommandRunActionsContext } from "./chat/CommandRuns";
+import { useCommandRunActions } from "./chat/useCommandRunActions";
 import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
@@ -401,6 +404,7 @@ const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
 const EMPTY_AGENT_PAGES: ReadonlyArray<OrchestrationAgentPage> = [];
+const EMPTY_COMMAND_REQUESTS: ReadonlyArray<OrchestrationCommandRequest> = [];
 const EMPTY_PROPOSED_PLANS: ProposedPlan[] = [];
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -2525,8 +2529,10 @@ export default function ChatView(props: ChatViewProps) {
         forkContextEntries,
         subagentActivityState.liveEntries,
         activeThread?.pages ?? EMPTY_AGENT_PAGES,
+        activeThread?.commandRequests ?? EMPTY_COMMAND_REQUESTS,
       ),
     [
+      activeThread?.commandRequests,
       activeThread?.pages,
       activeThread?.proposedPlans,
       forkContextEntries,
@@ -3161,6 +3167,44 @@ export default function ChatView(props: ChatViewProps) {
     storeNewTerminal(activeThreadRef, terminalId);
     setTerminalFocusRequestId((value) => value + 1);
   }, [activeThreadRef, storeNewTerminal]);
+  // Suggested commands (docs/terminal-command-runs.md): a run's tab, brought
+  // forward with the keyboard in it. A tab the server just opened may not have
+  // reached this store yet; adding it here is what its started event does too.
+  const focusCommandRunTerminal = useCallback(
+    (terminalId: string) => {
+      if (!activeThreadRef) return;
+      if (terminalState.terminalIds.includes(terminalId)) {
+        storeSetActiveTerminal(activeThreadRef, terminalId);
+      } else {
+        storeNewTerminal(activeThreadRef, terminalId);
+      }
+      setTerminalOpen(true);
+      setTerminalFocusRequestId((value) => value + 1);
+    },
+    [
+      activeThreadRef,
+      setTerminalOpen,
+      storeNewTerminal,
+      storeSetActiveTerminal,
+      terminalState.terminalIds,
+    ],
+  );
+  const commandRunAgentLabel = useCallback(
+    (participantId: ThreadParticipantId | null) =>
+      roomAgentLabels?.get(roomAgentKey(participantId))?.name ?? activeProviderLabel,
+    [activeProviderLabel, roomAgentLabels],
+  );
+  const commandRunActions = useCommandRunActions({
+    environmentId: activeThread?.environmentId ?? null,
+    threadId: activeThread?.id ?? null,
+    runs: activeThread?.commandRuns,
+    cwd: gitCwd,
+    projectCwd: activeProject?.cwd ?? null,
+    worktreePath: activeThread?.worktreePath ?? null,
+    terminalIds: terminalState.terminalIds,
+    focusTerminal: focusCommandRunTerminal,
+    agentLabel: commandRunAgentLabel,
+  });
   const performCloseTerminal = useCallback(
     (
       targetThreadRef: { environmentId: EnvironmentId; threadId: ThreadId },
@@ -7318,64 +7362,66 @@ export default function ChatView(props: ChatViewProps) {
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col draft-hero:mt-auto draft-hero:flex-none">
             {/* Messages — LegendList handles virtualization and scrolling internally */}
-            <MessagesTimeline
-              key={activeThread.id}
-              emptyState={draftTimelineEmptyState}
-              detailPending={isServerThread && !threadDetailLoaded}
-              savedEnvironmentConnected={
-                activeSavedEnvironmentRecord === null ? undefined : !activeEnvironmentUnavailable
-              }
-              isWorking={isWorking}
-              isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
-              awaitedTasks={awaitedTasks}
-              activeStatusLabel={activeStatusLabel}
-              activeTurnInProgress={isWorking || !latestTurnSettled}
-              activeTurnId={activeLatestTurn?.turnId ?? null}
-              activeTurnStartedAt={activeWorkStartedAt}
-              listRef={legendListRef}
-              stickToBottomRequestKey={stickToBottomRequestKey}
-              timelineEntries={timelineEntries}
-              sideAnswers={sideAnswers}
-              onStopSideAnswer={stopSideAnswer}
-              turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
-              activeThreadEnvironmentId={activeThread.environmentId}
-              activeThreadId={activeThread.id}
-              routeThreadKey={routeThreadKey}
-              onOpenTurnDiff={onOpenTurnDiff}
-              revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
-              roomAgents={roomAgentLabels}
-              agentModelLabeler={agentModelLabeler}
-              ownAgentLabels={ownAgentLabels}
-              workingParticipantId={activeThread.session?.participantId ?? null}
-              {...(activeThread.agentRequests
-                ? { openAgentRequests: activeThread.agentRequests.open }
-                : {})}
-              onRevertUserMessage={onRevertUserMessage}
-              onContinueInNewThread={onContinueMessageInNewThread}
-              onRevealPickedElement={isElectron ? revealPickedElement : undefined}
-              onAddTranscriptHighlightContext={addTranscriptHighlightContextToDraft}
-              isRevertingCheckpoint={isRevertingCheckpoint}
-              onImageExpand={onExpandTimelineImage}
-              onPreviewFile={onPreviewFile}
-              markdownCwd={gitCwd ?? undefined}
-              resolvedTheme={resolvedTheme}
-              timestampFormat={timestampFormat}
-              workspaceRoot={activeWorkspaceRoot}
-              skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
-              providerAuthReconnect={providerAuthReconnectPrompt}
-              failedTurnRetry={failedTurnRetryAction}
-              onRunProviderAuthReconnect={runProviderAuthReconnect}
-              mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
-              onRunMcpAuthReconnect={runMcpAuthReconnect}
-              onIsAtEndChange={onIsAtEndChange}
-              onVisibleTurnIdsChange={handleVisibleTurnIdsChange}
-              searchTarget={timelineSearchTarget}
-              planScrollTarget={planScrollTarget}
-              proposedPlanState={timelineProposedPlanState}
-              turnAgents={timelineTurnAgents}
-              onOpenAgentsPanel={onOpenAgentsPanel}
-              onOpenThread={onOpenForkSourceThread}
-            />
+            <CommandRunActionsContext value={commandRunActions}>
+              <MessagesTimeline
+                key={activeThread.id}
+                emptyState={draftTimelineEmptyState}
+                detailPending={isServerThread && !threadDetailLoaded}
+                savedEnvironmentConnected={
+                  activeSavedEnvironmentRecord === null ? undefined : !activeEnvironmentUnavailable
+                }
+                isWorking={isWorking}
+                isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
+                awaitedTasks={awaitedTasks}
+                activeStatusLabel={activeStatusLabel}
+                activeTurnInProgress={isWorking || !latestTurnSettled}
+                activeTurnId={activeLatestTurn?.turnId ?? null}
+                activeTurnStartedAt={activeWorkStartedAt}
+                listRef={legendListRef}
+                stickToBottomRequestKey={stickToBottomRequestKey}
+                timelineEntries={timelineEntries}
+                sideAnswers={sideAnswers}
+                onStopSideAnswer={stopSideAnswer}
+                turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+                activeThreadEnvironmentId={activeThread.environmentId}
+                activeThreadId={activeThread.id}
+                routeThreadKey={routeThreadKey}
+                onOpenTurnDiff={onOpenTurnDiff}
+                revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
+                roomAgents={roomAgentLabels}
+                agentModelLabeler={agentModelLabeler}
+                ownAgentLabels={ownAgentLabels}
+                workingParticipantId={activeThread.session?.participantId ?? null}
+                {...(activeThread.agentRequests
+                  ? { openAgentRequests: activeThread.agentRequests.open }
+                  : {})}
+                onRevertUserMessage={onRevertUserMessage}
+                onContinueInNewThread={onContinueMessageInNewThread}
+                onRevealPickedElement={isElectron ? revealPickedElement : undefined}
+                onAddTranscriptHighlightContext={addTranscriptHighlightContextToDraft}
+                isRevertingCheckpoint={isRevertingCheckpoint}
+                onImageExpand={onExpandTimelineImage}
+                onPreviewFile={onPreviewFile}
+                markdownCwd={gitCwd ?? undefined}
+                resolvedTheme={resolvedTheme}
+                timestampFormat={timestampFormat}
+                workspaceRoot={activeWorkspaceRoot}
+                skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+                providerAuthReconnect={providerAuthReconnectPrompt}
+                failedTurnRetry={failedTurnRetryAction}
+                onRunProviderAuthReconnect={runProviderAuthReconnect}
+                mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
+                onRunMcpAuthReconnect={runMcpAuthReconnect}
+                onIsAtEndChange={onIsAtEndChange}
+                onVisibleTurnIdsChange={handleVisibleTurnIdsChange}
+                searchTarget={timelineSearchTarget}
+                planScrollTarget={planScrollTarget}
+                proposedPlanState={timelineProposedPlanState}
+                turnAgents={timelineTurnAgents}
+                onOpenAgentsPanel={onOpenAgentsPanel}
+                onOpenThread={onOpenForkSourceThread}
+              />
+            </CommandRunActionsContext>
 
             {/* scroll to bottom button — shown when user has scrolled away from the bottom. */}
             {showScrollToBottom && (

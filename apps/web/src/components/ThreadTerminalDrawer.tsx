@@ -149,6 +149,24 @@ function writeTerminalSnapshot(
   });
 }
 
+// Built from the escape and bell characters so the pattern itself holds no
+// control codes: cursor position and device attribute requests (`ESC[6n`,
+// `ESC[c`) and color queries (`ESC]11;?`).
+const QUERY_ESC = String.fromCharCode(0x1b);
+const QUERY_BEL = String.fromCharCode(0x07);
+const TERMINAL_QUERY_PATTERN = new RegExp(
+  `${QUERY_ESC}\\[[0-9;?>]*[nc]|${QUERY_ESC}\\](?:10|11|12);\\?(?:${QUERY_BEL}|${QUERY_ESC}\\\\)`,
+  "g",
+);
+
+/**
+ * The queries in terminal output that the terminal answers: the server keeps
+ * them out of history, so they reach a terminal only through live output.
+ */
+export function terminalQueriesIn(data: string): string {
+  return (data.match(TERMINAL_QUERY_PATTERN) ?? []).join("");
+}
+
 export function selectTerminalEventEntriesAfterSnapshot(
   entries: ReadonlyArray<{ id: number; event: TerminalEvent }>,
   snapshotUpdatedAt: string,
@@ -816,6 +834,8 @@ export function TerminalViewport({
         handleSessionExited();
       }, 0);
     };
+    // When the snapshot this view was drawn from was taken; see applyPendingTerminalEvents.
+    let hydratedSnapshotAt: string | null = null;
     const applyPendingTerminalEvents = (
       terminalEventEntries: ReadonlyArray<{ id: number; event: TerminalEvent }>,
     ) => {
@@ -827,6 +847,19 @@ export function TerminalViewport({
         return;
       }
       for (const entry of pendingEntries) {
+        // Output the shell printed before the snapshot was taken can reach
+        // this client after the snapshot did; the snapshot already shows it.
+        // Only what the terminal must still answer (a cursor or color
+        // query, which never goes into history) is passed on.
+        if (
+          hydratedSnapshotAt !== null &&
+          entry.event.type === "output" &&
+          entry.event.createdAt <= hydratedSnapshotAt
+        ) {
+          const queries = terminalQueriesIn(entry.event.data);
+          if (queries.length > 0) terminalRef.current?.write(queries);
+          continue;
+        }
         applyTerminalEvent(entry.event);
       }
       lastAppliedTerminalEventIdRef.current =
@@ -874,6 +907,7 @@ export function TerminalViewport({
         });
         if (disposed) return;
         writeTerminalSnapshot(activeTerminal, snapshot, () => isTerminalActive(activeTerminal));
+        hydratedSnapshotAt = snapshot.updatedAt;
         const bufferedEntries = selectTerminalEventEntries(
           useTerminalStateStore.getState().terminalEventEntriesByKey,
           threadRef,

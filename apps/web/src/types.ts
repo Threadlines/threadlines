@@ -1,6 +1,8 @@
 import { DEFAULT_NEW_THREAD_RUNTIME_MODE } from "@threadlines/contracts";
 import type {
   OrchestrationAgentPage,
+  OrchestrationCommandRequest,
+  OrchestrationCommandRun,
   PullRequestMergeMethod,
   ChatFileAttachmentKind,
   ChatSkillReference,
@@ -174,6 +176,10 @@ export interface Thread {
   proposedPlans: ProposedPlan[];
   /** Agent pages (OrchestrationAgentPage), in thread order. Absent until the detail loads. */
   pages?: ReadonlyArray<OrchestrationAgentPage>;
+  /** Commands agents asked the user to run (docs/terminal-command-runs.md). Absent until the detail loads. */
+  commandRequests?: ReadonlyArray<OrchestrationCommandRequest>;
+  /** Runs the user started from a request card or a code block. Absent until the detail loads. */
+  commandRuns?: ReadonlyArray<OrchestrationCommandRun>;
   error: string | null;
   createdAt: string;
   archivedAt: string | null;

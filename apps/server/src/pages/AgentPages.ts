@@ -54,6 +54,7 @@ import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../config.ts";
+import { latchCallerTurn } from "../mcp/callerTurn.ts";
 import type { McpInvocationScope } from "../mcp/McpSessionRegistry.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -157,8 +158,6 @@ const TURN_ENDED_DETAIL =
 const DEFAULT_HEIGHT = 480;
 const MIN_PREVIEW_WIDTH = 240;
 const MAX_PREVIEW_WIDTH = 1600;
-/** How long a call waits for its own turn to be recorded (a provider can report a call first). */
-const TURN_WAIT = Duration.seconds(3);
 
 const measureDocument = (content: string, kind: AgentPageKind) =>
   buildAgentPageDocument({
@@ -199,35 +198,7 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => undefined),
     );
 
-  /**
-   * The turn this caller is in: its thread's, while it holds the thread.
-   * Waits briefly for a turn a provider has not reported yet.
-   */
-  type Latched =
-    | { readonly gone: true }
-    | { readonly notYours: true }
-    | { readonly thread: OrchestrationThread; readonly turnId: TurnId };
-
-  const callerTurn = (scope: McpInvocationScope): Effect.Effect<Latched> => {
-    const attempt: Effect.Effect<Latched, "no-turn"> = Effect.gen(function* () {
-      const thread = yield* readThread(scope.threadId);
-      if (thread === undefined || thread.deletedAt !== null) {
-        return { gone: true as const };
-      }
-      const holder = thread.session?.participantId ?? null;
-      const turnId = thread.session?.activeTurnId ?? null;
-      if (holder !== scope.participantId || turnId === null) {
-        return yield* Effect.fail("no-turn" as const);
-      }
-      return { thread, turnId };
-    });
-    return attempt.pipe(
-      Effect.retry(Schedule.spaced(Duration.millis(250))),
-      Effect.timeoutOption(TURN_WAIT),
-      Effect.map(Option.getOrElse((): Latched => ({ notYours: true as const }))),
-      Effect.orElseSucceed((): Latched => ({ notYours: true as const })),
-    );
-  };
+  const callerTurn = (scope: McpInvocationScope) => latchCallerTurn(readThread, scope);
 
   const show: AgentPagesShape["show"] = (scope, input) =>
     Effect.gen(function* () {

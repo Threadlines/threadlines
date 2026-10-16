@@ -1,6 +1,11 @@
 export interface TerminalCommandInputState {
   readonly draft: string;
   readonly cursor: number;
+  /**
+   * Inside a bracketed paste: newlines are part of the pasted text, not a
+   * submit. Kept across writes, since a paste can arrive in pieces.
+   */
+  readonly pasting?: boolean;
 }
 
 export interface TerminalCommandInputResult {
@@ -197,11 +202,46 @@ export function applyTerminalInputData(
   let nextState: TerminalCommandInputState = {
     draft: state.draft,
     cursor: clampCursor(state.cursor, state.draft),
+    ...(state.pasting === true ? { pasting: true } : {}),
   };
   let submittedCommand: string | null = null;
   let didSubmit = false;
 
   for (let index = 0; index < data.length;) {
+    if (nextState.pasting === true) {
+      // Pasted text goes into the draft as typed, line breaks included; only
+      // the end marker leaves the paste.
+      if (data.startsWith(BRACKETED_PASTE_END, index)) {
+        nextState = { draft: nextState.draft, cursor: nextState.cursor };
+        index += BRACKETED_PASTE_END.length;
+        continue;
+      }
+      const pastedPoint = data.codePointAt(index);
+      if (pastedPoint === undefined) break;
+      const pastedChar = String.fromCodePoint(pastedPoint);
+      if (
+        pastedChar === "\r" ||
+        pastedChar === "\n" ||
+        pastedChar === "\t" ||
+        pastedPoint >= 0x20
+      ) {
+        const inserted = insertText(
+          nextState.draft,
+          nextState.cursor,
+          pastedChar === "\r" ? "\n" : pastedChar,
+        );
+        nextState = { ...inserted, pasting: true };
+      }
+      index += pastedChar.length;
+      continue;
+    }
+
+    if (data.startsWith(BRACKETED_PASTE_START, index)) {
+      nextState = { ...nextState, pasting: true };
+      index += BRACKETED_PASTE_START.length;
+      continue;
+    }
+
     if (data.startsWith("\r\n", index)) {
       didSubmit = true;
       submittedCommand = normalizeSubmittedTerminalCommand(nextState.draft) ?? submittedCommand;

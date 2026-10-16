@@ -122,10 +122,16 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
+  mcpCommandsEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
+import {
+  buildCommandRequestInstructions,
+  CLAUDE_COMMAND_TOOL_IDS,
+  COMMANDS_MCP_SERVER_NAME,
+} from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { ROOM_TOOL_CALL_TIMEOUT } from "../../mcp/roomToolTimeouts.ts";
 import {
@@ -172,6 +178,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
   type ProviderAdapterError,
+  steerRejectedError,
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { estimatePartialFileChangeStat } from "./claudePartialToolInput.ts";
@@ -7334,6 +7341,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // Claude's own Artifact tool, which uploads a page to claude.ai. Only
       // beside agent pages: the chat shows the local copy of each publish.
       const artifacts = input.artifacts === true && agentPages;
+      // `ask_user_to_run`: a command card the user runs from the chat.
+      const commandRequests = input.commandRequests === true && !lockdown;
       const credential =
         !lockdown || roomTools
           ? yield* mcpSessionRegistry.credentialFor({
@@ -7341,6 +7350,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               browser: !lockdown,
               room: roomTools,
               pages: agentPages,
+              commands: commandRequests,
               sideKind,
             })
           : undefined;
@@ -7390,6 +7400,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 },
               }
             : {}),
+          ...(credential !== undefined && commandRequests
+            ? {
+                [COMMANDS_MCP_SERVER_NAME]: {
+                  type: "http" as const,
+                  url: mcpCommandsEndpointUrl(serverConfig.port),
+                  headers: { Authorization: `Bearer ${credential.token}` },
+                  // In the prompt too: deferred, the model tells the user to
+                  // copy the command into a terminal instead.
+                  alwaysLoad: true,
+                },
+              }
+            : {}),
         },
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
@@ -7402,6 +7424,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               ? [buildAgentPageInstructions({ assetsDir: pageAssets })]
               : []),
             ...(artifacts ? [CLAUDE_ARTIFACT_INSTRUCTIONS] : []),
+            ...(credential !== undefined && commandRequests
+              ? [buildCommandRequestInstructions({})]
+              : []),
             FILE_LINK_INSTRUCTIONS,
             ...(runsInManagedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
           ].join("\n\n"),
@@ -7423,6 +7448,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(roomServer !== undefined ? ROOM_TOOL_NAMES.map(claudeRoomToolId) : []),
           // A page shows only in the caller's own thread; nothing to approve.
           ...(credential !== undefined && agentPages ? CLAUDE_PAGE_TOOL_IDS : []),
+          // Asking the user to run a command only shows a card; they decide.
+          ...(credential !== undefined && commandRequests ? CLAUDE_COMMAND_TOOL_IDS : []),
         ],
         ...(effectiveEffort
           ? {
@@ -7904,11 +7931,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const context = yield* requireSession(input.threadId);
     const activeTurn = context.turnState;
     if (!activeTurn) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/steer",
-        detail: "No active Claude turn is available to steer.",
-      });
+      return yield* steerRejectedError(PROVIDER, "Claude", "no-active-turn");
     }
     if (activeTurn.turnId !== input.expectedTurnId) {
       return yield* new ProviderAdapterRequestError({

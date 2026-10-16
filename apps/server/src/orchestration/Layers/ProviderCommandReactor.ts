@@ -100,8 +100,9 @@ import {
 import {
   ProviderAdapterRequestError,
   ProviderAdapterValidationError,
+  steerRejectionOf,
 } from "../../provider/Errors.ts";
-import type { ProviderServiceError } from "../../provider/Errors.ts";
+import type { ProviderServiceError, SteerRejection } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ThreadContextSeedBuilder } from "../../provider/contextSeed/ThreadContextSeedBuilder.ts";
@@ -399,14 +400,9 @@ function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServic
   );
 }
 
-function isNoActiveTurnSteerError(cause: Cause.Cause<ProviderServiceError>): boolean {
+function steerRejectionIn(cause: Cause.Cause<ProviderServiceError>): SteerRejection | undefined {
   const error = findProviderAdapterRequestError(cause);
-  if (!error || error.method !== "turn/steer") {
-    return false;
-  }
-
-  const detail = error.detail.toLowerCase();
-  return detail.includes("no active") && detail.includes("turn") && detail.includes("steer");
+  return error ? steerRejectionOf(error) : undefined;
 }
 
 function stalePendingRequestDetail(
@@ -1168,6 +1164,7 @@ const make = Effect.gen(function* () {
           toolSettings?.enableClaudeArtifacts === true
             ? { artifacts: true }
             : {}),
+          ...(toolSettings?.enableCommandRequests !== false ? { commandRequests: true } : {}),
           runtimeMode: desiredRuntimeMode,
         })
         .pipe(
@@ -2458,13 +2455,41 @@ const make = Effect.gen(function* () {
       });
     }
 
+    // Command output the provider refused is no longer "sent": its card offers
+    // the send again instead of claiming the agent got it. The decider drops
+    // the take-back if the output was sent again in the meantime.
+    const takeBackCommandOutput = Effect.gen(function* () {
+      const latestThread = yield* resolveThread(event.payload.threadId);
+      const run = latestThread?.commandRuns?.find(
+        (entry) => entry.outputMessageId === event.payload.messageId,
+      );
+      if (run === undefined) return;
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.command-run.update",
+          commandId: serverCommandId("command-output-undelivered"),
+          threadId: event.payload.threadId,
+          progress: {
+            runId: run.runId,
+            autoSend: false,
+            heldReason: "undelivered",
+            outputSentAt: null,
+            outputMessageId: null,
+          },
+          ifOutputMessageId: event.payload.messageId,
+          createdAt: event.payload.createdAt,
+        })
+        .pipe(Effect.catchTag("OrchestrationCommandInvariantError", () => Effect.void));
+    });
+
     const recoverFollowUpFailure = Effect.fnUntraced(function* (
       cause: Cause.Cause<ProviderServiceError>,
     ) {
       if (Cause.hasInterruptsOnly(cause)) {
         return;
       }
-      if (!isNoActiveTurnSteerError(cause)) {
+      const rejection = steerRejectionIn(cause);
+      if (rejection === undefined) {
         yield* appendProviderFailureActivity({
           threadId: event.payload.threadId,
           kind: "provider.follow-up.failed",
@@ -2474,7 +2499,12 @@ const make = Effect.gen(function* () {
           createdAt: event.payload.createdAt,
           requestId: event.payload.messageId,
         });
+        yield* takeBackCommandOutput;
         return;
+      }
+      // The turn is still closing: the message waits in the queue until it has.
+      if (rejection === "turn-finishing") {
+        return yield* requeue;
       }
 
       // A provider's explicit "no active turn" rejection is authoritative: the
@@ -2916,7 +2946,7 @@ const make = Effect.gen(function* () {
                 .pipe(
                   Effect.as(true),
                   Effect.catchCause((cause) =>
-                    isNoActiveTurnSteerError(cause)
+                    steerRejectionIn(cause) === "no-active-turn"
                       ? Effect.succeed(false)
                       : Effect.failCause(cause),
                   ),

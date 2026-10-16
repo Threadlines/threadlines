@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
   AgentPageReadError,
+  CommandRunError,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -144,6 +145,7 @@ import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriver from "./vcs/VcsDriver.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
+import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -725,6 +727,14 @@ const buildAppUnderTest = (options?: {
             read: () => Effect.fail(new AgentPageReadError({ message: "No pages in this test." })),
             pendingVersionIds: Effect.succeed(new Set<string>()),
             assetsDirOf: () => null,
+          }),
+          // Suggested commands are tested on their own; here only the routes
+          // and the tool endpoint need something to call.
+          Layer.mock(CommandRuns)({
+            request: () => Effect.succeed({ outcome: "off" as const, detail: "off in this test" }),
+            start: () => Effect.fail(new CommandRunError({ message: "No runs in this test." })),
+            sendOutput: () =>
+              Effect.fail(new CommandRunError({ message: "No runs in this test." })),
           }),
           // Real too: with no models on disk it only reports "missing" and
           // never starts the worker, so a mock would assert nothing.

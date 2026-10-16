@@ -185,6 +185,11 @@ export const ProviderSessionStartInput = Schema.Struct({
    * local copy of what was published. Drivers without one ignore it.
    */
   artifacts: Schema.optional(Schema.Boolean),
+  /**
+   * Attach `ask_user_to_run` (`threadlines_commands`,
+   * docs/terminal-command-runs.md). Never for a locked-down side runtime.
+   */
+  commandRequests: Schema.optional(Schema.Boolean),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

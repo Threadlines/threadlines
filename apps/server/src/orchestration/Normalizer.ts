@@ -309,6 +309,17 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
               : {}),
           }))
           .filter((entry) => compareTranscriptOrder(entry, sourceMessage) <= 0),
+        // So do suggested commands and their runs.
+        ...(sourceThread.commandRequests ?? [])
+          .map((request) => ({
+            kind: "tool" as const,
+            text: `Asked the user to run \`${request.command}\` (the request stays in the original thread).`,
+            createdAt: request.createdAt,
+            ...(request.eventSequence !== undefined
+              ? { eventSequence: request.eventSequence }
+              : {}),
+          }))
+          .filter((entry) => compareTranscriptOrder(entry, sourceMessage) <= 0),
       ].toSorted(compareTranscriptOrder);
       const split = splitSeedEntriesByBudget(
         entries.map((entry) =>

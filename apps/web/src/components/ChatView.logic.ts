@@ -5,6 +5,7 @@ import {
   ProjectId,
   type ModelSelection,
   type OrchestrationAgentPage,
+  type OrchestrationCommandRequest,
   type OrchestrationThreadActivity,
   type ProviderDriverKind,
   type ProviderInstanceId,
@@ -2477,7 +2478,10 @@ export const deriveThreadSideAnswers = threadMemo(
   ) => deriveSideAnswers({ messages, activities, sideTurn }),
 );
 
-/** The conversation's rows: messages (side questions aside), plans, steps, pages and agents. */
+/**
+ * The conversation's rows: messages (side questions aside), plans, steps,
+ * pages, command cards and agents.
+ */
 export const deriveThreadTimelineEntries = threadMemo(
   (
     messages: ChatMessage[],
@@ -2487,6 +2491,7 @@ export const deriveThreadTimelineEntries = threadMemo(
     forkContexts: ForkContextEntry[],
     subagentLiveEntries: SubagentLiveEntry[],
     pages: ReadonlyArray<OrchestrationAgentPage>,
+    commandRequests: ReadonlyArray<OrchestrationCommandRequest>,
   ) =>
     deriveTimelineEntries(
       messages.filter((message) => !isSideMessage(message)),
@@ -2496,6 +2501,7 @@ export const deriveThreadTimelineEntries = threadMemo(
       forkContexts,
       subagentLiveEntries,
       pages,
+      commandRequests,
     ),
 );
 

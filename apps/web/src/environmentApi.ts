@@ -80,6 +80,10 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     pages: {
       read: rpcClient.pages.read,
     },
+    commandRuns: {
+      start: rpcClient.commandRuns.start,
+      sendOutput: rpcClient.commandRuns.sendOutput,
+    },
     filesystem: {
       browse: rpcClient.filesystem.browse,
     },

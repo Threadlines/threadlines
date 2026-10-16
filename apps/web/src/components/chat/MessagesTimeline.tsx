@@ -64,6 +64,13 @@ import {
 } from "../ChatView.logic";
 import { AgentPageRow } from "./AgentPageRow";
 import {
+  CodeBlockRunScopeContext,
+  CommandOutputMessage,
+  CommandRequestRow,
+  isCommandOutputMessage,
+  type CodeBlockRunScope,
+} from "./CommandRuns";
+import {
   type ChatAttachment,
   type ChatMessage,
   type SidebarThreadSummary,
@@ -2551,6 +2558,11 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
           updated={row.updated}
         />
       ) : null}
+      {row.kind === "command-request" ? (
+        <div className="mx-auto max-w-4xl px-1">
+          <CommandRequestRow request={row.request} />
+        </div>
+      ) : null}
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "side-status" ? <SideStatusTimelineRow row={row} /> : null}
@@ -2730,6 +2742,53 @@ function TimelineFileAttachmentChips(props: {
 }
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  if (isCommandOutputMessage(row.message.id)) {
+    return <CommandOutputTimelineRow row={row} />;
+  }
+  return <UserMessageTimelineRow row={row} />;
+}
+
+/**
+ * The output of a suggested command, sent to its agent as your message: one
+ * line in your bubble, the full text a click away.
+ */
+function CommandOutputTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const canRevertAgentWork = typeof row.revertTurnCount === "number";
+  return (
+    <div className="flex flex-col items-end">
+      <div className="flex w-full justify-end">
+        <div className="group relative max-w-[80%] min-w-0 rounded-4xl bg-secondary px-3.5 py-2.5">
+          <CommandOutputMessage
+            messageId={row.message.id}
+            text={row.message.text}
+            renderText={(text) => (
+              <ChatMarkdown
+                text={text}
+                cwd={ctx.markdownCwd}
+                environmentId={ctx.activeThreadEnvironmentId}
+                threadId={ctx.activeThreadId ?? undefined}
+              />
+            )}
+            footer={
+              <div className="flex items-center justify-end gap-1.5">
+                <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+                  <MessageCopyButton text={row.message.text} />
+                  {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+                </div>
+                <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
+                  {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
+                </p>
+              </div>
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageAttachments = row.message.attachments ?? [];
   const userImages = useResolvedAttachmentPreviews(
@@ -3385,6 +3444,20 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   // full strength and carries the turn's footer, while the notes before it
   // fade to the steps' grey. A note's time stays one hover away.
   const summary = row.turnSummary;
+  // A settled reply of a main turn: its shell code blocks get a Run button.
+  const runScope = useMemo<CodeBlockRunScope | null>(
+    () =>
+      streaming || row.message.sideTurnId !== undefined || row.message.turnId == null
+        ? null
+        : { messageId: row.message.id, participantId: row.message.participantId ?? null },
+    [
+      streaming,
+      row.message.id,
+      row.message.participantId,
+      row.message.sideTurnId,
+      row.message.turnId,
+    ],
+  );
 
   return (
     <>
@@ -3438,19 +3511,21 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                 data-transcript-message-streaming={row.message.streaming ? "true" : undefined}
                 data-chat-find-body=""
               >
-                <ChatMarkdown
-                  text={messageText}
-                  cwd={ctx.markdownCwd}
-                  environmentId={ctx.activeThreadEnvironmentId}
-                  threadId={ctx.activeThreadId ?? undefined}
-                  isStreaming={Boolean(row.message.streaming)}
-                  skills={ctx.skills}
-                  searchHighlightQuery={
-                    ctx.activeSearchTargetMessageId === row.message.id
-                      ? ctx.searchTargetQuery
-                      : undefined
-                  }
-                />
+                <CodeBlockRunScopeContext value={runScope}>
+                  <ChatMarkdown
+                    text={messageText}
+                    cwd={ctx.markdownCwd}
+                    environmentId={ctx.activeThreadEnvironmentId}
+                    threadId={ctx.activeThreadId ?? undefined}
+                    isStreaming={Boolean(row.message.streaming)}
+                    skills={ctx.skills}
+                    searchHighlightQuery={
+                      ctx.activeSearchTargetMessageId === row.message.id
+                        ? ctx.searchTargetQuery
+                        : undefined
+                    }
+                  />
+                </CodeBlockRunScopeContext>
               </div>
             </FallbackAssistantResponseContainer>
           )}
