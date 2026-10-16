@@ -19,6 +19,8 @@ export interface ElectronAppShape {
   readonly name: Effect.Effect<string>;
   readonly whenReady: Effect.Effect<void>;
   readonly quit: Effect.Effect<void>;
+  /** Brings the app to the front, even from the background on macOS. */
+  readonly focus: Effect.Effect<void>;
   readonly exit: (code: number) => Effect.Effect<void>;
   readonly relaunch: (options: Electron.RelaunchOptions) => Effect.Effect<void>;
   readonly setPath: (
@@ -72,6 +74,9 @@ const make = ElectronApp.of({
   whenReady: Effect.promise(() => Electron.app.whenReady()).pipe(Effect.asVoid),
   quit: Effect.sync(() => {
     Electron.app.quit();
+  }),
+  focus: Effect.sync(() => {
+    Electron.app.focus({ steal: true });
   }),
   exit: (code) =>
     Effect.sync(() => {

@@ -12629,6 +12629,140 @@ describe("ChatView timeline estimator parity (full app)", () => {
     },
   );
 
+  it("stops one background command through the agent from the runs list", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-stop-one-task" as MessageId,
+      targetText: "stop one task target",
+      sessionStatus: "ready",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                session: thread.session
+                  ? { ...thread.session, pendingBackgroundTaskCount: 1 }
+                  : thread.session,
+                activities: [
+                  ...thread.activities,
+                  {
+                    id: EventId.make("activity-dev-server-started"),
+                    kind: "task.started",
+                    tone: "info",
+                    summary: "background-command task started",
+                    payload: {
+                      taskId: "task-dev-server",
+                      taskType: "background-command",
+                      detail: "Start the web dev server",
+                      stoppable: true,
+                    },
+                    turnId: null,
+                    sequence: 50,
+                    createdAt: isoAt(1_050),
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+    try {
+      await page.getByRole("button", { name: "1 background run" }).click();
+      await page.getByRole("button", { name: "Stop Start the web dev server" }).click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.background-task.stop",
+          ),
+        ).toMatchObject({ threadId: THREAD_ID, taskId: "task-dev-server" });
+      });
+      // One task, not the session.
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.session.stop",
+        ),
+      ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers Stop for the background work a failed turn left running", async () => {
+    // A turn that died on a usage limit while two dev servers it started kept
+    // going: the thread still waits on them, and the agent can't be asked to
+    // stop them, so the composer has to.
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-background-stop" as MessageId,
+      targetText: "background stop target",
+      sessionStatus: "error",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                latestTurn: {
+                  turnId: "turn-background-stop" as TurnId,
+                  state: "error",
+                  requestedAt: NOW_ISO,
+                  startedAt: NOW_ISO,
+                  completedAt: NOW_ISO,
+                  assistantMessageId: null,
+                },
+                session: thread.session
+                  ? {
+                      ...thread.session,
+                      activeTurnId: null,
+                      lastError: "You've hit your session limit",
+                      pendingBackgroundTaskCount: 2,
+                      awaitedBackgroundTaskCount: 2,
+                      awaitedBackgroundTasks: [
+                        { kind: "command" as const, description: "Start the web dev server" },
+                        { kind: "command" as const, description: "Start the test server" },
+                      ],
+                    }
+                  : thread.session,
+              }
+            : thread,
+        ),
+      },
+    });
+    try {
+      const stop = page.getByLabelText("Stop background work");
+      await expect.element(stop).toBeVisible();
+      await stop.click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.session.stop",
+          ),
+        ).toMatchObject({ threadId: THREAD_ID });
+      });
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.turn.interrupt",
+        ),
+        "There is no turn to interrupt.",
+      ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("queues a message for after the turn, and Stop puts queued messages back in the box", async () => {
     const snapshot = createSnapshotForTargetUser({
       targetMessageId: "msg-user-queue-test" as MessageId,

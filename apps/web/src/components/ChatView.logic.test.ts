@@ -10,6 +10,7 @@ import {
   type ServerProvider,
   ThreadId,
   TurnId,
+  RuntimeTaskId,
 } from "@threadlines/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { type EnvironmentState, useStore } from "../store";
@@ -1168,6 +1169,129 @@ describe("deriveProviderBackgroundRuns", () => {
 
     expect(runs).toHaveLength(1);
     expect(runs[0]?.pids).toEqual([4242]);
+  });
+
+  it("hands a task its driver can stop to the row that shows it", () => {
+    const { runs, stoppableSubagentTasks } = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-dev-server",
+            taskType: "local_bash",
+            detail: "Start the web dev server",
+            stoppable: true,
+          },
+          1,
+        ),
+        taskActivity(
+          "task.started",
+          { taskId: "task-old-cli", taskType: "local_bash", detail: "Watch CI" },
+          2,
+        ),
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-review-agent",
+            taskType: "local_agent",
+            detail: "Review the diff",
+            toolUseId: "tool-review-agent",
+            stoppable: true,
+          },
+          3,
+        ),
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-finished-agent",
+            taskType: "local_agent",
+            detail: "Read the docs",
+            toolUseId: "tool-finished-agent",
+            stoppable: true,
+          },
+          4,
+        ),
+        taskActivity("task.completed", { taskId: "task-finished-agent", status: "completed" }, 5),
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-workflow",
+            taskType: "local_workflow",
+            detail: "Run the release checklist",
+            stoppable: true,
+          },
+          6,
+        ),
+        // Its start left the recent window; progress still says it can stop.
+        taskActivity(
+          "task.progress",
+          { taskId: "task-long-runner", detail: "Step 3 of 9", stoppable: true },
+          7,
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 5,
+      // An agent at work does not turn commands and workflows into agents.
+      activeSubagentCount: 1,
+    });
+
+    const providerTaskIdOf = (id: string) => runs.find((run) => run.id === id)?.providerTaskId;
+    expect(providerTaskIdOf("provider:task-dev-server")).toBe("task-dev-server");
+    expect(providerTaskIdOf("provider:task-workflow")).toBe("task-workflow");
+    expect(providerTaskIdOf("provider:task-long-runner")).toBe("task-long-runner");
+    // Started where the driver could not say: Stop falls back to the process.
+    expect(runs.some((run) => run.id === "provider:task-old-cli")).toBe(true);
+    expect(providerTaskIdOf("provider:task-old-cli")).toBeUndefined();
+    // Agents are rows in the agents panel, found by task or by launching call.
+    expect([...stoppableSubagentTasks]).toEqual([["task-review-agent", "tool-review-agent"]]);
+  });
+
+  it("keeps a quiet task's row and Stop from the session after its start left the window", () => {
+    const { runs, stoppableSubagentTasks } = deriveProviderBackgroundRuns({
+      activities: [
+        // All that is left of this command in the window: progress whose
+        // wording reads like an agent. The session still lists it as a command.
+        taskActivity(
+          "task.progress",
+          { taskId: "task-subagent-tests", detail: "Test subagent startup", stoppable: true },
+          1,
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 3,
+      activeSubagentCount: 1,
+      awaitedTasks: [
+        {
+          kind: "command",
+          description: "Run the subagent tests",
+          taskId: RuntimeTaskId.make("task-subagent-tests"),
+          stoppable: true,
+        },
+        {
+          kind: "workflow",
+          description: "Release checklist",
+          taskId: RuntimeTaskId.make("task-quiet-workflow"),
+          stoppable: true,
+        },
+        {
+          kind: "agent",
+          description: "Review the diff",
+          taskId: RuntimeTaskId.make("task-quiet-agent"),
+          toolUseId: "tool-quiet-agent",
+          stoppable: true,
+        },
+      ],
+    });
+
+    expect(runs.find((run) => run.id === "provider:task-subagent-tests")?.providerTaskId).toBe(
+      "task-subagent-tests",
+    );
+    expect(runs.find((run) => run.id === "provider:task-quiet-workflow")).toMatchObject({
+      label: "Release checklist",
+      providerTaskId: "task-quiet-workflow",
+    });
+    // The agent is a row in the agents panel, found by its launching call.
+    expect(stoppableSubagentTasks.get("task-quiet-agent")).toBe("tool-quiet-agent");
   });
 
   it("hides local and remote agent tasks without active subagent records", () => {

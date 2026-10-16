@@ -435,10 +435,13 @@ export interface DesktopTaskbarStatusInput {
 }
 
 export interface DesktopQuitConfirmationRequest {
+  /** Names one asking; the page reports it back once it has the question. */
+  requestId: string;
   runningThreadCount: number;
 }
 
 export const DesktopQuitConfirmationRequestSchema = Schema.Struct({
+  requestId: Schema.String,
   runningThreadCount: Schema.Number,
 });
 
@@ -1209,8 +1212,12 @@ export interface DesktopBridge {
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
   setTaskbarStatus?: (input: DesktopTaskbarStatusInput) => Promise<void>;
+  /**
+   * The quit question, or null when the app takes it back (it asked natively
+   * instead, or the quit was settled elsewhere).
+   */
   onQuitConfirmationRequested?: (
-    listener: (request: DesktopQuitConfirmationRequest) => void,
+    listener: (request: DesktopQuitConfirmationRequest | null) => void,
   ) => () => void;
   resolveQuitConfirmation?: (confirmed: boolean) => Promise<void>;
   onMenuAction: (

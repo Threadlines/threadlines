@@ -83,6 +83,7 @@ const makeElectronAppLayer = (calls: ElectronAppCalls) =>
         calls.bounceDock.push(type);
         return Option.some(9);
       }),
+    focus: Effect.void,
     cancelDockBounce: (id) =>
       Effect.sync(() => {
         calls.cancelDockBounce.push(id);
@@ -128,6 +129,7 @@ const makeElectronWindowLayer = (window: Electron.BrowserWindow) =>
     setMain: () => Effect.void,
     clearMain: () => Effect.void,
     reveal: () => Effect.void,
+    guestsOf: () => Effect.succeed([]),
     sendAll: () => Effect.void,
     destroyAll: Effect.void,
     syncAllAppearance: (sync) => sync(window),
@@ -152,7 +154,9 @@ const makeDesktopWindowLayer = (input: {
     allowMainWindowOpen: Effect.void,
     allowMainWindowClose: Effect.void,
     requestQuitConfirmation: () => Effect.succeed(false),
+    quitConfirmationShown: () => Effect.void,
     resolveQuitConfirmation: () => Effect.void,
+    repeatQuitConfirmation: Effect.succeed(false),
     dispatchMenuAction: (action, payload) =>
       Effect.sync(() => {
         input.dispatchedActions.push(payload === undefined ? { action } : { action, payload });

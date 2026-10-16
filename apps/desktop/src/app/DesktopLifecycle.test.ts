@@ -39,6 +39,7 @@ const makeElectronAppLayer = (exitCodes: Array<number>) =>
     setDockIcon: () => Effect.void,
     setDockBadge: () => Effect.void,
     bounceDock: () => Effect.die("unexpected dock bounce"),
+    focus: Effect.void,
     cancelDockBounce: () => Effect.void,
     appendCommandLineSwitch: () => Effect.void,
     on: () => Effect.void,
@@ -76,7 +77,7 @@ const runConfirmHarness = (input: {
   readonly runningThreadCount: number;
   readonly quitting?: boolean;
   readonly styledResponse?: boolean;
-  readonly styledFailure?: boolean;
+  readonly styledFailure?: { readonly windowOpen: boolean };
   readonly nativeResponse?: number;
   readonly body: (
     shouldQuit: boolean,
@@ -97,6 +98,7 @@ const runConfirmHarness = (input: {
       Layer.mergeAll(
         DesktopState.layer,
         makeElectronDialogLayer({ calls: dialogCalls, response: input.nativeResponse ?? 0 }),
+        makeElectronAppLayer([]),
         Layer.succeed(DesktopWindow.DesktopWindow, {
           createMain: Effect.die("unexpected createMain"),
           ensureMain: Effect.die("unexpected ensureMain"),
@@ -112,11 +114,18 @@ const runConfirmHarness = (input: {
             }).pipe(
               Effect.andThen(
                 input.styledFailure
-                  ? Effect.fail(new DesktopWindow.DesktopWindowDevServerUrlMissingError())
+                  ? Effect.fail(
+                      new DesktopWindow.DesktopWindowQuitConfirmationError({
+                        cause: "not shown",
+                        windowOpen: input.styledFailure.windowOpen,
+                      }),
+                    )
                   : Effect.succeed(input.styledResponse ?? false),
               ),
             ),
+          quitConfirmationShown: () => Effect.void,
           resolveQuitConfirmation: () => Effect.void,
+          repeatQuitConfirmation: Effect.succeed(false),
           dispatchMenuAction: () => Effect.void,
           syncAppearance: Effect.void,
         } satisfies DesktopWindow.DesktopWindowShape),
@@ -214,7 +223,7 @@ describe("confirmQuitWithRunningAgentSessions", () => {
   it.effect("falls back to a native warning when the app dialog cannot open", () =>
     runConfirmHarness({
       runningThreadCount: 1,
-      styledFailure: true,
+      styledFailure: { windowOpen: true },
       nativeResponse: 0,
       body: (shouldQuit, styledCalls, dialogCalls) =>
         Effect.sync(() => {
@@ -222,7 +231,22 @@ describe("confirmQuitWithRunningAgentSessions", () => {
           assert.deepEqual(styledCalls, [1]);
           assert.lengthOf(dialogCalls, 1);
           assert.equal(dialogCalls[0]?.type, "warning");
+          assert.equal(dialogCalls[0]?.message, "An agent session is still running.");
           assert.deepEqual(dialogCalls[0]?.buttons, ["Keep Running", "Quit Anyway"]);
+        }),
+    }),
+  );
+
+  it.effect("quits from the native warning when no window is open to ask", () =>
+    runConfirmHarness({
+      runningThreadCount: 2,
+      styledFailure: { windowOpen: false },
+      nativeResponse: 1,
+      body: (shouldQuit, _styledCalls, dialogCalls) =>
+        Effect.sync(() => {
+          assert.equal(shouldQuit, true);
+          // The count is from the last window to close, so it is not stated as fact.
+          assert.equal(dialogCalls[0]?.message, "2 agent sessions may still be running.");
         }),
     }),
   );

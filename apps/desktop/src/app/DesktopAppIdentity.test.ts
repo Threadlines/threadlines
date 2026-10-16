@@ -60,6 +60,7 @@ const makeElectronAppLayer = (calls: ElectronAppCalls) =>
       }),
     setDockBadge: () => Effect.void,
     bounceDock: () => Effect.succeed(Option.none()),
+    focus: Effect.void,
     cancelDockBounce: () => Effect.void,
     appendCommandLineSwitch: () => Effect.void,
     on: () => Effect.void,

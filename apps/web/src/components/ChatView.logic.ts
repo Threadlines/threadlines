@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type MessageId,
+  type OrchestrationAwaitedBackgroundTask,
   type OrchestrationRevertPlan,
   ProjectId,
   type ModelSelection,
@@ -371,6 +372,9 @@ export interface ProviderBackgroundRunState {
   outputFile: string | null;
   /** False when the provider said a task runs but not what it is. */
   described: boolean;
+  /** The provider task this run is, when its driver can stop that one task
+   *  (`task.started` said `stoppable`). Stop then goes through the agent. */
+  providerTaskId?: string | undefined;
 }
 
 /** What a run row says about a task the provider counted but never named. */
@@ -393,6 +397,12 @@ export interface ProviderBackgroundRunsResult {
    * that resolve one live.
    */
   promotedSubagentRuns: ReadonlyMap<string, ProviderBackgroundRunState>;
+  /**
+   * Running subagent tasks the provider can stop one at a time: task id to
+   * the tool call that launched it, when known. The agents panel finds an
+   * agent's row by either (Claude's roster records the task id once linked).
+   */
+  stoppableSubagentTasks: ReadonlyMap<string, string | null>;
   /**
    * URLs, PIDs, and command hints used to seed server-side process detection.
    * Includes unconfirmed prose mentions: those feed detection so a real
@@ -1135,6 +1145,10 @@ export function deriveProviderBackgroundRuns(input: {
   /** Tool calls the thread already tracks as subagents, live or in history. A
    *  task launched by one of these is that agent, not a separate run. */
   subagentSpawnCallIds?: ReadonlySet<string> | undefined;
+  /** The session's list of tasks the agent waits on. It outlives the recent
+   *  activity window, so a quiet task whose start fell out keeps its row and
+   *  its Stop. */
+  awaitedTasks?: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | undefined;
 }): ProviderBackgroundRunsResult {
   const activeRunsByTaskId = new Map<string, ProviderBackgroundRunState>();
   const activeCommandDetectionRunsByKey = new Map<string, ProviderBackgroundRunState>();
@@ -1152,6 +1166,17 @@ export function deriveProviderBackgroundRuns(input: {
   const toolCallStartedAtById = new Map<string, string>();
   const outputFileByToolCallId = new Map<string, string>();
   const toolUseIdByTaskId = new Map<string, string>();
+  const stoppableTaskIds = new Set<string>();
+  // Commands and workflows, by the type their start named or the kind the
+  // session lists: progress events omit both, and must not turn one into an
+  // agent by its wording.
+  const definitelyNotAgentTaskIds = new Set<string>(
+    (input.awaitedTasks ?? []).flatMap((task) =>
+      task.taskId !== undefined && (task.kind === "command" || task.kind === "workflow")
+        ? [task.taskId]
+        : [],
+    ),
+  );
 
   for (const activity of [...input.activities].toSorted(compareActivitiesByOrder)) {
     const payload = asBackgroundRunRecord(activity.payload);
@@ -1196,11 +1221,18 @@ export function deriveProviderBackgroundRuns(input: {
       suppressedSubagentTaskIds.delete(taskId);
       promotedToolUseIdByTaskId.delete(taskId);
       activeTaskScopesByTaskId.delete(taskId);
+      stoppableTaskIds.delete(taskId);
       continue;
     }
 
     if (activity.kind !== "task.started" && activity.kind !== "task.progress") {
       continue;
+    }
+    if (payload.stoppable === true) {
+      stoppableTaskIds.add(taskId);
+    }
+    if (isDefinitelyNotAgentTaskType(asBackgroundRunString(payload.taskType))) {
+      definitelyNotAgentTaskIds.add(taskId);
     }
 
     // Suppression is sticky per task: progress activities carry less context
@@ -1279,6 +1311,7 @@ export function deriveProviderBackgroundRuns(input: {
       ]),
     ].slice(0, 8);
     if (
+      !definitelyNotAgentTaskIds.has(taskId) &&
       isSubagentProviderTask({
         payload,
         activitySummary: activity.summary,
@@ -1318,6 +1351,7 @@ export function deriveProviderBackgroundRuns(input: {
       startedAt: previous?.startedAt ?? activity.createdAt,
       outputFile: null,
       described: describedLabel !== null,
+      ...(stoppableTaskIds.has(taskId) ? { providerTaskId: taskId } : {}),
     });
   }
 
@@ -1396,6 +1430,45 @@ export function deriveProviderBackgroundRuns(input: {
       ),
   );
   runs = taskBackedRuns;
+  const stoppableSubagentTasks = new Map<string, string | null>();
+  for (const taskId of suppressedSubagentTaskIds) {
+    if (stoppableTaskIds.has(taskId)) {
+      stoppableSubagentTasks.set(taskId, toolUseIdByTaskId.get(taskId) ?? null);
+    }
+  }
+  // What the session still lists but the recent activities no longer show.
+  const promotedTaskIds = new Set(promotedToolUseIdByTaskId.keys());
+  for (const task of input.awaitedTasks ?? []) {
+    const taskId = task.taskId;
+    if (
+      taskId === undefined ||
+      activeRunsByTaskId.has(taskId) ||
+      suppressedSubagentTaskIds.has(taskId) ||
+      promotedTaskIds.has(taskId)
+    ) {
+      continue;
+    }
+    if (task.kind === "agent") {
+      if (task.stoppable === true) stoppableSubagentTasks.set(taskId, task.toolUseId ?? null);
+      continue;
+    }
+    runs.push({
+      id: `provider:${taskId}`,
+      source: "provider",
+      providerKind: "task",
+      label: task.description ?? "Background task",
+      command: null,
+      detail: task.description ? "Provider-managed" : UNDESCRIBED_TASK_DETAIL,
+      statusLabel: "Running",
+      urls: [],
+      pids: [],
+      commandHints: [],
+      startedAt: null,
+      outputFile: null,
+      described: task.description !== undefined,
+      ...(task.stoppable === true ? { providerTaskId: taskId } : {}),
+    });
+  }
   const hiddenSubagentTaskCount = Math.max(
     suppressedSubagentTaskIds.size + promotedSubagentRuns.size,
     input.activeSubagentCount ?? 0,
@@ -1469,7 +1542,12 @@ export function deriveProviderBackgroundRuns(input: {
     ],
   };
 
-  return { runs, promotedSubagentRuns, detectionSeeds };
+  return { runs, promotedSubagentRuns, stoppableSubagentTasks, detectionSeeds };
+}
+
+/** Claude's task types for a command and a workflow: never an agent. */
+function isDefinitelyNotAgentTaskType(taskType: string | null): boolean {
+  return taskType !== null && ["local_bash", "local_workflow"].includes(taskType.toLowerCase());
 }
 
 function isSubagentProviderTask(input: {
@@ -1487,6 +1565,11 @@ function isSubagentProviderTask(input: {
   // is no longer the latest turn.
   if (taskType && ["local_agent", "remote_agent"].includes(taskType.toLowerCase())) {
     return true;
+  }
+  // Its commands and workflows are just as definitive the other way, and the
+  // guess below would hide them whenever an agent happens to be running.
+  if (isDefinitelyNotAgentTaskType(taskType)) {
+    return false;
   }
   if (asBackgroundRunString(input.payload.subagentType) !== null) {
     return true;
@@ -2577,6 +2660,7 @@ export const deriveThreadProviderBackgroundRuns = threadMemo(
     activeSubagentCount: number,
     activeCommandTurnId: TurnId | null,
     subagentSpawnCallIds: ReadonlySet<string>,
+    awaitedTasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | undefined,
   ) =>
     deriveProviderBackgroundRuns({
       activities,
@@ -2585,5 +2669,6 @@ export const deriveThreadProviderBackgroundRuns = threadMemo(
       activeSubagentCount,
       activeCommandTurnId,
       subagentSpawnCallIds,
+      awaitedTasks,
     }),
 );

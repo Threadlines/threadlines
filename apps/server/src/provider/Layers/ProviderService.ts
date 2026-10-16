@@ -1450,6 +1450,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     yield* routed.adapter.releaseBackgroundCommands(routed.threadId);
   });
 
+  const stopBackgroundTask: ProviderServiceShape["stopBackgroundTask"] = Effect.fn(
+    "stopBackgroundTask",
+  )(function* (input) {
+    // Never starts a runtime: a task lives only as long as its session does.
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.stopBackgroundTask",
+      allowRecovery: false,
+    });
+    if (!routed.isActive || routed.adapter.stopBackgroundTask === undefined) {
+      return false;
+    }
+    return yield* routed.adapter.stopBackgroundTask(routed.threadId, input.taskId);
+  });
+
   const noteExtensionsChanged: ProviderServiceShape["noteExtensionsChanged"] = Effect.fn(
     "noteExtensionsChanged",
   )(function* (input) {
@@ -2230,6 +2245,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     realtimeAppendAudio,
     realtimeListVoices,
     releaseBackgroundCommands,
+    stopBackgroundTask,
     noteExtensionsChanged,
     readConversation,
     compactContext,

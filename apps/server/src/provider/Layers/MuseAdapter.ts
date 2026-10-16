@@ -183,6 +183,21 @@ export const MUSE_PLAN_MODE_INSTRUCTION = `<threadlines_plan_mode>
 You are in plan mode. Explore the code and think it through, but do not change any files or run anything that changes state. Then reply with the plan as Markdown: what you will change and in what order, the files involved, risks, and how you will check it works. The user reviews the plan and decides whether to implement it.
 </threadlines_plan_mode>`;
 
+/** How Muse stops one piece of background work, when it can: a subagent or a workflow. */
+function museStopCommand(item: {
+  readonly kind: string;
+  readonly subagentId?: string | undefined;
+  readonly workflowRunId?: string | undefined;
+}): { readonly method: string; readonly params: Record<string, unknown> } | null {
+  if (item.kind === "subagent" && item.subagentId) {
+    return { method: "subagent/stop", params: { subagentId: item.subagentId } };
+  }
+  if (item.kind === "workflow" && item.workflowRunId) {
+    return { method: "workflow/cancel", params: { workflowRunId: item.workflowRunId } };
+  }
+  return null;
+}
+
 export interface MuseAdapterOptions {
   readonly instanceId: ProviderInstanceId;
   readonly settings: MuseSettings;
@@ -583,6 +598,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
                 ...(state.item.objective || state.item.entryId
                   ? { description: (state.item.objective ?? state.item.entryId)!.slice(0, 400) }
                   : {}),
+                ...(museStopCommand(state.item) ? { stoppable: true } : {}),
               },
             } as ProviderRuntimeEvent);
           }
@@ -2751,6 +2767,25 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         };
       });
 
+    // One subagent or workflow left running past its turn. Muse stops a
+    // background command only along with all the others (task/stopAll), so
+    // those are not offered. The agent is not stopped: the work's report still
+    // reaches it, as it would for any task that ended.
+    const stopBackgroundTask: NonNullable<MuseAdapterShape["stopBackgroundTask"]> = (
+      threadId,
+      taskId,
+    ) =>
+      Effect.gen(function* () {
+        const ctx = sessions.get(threadId);
+        if (!ctx || ctx.stopped) return false;
+        const state = ctx.items.get(taskId);
+        const command =
+          state && !state.completed && state.background ? museStopCommand(state.item) : null;
+        if (!command) return false;
+        yield* sessionCommand(ctx, command.method, command.params);
+        return true;
+      });
+
     const stopSession: MuseAdapterShape["stopSession"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = sessions.get(threadId);
@@ -2789,6 +2824,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
       respondToRequest,
       respondToUserInput,
       stopSession,
+      stopBackgroundTask,
       listSessions: () =>
         Effect.sync(() =>
           [...sessions.values()].map((ctx) => ({

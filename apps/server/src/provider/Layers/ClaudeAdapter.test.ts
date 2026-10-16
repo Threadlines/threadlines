@@ -25,6 +25,7 @@ import {
   ThreadId,
   ProviderInstanceId,
   TurnId,
+  RuntimeTaskId,
 } from "@threadlines/contracts";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 import {
@@ -114,6 +115,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   private failure: unknown | undefined;
 
   public readonly interruptCalls: Array<void> = [];
+  public readonly stopTaskCalls: Array<string> = [];
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
@@ -192,6 +194,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly interrupt = async (): Promise<void> => {
     this.interruptCalls.push(undefined);
+  };
+
+  readonly stopTask = async (taskId: string): Promise<void> => {
+    this.stopTaskCalls.push(taskId);
   };
 
   readonly setModel = async (model?: string): Promise<void> => {
@@ -5774,6 +5780,77 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(flagUpdates[0].payload.callId, "tool-backgrounded-agent");
         assert.equal(flagUpdates[0].payload.isBackgrounded, true);
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("stops one background task through the CLI, and only one it has running", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const startedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.started"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const completedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-dev-server",
+        description: "Start the web dev server",
+        task_type: "local_bash",
+        tool_use_id: "tool-dev-server",
+        session_id: "sdk-session-stop-task",
+        uuid: "task-dev-server-started",
+      } as unknown as SDKMessage);
+
+      const [started] = Array.from(yield* Fiber.join(startedFiber));
+      assert.equal(started?.type === "task.started" && started.payload.stoppable, true);
+
+      assert.equal(
+        yield* adapter.stopBackgroundTask!(THREAD_ID, RuntimeTaskId.make("task-dev-server")),
+        true,
+      );
+      assert.equal(
+        yield* adapter.stopBackgroundTask!(THREAD_ID, RuntimeTaskId.make("task-never-started")),
+        false,
+      );
+      assert.deepEqual(harness.query.stopTaskCalls, ["task-dev-server"]);
+
+      // The CLI's answer ends it the usual way; a second Stop finds nothing.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-dev-server",
+        tool_use_id: "tool-dev-server",
+        status: "stopped",
+        summary: "Stopped",
+        output_file: "/tmp/tasks/task-dev-server.output",
+        session_id: "sdk-session-stop-task",
+        uuid: "task-dev-server-stopped",
+      } as unknown as SDKMessage);
+      const [completed] = Array.from(yield* Fiber.join(completedFiber));
+      assert.equal(completed?.type === "task.completed" && completed.payload.status, "stopped");
+      assert.equal(
+        yield* adapter.stopBackgroundTask!(THREAD_ID, RuntimeTaskId.make("task-dev-server")),
+        false,
+      );
+      assert.deepEqual(harness.query.stopTaskCalls, ["task-dev-server"]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

@@ -1,4 +1,8 @@
-import type { DesktopBridge, DesktopMenuActionPayload } from "@threadlines/contracts";
+import type {
+  DesktopBridge,
+  DesktopMenuActionPayload,
+  DesktopQuitConfirmationRequest,
+} from "@threadlines/contracts";
 import { contextBridge, ipcRenderer } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
@@ -191,8 +195,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
   onQuitConfirmationRequested: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, request: unknown) => {
-      if (typeof request !== "object" || request === null) return;
-      listener(request as Parameters<typeof listener>[0]);
+      if (request === null) {
+        listener(null);
+        return;
+      }
+      if (typeof request !== "object") return;
+      const question = request as DesktopQuitConfirmationRequest;
+      listener(question);
+      // The app waits for this before trusting the page with the question, and
+      // asks natively when it never comes: a page still loading or signed out
+      // has no listener here, and a hung one never runs this.
+      void ipcRenderer
+        .invoke(IpcChannels.QUIT_CONFIRMATION_SHOWN_CHANNEL, question.requestId)
+        .catch(() => undefined);
     };
 
     ipcRenderer.on(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, wrappedListener);

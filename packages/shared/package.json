@@ -223,6 +223,10 @@
       "types": "./src/pendingRequests.ts",
       "import": "./src/pendingRequests.ts"
     },
+    "./awaitedBackgroundTasks": {
+      "types": "./src/awaitedBackgroundTasks.ts",
+      "import": "./src/awaitedBackgroundTasks.ts"
+    },
     "./threadActivityRetention": {
       "types": "./src/threadActivityRetention.ts",
       "import": "./src/threadActivityRetention.ts"

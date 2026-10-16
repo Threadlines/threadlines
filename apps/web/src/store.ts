@@ -1,3 +1,4 @@
+import { sameAwaitedBackgroundTasks } from "@threadlines/shared/awaitedBackgroundTasks";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type {
   EnvironmentId,
@@ -724,23 +725,6 @@ function latestTurnsEqual(
   );
 }
 
-function awaitedBackgroundTasksEqual(
-  left: ThreadSession["awaitedBackgroundTasks"],
-  right: ThreadSession["awaitedBackgroundTasks"],
-): boolean {
-  if (left === right) return true;
-  const leftTasks = left ?? [];
-  const rightTasks = right ?? [];
-  return (
-    leftTasks.length === rightTasks.length &&
-    leftTasks.every(
-      (task, index) =>
-        task.kind === rightTasks[index]?.kind &&
-        task.description === rightTasks[index]?.description,
-    )
-  );
-}
-
 function threadSessionsEqual(
   left: ThreadSession | null | undefined,
   right: ThreadSession | null | undefined,
@@ -761,7 +745,7 @@ function threadSessionsEqual(
     left.lastError === right.lastError &&
     left.pendingBackgroundTaskCount === right.pendingBackgroundTaskCount &&
     left.awaitedBackgroundTaskCount === right.awaitedBackgroundTaskCount &&
-    awaitedBackgroundTasksEqual(left.awaitedBackgroundTasks, right.awaitedBackgroundTasks)
+    sameAwaitedBackgroundTasks(left.awaitedBackgroundTasks, right.awaitedBackgroundTasks)
   );
 }
 

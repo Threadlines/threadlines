@@ -108,12 +108,31 @@ const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdo
   },
 );
 
+/**
+ * The count comes from the open window. With every window closed (the app
+ * keeps running on macOS) it is what the last window saw, which can be long
+ * out of date, so the dialog says what it knows rather than what it guesses.
+ */
+function describeRunningSessionsForNativeQuit(count: number, windowOpen: boolean): string {
+  if (!windowOpen) {
+    return count === 1
+      ? "An agent session may still be running."
+      : `${count} agent sessions may still be running.`;
+  }
+  return count === 1
+    ? "An agent session is still running."
+    : `${count} agent sessions are still running.`;
+}
+
 export const confirmQuitWithRunningAgentSessions = Effect.fn(
   "desktop.lifecycle.confirmQuitWithRunningAgentSessions",
 )(function* (): Effect.fn.Return<
   boolean,
   never,
-  DesktopState.DesktopState | DesktopWindow.DesktopWindow | ElectronDialog.ElectronDialog
+  | DesktopState.DesktopState
+  | DesktopWindow.DesktopWindow
+  | ElectronApp.ElectronApp
+  | ElectronDialog.ElectronDialog
 > {
   const state = yield* DesktopState.DesktopState;
   if (yield* Ref.get(state.quitting)) {
@@ -125,13 +144,17 @@ export const confirmQuitWithRunningAgentSessions = Effect.fn(
 
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   return yield* desktopWindow.requestQuitConfirmation(runningThreadCount).pipe(
-    Effect.catch(() =>
+    Effect.catch((error) =>
       Effect.gen(function* () {
+        yield* logLifecycleInfo("asking to quit with a native dialog", {
+          reason: String(error.cause),
+        });
         const electronDialog = yield* ElectronDialog.ElectronDialog;
-        const message =
-          runningThreadCount === 1
-            ? "An agent session is still running."
-            : `${runningThreadCount} agent sessions are still running.`;
+        const electronApp = yield* ElectronApp.ElectronApp;
+        // A quit from the Dock or the menu bar leaves the app in the back,
+        // where a dialog with no window would open unseen.
+        yield* electronApp.focus;
+        const message = describeRunningSessionsForNativeQuit(runningThreadCount, error.windowOpen);
         const result = yield* electronDialog.showMessageBox({
           type: "warning",
           title: "Quit Threadlines?",
@@ -188,7 +211,23 @@ function handleBeforeQuit(
   }
 
   event.preventDefault();
-  if (quitRequestPending()) return;
+  if (quitRequestPending()) {
+    // Asking again must never be a dead key: it brings the question back,
+    // the window's or, when that one gave way to it, the native dialog.
+    void runEffect(
+      Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        const repeated = yield* desktopWindow.repeatQuitConfirmation;
+        const state = yield* DesktopState.DesktopState;
+        if (!repeated && !(yield* Ref.get(state.quitting))) {
+          const electronApp = yield* ElectronApp.ElectronApp;
+          yield* electronApp.focus;
+        }
+        yield* logLifecycleInfo("quit asked for again while confirming", { repeated });
+      }).pipe(Effect.withSpan("desktop.lifecycle.repeatQuit")),
+    );
+    return;
+  }
   markQuitRequestPending(true);
   void runEffect(
     Effect.gen(function* () {
@@ -225,19 +264,29 @@ function handleBeforeQuit(
     });
 }
 
+/**
+ * A signal is a quit nobody is asked about. It is let through `before-quit`
+ * explicitly: a quit question already open would otherwise take the signal's
+ * own quit as a repeat, and the app would wait on an answer after its backend
+ * had stopped.
+ */
 function quitFromSignal(
   signal: "SIGINT" | "SIGTERM",
   runEffect: <A, E>(effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>) => Promise<A>,
+  markQuitAllowed: () => void,
 ): void {
   void runEffect(
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ signal });
       const electronApp = yield* ElectronApp.ElectronApp;
+      const desktopWindow = yield* DesktopWindow.DesktopWindow;
       const state = yield* DesktopState.DesktopState;
       const wasQuitting = yield* Ref.getAndSet(state.quitting, true);
       if (wasQuitting) return;
       yield* logLifecycleInfo("process signal received", { signal });
       yield* requestDesktopShutdownAndWaitWithFailsafe();
+      markQuitAllowed();
+      yield* desktopWindow.allowMainWindowClose;
       yield* electronApp.quit;
     }).pipe(Effect.withSpan("desktop.lifecycle.processSignal")),
   );
@@ -327,11 +376,14 @@ export const layer = Layer.succeed(
       });
 
       if (environment.platform !== "win32") {
+        const allowSignalQuit = () => {
+          quitAllowed = true;
+        };
         yield* addScopedListener(process, "SIGINT", () => {
-          quitFromSignal("SIGINT", runEffect);
+          quitFromSignal("SIGINT", runEffect, allowSignalQuit);
         });
         yield* addScopedListener(process, "SIGTERM", () => {
-          quitFromSignal("SIGTERM", runEffect);
+          quitFromSignal("SIGTERM", runEffect, allowSignalQuit);
         });
       }
     }).pipe(Effect.withSpan("desktop.lifecycle.register")),
