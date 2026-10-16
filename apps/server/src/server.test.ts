@@ -1,3 +1,4 @@
+import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -334,6 +335,36 @@ const makeThreadMessageEvent = (
       streaming: false,
       createdAt: now,
       updatedAt: now,
+    },
+  };
+};
+
+const makeThreadActivityEvent = (
+  sequence: number,
+): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> => {
+  const now = "2026-01-01T00:00:00.000Z";
+  return {
+    sequence,
+    eventId: EventId.make(`event-thread-activity-${sequence}`),
+    aggregateKind: "thread",
+    aggregateId: defaultThreadId,
+    occurredAt: now,
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.activity-appended",
+    payload: {
+      threadId: defaultThreadId,
+      activity: {
+        id: EventId.make(`activity-${sequence}`),
+        tone: "tool",
+        kind: "tool.completed",
+        summary: "Ran a command",
+        payload: {},
+        turnId: null,
+        createdAt: now,
+      },
     },
   };
 };
@@ -4076,15 +4107,23 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           orchestrationEngine: {
             // The thread missed one event since 590 or 99, however busy other
             // threads were; since 50 it missed more than a replay may carry.
+            // Since 70 what is stored is a full activity window, which storage
+            // maintenance may have trimmed from a longer run.
             readThreadEvents: (input) =>
               Effect.sync(() => {
                 readEventCursors.push(input.fromSequenceExclusive);
                 assert.equal(input.toSequenceInclusive, 600);
-                return input.fromSequenceExclusive === 50
-                  ? Array.from({ length: input.limit }, (_, index) =>
-                      makeThreadMessageEvent(51 + index),
-                    )
-                  : [replayedEvent];
+                if (input.fromSequenceExclusive === 50) {
+                  return Array.from({ length: input.limit }, (_, index) =>
+                    makeThreadMessageEvent(51 + index),
+                  );
+                }
+                if (input.fromSequenceExclusive === 70) {
+                  return Array.from({ length: MAX_THREAD_ACTIVITIES }, (_, index) =>
+                    makeThreadActivityEvent(100 + index),
+                  );
+                }
+                return [replayedEvent];
               }),
             subscribeDomainEvents: Effect.succeed(Stream.empty),
           },
@@ -4139,8 +4178,17 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         staleItems[0]?.kind === "snapshot" ? staleItems[0].snapshot.snapshotSequence : null,
         600,
       );
-      assert.deepEqual(readEventCursors, [590, 99, 50]);
-      assert.equal(threadDetailReads, 1);
+      const prunedItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            fromSequenceExclusive: 70,
+          }).pipe(Stream.take(1), Stream.runCollect),
+        ),
+      );
+      assert.equal(prunedItems[0]?.kind, "snapshot");
+      assert.deepEqual(readEventCursors, [590, 99, 50, 70]);
+      assert.equal(threadDetailReads, 2);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

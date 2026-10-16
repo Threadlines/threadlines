@@ -162,6 +162,7 @@ import {
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
 import { dropSupersededToolUpdateImages } from "./orchestration/clientActivityImages.ts";
+import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { isInternalClientSession } from "./auth/utils.ts";
 
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
@@ -245,10 +246,29 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 /**
  * The most events a thread may have missed and still resume by replay rather
- * than a fresh snapshot. Counted per thread: storage maintenance keeps a
- * thread's newest 500 activity events, so a replay this size is complete.
+ * than a fresh snapshot, counted in that thread's own events.
  */
 export const ORCHESTRATION_THREAD_RESUME_MAX_EVENTS = 500;
+
+/**
+ * Whether a thread's stored events after a client's cursor are all it missed.
+ * Storage maintenance deletes a thread's activity events older than its newest
+ * MAX_THREAD_ACTIVITIES, so once that many activity events follow the cursor,
+ * older ones after it may be gone and what is left only looks like a short
+ * replay. Below that, nothing after the cursor was pruned.
+ */
+function isCompleteThreadReplay(events: ReadonlyArray<OrchestrationEvent>): boolean {
+  if (events.length > ORCHESTRATION_THREAD_RESUME_MAX_EVENTS) {
+    return false;
+  }
+  let activityEvents = 0;
+  for (const event of events) {
+    if (event.type === "thread.activity-appended") {
+      activityEvents += 1;
+    }
+  }
+  return activityEvents < MAX_THREAD_ACTIVITIES;
+}
 
 function toAuthAccessStreamEvent(
   change: BootstrapCredentialChange | SessionCredentialChange,
@@ -959,7 +979,7 @@ const makeWsRpcLayer = (currentSession: {
                             }),
                         ),
                       );
-                    if (missedEvents.length <= ORCHESTRATION_THREAD_RESUME_MAX_EVENTS) {
+                    if (isCompleteThreadReplay(missedEvents)) {
                       return Stream.concat(
                         Stream.fromIterable(
                           missedEvents.filter(isThreadEvent).map((event) => ({
