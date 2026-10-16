@@ -38,6 +38,7 @@ import { compactTraceAttributes } from "@threadlines/shared/observability";
 import { decodeJsonResult } from "@threadlines/shared/schemaJson";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { scratchIndexFileName } from "./scratchIndex.ts";
 import {
   parseRemoteNames,
   parseRemoteNamesInGitOrder,
@@ -117,6 +118,13 @@ const BRANCH_SHIPPING_DIFF_MAX_BYTES = 16 * 1024 * 1024;
  * a path filter, which stays under command-line limits (32K on Windows).
  */
 const BRANCH_SHIPPING_MAX_PATHSPEC_CHARS = 8_000;
+/**
+ * Porcelain `git diff` against the working tree saves a refreshed index when
+ * it meets files whose timestamps changed but whose content did not, and
+ * GIT_OPTIONAL_LOCKS does not stop it. Status reads diff through this prefix
+ * instead; the output is unchanged.
+ */
+const DIFF_WITHOUT_INDEX_REFRESH = ["-c", "diff.autoRefreshIndex=false", "diff"] as const;
 const BACKGROUND_GIT_FETCH_ENV = Object.freeze({
   GCM_INTERACTIVE: "Never",
   GIT_TERMINAL_PROMPT: "0",
@@ -308,10 +316,16 @@ function decodeGitQuotedPath(value: string): string {
   return decoded;
 }
 
-function parseNumstatEntries(
-  stdout: string,
-): Array<{ path: string; insertions: number; deletions: number }> {
-  const entries: Array<{ path: string; insertions: number; deletions: number }> = [];
+interface NumstatEntry {
+  readonly path: string;
+  readonly insertions: number;
+  readonly deletions: number;
+  /** Git printed "-" for both counts: it treats the file as binary. */
+  readonly binary: boolean;
+}
+
+function parseNumstatEntries(stdout: string): Array<NumstatEntry> {
+  const entries: Array<NumstatEntry> = [];
   for (const line of stdout.split(/\r?\n/g)) {
     if (line.trim().length === 0) continue;
     const [addedRaw, deletedRaw, ...pathParts] = line.split("\t");
@@ -327,6 +341,7 @@ function parseNumstatEntries(
       path: decodeGitQuotedPath(normalizedPath.length > 0 ? normalizedPath : rawPath),
       insertions: Number.isFinite(added) ? added : 0,
       deletions: Number.isFinite(deleted) ? deleted : 0,
+      binary: addedRaw === "-" && deletedRaw === "-",
     });
   }
   return entries;
@@ -1165,6 +1180,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                   // the server does not have; fail fast so auth errors surface
                   // deterministically on every platform.
                   GIT_TERMINAL_PROMPT: "0",
+                  // Skip optional index writes such as `git status` saving the
+                  // index it refreshed. Background status reads would otherwise
+                  // take `.git/index.lock` out from under an agent's own git
+                  // commands, and wake the git-dir watcher with our own echo.
+                  GIT_OPTIONAL_LOCKS: "0",
                   ...input.env,
                   ...trace2Monitor.env,
                 },
@@ -2134,10 +2154,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const hasMixedIndexAndWorktreeChanges = Array.from(changedFilesByPath.values()).some(
       (change) => change.indexStatus !== null && change.worktreeStatus !== null,
     );
+    // Without the index refresh, a binary file whose timestamp moved but whose
+    // bytes did not still gets a "-" numstat row. Status compared its content
+    // and left it out, so it is not a change.
+    const readNumstatEntries = (stdout: string) =>
+      parseNumstatEntries(stdout).filter(
+        (entry) => !entry.binary || changedFilesByPath.has(entry.path),
+      );
     const numstatDetails =
       headSha !== null && !hasMixedIndexAndWorktreeChanges
         ? runGitStdout("GitVcsDriver.statusDetails.combinedNumstat", cwd, [
-            "diff",
+            ...DIFF_WITHOUT_INDEX_REFRESH,
             "HEAD",
             "--numstat",
           ]).pipe(
@@ -2145,18 +2172,18 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               (stdout) =>
                 ({
                   mode: "combined",
-                  entries: parseNumstatEntries(stdout),
+                  entries: readNumstatEntries(stdout),
                 }) as const,
             ),
           )
         : Effect.all(
             [
               runGitStdout("GitVcsDriver.statusDetails.unstagedNumstat", cwd, [
-                "diff",
+                ...DIFF_WITHOUT_INDEX_REFRESH,
                 "--numstat",
               ]),
               runGitStdout("GitVcsDriver.statusDetails.stagedNumstat", cwd, [
-                "diff",
+                ...DIFF_WITHOUT_INDEX_REFRESH,
                 "--cached",
                 "--numstat",
               ]),
@@ -2167,8 +2194,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               ([unstagedStdout, stagedStdout]) =>
                 ({
                   mode: "split",
-                  stagedEntries: parseNumstatEntries(stagedStdout),
-                  unstagedEntries: parseNumstatEntries(unstagedStdout),
+                  stagedEntries: readNumstatEntries(stagedStdout),
+                  unstagedEntries: readNumstatEntries(unstagedStdout),
                 }) as const,
             ),
           );
@@ -2514,7 +2541,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }
     }
     const gitCommonDir = yield* resolveGitCommonDir(cwd);
-    const tempIndexPath = path.join(gitCommonDir, `t3-preview-index-${randomUUID()}`);
+    const tempIndexPath = path.join(gitCommonDir, scratchIndexFileName("preview"));
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       GIT_INDEX_FILE: tempIndexPath,
@@ -2539,7 +2566,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   )(function* (input) {
     const operation = "GitVcsDriver.workingTreeDiff";
     const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
-    const tempIndexPath = path.join(gitCommonDir, `t3-working-tree-diff-index-${randomUUID()}`);
+    const tempIndexPath = path.join(gitCommonDir, scratchIndexFileName("working-tree-diff"));
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       GIT_INDEX_FILE: tempIndexPath,

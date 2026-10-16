@@ -491,6 +491,41 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    // Saving a refreshed index takes `.git/index.lock`, which makes an agent's
+    // own `git commit` in the same checkout fail if it lands at that moment.
+    it.effect("reads status without rewriting the index", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        yield* fileSystem.writeFile(
+          pathService.join(cwd, "logo.bin"),
+          new Uint8Array([0, 1, 2, 3, 0, 255]),
+        );
+        yield* git(cwd, ["add", "logo.bin"]);
+        yield* git(cwd, ["commit", "-m", "add binary"]);
+        // Same content, older timestamp: git would refresh these entries, and
+        // the binary one still gets a numstat row when it doesn't.
+        const touchedAt = new Date("2020-01-01T00:00:00Z");
+        for (const fileName of ["README.md", "logo.bin"]) {
+          yield* fileSystem.utimes(pathService.join(cwd, fileName), touchedAt, touchedAt);
+        }
+        yield* writeTextFile(cwd, "feature.ts", "export const value = 1;\n");
+        yield* git(cwd, ["add", "feature.ts"]);
+        const indexPath = pathService.join(cwd, ".git", "index");
+        const indexBefore = yield* fileSystem.readFile(indexPath);
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+
+        assert.deepStrictEqual(
+          status.workingTree.files.map((file) => file.path),
+          ["feature.ts"],
+        );
+        assert.deepStrictEqual(yield* fileSystem.readFile(indexPath), indexBefore);
+      }),
+    );
+
     it.effect("preserves staged and unstaged stats when one path has both", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
 
 import * as Context from "effect/Context";
@@ -59,6 +58,7 @@ import {
 import { CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX } from "./checkpointRefs.ts";
 import * as GitVcsDriverCore from "./GitVcsDriverCore.ts";
 import { mergeRegionEditsIntoCurrent, parseUnifiedDiffRegions } from "./LineRegionMerge.ts";
+import { scratchIndexFileName } from "./scratchIndex.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 
@@ -1163,7 +1163,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       const operation = "GitVcsDriver.checkpoints.captureCheckpoint";
       yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
       const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
-      const tempIndexPath = path.join(gitCommonDir, `t3-checkpoint-index-${randomUUID()}`);
+      const tempIndexPath = path.join(gitCommonDir, scratchIndexFileName("checkpoint"));
       const commitEnv: NodeJS.ProcessEnv = {
         ...process.env,
         GIT_INDEX_FILE: tempIndexPath,
