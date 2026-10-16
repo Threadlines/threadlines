@@ -1,5 +1,3 @@
-import * as NodeOS from "node:os";
-
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -93,18 +91,6 @@ const mergePaths = (
   }
 
   return entries.length > 0 ? Option.some(entries.join(delimiter)) : Option.none();
-};
-
-/**
- * The account's own login shell, for when SHELL is unset. The backend skips
- * its probe once this one answers, so both must try the same shells.
- */
-const readAccountLoginShell = (): Option.Option<string> => {
-  try {
-    return trimNonEmpty(NodeOS.userInfo().shell);
-  } catch {
-    return Option.none();
-  }
 };
 
 const listLoginShellCandidates = (config: ShellEnvironmentConfig): ReadonlyArray<string> => {
@@ -346,7 +332,9 @@ export const layer = Layer.effect(
       installIntoProcess: installShellEnvironment({
         env: process.env,
         platform: environment.platform,
-        userShell: readAccountLoginShell(),
+        // The backend skips its own probe once this one answers, so both try
+        // the same shells: SHELL, then the account's login shell.
+        userShell: trimNonEmpty(environment.accountLoginShell),
       }).pipe(
         Effect.flatMap((prepared) => Ref.set(preparedRef, prepared)),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

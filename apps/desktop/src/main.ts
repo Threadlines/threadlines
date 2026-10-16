@@ -168,6 +168,13 @@ const desktopEnvironmentLayer = Layer.unwrap(
     return DesktopEnvironment.layer({
       dirname: __dirname,
       homeDirectory: NodeOS.homedir(),
+      accountLoginShell: (() => {
+        try {
+          return NodeOS.userInfo().shell ?? undefined;
+        } catch {
+          return undefined;
+        }
+      })(),
       platform: process.platform,
       processArch: process.arch,
       ...metadata,

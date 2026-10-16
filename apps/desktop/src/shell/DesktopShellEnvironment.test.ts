@@ -87,12 +87,14 @@ function commandWindowsHide(command: ChildProcess.Command): boolean | undefined 
 function runShellEnvironment(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
+  readonly accountLoginShell?: string;
   readonly handler: (command: ChildProcess.Command) => string;
 }) {
   const environmentLayer = Layer.succeed(
     DesktopEnvironment.DesktopEnvironment,
     DesktopEnvironment.DesktopEnvironment.of({
       platform: input.platform,
+      accountLoginShell: input.accountLoginShell,
     } as DesktopEnvironment.DesktopEnvironmentShape),
   );
   const spawnerLayer = Layer.succeed(
@@ -144,6 +146,26 @@ describe("DesktopShellEnvironment", () => {
       assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin:/Users/test/.local/bin");
       assert.equal(env.SSH_AUTH_SOCK, "/tmp/secretive.sock");
       assert.equal(env.HOMEBREW_PREFIX, "/opt/homebrew");
+    }),
+  );
+
+  // The backend skips its own probe once this one answers, and its probe
+  // tries the account's login shell, so this one must too.
+  it.effect("tries the account's login shell when SHELL is unset", () =>
+    Effect.gen(function* () {
+      const env: NodeJS.ProcessEnv = { PATH: "/usr/bin" };
+      const shells: string[] = [];
+      const prepared = yield* runShellEnvironment({
+        env,
+        platform: "darwin",
+        accountLoginShell: "/opt/homebrew/bin/fish",
+        handler: (command) => {
+          if (command._tag === "StandardCommand") shells.push(command.command);
+          return envOutput({ PATH: "/opt/homebrew/bin:/usr/bin" });
+        },
+      });
+      assert.deepEqual(shells, ["/opt/homebrew/bin/fish"]);
+      assert.equal(prepared, true);
     }),
   );
 
