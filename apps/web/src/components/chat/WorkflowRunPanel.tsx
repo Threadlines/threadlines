@@ -124,9 +124,7 @@ function AgentList({
                         <span
                           className={cn(
                             "block truncate text-[11.5px]",
-                            agent.state === "failed" || agent.state === "skipped"
-                              ? "text-destructive"
-                              : "text-muted-foreground",
+                            agent.state === "failed" ? "text-destructive" : "text-muted-foreground",
                           )}
                         >
                           {now}

@@ -2081,10 +2081,17 @@ describe("orchestration projector", () => {
             { index: 0, title: "Scan" },
             { index: 1, title: "Verify" },
           ],
+          // The end cut off the agents still going: they ran no further.
           agents: [
             { index: 0, label: "scan:a", state: "done" },
-            { index: 1, label: "scan:b", state: "running" },
-            { index: 2, label: "verify", phaseIndex: 1, state: "queued" },
+            { index: 1, label: "scan:b", state: "skipped", error: "Ended with the workflow" },
+            {
+              index: 2,
+              label: "verify",
+              phaseIndex: 1,
+              state: "skipped",
+              error: "Ended with the workflow",
+            },
           ],
           updatedAt: at(5),
           // Its first report places it in the transcript.

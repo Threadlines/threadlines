@@ -93,7 +93,7 @@ function newRun(
   updatedAt: string,
   eventSequence: number | undefined,
 ): OrchestrationWorkflowRun {
-  return {
+  return settleCutOffAgents({
     taskId: patch.taskId,
     runId: patch.runId ?? null,
     turnId: patch.turnId ?? null,
@@ -115,6 +115,35 @@ function newRun(
     agents: upsertByIndex<WorkflowAgent>([], patch.agents, MAX_AGENTS_PER_RUN),
     updatedAt,
     ...(eventSequence !== undefined ? { eventSequence } : {}),
+  });
+}
+
+/**
+ * Agents still running or waiting when their run ended ran no further: they
+ * read as skipped, ending with the run, so no view keeps them live. A later
+ * report of where they really got to replaces them.
+ */
+function settleCutOffAgents(run: OrchestrationWorkflowRun): OrchestrationWorkflowRun {
+  const cutOff = (agent: WorkflowAgent) => agent.state === "running" || agent.state === "queued";
+  if (!isWorkflowRunTerminal(run.status) || !run.agents.some(cutOff)) return run;
+  const endedMs = run.endedAt === null ? Number.NaN : Date.parse(run.endedAt);
+  const note = run.status === "stopped" ? "Stopped with the workflow" : "Ended with the workflow";
+  return {
+    ...run,
+    agents: run.agents.map((agent) => {
+      if (!cutOff(agent)) return agent;
+      const durationMs =
+        agent.durationMs ??
+        (agent.startedAt !== undefined && Number.isFinite(endedMs)
+          ? Math.max(0, endedMs - agent.startedAt)
+          : undefined);
+      return {
+        ...agent,
+        state: "skipped" as const,
+        error: agent.error ?? note,
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      };
+    }),
   };
 }
 
@@ -127,7 +156,7 @@ export function mergeWorkflowRunPatch(
 ): OrchestrationWorkflowRun {
   const status = patch.status === undefined ? run.status : nextStatus(run.status, patch.status);
   const statusChanged = status !== run.status;
-  return {
+  return settleCutOffAgents({
     ...run,
     runId: patch.runId ?? run.runId,
     // Where a run came from is settled by the update that first names it.
@@ -160,7 +189,7 @@ export function mergeWorkflowRunPatch(
     ...((run.eventSequence ?? eventSequence) !== undefined
       ? { eventSequence: run.eventSequence ?? eventSequence }
       : {}),
-  };
+  });
 }
 
 /**

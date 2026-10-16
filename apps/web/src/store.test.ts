@@ -683,7 +683,8 @@ describe("incremental orchestration updates", () => {
 
     const [first] = threadsOf(state)[0]?.workflowRuns ?? [];
     expect(first).toMatchObject({ taskId: "task-a", status: "completed" });
-    expect(first?.agents.map((agent) => agent.state)).toEqual(["running", "done"]);
+    // The run's end cut off the agent still going.
+    expect(first?.agents.map((agent) => agent.state)).toEqual(["skipped", "done"]);
 
     const reverted = applyOrchestrationEvent(
       state,

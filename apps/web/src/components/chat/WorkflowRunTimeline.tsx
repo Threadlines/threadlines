@@ -72,7 +72,8 @@ export function WorkflowRunTimeline({
                         "absolute top-0 h-2.5 rounded-[3px]",
                         state === "running" && "bg-primary-graph",
                         state === "retrying" && "bg-amber-500",
-                        (state === "failed" || state === "skipped") && "bg-destructive/70",
+                        state === "failed" && "bg-destructive/70",
+                        state === "skipped" && "bg-foreground/15",
                         state === "done" && "bg-foreground/30",
                       )}
                       style={{ left: `${bar.left}%`, width: `${bar.width}%` }}

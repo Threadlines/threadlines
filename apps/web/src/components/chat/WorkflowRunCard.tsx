@@ -65,7 +65,10 @@ export function WorkflowAgentDot({
         state === "running" && "bg-primary-graph",
         state === "retrying" && "bg-amber-500",
         state === "done" && "bg-muted-foreground/40",
-        (state === "failed" || state === "skipped") && "bg-destructive",
+        state === "failed" && "bg-destructive",
+        // Never ran to its end (cut off by the run's end, or left out by the
+        // script): not a failure.
+        state === "skipped" && "bg-muted-foreground/25",
         state === "queued" && "border border-muted-foreground/45",
         className ?? "size-1.5",
       )}
@@ -122,7 +125,7 @@ function AgentRow({
       <span
         className={cn(
           "truncate",
-          state === "failed" || state === "skipped" ? "text-destructive" : "text-muted-foreground",
+          state === "failed" ? "text-destructive" : "text-muted-foreground",
         )}
       >
         {tool ? <span className="font-medium text-foreground/75">{tool} </span> : null}

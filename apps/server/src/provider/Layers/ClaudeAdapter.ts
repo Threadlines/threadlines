@@ -4066,6 +4066,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     result?: SDKResultMessage,
   ) {
     const turnState = context.turnState;
+    // A context message's own result always comes before its turn's; one
+    // still owed now never came, and must not swallow a later turn's end.
+    context.pendingAppendOnlyResults = 0;
     const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
     const providerErrorMessage =
       status === "failed" && errorMessage

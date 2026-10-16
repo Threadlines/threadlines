@@ -1668,6 +1668,67 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("ends the turn on its own result, not on the context message's empty one", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const completedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit(claudeInitMessage("2.1.226"));
+      yield* Fiber.join(configuredFiber);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "<room-catch-up>Sol: done</room-catch-up>\n\nultracode do X",
+        typed: { text: "ultracode do X", context: "<room-catch-up>Sol: done</room-catch-up>" },
+        attachments: [],
+      });
+      // As CLI 2.1.296 does: the context message gets a result with no turn in
+      // it before the turn the user's words start.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 0,
+        result: "",
+        errors: [],
+        session_id: "sdk-session-append",
+        uuid: "result-append",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        result: "Done.",
+        stop_reason: "end_turn",
+        errors: [],
+        session_id: "sdk-session-append",
+        uuid: "result-turn",
+      } as unknown as SDKMessage);
+
+      const [completed] = Array.from(yield* Fiber.join(completedFiber));
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type === "turn.completed") {
+        assert.equal(completed.payload.stopReason, "end_turn");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("sends a CLI too old to append context the single unmarked message", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
