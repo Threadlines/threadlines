@@ -399,6 +399,11 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
     entry.unsubscribeConnectionListener = null;
     entries.delete(key);
     detach(entry);
+    // Its detail stops updating here, so the chat waits for the next
+    // snapshot before it calls the thread empty.
+    useStore
+      .getState()
+      .markThreadDetailUnloaded(scopeThreadRef(entry.environmentId, entry.threadId));
     bootGate?.heldWarms.delete(key);
     evaluateScheduling();
     return true;
