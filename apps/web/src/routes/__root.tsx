@@ -21,7 +21,7 @@ import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
-import { CommandPalette } from "../components/CommandPalette";
+import { CommandPalette, preloadCommandPaletteDialog } from "../components/CommandPalette";
 import { BrowserHostLayer } from "../components/browser/BrowserHostLayer";
 import { BrowserProfileReconciler } from "../components/desktop/BrowserProfileReconciler";
 import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
@@ -67,7 +67,12 @@ import {
   formatAwaitedTasks,
   isWaitingOnBackgroundTasks,
 } from "../session-logic";
-import { type AppState, selectRunningSidebarThreadsAcrossEnvironments, useStore } from "../store";
+import {
+  type AppState,
+  selectBootstrapCompleteForActiveEnvironment,
+  selectRunningSidebarThreadsAcrossEnvironments,
+  useStore,
+} from "../store";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import {
@@ -186,6 +191,7 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
         <EnvironmentConnectionManagerBootstrap />
+        <AppShellIdlePreloads />
         <DesktopTaskbarStatusSync />
         {isElectron ? <BrowserProfileReconciler /> : null}
         {isElectron ? <BrowserHostLayer /> : null}
@@ -605,6 +611,49 @@ function EnvironmentConnectionManagerBootstrap() {
       stopConnections();
     };
   }, [queryClient, router]);
+
+  return null;
+}
+
+/** Deferred past the first paint: on the way to it, these competed with it. */
+function whenIdleAfterFirstPaint(task: () => void): () => void {
+  let cancelIdle: (() => void) | null = null;
+  const frame = window.requestAnimationFrame(() => {
+    if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(task, { timeout: 3_000 });
+      cancelIdle = () => window.cancelIdleCallback(handle);
+    } else {
+      const handle = window.setTimeout(task, 500);
+      cancelIdle = () => window.clearTimeout(handle);
+    }
+  });
+  return () => {
+    window.cancelAnimationFrame(frame);
+    cancelIdle?.();
+  };
+}
+
+/**
+ * Fetches code the first interactions need once the workspace has painted:
+ * the thread page, which a launch into a draft or home would otherwise wait
+ * for on its first switch to a thread, and the command palette's body, so the
+ * first shortcut press opens it at once.
+ */
+function AppShellIdlePreloads() {
+  const router = useRouter();
+  const workspaceLoaded = useStore(selectBootstrapCompleteForActiveEnvironment);
+
+  useEffect(() => {
+    if (!workspaceLoaded) {
+      return;
+    }
+    return whenIdleAfterFirstPaint(() => {
+      void router
+        .loadRouteChunk(router.routesById["/_chat/$environmentId/$threadId"])
+        ?.catch(() => undefined);
+      preloadCommandPaletteDialog();
+    });
+  }, [router, workspaceLoaded]);
 
   return null;
 }
