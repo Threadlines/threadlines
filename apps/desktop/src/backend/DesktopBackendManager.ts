@@ -582,6 +582,10 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
         // MIGRATION_NOTICE_DELAY, and holds it open; readiness and the run
         // ending both interrupt the watcher, which closes the dialog.
         const watchForLongMigration = Effect.gen(function* () {
+          // A box that cannot close itself would hold startup until answered
+          // even after the migration finished, so there it waits for the
+          // readiness deadline instead (see onReadinessTimeout).
+          if (!startupFailurePrompt.migrationNoticeClosesItself) return;
           const delayMs = Duration.toMillis(MIGRATION_NOTICE_DELAY);
           let firstSeenAt: number | undefined;
           while (true) {
@@ -882,8 +886,8 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
           // failure. Once a window exists, an unresponsive restart is visible
           // and recoverable, so keep probing quietly. Before the first window
           // a migration still running is healthy work that a kill would only
-          // make restart from zero, so keep probing (the migration watcher has
-          // already said so, or will within MIGRATION_NOTICE_DELAY). Anything else
+          // make restart from zero, so keep probing and say so, unless the
+          // migration watcher already did. Anything else
           // is a process that is alive but unresponsive and would sit
           // invisible forever: mark the run and kill it so finalizeRun
           // surfaces the failure instead of scheduling a restart.
@@ -903,6 +907,16 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                   migrationName: migration.value.name,
                   totalMigrations: migration.value.total,
                 });
+                if (!startupFailurePrompt.migrationNoticeClosesItself) {
+                  const noticeFiber = yield* Effect.forkIn(
+                    startupFailurePrompt.notifyMigrationInProgress({
+                      migrationId: migration.value.id,
+                      totalMigrations: migration.value.total,
+                    }),
+                    parentScope,
+                  );
+                  yield* Ref.set(migrationNoticeRef, Option.some(noticeFiber));
+                }
                 return "keep-waiting" as const;
               }
               yield* Ref.set(readinessTimeoutRef, Option.some(error));

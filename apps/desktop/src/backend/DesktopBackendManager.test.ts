@@ -139,6 +139,7 @@ function makeManagerLayer(input: {
           handle: () => Effect.die("unexpected startup failure prompt"),
           notifyDatabaseRecovery: () => Effect.void,
           notifyMigrationInProgress: () => Effect.die("unexpected migration notice"),
+          migrationNoticeClosesItself: true,
           ...input.startupFailurePrompt,
         }),
         Layer.succeed(DesktopDatabaseRecovery.DesktopDatabaseRecovery, {
@@ -923,69 +924,91 @@ describe("DesktopBackendManager", () => {
       }),
   );
 
+  // A first start whose backend sits in migration 50 of 51 until the test
+  // lets it answer readiness, with the notice and window recorded.
+  const makeMigratingBackend = (closesItself: boolean) =>
+    Effect.gen(function* () {
+      const noticeInfo = yield* Queue.unbounded<{
+        readonly migrationId: number;
+        readonly totalMigrations: number;
+      }>();
+      const noticeClosed = yield* Deferred.make<void>();
+      const windowOpened = yield* Deferred.make<void>();
+      const answersReadiness = yield* Ref.make(false);
+      const terminations = yield* Ref.make(0);
+
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.gen(function* () {
+            const scope = yield* Scope.Scope;
+            const closed = yield* Deferred.make<void>();
+            const close = Ref.update(terminations, (count) => count + 1).pipe(
+              Effect.andThen(Deferred.succeed(closed, void 0)),
+              Effect.asVoid,
+            );
+            yield* Scope.addFinalizer(scope, close);
+            return makeProcess({
+              stdout: Stream.make(
+                new TextEncoder().encode("[00:00:01.000] INFO (#42): Running all migrations...\n"),
+                new TextEncoder().encode(
+                  "[00:00:01.100] INFO (#42): Running migration 50_ProjectionTranscriptEventSequence (50 of 51)\n",
+                ),
+              ),
+              exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+              kill: () => close,
+            });
+          }),
+        ),
+      );
+
+      const managerLayer = makeManagerLayer({
+        spawnerLayer,
+        httpClientLayer: httpClientLayer((request) =>
+          Effect.flatMap(Ref.get(answersReadiness), (ready) =>
+            ready ? Effect.succeed(responseForRequest(request, 200)) : Effect.never,
+          ),
+        ),
+        startupFailurePrompt: {
+          migrationNoticeClosesItself: closesItself,
+          notifyMigrationInProgress: (info) =>
+            Queue.offer(noticeInfo, info).pipe(
+              Effect.andThen(
+                Effect.never.pipe(
+                  Effect.onInterrupt(() =>
+                    Deferred.succeed(noticeClosed, void 0).pipe(Effect.asVoid),
+                  ),
+                ),
+              ),
+            ),
+        },
+        desktopWindow: {
+          handleBackendReady: Deferred.succeed(windowOpened, void 0).pipe(Effect.asVoid),
+        },
+      });
+
+      return {
+        noticeInfo,
+        noticeClosed,
+        windowOpened,
+        answersReadiness,
+        terminations,
+        managerLayer,
+      };
+    });
+
   it.effect(
     "shows the migration notice a few seconds into a first-start migration and keeps waiting past the deadline",
     () =>
       Effect.gen(function* () {
-        const noticeInfo = yield* Queue.unbounded<{
-          readonly migrationId: number;
-          readonly totalMigrations: number;
-        }>();
-        const noticeClosed = yield* Deferred.make<void>();
-        const windowOpened = yield* Deferred.make<void>();
-        const answersReadiness = yield* Ref.make(false);
-        const terminations = yield* Ref.make(0);
-
-        const spawnerLayer = Layer.succeed(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() =>
-            Effect.gen(function* () {
-              const scope = yield* Scope.Scope;
-              const closed = yield* Deferred.make<void>();
-              const close = Ref.update(terminations, (count) => count + 1).pipe(
-                Effect.andThen(Deferred.succeed(closed, void 0)),
-                Effect.asVoid,
-              );
-              yield* Scope.addFinalizer(scope, close);
-              return makeProcess({
-                stdout: Stream.make(
-                  new TextEncoder().encode(
-                    "[00:00:01.000] INFO (#42): Running all migrations...\n",
-                  ),
-                  new TextEncoder().encode(
-                    "[00:00:01.100] INFO (#42): Running migration 50_ProjectionTranscriptEventSequence (50 of 51)\n",
-                  ),
-                ),
-                exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
-                kill: () => close,
-              });
-            }),
-          ),
-        );
-
-        const managerLayer = makeManagerLayer({
-          spawnerLayer,
-          httpClientLayer: httpClientLayer((request) =>
-            Effect.flatMap(Ref.get(answersReadiness), (ready) =>
-              ready ? Effect.succeed(responseForRequest(request, 200)) : Effect.never,
-            ),
-          ),
-          startupFailurePrompt: {
-            notifyMigrationInProgress: (info) =>
-              Queue.offer(noticeInfo, info).pipe(
-                Effect.andThen(
-                  Effect.never.pipe(
-                    Effect.onInterrupt(() =>
-                      Deferred.succeed(noticeClosed, void 0).pipe(Effect.asVoid),
-                    ),
-                  ),
-                ),
-              ),
-          },
-          desktopWindow: {
-            handleBackendReady: Deferred.succeed(windowOpened, void 0).pipe(Effect.asVoid),
-          },
-        });
+        const {
+          noticeInfo,
+          noticeClosed,
+          windowOpened,
+          answersReadiness,
+          terminations,
+          managerLayer,
+        } = yield* makeMigratingBackend(true);
 
         yield* Effect.gen(function* () {
           const manager = yield* DesktopBackendManager.DesktopBackendManager;
@@ -1019,6 +1042,36 @@ describe("DesktopBackendManager", () => {
           assert.isTrue((yield* manager.snapshot).ready);
         }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
       }),
+  );
+
+  it.effect("leaves a notice that cannot close itself to the readiness deadline", () =>
+    Effect.gen(function* () {
+      const { noticeInfo, answersReadiness, terminations, windowOpened, managerLayer } =
+        yield* makeMigratingBackend(false);
+
+      yield* Effect.gen(function* () {
+        const manager = yield* DesktopBackendManager.DesktopBackendManager;
+        yield* manager.start;
+
+        // As on macOS: a box that would hold startup until answered is not
+        // shown a few seconds in.
+        yield* TestClock.adjust(Duration.seconds(10));
+        assert.equal(yield* Queue.size(noticeInfo), 0);
+
+        // Still migrating at the deadline: keep waiting, and say so once.
+        yield* TestClock.adjust(Duration.minutes(1));
+        assert.deepEqual(yield* Queue.take(noticeInfo), {
+          migrationId: 50,
+          totalMigrations: 51,
+        });
+        assert.equal(yield* Ref.get(terminations), 0);
+
+        yield* Ref.set(answersReadiness, true);
+        yield* TestClock.adjust(Duration.seconds(2));
+        yield* Deferred.await(windowOpened);
+        assert.isTrue((yield* manager.snapshot).ready);
+      }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+    }),
   );
 
   it.effect("keeps restarting without a prompt once the backend has been ready", () =>
