@@ -330,10 +330,14 @@ export class ClaudeWorkflowRunTracker {
   }
 
   /** The `Workflow` call's result named the run's files. */
-  launched(launch: ClaudeWorkflowLaunch, toolCallId: string): WorkflowRunUpdate {
+  launched(
+    launch: ClaudeWorkflowLaunch,
+    toolCallId: string,
+    nowMs: number = Date.now(),
+  ): WorkflowRunUpdate {
     const state = this.run(launch.taskId);
     if (launch.name !== undefined) state.name = launch.name;
-    return {
+    return this.withStart(state, nowMs, {
       taskId: launch.taskId,
       toolCallId,
       ...(launch.runId !== undefined ? { runId: launch.runId } : {}),
@@ -341,7 +345,7 @@ export class ClaudeWorkflowRunTracker {
       ...(launch.description !== undefined ? { description: launch.description } : {}),
       ...(launch.transcriptDir !== undefined ? { transcriptDir: launch.transcriptDir } : {}),
       ...(launch.scriptPath !== undefined ? { scriptPath: launch.scriptPath } : {}),
-    };
+    });
   }
 
   /**
@@ -358,7 +362,8 @@ export class ClaudeWorkflowRunTracker {
     const state = this.run(input.taskId);
     if (state.ended) return undefined;
     this.absorb(state, input.snapshot, input.totalTokens, input.totalToolCalls);
-    return this.flush(state, input.nowMs, false);
+    const update = this.flush(state, input.nowMs, false);
+    return update && this.withStart(state, input.nowMs, update);
   }
 
   /**
@@ -381,14 +386,14 @@ export class ClaudeWorkflowRunTracker {
     state.ended = true;
     const summary = clip(input.summary, MAX_SUMMARY_CHARS);
     const statusReason = clip(input.statusReason, 80);
-    return {
+    return this.withStart(state, input.nowMs, {
       ...held,
       taskId: input.taskId,
       status: input.status,
       endedAt: input.endedAt,
       ...(summary !== undefined ? { summary } : {}),
       ...(statusReason !== undefined ? { statusReason } : {}),
-    };
+    });
   }
 
   /**
@@ -404,7 +409,19 @@ export class ClaudeWorkflowRunTracker {
     const state = this.runs.get(taskId);
     if (!state) return undefined;
     this.absorb(state, output.snapshot, output.totalTokens, output.totalToolCalls);
-    return this.flush(state, nowMs, true);
+    const update = this.flush(state, nowMs, true);
+    return update && this.withStart(state, nowMs, update);
+  }
+
+  /**
+   * A thread creates a run only from an update with a start time
+   * (applyWorkflowRunPatch), so a late one for a run a revert removed can not
+   * bring it back. Whichever update goes out first carries one.
+   */
+  private withStart(state: RunState, nowMs: number, update: WorkflowRunUpdate): WorkflowRunUpdate {
+    if (state.startReported) return update;
+    state.startReported = true;
+    return { startedAt: new Date(nowMs).toISOString(), ...update };
   }
 
   /** What the thread list shows about the run, from everything seen so far. */

@@ -976,7 +976,8 @@ describe("ProviderCommandReactor", () => {
       type: "thread.workflow-run.record",
       commandId: CommandId.make(`cmd-record-${threadId}-${patch.taskId}`),
       threadId,
-      patch,
+      // A run's first report carries its start (applyWorkflowRunPatch).
+      patch: { startedAt: "2026-01-01T00:00:01.000Z", ...patch },
       createdAt: "2026-01-01T00:00:01.000Z",
     });
 

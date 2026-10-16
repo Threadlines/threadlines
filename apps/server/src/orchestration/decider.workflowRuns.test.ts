@@ -111,4 +111,35 @@ describe("decider workflow runs", () => {
       payload: { threadId: THREAD, patch, createdAt: now },
     });
   });
+
+  it("refuses a revert while a workflow is still running, and allows it once it ended", async () => {
+    const revert: OrchestrationCommand = {
+      type: "thread.checkpoint.revert",
+      commandId: CommandId.make("cmd-revert"),
+      threadId: THREAD,
+      turnCount: 0,
+      createdAt: now,
+    };
+    const thread = (status: OrchestrationWorkflowRun["status"]) =>
+      readModelWith({
+        participants: [],
+        agentRequests: {
+          open: [],
+          hold: false,
+          chainEpoch: 0,
+          requestsSinceUser: 0,
+          invitesPaused: false,
+        },
+        childRequests: { open: [] },
+        parentThreadId: null,
+        queuedFollowUps: [],
+        workflowRuns: [run("task-a", status)],
+      } as Partial<OrchestrationThread>);
+    await expect(decide(revert, thread("running"))).rejects.toThrow(
+      "A workflow is still running. Stop it first.",
+    );
+    await expect(decide(revert, thread("stopped"))).resolves.toMatchObject({
+      type: "thread.checkpoint-revert-requested",
+    });
+  });
 });

@@ -1979,6 +1979,7 @@ describe("ProviderRuntimeIngestion", () => {
         taskId: "task-workflow",
         name: "audit",
         status: "running",
+        startedAt: "2026-01-01T00:00:02.000Z",
         agents: [{ index: 0, label: "scan", state: "running" }],
       }),
     );
@@ -2014,7 +2015,11 @@ describe("ProviderRuntimeIngestion", () => {
     await holdThreadWith(harness, "codex", "codex-conversation");
 
     harness.emit(
-      workflowUpdate("evt-workflow-after-switch", { taskId: "task-workflow", status: "running" }),
+      workflowUpdate("evt-workflow-after-switch", {
+        taskId: "task-workflow",
+        status: "running",
+        startedAt: "2026-01-01T00:00:02.000Z",
+      }),
     );
     await harness.drain();
 
@@ -2027,6 +2032,41 @@ describe("ProviderRuntimeIngestion", () => {
       participantId: null,
       providerInstanceId: "claudeAgent",
     });
+  });
+
+  it("records how a workflow run ended after its thread was archived", async () => {
+    const harness = await createHarness();
+    await holdThreadWith(harness, "claudeAgent", "claude-conversation");
+    harness.emit(
+      workflowUpdate("evt-workflow-before-archive", {
+        taskId: "task-workflow",
+        status: "running",
+        startedAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.drain();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("cmd-archive-workflow-thread"),
+        threadId: ThreadId.make("thread-1"),
+      }),
+    );
+    // Archiving stops the runtime; the run's end arrives after.
+    harness.emit(
+      workflowUpdate("evt-workflow-stopped", {
+        taskId: "task-workflow",
+        status: "stopped",
+        statusReason: "session-ended",
+        endedAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.workflowRuns?.map((run) => [run.taskId, run.status])).toEqual([
+      ["task-workflow", "stopped"],
+    ]);
   });
 
   it("settles an idle session restart instead of inventing a pending turn", async () => {

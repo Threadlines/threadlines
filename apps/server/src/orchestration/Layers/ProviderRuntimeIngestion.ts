@@ -2745,7 +2745,8 @@ const make = Effect.gen(function* () {
    */
   const recordWorkflowRunUpdate = (
     event: Extract<ProviderRuntimeEvent, { readonly type: "task.workflow.updated" }>,
-    thread: NonNullable<Effect.Success<ReturnType<typeof resolveThreadShell>>>,
+    /** Undefined for an archived thread, whose runs still settle. */
+    thread: Effect.Success<ReturnType<typeof resolveThreadShell>>,
   ) =>
     Effect.gen(function* () {
       const participantId = event.participantId ?? null;
@@ -2753,6 +2754,7 @@ const make = Effect.gen(function* () {
       // the runtime that sent the update: after the slot or the provider
       // moved on, its conversation belongs to someone else.
       const providerThreadId =
+        thread !== undefined &&
         participantId === sessionSlotParticipantId(thread.session) &&
         runtimeEventMatchesThreadSession(event, thread.session)
           ? (thread.session?.providerThreadId ?? undefined)
@@ -2760,7 +2762,7 @@ const make = Effect.gen(function* () {
       yield* orchestrationEngine.dispatch({
         type: "thread.workflow-run.record",
         commandId: providerCommandId(event, "workflow-run-record"),
-        threadId: thread.id,
+        threadId: thread?.id ?? event.threadId,
         patch: {
           ...event.payload,
           turnId: toTurnId(event.turnId) ?? null,
@@ -2788,17 +2790,26 @@ const make = Effect.gen(function* () {
         return;
       }
       const thread = yield* resolveThreadShell(event.threadId);
-      if (!thread) return;
-      if (event.sideTurnId !== undefined) {
-        yield* processSideTurnEvent({ ...event, sideTurnId: event.sideTurnId }, thread);
-        return;
-      }
       // A workflow run keeps running in the runtime that started it after its
       // agent hands the thread on, or the thread moves to another provider,
       // so its updates are recorded before the slot and session checks below,
-      // which would drop them as an idle agent's or a stale session's.
+      // which would drop them as an idle agent's or a stale session's. An
+      // archived thread (no active shell) still gets them: archiving stops
+      // its runtimes, and the runs must say so when it comes back.
       if (event.type === "task.workflow.updated") {
-        yield* recordWorkflowRunUpdate(event, thread);
+        yield* recordWorkflowRunUpdate(event, thread).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider runtime ingestion could not record a workflow run", {
+              threadId: event.threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+        return;
+      }
+      if (!thread) return;
+      if (event.sideTurnId !== undefined) {
+        yield* processSideTurnEvent({ ...event, sideTurnId: event.sideTurnId }, thread);
         return;
       }
       // In a room, only the agent holding the session slot is working; an

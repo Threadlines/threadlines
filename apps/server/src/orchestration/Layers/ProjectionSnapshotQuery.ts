@@ -508,9 +508,11 @@ const WorkflowRunDbRow = Schema.Struct({ threadId: ThreadId, runJson: Schema.Str
  *  skipped, never failing the snapshot. */
 function workflowRunsByThreadOf(
   rows: ReadonlyArray<typeof WorkflowRunDbRow.Type>,
+  keep: (run: OrchestrationWorkflowRun) => boolean = () => true,
 ): ReadonlyMap<string, ReadonlyArray<OrchestrationWorkflowRun>> {
   const byThread = new Map<string, Array<OrchestrationWorkflowRun>>();
   for (const { threadId, run } of decodeWorkflowRunRows(rows)) {
+    if (!keep(run)) continue;
     const runs = byThread.get(threadId) ?? [];
     runs.push(run);
     byThread.set(threadId, runs);
@@ -2489,8 +2491,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ]) =>
             Effect.sync(() => {
               const pagesByThread = pagesByThreadOf(pageRows);
-              // The decider checks a run exists and is running before Stop.
-              const workflowRunsByThread = workflowRunsByThreadOf(workflowRunRows);
+              // Only live runs: the decider acts on those (Stop, the revert
+              // guard); finished ones are history, read from the projection.
+              // This model loads no checkpoints, so it could not tell which
+              // finished run a later revert takes back anyway.
+              const workflowRunsByThread = workflowRunsByThreadOf(
+                workflowRunRows,
+                (run) => run.status === "running",
+              );
               let updatedAt: string | null = null;
               const projects: OrchestrationProject[] = [];
               const threads: OrchestrationThread[] = [];

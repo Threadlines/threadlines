@@ -2917,6 +2917,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: familyRefusal,
         });
       }
+      // A workflow's agents keep editing files after their turn ends; they
+      // would write into the checkout the revert is restoring.
+      if ((thread.workflowRuns ?? []).some((run) => run.status === "running")) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A workflow is still running. Stop it first.",
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",

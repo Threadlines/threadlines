@@ -2023,6 +2023,7 @@ describe("orchestration projector", () => {
           taskId: "task-a",
           name: "audit",
           status: "running",
+          startedAt: at(2),
           turnId: "turn-1",
           owner: { participantId: null, providerInstanceId: "claudeAgent" },
           phases: [{ index: 0, title: "Scan" }],
@@ -2086,7 +2087,8 @@ describe("orchestration projector", () => {
             { index: 2, label: "verify", phaseIndex: 1, state: "queued" },
           ],
           updatedAt: at(5),
-          eventSequence: 5,
+          // Its first report places it in the transcript.
+          eventSequence: 2,
         },
       ]);
     });
@@ -2113,9 +2115,19 @@ describe("orchestration projector", () => {
         });
 
       const next = await projectAll(await createThread(), [
-        recorded(2, { taskId: "task-turn-1", status: "running", turnId: "turn-1" }),
+        recorded(2, {
+          taskId: "task-turn-1",
+          status: "running",
+          startedAt: at(2),
+          turnId: "turn-1",
+        }),
         checkpoint(3, "turn-1", 1),
-        recorded(4, { taskId: "task-turn-2", status: "running", turnId: "turn-2" }),
+        recorded(4, {
+          taskId: "task-turn-2",
+          status: "running",
+          startedAt: at(4),
+          turnId: "turn-2",
+        }),
         checkpoint(5, "turn-2", 2),
         makeEvent({
           sequence: 6,

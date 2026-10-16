@@ -119,6 +119,13 @@ describe("applyWorkflowRunPatch", () => {
   });
 });
 
+describe("applyWorkflowRunPatch after a revert", () => {
+  it("never brings back a run from a late report: only a first report, with a start, creates one", () => {
+    expect(applyWorkflowRunPatch([], { taskId: "task-1", status: "completed" }, "t1")).toEqual([]);
+    expect(applyWorkflowRunPatch([], launch, "t1").map((run) => run.taskId)).toEqual(["task-1"]);
+  });
+});
+
 describe("retainWorkflowRunsAfterRevert", () => {
   it("drops only runs started by a removed turn", () => {
     const runs = [

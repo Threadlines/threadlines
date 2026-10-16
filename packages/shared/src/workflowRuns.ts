@@ -175,6 +175,9 @@ export function applyWorkflowRunPatch(
 ): ReadonlyArray<OrchestrationWorkflowRun> {
   const index = runs.findIndex((run) => run.taskId === patch.taskId);
   if (index === -1) {
+    // Only a run's first report, which carries its start, creates it: a late
+    // one for a run a revert removed must not bring it back.
+    if (patch.startedAt === undefined) return runs;
     return [...runs, newRun(patch, updatedAt, eventSequence)].toSorted(compareWorkflowRuns);
   }
   const next = [...runs];

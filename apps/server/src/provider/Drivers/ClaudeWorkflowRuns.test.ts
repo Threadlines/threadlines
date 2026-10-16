@@ -205,6 +205,23 @@ describe("ClaudeWorkflowRunTracker", () => {
     expect(progress(tracker, T0 + 10_000, snapshot)).toBeUndefined();
   });
 
+  it("puts a start on whichever report goes out first, so the thread can create the run", () => {
+    // The launch result can beat task_started; progress can come with no start at all.
+    const launchedFirst = new ClaudeWorkflowRunTracker();
+    expect(
+      launchedFirst.launched({ taskId: TASK_ID, runId: "wf_1" }, "toolu_wf", T0),
+    ).toMatchObject({ taskId: TASK_ID, startedAt: new Date(T0).toISOString() });
+    expect(launchedFirst.started({ taskId: TASK_ID, startedAt: STARTED_AT })).toBeUndefined();
+
+    const progressFirst = new ClaudeWorkflowRunTracker();
+    expect(progress(progressFirst, T0, frame(agent(0, "start")))).toMatchObject({
+      startedAt: new Date(T0).toISOString(),
+    });
+    expect(progress(progressFirst, T0 + 1, frame(agent(0, "done")))).not.toHaveProperty(
+      "startedAt",
+    );
+  });
+
   it("holds progress-only changes for the interval but sends a state change at once", () => {
     const tracker = new ClaudeWorkflowRunTracker();
     progress(tracker, T0, frame(phase(0, "Research"), agent(0, "start"), agent(1, "start")));

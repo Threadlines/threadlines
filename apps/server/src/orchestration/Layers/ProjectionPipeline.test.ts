@@ -3429,6 +3429,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           taskId: "task-a",
           name: "audit",
           status: "running",
+          startedAt: "2026-05-01T00:00:01.000Z",
           turnId: TurnId.make("turn-1"),
           owner,
           agents: [
@@ -3453,6 +3454,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         {
           taskId: "task-b",
           status: "completed",
+          startedAt: "2026-05-01T00:00:03.000Z",
           turnId: TurnId.make("turn-1"),
           owner,
           endedAt: "2026-05-01T00:00:04.000Z",
@@ -3496,8 +3498,11 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       const detail = yield* query.getThreadDetailById(threadId);
       assert.deepEqual(runsOf(Option.toArray(detail)), expected);
       assert.deepEqual(runsOf((yield* query.getSnapshot()).threads), expected);
-      // The decider reads the command read model to check a run before Stop.
-      assert.deepEqual(runsOf((yield* query.getCommandReadModel()).threads), expected);
+      // The decider's model keeps only live runs: Stop and the revert guard.
+      assert.deepEqual(
+        runsOf((yield* query.getCommandReadModel()).threads),
+        expected?.filter((run) => run.status === "running"),
+      );
 
       const running = (yield* query.listRunningWorkflowRuns()).filter(
         (entry) => entry.threadId === threadId,
@@ -3525,6 +3530,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           {
             taskId: `task-turn-${turnCount}`,
             status: "running",
+            startedAt: createdAt,
             turnId,
             owner: { participantId: null },
           },
