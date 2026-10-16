@@ -41,6 +41,7 @@ import type {
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
   ProviderTurnStartResult,
+  RuntimeTaskId,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -121,6 +122,16 @@ export interface ProviderServiceShape {
   readonly releaseBackgroundCommands: (input: {
     readonly threadId: ThreadId;
   }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Stop one background task in a live session (see
+   * ProviderAdapter.stopBackgroundTask). False when the session is not
+   * running, its driver can't stop one task, or it has no such task.
+   */
+  readonly stopBackgroundTask: (input: {
+    readonly threadId: ThreadId;
+    readonly taskId: RuntimeTaskId;
+  }) => Effect.Effect<boolean, ProviderServiceError>;
 
   /**
    * One provider instance's plugins or skills changed from Settings; tells its live sessions (see

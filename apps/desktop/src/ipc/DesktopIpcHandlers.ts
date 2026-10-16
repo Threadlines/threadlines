@@ -41,6 +41,7 @@ import {
   getLocalEnvironmentBootstrap,
   openExternal,
   pickFolder,
+  quitConfirmationShown,
   resolveQuitConfirmation,
   setTaskbarStatus,
   setTheme,
@@ -148,6 +149,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(captureScreenshot);
   yield* ipc.handle(setTheme);
   yield* ipc.handle(setTaskbarStatus);
+  yield* ipc.handle(quitConfirmationShown);
   yield* ipc.handle(resolveQuitConfirmation);
   yield* ipc.handle(showContextMenu);
   yield* ipc.handle(openExternal);

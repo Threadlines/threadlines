@@ -24,6 +24,7 @@ import {
   ProjectId,
   ProviderItemId,
   RoomAgentRequestId,
+  RuntimeTaskId,
   ThreadId,
   SideTurnId,
   ThreadParticipantId,
@@ -1003,6 +1004,14 @@ export const OrchestrationAwaitedBackgroundTask = Schema.Struct({
   kind: OrchestrationBackgroundTaskKind,
   /** The agent's own short description of the task, clipped. */
   description: Schema.optional(TrimmedNonEmptyString),
+  /** The provider's id for the task, when it reports one. This list outlives
+   *  the recent activity window, so a quiet task's row still knows it. */
+  taskId: Schema.optional(RuntimeTaskId),
+  /** The tool call that launched the task, when known: an agent's row is
+   *  found by it. */
+  toolUseId: Schema.optional(TrimmedNonEmptyString),
+  /** The driver can stop this one task (`thread.background-task.stop`). */
+  stoppable: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationAwaitedBackgroundTask = typeof OrchestrationAwaitedBackgroundTask.Type;
 
@@ -2500,6 +2509,20 @@ const ThreadRealtimeStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Stops one background task (a background agent, workflow or command) the
+ * thread's agent started, leaving the session and its other tasks running.
+ * Only offered for tasks the driver marked stoppable (`task.started`
+ * payload `stoppable`).
+ */
+const ThreadBackgroundTaskStopCommand = Schema.Struct({
+  type: Schema.Literal("thread.background-task.stop"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  taskId: RuntimeTaskId,
+  createdAt: IsoDateTime,
+});
+
 /** Re-requests the thread's last user message after a failed turn. The
  *  server recovers the message from the thread's history, so the client
  *  never rebuilds text or attachments. */
@@ -2683,6 +2706,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadSideTurnInterruptCommand,
   ThreadRealtimeStartCommand,
   ThreadRealtimeStopCommand,
+  ThreadBackgroundTaskStopCommand,
   ThreadTurnRetryCommand,
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
@@ -2730,6 +2754,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadSideTurnInterruptCommand,
   ThreadRealtimeStartCommand,
   ThreadRealtimeStopCommand,
+  ThreadBackgroundTaskStopCommand,
   ThreadTurnRetryCommand,
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
@@ -3343,6 +3368,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-interrupt-requested",
   "thread.realtime-start-requested",
   "thread.realtime-stop-requested",
+  "thread.background-task-stop-requested",
   "thread.realtime-state-set",
   "thread.context-compact-requested",
   "thread.approval-response-requested",
@@ -3797,6 +3823,12 @@ export const ThreadRealtimeStopRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadBackgroundTaskStopRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  taskId: RuntimeTaskId,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadRealtimeStateSetPayload = Schema.Struct({
   threadId: ThreadId,
   active: Schema.Boolean,
@@ -4211,6 +4243,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.realtime-stop-requested"),
     payload: ThreadRealtimeStopRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.background-task-stop-requested"),
+    payload: ThreadBackgroundTaskStopRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

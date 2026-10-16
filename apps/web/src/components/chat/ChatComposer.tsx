@@ -441,6 +441,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onFollowUpDeliveryChange: (delivery: FollowUpDelivery) => void;
   roomDelivery: ComposerRoomDelivery | null;
   onRoomDeliveryChange: (delivery: FollowUpDelivery) => void;
+  onStopBackgroundWork: (() => void) | undefined;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onResetAccountUsage?: (() => void) | undefined;
@@ -492,6 +493,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         onFollowUpDeliveryChange={props.onFollowUpDeliveryChange}
         roomDelivery={props.roomDelivery}
         onRoomDeliveryChange={props.onRoomDeliveryChange}
+        onStopBackgroundWork={props.onStopBackgroundWork}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
@@ -661,6 +663,8 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
+  /** Ends the background work a settled turn left the thread waiting on. */
+  onStopBackgroundWork: () => void;
   // Goal (Codex goal mode)
   goalDispatching?: boolean | undefined;
   /** Freshly dispatched goal state not yet confirmed by the projection —
@@ -753,6 +757,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     scheduleStickToBottom,
     onSend,
     onInterrupt,
+    onStopBackgroundWork,
     goalDispatching,
     optimisticGoal,
     onSetThreadGoal,
@@ -1539,6 +1544,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     phase === "running" ||
     activeThread?.session?.activeTurnId != null ||
     activeThread?.latestTurn?.state === "running";
+  // A settled turn can leave the thread live: it waits on a command or an
+  // agent. Stop must still reach that, or a thread whose agent can't answer
+  // (a usage limit, an error) stays live with no way to end it.
+  const isWaitingOnBackgroundWork =
+    !hasActiveTurn &&
+    isWaitingOnBackgroundTasks(activeThread?.latestTurn ?? null, activeThread?.session ?? null);
   const hasComposerHeader =
     isComposerApprovalState ||
     pendingUserInputs.length > 0 ||
@@ -1557,7 +1568,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return `running:${composerSendState.hasSendableContent}:${isSendBusy}:${isConnecting}`;
     }
     if (showPlanFollowUpPrompt) {
-      return prompt.trim().length > 0 ? "plan:refine" : "plan:implement";
+      return prompt.trim().length > 0
+        ? "plan:refine"
+        : `plan:implement:${isWaitingOnBackgroundWork}`;
     }
     return `idle:${composerSendState.hasSendableContent}:${isSendBusy}:${isConnecting}:${isPreparingWorktree}`;
   }, [
@@ -1565,6 +1578,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isConnecting,
     isPreparingWorktree,
     isSendBusy,
+    isWaitingOnBackgroundWork,
     phase,
     prompt,
     showPlanFollowUpPrompt,
@@ -3300,6 +3314,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const handleInterruptPrimaryAction = useCallback(() => {
     void onInterrupt();
   }, [onInterrupt]);
+  const handleStopBackgroundWorkPrimaryAction = useCallback(() => {
+    void onStopBackgroundWork();
+  }, [onStopBackgroundWork]);
+  // Stop beside approval decisions and blocking questions, which take the
+  // footer's place. A background agent can ask after the turn settled, so the
+  // wait needs its Stop here too.
+  const sideStopButton = hasActiveTurn ? (
+    <ComposerStopButton
+      onInterrupt={handleInterruptPrimaryAction}
+      preserveComposerFocusOnPointerDown={isMobileViewport}
+    />
+  ) : isWaitingOnBackgroundWork ? (
+    <ComposerStopButton
+      onInterrupt={handleStopBackgroundWorkPrimaryAction}
+      preserveComposerFocusOnPointerDown={isMobileViewport}
+      stops="background-work"
+    />
+  ) : null;
   const handleImplementPlanInNewThreadPrimaryAction = useCallback(() => {
     void onImplementPlanInNewThread();
   }, [onImplementPlanInNewThread]);
@@ -3670,12 +3702,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                   onRespondToApproval={onRespondToApproval}
                 />
-                {hasActiveTurn ? (
-                  <ComposerStopButton
-                    onInterrupt={handleInterruptPrimaryAction}
-                    preserveComposerFocusOnPointerDown={isMobileViewport}
-                  />
-                ) : null}
+                {sideStopButton}
               </div>
             </div>
           ) : null}
@@ -3731,12 +3758,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               >
                 {prompt.trim() || "Answer the question above, or stop the turn"}
               </p>
-              {hasActiveTurn ? (
-                <ComposerStopButton
-                  onInterrupt={handleInterruptPrimaryAction}
-                  preserveComposerFocusOnPointerDown={isMobileViewport}
-                />
-              ) : null}
+              {sideStopButton}
             </div>
           ) : (
             <>
@@ -3969,12 +3991,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                     onRespondToApproval={onRespondToApproval}
                   />
-                  {hasActiveTurn ? (
-                    <ComposerStopButton
-                      onInterrupt={handleInterruptPrimaryAction}
-                      preserveComposerFocusOnPointerDown={isMobileViewport}
-                    />
-                  ) : null}
+                  {sideStopButton}
                 </div>
               ) : (
                 <div
@@ -4203,6 +4220,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onFollowUpDeliveryChange={handleFollowUpDeliveryChange}
                       roomDelivery={roomDelivery}
                       onRoomDeliveryChange={handleRoomDeliveryChange}
+                      onStopBackgroundWork={
+                        isWaitingOnBackgroundWork
+                          ? handleStopBackgroundWorkPrimaryAction
+                          : undefined
+                      }
                       onInterrupt={handleInterruptPrimaryAction}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                       onResetAccountUsage={

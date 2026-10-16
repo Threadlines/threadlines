@@ -138,6 +138,16 @@ export const setTaskbarStatus = makeIpcMethod({
   }),
 });
 
+export const quitConfirmationShown = makeIpcMethod({
+  channel: IpcChannels.QUIT_CONFIRMATION_SHOWN_CHANNEL,
+  payload: Schema.String,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.quitConfirmationShown")(function* (requestId) {
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* desktopWindow.quitConfirmationShown(requestId);
+  }),
+});
+
 export const resolveQuitConfirmation = makeIpcMethod({
   channel: IpcChannels.QUIT_CONFIRMATION_RESOLVE_CHANNEL,
   payload: Schema.Boolean,

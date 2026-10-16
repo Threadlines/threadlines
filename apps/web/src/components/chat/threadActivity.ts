@@ -33,6 +33,9 @@ export interface ThreadBackgroundRunItem {
   outputFile?: string | null | undefined;
   /** False when the provider said a task runs but not what it is. */
   described?: boolean | undefined;
+  /** The provider task this run is, when its agent can stop just that task;
+   *  Stop then asks the agent rather than signalling a process. */
+  providerTaskId?: string | null | undefined;
 }
 
 export interface SubagentDisplayDetails {

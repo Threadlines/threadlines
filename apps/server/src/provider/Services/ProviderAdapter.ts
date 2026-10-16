@@ -35,6 +35,7 @@ import type {
   ThreadId,
   ProviderTurnStartResult,
   TurnId,
+  RuntimeTaskId,
 } from "@threadlines/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -211,6 +212,18 @@ export interface ProviderAdapterShape<TError> {
    * commands omit it.
    */
   readonly releaseBackgroundCommands?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /**
+   * Stops one background task (an agent, a workflow, a command) this session
+   * started, leaving the session and its other tasks running. Resolves to
+   * false when the session has no such task. The task's end comes back as the
+   * usual `task.completed`. Drivers that set `stoppable` on `task.started`
+   * implement it; others omit it.
+   */
+  readonly stopBackgroundTask?: (
+    threadId: ThreadId,
+    taskId: RuntimeTaskId,
+  ) => Effect.Effect<boolean, TError>;
 
   /**
    * Plugins or skills changed outside the sessions, from Settings. Drivers whose live sessions do

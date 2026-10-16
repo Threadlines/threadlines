@@ -44,6 +44,7 @@ const electronAppLayer = Layer.succeed(ElectronApp.ElectronApp, {
   setDockIcon: () => Effect.void,
   setDockBadge: () => Effect.void,
   bounceDock: () => Effect.succeed(Option.none()),
+  focus: Effect.void,
   cancelDockBounce: () => Effect.void,
   appendCommandLineSwitch: () => Effect.void,
   on: () => Effect.void,
@@ -78,7 +79,9 @@ const makeDesktopWindowLayer = (selectedAction: Deferred.Deferred<string>) =>
     allowMainWindowOpen: Effect.void,
     allowMainWindowClose: Effect.void,
     requestQuitConfirmation: () => Effect.succeed(false),
+    quitConfirmationShown: () => Effect.void,
     resolveQuitConfirmation: () => Effect.void,
+    repeatQuitConfirmation: Effect.succeed(false),
     dispatchMenuAction: (action) => Deferred.succeed(selectedAction, action).pipe(Effect.asVoid),
     syncAppearance: Effect.void,
   } satisfies DesktopWindow.DesktopWindowShape);
