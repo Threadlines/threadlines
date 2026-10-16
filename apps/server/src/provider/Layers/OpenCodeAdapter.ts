@@ -1199,19 +1199,24 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         }
       });
 
+    // One end per run, claimed before anything waits: the child's own end, a
+    // resync and a Stop can each report it, and the first one is the end.
+    // Every report still clears what the child left open, since a request
+    // can arrive after a Stop already ended the run.
     const childEnded = (ctx: SessionContext, child: ChildAgent, terminal: Terminal) =>
       Effect.gen(function* () {
-        yield* closeBlocks(ctx, child.sessionId);
-        yield* closeTools(ctx, child.sessionId, terminal.kind !== "succeeded");
-        yield* dropPendingRequests(ctx, child.sessionId);
         const status: ChildAgent["status"] =
           terminal.kind === "succeeded"
             ? "completed"
             : terminal.kind === "failed"
               ? "failed"
               : "interrupted";
-        if (child.status === status) return;
-        child.status = status;
+        const ending = child.status === "running";
+        if (ending) child.status = status;
+        yield* closeBlocks(ctx, child.sessionId);
+        yield* closeTools(ctx, child.sessionId, terminal.kind !== "succeeded");
+        yield* dropPendingRequests(ctx, child.sessionId);
+        if (!ending) return;
         yield* emitSubagentMetadata(ctx, child, {
           status,
           ...(child.lastText ? { resultBody: child.lastText } : {}),
@@ -2985,12 +2990,37 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         if (!ctx) return false;
         const shell = ctx.backgroundShells.get(taskId);
         if (shell) {
-          yield* runOpenCode("shell.remove", (signal) =>
-            ctx.client.shell.remove(
-              { id: taskId, location: { directory: ctx.directory } },
-              { signal },
+          const location = { directory: ctx.directory };
+          const status = yield* runOpenCode("shell.remove", (signal) =>
+            ctx.client.shell.remove({ id: taskId, location }, { signal }),
+          ).pipe(
+            Effect.as<"completed" | "failed" | "stopped">("stopped"),
+            // A shell whose exit never reached us (a dropped stream) can't be
+            // removed: it is already over, and saying so ends its row.
+            Effect.catch((error) =>
+              runOpenCode("shell.get", (signal) =>
+                ctx.client.shell.get({ id: taskId, location }, { signal }),
+              ).pipe(
+                Effect.map((found) =>
+                  found.data.status === "running"
+                    ? null
+                    : found.data.exit === 0 || found.data.exit === undefined
+                      ? ("completed" as const)
+                      : ("failed" as const),
+                ),
+                Effect.catch((lookup) =>
+                  Effect.succeed(
+                    openCodeErrorTag(lookup) === "ShellNotFoundError" ? ("stopped" as const) : null,
+                  ),
+                ),
+                Effect.flatMap((ended) =>
+                  ended === null
+                    ? Effect.fail(toRequestError("shell.remove")(error))
+                    : Effect.succeed(ended),
+                ),
+              ),
             ),
-          ).pipe(Effect.mapError(toRequestError("shell.remove")));
+          );
           // Nothing promises a shell.exited after a removal: whichever of the
           // two takes the shell out of the map first ends the task, once.
           if (ctx.backgroundShells.delete(taskId)) {
@@ -3001,7 +3031,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 taskId: RuntimeTaskId.make(taskId),
                 taskType: "local_bash",
                 toolUseId: shell.callId,
-                status: "stopped",
+                status,
               },
             } as ProviderRuntimeEvent);
           }
@@ -3009,11 +3039,13 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         }
         const child = ctx.children.get(taskId);
         if (!child || !child.background || child.status !== "running") return false;
+        const invocation = child.callId;
         const result = yield* runOpenCode("session.interrupt", (signal) =>
           ctx.client.session.interrupt({ sessionID: child.sessionId }, { signal }),
         ).pipe(Effect.mapError(toRequestError("session.interrupt")));
-        // Nothing was executing, so no interrupted event will end it.
-        if (!result.interrupted) {
+        // Nothing was executing, so no interrupted event will end it. Not when
+        // a later call took the child over meanwhile: that run is not stopped.
+        if (!result.interrupted && child.callId === invocation) {
           yield* childEnded(ctx, child, { kind: "interrupted", reason: "user" });
         }
         return true;

@@ -70,7 +70,7 @@ function fakeClient(calls: Array<Call>, overrides: Record<string, (input: any) =
     },
     command: { list: call("command.list", () => ({ data: [] })) },
     permission: { reply: call("permission.reply"), list: call("permission.list", () => []) },
-    shell: { remove: call("shell.remove") },
+    shell: { remove: call("shell.remove"), get: call("shell.get") },
     message: { list: call("message.list", () => ({ data: [], cursor: {} })) },
     session: {
       create: call("session.create", () => ({ id: ROOT, location: { directory: "/" } })),
@@ -97,69 +97,97 @@ function frame(type: string, data: Record<string, unknown>) {
   return { id: "evt_x", created: Date.now(), type, data };
 }
 
-const harness = Effect.gen(function* () {
-  const calls: Array<Call> = [];
-  const signals = yield* PubSub.unbounded<OpenCodeServerSignal>();
-  const client = fakeClient(calls);
-  const active = {
-    generation: 1,
-    server: {
-      url: "http://127.0.0.1:1",
-      client,
-      version: "2.0.22",
-      external: false,
-      exited: Effect.never,
-    },
-    streamReady: Effect.void,
-  };
-  const manager: OpenCodeServerManagerShape = {
-    server: Effect.succeed(active),
-    lease: Effect.void,
-    retire: Effect.void,
-    withServer: (use) => Effect.scoped(use(active)),
-    signals: Stream.fromPubSub(signals),
-  };
-  const adapter = yield* makeOpenCodeAdapter({
-    instanceId: INSTANCE_ID,
-    settings: {
-      enabled: true,
-      binaryPath: "opencode",
-      serverUrl: "",
-      serverPassword: "",
-      accountFolder: "",
-      customModels: [],
-    },
-    manager,
-  });
-  const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
-  yield* adapter.streamEvents.pipe(
-    Stream.runForEach((event) => Queue.offer(events, event)),
-    Effect.forkScoped,
-  );
-  // Let the adapter's signal loop subscribe before anything is published.
-  yield* Effect.sleep(Duration.millis(10));
+const harnessWith = (overrides: Record<string, (input: any) => unknown> = {}) =>
+  Effect.gen(function* () {
+    const calls: Array<Call> = [];
+    const signals = yield* PubSub.unbounded<OpenCodeServerSignal>();
+    const client = fakeClient(calls, overrides);
+    const active = {
+      generation: 1,
+      server: {
+        url: "http://127.0.0.1:1",
+        client,
+        version: "2.0.22",
+        external: false,
+        exited: Effect.never,
+      },
+      streamReady: Effect.void,
+    };
+    const manager: OpenCodeServerManagerShape = {
+      server: Effect.succeed(active),
+      lease: Effect.void,
+      retire: Effect.void,
+      withServer: (use) => Effect.scoped(use(active)),
+      signals: Stream.fromPubSub(signals),
+    };
+    const adapter = yield* makeOpenCodeAdapter({
+      instanceId: INSTANCE_ID,
+      settings: {
+        enabled: true,
+        binaryPath: "opencode",
+        serverUrl: "",
+        serverPassword: "",
+        accountFolder: "",
+        customModels: [],
+      },
+      manager,
+    });
+    const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+    yield* adapter.streamEvents.pipe(
+      Stream.runForEach((event) => Queue.offer(events, event)),
+      Effect.forkScoped,
+    );
+    // Let the adapter's signal loop subscribe before anything is published.
+    yield* Effect.sleep(Duration.millis(10));
 
-  const send = (type: string, data: Record<string, unknown>) => {
-    const decoded = decodeOpenCodeFrame(frame(type, data));
-    if (decoded._tag !== "Event") throw new Error(`frame ${type} did not decode`);
-    return PubSub.publish(signals, { _tag: "Event", generation: 1, event: decoded.event });
-  };
-  const next = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
-    Effect.gen(function* () {
-      while (true) {
-        const event = yield* Queue.take(events);
-        if (predicate(event)) return event;
-      }
-    }).pipe(Effect.timeout(Duration.seconds(5)));
-  const drain = Effect.gen(function* () {
-    yield* Effect.sleep(Duration.millis(30));
-    return yield* Queue.takeAll(events);
-  });
+    const send = (type: string, data: Record<string, unknown>) => {
+      const decoded = decodeOpenCodeFrame(frame(type, data));
+      if (decoded._tag !== "Event") throw new Error(`frame ${type} did not decode`);
+      return PubSub.publish(signals, { _tag: "Event", generation: 1, event: decoded.event });
+    };
+    const next = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
+      Effect.gen(function* () {
+        while (true) {
+          const event = yield* Queue.take(events);
+          if (predicate(event)) return event;
+        }
+      }).pipe(Effect.timeout(Duration.seconds(5)));
+    const drain = Effect.gen(function* () {
+      yield* Effect.sleep(Duration.millis(30));
+      return yield* Queue.takeAll(events);
+    });
 
-  const threadId = ThreadId.make("thread-1");
-  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "opencode-adapter-")));
-  return { adapter, calls, send, next, drain, threadId, cwd };
-});
+    const threadId = ThreadId.make("thread-1");
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "opencode-adapter-")));
+    return { adapter, calls, send, next, drain, threadId, cwd };
+  });
+const harness = harnessWith();
+
+/** Plays a shell call that OpenCode moves to the background as `shellId`. */
+const backgroundShell = (
+  send: (type: string, data: Record<string, unknown>) => Effect.Effect<boolean>,
+  shellId: string,
+) =>
+  Effect.gen(function* () {
+    yield* send("session.tool.input.started", {
+      sessionID: ROOT,
+      assistantMessageID: "msg_a",
+      id: `call_${shellId}`,
+      name: "shell",
+    });
+    yield* send("session.tool.called", {
+      sessionID: ROOT,
+      assistantMessageID: "msg_a",
+      id: `call_${shellId}`,
+      input: { command: "npm run dev" },
+      executed: false,
+    });
+    yield* send("session.tool.success", {
+      sessionID: ROOT,
+      id: `call_${shellId}`,
+      metadata: { status: "running", shellID: shellId },
+    });
+  });
 
 const testLayer = ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-" }).pipe(
   Layer.provideMerge(NodeServices.layer),
@@ -327,6 +355,87 @@ describe("OpenCodeAdapter", () => {
       });
       expect(later.some((event) => event.type === "task.completed")).toBe(false);
       expect(yield* adapter.stopBackgroundTask!(threadId, RuntimeTaskId.make("sh_1"))).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("ends a background shell that was already gone when Stop came", () =>
+    Effect.gen(function* () {
+      // Its exit was lost (a dropped stream): removing it fails, and OpenCode
+      // says it already exited cleanly.
+      const { adapter, send, next, threadId, cwd } = yield* harnessWith({
+        "shell.remove": () => Promise.reject(new Error("no such shell")),
+        "shell.get": () => ({ location: {}, data: { status: "exited", exit: 0 } }),
+      });
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, messageId: MessageId.make("m1"), input: "serve" });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* backgroundShell(send, "sh_gone");
+      yield* next((event) => event.type === "task.started");
+
+      expect(yield* adapter.stopBackgroundTask!(threadId, RuntimeTaskId.make("sh_gone"))).toBe(
+        true,
+      );
+      const ended = yield* next((event) => event.type === "task.completed");
+      expect(ended.payload).toMatchObject({ taskId: "sh_gone", status: "completed" });
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("reports a stopped subagent's end once, and its own end still clears its asks", () =>
+    Effect.gen(function* () {
+      // The interrupt finds nothing running, so the stop ends the run itself;
+      // the child's own end that arrives after must not end it again.
+      const { adapter, send, next, threadId, cwd } = yield* harnessWith({
+        "session.interrupt": () => ({ interrupted: false }),
+      });
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "approval-required" });
+      yield* adapter.sendTurn({ threadId, messageId: MessageId.make("m1"), input: "delegate" });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* send("session.inbox.delivered", { sessionID: ROOT, inboxID: "msg_tl_m1" });
+      yield* send("session.tool.input.started", {
+        sessionID: ROOT,
+        assistantMessageID: "msg_a",
+        id: "call_bg",
+        name: "subagent",
+      });
+      yield* send("session.tool.called", {
+        sessionID: ROOT,
+        assistantMessageID: "msg_a",
+        id: "call_bg",
+        input: { agent: "general", description: "Audit deps", prompt: "Audit", background: true },
+        executed: false,
+      });
+      yield* send("session.created", { sessionID: "ses_bg", parentID: ROOT, agent: "general" });
+      yield* send("session.tool.progress", {
+        sessionID: ROOT,
+        id: "call_bg",
+        metadata: { sessionID: "ses_bg", status: "running" },
+      });
+      yield* next((event) => event.type === "task.started");
+
+      expect(yield* adapter.stopBackgroundTask!(threadId, RuntimeTaskId.make("ses_bg"))).toBe(true);
+      const stopped = yield* next((event) => event.type === "task.completed");
+      expect(stopped.payload).toMatchObject({ taskId: "ses_bg", status: "stopped" });
+      // An ask the child had already sent lands after the Stop ended its run.
+      yield* send("permission.asked", {
+        id: "per_late",
+        sessionID: "ses_bg",
+        action: "shell",
+        resources: ["npm audit"],
+        save: [],
+        source: { type: "tool", messageID: "msg_c", id: "call_late" },
+      });
+      const asked = yield* next((event) => event.type === "request.opened");
+      yield* send("session.execution.succeeded", { sessionID: "ses_bg" });
+      yield* next(
+        (event) => event.type === "request.resolved" && event.requestId === asked.requestId,
+      );
+      yield* send("session.execution.succeeded", { sessionID: ROOT });
+      const later: Array<ProviderRuntimeEvent> = [];
+      yield* next((event) => {
+        later.push(event);
+        return event.type === "turn.completed";
+      });
+      expect(later.some((event) => event.type === "task.completed")).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
