@@ -2765,12 +2765,30 @@ const make = Effect.gen(function* () {
     }
     // Goals live provider-side, so the thread needs a live session before the
     // goal RPC. Cold threads get their session started (or resumed) here. In a
-    // room the goal belongs to the agent holding the session slot.
+    // room the goal belongs to the agent holding the session slot. The
+    // thread's own agent goes to the model the client saved just before the
+    // goal, as a turn would: picking another agent and then setting a goal
+    // hands the thread over first, rather than asking the old agent, which
+    // may not keep goals at all. (Room agents never change agent in place.)
     const goalHolderId = sessionSlotParticipantId(thread.session);
+    const ownModelSelection = goalHolderId === null ? thread.modelSelection : undefined;
     yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
       participantId: goalHolderId,
+      ...(ownModelSelection !== undefined ? { modelSelection: ownModelSelection } : {}),
     })
       .pipe(
+        // Remembered as a turn's selection is, so a later restart (an access
+        // change) keeps the agent the goal moved the thread to.
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (ownModelSelection !== undefined) {
+              threadModelSelections.set(
+                participantSessionKey(event.payload.threadId, null),
+                ownModelSelection,
+              );
+            }
+          }),
+        ),
         Effect.flatMap(() =>
           providerService.setThreadGoal({
             threadId: participantSessionKey(event.payload.threadId, goalHolderId),

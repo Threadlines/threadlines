@@ -209,7 +209,7 @@ import {
 } from "../../runtimeModeOptions";
 import {
   deriveDisplayProviderInstanceEntries,
-  resolveProviderDriverKindForInstanceSelection,
+  resolveComposerProviderSelection,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
@@ -921,25 +921,34 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => deriveDisplayProviderInstanceEntries(providerStatuses),
     [providerStatuses],
   );
-  const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
   // The model controls belong to the thread's own agent; in a room the session
   // slot may hold another agent's runtime.
   const ownSession = ownAgentSession(activeThread);
-  const threadProvider =
-    ownSession?.providerInstanceId ?? activeThreadModelSelection?.instanceId ?? null;
-  const explicitSelectedInstanceId = selectedProviderByThreadId ?? threadProvider;
-
-  // A thread whose instance was removed (an extra account) falls back to
-  // another instance of the same agent rather than to Codex.
-  const unlockedSelectedProvider =
-    resolveProviderDriverKindForInstanceSelection(
+  // The instance the composer targets and its agent, from one rule: the
+  // user's unsaved pick, then the session's instance, then the thread's
+  // saved one, each only while enabled (resolveComposerProviderSelection).
+  const providerSelection = useMemo(
+    () =>
+      resolveComposerProviderSelection({
+        entries: providerInstanceEntries,
+        candidates: [
+          composerDraft.activeProvider,
+          ownSession?.providerInstanceId,
+          activeThreadModelSelection?.instanceId,
+        ],
+        lockedProvider,
+        fallbackDriverKind: ownSession?.provider ?? ProviderDriverKind.make("codex"),
+      }),
+    [
+      activeThreadModelSelection?.instanceId,
+      composerDraft.activeProvider,
+      lockedProvider,
+      ownSession?.provider,
+      ownSession?.providerInstanceId,
       providerInstanceEntries,
-      providerStatuses,
-      explicitSelectedInstanceId,
-    ) ??
-    ownSession?.provider ??
-    ProviderDriverKind.make("codex");
-  const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
+    ],
+  );
+  const selectedProvider: ProviderDriverKind = lockedProvider ?? providerSelection.driverKind;
   // Claude runs a message holding "ultracode" as a workflow; the composer says
   // so as it is typed (and offers to send it as plain text instead).
   const workflowKeywordActive =
@@ -951,54 +960,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onSetThreadGoal !== undefined &&
     onClearThreadGoal !== undefined;
 
-  // Resolve which configured instance the composer is currently targeting.
-  // Every configured instance stays selectable, including ones that can't
-  // resume this thread natively: the chat view confirms that handoff.
-  // Priority:
-  //   1. The composer draft's `activeProvider` — the user's unsaved pick
-  //      from the model picker (must win, otherwise the UI appears to
-  //      ignore picker selections).
-  //   2. Thread's persisted instance id (server-side saved selection).
-  //   3. First enabled entry matching the current driver kind.
-  //   4. First enabled entry overall / default instance for the kind.
-  //
-  const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
-    const candidates: Array<string | null | undefined> = [
-      composerDraft.activeProvider,
-      ownSession?.providerInstanceId,
-      activeThreadModelSelection?.instanceId,
-    ];
-    for (const candidate of candidates) {
-      if (!candidate) continue;
-      const match = providerInstanceEntries.find(
-        (entry) => entry.instanceId === candidate && entry.enabled,
-      );
-      if (match) {
-        // When locked to a specific driver kind, ignore persisted instance
-        // ids from a different kind.
-        if (lockedProvider && match.driverKind !== lockedProvider) continue;
-        return match.instanceId;
-      }
-    }
-    const byKind = providerInstanceEntries.find(
-      (entry) => entry.enabled && entry.driverKind === selectedProvider,
-    );
-    if (byKind) return byKind.instanceId;
-    const anyEnabled = providerInstanceEntries.find((entry) => entry.enabled);
-    return (
-      anyEnabled?.instanceId ??
-      providerInstanceEntries[0]?.instanceId ??
-      activeThreadModelSelection?.instanceId ??
-      ProviderInstanceId.make("codex")
-    );
-  }, [
-    ownSession?.providerInstanceId,
-    activeThreadModelSelection?.instanceId,
-    composerDraft.activeProvider,
-    lockedProvider,
-    providerInstanceEntries,
-    selectedProvider,
-  ]);
+  const selectedInstanceId = providerSelection.instanceId;
 
   const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
     threadRef: composerDraftTarget,

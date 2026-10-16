@@ -191,7 +191,7 @@ import {
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
-import { formatProviderDriverKindLabel, resolveSelectableProvider } from "../providerModels";
+import { formatProviderDriverKindLabel } from "../providerModels";
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { roomsEnabledFor } from "../hooks/useRoomsEnabled";
 import {
@@ -405,6 +405,7 @@ import { derivePlanTaskBadge, useThreadPlanCatalog } from "../planPanelState";
 import {
   deriveDisplayProviderInstanceEntries,
   type ProviderInstanceEntry,
+  resolveComposerProviderSelection,
 } from "../providerInstances";
 
 // Lazy so @xterm/xterm (and the drawer's terminal machinery) stays out of
@@ -1930,11 +1931,28 @@ export default function ChatView(props: ChatViewProps) {
     selectedProvider: selectedProviderDriver,
     threadProvider: threadProviderDriver,
   });
-  const unlockedSelectedProvider = resolveSelectableProvider(
-    providerStatuses,
-    selectedProviderByThreadId ?? threadProvider ?? ProviderDriverKind.make("codex"),
+  // The agent the next message goes to, by the composer's own rule and
+  // inputs, so the goal command and the composer agree. Like the composer it
+  // takes no lock: the lock above only decides when switching agents needs
+  // the handoff confirmation (classifyModelSwitch).
+  const ownSessionInstanceId = ownAgentSession(activeThread)?.providerInstanceId;
+  const ownSessionProvider = ownAgentSession(activeThread)?.provider;
+  const selectedProvider: ProviderDriverKind = useMemo(
+    () =>
+      resolveComposerProviderSelection({
+        entries: providerInstanceEntries,
+        candidates: [selectedProviderByThreadId, ownSessionInstanceId, threadProvider],
+        lockedProvider: null,
+        fallbackDriverKind: ownSessionProvider ?? ProviderDriverKind.make("codex"),
+      }).driverKind,
+    [
+      ownSessionInstanceId,
+      ownSessionProvider,
+      providerInstanceEntries,
+      selectedProviderByThreadId,
+      threadProvider,
+    ],
   );
-  const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
   useEffect(() => {
     if (!shouldRetainThreadDetailSubscription || phase !== "running") {

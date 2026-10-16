@@ -17,7 +17,7 @@ import {
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   type ServerProvider,
   type ServerProviderModel,
   type ServerProviderState,
@@ -318,21 +318,43 @@ export function resolveSelectableProviderInstance(
 }
 
 /**
- * Resolve an open model-selection routing key back to a driver kind.
- * Custom instance ids such as `claude_openrouter` are not themselves
- * driver-kind slugs, but the composer still needs the owning driver kind
- * for capabilities, options, icons, and turn dispatch metadata.
+ * The instance a composer targets, and the agent behind it. The candidates
+ * (the user's unsaved pick, the session's instance, the thread's saved one)
+ * are tried in order; one that is turned off or gone gives way to an
+ * enabled instance, of the same agent when there is one. The agent always
+ * follows the instance chosen, so every agent-specific control agrees with
+ * the model the composer shows and sends.
  */
-export function resolveProviderDriverKindForInstanceSelection(
-  entries: ReadonlyArray<ProviderInstanceEntry>,
-  providers: ReadonlyArray<ServerProvider>,
-  selection: ProviderInstanceId | ProviderDriverKind | null | undefined,
-): ProviderDriverKind | undefined {
-  const matchedEntry = entries.find((entry) => entry.instanceId === selection);
-  if (matchedEntry) {
-    return matchedEntry.driverKind;
+export function resolveComposerProviderSelection(input: {
+  readonly entries: ReadonlyArray<ProviderInstanceEntry>;
+  readonly candidates: ReadonlyArray<ProviderInstanceId | string | null | undefined>;
+  /** A thread bound to one agent: other agents' instances are passed over. */
+  readonly lockedProvider: ProviderDriverKind | null;
+  /** The agent when no instance is known yet (providers still loading). */
+  readonly fallbackDriverKind: ProviderDriverKind;
+}): { readonly instanceId: ProviderInstanceId; readonly driverKind: ProviderDriverKind } {
+  const { entries, lockedProvider } = input;
+  for (const candidate of input.candidates) {
+    if (!candidate) continue;
+    const match = entries.find((entry) => entry.instanceId === candidate && entry.enabled);
+    if (!match || (lockedProvider && match.driverKind !== lockedProvider)) continue;
+    return { instanceId: match.instanceId, driverKind: match.driverKind };
   }
-  return undefined;
+  // The agent the thread asked for, even when its instance is off: another
+  // instance of it is the closest stand-in.
+  let requestedKind = lockedProvider;
+  for (const candidate of input.candidates) {
+    if (requestedKind || !candidate) continue;
+    requestedKind = entries.find((entry) => entry.instanceId === candidate)?.driverKind ?? null;
+  }
+  const kind = requestedKind ?? input.fallbackDriverKind;
+  const fallback =
+    entries.find((entry) => entry.enabled && entry.driverKind === kind) ??
+    entries.find((entry) => entry.enabled) ??
+    entries[0];
+  if (fallback) return { instanceId: fallback.instanceId, driverKind: fallback.driverKind };
+  const firstCandidate = input.candidates.find((candidate) => Boolean(candidate));
+  return { instanceId: ProviderInstanceId.make(firstCandidate ?? kind), driverKind: kind };
 }
 
 /**
