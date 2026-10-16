@@ -400,6 +400,9 @@ export function resolveThreadBrowserTarget(
     onUserTakeover: () => useBrowserPanelStore.getState().markBrowserUserControlled(threadRef),
     windowsOpenedByPage: () =>
       signInPopupsOf(webview === null ? null : attachedWebContentsId(webview)),
+    screenshotsMayBeJpeg:
+      readEnvironmentDescriptor(threadRef.environmentId)?.capabilities.browserScreenshotTypes ===
+      true,
     tabsOpenedByPage: () =>
       tabId === ""
         ? []

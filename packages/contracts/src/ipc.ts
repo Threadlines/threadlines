@@ -832,10 +832,33 @@ export const DesktopPreviewMemorySchema = Schema.Struct({
 });
 export type DesktopPreviewMemory = typeof DesktopPreviewMemorySchema.Type;
 
+export const DesktopPreviewScreenshotInputSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  /**
+   * Sized for a model rather than a person: the page's CSS pixels instead of
+   * the display's, re-encoded (JPEG, then fewer pixels) until it fits what a
+   * conversation can carry. Without it the capture is a full-resolution PNG,
+   * as the user's own screenshots and annotations want.
+   */
+  forAgent: Schema.optionalKey(Schema.Boolean),
+  /**
+   * An agent's picture may be a JPEG. Only when the server advertises
+   * `browserScreenshotTypes`: an older one labels every screenshot PNG, and a
+   * model refuses a JPEG called a PNG. Without it the picture stays PNG and
+   * loses pixels instead when it is too big.
+   */
+  jpeg: Schema.optionalKey(Schema.Boolean),
+});
+export type DesktopPreviewScreenshotInput = typeof DesktopPreviewScreenshotInputSchema.Type;
+
 export const DesktopPreviewScreenshotSchema = Schema.Struct({
+  /** PNG, or JPEG for an agent's picture that would not fit as PNG. */
   dataUrl: Schema.String,
+  /** The page's size in CSS pixels. */
   width: Schema.Number,
   height: Schema.Number,
+  /** Image pixels per CSS pixel, set only when an agent's picture was shrunk to fit. */
+  scale: Schema.optionalKey(Schema.Number),
 });
 export type DesktopPreviewScreenshot = typeof DesktopPreviewScreenshotSchema.Type;
 
@@ -1208,7 +1231,7 @@ export interface DesktopBridge {
   previewScroll?: (input: DesktopPreviewScrollInput) => Promise<void>;
   previewWaitFor?: (input: DesktopPreviewWaitForInput) => Promise<void>;
   previewLocalServers?: () => Promise<readonly DesktopLocalServer[]>;
-  previewScreenshot?: (input: DesktopPreviewTarget) => Promise<DesktopPreviewScreenshot>;
+  previewScreenshot?: (input: DesktopPreviewScreenshotInput) => Promise<DesktopPreviewScreenshot>;
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
   previewSetLifecycle?: (input: DesktopPreviewLifecycleInput) => Promise<void>;

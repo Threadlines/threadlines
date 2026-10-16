@@ -60,6 +60,20 @@ export const PREVIEW_AUTOMATION_DEFAULT_TIMEOUT_MS = 20_000;
  * the request.
  */
 export const PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES = 512_000;
+/**
+ * A screenshot is a backstop rather than a budget. The desktop already keeps
+ * the picture small (a few hundred kilobytes, usually far less), and it goes
+ * back as an image block, which the model sees as a picture rather than reads
+ * as text, so the text limit says nothing about it.
+ */
+export const PREVIEW_AUTOMATION_SCREENSHOT_LIMIT_BYTES = 1_500_000;
+
+/** The most a call's result may weigh before the agent is refused it. */
+export function previewAutomationResultLimitBytes(operation: PreviewAutomationOperation): number {
+  return operation === "screenshot"
+    ? PREVIEW_AUTOMATION_SCREENSHOT_LIMIT_BYTES
+    : PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES;
+}
 
 /**
  * How long a call may take before the agent is told it timed out.
@@ -438,12 +452,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     );
 
     const bytes = measure(result);
-    if (bytes > PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES) {
+    const limitBytes = previewAutomationResultLimitBytes(input.operation);
+    if (bytes > limitBytes) {
       return yield* Effect.fail(
         new PreviewAutomationResultTooLargeError({
           operation: input.operation,
           bytes,
-          limitBytes: PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES,
+          limitBytes,
         }),
       );
     }
