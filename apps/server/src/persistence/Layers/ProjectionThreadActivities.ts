@@ -26,6 +26,25 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   }),
 );
 
+function toProjectionThreadActivity(
+  row: typeof ProjectionThreadActivityDbRowSchema.Type,
+): ProjectionThreadActivity {
+  return {
+    activityId: row.activityId,
+    ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
+    threadId: row.threadId,
+    turnId: row.turnId,
+    ...(row.sideTurnId !== null ? { sideTurnId: row.sideTurnId } : {}),
+    ...(row.participantId !== null ? { participantId: row.participantId } : {}),
+    tone: row.tone,
+    kind: row.kind,
+    summary: row.summary,
+    payload: row.payload,
+    ...(row.sequence !== null ? { sequence: row.sequence } : {}),
+    createdAt: row.createdAt,
+  };
+}
+
 function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: string) {
   return (cause: unknown) =>
     Schema.isSchemaError(cause)
@@ -111,6 +130,41 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  // The kind list is literal SQL, in the exact order of the partial index
+  // idx_projection_thread_activities_prompt_kinds (migration 070): SQLite only
+  // uses a partial index whose WHERE matches the query's term exactly.
+  const listProjectionThreadPromptActivityRows = SqlSchema.findAll({
+    Request: ListProjectionThreadActivitiesInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          activity_id AS "activityId",
+          event_sequence AS "eventSequence",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          side_turn_id AS "sideTurnId",
+          participant_id AS "participantId",
+          tone,
+          kind,
+          summary,
+          payload_json AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind IN (
+            'approval.requested', 'approval.resolved', 'provider.approval.respond.failed',
+            'user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed'
+          )
+        ORDER BY
+          event_sequence ASC,
+          sequence ASC,
+          created_at ASC,
+          activity_id ASC
+      `,
+  });
+
   const deleteProjectionThreadActivityRows = SqlSchema.void({
     Request: DeleteProjectionThreadActivitiesInput,
     execute: ({ threadId }) =>
@@ -138,22 +192,20 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
           "ProjectionThreadActivityRepository.listByThreadId:decodeRows",
         ),
       ),
-      Effect.map((rows) =>
-        rows.map((row) => ({
-          activityId: row.activityId,
-          ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
-          threadId: row.threadId,
-          turnId: row.turnId,
-          ...(row.sideTurnId !== null ? { sideTurnId: row.sideTurnId } : {}),
-          ...(row.participantId !== null ? { participantId: row.participantId } : {}),
-          tone: row.tone,
-          kind: row.kind,
-          summary: row.summary,
-          payload: row.payload,
-          ...(row.sequence !== null ? { sequence: row.sequence } : {}),
-          createdAt: row.createdAt,
-        })),
+      Effect.map((rows) => rows.map(toProjectionThreadActivity)),
+    );
+
+  const listPromptsByThreadId: ProjectionThreadActivityRepositoryShape["listPromptsByThreadId"] = (
+    input,
+  ) =>
+    listProjectionThreadPromptActivityRows(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionThreadActivityRepository.listPromptsByThreadId:query",
+          "ProjectionThreadActivityRepository.listPromptsByThreadId:decodeRows",
+        ),
       ),
+      Effect.map((rows) => rows.map(toProjectionThreadActivity)),
     );
 
   const deleteByThreadId: ProjectionThreadActivityRepositoryShape["deleteByThreadId"] = (input) =>
@@ -166,6 +218,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
   return {
     upsert,
     listByThreadId,
+    listPromptsByThreadId,
     deleteByThreadId,
   } satisfies ProjectionThreadActivityRepositoryShape;
 });
