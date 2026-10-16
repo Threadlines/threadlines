@@ -32,6 +32,7 @@ import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as PreviewSession from "../preview/PreviewSession.ts";
 import { isPreviewPartition } from "../preview/previewPartitions.ts";
+import { makeWindowOpenBudget } from "../preview/windowOpenBudget.ts";
 
 const TITLEBAR_HEIGHT = 40;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
@@ -815,6 +816,7 @@ const make = Effect.gen(function* () {
       showEditContextMenu(window.webContents, () => false, params);
     });
 
+    const windowOpenBudget = makeWindowOpenBudget();
     window.webContents.on("did-attach-webview", (_event, guest) => {
       // Browser shortcuts pressed inside a guest page never reach the
       // renderer: the guest keeps its keystrokes, and the application menu's
@@ -867,7 +869,12 @@ const make = Effect.gen(function* () {
         window.webContents.send(IpcChannels.PREVIEW_OPEN_TAB_CHANNEL, request);
       };
       guest.setWindowOpenHandler(({ url, disposition }) => {
-        openInTab(url, disposition === "background-tab");
+        if (
+          Option.isSome(ElectronShell.parseSafeExternalUrl(url)) &&
+          windowOpenBudget.take(guest.session)
+        ) {
+          openInTab(url, disposition === "background-tab");
+        }
         return { action: "deny" };
       });
 

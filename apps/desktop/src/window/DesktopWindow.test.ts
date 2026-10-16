@@ -886,6 +886,7 @@ describe("DesktopWindow", () => {
         >[0] = () => ({ action: "allow" });
         const guest = {
           id: 7,
+          session: {},
           on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
             guestHandlers.set(eventName, listener);
           }),
@@ -916,6 +917,11 @@ describe("DesktopWindow", () => {
           action: "deny",
         });
         assert.deepEqual(pageOpens("about:blank", "foreground-tab"), { action: "deny" });
+        // A page opening tabs in a loop gets a burst, not one per call: three
+        // went above, so three more and then nothing.
+        for (let index = 0; index < 20; index += 1) {
+          pageOpens(`https://example.com/loop-${index}`, "foreground-tab");
+        }
 
         guestHandlers.get("context-menu")?.({ preventDefault: vi.fn() }, {
           misspelledWord: "",
@@ -944,6 +950,10 @@ describe("DesktopWindow", () => {
           { webContentsId: 7, url: "https://example.com/docs", background: false },
           { webContentsId: 7, url: "https://example.com/later", background: true },
           { webContentsId: 7, url: "https://example.com/sign-in", background: false },
+          { webContentsId: 7, url: "https://example.com/loop-0", background: false },
+          { webContentsId: 7, url: "https://example.com/loop-1", background: false },
+          { webContentsId: 7, url: "https://example.com/loop-2", background: false },
+          // The menu is the user asking, so it never runs out.
           { webContentsId: 7, url: "https://example.com/menu", background: true },
         ]);
       }).pipe(Effect.provide(layer));
