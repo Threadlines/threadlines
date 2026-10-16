@@ -194,6 +194,7 @@ describe("ClaudeWorkflowRunTracker", () => {
 
     const snapshot = frame(phase(0, "Research"), agent(0, "start"), agent(1, "start"));
     expect(progress(tracker, T0, snapshot, { totalTokens: 100, totalToolCalls: 2 })).toEqual({
+      startedAt: STARTED_AT,
       taskId: TASK_ID,
       phases: snapshot.phases,
       agents: snapshot.agents,
@@ -205,21 +206,30 @@ describe("ClaudeWorkflowRunTracker", () => {
     expect(progress(tracker, T0 + 10_000, snapshot)).toBeUndefined();
   });
 
-  it("puts a start on whichever report goes out first, so the thread can create the run", () => {
-    // The launch result can beat task_started; progress can come with no start at all.
+  it("carries the run's start on every report while it lives, and none after it ended", () => {
+    // The launch result can beat task_started, which still brings its details.
     const launchedFirst = new ClaudeWorkflowRunTracker();
+    const firstSeen = new Date(T0).toISOString();
     expect(
       launchedFirst.launched({ taskId: TASK_ID, runId: "wf_1" }, "toolu_wf", T0),
-    ).toMatchObject({ taskId: TASK_ID, startedAt: new Date(T0).toISOString() });
-    expect(launchedFirst.started({ taskId: TASK_ID, startedAt: STARTED_AT })).toBeUndefined();
+    ).toMatchObject({ taskId: TASK_ID, startedAt: firstSeen });
+    expect(
+      launchedFirst.started({ taskId: TASK_ID, name: "audit", startedAt: STARTED_AT }),
+    ).toMatchObject({ name: "audit", startedAt: firstSeen });
 
+    // A thread that missed the first report still gets the run from the next.
     const progressFirst = new ClaudeWorkflowRunTracker();
     expect(progress(progressFirst, T0, frame(agent(0, "start")))).toMatchObject({
-      startedAt: new Date(T0).toISOString(),
+      startedAt: firstSeen,
     });
-    expect(progress(progressFirst, T0 + 1, frame(agent(0, "done")))).not.toHaveProperty(
-      "startedAt",
-    );
+    expect(progress(progressFirst, T0 + 1, frame(agent(0, "done")))).toMatchObject({
+      startedAt: firstSeen,
+    });
+    progressFirst.ended({ taskId: TASK_ID, status: "completed", endedAt: ENDED_AT, nowMs: T0 + 2 });
+    // After the end, a report must not recreate a run a revert removed.
+    expect(
+      progressFirst.finalOutput(TASK_ID, { snapshot: frame(agent(1, "done")) }, T0 + 3),
+    ).not.toHaveProperty("startedAt");
   });
 
   it("holds progress-only changes for the interval but sends a state change at once", () => {
@@ -243,6 +253,7 @@ describe("ClaudeWorkflowRunTracker", () => {
     );
     // The next frame past the interval carries it, even without a snapshot of its own.
     expect(progress(tracker, T0 + 2_000 + WORKFLOW_PROGRESS_INTERVAL_MS, undefined)).toEqual({
+      startedAt: new Date(T0).toISOString(),
       taskId: TASK_ID,
       agents: frame(agent(0, "progress", { tokens: 80 })).agents,
     });
@@ -265,6 +276,7 @@ describe("ClaudeWorkflowRunTracker", () => {
         nowMs: T0 + 1_500,
       }),
     ).toEqual({
+      startedAt: new Date(T0).toISOString(),
       taskId: TASK_ID,
       agents: frame(agent(0, "progress", { tokens: 50 })).agents,
       totalTokens: 500,

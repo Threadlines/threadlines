@@ -204,8 +204,10 @@ export function applyWorkflowRunPatch(
 ): ReadonlyArray<OrchestrationWorkflowRun> {
   const index = runs.findIndex((run) => run.taskId === patch.taskId);
   if (index === -1) {
-    // Only a run's first report, which carries its start, creates it: a late
-    // one for a run a revert removed must not bring it back.
+    // Only a report with a start creates a run. Drivers put one on every
+    // report while the run lives and none after it ended, so a late report
+    // for a run a revert removed (revert waits for runs to end) can not
+    // bring it back.
     if (patch.startedAt === undefined) return runs;
     return [...runs, newRun(patch, updatedAt, eventSequence)].toSorted(compareWorkflowRuns);
   }
@@ -239,6 +241,9 @@ export interface WorkflowRunCounts {
   readonly total: number;
   readonly done: number;
   readonly failed: number;
+  /** Never ran to its end: cut off by the run's end, or left out by the
+   *  script. Not a failure. */
+  readonly skipped: number;
   readonly running: number;
   readonly queued: number;
   /** Agents restarted at least once that are still going. */
@@ -248,6 +253,7 @@ export interface WorkflowRunCounts {
 export function countWorkflowAgents(agents: ReadonlyArray<WorkflowAgent>): WorkflowRunCounts {
   let done = 0;
   let failed = 0;
+  let skipped = 0;
   let running = 0;
   let queued = 0;
   let retrying = 0;
@@ -257,8 +263,10 @@ export function countWorkflowAgents(agents: ReadonlyArray<WorkflowAgent>): Workf
         done += 1;
         break;
       case "failed":
-      case "skipped":
         failed += 1;
+        break;
+      case "skipped":
+        skipped += 1;
         break;
       case "queued":
         queued += 1;
@@ -269,7 +277,7 @@ export function countWorkflowAgents(agents: ReadonlyArray<WorkflowAgent>): Workf
         break;
     }
   }
-  return { total: agents.length, done, failed, running, queued, retrying };
+  return { total: agents.length, done, failed, skipped, running, queued, retrying };
 }
 
 /**
@@ -305,7 +313,7 @@ export function workflowAwaitedProgress(
     ...(run.name ? { name: run.name } : {}),
     ...(phase ? { phaseTitle: phase.title } : {}),
     // A skipped or failed agent is over too: "6/8" means six of eight ended.
-    doneAgents: counts.done + counts.failed,
+    doneAgents: counts.done + counts.failed + counts.skipped,
     totalAgents: counts.total,
   };
 }

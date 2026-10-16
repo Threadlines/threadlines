@@ -82,8 +82,9 @@ export function WorkflowRunFileView({
     threadId,
     taskId: run.taskId,
     file,
-    // A script never changes; a result appears when the run ends.
-    revision: file === "result" ? run.status : "script",
+    // A result appears when the run ends. A script is read again only when
+    // where it is, or whether Claude keeps it to itself, turns out different.
+    revision: file === "result" ? run.status : `${run.hiddenScript}:${run.scriptPath ?? ""}`,
   });
   if (file === "result" && run.status === "running") {
     return <Note>{UNAVAILABLE_WORDS["not-ended"]!}</Note>;

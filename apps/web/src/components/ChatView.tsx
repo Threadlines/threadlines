@@ -7,6 +7,7 @@ import {
   defaultInstanceIdForDriver,
   type EnvironmentId,
   type MessageId,
+  type MessageComposer,
   type ModelSelection,
   type ProjectScript,
   type ProjectId,
@@ -4865,9 +4866,21 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
+      // Feedback on the plan is the user's own words; the implement prompt
+      // (an empty draft) is the agent's plan, never theirs.
+      const planComposer =
+        followUp.interactionMode === "plan"
+          ? composerForTypedMessage({
+              typedText: trimmed,
+              sentText: followUp.text,
+              plain: workflowKeywordSuppressed,
+            })
+          : undefined;
+      setWorkflowKeywordSuppressed(false);
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
+        ...(planComposer ? { composer: planComposer } : {}),
       });
       return;
     }
@@ -6288,9 +6301,12 @@ export default function ChatView(props: ChatViewProps) {
     async ({
       text,
       interactionMode: nextInteractionMode,
+      composer,
     }: {
       text: string;
       interactionMode: "default" | "plan";
+      /** Set only when the user wrote the text. See MessageComposer. */
+      composer?: MessageComposer;
     }) => {
       const api = readEnvironmentApi(environmentId);
       if (
@@ -6377,6 +6393,7 @@ export default function ChatView(props: ChatViewProps) {
           titleSeed: activeThread.title,
           runtimeMode,
           interactionMode: nextInteractionMode,
+          ...(composer ? { composer } : {}),
           ...(nextInteractionMode === "default" && activeProposedPlan
             ? {
                 sourceProposedPlan: {

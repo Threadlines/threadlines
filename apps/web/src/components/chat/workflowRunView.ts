@@ -58,7 +58,8 @@ export function workflowRunSubtitle(
   return run.name && run.description ? run.description : null;
 }
 
-export type WorkflowPhaseState = "done" | "live" | "waiting" | "failed";
+/** `skipped`: none of its agents ran to the end (the run was stopped). */
+export type WorkflowPhaseState = "done" | "live" | "waiting" | "failed" | "skipped";
 
 export interface WorkflowPhaseGroup {
   /** Null: the agents of a run without phases. */
@@ -68,6 +69,7 @@ export interface WorkflowPhaseGroup {
   readonly state: WorkflowPhaseState;
   readonly done: number;
   readonly failed: number;
+  readonly skipped: number;
   readonly running: number;
   readonly retrying: number;
   readonly tokens: number;
@@ -109,7 +111,9 @@ function groupOf(
       ? "waiting"
       : counts.failed > 0 && counts.done === 0
         ? "failed"
-        : "done";
+        : counts.done === 0
+          ? "skipped"
+          : "done";
   return {
     phase,
     title: phase ? workflowPhaseTitle(phase) : "Agents",
@@ -117,6 +121,7 @@ function groupOf(
     state,
     done: counts.done,
     failed: counts.failed,
+    skipped: counts.skipped,
     running: counts.running,
     retrying: counts.retrying,
     tokens,
@@ -196,6 +201,7 @@ export function workflowPhaseMeta(group: WorkflowPhaseGroup): string {
   if (group.state === "waiting") return "Not started";
   const parts = [pluralize(group.agents.length, "agent")];
   if (group.failed > 0) parts.push(`${group.failed} failed`);
+  if (group.skipped > 0) parts.push(`${group.skipped} skipped`);
   if (group.durationMs !== null) parts.push(formatWorkflowSpan(group.durationMs));
   if (group.tokens > 0) parts.push(formatWorkflowTokens(group.tokens));
   return parts.join(" · ");
@@ -284,7 +290,7 @@ export function summarizeWorkflowRun(run: OrchestrationWorkflowRun): WorkflowRun
   return {
     title: workflowRunTitle(run),
     total: counts.total,
-    done: counts.done + counts.failed,
+    done: counts.done + counts.failed + counts.skipped,
     failed: counts.failed,
     running: counts.running,
     phaseTitle: phase ? workflowPhaseTitle(phase) : null,
@@ -335,7 +341,7 @@ export function workflowLargeNote(input: {
   const agentLimit =
     (input.sizeGuideline ? SIZE_GUIDELINE_AGENTS[input.sizeGuideline] : undefined) ??
     LARGE_WORKFLOW_AGENTS;
-  const finished = counts.done + counts.failed;
+  const finished = counts.done + counts.failed + counts.skipped;
   const projected =
     finished > 0 && counts.total > finished
       ? Math.round((run.totalTokens / finished) * counts.total)

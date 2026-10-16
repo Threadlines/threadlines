@@ -85,6 +85,7 @@ function PhaseMark({ group }: { readonly group: WorkflowPhaseGroup }) {
     case "live":
       return <span aria-hidden="true" className="block size-1.5 rounded-full bg-primary-graph" />;
     case "waiting":
+    case "skipped":
       return (
         <span
           aria-hidden="true"

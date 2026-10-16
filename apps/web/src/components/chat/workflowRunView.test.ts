@@ -83,7 +83,8 @@ describe("workflowPhaseGroups", () => {
       }),
       START_MS + 1_000,
     );
-    expect(group?.state).toBe("done");
+    // Nothing in it ran to the end: not a check mark.
+    expect(group?.state).toBe("skipped");
   });
 });
 

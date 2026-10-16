@@ -2017,8 +2017,9 @@ describe("orchestration projector", () => {
         Promise.resolve(start),
       );
 
-    it("folds each update into the run by what changed, and an ended run stays ended", async () => {
-      const next = await projectAll(await createThread(), [
+    it("folds each update into a live run by what changed, and lets it go once it ends", async () => {
+      const thread = await createThread();
+      const live = await projectAll(thread, [
         recorded(2, {
           taskId: "task-a",
           name: "audit",
@@ -2044,21 +2045,9 @@ describe("orchestration projector", () => {
             { index: 2, label: "verify", phaseIndex: 1, state: "queued" },
           ],
         }),
-        recorded(4, {
-          taskId: "task-a",
-          status: "completed",
-          summary: "All clean",
-          endedAt: at(4),
-        }),
-        // A progress frame that arrives after the end does not reopen it.
-        recorded(5, {
-          taskId: "task-a",
-          status: "running",
-          agents: [{ index: 0, label: "scan:a", state: "done" }],
-        }),
       ]);
 
-      expect(next.threads[0]?.workflowRuns).toEqual([
+      expect(live.threads[0]?.workflowRuns).toEqual([
         {
           taskId: "task-a",
           runId: null,
@@ -2067,87 +2056,38 @@ describe("orchestration projector", () => {
           owner: { participantId: null, providerInstanceId: "claudeAgent" },
           name: "audit",
           description: null,
-          status: "completed",
+          status: "running",
           statusReason: null,
           hiddenScript: false,
           startedAt: at(2),
-          endedAt: at(4),
+          endedAt: null,
           totalTokens: 0,
           totalToolCalls: 0,
           transcriptDir: null,
           scriptPath: null,
-          summary: "All clean",
+          summary: null,
           phases: [
             { index: 0, title: "Scan" },
             { index: 1, title: "Verify" },
           ],
-          // The end cut off the agents still going: they ran no further.
           agents: [
-            { index: 0, label: "scan:a", state: "done" },
-            { index: 1, label: "scan:b", state: "skipped", error: "Ended with the workflow" },
-            {
-              index: 2,
-              label: "verify",
-              phaseIndex: 1,
-              state: "skipped",
-              error: "Ended with the workflow",
-            },
+            { index: 0, label: "scan:a", state: "running" },
+            { index: 1, label: "scan:b", state: "running" },
+            { index: 2, label: "verify", phaseIndex: 1, state: "queued" },
           ],
-          updatedAt: at(5),
+          updatedAt: at(3),
           // Its first report places it in the transcript.
           eventSequence: 2,
         },
       ]);
-    });
 
-    it("drops the runs a revert took back and keeps the earlier turns' runs", async () => {
-      const checkpoint = (sequence: number, turnId: string, checkpointTurnCount: number) =>
-        makeEvent({
-          sequence,
-          type: "thread.turn-diff-completed",
-          aggregateKind: "thread",
-          aggregateId: "thread-workflow",
-          occurredAt: at(sequence),
-          commandId: `cmd-checkpoint-${sequence}`,
-          payload: {
-            threadId: "thread-workflow",
-            turnId,
-            checkpointTurnCount,
-            checkpointRef: `refs/threadlines/checkpoints/thread-workflow/turn/${checkpointTurnCount}`,
-            status: "ready",
-            files: [],
-            assistantMessageId: null,
-            completedAt: at(sequence),
-          },
-        });
-
-      const next = await projectAll(await createThread(), [
-        recorded(2, {
-          taskId: "task-turn-1",
-          status: "running",
-          startedAt: at(2),
-          turnId: "turn-1",
-        }),
-        checkpoint(3, "turn-1", 1),
-        recorded(4, {
-          taskId: "task-turn-2",
-          status: "running",
-          startedAt: at(4),
-          turnId: "turn-2",
-        }),
-        checkpoint(5, "turn-2", 2),
-        makeEvent({
-          sequence: 6,
-          type: "thread.reverted",
-          aggregateKind: "thread",
-          aggregateId: "thread-workflow",
-          occurredAt: at(6),
-          commandId: "cmd-revert",
-          payload: { threadId: "thread-workflow", turnCount: 1 },
-        }),
+      // This model serves the decider (Stop, the revert guard): an ended run
+      // leaves it, and a report after the end does not bring it back.
+      const ended = await projectAll(live, [
+        recorded(4, { taskId: "task-a", status: "completed", endedAt: at(4) }),
+        recorded(5, { taskId: "task-a", agents: [{ index: 0, label: "scan:a", state: "done" }] }),
       ]);
-
-      expect(next.threads[0]?.workflowRuns?.map((run) => run.taskId)).toEqual(["task-turn-1"]);
+      expect(ended.threads[0]?.workflowRuns).toEqual([]);
     });
   });
 });

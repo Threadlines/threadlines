@@ -242,6 +242,8 @@ interface RunState {
   name: string | undefined;
   /** `started` already reported; a resumed task restates its start. */
   startReported: boolean;
+  /** When the run started: `task_started`'s time, else the first update's. */
+  startedAt: string | undefined;
   ended: boolean;
   hiddenScript: boolean;
   /** `hiddenScript` as last sent; undefined until phases were sent. */
@@ -284,6 +286,7 @@ export class ClaudeWorkflowRunTracker {
         taskId,
         name: undefined,
         startReported: false,
+        startedAt: undefined,
         ended: false,
         hiddenScript: false,
         sentHiddenScript: undefined,
@@ -316,13 +319,15 @@ export class ClaudeWorkflowRunTracker {
     const state = this.run(input.taskId);
     if (state.startReported) return undefined;
     state.startReported = true;
+    // An update may have gone out first (with its own time): this one still
+    // brings the task's name and the call that launched it.
+    state.startedAt ??= input.startedAt;
     const name = clip(input.name, MAX_LABEL_CHARS);
     const description = clip(input.description, MAX_SUMMARY_CHARS);
     if (name !== undefined) state.name = name;
     return {
       taskId: input.taskId,
-      status: "running",
-      startedAt: input.startedAt,
+      ...(state.ended ? {} : { status: "running" as const, startedAt: state.startedAt }),
       ...(input.toolCallId !== undefined ? { toolCallId: input.toolCallId } : {}),
       ...(name !== undefined ? { name } : {}),
       ...(description !== undefined ? { description } : {}),
@@ -383,10 +388,9 @@ export class ClaudeWorkflowRunTracker {
     const state = this.run(input.taskId);
     this.absorb(state, undefined, input.totalTokens, input.totalToolCalls);
     const held = this.flush(state, input.nowMs, true);
-    state.ended = true;
     const summary = clip(input.summary, MAX_SUMMARY_CHARS);
     const statusReason = clip(input.statusReason, 80);
-    return this.withStart(state, input.nowMs, {
+    const update = this.withStart(state, input.nowMs, {
       ...held,
       taskId: input.taskId,
       status: input.status,
@@ -394,6 +398,8 @@ export class ClaudeWorkflowRunTracker {
       ...(summary !== undefined ? { summary } : {}),
       ...(statusReason !== undefined ? { statusReason } : {}),
     });
+    state.ended = true;
+    return update;
   }
 
   /**
@@ -415,13 +421,15 @@ export class ClaudeWorkflowRunTracker {
 
   /**
    * A thread creates a run only from an update with a start time
-   * (applyWorkflowRunPatch), so a late one for a run a revert removed can not
-   * bring it back. Whichever update goes out first carries one.
+   * (applyWorkflowRunPatch). Every update carries one while the run lives,
+   * so a run whose first update was lost still appears; none does after it
+   * ended, so a report arriving after a revert removed the run (revert is
+   * refused while a run lives) can not bring it back.
    */
   private withStart(state: RunState, nowMs: number, update: WorkflowRunUpdate): WorkflowRunUpdate {
-    if (state.startReported) return update;
-    state.startReported = true;
-    return { startedAt: new Date(nowMs).toISOString(), ...update };
+    if (state.ended) return update;
+    state.startedAt ??= new Date(nowMs).toISOString();
+    return { startedAt: state.startedAt, ...update };
   }
 
   /** What the thread list shows about the run, from everything seen so far. */

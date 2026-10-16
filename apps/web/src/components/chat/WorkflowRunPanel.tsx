@@ -216,7 +216,16 @@ function AgentDetail({
           compute={() => agentDetailMeta(agent, Date.now())}
           className="mt-0.5 block truncate font-mono text-[10.5px] text-muted-foreground tabular-nums"
         />
-        {agent.error ? <p className="mt-1 text-[12px] text-destructive">{agent.error}</p> : null}
+        {agent.error ? (
+          <p
+            className={cn(
+              "mt-1 text-[12px]",
+              agent.state === "failed" ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            {agent.error}
+          </p>
+        ) : null}
       </div>
       {agentIds.length > 0 ? (
         <SubagentTranscript

@@ -30,10 +30,7 @@ import {
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
 import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
-import {
-  applyWorkflowRunPatch,
-  retainWorkflowRunsAfterRevert,
-} from "@threadlines/shared/workflowRuns";
+import { applyWorkflowRunPatch } from "@threadlines/shared/workflowRuns";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -1606,17 +1603,6 @@ export function projectEvent(
             thread.subagents ?? [],
             retainedTurnIds,
           );
-          // Workflow runs are never capped, so they are not filtered by the
-          // capped checkpoint list: only runs of the turns the revert removed go.
-          const removedTurnIds = new Set(
-            thread.checkpoints
-              .filter((entry) => entry.checkpointTurnCount > payload.turnCount)
-              .map((entry) => entry.turnId),
-          );
-          const workflowRuns = retainWorkflowRunsAfterRevert(
-            thread.workflowRuns ?? [],
-            removedTurnIds,
-          );
 
           const latestCheckpoint = checkpoints.at(-1) ?? null;
           const latestTurn =
@@ -1640,7 +1626,6 @@ export function projectEvent(
               pages,
               activities,
               subagents,
-              workflowRuns,
               latestTurn,
               updatedAt: event.occurredAt,
             }),
@@ -1663,12 +1648,15 @@ export function projectEvent(
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
+              // This model keeps live runs only, for the decider (Stop, and
+              // revert waits for them): a run leaves it when it ends. Finished
+              // runs are history, read from the SQL projection.
               workflowRuns: applyWorkflowRunPatch(
                 thread.workflowRuns ?? [],
                 payload.patch,
                 event.occurredAt,
                 event.sequence,
-              ),
+              ).filter((run) => run.status === "running"),
             }),
           };
         }),
