@@ -13,6 +13,20 @@
  */
 export const AGENT_SCREENSHOT_BUDGET_BYTES = 700_000;
 
+/**
+ * The budget for a server older than per-operation limits: its 512,000-byte
+ * cap applies to the whole result, where base64 adds a third to the picture.
+ */
+export const AGENT_SCREENSHOT_LEGACY_BUDGET_BYTES = 360_000;
+
+/**
+ * The longest side an agent's picture is encoded at, in CSS pixels. A model
+ * shrinks anything much bigger before it looks, and decoding and re-encoding
+ * a page an agent made enormous with browser_resize would hold up the app for
+ * nothing.
+ */
+export const AGENT_SCREENSHOT_MAX_EDGE = 2560;
+
 export type ScreenshotMimeType = "image/png" | "image/jpeg";
 
 /** One way to encode the page: a format, and a size as a fraction of its CSS pixels. */
@@ -48,6 +62,8 @@ export const AGENT_SCREENSHOT_PNG_ENCODINGS: readonly [
   { mimeType: "image/png", scale: 1 },
   { mimeType: "image/png", scale: 0.75 },
   { mimeType: "image/png", scale: 0.5 },
+  { mimeType: "image/png", scale: 0.35 },
+  { mimeType: "image/png", scale: 0.25 },
 ];
 
 export interface FittedScreenshot {

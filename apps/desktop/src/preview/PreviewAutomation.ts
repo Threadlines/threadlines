@@ -61,6 +61,8 @@ import * as IpcChannels from "../ipc/channels.ts";
 import {
   AGENT_SCREENSHOT_BUDGET_BYTES,
   AGENT_SCREENSHOT_ENCODINGS,
+  AGENT_SCREENSHOT_LEGACY_BUDGET_BYTES,
+  AGENT_SCREENSHOT_MAX_EDGE,
   AGENT_SCREENSHOT_PNG_ENCODINGS,
   fitScreenshot,
 } from "./screenshotFit.ts";
@@ -288,27 +290,35 @@ interface PickResult {
  */
 const encodeForAgent = (
   data: string,
-  width: number,
-  height: number,
+  /**
+   * The page's own `devicePixelRatio`: the display's scale times the page's
+   * zoom. The capture is in device pixels and covers the whole page area,
+   * scrollbars included, so this rather than the viewport's reported width
+   * is what turns it back into CSS pixels without squeezing it.
+   */
+  devicePixelRatio: number,
   /** Whether the server can carry a JPEG; see `DesktopPreviewScreenshotInputSchema`. */
   jpeg: boolean,
 ): { readonly dataUrl: string; readonly scale?: number } => {
   const captured = nativeImage.createFromBuffer(Buffer.from(data, "base64"));
-  if (captured.isEmpty() || width <= 0 || height <= 0) {
+  if (captured.isEmpty() || !Number.isFinite(devicePixelRatio) || devicePixelRatio <= 0) {
     // Nothing to work with; passed on as it came, and the caller sees it empty.
     return { dataUrl: `data:image/png;base64,${data}` };
   }
+  const capturedSize = captured.getSize();
+  const width = capturedSize.width / devicePixelRatio;
+  const height = capturedSize.height / devicePixelRatio;
+  const toMaxEdge = Math.min(1, AGENT_SCREENSHOT_MAX_EDGE / Math.max(width, height));
   const sized = new Map<number, NativeImage>();
   const atScale = (scale: number) => {
     const existing = sized.get(scale);
     if (existing !== undefined) return existing;
     const target = {
-      width: Math.max(1, Math.round(width * scale)),
-      height: Math.max(1, Math.round(height * scale)),
+      width: Math.max(1, Math.round(width * scale * toMaxEdge)),
+      height: Math.max(1, Math.round(height * scale * toMaxEdge)),
     };
-    const current = captured.getSize();
     const image =
-      current.width === target.width && current.height === target.height
+      capturedSize.width === target.width && capturedSize.height === target.height
         ? captured
         : captured.resize({ ...target, quality: "good" });
     sized.set(scale, image);
@@ -319,12 +329,14 @@ const encodeForAgent = (
       encoding.mimeType === "image/png"
         ? atScale(encoding.scale).toPNG()
         : atScale(encoding.scale).toJPEG(encoding.quality),
-    AGENT_SCREENSHOT_BUDGET_BYTES,
+    // A server that cannot take a JPEG is older, and so is its result limit.
+    jpeg ? AGENT_SCREENSHOT_BUDGET_BYTES : AGENT_SCREENSHOT_LEGACY_BUDGET_BYTES,
     jpeg ? AGENT_SCREENSHOT_ENCODINGS : AGENT_SCREENSHOT_PNG_ENCODINGS,
   );
+  const scale = fitted.scale * toMaxEdge;
   return {
     dataUrl: `data:${fitted.mimeType};base64,${Buffer.from(fitted.bytes).toString("base64")}`,
-    ...(fitted.scale === 1 ? {} : { scale: fitted.scale }),
+    ...(scale === 1 ? {} : { scale }),
   };
 };
 
@@ -356,6 +368,16 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * built, hence the wait.
    */
   let screenLocked = false;
+  // Asked of the system as well, at the moment of capture: the notices only
+  // cover locks that began after the app was ready to hear them.
+  const isScreenLocked = () => {
+    if (screenLocked) return true;
+    try {
+      return powerMonitor.getSystemIdleState(1) === "locked";
+    } catch {
+      return false;
+    }
+  };
   void app.whenReady().then(() => {
     powerMonitor.on("lock-screen", () => {
       screenLocked = true;
@@ -1799,7 +1821,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       // the screen is locked: nothing is painted, and the capture would wait
       // until the user is back. So then it gets a short wait, and an answer
       // that says why.
-      const lockedAtStart = screenLocked;
+      const lockedAtStart = isScreenLocked();
       const shot = (yield* sendCommand(
         contents,
         "Page.captureScreenshot",
@@ -1813,7 +1835,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         },
         {
           timeout: lockedAtStart ? LOCKED_CAPTURE_TIMEOUT : CDP_COMMAND_TIMEOUT,
-          timedOut: () => (lockedAtStart || screenLocked ? SCREEN_LOCKED : PAGE_DID_NOT_ANSWER),
+          timedOut: () => (lockedAtStart || isScreenLocked() ? SCREEN_LOCKED : PAGE_DID_NOT_ANSWER),
         },
       )) as { data?: string };
       const metrics = (yield* sendCommand(contents, "Page.getLayoutMetrics", {})) as {
@@ -1824,8 +1846,13 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       if (!forAgent) {
         return { dataUrl: `data:image/png;base64,${shot.data ?? ""}`, width, height };
       }
+      // Read in the injected world, where the page cannot redefine it.
+      const ratio = yield* evaluateInjected(contents, "window.devicePixelRatio", {
+        returnByValue: true,
+      });
+      const devicePixelRatio = typeof ratio.value === "number" ? ratio.value : 0;
       return {
-        ...encodeForAgent(shot.data ?? "", width, height, input.jpeg === true),
+        ...encodeForAgent(shot.data ?? "", devicePixelRatio, input.jpeg === true),
         width,
         height,
       };
