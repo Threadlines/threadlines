@@ -205,6 +205,12 @@ interface AcpSessionContext {
   agentTurnAhead:
     | { readonly turnId: TurnId; readonly after: AcpSessionContext["openPrompt"] }
     | undefined;
+  /**
+   * Ids of agent turns whose start the reader has read and the event fiber
+   * has not reached yet, oldest first: output just ahead of a start notice
+   * opens the first one.
+   */
+  readonly queuedAgentTurns: Array<TurnId>;
   /** The turn each running tool call started in, for updates that land after it. */
   readonly toolCallTurns: Map<string, TurnId>;
   /** How the agent said the running prompt ended, from its own notice. */
@@ -783,10 +789,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       turnId: TurnId,
     ) =>
       Effect.gen(function* () {
+        const queued = ctx.queuedAgentTurns.indexOf(turnId);
+        if (queued !== -1) ctx.queuedAgentTurns.splice(queued, 1);
         if (after !== undefined && ctx.openPrompt === after) {
           yield* Deferred.succeed(after.drained, undefined);
           yield* Deferred.await(after.closed);
         }
+        // Opened already by the output just ahead of this notice, or opens now.
         yield* openAgentTurn(ctx, raw, turnId);
         // Not opened (a turn already runs): requests go to the running one.
         if (ctx.agentTurn?.turnId !== turnId && ctx.agentTurnAhead?.turnId === turnId) {
@@ -862,11 +871,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         if (earlier !== undefined) return earlier;
         if (ctx.activeTurnId !== undefined) return ctx.activeTurnId;
         if (!descriptor.agentTurns) return undefined;
-        // Output just ahead of its turn's start notice is that turn's.
+        // Output just ahead of a start notice is that turn's.
         yield* openAgentTurn(
           ctx,
           { method: "session/update", payload: {} },
-          ctx.agentTurnAhead?.turnId,
+          ctx.queuedAgentTurns[0],
         );
         return ctx.activeTurnId;
       });
@@ -1169,6 +1178,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
            * shown. While the reader waits on a prompt's answer to open a turn
            * the agent began, it shows at once under that turn instead: the
            * agent may hold the answer back until this request is answered.
+           * A start read after this check can't hold a queued show: the agent
+           * begins a turn only once the one this request blocks has finished.
            */
           const showRequest = (show: (turnId: TurnId | undefined) => Effect.Effect<void>) =>
             Effect.gen(function* () {
@@ -1304,6 +1315,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               const turnId = TurnId.make(crypto.randomUUID());
               const after = ctx.openPrompt;
               ctx.agentTurnAhead = { turnId, after };
+              ctx.queuedAgentTurns.push(turnId);
               return acp.markAgentTurnBoundary.pipe(
                 Effect.andThen(acp.inOrder(beginAgentTurnInOrder(ctx, request, after, turnId))),
               );
@@ -1506,6 +1518,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             agentTurn: undefined,
             agentTurnLastActivityMs: 0,
             agentTurnAhead: undefined,
+            queuedAgentTurns: [],
             toolCallTurns: new Map(),
             promptOutcome: undefined,
             openPrompt: undefined,
