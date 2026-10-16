@@ -8,14 +8,13 @@ import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as NetService from "@threadlines/shared/Net";
-import { SHELL_ENVIRONMENT_HYDRATED_ENV_NAME } from "@threadlines/shared/shell";
 
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
-import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
+import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 
 const PersistedServerObservabilitySettingsDocument = Schema.Struct({
   observability: Schema.Struct({
@@ -100,10 +99,10 @@ function makeEnvironmentLayer(
   );
 }
 
-const makeShellEnvironmentLayer = (loginShellPathHydrated = false) =>
+const shellEnvironmentLayer = (prepared: boolean) =>
   Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
     installIntoProcess: Effect.void,
-    loginShellPathHydrated: Effect.succeed(loginShellPathHydrated),
+    prepared: Effect.succeed(prepared),
   });
 
 const withHarness = <A, E, R>(
@@ -117,7 +116,7 @@ const withHarness = <A, E, R>(
   >,
   options?: {
     readonly occupiedPorts?: readonly number[];
-    readonly loginShellPathHydrated?: boolean;
+    readonly shellEnvironmentPrepared?: boolean;
   },
 ) =>
   Effect.gen(function* () {
@@ -130,9 +129,9 @@ const withHarness = <A, E, R>(
       Effect.provide(
         DesktopBackendConfiguration.layer.pipe(
           Layer.provideMerge(serverExposureLayer),
-          Layer.provideMerge(makeShellEnvironmentLayer(options?.loginShellPathHydrated)),
           Layer.provideMerge(DesktopAppSettings.layerTest()),
           Layer.provideMerge(makeNetLayer(options?.occupiedPorts)),
+          Layer.provideMerge(shellEnvironmentLayer(options?.shellEnvironmentPrepared ?? true)),
           Layer.provideMerge(makeEnvironmentLayer(baseDir)),
         ),
       ),
@@ -179,8 +178,8 @@ const withLiveExposureHarness = <A, E, R>(
       Effect.provide(
         DesktopBackendConfiguration.layer.pipe(
           Layer.provideMerge(exposureLayer),
-          Layer.provideMerge(makeShellEnvironmentLayer()),
           Layer.provideMerge(makeNetLayer(input.occupiedPorts, input.listenerPorts)),
+          Layer.provideMerge(shellEnvironmentLayer(true)),
           Layer.provideMerge(makeEnvironmentLayer(baseDir)),
         ),
       ),
@@ -225,24 +224,20 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(first.bootstrap.tailscaleServePort, 8443);
         assert.match(first.bootstrap.desktopBootstrapToken, /^[0-9a-f]{48}$/i);
         assert.equal(second.bootstrap.desktopBootstrapToken, first.bootstrap.desktopBootstrapToken);
+        assert.equal(first.bootstrap.shellEnvironmentPrepared, true);
       }),
     ),
   );
 
-  it.effect("lets the backend skip its PATH probe only after the login shell was read", () =>
-    Effect.gen(function* () {
-      const resolveConfig = Effect.gen(function* () {
+  // The backend then runs its own probe, as a server started on its own does.
+  it.effect("leaves the shell environment to the backend when the desktop's probe failed", () =>
+    withHarness(
+      Effect.gen(function* () {
         const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
-        return yield* configuration.resolve;
-      });
-      const hydrated = yield* withHarness(resolveConfig, { loginShellPathHydrated: true });
-      assert.equal(hydrated.env[SHELL_ENVIRONMENT_HYDRATED_ENV_NAME], "1");
-
-      const notHydrated = yield* withHarness(resolveConfig);
-      // Present but undefined, so the spawn drops a value this process inherited.
-      assert.isTrue(SHELL_ENVIRONMENT_HYDRATED_ENV_NAME in notHydrated.env);
-      assert.isUndefined(notHydrated.env[SHELL_ENVIRONMENT_HYDRATED_ENV_NAME]);
-    }),
+        assert.isUndefined((yield* configuration.resolve).bootstrap.shellEnvironmentPrepared);
+      }),
+      { shellEnvironmentPrepared: false },
+    ),
   );
 
   it.effect("issues a fresh launch id per resolved start config", () =>
@@ -383,9 +378,9 @@ describe("DesktopBackendConfiguration", () => {
         Effect.provide(
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(serverExposureLayer),
-            Layer.provideMerge(makeShellEnvironmentLayer()),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
             Layer.provideMerge(makeNetLayer()),
+            Layer.provideMerge(shellEnvironmentLayer(true)),
             Layer.provideMerge(
               makeEnvironmentLayer(baseDir, {
                 isPackaged: false,

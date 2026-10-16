@@ -798,7 +798,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       yield* manager.write({
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
-        data: "Write-Output done\r",
+        // Recalled from history: the server polls to name it.
+        data: "\u001b[A\r",
       });
       yield* Deferred.await(checkStarted);
 
@@ -816,6 +817,70 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         .filter((event) => event.type === "activity")
         .map((event) => event.hasRunningSubprocess);
       expect(activityStates).toEqual([true, false]);
+    }),
+  );
+
+  // The prompt marker ends a PowerShell command, so reading the process
+  // table (a PowerShell process of its own on Windows) can only name one.
+  it.effect("reads no process table for a PowerShell command it can name", () =>
+    Effect.gen(function* () {
+      let checks = 0;
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+        platform: "win32",
+        shellResolver: () => "powershell.exe",
+        subprocessChecker: () =>
+          Effect.sync(() => {
+            checks += 1;
+            return true;
+          }),
+        subprocessPollIntervalMs: 20,
+      });
+
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      assert.isDefined(process);
+      process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "npm run dev\r",
+      });
+      yield* Effect.sleep("200 millis");
+      assert.equal(checks, 0);
+
+      process.emitData("\u001b]633;D\u0007PS C:\\repo> ");
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess === false),
+        ),
+      );
+    }),
+  );
+
+  it.effect("stops looking for a recalled PowerShell command's name after a few polls", () =>
+    Effect.gen(function* () {
+      let checks = 0;
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        platform: "win32",
+        shellResolver: () => "powershell.exe",
+        // A cmdlet runs inside the shell: there is no process to find.
+        subprocessChecker: () =>
+          Effect.sync(() => {
+            checks += 1;
+            return false;
+          }),
+        subprocessPollIntervalMs: 20,
+      });
+
+      yield* manager.open(openInput());
+      ptyAdapter.processes[0]?.emitData("\u001b]633;D\u0007PS C:\\repo> ");
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "\u001b[A\r",
+      });
+      yield* Effect.sleep("400 millis");
+      assert.equal(checks, 3);
     }),
   );
 
@@ -994,6 +1059,55 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       const checksAfterConfirmedIdle = checks;
       yield* Effect.sleep("80 millis");
       assert.equal(checks, checksAfterConfirmedIdle);
+    }),
+  );
+
+  it.effect("checks a long-running command less often until the terminal is used", () =>
+    Effect.gen(function* () {
+      let checks = 0;
+      let hasRunningSubprocess = true;
+      const { manager, getEvents } = yield* createManager(5, {
+        // Poll-only path; see the platform note in the activity test above.
+        platform: "linux",
+        subprocessChecker: () =>
+          Effect.sync(() => {
+            checks += 1;
+            return hasRunningSubprocess;
+          }),
+        subprocessPollIntervalMs: 20,
+      });
+
+      yield* manager.open(openInput());
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "vp run dev\r",
+      });
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess),
+        ),
+      );
+
+      // Every 20 ms this window would hold about 30 checks; backing off to
+      // 300 ms apart leaves a handful.
+      const checksBeforeWindow = checks;
+      yield* Effect.sleep("600 millis");
+      expect(checks - checksBeforeWindow).toBeLessThan(10);
+
+      // Ctrl+C: the next tick looks again, and the exit shows quickly.
+      hasRunningSubprocess = false;
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "\u0003",
+      });
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && !event.hasRunningSubprocess),
+        ),
+        "250 millis",
+      );
     }),
   );
 

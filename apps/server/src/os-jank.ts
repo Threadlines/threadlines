@@ -4,13 +4,14 @@ import * as Path from "effect/Path";
 import {
   readPathFromLoginShell,
   readEnvironmentFromWindowsShell,
+  resolveKnownWindowsCliDirs,
   resolveWindowsEnvironment,
+  mergePathValues,
   type CommandAvailabilityOptions,
   type WindowsShellEnvironmentReader,
   listLoginShellCandidates,
   mergePathEntries,
   readPathFromLaunchctl,
-  SHELL_ENVIRONMENT_HYDRATED_ENV_NAME,
 } from "@threadlines/shared/shell";
 
 type WindowsCommandAvailabilityChecker = (
@@ -24,17 +25,15 @@ function logPathHydrationWarning(message: string, error?: unknown): void {
   );
 }
 
-/**
- * Puts the user's shell PATH into this process before anything spawns, since
- * apps launched from a dock or menu inherit a bare one. On macOS and Linux the
- * login shell probe is skipped when the desktop app that spawned this server
- * says it already ran it (SHELL_ENVIRONMENT_HYDRATED_ENV_NAME); that flag is
- * removed here either way, so provider processes never inherit it.
- */
 export function fixPath(
   options: {
     env?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;
+    /**
+     * The desktop app already read the user's shell environment into this
+     * process, so the blocking login-shell or PowerShell probe is skipped.
+     */
+    shellEnvironmentPrepared?: boolean;
     readPath?: typeof readPathFromLoginShell;
     readWindowsEnvironment?: WindowsShellEnvironmentReader;
     isWindowsCommandAvailable?: WindowsCommandAvailabilityChecker;
@@ -47,12 +46,21 @@ export function fixPath(
   const env = options.env ?? process.env;
   const logWarning = options.logWarning ?? logPathHydrationWarning;
   const readPath = options.readPath ?? readPathFromLoginShell;
-  const hydratedByDesktop = env[SHELL_ENVIRONMENT_HYDRATED_ENV_NAME] === "1";
-  delete env[SHELL_ENVIRONMENT_HYDRATED_ENV_NAME];
 
   try {
-    // Windows always runs its own repair: the desktop's builds PATH in a
-    // different order (profile entries first), so it is not a substitute.
+    if (options.shellEnvironmentPrepared) {
+      if (platform === "win32") {
+        // Same order a probe would leave: known CLI folders first.
+        const path = mergePathValues(
+          resolveKnownWindowsCliDirs(env).join(";"),
+          env.PATH ?? env.Path ?? env.path,
+          "win32",
+        );
+        if (path) env.PATH = path;
+      }
+      return;
+    }
+
     if (platform === "win32") {
       const repairedEnvironment = resolveWindowsEnvironment(env, {
         readEnvironment: options.readWindowsEnvironment ?? readEnvironmentFromWindowsShell,
@@ -69,7 +77,6 @@ export function fixPath(
     }
 
     if (platform !== "darwin" && platform !== "linux") return;
-    if (hydratedByDesktop) return;
 
     let shellPath: string | undefined;
     for (const shell of listLoginShellCandidates(platform, env.SHELL, options.userShell)) {

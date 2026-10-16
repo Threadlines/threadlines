@@ -1,70 +1,50 @@
-import { SHELL_ENVIRONMENT_HYDRATED_ENV_NAME } from "@threadlines/shared/shell";
 import { describe, expect, it } from "vite-plus/test";
 
 import { fixPath } from "./os-jank.ts";
 
 describe("fixPath", () => {
-  it("probes the login shell and merges its PATH ahead of the inherited one", () => {
-    const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin" };
-    const probed: string[] = [];
-
-    fixPath({
-      env,
-      platform: "darwin",
-      userShell: "",
-      readPath: (shell) => {
-        probed.push(shell);
-        return "/opt/homebrew/bin:/usr/bin";
-      },
-    });
-
-    expect(probed).toEqual(["/bin/zsh"]);
-    expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
-  });
-
-  it("trusts a desktop parent that already read the login shell, and drops its flag", () => {
-    const env: NodeJS.ProcessEnv = {
-      SHELL: "/bin/zsh",
-      PATH: "/opt/homebrew/bin:/usr/bin",
-      [SHELL_ENVIRONMENT_HYDRATED_ENV_NAME]: "1",
-    };
-    const probed: string[] = [];
-
-    fixPath({
-      env,
-      platform: "linux",
-      userShell: "",
-      readPath: (shell) => {
-        probed.push(shell);
-        return "/elsewhere/bin";
-      },
-    });
-
-    expect(probed).toEqual([]);
-    expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
-    // Provider processes inherit this environment; the flag must not reach them.
-    expect(SHELL_ENVIRONMENT_HYDRATED_ENV_NAME in env).toBe(false);
-  });
-
-  it("keeps the Windows repair even when the flag is set", () => {
-    const env: NodeJS.ProcessEnv = {
-      PATH: "C:\\Windows\\System32",
-      [SHELL_ENVIRONMENT_HYDRATED_ENV_NAME]: "1",
-    };
+  // Under the desktop app the backend inherits the environment the desktop
+  // read from the user's shell; probing again would block startup.
+  it("runs no probe when the desktop already prepared the environment", () => {
     const probes: string[] = [];
-
+    const windowsEnv: NodeJS.ProcessEnv = {
+      PATH: "D:\\Configured;C:\\Windows",
+      USERPROFILE: "C:\\Users\\testuser",
+    };
     fixPath({
-      env,
+      env: windowsEnv,
       platform: "win32",
-      readWindowsEnvironment: (names) => {
-        probes.push(names.join(","));
-        return { PATH: "C:\\Custom\\Bin" };
+      shellEnvironmentPrepared: true,
+      readWindowsEnvironment: () => {
+        probes.push("powershell");
+        return {};
       },
-      isWindowsCommandAvailable: () => true,
     });
+    // Known CLI folders still come first, as after a probe.
+    expect(windowsEnv.PATH?.split(";").slice(0, 1)).toEqual(["C:\\Users\\testuser\\.local\\bin"]);
+    expect(windowsEnv.PATH?.split(";")).toContain("D:\\Configured");
 
-    expect(probes).toEqual(["PATH"]);
-    expect(env.PATH?.split(";")).toContain("C:\\Custom\\Bin");
-    expect(SHELL_ENVIRONMENT_HYDRATED_ENV_NAME in env).toBe(false);
+    const macEnv: NodeJS.ProcessEnv = { PATH: "/usr/bin", SHELL: "/bin/zsh" };
+    fixPath({
+      env: macEnv,
+      platform: "darwin",
+      shellEnvironmentPrepared: true,
+      readPath: () => {
+        probes.push("login shell");
+        return "/opt/homebrew/bin";
+      },
+      readLaunchctlPath: () => {
+        probes.push("launchctl");
+        return undefined;
+      },
+    });
+    expect(macEnv.PATH).toBe("/usr/bin");
+    expect(probes).toEqual([]);
+  });
+
+  it("probes the login shell for a server started on its own", () => {
+    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin", SHELL: "/bin/zsh" };
+    fixPath({ env, platform: "darwin", readPath: () => "/opt/homebrew/bin:/usr/bin" });
+    expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
   });
 });

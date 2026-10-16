@@ -8,8 +8,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import {
   buildWindowsEnvironmentCaptureCommand,
-  listLoginShellCandidates,
-  readUserLoginShell,
   resolveKnownWindowsCliDirs,
 } from "@threadlines/shared/shell";
 
@@ -29,13 +27,8 @@ interface WindowsProbeOptions {
 
 export interface DesktopShellEnvironmentShape {
   readonly installIntoProcess: Effect.Effect<void, never>;
-  /**
-   * True once installIntoProcess has read PATH from a login shell. The
-   * backend's own startup probe asks the same shells (see
-   * SHELL_ENVIRONMENT_HYDRATED_ENV_NAME), so only then may it skip that probe.
-   * Always false on Windows, where the two repairs build PATH differently.
-   */
-  readonly loginShellPathHydrated: Effect.Effect<boolean>;
+  /** True once `installIntoProcess` got PATH from the user's shell. */
+  readonly prepared: Effect.Effect<boolean>;
 }
 
 export class DesktopShellEnvironment extends Context.Service<
@@ -98,6 +91,25 @@ const mergePaths = (
   }
 
   return entries.length > 0 ? Option.some(entries.join(delimiter)) : Option.none();
+};
+
+const listLoginShellCandidates = (config: ShellEnvironmentConfig): ReadonlyArray<string> => {
+  const fallback =
+    config.platform === "darwin" ? "/bin/zsh" : config.platform === "linux" ? "/bin/bash" : "";
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+
+  for (const candidate of [
+    trimNonEmpty(config.env.SHELL),
+    config.userShell,
+    trimNonEmpty(fallback),
+  ]) {
+    if (Option.isNone(candidate) || seen.has(candidate.value)) continue;
+    seen.add(candidate.value);
+    candidates.push(candidate.value);
+  }
+
+  return candidates;
 };
 
 const startMarker = (name: string) => `__THREADLINES_ENV_${name}_START__`;
@@ -222,7 +234,7 @@ const readWindowsEnvironment = Effect.fn("desktop.shellEnvironment.readWindowsEn
 const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWindowsEnvironment")(
   function* (
     config: ShellEnvironmentConfig,
-  ): Effect.fn.Return<void, never, ChildProcessSpawner.ChildProcessSpawner> {
+  ): Effect.fn.Return<boolean, never, ChildProcessSpawner.ChildProcessSpawner> {
     // Each probe is a PowerShell launch costing hundreds of milliseconds, and
     // startup waits on this before the window, so run them side by side.
     const [noProfile, profile] = yield* Effect.all(
@@ -248,24 +260,17 @@ const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWin
     if (!config.env.FNM_MULTISHELL_PATH && profile.FNM_MULTISHELL_PATH) {
       config.env.FNM_MULTISHELL_PATH = profile.FNM_MULTISHELL_PATH;
     }
+    return Option.isSome(trimNonEmpty(profile.PATH)) || Option.isSome(trimNonEmpty(noProfile.PATH));
   },
 );
 
-/** Returns whether PATH came from a login shell, rather than launchctl or nowhere. */
 const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosixEnvironment")(
   function* (
     config: ShellEnvironmentConfig,
   ): Effect.fn.Return<boolean, never, ChildProcessSpawner.ChildProcessSpawner> {
     const shellEnvironment: EnvironmentPatch = {};
-    const candidates = listLoginShellCandidates(
-      config.platform,
-      config.env.SHELL,
-      // "" rather than undefined: undefined makes the helper read the account
-      // shell itself, around the value injected here.
-      Option.getOrElse(config.userShell, () => ""),
-    );
 
-    for (const shell of candidates) {
+    for (const shell of listLoginShellCandidates(config)) {
       Object.assign(
         shellEnvironment,
         yield* readLoginShellEnvironment(shell, LOGIN_SHELL_ENV_NAMES),
@@ -300,17 +305,16 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
         config.env[name] = shellEnvironment[name];
       }
     }
-
-    return shellEnvironment.PATH !== undefined;
+    return Option.isSome(trimNonEmpty(shellEnvironment.PATH)) || Option.isSome(launchctlPath);
   },
 );
 
-/** Returns whether PATH came from a login shell (see loginShellPathHydrated). */
+/** Installs the shell's environment into `config.env`; true when a probe answered with PATH. */
 const installShellEnvironment = (
   config: ShellEnvironmentConfig,
 ): Effect.Effect<boolean, never, ChildProcessSpawner.ChildProcessSpawner> => {
   if (config.platform === "win32") {
-    return installWindowsEnvironment(config).pipe(Effect.as(false));
+    return installWindowsEnvironment(config);
   }
   if (config.platform === "darwin" || config.platform === "linux") {
     return installPosixEnvironment(config);
@@ -318,32 +322,25 @@ const installShellEnvironment = (
   return Effect.succeed(false);
 };
 
-/**
- * `readUserShell` names the account's login shell, probed after `SHELL`. The
- * app reads it from the user database, as the server does; tests pin it.
- */
-export const layerWithUserShell = (readUserShell: () => string | undefined) =>
-  Layer.effect(
-    DesktopShellEnvironment,
-    Effect.gen(function* () {
-      const environment = yield* DesktopEnvironment.DesktopEnvironment;
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const hydrated = yield* Ref.make(false);
-      return DesktopShellEnvironment.of({
-        installIntoProcess: Effect.suspend(() =>
-          installShellEnvironment({
-            env: process.env,
-            platform: environment.platform,
-            userShell: Option.fromNullishOr(readUserShell()),
-          }),
-        ).pipe(
-          Effect.flatMap((fromLoginShell) => Ref.set(hydrated, fromLoginShell)),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.withSpan("desktop.shellEnvironment.installIntoProcess"),
-        ),
-        loginShellPathHydrated: Ref.get(hydrated),
-      });
-    }),
-  );
-
-export const layer = layerWithUserShell(readUserLoginShell);
+export const layer = Layer.effect(
+  DesktopShellEnvironment,
+  Effect.gen(function* () {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const preparedRef = yield* Ref.make(false);
+    return DesktopShellEnvironment.of({
+      installIntoProcess: installShellEnvironment({
+        env: process.env,
+        platform: environment.platform,
+        // The backend skips its own probe once this one answers, so both try
+        // the same shells: SHELL, then the account's login shell.
+        userShell: trimNonEmpty(environment.accountLoginShell),
+      }).pipe(
+        Effect.flatMap((prepared) => Ref.set(preparedRef, prepared)),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.withSpan("desktop.shellEnvironment.installIntoProcess"),
+      ),
+      prepared: Ref.get(preparedRef),
+    });
+  }),
+);

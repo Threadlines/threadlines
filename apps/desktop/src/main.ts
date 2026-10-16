@@ -168,6 +168,13 @@ const desktopEnvironmentLayer = Layer.unwrap(
     return DesktopEnvironment.layer({
       dirname: __dirname,
       homeDirectory: NodeOS.homedir(),
+      accountLoginShell: (() => {
+        try {
+          return NodeOS.userInfo().shell ?? undefined;
+        } catch {
+          return undefined;
+        }
+      })(),
       platform: process.platform,
       processArch: process.arch,
       ...metadata,
@@ -266,8 +273,8 @@ const desktopBackendLayer = DesktopBackendManager.layer.pipe(
   Layer.provideMerge(DesktopCrashReport.layer),
   Layer.provideMerge(DesktopAppIdentity.layer),
   Layer.provideMerge(DesktopBackendConfiguration.layer),
-  // Beneath the backend configuration, which tells the backend whether this
-  // process already read PATH from the login shell.
+  // Startup installs the shell environment and the backend configuration
+  // reads whether that worked: both must see this one instance.
   Layer.provideMerge(DesktopShellEnvironment.layer),
   Layer.provideMerge(DesktopDatabaseRecovery.layer),
   Layer.provideMerge(desktopWindowLayer),
