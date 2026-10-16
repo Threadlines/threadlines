@@ -44,6 +44,7 @@ import {
   normalizePreviewWaitForTimeoutMs,
   PREVIEW_AGENT_KEYBOARD_HOLD_MS,
   PREVIEW_AGENT_KEYS_DEADLINE_MS,
+  withBrowserApproval,
   type BrowserSiteAccess,
 } from "@threadlines/shared/preview";
 import {
@@ -57,6 +58,7 @@ import {
   type WebContents,
 } from "electron";
 
+import { isAppWindow } from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import {
   AGENT_SCREENSHOT_BUDGET_BYTES,
@@ -195,6 +197,27 @@ export class PreviewAutomation extends Context.Service<
     readonly setNavigationPolicy: (
       webContentsId: number,
       access: BrowserSiteAccess,
+    ) => Effect.Effect<void, PreviewAutomationError>;
+    /**
+     * Holds a page's sign-in pop-up to the page's own sites, live, so what the
+     * project allows later reaches the pop-up too, and to web addresses only.
+     * A refused navigation goes to `onRefused` rather than to the panel, which
+     * cannot see the pop-up.
+     */
+    readonly guardPopup: (
+      openerWebContentsId: number,
+      popup: WebContents,
+      onRefused: (url: string, host: string) => void,
+    ) => Effect.Effect<void, PreviewAutomationError>;
+    /**
+     * Lets a page, and its pop-ups, go to a site now: the user allowed it from
+     * a pop-up's question, and the renderer records the answer and pushes the
+     * project's policy back only after a round trip.
+     */
+    readonly allowSite: (
+      webContentsId: number,
+      host: string,
+      allowAll: boolean,
     ) => Effect.Effect<void, PreviewAutomationError>;
     readonly status: (
       webContentsId: number,
@@ -411,8 +434,8 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * Tells the renderer a page tried to go somewhere it may not.
    *
    * Sent to the window embedding the guest, because that is the renderer that
-   * owns the tab and can put the question in front of the user. Every window
-   * is the fallback rather than silence: the notice is addressed by
+   * owns the tab and can put the question in front of the user. Every app
+   * window is the fallback rather than silence: the notice is addressed by
    * webContents id, so a window that does not own this tab ignores it.
    */
   const reportBlockedNavigation = (contents: WebContents, url: string, blockedHost: string) => {
@@ -431,7 +454,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       return;
     }
     for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) {
+      if (isAppWindow(window)) {
         window.webContents.send(IpcChannels.PREVIEW_NAVIGATION_BLOCKED_CHANNEL, payload);
       }
     }
@@ -445,7 +468,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       return;
     }
     for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) {
+      if (isAppWindow(window)) {
         window.webContents.send(IpcChannels.PREVIEW_USER_CONTROL_CHANNEL, payload);
       }
     }
@@ -466,6 +489,52 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   const accessBySession = new WeakMap<Session, BrowserSiteAccess>();
 
   /**
+   * Holds a page's own navigations to a guard's sites: a refused one is
+   * stopped, and `onRefused` hears where it was going.
+   *
+   * `webOnly` is for sign-in pop-ups. A window outside the panel goes only to
+   * web addresses, so a `blob:` or `data:` page its opener made cannot pose as
+   * a site in it. Panel tabs keep those, since they name no site (see
+   * `navigationHost`).
+   */
+  const armNavigationGuard = (
+    contents: WebContents,
+    guard: NavigationGuard,
+    onRefused: (url: string, host: string) => void,
+    webOnly: boolean,
+  ) => {
+    const refuse = (details: {
+      readonly url: string;
+      readonly isMainFrame: boolean;
+      readonly preventDefault: () => void;
+    }) => {
+      // Only the top-level document. An iframe is the page's own composition,
+      // not somewhere the browser went.
+      if (!details.isMainFrame) {
+        return;
+      }
+      const blockedHost = navigationHost(details.url);
+      if (blockedHost === null) {
+        if (webOnly) details.preventDefault();
+        return;
+      }
+      if (isBrowserHostAllowed(blockedHost, guard.access)) {
+        return;
+      }
+      details.preventDefault();
+      onRefused(details.url, blockedHost);
+    };
+    // Both, because a link click and a 302 arriving mid-load are the same
+    // event to the user: the page ended up somewhere nobody approved.
+    contents.on("will-navigate", refuse);
+    contents.on("will-redirect", refuse);
+    contents.once("destroyed", () => {
+      contents.off("will-navigate", refuse);
+      contents.off("will-redirect", refuse);
+    });
+  };
+
+  /**
    * Arms the guest's own navigations against the guest's allowlist.
    *
    * Registered at attach as well as when a policy arrives, so a tab whose
@@ -480,32 +549,13 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     const guard: NavigationGuard = {
       access: accessBySession.get(contents.session) ?? { allowAll: false, approvedHosts: [] },
     };
-    const refuse = (details: {
-      readonly url: string;
-      readonly isMainFrame: boolean;
-      readonly preventDefault: () => void;
-    }) => {
-      // Only the top-level document. An iframe is the page's own composition,
-      // not somewhere the browser went.
-      if (!details.isMainFrame) {
-        return;
-      }
-      const blockedHost = navigationHost(details.url);
-      if (blockedHost === null || isBrowserHostAllowed(blockedHost, guard.access)) {
-        return;
-      }
-      details.preventDefault();
-      reportBlockedNavigation(contents, details.url, blockedHost);
-    };
-    // Both, because a link click and a 302 arriving mid-load are the same
-    // event to the user: the page ended up somewhere nobody approved.
-    contents.on("will-navigate", refuse);
-    contents.on("will-redirect", refuse);
-    contents.once("destroyed", () => {
-      contents.off("will-navigate", refuse);
-      contents.off("will-redirect", refuse);
-      navigationGuards.delete(contents.id);
-    });
+    armNavigationGuard(
+      contents,
+      guard,
+      (url, host) => reportBlockedNavigation(contents, url, host),
+      false,
+    );
+    contents.once("destroyed", () => navigationGuards.delete(contents.id));
     navigationGuards.set(contents.id, guard);
     return guard;
   };
@@ -1463,6 +1513,29 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     ) {
       const contents = yield* resolve(webContentsId);
       ensureNavigationGuard(contents).access = access;
+      accessBySession.set(contents.session, access);
+    }),
+    guardPopup: Effect.fn("PreviewAutomation.guardPopup")(function* (
+      openerWebContentsId: number,
+      popup: WebContents,
+      onRefused: (url: string, host: string) => void,
+    ) {
+      const opener = yield* resolve(openerWebContentsId);
+      // The opener's own guard object, not a copy: a policy pushed to the page
+      // later is the pop-up's policy too.
+      armNavigationGuard(popup, ensureNavigationGuard(opener), onRefused, true);
+    }),
+    allowSite: Effect.fn("PreviewAutomation.allowSite")(function* (
+      webContentsId: number,
+      host: string,
+      allowAll: boolean,
+    ) {
+      const contents = yield* resolve(webContentsId);
+      const guard = ensureNavigationGuard(contents);
+      const access: BrowserSiteAccess = allowAll
+        ? { ...guard.access, allowAll: true }
+        : { ...guard.access, approvedHosts: withBrowserApproval(guard.access.approvedHosts, host) };
+      guard.access = access;
       accessBySession.set(contents.session, access);
     }),
     status: Effect.fn("PreviewAutomation.status")(function* (webContentsId: number) {

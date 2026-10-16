@@ -242,6 +242,30 @@ describe("openTabForPage", () => {
     expect(selectActiveTab(panelState())?.id).toBe(helpTab.id);
   });
 
+  it("stops opening tabs for pages once they have filled the strip", () => {
+    const opener = selectActiveTab(panelState())!.id;
+    for (let index = 0; index < 25; index += 1) {
+      pageAsks({ openerTabId: opener, url: `http://localhost:5173/${index}`, background: true });
+    }
+
+    expect(panelState().tabs).toHaveLength(21);
+    // The user's own tabs are theirs to open.
+    useBrowserPanelStore.getState().openTab(THREAD_REF);
+    expect(panelState().tabs).toHaveLength(22);
+  });
+
+  it("counts tabs waiting on a site question against the same limit", () => {
+    const opener = selectActiveTab(panelState())!.id;
+    for (let index = 0; index < 25; index += 1) {
+      pageAsks({ openerTabId: opener, url: `https://shop.example.org/${index}`, background: true });
+    }
+
+    const questions =
+      useBrowserPanelStore.getState().pendingApprovalsByThreadKey[scopedThreadKey(THREAD_REF)] ??
+      [];
+    expect(questions).toHaveLength(20);
+  });
+
   it("asks before a page opens a site the project has not allowed", () => {
     const opener = selectActiveTab(panelState())!.id;
 

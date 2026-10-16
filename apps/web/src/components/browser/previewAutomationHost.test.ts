@@ -215,15 +215,19 @@ describe("createPreviewAutomationHandler", () => {
     expect(points).toEqual([{ x: 120, y: 48 }]);
   });
 
-  it("names the tabs a click made the page open, and only those", async () => {
+  it("names the tabs and sign-in windows a click made the page open, and only those", async () => {
     // A link into a new tab leaves the agent's page where it was. Without the
     // tab named, the click reads as a miss and a retry opens a second one.
     const openedByPage = [{ id: "tab-earlier", url: "https://example.com/earlier" }];
+    const popupsOpen: Array<{ id: number; url: string }> = [];
     const handle = createPreviewAutomationHandler(
       {
         previewClick: (input: { target: { ref: string } }) => {
           if (input.target.ref === "docs-link") {
             openedByPage.push({ id: "tab-docs", url: "https://example.com/docs" });
+          }
+          if (input.target.ref === "sign-in") {
+            popupsOpen.push({ id: 31, url: "https://accounts.example.com/o/auth" });
           }
           return Promise.resolve({ x: 1, y: 1 });
         },
@@ -238,6 +242,7 @@ describe("createPreviewAutomationHandler", () => {
         onAgentPoint: () => {},
         tabs: () => [],
         tabsOpenedByPage: () => openedByPage,
+        windowsOpenedByPage: () => popupsOpen,
         selectTab: () => {},
         onAgentActivity: () => {},
       }),
@@ -253,6 +258,14 @@ describe("createPreviewAutomationHandler", () => {
     const plain = await handle(request("click", { target: { ref: "button" } }));
     expect(plain.result).toMatchObject({ tabId: "tab-agent" });
     expect(plain.result).not.toHaveProperty("openedTabs");
+    expect(plain.result).not.toHaveProperty("openedWindows");
+
+    // A sign-in pop-up is a window for the user, named so the agent knows to ask.
+    const signIn = await handle(request("click", { target: { ref: "sign-in" } }));
+    expect(signIn.result).toMatchObject({
+      openedWindows: [{ url: "https://accounts.example.com/o/auth" }],
+    });
+    expect(signIn.result).not.toHaveProperty("openedTabs");
   });
 
   it("reports both ends of a drag, so the pointer can replay the gesture", async () => {

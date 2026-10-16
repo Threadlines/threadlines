@@ -22,6 +22,7 @@ import {
   callWhenReady,
   getPreviewWebview,
   selectActiveTab,
+  selectPendingBrowserApprovals,
   selectThreadBrowserState,
   useBrowserPanelStore,
 } from "../../browserPanelStore";
@@ -161,6 +162,15 @@ export function openUrlInBrowserPanel(threadRef: ScopedThreadRef, rawUrl: string
 }
 
 /**
+ * How many tabs pages may have open in one thread, counting those waiting on
+ * a site question (allowing a site opens them all at once). The desktop slows
+ * a page that opens tabs in a loop; this stops one that keeps going from
+ * filling the strip, and memory, with tabs nobody asked for. Tabs the user
+ * opens do not count.
+ */
+const PAGE_OPENED_TAB_LIMIT = 20;
+
+/**
  * Opens a tab a page asked for (see `DesktopPreviewOpenTab`), beside the page.
  *
  * Held to the same sites as a link followed in the same tab: one the project
@@ -182,6 +192,16 @@ export function openTabForPage(input: {
   }
   const store = useBrowserPanelStore.getState();
   const panel = selectThreadBrowserState(store.browserStateByThreadKey, input.threadRef);
+  const waitingOnQuestions = selectPendingBrowserApprovals(
+    store.pendingApprovalsByThreadKey,
+    input.threadRef,
+  ).filter((question) => question.newTab !== undefined).length;
+  if (
+    panel.tabs.filter((tab) => tab.openerTabId !== undefined).length + waitingOnQuestions >=
+    PAGE_OPENED_TAB_LIMIT
+  ) {
+    return;
+  }
   if (!isBrowserHostAllowed(host, readBrowserSiteAccess(input.projectId))) {
     const opener = panel.tabs.find((tab) => tab.id === input.openerTabId);
     store.enqueueBrowserApproval(input.threadRef, {

@@ -25,10 +25,15 @@ import { useBrowserProfilePartition } from "../../lib/browserProfiles";
 import { useStore } from "../../store";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { resolveBrowserSiteAccess } from "@threadlines/shared/preview";
-import { pushNavigationPolicy } from "./browserApprovals";
+import {
+  approveBrowserHostForProject,
+  pushNavigationPolicy,
+  setBrowserSitePolicyForProject,
+} from "./browserApprovals";
 import { nextBrowserApprovalId } from "./browserApprovalRequests";
 import { installBrowserFocusGuard } from "./browserFocusGuard";
 import { openTabForPage } from "./openInBrowserPanel";
+import { noteSignInPopup } from "./signInPopups";
 import {
   forgetThreadPages,
   hasBackgroundPages,
@@ -293,6 +298,25 @@ export function useBrowserPageWatchers(): void {
         url: request.url,
         background: request.background,
       });
+    });
+  }, []);
+
+  useEffect(() => window.desktopBridge?.onPreviewPopup?.(noteSignInPopup), []);
+
+  // A site the user allowed from a sign-in pop-up's own question. The pop-up
+  // has gone there already; the answer is the project's, as if given in the
+  // approval line, and recording it pushes the policy to every page.
+  useEffect(() => {
+    const subscribe = window.desktopBridge?.onPreviewSiteAllowed;
+    if (subscribe === undefined) return;
+    return subscribe((allowed) => {
+      const page = attachedPages().find((entry) => entry.webContentsId === allowed.webContentsId);
+      if (page === undefined) return;
+      if (allowed.allowAll) {
+        setBrowserSitePolicyForProject(page.live.projectId, "any");
+      } else {
+        approveBrowserHostForProject(page.live.projectId, allowed.host);
+      }
     });
   }, []);
 

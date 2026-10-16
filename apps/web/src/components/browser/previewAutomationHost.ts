@@ -147,6 +147,8 @@ export interface PreviewAutomationHostTarget {
   }>;
   /** Tabs this tab's page has opened, so an action can say which it opened. */
   readonly tabsOpenedByPage?: (() => ReadonlyArray<{ id: string; url: string }>) | undefined;
+  /** Sign-in pop-ups this tab's page has open, for the same reason. */
+  readonly windowsOpenedByPage?: (() => ReadonlyArray<{ id: number; url: string }>) | undefined;
   /**
    * The server can carry a JPEG screenshot (it advertises
    * `browserScreenshotTypes`). Without it pictures stay PNG.
@@ -506,6 +508,9 @@ async function dispatch(
   // retried click opens a second one. Only tabs already open by the time the
   // page is asked where it stands; a page that opens one later is not caught.
   const tabsOpenedBefore = new Set((target.tabsOpenedByPage?.() ?? []).map((tab) => tab.id));
+  const windowsOpenedBefore = new Set(
+    (target.windowsOpenedByPage?.() ?? []).map((popup) => popup.id),
+  );
   const actionStatus = async () => {
     const status = toStatus(
       target.tabId ?? "",
@@ -515,7 +520,14 @@ async function dispatch(
     const openedTabs = (target.tabsOpenedByPage?.() ?? []).filter(
       (tab) => !tabsOpenedBefore.has(tab.id),
     );
-    return openedTabs.length === 0 ? status : { ...status, openedTabs };
+    const openedWindows = (target.windowsOpenedByPage?.() ?? [])
+      .filter((popup) => !windowsOpenedBefore.has(popup.id))
+      .map((popup) => ({ url: popup.url }));
+    return {
+      ...status,
+      ...(openedTabs.length === 0 ? {} : { openedTabs }),
+      ...(openedWindows.length === 0 ? {} : { openedWindows }),
+    };
   };
 
   switch (request.operation) {

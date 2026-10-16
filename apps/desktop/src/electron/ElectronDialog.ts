@@ -22,8 +22,10 @@ export interface ElectronDialogShape {
     input: ElectronDialogPickFolderInput,
   ) => Effect.Effect<Option.Option<string>>;
   readonly confirm: (input: ElectronDialogConfirmInput) => Effect.Effect<boolean>;
+  /** Attached to `owner` as a sheet when given, rather than standing alone. */
   readonly showMessageBox: (
     options: Electron.MessageBoxOptions,
+    owner?: Electron.BrowserWindow,
   ) => Effect.Effect<Electron.MessageBoxReturnValue>;
   readonly showErrorBox: (title: string, content: string) => Effect.Effect<void>;
 }
@@ -76,8 +78,12 @@ const make = ElectronDialog.of({
   }),
   // Interrupting the fiber aborts the signal, which closes the box as if the
   // user had cancelled it, so a dialog never outlives the work that showed it.
-  showMessageBox: (options) =>
-    Effect.promise((signal) => Electron.dialog.showMessageBox({ ...options, signal })),
+  showMessageBox: (options, owner) =>
+    Effect.promise((signal) =>
+      owner === undefined || owner.isDestroyed()
+        ? Electron.dialog.showMessageBox({ ...options, signal })
+        : Electron.dialog.showMessageBox(owner, { ...options, signal }),
+    ),
   showErrorBox: (title, content) =>
     Effect.sync(() => {
       Electron.dialog.showErrorBox(title, content);
