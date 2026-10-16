@@ -180,16 +180,24 @@ describe("LiveThreadBrowserView", () => {
         document.querySelector<HTMLElement>(`[data-testid="browser-frame-${tabId}"]`)!;
       expect(frame(current.id).dataset.frameMode).toBe("visible");
       // Painted but invisible: a screenshot of a hidden page never returns.
+      // Through a filter, since Chromium leaves an element at zero opacity
+      // out of the frame, and then the page stops producing frames too.
       expect(frame(working.id).dataset.frameMode).toBe("drawn");
       expect(getComputedStyle(frame(working.id)).visibility).toBe("visible");
-      expect(getComputedStyle(frame(working.id)).opacity).toBe("0");
-      // Another thread's page: not painted, and under the app.
+      expect(getComputedStyle(frame(working.id)).filter).toBe("opacity(0)");
+      expect(getComputedStyle(frame(working.id)).opacity).toBe("1");
+      // Another thread's page: not painted, and in a layer that takes no
+      // clicks. Above the app, which would otherwise cover it: Chromium does
+      // not draw what an opaque layer hides, drawn page or not.
       expect(frame(away.id).dataset.frameMode).toBe("hidden");
       expect(getComputedStyle(frame(away.id)).visibility).toBe("hidden");
       const awayContainer = document.querySelector<HTMLElement>(
         `[data-testid="browser-live-${scopedThreadKey(AWAY)}"]`,
       )!;
-      expect(getComputedStyle(awayContainer).zIndex).toBe("-1");
+      expect(getComputedStyle(awayContainer).pointerEvents).toBe("none");
+      expect(Number(getComputedStyle(awayContainer).zIndex)).toBeGreaterThan(
+        Number(getComputedStyle(shownContainer()!).zIndex),
+      );
       expect(awayContainer.getBoundingClientRect().width).toBe(500);
     } finally {
       screen.unmount();

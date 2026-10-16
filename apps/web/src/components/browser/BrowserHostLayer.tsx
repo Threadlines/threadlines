@@ -61,9 +61,9 @@ import {
  * The thread on screen has its pages drawn exactly over its panel's page area
  * (the slot), by CSS anchor positioning, so they follow the panel through
  * resizes, splits and moves with no measuring. Every other running page sits
- * underneath the app, out of sight: painted while an agent is using it,
- * hidden once idle, frozen later, closed when memory runs short (see
- * `browserLifecyclePlan.ts`).
+ * out of sight, in a layer above the app that shows nothing and takes no
+ * clicks: painted invisibly while an agent is using it, hidden once idle,
+ * frozen later, closed when memory runs short (see `browserLifecyclePlan.ts`).
  *
  * The layer also holds this client's browser connection to each environment,
  * so agent requests reach a thread whichever thread is on screen.
@@ -483,14 +483,18 @@ export function LiveThreadBrowserView({ browser }: { browser: LiveThreadBrowserR
         zIndex: 40,
       }
     : {
-        // Underneath the app and invisible besides: nothing here is meant to
-        // be seen, only kept running at the size it would have on screen.
+        // Nothing here is meant to be seen, only kept running at the size it
+        // would have on screen: its pages are hidden, or drawn invisibly for
+        // an agent. Above everything rather than under the app, because
+        // Chromium skips drawing what the app's opaque background covers, and
+        // a page that is not drawn produces no frames, so a screenshot of it
+        // waits forever. Clicks pass through it to the app.
         position: "fixed",
         top: 0,
         left: 0,
         width: `${hiddenSize.width}px`,
         height: `${hiddenSize.height}px`,
-        zIndex: -1,
+        zIndex: 2147483647,
         pointerEvents: "none",
       };
 
