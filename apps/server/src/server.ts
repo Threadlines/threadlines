@@ -14,6 +14,7 @@ import {
   staticAndDevRouteLayer,
   browserApiCorsLayer,
 } from "./http.ts";
+import { scheduleServerCompileCacheFlush } from "./compileCache.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import { relayDirectRouteLayer } from "./relay/directRoute.ts";
@@ -516,6 +517,8 @@ export const makeServerLayer = Layer.unwrap(
         yield* HttpServer.HttpServer;
         const startup = yield* ServerRuntimeStartup;
         yield* startup.markHttpListening;
+        // Startup has compiled nearly every module by now.
+        scheduleServerCompileCacheFlush();
       }),
     );
     const runtimeStateLayer = Layer.effectDiscard(

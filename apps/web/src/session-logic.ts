@@ -67,6 +67,7 @@ import {
 } from "./mcpAuthStatus";
 import { filterSupersededManualContextCompactionActivities } from "./lib/contextCompactionActivities";
 import { isImageFilePath } from "./lib/imageFilePaths";
+import { keyedMemo } from "./lib/derivationMemo";
 
 import type {
   ChatMessage,
@@ -4730,10 +4731,22 @@ function imagePathFromPayload(payload: Record<string, unknown> | null): unknown 
  * trimmed copy (`...` plus the tail). That is not base64, and a data URL built
  * from it draws as a broken image, so such a block is skipped and the row falls
  * back to loading the named path.
+ *
+ * Remembered per payload: a screenshot's bytes run to megabytes, and every
+ * pass over a chat's steps (each switch back to it, each update while it
+ * streams) would otherwise check them again.
  */
-const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/u;
-
 function imageBlocksFromPayload(
+  payload: Record<string, unknown> | null,
+): ReadonlyArray<{ mimeType: string; base64: string }> {
+  return payload ? imageBlocksByPayload(payload) : readImageBlocks(null);
+}
+
+const imageBlocksByPayload = keyedMemo((payload: Record<string, unknown>) =>
+  readImageBlocks(payload),
+);
+
+function readImageBlocks(
   payload: Record<string, unknown> | null,
 ): Array<{ mimeType: string; base64: string }> {
   const data = asRecord(payload?.data);
@@ -4750,11 +4763,46 @@ function imageBlocksFromPayload(
     }
     const mimeType = asTrimmedString(source.media_type);
     const base64 = asTrimmedString(source.data);
-    return mimeType && base64 && BASE64_PATTERN.test(base64) ? [{ mimeType, base64 }] : [];
+    return mimeType && base64 && isWholeBase64(base64) ? [{ mimeType, base64 }] : [];
   });
 }
 
-function extractWorkLogImages(payload: Record<string, unknown> | null): WorkLogImagePreview[] {
+/** Any character outside the base64 alphabet and its `=` padding. */
+const NON_BASE64_CHARACTER = /[^A-Za-z0-9+/=]/u;
+
+/**
+ * Whether `value` is whole base64: one or more alphabet characters, then at
+ * most two `=`. The same answer as `/^[A-Za-z0-9+/]+={0,2}$/u`, but searching
+ * for a stray character runs several times faster over a screenshot's
+ * megabytes than matching the whole string against the pattern.
+ */
+export function isWholeBase64(value: string): boolean {
+  if (NON_BASE64_CHARACTER.test(value)) {
+    return false;
+  }
+  const paddingStart = value.indexOf("=");
+  if (paddingStart === -1) {
+    return value.length > 0;
+  }
+  const paddingLength = value.length - paddingStart;
+  return (
+    paddingStart > 0 &&
+    (paddingLength === 1 || (paddingLength === 2 && value[paddingStart + 1] === "="))
+  );
+}
+
+/** The pictures a step shows, remembered per payload like its image blocks. */
+function extractWorkLogImages(
+  payload: Record<string, unknown> | null,
+): ReadonlyArray<WorkLogImagePreview> {
+  return payload ? workLogImagesByPayload(payload) : readWorkLogImages(null);
+}
+
+const workLogImagesByPayload = keyedMemo((payload: Record<string, unknown>) =>
+  readWorkLogImages(payload),
+);
+
+function readWorkLogImages(payload: Record<string, unknown> | null): WorkLogImagePreview[] {
   if (!isImagePreviewPayload(payload)) {
     return [];
   }

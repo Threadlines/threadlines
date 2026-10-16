@@ -12,10 +12,14 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { GitCommandError } from "@threadlines/contracts";
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { GitInstallProbe } from "./gitLaunch.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-git-vcs-driver-test-",
@@ -204,6 +208,72 @@ const pushRemoteBranchFromPeer = (input: {
     yield* git(peer, ["commit", "-m", input.subject]);
     yield* git(peer, ["push", "origin", input.branch]);
   });
+
+describe("GitVcsDriver git launch", () => {
+  // On Git for Windows, the driver's own reads start on the real git.exe
+  // without a console; commands that can run hooks keep the launcher.
+  it.effect("starts Windows git reads on the real git.exe without a console", () => {
+    const realGit = "C:\\Program Files\\Git\\mingw64\\bin\\git.exe";
+    const spawned: Array<{
+      readonly command: string;
+      readonly options: {
+        readonly detached?: boolean;
+        readonly windowsHide?: boolean;
+        readonly env?: Record<string, string | undefined>;
+      };
+    }> = [];
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        spawned.push(command as unknown as (typeof spawned)[number]);
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.encodeText(Stream.make("ok\n")),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        });
+      }),
+    );
+    const layer = Layer.fresh(GitVcsDriver.layer).pipe(
+      Layer.provide(ServerConfigLayer),
+      Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* driver.execute({
+        operation: "test.read",
+        cwd: process.cwd(),
+        args: ["rev-parse", "HEAD"],
+      });
+      yield* driver.execute({ operation: "test.status", cwd: process.cwd(), args: ["status"] });
+
+      const [read, status] = spawned;
+      assert.equal(read?.command, realGit);
+      assert.equal(read?.options.detached, true);
+      assert.equal(read?.options.windowsHide, true);
+      assert.equal(read?.options.env?.LC_ALL, "C");
+      assert.equal(status?.command, "git");
+      assert.equal(status?.options.detached, undefined);
+      assert.equal(status?.options.env?.LC_ALL, undefined);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(GitInstallProbe, {
+        platform: "win32",
+        findOnPath: () => "C:\\Program Files\\Git\\cmd\\git.exe",
+        isFile: () => true,
+        readExecPath: async () => "C:/Program Files/Git/mingw64/libexec/git-core",
+      }),
+    );
+  });
+});
 
 it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   describe("repository status", () => {

@@ -3,8 +3,8 @@ import {
   AGENT_PAGE_FALLBACK_THEMES,
   AGENT_PAGE_MEASURE_FONTS,
   agentPageTheme,
-  buildAgentPageDocument,
 } from "@threadlines/shared/agentPages";
+import { buildAgentPageDocument } from "@threadlines/shared/agentPageDocument";
 import * as NodeDgram from "node:dgram";
 import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";

@@ -6,7 +6,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
-  type OrchestrationThreadShell,
+  type ScopedThreadRef,
   type ServerConfig,
   type TerminalEvent,
   ThreadId,
@@ -49,6 +49,7 @@ import { projectQueryKeys } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { pullRequestQueryKeys } from "~/lib/pullRequestsReactQuery";
 import { getPrimaryKnownEnvironment } from "../primary";
+import { isLoopbackHostname } from "../primary/target";
 import {
   bootstrapRemoteBearerSession,
   fetchRemoteEnvironmentDescriptor,
@@ -75,9 +76,13 @@ import {
 import { createEnvironmentConnection, type EnvironmentConnection } from "./connection";
 import { isPendingRelayJoin } from "./relayJoins";
 import {
+  bindThreadRowIntentPrewarm as bindThreadRowIntentPrewarmTo,
+  createThreadDetailSubscriptions,
+  THREAD_INTENT_GRACE_MS,
+} from "./threadDetailSubscriptions";
+import {
   useStore,
   selectProjectsAcrossEnvironments,
-  selectSidebarThreadSummaryByRef,
   selectThreadByRef,
   selectThreadsAcrossEnvironments,
 } from "~/store";
@@ -115,20 +120,6 @@ type EnvironmentServiceState = {
   stop: () => void;
 };
 
-type ThreadDetailSubscriptionEntry = {
-  readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
-  readonly resumeInput: {
-    readonly threadId: ThreadId;
-    fromSequenceExclusive?: number;
-  };
-  unsubscribe: () => void;
-  unsubscribeConnectionListener: (() => void) | null;
-  refCount: number;
-  lastAccessedAt: number;
-  evictionTimeoutId: ReturnType<typeof setTimeout> | null;
-};
-
 const environmentConnections = new Map<EnvironmentId, EnvironmentConnection>();
 class SavedEnvironmentConnectionCancelledError extends Error {
   constructor(environmentId: EnvironmentId) {
@@ -153,7 +144,6 @@ const pendingSavedEnvironmentConnections = new Map<
   PendingSavedEnvironmentConnection
 >();
 const environmentConnectionListeners = new Set<() => void>();
-const threadDetailSubscriptions = new Map<string, ThreadDetailSubscriptionEntry>();
 const lastAppliedProjectionVersionByEnvironment = new Map<
   EnvironmentId,
   {
@@ -168,15 +158,106 @@ let needsPullRequestInvalidation = false;
 let lastBrowserHiddenAt: number | null = null;
 let lastBrowserResumeReconnectAt = Number.NEGATIVE_INFINITY;
 
-// Thread detail subscription cache policy:
-// - Active consumers keep a subscription retained via refCount.
-// - Released subscriptions stay warm for a longer idle TTL to avoid churn
-//   while moving around the UI.
-// - Threads with active work or pending user action are sticky and are never
-//   evicted while they remain non-idle.
-// - Capacity eviction only targets idle cached subscriptions.
-const THREAD_DETAIL_SUBSCRIPTION_IDLE_EVICTION_MS = 15 * 60 * 1000;
-const MAX_CACHED_THREAD_DETAIL_SUBSCRIPTIONS = 32;
+// Function declarations below are hoisted, so the registry can hold them now
+// and call them once connections exist.
+const threadDetails = createThreadDetailSubscriptions({
+  readConnection: readEnvironmentConnection,
+  subscribeConnections: subscribeEnvironmentConnections,
+  applyThreadDetailEvent: applyEnvironmentThreadDetailEvent,
+});
+
+/** How many jump-hinted threads are prewarmed while the hints are on screen. */
+const THREAD_JUMP_PREWARM_LIMIT = 4;
+/**
+ * How long the jump hints must stay up before their threads prewarm. The
+ * hints appear 100ms into holding the modifier, which a slow Cmd+C or
+ * Cmd+Tab also does; someone reading the numbers holds it longer.
+ */
+const THREAD_JUMP_PREWARM_DWELL_MS = 250;
+
+/**
+ * Keeps a thread's detail stream open for a mounted chat until the returned
+ * release runs. Mounted chats always load first.
+ */
+export function retainThreadDetailSubscription(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): () => void {
+  return threadDetails.retain(environmentId, threadId, "foreground");
+}
+
+/** Restarts a retained thread's stream to fetch a fresh snapshot; false if none is open. */
+export function refreshThreadDetailSubscription(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): boolean {
+  return threadDetails.refresh(environmentId, threadId);
+}
+
+/**
+ * Prewarms the threads behind the jump-hint numbers once they have been on
+ * screen a moment (the first few only). The release lets loaded ones go
+ * after a grace period and cancels the rest.
+ */
+export function prewarmThreadJumpTargets(refs: ReadonlyArray<ScopedThreadRef>): () => void {
+  let endIntent: (() => void) | null = null;
+  const timeoutId = setTimeout(() => {
+    endIntent = threadDetails.holdIntent(refs.slice(0, THREAD_JUMP_PREWARM_LIMIT), {
+      graceMs: THREAD_INTENT_GRACE_MS,
+    });
+  }, THREAD_JUMP_PREWARM_DWELL_MS);
+  return () => {
+    clearTimeout(timeoutId);
+    endIntent?.();
+    endIntent = null;
+  };
+}
+
+/**
+ * The environment whose server runs on this machine (reached over loopback),
+ * if any: the desktop app's own, or a local `threadlines` opened in a
+ * browser. A primary environment reached by hostname is remote like any
+ * saved one.
+ */
+function readLocalEnvironmentId(): EnvironmentId | null {
+  const primary = getPrimaryKnownEnvironment();
+  if (!primary?.environmentId) {
+    return null;
+  }
+  try {
+    return isLoopbackHostname(new URL(primary.target.httpBaseUrl).hostname)
+      ? primary.environmentId
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prewarms these threads one at a time when the page is idle and nothing in
+ * the foreground is loading. They stay retained until the cancel runs. Only
+ * this machine's own threads take part: over a network or relayed connection
+ * a detail is too costly to fetch on speculation, so those load on intent.
+ */
+export function requestIdleThreadDetailPrewarm(refs: ReadonlyArray<ScopedThreadRef>): () => void {
+  const localEnvironmentId = readLocalEnvironmentId();
+  return threadDetails.requestIdlePrewarm(
+    localEnvironmentId ? refs.filter((ref) => ref.environmentId === localEnvironmentId) : [],
+  );
+}
+
+/**
+ * Prewarms a thread when a pointer rests on its row, or a finger lands on it
+ * (any element under `target` carrying `data-thread-key`). Returns the cleanup.
+ */
+export function bindThreadRowIntentPrewarm(
+  target: Parameters<typeof bindThreadRowIntentPrewarmTo>[0],
+): () => void {
+  return bindThreadRowIntentPrewarmTo(target, (refs) =>
+    threadDetails.holdIntent(refs, { graceMs: THREAD_INTENT_GRACE_MS }),
+  );
+}
+
 const BROWSER_RESUME_RECONNECT_COOLDOWN_MS = 2_000;
 const INITIAL_SERVER_CONFIG_SNAPSHOT_WAIT_MS = 150;
 const NOOP = () => undefined;
@@ -333,391 +414,6 @@ function markAppliedProjectionEvent(environmentId: EnvironmentId, sequence: numb
     updatedAt: currentVersion?.updatedAt ?? null,
   });
 }
-function getThreadDetailSubscriptionKey(environmentId: EnvironmentId, threadId: ThreadId): string {
-  return scopedThreadKey(scopeThreadRef(environmentId, threadId));
-}
-
-function clearThreadDetailSubscriptionEviction(
-  entry: ThreadDetailSubscriptionEntry,
-): ThreadDetailSubscriptionEntry {
-  if (entry.evictionTimeoutId !== null) {
-    clearTimeout(entry.evictionTimeoutId);
-    entry.evictionTimeoutId = null;
-  }
-  return entry;
-}
-
-function isNonIdleThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): boolean {
-  const threadRef = scopeThreadRef(entry.environmentId, entry.threadId);
-  const state = useStore.getState();
-  const sidebarThread = selectSidebarThreadSummaryByRef(state, threadRef);
-
-  // Prefer shell/sidebar state first because it carries the coarse thread
-  // readiness flags used throughout the UI (pending approvals/input/plan).
-  if (sidebarThread) {
-    if (
-      sidebarThread.hasPendingApprovals ||
-      sidebarThread.pendingChildApproval === true ||
-      sidebarThread.hasPendingUserInput ||
-      sidebarThread.hasActionableProposedPlan
-    ) {
-      return true;
-    }
-
-    const orchestrationStatus = sidebarThread.session?.orchestrationStatus;
-    if (
-      orchestrationStatus &&
-      orchestrationStatus !== "idle" &&
-      orchestrationStatus !== "stopped"
-    ) {
-      return true;
-    }
-
-    if (
-      sidebarThread.latestTurn?.state === "running" ||
-      (sidebarThread.sideTurn ?? null) !== null
-    ) {
-      return true;
-    }
-  }
-
-  const thread = selectThreadByRef(state, threadRef);
-  if (!thread) {
-    return false;
-  }
-
-  const orchestrationStatus = thread.session?.orchestrationStatus;
-  return (
-    Boolean(
-      orchestrationStatus && orchestrationStatus !== "idle" && orchestrationStatus !== "stopped",
-    ) ||
-    thread.latestTurn?.state === "running" ||
-    (thread.sideTurn ?? null) !== null ||
-    thread.pendingSourceProposedPlan !== undefined
-  );
-}
-
-function shouldEvictThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): boolean {
-  return entry.refCount === 0 && !isNonIdleThreadDetailSubscription(entry);
-}
-
-function shouldWarmThreadDetailSubscription(thread: OrchestrationThreadShell): boolean {
-  if (
-    thread.hasPendingApprovals ||
-    thread.pendingChildApproval ||
-    thread.hasPendingUserInput ||
-    thread.hasActionableProposedPlan
-  ) {
-    return true;
-  }
-
-  const orchestrationStatus = thread.session?.status;
-  if (orchestrationStatus && orchestrationStatus !== "idle" && orchestrationStatus !== "stopped") {
-    return true;
-  }
-
-  return thread.latestTurn?.state === "running" || (thread.sideTurn ?? null) !== null;
-}
-
-function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): boolean {
-  if (entry.unsubscribeConnectionListener !== null) {
-    entry.unsubscribeConnectionListener();
-    entry.unsubscribeConnectionListener = null;
-  }
-  if (entry.unsubscribe !== NOOP) {
-    return true;
-  }
-
-  const connection = readEnvironmentConnection(entry.environmentId);
-  if (!connection) {
-    return false;
-  }
-
-  entry.unsubscribe = connection.client.orchestration.subscribeThread(entry.resumeInput, (item) => {
-    if (item.kind === "snapshot") {
-      useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
-      entry.resumeInput.fromSequenceExclusive = item.snapshot.snapshotSequence;
-      return;
-    }
-    applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
-    entry.resumeInput.fromSequenceExclusive = Math.max(
-      entry.resumeInput.fromSequenceExclusive ?? 0,
-      item.event.sequence,
-    );
-  });
-  return true;
-}
-
-function watchThreadDetailSubscriptionConnection(entry: ThreadDetailSubscriptionEntry): void {
-  if (entry.unsubscribeConnectionListener !== null) {
-    return;
-  }
-
-  entry.unsubscribeConnectionListener = subscribeEnvironmentConnections(() => {
-    if (attachThreadDetailSubscription(entry)) {
-      entry.lastAccessedAt = Date.now();
-    }
-  });
-  attachThreadDetailSubscription(entry);
-}
-
-function disposeThreadDetailSubscriptionByKey(key: string): boolean {
-  const entry = threadDetailSubscriptions.get(key);
-  if (!entry) {
-    return false;
-  }
-
-  clearThreadDetailSubscriptionEviction(entry);
-  entry.unsubscribeConnectionListener?.();
-  entry.unsubscribeConnectionListener = null;
-  threadDetailSubscriptions.delete(key);
-  entry.unsubscribe();
-  entry.unsubscribe = NOOP;
-  return true;
-}
-
-function disposeThreadDetailSubscriptionsForEnvironment(environmentId: EnvironmentId): void {
-  for (const [key, entry] of threadDetailSubscriptions) {
-    if (entry.environmentId === environmentId) {
-      disposeThreadDetailSubscriptionByKey(key);
-    }
-  }
-}
-
-function detachThreadDetailSubscriptionsForEnvironment(environmentId: EnvironmentId): void {
-  for (const entry of threadDetailSubscriptions.values()) {
-    if (entry.environmentId !== environmentId) {
-      continue;
-    }
-    entry.unsubscribe();
-    entry.unsubscribe = NOOP;
-    watchThreadDetailSubscriptionConnection(entry);
-  }
-}
-
-function attachThreadDetailSubscriptionsForEnvironment(environmentId: EnvironmentId): void {
-  for (const entry of threadDetailSubscriptions.values()) {
-    if (entry.environmentId === environmentId) {
-      attachThreadDetailSubscription(entry);
-    }
-  }
-}
-
-function reconcileThreadDetailSubscriptionsForEnvironment(
-  environmentId: EnvironmentId,
-  threadIds: ReadonlyArray<ThreadId>,
-): void {
-  const activeThreadIds = new Set(threadIds);
-  for (const [key, entry] of threadDetailSubscriptions) {
-    if (entry.environmentId === environmentId && !activeThreadIds.has(entry.threadId)) {
-      disposeThreadDetailSubscriptionByKey(key);
-    }
-  }
-}
-
-function scheduleThreadDetailSubscriptionEviction(entry: ThreadDetailSubscriptionEntry): void {
-  clearThreadDetailSubscriptionEviction(entry);
-  if (!shouldEvictThreadDetailSubscription(entry)) {
-    return;
-  }
-
-  entry.evictionTimeoutId = setTimeout(() => {
-    const currentEntry = threadDetailSubscriptions.get(
-      getThreadDetailSubscriptionKey(entry.environmentId, entry.threadId),
-    );
-    if (!currentEntry) {
-      return;
-    }
-
-    currentEntry.evictionTimeoutId = null;
-    if (!shouldEvictThreadDetailSubscription(currentEntry)) {
-      return;
-    }
-    disposeThreadDetailSubscriptionByKey(
-      getThreadDetailSubscriptionKey(entry.environmentId, entry.threadId),
-    );
-  }, THREAD_DETAIL_SUBSCRIPTION_IDLE_EVICTION_MS);
-}
-
-function evictIdleThreadDetailSubscriptionsToCapacity(): void {
-  if (threadDetailSubscriptions.size <= MAX_CACHED_THREAD_DETAIL_SUBSCRIPTIONS) {
-    return;
-  }
-
-  const idleEntries = [...threadDetailSubscriptions.entries()]
-    .filter(([, entry]) => shouldEvictThreadDetailSubscription(entry))
-    .toSorted(([, left], [, right]) => left.lastAccessedAt - right.lastAccessedAt);
-
-  for (const [key] of idleEntries) {
-    if (threadDetailSubscriptions.size <= MAX_CACHED_THREAD_DETAIL_SUBSCRIPTIONS) {
-      return;
-    }
-    disposeThreadDetailSubscriptionByKey(key);
-  }
-}
-
-function reconcileThreadDetailSubscriptionEvictionState(
-  entry: ThreadDetailSubscriptionEntry,
-): void {
-  clearThreadDetailSubscriptionEviction(entry);
-  if (!shouldEvictThreadDetailSubscription(entry)) {
-    return;
-  }
-
-  scheduleThreadDetailSubscriptionEviction(entry);
-}
-
-function reconcileThreadDetailSubscriptionEvictionForThread(
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-): void {
-  const entry = threadDetailSubscriptions.get(
-    getThreadDetailSubscriptionKey(environmentId, threadId),
-  );
-  if (!entry) {
-    return;
-  }
-
-  reconcileThreadDetailSubscriptionEvictionState(entry);
-}
-
-function reconcileThreadDetailSubscriptionEvictionForEnvironment(
-  environmentId: EnvironmentId,
-): void {
-  for (const entry of threadDetailSubscriptions.values()) {
-    if (entry.environmentId === environmentId) {
-      reconcileThreadDetailSubscriptionEvictionState(entry);
-    }
-  }
-  evictIdleThreadDetailSubscriptionsToCapacity();
-}
-
-function ensureWarmThreadDetailSubscription(
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-): void {
-  const key = getThreadDetailSubscriptionKey(environmentId, threadId);
-  const existing = threadDetailSubscriptions.get(key);
-  if (existing) {
-    clearThreadDetailSubscriptionEviction(existing);
-    existing.lastAccessedAt = Date.now();
-    if (!attachThreadDetailSubscription(existing)) {
-      watchThreadDetailSubscriptionConnection(existing);
-    }
-    return;
-  }
-
-  const entry: ThreadDetailSubscriptionEntry = {
-    environmentId,
-    threadId,
-    resumeInput: { threadId },
-    unsubscribe: NOOP,
-    unsubscribeConnectionListener: null,
-    refCount: 0,
-    lastAccessedAt: Date.now(),
-    evictionTimeoutId: null,
-  };
-  threadDetailSubscriptions.set(key, entry);
-  if (!attachThreadDetailSubscription(entry)) {
-    watchThreadDetailSubscriptionConnection(entry);
-  }
-  evictIdleThreadDetailSubscriptionsToCapacity();
-}
-
-function warmNonIdleThreadDetailSubscriptionsForEnvironment(
-  environmentId: EnvironmentId,
-  threads: ReadonlyArray<OrchestrationThreadShell>,
-): void {
-  for (const thread of threads) {
-    if (shouldWarmThreadDetailSubscription(thread)) {
-      ensureWarmThreadDetailSubscription(environmentId, thread.id);
-    }
-  }
-}
-
-export function retainThreadDetailSubscription(
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-): () => void {
-  const key = getThreadDetailSubscriptionKey(environmentId, threadId);
-  const existing = threadDetailSubscriptions.get(key);
-  if (existing) {
-    clearThreadDetailSubscriptionEviction(existing);
-    existing.refCount += 1;
-    existing.lastAccessedAt = Date.now();
-    if (!attachThreadDetailSubscription(existing)) {
-      watchThreadDetailSubscriptionConnection(existing);
-    }
-    let released = false;
-    return () => {
-      if (released) {
-        return;
-      }
-      released = true;
-      existing.refCount = Math.max(0, existing.refCount - 1);
-      existing.lastAccessedAt = Date.now();
-      if (existing.refCount === 0) {
-        reconcileThreadDetailSubscriptionEvictionState(existing);
-        evictIdleThreadDetailSubscriptionsToCapacity();
-      }
-    };
-  }
-
-  const entry: ThreadDetailSubscriptionEntry = {
-    environmentId,
-    threadId,
-    resumeInput: { threadId },
-    unsubscribe: NOOP,
-    unsubscribeConnectionListener: null,
-    refCount: 1,
-    lastAccessedAt: Date.now(),
-    evictionTimeoutId: null,
-  };
-  threadDetailSubscriptions.set(key, entry);
-  if (!attachThreadDetailSubscription(entry)) {
-    watchThreadDetailSubscriptionConnection(entry);
-  }
-  evictIdleThreadDetailSubscriptionsToCapacity();
-
-  let released = false;
-  return () => {
-    if (released) {
-      return;
-    }
-    released = true;
-    entry.refCount = Math.max(0, entry.refCount - 1);
-    entry.lastAccessedAt = Date.now();
-    if (entry.refCount === 0) {
-      reconcileThreadDetailSubscriptionEvictionState(entry);
-      evictIdleThreadDetailSubscriptionsToCapacity();
-    }
-  };
-}
-
-export function refreshThreadDetailSubscription(
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-): boolean {
-  const entry = threadDetailSubscriptions.get(
-    getThreadDetailSubscriptionKey(environmentId, threadId),
-  );
-  if (!entry) {
-    return false;
-  }
-
-  clearThreadDetailSubscriptionEviction(entry);
-  entry.unsubscribeConnectionListener?.();
-  entry.unsubscribeConnectionListener = null;
-  entry.unsubscribe();
-  entry.unsubscribe = NOOP;
-  delete entry.resumeInput.fromSequenceExclusive;
-  entry.lastAccessedAt = Date.now();
-  if (!attachThreadDetailSubscription(entry)) {
-    watchThreadDetailSubscriptionConnection(entry);
-  }
-  return true;
-}
-
 function emitEnvironmentConnectionRegistryChange() {
   for (const listener of environmentConnectionListeners) {
     listener();
@@ -1517,7 +1213,7 @@ function applyRecoveredEventBatch(
     useTerminalStateStore.getState().removeTerminalState(scopeThreadRef(environmentId, threadId));
   }
 
-  reconcileThreadDetailSubscriptionEvictionForEnvironment(environmentId);
+  threadDetails.reconcileEvictionForEnvironment(environmentId);
 }
 
 export function applyEnvironmentThreadDetailEvent(
@@ -1559,9 +1255,7 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       if (!previousThread && threadRef) {
         markPromotedDraftThreadByRef(threadRef);
       }
-      if (shouldWarmThreadDetailSubscription(event.thread)) {
-        ensureWarmThreadDetailSubscription(environmentId, event.thread.id);
-      }
+      threadDetails.warmNonIdle(environmentId, [event.thread]);
       if (previousThread?.archivedAt === null && event.thread.archivedAt !== null && threadRef) {
         useTerminalStateStore.getState().removeTerminalState(threadRef);
       }
@@ -1571,12 +1265,12 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
         needsPullRequestInvalidation = true;
         void activeService?.queryInvalidationThrottler.maybeExecute();
       }
-      reconcileThreadDetailSubscriptionEvictionForThread(environmentId, event.thread.id);
-      evictIdleThreadDetailSubscriptionsToCapacity();
+      threadDetails.reconcileEvictionForThread(environmentId, event.thread.id);
+      threadDetails.evictIdleToCapacity();
       return;
     case "thread-removed":
       if (threadRef) {
-        disposeThreadDetailSubscriptionByKey(scopedThreadKey(threadRef));
+        threadDetails.disposeThread(environmentId, threadRef.threadId);
         useOptimisticThreadMessagesStore.getState().clearThread(threadRef);
         useComposerDraftStore.getState().clearDraftThread(threadRef);
         useUiStateStore.getState().clearThreadUi(scopedThreadKey(threadRef));
@@ -1599,12 +1293,13 @@ function createEnvironmentConnectionHandlers() {
       ) {
         useStore.getState().syncServerShellSnapshot(snapshot, environmentId);
         markAppliedProjectionSnapshot(environmentId, snapshot);
-        warmNonIdleThreadDetailSubscriptionsForEnvironment(environmentId, snapshot.threads);
-        reconcileThreadDetailSubscriptionsForEnvironment(
+        threadDetails.warmNonIdle(environmentId, snapshot.threads);
+        threadDetails.reconcileForEnvironment(
           environmentId,
           snapshot.threads.map((thread) => thread.id),
         );
-        reconcileThreadDetailSubscriptionEvictionForEnvironment(environmentId);
+        threadDetails.noteShellLoaded(environmentId);
+        threadDetails.reconcileEvictionForEnvironment(environmentId);
         reconcileSnapshotDerivedState();
         // Deferred inside; the first snapshot is what makes the environment's
         // threads (and their server-held lifecycle state) knowable.
@@ -1860,7 +1555,7 @@ function registerConnection(connection: EnvironmentConnection): EnvironmentConne
     stopWaitingForUnreachableSavedEnvironment(connection.environmentId);
     liftUserDisconnect(connection.environmentId);
   }
-  attachThreadDetailSubscriptionsForEnvironment(connection.environmentId);
+  threadDetails.attachForEnvironment(connection.environmentId);
   emitEnvironmentConnectionRegistryChange();
   return connection;
 }
@@ -1874,7 +1569,7 @@ async function removeConnection(environmentId: EnvironmentId): Promise<boolean> 
   lastAppliedProjectionVersionByEnvironment.delete(environmentId);
   environmentConnections.delete(environmentId);
   emitEnvironmentConnectionRegistryChange();
-  detachThreadDetailSubscriptionsForEnvironment(environmentId);
+  threadDetails.detachForEnvironment(environmentId);
   await connection.dispose();
   return true;
 }
@@ -2343,7 +2038,7 @@ export async function removeSavedEnvironment(environmentId: EnvironmentId): Prom
   clearRelayHold(environmentId);
   relayOfflineAttempts.delete(environmentId);
   await disconnectSavedEnvironment(environmentId);
-  disposeThreadDetailSubscriptionsForEnvironment(environmentId);
+  threadDetails.disposeForEnvironment(environmentId);
   useSavedEnvironmentRegistryStore.getState().remove(environmentId);
   useSavedEnvironmentRuntimeStore.getState().clear(environmentId);
   useStore.getState().removeEnvironmentState(environmentId);
@@ -2527,7 +2222,20 @@ export async function ensureEnvironmentConnectionBootstrapped(
   await environmentConnections.get(environmentId)?.ensureBootstrapped();
 }
 
-export function startEnvironmentConnectionService(queryClient: QueryClient): () => void {
+export interface EnvironmentConnectionServiceOptions {
+  /**
+   * The chat this page load opens into, if any: the routed thread, or the
+   * one the launch restores. Its detail is requested before any warm thread.
+   * Only the first start of a page load uses it.
+   */
+  readonly foregroundThreadRef?: ScopedThreadRef | null;
+}
+
+export function startEnvironmentConnectionService(
+  queryClient: QueryClient,
+  options?: EnvironmentConnectionServiceOptions,
+): () => void {
+  threadDetails.beginBoot(options?.foregroundThreadRef ?? null);
   if (activeService?.queryClient === queryClient) {
     activeService.refCount += 1;
     return () => {
@@ -2610,9 +2318,7 @@ export async function resetEnvironmentServiceForTests(): Promise<void> {
   lastBrowserResumeReconnectAt = Number.NEGATIVE_INFINITY;
   lastAppliedProjectionVersionByEnvironment.clear();
   pendingSavedEnvironmentConnections.clear();
-  for (const key of Array.from(threadDetailSubscriptions.keys())) {
-    disposeThreadDetailSubscriptionByKey(key);
-  }
+  threadDetails.resetForTests();
   await Promise.all(
     [...environmentConnections.keys()].map((environmentId) => removeConnection(environmentId)),
   );

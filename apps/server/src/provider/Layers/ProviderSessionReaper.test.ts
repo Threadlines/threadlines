@@ -288,6 +288,7 @@ describe("ProviderSessionReaper", () => {
           getFullThreadDiffContext: () => Effect.die("unused"),
           listThreadDiffStatBaselines: () => Effect.die("unused"),
           listThreadTurnOverlapsSince: () => Effect.die("unused"),
+          listThreadIdsWithOpenAgentRequests: () => Effect.die("unused"),
           getThreadShellById: (threadId) => {
             const thread = input.readModel.threads.find((entry) => entry.id === threadId);
             return Effect.succeed(
@@ -307,6 +308,7 @@ describe("ProviderSessionReaper", () => {
       Layer.provideMerge(
         Layer.succeed(OrchestrationEngineService, {
           readEvents: () => Stream.empty,
+          readThreadEvents: () => Effect.succeed([]),
           dispatch,
           getCommandReceipt: () => Effect.succeed(Option.none()),
           streamDomainEvents: Stream.empty,

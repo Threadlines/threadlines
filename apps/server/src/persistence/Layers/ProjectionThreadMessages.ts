@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import {
+  IsoDateTime,
   SideTurnId,
   ChatAttachmentListLenient,
   ChatSkillReferenceList,
@@ -260,6 +261,25 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       `,
   });
 
+  // Agent-written user-role messages (room requests and replies, child-thread
+  // reports) carry `from_agent` or `from_thread`; `isUserWrittenMessage` skips
+  // them, and so does this.
+  const getLatestUserWrittenMessageRow = SqlSchema.findOneOption({
+    Request: ListProjectionThreadMessagesInput,
+    Result: Schema.Struct({ createdAt: IsoDateTime }),
+    execute: ({ threadId }) =>
+      sql`
+        SELECT created_at AS "createdAt"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+          AND role = 'user'
+          AND from_agent IS NULL
+          AND from_thread IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+  });
+
   const deleteProjectionThreadMessageRows = SqlSchema.void({
     Request: DeleteProjectionThreadMessagesInput,
     execute: ({ threadId }) =>
@@ -290,6 +310,16 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       Effect.map((rows) => rows.map(toProjectionThreadMessage)),
     );
 
+  const getLatestUserWrittenAt: ProjectionThreadMessageRepositoryShape["getLatestUserWrittenAt"] = (
+    input,
+  ) =>
+    getLatestUserWrittenMessageRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadMessageRepository.getLatestUserWrittenAt:query"),
+      ),
+      Effect.map(Option.match({ onNone: () => null, onSome: (row) => row.createdAt })),
+    );
+
   const deleteByThreadId: ProjectionThreadMessageRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadMessageRows(input).pipe(
       Effect.mapError(
@@ -301,6 +331,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
     upsert,
     getByMessageId,
     listByThreadId,
+    getLatestUserWrittenAt,
     deleteByThreadId,
   } satisfies ProjectionThreadMessageRepositoryShape;
 });

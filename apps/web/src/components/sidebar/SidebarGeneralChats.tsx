@@ -1,4 +1,4 @@
-import { scopeThreadRef } from "@threadlines/client-runtime";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type { ScopedThreadRef } from "@threadlines/contracts";
 import { MessageCirclePlusIcon, MessagesSquareIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
@@ -175,6 +175,7 @@ function GeneralChatLineButton({
     <button
       type="button"
       data-testid={`sidebar-general-chat-${thread.id}`}
+      data-thread-key={scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))}
       aria-current={isActive ? "page" : undefined}
       disabled={gone}
       className={cn(

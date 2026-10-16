@@ -23,6 +23,8 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
+import { threadMemoOfInput } from "../../lib/derivationMemo";
+import { shallow } from "zustand/vanilla/shallow";
 import { deriveDisplayedUserMessageState } from "../../lib/terminalContext";
 import {
   activityStepFromWorkLogEntry,
@@ -383,6 +385,18 @@ function deriveModelFallbackByTurn(
   }
   return fallbackByTurn;
 }
+
+/**
+ * `deriveMessagesTimelineRows`, remembered per thread (threadMemoOfInput): the
+ * list remounts with each chat it shows, so without this a chat opened again
+ * would place every row again. Reused only when every input field is the same
+ * value; a room's agent names count as the same when they name the same
+ * agents the same way, since the list builds them afresh as it mounts.
+ */
+export const deriveRememberedMessagesTimelineRows = threadMemoOfInput(
+  (input: Parameters<typeof deriveMessagesTimelineRows>[0]) => deriveMessagesTimelineRows(input),
+  { roomAgentNames: (left, right) => shallow(left, right) },
+);
 
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;

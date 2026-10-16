@@ -1,0 +1,2549 @@
+"use client";
+
+import {
+  scopedProjectKey,
+  scopedThreadKey,
+  scopeProjectRef,
+  scopeThreadRef,
+} from "@threadlines/client-runtime";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
+import {
+  DEFAULT_NEW_THREAD_RUNTIME_MODE,
+  type EnvironmentId,
+  type FilesystemBrowseResult,
+  type ProviderExternalThreadCandidate,
+  type ProviderInstanceId,
+  type ProjectId,
+  type SourceControlDiscoveryResult,
+  type SourceControlProviderKind,
+  type SourceControlRepositoryInfo,
+} from "@threadlines/contracts";
+import { deriveRepositoryDirectoryName, normalizeGitRemoteUrl } from "@threadlines/shared/git";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useDebouncedValue } from "@tanstack/react-pacer";
+import { useLocation, useNavigate } from "@tanstack/react-router";
+import * as Option from "effect/Option";
+import {
+  ArrowDownIcon,
+  ArrowLeftIcon,
+  ArrowUpIcon,
+  BotIcon,
+  CornerLeftUpIcon,
+  FileTextIcon,
+  FolderIcon,
+  FolderPlusIcon,
+  GaugeIcon,
+  GitPullRequestIcon,
+  HomeIcon,
+  LinkIcon,
+  MessageSquareIcon,
+  MessagesSquareIcon,
+  SearchIcon,
+  SettingsIcon,
+  SquarePenIcon,
+  UsersRoundIcon,
+} from "lucide-react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
+import { useShallow } from "zustand/react/shallow";
+import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useRoomRecipientStore } from "../rooms";
+import { useChatFindStore } from "../chatFindStore";
+import { derivePendingApprovals } from "../session-logic";
+import { readEnvironmentApi } from "../environmentApi";
+import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
+import {
+  useSavedEnvironmentRegistryStore,
+  useSavedEnvironmentRuntimeStore,
+  requireEnvironmentConnection,
+} from "../environments/runtime";
+import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useSettings } from "../hooks/useSettings";
+import { useRoomsEnabled } from "../hooks/useRoomsEnabled";
+import { readLocalApi } from "../localApi";
+import { closeRightPanelSearchParams } from "../diffRouteSearch";
+import {
+  getSourceControlDiscoverySnapshot,
+  refreshSourceControlDiscovery,
+} from "../lib/sourceControlDiscoveryState";
+import {
+  startNewThreadInProjectFromContext,
+  startNewThreadFromContext,
+} from "../lib/chatThreadActions";
+import {
+  appendBrowsePathSegment,
+  canNavigateUp,
+  ensureBrowseDirectoryPath,
+  findProjectByPath,
+  getBrowseDirectoryPath,
+  getBrowseLeafPathSegment,
+  getBrowseParentPath,
+  hasTrailingPathSeparator,
+  inferProjectTitleFromPath,
+  isExplicitRelativeProjectPath,
+  isFilesystemBrowseQuery,
+  isUnsupportedWindowsProjectPath,
+  resolveCloneDestinationPathForDispatch,
+  resolveProjectPathForDispatch,
+} from "../lib/projectPaths";
+import { waitForProjectInStore } from "../lib/waitForProject";
+import { getLatestThreadForProject } from "../lib/threadSort";
+import { threadSearchQueryOptions, type ThreadSearchTarget } from "../lib/threadSearchReactQuery";
+import {
+  PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+  usePullRequestEnvironments,
+  usePullRequestLists,
+} from "../lib/pullRequestsReactQuery";
+import { useGitStatus } from "../lib/gitStatusState";
+import { resolveThreadPullRequest, threadViewBranch } from "./pull-requests/pullRequests.logic";
+import { focusRightPanelTab, pullRequestTabSearchParams } from "../rightPanelTabs";
+import {
+  cn,
+  isMacPlatform,
+  isWindowsPlatform,
+  newCommandId,
+  newProjectId,
+  newThreadId,
+} from "../lib/utils";
+import {
+  selectProjectsAcrossEnvironments,
+  selectSidebarThreadsAcrossEnvironments,
+  useStore,
+} from "../store";
+import { buildThreadRouteParams } from "../threadRoutes";
+import {
+  ADDON_ICON_CLASS,
+  applyThreadContentSearchMatches,
+  buildBrowseGroups,
+  buildProjectActionItems,
+  buildRootGroups,
+  buildThreadActionItems,
+  type CommandPaletteActionItem,
+  type CommandPaletteSubmenuItem,
+  type CommandPaletteView,
+  filterBrowseEntries,
+  filterCommandPaletteGroups,
+  getCommandPaletteInputPlaceholder,
+  getCommandPaletteMode,
+  ITEM_ICON_CLASS,
+  normalizeSearchText,
+  RECENT_THREAD_LIMIT,
+  resolveAddProjectUnavailableGuidance,
+} from "./CommandPalette.logic";
+import { isHostedStaticApp } from "../hostedPairing";
+import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
+import { CommandPaletteResults } from "./CommandPaletteResults";
+import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
+import { ProjectFavicon } from "./ProjectFavicon";
+import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
+import { useServerKeybindings, useServerProviders } from "../rpc/serverState";
+import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import { deriveProviderInstanceEntries } from "../providerInstances";
+import { formatRelativeTimeLabel } from "../timestampFormat";
+import {
+  Command,
+  CommandDialogPopup,
+  CommandFooter,
+  CommandInput,
+  CommandPanel,
+} from "./ui/command";
+import { Button } from "./ui/button";
+import { Kbd, KbdGroup } from "./ui/kbd";
+import { stackedThreadToast, toastManager } from "./ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { useComposerHandleContext } from "../composerHandleContext";
+
+const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
+const BROWSE_STALE_TIME_MS = 30_000;
+const GITHUB_REPOSITORY_LIST_LIMIT = 100;
+const GITHUB_REPOSITORY_LIST_STALE_TIME_MS = 60_000;
+const THREAD_CONTENT_SEARCH_DEBOUNCE_MS = 180;
+const EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS = 180;
+const EMPTY_THREAD_CONTENT_MATCHES = [] as const;
+
+interface CodexSessionBrowserFlow {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly projectName: string;
+  readonly cwd: string;
+  readonly providerInstanceId: ProviderInstanceId;
+}
+
+function externalSessionSourceLabel(source: ProviderExternalThreadCandidate["source"]): string {
+  switch (source) {
+    case "cli":
+      return "Codex CLI";
+    case "vscode":
+      return "Codex app / IDE";
+    case "exec":
+      return "Codex exec";
+    case "appServer":
+      return "Codex app";
+    case "unknown":
+      return "Codex";
+  }
+}
+
+function getLocalFileManagerName(platform: string): string {
+  if (isMacPlatform(platform)) {
+    return "Finder";
+  }
+  if (isWindowsPlatform(platform)) {
+    return "Explorer";
+  }
+  return "Files";
+}
+
+function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
+  if (os === "windows") {
+    return "Win32";
+  }
+  if (os === "darwin") {
+    return "MacIntel";
+  }
+  if (os === "linux") {
+    return "Linux";
+  }
+  return typeof navigator === "undefined" ? "" : navigator.platform;
+}
+
+interface AddProjectEnvironmentOption {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly isPrimary: boolean;
+}
+
+type AddProjectRemoteProviderKind = Extract<
+  SourceControlProviderKind,
+  "github" | "gitlab" | "bitbucket" | "azure-devops"
+>;
+type AddProjectRemoteSource = AddProjectRemoteProviderKind | "url";
+
+type AddProjectCloneFlow =
+  | {
+      readonly step: "repository";
+      readonly environmentId: EnvironmentId;
+      readonly source: AddProjectRemoteSource;
+    }
+  | {
+      readonly step: "confirm";
+      readonly environmentId: EnvironmentId;
+      readonly source: AddProjectRemoteSource;
+      readonly repositoryInput: string;
+      readonly repository: SourceControlRepositoryInfo | null;
+      readonly remoteUrl: string;
+    };
+
+const REMOTE_PROJECT_SOURCES: ReadonlyArray<AddProjectRemoteSource> = [
+  "url",
+  "github",
+  "gitlab",
+  "bitbucket",
+  "azure-devops",
+];
+const REMOTE_PROJECT_PROVIDER_SOURCES: ReadonlyArray<AddProjectRemoteProviderKind> = [
+  "github",
+  "gitlab",
+  "bitbucket",
+  "azure-devops",
+];
+
+function remoteProjectSourceLabel(source: AddProjectRemoteSource): string {
+  switch (source) {
+    case "github":
+      return "GitHub";
+    case "gitlab":
+      return "GitLab";
+    case "bitbucket":
+      return "Bitbucket";
+    case "azure-devops":
+      return "Azure DevOps";
+    case "url":
+      return "Git URL";
+  }
+}
+
+function remoteProjectSourcePathHint(source: AddProjectRemoteSource): string {
+  switch (source) {
+    case "github":
+      return "owner/repo";
+    case "gitlab":
+      return "group/project";
+    case "bitbucket":
+      return "workspace/repository";
+    case "azure-devops":
+      return "project/repository";
+    case "url":
+      return "URL";
+  }
+}
+
+function remoteProjectSourceProvider(
+  source: AddProjectRemoteSource,
+): AddProjectRemoteProviderKind | null {
+  return source === "url" ? null : source;
+}
+
+function remoteProjectSourceIcon(source: AddProjectRemoteSource, className: string): ReactNode {
+  switch (source) {
+    case "github":
+      return <GitHubIcon className={className} />;
+    case "gitlab":
+      return <GitLabIcon className={className} />;
+    case "bitbucket":
+      return <BitbucketIcon className={className} />;
+    case "azure-devops":
+      return <AzureDevOpsIcon className={className} />;
+    case "url":
+      return <LinkIcon className={className} />;
+  }
+}
+
+function remoteProjectInputPlaceholder(flow: AddProjectCloneFlow | null): string | null {
+  if (!flow) return null;
+  if (flow.step === "confirm") return null;
+  if (flow.source === "url") {
+    return "Enter Git clone URL";
+  }
+  return `Enter ${remoteProjectSourceLabel(flow.source)} repository (${remoteProjectSourcePathHint(flow.source)})`;
+}
+
+function sourceProviderKind(source: AddProjectRemoteSource): AddProjectRemoteProviderKind | null {
+  return source === "url" ? null : source;
+}
+
+function sortAddProjectProviderSources(
+  readinessBySource: AddProjectRemoteSourceReadiness,
+): ReadonlyArray<AddProjectRemoteProviderKind> {
+  return REMOTE_PROJECT_PROVIDER_SOURCES.toSorted((left, right) => {
+    const leftReady = readinessBySource[left].ready;
+    const rightReady = readinessBySource[right].ready;
+    if (leftReady !== rightReady) {
+      return leftReady ? -1 : 1;
+    }
+    return remoteProjectSourceLabel(left).localeCompare(remoteProjectSourceLabel(right));
+  });
+}
+
+type AddProjectRemoteSourceReadiness = Record<
+  AddProjectRemoteSource,
+  { readonly ready: boolean; readonly hint: string | null }
+>;
+
+function buildAddProjectRemoteSourceReadiness(
+  discovery: SourceControlDiscoveryResult | null,
+): AddProjectRemoteSourceReadiness {
+  const unavailable = {
+    ready: false,
+    hint: "Provider status unavailable. Open Settings -> Source Control and rescan.",
+  } as const;
+  const defaultReadiness: AddProjectRemoteSourceReadiness = {
+    url: { ready: true, hint: null },
+    github: unavailable,
+    gitlab: unavailable,
+    bitbucket: unavailable,
+    "azure-devops": unavailable,
+  };
+
+  if (!discovery) {
+    return defaultReadiness;
+  }
+
+  const providerByKind = new Map(
+    discovery.sourceControlProviders.map((provider) => [provider.kind, provider]),
+  );
+  const readiness = { ...defaultReadiness };
+
+  for (const source of REMOTE_PROJECT_SOURCES) {
+    const kind = sourceProviderKind(source);
+    if (!kind) continue;
+    const provider = providerByKind.get(kind);
+    if (!provider) {
+      readiness[source] = unavailable;
+      continue;
+    }
+    if (provider.status !== "available") {
+      readiness[source] = { ready: false, hint: provider.installHint };
+      continue;
+    }
+    if (provider.auth.status === "unauthenticated") {
+      readiness[source] = {
+        ready: false,
+        hint:
+          Option.getOrNull(provider.auth.detail) ??
+          `${provider.label} is not authenticated. Open Settings -> Source Control for setup guidance.`,
+      };
+      continue;
+    }
+    readiness[source] = { ready: true, hint: null };
+  }
+
+  return readiness;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+  return "An error occurred.";
+}
+
+function sourceControlRepositoryComparisonKeys(
+  repository: SourceControlRepositoryInfo,
+): ReadonlyArray<string> {
+  return [repository.sshUrl, repository.url]
+    .map((remoteUrl) => normalizeGitRemoteUrl(remoteUrl))
+    .filter((key) => key.length > 0);
+}
+
+function getAddProjectCloneDirectoryName(
+  input: Extract<AddProjectCloneFlow, { readonly step: "confirm" }>,
+): string | null {
+  return (
+    deriveRepositoryDirectoryName(input.repository?.nameWithOwner) ??
+    deriveRepositoryDirectoryName(input.remoteUrl) ??
+    deriveRepositoryDirectoryName(input.repositoryInput)
+  );
+}
+
+/**
+ * The open palette: search, actions and the add-project flows. Loaded on
+ * demand by CommandPalette, which owns the open state and the shortcut.
+ */
+export function OpenCommandPaletteDialog() {
+  const navigate = useNavigate();
+  const setOpen = useCommandPaletteStore((store) => store.setOpen);
+  const chatFindAvailable = useChatFindStore((store) => store.available);
+  const closeIfGeneration = useCommandPaletteStore((store) => store.closeIfGeneration);
+  const openIntent = useCommandPaletteStore((store) => store.openIntent);
+  const clearOpenIntent = useCommandPaletteStore((store) => store.clearOpenIntent);
+  const composerHandleRef = useComposerHandleContext();
+  // This component mounts once per palette session, so its mount-time
+  // generation identifies the session every deferred close below belongs to.
+  // Async flows close via `closeIfGeneration`: if the user closed or reopened
+  // the palette while a request was in flight, the stale close is a no-op
+  // instead of slamming a palette it does not own. There is deliberately no
+  // unmount cleanup here: React StrictMode runs a new effect's cleanup once
+  // right after mount, which closed the palette the instant it opened in dev.
+  const [sessionGeneration] = useState(() => useCommandPaletteStore.getState().openGeneration);
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const isActionsOnly = deferredQuery.startsWith(">");
+  const queryClient = useQueryClient();
+  const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
+  const settings = useSettings();
+  const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
+    useHandleNewThread();
+  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const keybindings = useServerKeybindings();
+  const isHomeRoute = useLocation({ select: (location) => location.pathname === "/" });
+  const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
+  const currentView = viewStack.at(-1) ?? null;
+  const [browseGeneration, setBrowseGeneration] = useState(0);
+  const [addProjectEnvironmentId, setAddProjectEnvironmentId] = useState<EnvironmentId | null>(
+    null,
+  );
+  const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
+  const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
+  const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
+  const [isRemoteProjectCloning, setIsRemoteProjectCloning] = useState(false);
+  const [codexSessionFlow, setCodexSessionFlow] = useState<CodexSessionBrowserFlow | null>(null);
+  const [importingProviderThreadId, setImportingProviderThreadId] = useState<string | null>(null);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const primaryServerProviders = useServerProviders();
+  const primaryEnvironmentLabel = readPrimaryEnvironmentDescriptor()?.label ?? null;
+  const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((state) => state.byId);
+  const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const pullRequestEnvironments = usePullRequestEnvironments();
+  // The active thread's pull request, so the palette can offer its tab. Both
+  // reads are the sidebar's: the same refcounted git status and the same open
+  // listing key, and neither runs on a thread with no branch to match.
+  const activeThreadProject = activeThread
+    ? (projects.find(
+        (project) =>
+          project.environmentId === activeThread.environmentId &&
+          project.id === activeThread.projectId,
+      ) ?? null)
+    : null;
+  const activeThreadRoomsEnabled = useRoomsEnabled(
+    activeThread?.environmentId ?? activeDraftThread?.environmentId,
+  );
+  const activeThreadHasBranch = (activeThread?.branch ?? null) !== null;
+  const activeThreadGitStatus = useGitStatus({
+    environmentId: activeThreadHasBranch ? (activeThread?.environmentId ?? null) : null,
+    cwd:
+      activeThreadHasBranch && activeThread && activeThreadProject
+        ? resolveThreadWorkingCwd({
+            projectCwd: activeThreadProject.cwd,
+            worktreePath: activeThread.worktreePath,
+            effectiveCwd: activeThread.effectiveCwd,
+          })
+        : null,
+  });
+  const activeThreadOpenPullRequests = usePullRequestLists({
+    state: "open",
+    refetchIntervalMs: PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
+    enabled: activeThreadHasBranch,
+  });
+  const activeThreadPullRequest = activeThread
+    ? resolveThreadPullRequest({
+        thread: {
+          ...activeThread,
+          branch: threadViewBranch(activeThread, activeThreadGitStatus.data),
+        },
+        gitStatus: activeThreadGitStatus.data,
+        openEntries: activeThreadOpenPullRequests.entries,
+        projects,
+      })
+    : null;
+
+  const addProjectEnvironmentOptions = useMemo(() => {
+    const options: AddProjectEnvironmentOption[] = [];
+    const seenEnvironmentIds = new Set<EnvironmentId>();
+
+    if (primaryEnvironmentId) {
+      seenEnvironmentIds.add(primaryEnvironmentId);
+      options.push({
+        environmentId: primaryEnvironmentId,
+        label: resolveEnvironmentOptionLabel({
+          isPrimary: true,
+          environmentId: primaryEnvironmentId,
+          runtimeLabel: primaryEnvironmentLabel,
+        }),
+        isPrimary: true,
+      });
+    }
+
+    for (const record of Object.values(savedEnvironmentRegistry)) {
+      if (seenEnvironmentIds.has(record.environmentId)) {
+        continue;
+      }
+
+      const runtimeState = savedEnvironmentRuntimeById[record.environmentId];
+      options.push({
+        environmentId: record.environmentId,
+        label: resolveEnvironmentOptionLabel({
+          isPrimary: false,
+          environmentId: record.environmentId,
+          runtimeLabel: runtimeState?.descriptor?.label ?? null,
+          savedLabel: record.label,
+        }),
+        isPrimary: false,
+      });
+    }
+
+    options.sort((left, right) => {
+      if (left.isPrimary !== right.isPrimary) {
+        return left.isPrimary ? -1 : 1;
+      }
+      return left.label.localeCompare(right.label);
+    });
+
+    return options;
+  }, [
+    primaryEnvironmentId,
+    primaryEnvironmentLabel,
+    savedEnvironmentRegistry,
+    savedEnvironmentRuntimeById,
+  ]);
+  const defaultAddProjectEnvironmentId = addProjectEnvironmentOptions[0]?.environmentId ?? null;
+  const browseEnvironmentId = addProjectEnvironmentId ?? defaultAddProjectEnvironmentId;
+  const browseEnvironmentPlatform = useMemo(() => {
+    const os =
+      browseEnvironmentId && primaryEnvironmentId && browseEnvironmentId === primaryEnvironmentId
+        ? (readPrimaryEnvironmentDescriptor()?.platform.os ?? null)
+        : browseEnvironmentId
+          ? (savedEnvironmentRuntimeById[browseEnvironmentId]?.descriptor?.platform.os ??
+            savedEnvironmentRuntimeById[browseEnvironmentId]?.serverConfig?.environment.platform
+              .os ??
+            null)
+          : null;
+    return getEnvironmentBrowsePlatform(os);
+  }, [browseEnvironmentId, primaryEnvironmentId, savedEnvironmentRuntimeById]);
+  const isRemoteProjectCloneFlow = addProjectCloneFlow !== null;
+  const isRemoteProjectRepositoryStep = addProjectCloneFlow?.step === "repository";
+  const isBrowsing =
+    !isRemoteProjectRepositoryStep && isFilesystemBrowseQuery(query, browseEnvironmentPlatform);
+  const paletteMode = getCommandPaletteMode({ currentView, isBrowsing });
+  const getAddProjectInitialQueryForEnvironment = useCallback(
+    (environmentId: EnvironmentId | null): string => {
+      const environmentSettings =
+        environmentId && primaryEnvironmentId && environmentId === primaryEnvironmentId
+          ? settings
+          : environmentId
+            ? savedEnvironmentRuntimeById[environmentId]?.serverConfig?.settings
+            : null;
+      const baseDirectory = environmentSettings?.addProjectBaseDirectory?.trim() ?? "";
+      if (baseDirectory.length === 0) {
+        return "~/";
+      }
+      return ensureBrowseDirectoryPath(baseDirectory);
+    },
+    [primaryEnvironmentId, savedEnvironmentRuntimeById, settings],
+  );
+
+  const projectTitleById = useMemo(
+    () => new Map<ProjectId, string>(projects.map((project) => [project.id, project.name])),
+    [projects],
+  );
+  const projectByScopedKey = useMemo(
+    () =>
+      new Map(
+        projects.map((project) => [
+          scopedProjectKey(scopeProjectRef(project.environmentId, project.id)),
+          project,
+        ]),
+      ),
+    [projects],
+  );
+  const existingGitHubRepositoryKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const project of projects) {
+      const canonicalKey = project.repositoryIdentity?.canonicalKey?.trim().toLowerCase() ?? "";
+      if (canonicalKey.startsWith("github.com/")) {
+        keys.add(canonicalKey);
+      }
+      const remoteUrl = project.repositoryIdentity?.locator.remoteUrl;
+      if (remoteUrl) {
+        const remoteKey = normalizeGitRemoteUrl(remoteUrl);
+        if (remoteKey.startsWith("github.com/")) {
+          keys.add(remoteKey);
+        }
+      }
+    }
+    return keys;
+  }, [projects]);
+
+  const activeThreadId = activeThread?.id;
+  const currentProjectEnvironmentId =
+    activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null;
+  const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
+  const currentProject =
+    currentProjectId && currentProjectEnvironmentId
+      ? (projects.find(
+          (project) =>
+            project.id === currentProjectId &&
+            project.environmentId === currentProjectEnvironmentId,
+        ) ?? null)
+      : null;
+  const currentProjectCwd = currentProject?.cwd ?? null;
+  const currentEnvironmentProviders = useMemo(
+    () =>
+      currentProjectEnvironmentId && currentProjectEnvironmentId === primaryEnvironmentId
+        ? primaryServerProviders
+        : currentProjectEnvironmentId
+          ? (savedEnvironmentRuntimeById[currentProjectEnvironmentId]?.serverConfig?.providers ??
+            [])
+          : [],
+    [
+      currentProjectEnvironmentId,
+      primaryEnvironmentId,
+      primaryServerProviders,
+      savedEnvironmentRuntimeById,
+    ],
+  );
+  const currentEnvironmentServerSettings =
+    currentProjectEnvironmentId && currentProjectEnvironmentId !== primaryEnvironmentId
+      ? savedEnvironmentRuntimeById[currentProjectEnvironmentId]?.serverConfig?.settings
+      : null;
+  const currentEnvironmentSettings = currentEnvironmentServerSettings
+    ? { ...settings, ...currentEnvironmentServerSettings }
+    : settings;
+  const availableCodexInstances = useMemo(
+    () =>
+      deriveProviderInstanceEntries(currentEnvironmentProviders).filter(
+        (entry) =>
+          entry.driverKind === "codex" &&
+          entry.enabled &&
+          entry.installed &&
+          entry.isAvailable &&
+          entry.models.length > 0,
+      ),
+    [currentEnvironmentProviders],
+  );
+  const currentProjectCwdForBrowse =
+    browseEnvironmentId && currentProjectEnvironmentId === browseEnvironmentId
+      ? currentProjectCwd
+      : null;
+  const relativePathNeedsActiveProject =
+    isExplicitRelativeProjectPath(query.trim()) && currentProjectCwdForBrowse === null;
+  const browseDirectoryPath = isBrowsing ? getBrowseDirectoryPath(query) : "";
+  const browseFilterQuery =
+    isBrowsing && !hasTrailingPathSeparator(query) ? getBrowseLeafPathSegment(query) : "";
+  const [externalSessionSearchQuery] = useDebouncedValue(
+    codexSessionFlow ? deferredQuery : "",
+    { wait: EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS },
+    (debouncerState) => ({ isPending: debouncerState.isPending }),
+  );
+  const externalSessionsQuery = useInfiniteQuery({
+    queryKey: [
+      "externalCodexSessions",
+      codexSessionFlow?.environmentId,
+      codexSessionFlow?.providerInstanceId,
+      codexSessionFlow?.cwd,
+      externalSessionSearchQuery.trim(),
+    ],
+    queryFn: async ({ pageParam }) => {
+      if (!codexSessionFlow) {
+        return { data: [] };
+      }
+      return requireEnvironmentConnection(
+        codexSessionFlow.environmentId,
+      ).client.server.listExternalProviderThreads({
+        providerInstanceId: codexSessionFlow.providerInstanceId,
+        cwd: codexSessionFlow.cwd,
+        limit: 20,
+        ...(typeof pageParam === "string" ? { cursor: pageParam } : {}),
+        ...(externalSessionSearchQuery.trim().length > 0
+          ? { searchTerm: externalSessionSearchQuery.trim() }
+          : {}),
+      });
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    enabled: codexSessionFlow !== null,
+  });
+
+  const fetchBrowseResult = useCallback(
+    async (partialPath: string): Promise<FilesystemBrowseResult | null> => {
+      if (!browseEnvironmentId) return null;
+      const api = readEnvironmentApi(browseEnvironmentId);
+      if (!api) return null;
+      return api.filesystem.browse({
+        partialPath,
+        ...(currentProjectCwdForBrowse ? { cwd: currentProjectCwdForBrowse } : {}),
+      });
+    },
+    [browseEnvironmentId, currentProjectCwdForBrowse],
+  );
+
+  const { data: browseResult, isPending: isBrowsePending } = useQuery({
+    queryKey: [
+      "filesystemBrowse",
+      browseEnvironmentId,
+      browseDirectoryPath,
+      currentProjectCwdForBrowse,
+    ],
+    queryFn: () => fetchBrowseResult(browseDirectoryPath),
+    staleTime: BROWSE_STALE_TIME_MS,
+    enabled:
+      isBrowsing &&
+      browseDirectoryPath.length > 0 &&
+      browseEnvironmentId !== null &&
+      !relativePathNeedsActiveProject,
+  });
+  const browseEntries = browseResult?.entries ?? EMPTY_BROWSE_ENTRIES;
+  const {
+    filteredEntries: filteredBrowseEntries,
+    highlightedEntry: highlightedBrowseEntry,
+    exactEntry: exactBrowseEntry,
+  } = useMemo(
+    () => filterBrowseEntries({ browseEntries, browseFilterQuery, highlightedItemValue }),
+    [browseEntries, browseFilterQuery, highlightedItemValue],
+  );
+  const isGitHubRepositorySelectionStep =
+    addProjectCloneFlow?.step === "repository" && addProjectCloneFlow.source === "github";
+  const gitHubRepositorySelectionEnvironmentId = isGitHubRepositorySelectionStep
+    ? addProjectCloneFlow.environmentId
+    : null;
+  const gitHubRepositoriesQuery = useQuery({
+    queryKey: [
+      "sourceControlRepositories",
+      gitHubRepositorySelectionEnvironmentId,
+      "github",
+      GITHUB_REPOSITORY_LIST_LIMIT,
+    ],
+    queryFn: async () => {
+      if (!gitHubRepositorySelectionEnvironmentId) {
+        return { repositories: [] };
+      }
+      const api = readEnvironmentApi(gitHubRepositorySelectionEnvironmentId);
+      if (!api) {
+        return { repositories: [] };
+      }
+      return api.sourceControl.listRepositories({
+        provider: "github",
+        limit: GITHUB_REPOSITORY_LIST_LIMIT,
+      });
+    },
+    staleTime: GITHUB_REPOSITORY_LIST_STALE_TIME_MS,
+    enabled: gitHubRepositorySelectionEnvironmentId !== null,
+  });
+
+  const prefetchBrowsePath = useCallback(
+    (partialPath: string) => {
+      void queryClient.prefetchQuery({
+        queryKey: [
+          "filesystemBrowse",
+          browseEnvironmentId,
+          partialPath,
+          currentProjectCwdForBrowse,
+        ],
+        queryFn: () => fetchBrowseResult(partialPath),
+        staleTime: BROWSE_STALE_TIME_MS,
+      });
+    },
+    [browseEnvironmentId, currentProjectCwdForBrowse, fetchBrowseResult, queryClient],
+  );
+
+  // Prefetch the parent and the most likely next child so browse navigation
+  // stays warm without scanning every child directory in large trees.
+  useEffect(() => {
+    if (!isBrowsing || filteredBrowseEntries.length === 0) return;
+
+    if (canNavigateUp(query)) {
+      prefetchBrowsePath(getBrowseParentPath(query)!);
+    }
+
+    const nextChild = highlightedBrowseEntry ?? exactBrowseEntry;
+    if (nextChild) {
+      prefetchBrowsePath(appendBrowsePathSegment(query, nextChild.name));
+    }
+  }, [
+    exactBrowseEntry,
+    filteredBrowseEntries.length,
+    highlightedBrowseEntry,
+    isBrowsing,
+    prefetchBrowsePath,
+    query,
+  ]);
+
+  const openProjectFromSearch = useMemo(
+    () => async (project: (typeof projects)[number]) => {
+      const latestThread = getLatestThreadForProject(
+        threads.filter((thread) => thread.environmentId === project.environmentId),
+        project.id,
+      );
+      if (latestThread) {
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(
+            scopeThreadRef(latestThread.environmentId, latestThread.id),
+          ),
+        });
+        return;
+      }
+
+      await handleNewThread(scopeProjectRef(project.environmentId, project.id));
+    },
+    [handleNewThread, navigate, threads],
+  );
+
+  const projectSearchItems = useMemo(
+    () =>
+      buildProjectActionItems({
+        projects,
+        valuePrefix: "project",
+        icon: (project) => (
+          <ProjectFavicon
+            environmentId={project.environmentId}
+            cwd={project.cwd}
+            name={project.name}
+            className={ITEM_ICON_CLASS}
+          />
+        ),
+        runProject: openProjectFromSearch,
+      }),
+    [openProjectFromSearch, projects],
+  );
+
+  const projectThreadItems = useMemo(
+    () =>
+      buildProjectActionItems({
+        projects,
+        valuePrefix: "new-thread-in",
+        icon: (project) => (
+          <ProjectFavicon
+            environmentId={project.environmentId}
+            cwd={project.cwd}
+            name={project.name}
+            className={ITEM_ICON_CLASS}
+          />
+        ),
+        runProject: async (project) => {
+          await startNewThreadInProjectFromContext(
+            {
+              activeDraftThread,
+              activeThread,
+              defaultProjectRef,
+              handleNewThread,
+            },
+            scopeProjectRef(project.environmentId, project.id),
+          );
+        },
+      }),
+    [activeDraftThread, activeThread, defaultProjectRef, handleNewThread, projects],
+  );
+
+  const allThreadItems = useMemo(
+    () =>
+      buildThreadActionItems({
+        threads,
+        ...(activeThreadId ? { activeThreadId } : {}),
+        projectTitleById,
+        icon: (thread) => {
+          const project = projectByScopedKey.get(
+            scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+          );
+          if (!project) {
+            return <MessageSquareIcon className={ITEM_ICON_CLASS} />;
+          }
+          if (project.kind === "general-chat") {
+            return <MessagesSquareIcon className={ITEM_ICON_CLASS} />;
+          }
+          return (
+            <ProjectFavicon
+              environmentId={project.environmentId}
+              cwd={project.cwd}
+              name={project.name}
+              className={ITEM_ICON_CLASS}
+            />
+          );
+        },
+        renderLeadingContent: (thread) => <ThreadRowLeadingStatus thread={thread} />,
+        renderTrailingContent: (thread) => <ThreadRowTrailingStatus thread={thread} />,
+        runThread: async (thread) => {
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+          });
+        },
+      }),
+    [activeThreadId, navigate, projectByScopedKey, projectTitleById, threads],
+  );
+  const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
+  const threadContentSearchTargets = useMemo<ReadonlyArray<ThreadSearchTarget>>(() => {
+    const scopedProjectIds = currentView?.threadSearchProjectIdsByEnvironment;
+    if (currentView && !scopedProjectIds) {
+      return [];
+    }
+    if (scopedProjectIds) {
+      return [...scopedProjectIds].map(([environmentId, projectIds]) => ({
+        environmentId,
+        projectIds,
+      }));
+    }
+
+    return [...new Set(threads.map((thread) => thread.environmentId))].map((environmentId) => ({
+      environmentId,
+    }));
+  }, [currentView, threads]);
+  const [debouncedThreadContentQuery] = useDebouncedValue(
+    deferredQuery,
+    { wait: THREAD_CONTENT_SEARCH_DEBOUNCE_MS },
+    (debouncerState) => ({ isPending: debouncerState.isPending }),
+  );
+  const threadContentSearchQuery = useQuery(
+    threadSearchQueryOptions({
+      query: debouncedThreadContentQuery,
+      targets: threadContentSearchTargets,
+      enabled: !isActionsOnly,
+    }),
+  );
+  const threadContentMatches =
+    normalizeSearchText(debouncedThreadContentQuery) === normalizeSearchText(deferredQuery)
+      ? (threadContentSearchQuery.data?.matches ?? EMPTY_THREAD_CONTENT_MATCHES)
+      : EMPTY_THREAD_CONTENT_MATCHES;
+  const allThreadSearchItems = useMemo(
+    () =>
+      applyThreadContentSearchMatches({
+        items: allThreadItems,
+        matches: threadContentMatches,
+        query: deferredQuery,
+      }),
+    [allThreadItems, deferredQuery, threadContentMatches],
+  );
+
+  function pushPaletteView(view: CommandPaletteView): void {
+    setViewStack((previousViews) => [
+      ...previousViews,
+      {
+        addonIcon: view.addonIcon,
+        groups: view.groups,
+        ...(view.initialQuery ? { initialQuery: view.initialQuery } : {}),
+        ...(view.inputPlaceholder ? { inputPlaceholder: view.inputPlaceholder } : {}),
+        ...(view.threadSearchProjectIdsByEnvironment
+          ? {
+              threadSearchProjectIdsByEnvironment: view.threadSearchProjectIdsByEnvironment,
+            }
+          : {}),
+      },
+    ]);
+    setHighlightedItemValue(null);
+    setQuery(view.initialQuery ?? "");
+  }
+
+  function pushView(item: CommandPaletteSubmenuItem): void {
+    pushPaletteView({
+      addonIcon: item.addonIcon,
+      groups: item.groups,
+      ...(item.initialQuery ? { initialQuery: item.initialQuery } : {}),
+    });
+  }
+
+  function startCodexSessionBrowser(instance: (typeof availableCodexInstances)[number]): void {
+    if (!currentProject || currentProject.kind !== "workspace") {
+      return;
+    }
+    setCodexSessionFlow({
+      environmentId: currentProject.environmentId,
+      projectId: currentProject.id,
+      projectName: currentProject.name,
+      cwd: currentProject.cwd,
+      providerInstanceId: instance.instanceId,
+    });
+    pushPaletteView({
+      addonIcon: <MessagesSquareIcon className={ADDON_ICON_CLASS} />,
+      groups: [],
+      inputPlaceholder: `Search other Codex conversations in ${currentProject.name}...`,
+    });
+  }
+
+  function openCodexSessionBrowser(): void {
+    if (availableCodexInstances.length === 1) {
+      startCodexSessionBrowser(availableCodexInstances[0]!);
+      return;
+    }
+    pushPaletteView({
+      addonIcon: <MessagesSquareIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "codex-accounts",
+          label: "Codex accounts",
+          items: availableCodexInstances.map((instance) => ({
+            kind: "action" as const,
+            value: `external-codex-account:${instance.instanceId}`,
+            searchTerms: [instance.displayName, instance.instanceId, "codex", "account"],
+            title: instance.displayName,
+            description: "Sessions stored by this Codex account",
+            icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
+            keepOpen: true,
+            run: async () => {
+              startCodexSessionBrowser(instance);
+            },
+          })),
+        },
+      ],
+      inputPlaceholder: "Choose a Codex account...",
+    });
+  }
+
+  function popView(): void {
+    setAddProjectCloneFlow(null);
+    setCodexSessionFlow(null);
+    setImportingProviderThreadId(null);
+    if (viewStack.length <= 1) {
+      setAddProjectEnvironmentId(null);
+    }
+    setViewStack((previousViews) => previousViews.slice(0, -1));
+    setHighlightedItemValue(null);
+    setQuery("");
+  }
+
+  function handleQueryChange(nextQuery: string): void {
+    setHighlightedItemValue(null);
+    setQuery(nextQuery);
+    if (nextQuery === "" && currentView?.initialQuery) {
+      popView();
+    }
+  }
+
+  const startAddProjectBrowse = useCallback(
+    (environmentId: EnvironmentId): void => {
+      setAddProjectEnvironmentId(environmentId);
+      setAddProjectCloneFlow(null);
+      pushPaletteView({
+        addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
+        groups: [],
+        initialQuery: getAddProjectInitialQueryForEnvironment(environmentId),
+      });
+    },
+    [getAddProjectInitialQueryForEnvironment],
+  );
+
+  const startAddProjectClone = useCallback(
+    (environmentId: EnvironmentId, source: AddProjectRemoteSource): void => {
+      setAddProjectEnvironmentId(environmentId);
+      setAddProjectCloneFlow({ step: "repository", environmentId, source });
+      pushPaletteView({
+        addonIcon: remoteProjectSourceIcon(source, ADDON_ICON_CLASS),
+        groups: [],
+        initialQuery: "",
+      });
+    },
+    [],
+  );
+
+  const openSourceControlSettings = useCallback(() => {
+    setOpen(false);
+    void navigate({ to: "/settings/source-control" });
+  }, [navigate, setOpen]);
+
+  const buildAddProjectSourceGroups = useCallback(
+    (
+      environmentId: EnvironmentId,
+      readinessBySource: AddProjectRemoteSourceReadiness,
+    ): CommandPaletteView["groups"] => {
+      const sourceItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [
+        {
+          kind: "action",
+          value: `action:add-project:${environmentId}:local`,
+          searchTerms: ["local", "folder", "directory", "browse"],
+          title: "Local folder",
+          description: "Browse a folder on disk",
+          icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+          keepOpen: true,
+          run: async () => {
+            startAddProjectBrowse(environmentId);
+          },
+        },
+      ];
+
+      const orderedSources: ReadonlyArray<AddProjectRemoteSource> = [
+        "url",
+        ...sortAddProjectProviderSources(readinessBySource),
+      ];
+
+      for (const source of orderedSources) {
+        const label = remoteProjectSourceLabel(source);
+        const title = source === "url" ? "Git URL" : `${label} repository`;
+        const description =
+          source === "url"
+            ? "Clone from a remote URL"
+            : `Clone ${label} ${remoteProjectSourcePathHint(source)}`;
+        const readiness = readinessBySource[source];
+        const disabledHint = readiness.hint;
+
+        const titleTrailingContent = readiness.ready ? undefined : (
+          <span className="ml-auto">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="h-5 rounded-[var(--app-radius-badge)] px-1.5 text-[10px] text-warning-foreground"
+                    onClick={() => {
+                      openSourceControlSettings();
+                    }}
+                  >
+                    Setup Required
+                  </Button>
+                }
+              />
+              <TooltipPopup align="end" side="left">
+                {disabledHint ?? "Open Settings -> Source Control to configure this provider."}
+              </TooltipPopup>
+            </Tooltip>
+          </span>
+        );
+
+        if (!readiness.ready) {
+          sourceItems.push({
+            kind: "action",
+            value: `action:add-project:${environmentId}:${source}:not-ready`,
+            searchTerms: ["clone", "remote", "repository", "repo", "git", label, "setup required"],
+            title,
+            description,
+            disabled: true,
+            icon: remoteProjectSourceIcon(source, ITEM_ICON_CLASS),
+            ...(titleTrailingContent ? { titleTrailingContent } : {}),
+            run: async () => {},
+          });
+          continue;
+        }
+
+        sourceItems.push({
+          kind: "action",
+          value: `action:add-project:${environmentId}:${source}`,
+          searchTerms: ["clone", "remote", "repository", "repo", "git", label],
+          title,
+          description,
+          icon: remoteProjectSourceIcon(source, ITEM_ICON_CLASS),
+          ...(titleTrailingContent ? { titleTrailingContent } : {}),
+          keepOpen: true,
+          run: async () => {
+            startAddProjectClone(environmentId, source);
+          },
+        });
+      }
+
+      return [{ value: `sources:${environmentId}`, label: "Sources", items: sourceItems }];
+    },
+    [openSourceControlSettings, startAddProjectBrowse, startAddProjectClone],
+  );
+
+  const startAddProjectSourceSelection = useCallback(
+    (environmentId: EnvironmentId): void => {
+      setAddProjectEnvironmentId(environmentId);
+      setAddProjectCloneFlow(null);
+      const target = { environmentId };
+      const initialDiscovery = getSourceControlDiscoverySnapshot(target).data;
+      pushPaletteView({
+        addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
+        groups: buildAddProjectSourceGroups(
+          environmentId,
+          buildAddProjectRemoteSourceReadiness(initialDiscovery),
+        ),
+      });
+
+      if (initialDiscovery) {
+        return;
+      }
+
+      void refreshSourceControlDiscovery(target).then((discovery) => {
+        if (!discovery) {
+          return;
+        }
+        setViewStack((previousViews) => {
+          const currentTopView = previousViews.at(-1);
+          if (currentTopView?.groups[0]?.value !== `sources:${environmentId}`) {
+            return previousViews;
+          }
+          return [
+            ...previousViews.slice(0, -1),
+            {
+              addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
+              groups: buildAddProjectSourceGroups(
+                environmentId,
+                buildAddProjectRemoteSourceReadiness(discovery),
+              ),
+            },
+          ];
+        });
+      });
+    },
+    [buildAddProjectSourceGroups],
+  );
+
+  const addProjectEnvironmentItems: CommandPaletteActionItem[] = addProjectEnvironmentOptions.map(
+    (option) => ({
+      kind: "action",
+      value: `action:add-project:environment:${option.environmentId}`,
+      searchTerms: [option.label, option.environmentId, option.isPrimary ? "this device" : ""],
+      title: option.label,
+      description: option.isPrimary ? "This device" : option.environmentId,
+      icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+      keepOpen: true,
+      run: async () => {
+        startAddProjectSourceSelection(option.environmentId);
+      },
+    }),
+  );
+
+  const addProjectEnvironmentGroups = useMemo<CommandPaletteView["groups"]>(
+    () => [
+      {
+        value: "environments",
+        label: "Environments",
+        items: addProjectEnvironmentItems,
+      },
+    ],
+    [addProjectEnvironmentItems],
+  );
+
+  const openAddProjectFlow = useCallback(() => {
+    // A caller picking a folder on a specific computer skips the computer list.
+    const selectionEnvironmentId =
+      useCommandPaletteStore.getState().projectSelection?.environmentId;
+    if (selectionEnvironmentId) {
+      void startAddProjectSourceSelection(selectionEnvironmentId);
+      return;
+    }
+    if (addProjectEnvironmentOptions.length > 1) {
+      pushPaletteView({
+        addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
+        groups: addProjectEnvironmentGroups,
+      });
+      return;
+    }
+
+    const environmentId = defaultAddProjectEnvironmentId;
+    if (!environmentId) {
+      const guidance = resolveAddProjectUnavailableGuidance({
+        isHostedStatic: isHostedStaticApp(),
+      });
+      const guidanceAction = guidance.action;
+      toastManager.add(
+        stackedThreadToast({
+          type: guidance.type,
+          title: guidance.title,
+          description: guidance.description,
+          ...(guidanceAction
+            ? {
+                actionProps: {
+                  children: guidanceAction.label,
+                  onClick: () => {
+                    void navigate({ to: guidanceAction.to });
+                  },
+                },
+                actionVariant: "outline" as const,
+              }
+            : {}),
+        }),
+      );
+      return;
+    }
+
+    void startAddProjectSourceSelection(environmentId);
+  }, [
+    addProjectEnvironmentGroups,
+    addProjectEnvironmentOptions.length,
+    defaultAddProjectEnvironmentId,
+    navigate,
+    startAddProjectSourceSelection,
+  ]);
+
+  useLayoutEffect(() => {
+    if (openIntent?.kind !== "add-project") {
+      return;
+    }
+    // Environments hydrate a beat after the palette can open, and this
+    // intent is one-shot: consuming it against an empty environment list
+    // turned an add-project click during startup into a dead end. Hold the
+    // intent until an environment exists (closing the palette clears it);
+    // this effect re-runs when the options arrive. Hosted-static tabs know
+    // immediately that no local environment is coming, so they proceed
+    // straight to the pairing guidance.
+    if (addProjectEnvironmentOptions.length === 0 && !isHostedStaticApp()) {
+      return;
+    }
+    clearOpenIntent();
+    openAddProjectFlow();
+  }, [addProjectEnvironmentOptions.length, clearOpenIntent, openAddProjectFlow, openIntent]);
+
+  // Sidebar "Search all N threads" hands off here: a submenu view scoped to
+  // one logical project's threads, searchable with the usual palette ranking.
+  useLayoutEffect(() => {
+    if (openIntent?.kind !== "search-threads") {
+      return;
+    }
+    clearOpenIntent();
+    const memberProjectKeys = new Set(openIntent.memberProjectKeys);
+    const projectThreads = threads.filter((thread) =>
+      memberProjectKeys.has(
+        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+      ),
+    );
+    const projectIdsByEnvironment = new Map<EnvironmentId, ProjectId[]>();
+    for (const thread of projectThreads) {
+      const projectIds = projectIdsByEnvironment.get(thread.environmentId) ?? [];
+      if (!projectIds.includes(thread.projectId)) {
+        projectIds.push(thread.projectId);
+        projectIdsByEnvironment.set(thread.environmentId, projectIds);
+      }
+    }
+    pushPaletteView({
+      addonIcon: <MessageSquareIcon className={ADDON_ICON_CLASS} />,
+      inputPlaceholder: `Search threads in ${openIntent.projectName}...`,
+      threadSearchProjectIdsByEnvironment: projectIdsByEnvironment,
+      groups: [
+        {
+          value: "project-threads",
+          label: `Threads in ${openIntent.projectName}`,
+          items: buildThreadActionItems({
+            threads: projectThreads,
+            ...(activeThreadId ? { activeThreadId } : {}),
+            projectTitleById,
+            icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+            renderLeadingContent: (thread) => <ThreadRowLeadingStatus thread={thread} />,
+            renderTrailingContent: (thread) => <ThreadRowTrailingStatus thread={thread} />,
+            runThread: async (thread) => {
+              await navigate({
+                to: "/$environmentId/$threadId",
+                params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+              });
+            },
+          }),
+        },
+      ],
+    });
+  }, [activeThreadId, clearOpenIntent, navigate, openIntent, projectTitleById, threads]);
+
+  const importExternalCodexSession = useCallback(
+    async (candidate: ProviderExternalThreadCandidate): Promise<void> => {
+      if (!codexSessionFlow || importingProviderThreadId !== null) {
+        return;
+      }
+      const model = resolveAppModelSelectionForInstance(
+        codexSessionFlow.providerInstanceId,
+        currentEnvironmentSettings,
+        currentEnvironmentProviders,
+        null,
+      );
+      if (!model) {
+        throw new Error("No usable model is available for this Codex account.");
+      }
+
+      setImportingProviderThreadId(candidate.providerThreadId);
+      try {
+        const connection = requireEnvironmentConnection(codexSessionFlow.environmentId);
+        const result = await connection.client.server.importExternalProviderThread({
+          providerInstanceId: codexSessionFlow.providerInstanceId,
+          providerThreadId: candidate.providerThreadId,
+          projectId: codexSessionFlow.projectId,
+          threadId: newThreadId(),
+          modelSelection: {
+            instanceId: codexSessionFlow.providerInstanceId,
+            model,
+          },
+          runtimeMode:
+            activeThread?.runtimeMode ??
+            activeDraftThread?.runtimeMode ??
+            DEFAULT_NEW_THREAD_RUNTIME_MODE,
+        });
+        closeIfGeneration(sessionGeneration);
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(
+            scopeThreadRef(codexSessionFlow.environmentId, result.threadId),
+          ),
+        });
+      } finally {
+        setImportingProviderThreadId(null);
+      }
+    },
+    [
+      activeDraftThread?.runtimeMode,
+      activeThread?.runtimeMode,
+      codexSessionFlow,
+      closeIfGeneration,
+      currentEnvironmentProviders,
+      currentEnvironmentSettings,
+      importingProviderThreadId,
+      navigate,
+      sessionGeneration,
+    ],
+  );
+
+  const externalCodexSessionGroups = useMemo<CommandPaletteView["groups"]>(() => {
+    if (!codexSessionFlow) {
+      return [];
+    }
+    const candidates = externalSessionsQuery.data?.pages.flatMap((page) => page.data) ?? [];
+    const items: CommandPaletteActionItem[] = candidates.map((candidate) => {
+      const title =
+        candidate.name?.trim() ||
+        candidate.preview.trim().split(/\r?\n/, 1)[0] ||
+        "Untitled Codex session";
+      const source = externalSessionSourceLabel(candidate.source);
+      const isImporting = importingProviderThreadId === candidate.providerThreadId;
+      return {
+        kind: "action",
+        value: `external-codex-session:${candidate.providerThreadId}`,
+        searchTerms: [title, candidate.preview, source, candidate.cliVersion],
+        title,
+        description: candidate.unavailableReason ?? `${source} · ${candidate.preview}`,
+        icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+        timestamp: formatRelativeTimeLabel(candidate.updatedAt),
+        disabled: !candidate.canImport || importingProviderThreadId !== null,
+        ...(isImporting
+          ? {
+              titleTrailingContent: (
+                <span className="ml-auto text-[10px] text-muted-foreground">Importing…</span>
+              ),
+            }
+          : {}),
+        keepOpen: true,
+        run: async () => {
+          await importExternalCodexSession(candidate);
+        },
+      };
+    });
+
+    if (externalSessionsQuery.hasNextPage) {
+      items.push({
+        kind: "action",
+        value: "external-codex-session:load-more",
+        searchTerms: ["load more", "older", "sessions"],
+        title: externalSessionsQuery.isFetchingNextPage ? "Loading more…" : "Load more sessions",
+        description: "Fetch the next 20 conversations",
+        icon: <ArrowDownIcon className={ITEM_ICON_CLASS} />,
+        disabled: externalSessionsQuery.isFetchingNextPage || importingProviderThreadId !== null,
+        keepOpen: true,
+        run: async () => {
+          await externalSessionsQuery.fetchNextPage();
+        },
+      });
+    }
+
+    return items.length > 0
+      ? [
+          {
+            value: "external-codex-sessions",
+            label: `Other Codex conversations in ${codexSessionFlow.projectName}`,
+            items,
+          },
+        ]
+      : [];
+  }, [
+    codexSessionFlow,
+    externalSessionsQuery.data?.pages,
+    externalSessionsQuery.fetchNextPage,
+    externalSessionsQuery.hasNextPage,
+    externalSessionsQuery.isFetchingNextPage,
+    importExternalCodexSession,
+    importingProviderThreadId,
+  ]);
+
+  const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+
+  if (projects.length > 0) {
+    const activeProjectTitle = currentProject?.name ?? null;
+
+    if (activeProjectTitle) {
+      actionItems.push({
+        kind: "action",
+        value: "action:new-thread",
+        searchTerms: ["new thread", "chat", "create", "draft"],
+        title: (
+          <>
+            New thread in <span className="font-semibold">{activeProjectTitle}</span>
+          </>
+        ),
+        icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
+        shortcutCommand: "chat.new",
+        run: async () => {
+          await startNewThreadFromContext({
+            activeDraftThread,
+            activeThread,
+            defaultProjectRef,
+            handleNewThread,
+          });
+        },
+      });
+
+      if (
+        currentProject?.kind === "workspace" &&
+        currentProjectCwd &&
+        availableCodexInstances.length > 0
+      ) {
+        actionItems.push({
+          kind: "action",
+          value: "action:open-codex-session",
+          searchTerms: ["open", "import", "codex", "session", "chat", "conversation"],
+          title: "Bring in Codex conversation…",
+          description: "Continue work from Codex app, CLI, or IDE",
+          icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
+          keepOpen: true,
+          run: async () => {
+            openCodexSessionBrowser();
+          },
+        });
+      }
+    }
+
+    actionItems.push({
+      kind: "submenu",
+      value: "action:new-thread-in",
+      searchTerms: ["new thread", "project", "pick", "choose", "select"],
+      title: "New thread in...",
+      icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
+      addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
+      groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
+    });
+  }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:add-project",
+    searchTerms: [
+      "add project",
+      "folder",
+      "directory",
+      "browse",
+      "clone",
+      "remote",
+      "repository",
+      "repo",
+      "git",
+      "github",
+      "gitlab",
+      "bitbucket",
+      "azure",
+      "devops",
+      "url",
+      "environment",
+    ],
+    title: "Add project",
+    icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+    keepOpen: true,
+    run: async () => {
+      openAddProjectFlow();
+    },
+  });
+
+  if (!isHomeRoute) {
+    actionItems.push({
+      kind: "action",
+      value: "action:go-home",
+      searchTerms: ["home", "landing", "start", "threads"],
+      title: "Go to Home",
+      icon: <HomeIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/" });
+      },
+    });
+  }
+
+  // Registered only where the sidebar row is: an action that lands on
+  // "unsupported" is worse than one the palette never offers.
+  if (pullRequestEnvironments.length > 0) {
+    actionItems.push({
+      kind: "action",
+      value: "action:pull-requests",
+      searchTerms: ["pull requests", "prs", "pr", "reviews", "github"],
+      title: "Open pull requests",
+      icon: <GitPullRequestIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/pull-requests", search: { state: "open" } });
+      },
+    });
+  }
+
+  // Only where there is one to open: an action that lands on "this branch has
+  // no pull request" is a dead end the palette should not offer.
+  if (activeThreadPullRequest && activeThread) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    const pullRequestNumber = activeThreadPullRequest.number;
+    actionItems.push({
+      kind: "action",
+      value: "action:thread-pull-request",
+      searchTerms: ["pull request", "pr", "review", "github", `#${activeThreadPullRequest.number}`],
+      title: `Open pull request #${activeThreadPullRequest.number}`,
+      icon: <GitPullRequestIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        focusRightPanelTab(scopedThreadKey(threadRef), "pullRequest");
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(threadRef),
+          search: (previous) => pullRequestTabSearchParams(previous, pullRequestNumber),
+        });
+      },
+    });
+  }
+
+  // Where find in chat can open: a saved chat on screen, off phones.
+  if (chatFindAvailable) {
+    actionItems.push({
+      kind: "action",
+      value: "action:find-in-chat",
+      searchTerms: ["find in chat", "find", "search this chat", "search messages", "ctrl f"],
+      title: "Find in chat",
+      description: "Search this chat's messages",
+      icon: <SearchIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "chat.find",
+      run: async () => {
+        // After the palette has closed and handed focus back, so the bar's
+        // field keeps it.
+        window.requestAnimationFrame(() => useChatFindStore.getState().requestOpen(null));
+      },
+    });
+  }
+
+  // Where the composer's model picker lists agents: a thread (a new one
+  // included), with rooms on, and no approval holding the composer's toolbar.
+  // It opens the picker ready to add one, the same as its "Add agent" row.
+  const addAgentThreadRef = !activeThreadRoomsEnabled
+    ? null
+    : activeThread
+      ? derivePendingApprovals(activeThread.activities).length === 0
+        ? scopeThreadRef(activeThread.environmentId, activeThread.id)
+        : null
+      : activeDraftThread
+        ? scopeThreadRef(activeDraftThread.environmentId, activeDraftThread.threadId)
+        : null;
+  if (addAgentThreadRef !== null) {
+    const threadRef = addAgentThreadRef;
+    actionItems.push({
+      kind: "action",
+      value: "action:add-room-agent",
+      searchTerms: ["add agent", "agents", "room", "model", "invite", "second opinion", "review"],
+      title: "Add agent",
+      description: "Bring another model into this thread",
+      icon: <UsersRoundIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        useRoomRecipientStore.getState().requestAddAgent(threadRef);
+      },
+    });
+  }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:usage",
+    searchTerms: ["usage", "tokens", "cost", "spend", "spending", "price", "billing"],
+    title: "Open usage",
+    icon: <GaugeIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/usage" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:settings",
+    searchTerms: ["settings", "preferences", "configuration", "keybindings"],
+    title: "Open settings",
+    icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:setup",
+    searchTerms: ["setup", "set up", "agents", "providers", "install", "sign in", "onboarding"],
+    title: "Set up agents",
+    icon: <BotIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/setup" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:community-agents",
+    searchTerms: ["community", "agents", "add agent", "install agent", "acp", "registry"],
+    title: "Browse community agents",
+    icon: <BotIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings/providers", search: { section: "community" } });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:skills",
+    searchTerms: ["skills", "plugins", "extensions", "agents", "capabilities"],
+    title: "Open skills",
+    icon: <FileTextIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings/plugins", search: { tab: "skills" } });
+    },
+  });
+
+  const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
+  const activeGroups = currentView
+    ? currentView.groups.map((group) => ({
+        ...group,
+        items: applyThreadContentSearchMatches({
+          items: group.items,
+          matches: threadContentMatches,
+          query: deferredQuery,
+        }),
+      }))
+    : rootGroups;
+
+  const filteredGroups = filterCommandPaletteGroups({
+    activeGroups,
+    query: deferredQuery,
+    isInSubmenu: currentView !== null,
+    projectSearchItems: projectSearchItems,
+    threadSearchItems: allThreadSearchItems,
+  });
+
+  const handleAddProject = useCallback(
+    async (rawCwd: string) => {
+      if (!browseEnvironmentId) return;
+      const api = readEnvironmentApi(browseEnvironmentId);
+      if (!api) return;
+
+      if (isUnsupportedWindowsProjectPath(rawCwd.trim(), browseEnvironmentPlatform)) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to add project",
+            description: "Windows-style paths are only supported on Windows.",
+          }),
+        );
+        return;
+      }
+
+      if (isExplicitRelativeProjectPath(rawCwd.trim()) && !currentProjectCwdForBrowse) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to add project",
+            description: "Relative paths require an active project.",
+          }),
+        );
+        return;
+      }
+
+      const cwd = resolveProjectPathForDispatch(rawCwd, currentProjectCwdForBrowse);
+      if (cwd.length === 0) return;
+
+      const existing = findProjectByPath(
+        projects.filter((project) => project.environmentId === browseEnvironmentId),
+        cwd,
+      );
+      // Picking a folder for someone else (the setup screen): report the
+      // project and close, instead of opening a thread in it.
+      const projectSelection = useCommandPaletteStore.getState().projectSelection;
+      if (existing && projectSelection) {
+        projectSelection.onProjectSelected(scopeProjectRef(existing.environmentId, existing.id));
+        closeIfGeneration(sessionGeneration);
+        return;
+      }
+      if (existing) {
+        const latestThread = getLatestThreadForProject(
+          threads.filter((thread) => thread.environmentId === existing.environmentId),
+          existing.id,
+        );
+        if (latestThread) {
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(
+              scopeThreadRef(latestThread.environmentId, latestThread.id),
+            ),
+          });
+        } else {
+          await handleNewThread(scopeProjectRef(existing.environmentId, existing.id)).catch(
+            () => undefined,
+          );
+        }
+        closeIfGeneration(sessionGeneration);
+        return;
+      }
+
+      try {
+        const projectId = newProjectId();
+        await api.orchestration.dispatchCommand({
+          type: "project.create",
+          commandId: newCommandId(),
+          projectId,
+          title: inferProjectTitleFromPath(cwd),
+          workspaceRoot: cwd,
+          createWorkspaceRootIfMissing: true,
+          // Keep newly added projects on the provider's live default until
+          // the user explicitly chooses a project/thread model.
+          defaultModelSelection: null,
+          createdAt: new Date().toISOString(),
+        });
+        const createdProjectRef = scopeProjectRef(browseEnvironmentId, projectId);
+        // Let the created project reach the store first so the draft is keyed
+        // to the project's real identity. If it does not arrive in time the
+        // draft is adopted (re-keyed) on the next new-thread call instead.
+        await waitForProjectInStore(createdProjectRef);
+        if (projectSelection) {
+          projectSelection.onProjectSelected(createdProjectRef);
+          closeIfGeneration(sessionGeneration);
+          return;
+        }
+        await handleNewThread(createdProjectRef).catch(() => undefined);
+        closeIfGeneration(sessionGeneration);
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to add project",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      }
+    },
+    [
+      browseEnvironmentId,
+      browseEnvironmentPlatform,
+      closeIfGeneration,
+      currentProjectCwdForBrowse,
+      handleNewThread,
+      navigate,
+      projects,
+      sessionGeneration,
+      threads,
+    ],
+  );
+
+  const continueAddProjectCloneFlowWithRepository = useCallback(
+    (
+      flow: Extract<AddProjectCloneFlow, { readonly step: "repository" }>,
+      input: {
+        readonly repositoryInput: string;
+        readonly repository: SourceControlRepositoryInfo | null;
+        readonly remoteUrl: string;
+      },
+    ): void => {
+      const destinationPath = getAddProjectInitialQueryForEnvironment(flow.environmentId);
+      setAddProjectCloneFlow({
+        step: "confirm",
+        environmentId: flow.environmentId,
+        source: flow.source,
+        repositoryInput: input.repositoryInput,
+        repository: input.repository,
+        remoteUrl: input.remoteUrl,
+      });
+      setHighlightedItemValue(null);
+      setQuery(destinationPath);
+      setBrowseGeneration((generation) => generation + 1);
+    },
+    [getAddProjectInitialQueryForEnvironment],
+  );
+
+  async function submitAddProjectCloneFlow(destinationPathInput?: string): Promise<void> {
+    if (!addProjectCloneFlow) {
+      return;
+    }
+
+    const api = readEnvironmentApi(addProjectCloneFlow.environmentId);
+    if (!api) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to clone project",
+          description: "Environment API is not available.",
+        }),
+      );
+      return;
+    }
+
+    if (addProjectCloneFlow.step === "repository") {
+      const rawRepository = query.trim();
+      if (rawRepository.length === 0 || isRemoteProjectLookingUp) {
+        return;
+      }
+
+      const provider = remoteProjectSourceProvider(addProjectCloneFlow.source);
+      if (!provider) {
+        continueAddProjectCloneFlowWithRepository(addProjectCloneFlow, {
+          repositoryInput: rawRepository,
+          repository: null,
+          remoteUrl: rawRepository,
+        });
+        return;
+      }
+
+      setIsRemoteProjectLookingUp(true);
+      try {
+        const repository = await api.sourceControl.lookupRepository({
+          provider,
+          repository: rawRepository,
+        });
+        continueAddProjectCloneFlowWithRepository(addProjectCloneFlow, {
+          repositoryInput: rawRepository,
+          repository,
+          remoteUrl: repository.url,
+        });
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Repository lookup failed",
+            description: errorMessage(error),
+          }),
+        );
+      } finally {
+        setIsRemoteProjectLookingUp(false);
+      }
+      return;
+    }
+
+    const rawDestination = (destinationPathInput ?? query).trim();
+    if (rawDestination.length === 0 || isRemoteProjectCloning) {
+      return;
+    }
+
+    if (isUnsupportedWindowsProjectPath(rawDestination, browseEnvironmentPlatform)) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Clone failed",
+          description: "Windows-style paths are only supported on Windows.",
+        }),
+      );
+      return;
+    }
+
+    if (isExplicitRelativeProjectPath(rawDestination) && !currentProjectCwdForBrowse) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Clone failed",
+          description: "Relative paths require an active project.",
+        }),
+      );
+      return;
+    }
+
+    const cloneDirectoryName = getAddProjectCloneDirectoryName(addProjectCloneFlow);
+    const destinationPath = resolveCloneDestinationPathForDispatch({
+      destinationPath: rawDestination,
+      repositoryDirectoryName: cloneDirectoryName,
+      cwd: currentProjectCwdForBrowse,
+    });
+    if (destinationPath.length === 0) {
+      return;
+    }
+
+    setIsRemoteProjectCloning(true);
+    try {
+      const provider = remoteProjectSourceProvider(addProjectCloneFlow.source);
+      const result = await api.sourceControl.cloneRepository({
+        remoteUrl: addProjectCloneFlow.remoteUrl,
+        destinationPath,
+        ...(provider ? { provider } : {}),
+      });
+      await handleAddProject(result.cwd);
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Clone failed",
+          description: errorMessage(error),
+        }),
+      );
+    } finally {
+      setIsRemoteProjectCloning(false);
+    }
+  }
+
+  function browseTo(name: string): void {
+    const nextQuery = appendBrowsePathSegment(query, name);
+    setHighlightedItemValue(null);
+    setQuery(nextQuery);
+    setBrowseGeneration((generation) => generation + 1);
+  }
+
+  function browseUp(): void {
+    const parentPath = getBrowseParentPath(query);
+    if (parentPath === null) {
+      return;
+    }
+
+    setHighlightedItemValue(null);
+    setQuery(parentPath);
+    setBrowseGeneration((generation) => generation + 1);
+  }
+
+  // Resolve the add-project path from browse data when available. When the
+  // query has a trailing separator (e.g. "~/projects/foo/"), parentPath is the
+  // directory itself. Otherwise the user typed a partial leaf name, so we need
+  // the exact browse entry's fullPath or fall back to the raw query.
+  const resolvedAddProjectPath = hasTrailingPathSeparator(query)
+    ? (browseResult?.parentPath ?? query.trim())
+    : (exactBrowseEntry?.fullPath ?? query.trim());
+
+  const canBrowseUp =
+    isBrowsing && !relativePathNeedsActiveProject && canNavigateUp(browseDirectoryPath);
+
+  const browseGroups = buildBrowseGroups({
+    browseEntries: filteredBrowseEntries,
+    browseQuery: query,
+    canBrowseUp,
+    upIcon: <CornerLeftUpIcon className={ITEM_ICON_CLASS} />,
+    directoryIcon: <FolderIcon className={ITEM_ICON_CLASS} />,
+    browseUp,
+    browseTo,
+  });
+  const cloneDestinationBrowseGroups = useMemo(
+    () =>
+      browseGroups.map((group) =>
+        group.value === "directories" ? { ...group, label: "Select where to clone" } : group,
+      ),
+    [browseGroups],
+  );
+  const gitHubRepositorySuggestionGroups = useMemo<CommandPaletteView["groups"]>(() => {
+    if (!isGitHubRepositorySelectionStep || addProjectCloneFlow?.step !== "repository") {
+      return [];
+    }
+
+    const repositories = gitHubRepositoriesQuery.data?.repositories ?? [];
+    const items: CommandPaletteActionItem[] = repositories
+      .filter((repository) =>
+        sourceControlRepositoryComparisonKeys(repository).every(
+          (key) => !existingGitHubRepositoryKeys.has(key),
+        ),
+      )
+      .map((repository) => ({
+        kind: "action",
+        value: `github-repository:${repository.nameWithOwner}`,
+        searchTerms: [repository.nameWithOwner, repository.url, repository.sshUrl, "github"],
+        title: repository.nameWithOwner,
+        description: repository.url,
+        icon: <GitHubIcon className={ITEM_ICON_CLASS} />,
+        keepOpen: true,
+        run: async () => {
+          if (addProjectCloneFlow?.step !== "repository") {
+            return;
+          }
+          continueAddProjectCloneFlowWithRepository(addProjectCloneFlow, {
+            repositoryInput: repository.nameWithOwner,
+            repository,
+            remoteUrl: repository.url,
+          });
+        },
+      }));
+
+    return items.length > 0
+      ? [{ value: "github-repositories", label: "GitHub repositories", items }]
+      : [];
+  }, [
+    addProjectCloneFlow,
+    continueAddProjectCloneFlowWithRepository,
+    existingGitHubRepositoryKeys,
+    gitHubRepositoriesQuery.data?.repositories,
+    isGitHubRepositorySelectionStep,
+  ]);
+  const filteredGitHubRepositorySuggestionGroups = useMemo(
+    () =>
+      filterCommandPaletteGroups({
+        activeGroups: gitHubRepositorySuggestionGroups,
+        query: deferredQuery,
+        isInSubmenu: true,
+        projectSearchItems: [],
+        threadSearchItems: [],
+      }),
+    [deferredQuery, gitHubRepositorySuggestionGroups],
+  );
+
+  const remoteProjectContext = useMemo(() => {
+    if (addProjectCloneFlow?.step !== "confirm") {
+      return null;
+    }
+
+    return {
+      title: addProjectCloneFlow.repository?.nameWithOwner ?? addProjectCloneFlow.repositoryInput,
+      description: addProjectCloneFlow.repository?.url ?? addProjectCloneFlow.remoteUrl,
+      icon: remoteProjectSourceIcon(addProjectCloneFlow.source, ITEM_ICON_CLASS),
+    };
+  }, [addProjectCloneFlow]);
+
+  let displayedGroups: CommandPaletteView["groups"] = filteredGroups;
+  if (codexSessionFlow) {
+    displayedGroups = externalCodexSessionGroups;
+  } else if (addProjectCloneFlow?.step === "repository") {
+    displayedGroups = isGitHubRepositorySelectionStep
+      ? filteredGitHubRepositorySuggestionGroups
+      : [];
+  } else if (addProjectCloneFlow?.step === "confirm") {
+    displayedGroups = relativePathNeedsActiveProject ? [] : cloneDestinationBrowseGroups;
+  } else if (isBrowsing) {
+    displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
+  }
+
+  const inputPlaceholder =
+    remoteProjectInputPlaceholder(addProjectCloneFlow) ??
+    currentView?.inputPlaceholder ??
+    getCommandPaletteInputPlaceholder(paletteMode);
+  const commandResultsLoading =
+    (codexSessionFlow !== null && externalSessionsQuery.isPending) ||
+    (isGitHubRepositorySelectionStep && gitHubRepositoriesQuery.isPending);
+  const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
+  const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;
+  const hasHighlightedRemoteRepositoryItem =
+    highlightedItemValue?.startsWith("github-repository:") ?? false;
+  const canSubmitBrowsePath = isBrowsing && !relativePathNeedsActiveProject;
+  const willCreateProjectPath =
+    canSubmitBrowsePath &&
+    !isBrowsePending &&
+    query.trim().length > 0 &&
+    !hasHighlightedBrowseItem &&
+    (hasTrailingPathSeparator(query) ? !browseResult : exactBrowseEntry === null);
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  const submitModifierLabel = useMetaForMod ? "\u2318" : "Ctrl";
+  const isCloneDestinationStep = addProjectCloneFlow?.step === "confirm";
+  const submitActionLabel = isCloneDestinationStep
+    ? willCreateProjectPath
+      ? "Create & Clone"
+      : "Clone"
+    : willCreateProjectPath
+      ? "Create & Add"
+      : "Add";
+  const addShortcutLabel = hasHighlightedBrowseItem ? `${submitModifierLabel} Enter` : "Enter";
+  const remoteProjectButtonLabel = addProjectCloneFlow
+    ? addProjectCloneFlow.source === "url"
+      ? "Continue"
+      : "Lookup"
+    : null;
+  const isRemoteProjectPending = isRemoteProjectLookingUp || isRemoteProjectCloning;
+  const canSubmitRemoteProjectFlow =
+    addProjectCloneFlow?.step === "repository" &&
+    query.trim().length > 0 &&
+    !isRemoteProjectPending;
+  const remoteProjectRepositoryEmptyStateMessage =
+    addProjectCloneFlow?.step === "repository"
+      ? addProjectCloneFlow.source === "url"
+        ? "Enter a Git clone URL and press Enter to continue."
+        : isGitHubRepositorySelectionStep
+          ? gitHubRepositoriesQuery.isPending
+            ? "Loading GitHub repositories..."
+            : gitHubRepositoriesQuery.isError
+              ? "Could not load GitHub repositories. Enter owner/repo and press Enter to look it up."
+              : query.trim().length > 0
+                ? "No matching GitHub repositories. Press Enter to look up owner/repo."
+                : "No unadded GitHub repositories found. Enter owner/repo and press Enter to look it up."
+          : "Enter a repository path and press Enter to look it up."
+      : null;
+  const fileManagerName = getLocalFileManagerName(navigator.platform);
+  const canOpenProjectFromFileManager =
+    isBrowsing &&
+    browseEnvironmentId !== null &&
+    primaryEnvironmentId !== null &&
+    browseEnvironmentId === primaryEnvironmentId &&
+    typeof window !== "undefined" &&
+    window.desktopBridge !== undefined;
+  const fileManagerInitialPath = useMemo(() => {
+    if (!canOpenProjectFromFileManager) {
+      return undefined;
+    }
+
+    const trimmedQuery = query.trim();
+    if (trimmedQuery.length === 0) {
+      return undefined;
+    }
+
+    const initialPath = hasTrailingPathSeparator(query)
+      ? (browseResult?.parentPath ?? trimmedQuery)
+      : browseDirectoryPath || trimmedQuery;
+
+    const resolvedPath = resolveProjectPathForDispatch(initialPath, currentProjectCwdForBrowse);
+    return resolvedPath.length > 0 ? resolvedPath : undefined;
+  }, [
+    browseDirectoryPath,
+    browseResult?.parentPath,
+    canOpenProjectFromFileManager,
+    currentProjectCwdForBrowse,
+    query,
+  ]);
+
+  function isPrimaryModifierPressed(event: KeyboardEvent<HTMLInputElement>): boolean {
+    return useMetaForMod ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (addProjectCloneFlow?.step === "repository" && event.key === "Enter") {
+      if (hasHighlightedRemoteRepositoryItem) {
+        return;
+      }
+      event.preventDefault();
+      void submitAddProjectCloneFlow();
+      return;
+    }
+
+    const shouldSubmitBrowsePath =
+      canSubmitBrowsePath &&
+      event.key === "Enter" &&
+      (!hasHighlightedBrowseItem || isPrimaryModifierPressed(event));
+
+    if (shouldSubmitBrowsePath) {
+      event.preventDefault();
+      if (isCloneDestinationStep) {
+        void submitAddProjectCloneFlow(resolvedAddProjectPath);
+      } else {
+        void handleAddProject(resolvedAddProjectPath);
+      }
+      return;
+    }
+
+    if (event.key === "Backspace" && query === "" && isSubmenu) {
+      event.preventDefault();
+      popView();
+    }
+  }
+
+  function executeItem(item: CommandPaletteActionItem | CommandPaletteSubmenuItem): void {
+    if (item.disabled) {
+      return;
+    }
+
+    if (item.kind === "submenu") {
+      pushView(item);
+      return;
+    }
+
+    if (!item.keepOpen) {
+      setOpen(false);
+    }
+
+    const execution =
+      item.threadRef && item.threadContentMatch
+        ? navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(
+              scopeThreadRef(item.threadRef.environmentId, item.threadRef.id),
+            ),
+            search: (current) => ({
+              ...closeRightPanelSearchParams(current),
+              focusMessageId: item.threadContentMatch?.messageId,
+              focusQuery: item.threadContentMatch?.query,
+              focusRequest: newCommandId(),
+            }),
+          })
+        : item.run();
+
+    void execution.catch((error: unknown) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to run command",
+          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+        }),
+      );
+    });
+  }
+
+  const handleOpenProjectFromFileManager = useCallback(async () => {
+    if (!canOpenProjectFromFileManager || isPickingProjectFolder) {
+      return;
+    }
+    const api = readLocalApi();
+    if (!api) {
+      return;
+    }
+
+    setIsPickingProjectFolder(true);
+    let pickedPath: string | null = null;
+    try {
+      pickedPath = await api.dialogs.pickFolder(
+        fileManagerInitialPath ? { initialPath: fileManagerInitialPath } : undefined,
+      );
+    } catch {
+      // Ignore picker failures and leave the palette open.
+      setIsPickingProjectFolder(false);
+      return;
+    }
+    setIsPickingProjectFolder(false);
+    if (!pickedPath) {
+      return;
+    }
+    await handleAddProject(pickedPath);
+  }, [
+    canOpenProjectFromFileManager,
+    fileManagerInitialPath,
+    handleAddProject,
+    isPickingProjectFolder,
+  ]);
+
+  return (
+    <CommandDialogPopup
+      aria-label="Command palette"
+      className="overflow-hidden p-0"
+      data-testid="command-palette"
+      finalFocus={() => {
+        composerHandleRef?.current?.focusAtEnd();
+        return false;
+      }}
+      onBackdropPointerDown={() => {
+        setOpen(false);
+      }}
+    >
+      <Command
+        key={`${viewStack.length}-${browseGeneration}-${isBrowsing}-${addProjectCloneFlow?.step ?? "none"}-${codexSessionFlow?.providerInstanceId ?? "no-codex-browser"}`}
+        aria-label="Command palette"
+        autoHighlight={isBrowsing || isRemoteProjectCloneFlow ? false : "always"}
+        mode="none"
+        onItemHighlighted={(value) => {
+          setHighlightedItemValue(typeof value === "string" ? value : null);
+        }}
+        onValueChange={handleQueryChange}
+        value={query}
+      >
+        <div className="relative">
+          <CommandInput
+            className={
+              addProjectCloneFlow?.step === "repository"
+                ? "pe-32"
+                : isBrowsing
+                  ? willCreateProjectPath
+                    ? "pe-36"
+                    : "pe-16"
+                  : undefined
+            }
+            placeholder={inputPlaceholder}
+            wrapperClassName={
+              isSubmenu ? "[&_[data-slot=autocomplete-start-addon]]:pointer-events-auto" : undefined
+            }
+            {...(isSubmenu
+              ? {
+                  startAddon: (
+                    <button
+                      type="button"
+                      className="flex cursor-pointer items-center"
+                      aria-label="Back"
+                      onClick={popView}
+                    >
+                      <ArrowLeftIcon />
+                    </button>
+                  ),
+                }
+              : isBrowsing && !isSubmenu
+                ? {
+                    startAddon: <FolderPlusIcon />,
+                  }
+                : {})}
+            onKeyDown={handleKeyDown}
+          />
+          {addProjectCloneFlow?.step === "repository" ? (
+            <Button
+              variant="outline"
+              size="xs"
+              tabIndex={-1}
+              className="absolute inset-e-2.5 top-1/2 gap-1.5 pe-1 ps-2 -translate-y-1/2"
+              aria-label={`${remoteProjectButtonLabel ?? "Continue"} (Enter)`}
+              disabled={!canSubmitRemoteProjectFlow}
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
+              onClick={() => {
+                void submitAddProjectCloneFlow();
+              }}
+            >
+              <span>{isRemoteProjectPending ? "Working" : remoteProjectButtonLabel}</span>
+              <KbdGroup className="pointer-events-none -me-0.5 items-center gap-1">
+                <Kbd>Enter</Kbd>
+              </KbdGroup>
+            </Button>
+          ) : isBrowsing ? (
+            <Button
+              variant="outline"
+              size="xs"
+              tabIndex={-1}
+              className={cn(
+                "absolute inset-e-2.5 top-1/2 pe-1 ps-2 -translate-y-1/2",
+                hasHighlightedBrowseItem ? "gap-1" : "gap-1.5",
+              )}
+              aria-label={`${submitActionLabel} (${addShortcutLabel})`}
+              disabled={
+                relativePathNeedsActiveProject || (isCloneDestinationStep && isRemoteProjectPending)
+              }
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
+              onClick={() => {
+                if (relativePathNeedsActiveProject) {
+                  return;
+                }
+                if (isCloneDestinationStep) {
+                  void submitAddProjectCloneFlow(resolvedAddProjectPath);
+                } else {
+                  void handleAddProject(resolvedAddProjectPath);
+                }
+              }}
+            >
+              <span>
+                {isCloneDestinationStep && isRemoteProjectPending ? "Cloning" : submitActionLabel}
+              </span>
+              <KbdGroup className="pointer-events-none -me-0.5 items-center gap-1">
+                <Kbd>{hasHighlightedBrowseItem ? `${submitModifierLabel} Enter` : "Enter"}</Kbd>
+              </KbdGroup>
+            </Button>
+          ) : null}
+        </div>
+        <CommandPanel className="max-h-[min(28rem,70vh)]">
+          {remoteProjectContext ? (
+            <div className="p-2 pb-0">
+              <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                Repository
+              </div>
+              <div className="flex min-h-8 items-center gap-2 rounded-sm px-2 py-1.5">
+                {remoteProjectContext.icon}
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-foreground text-sm">
+                    {remoteProjectContext.title}
+                  </span>
+                  <span className="truncate text-muted-foreground/70 text-xs">
+                    {remoteProjectContext.description}
+                  </span>
+                </span>
+              </div>
+            </div>
+          ) : null}
+          <CommandPaletteResults
+            groups={displayedGroups}
+            highlightedItemValue={highlightedItemValue}
+            isActionsOnly={isActionsOnly}
+            isLoading={commandResultsLoading}
+            keybindings={keybindings}
+            query={deferredQuery}
+            onExecuteItem={executeItem}
+            {...(codexSessionFlow
+              ? {
+                  emptyStateMessage: externalSessionsQuery.isPending
+                    ? "Loading other Codex conversations…"
+                    : externalSessionsQuery.isError
+                      ? `Could not load Codex conversations: ${errorMessage(externalSessionsQuery.error)}`
+                      : deferredQuery.trim().length > 0
+                        ? "No matching external Codex conversations in this project."
+                        : "No other Codex conversations were found. Conversations already in Threadlines are hidden.",
+                }
+              : addProjectCloneFlow?.step === "repository"
+                ? {
+                    emptyStateMessage:
+                      remoteProjectRepositoryEmptyStateMessage ??
+                      "Enter a repository path and press Enter to look it up.",
+                  }
+                : addProjectCloneFlow?.step === "confirm"
+                  ? { emptyStateMessage: "Choose a destination path and press Enter to clone." }
+                  : relativePathNeedsActiveProject
+                    ? { emptyStateMessage: "Relative paths require an active project." }
+                    : willCreateProjectPath
+                      ? {
+                          emptyStateMessage:
+                            "Press Enter to create this folder and add it as a project.",
+                        }
+                      : {})}
+          />
+        </CommandPanel>
+        <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
+          <div className="flex items-center gap-3">
+            <KbdGroup className="items-center gap-1.5">
+              <Kbd>
+                <ArrowUpIcon />
+              </Kbd>
+              <Kbd>
+                <ArrowDownIcon />
+              </Kbd>
+              <span className={cn("text-muted-foreground/80")}>Navigate</span>
+            </KbdGroup>
+            {addProjectCloneFlow?.step === "repository" ? (
+              <KbdGroup className="items-center gap-1.5">
+                <Kbd>Enter</Kbd>
+                <span className={cn("text-muted-foreground/80")}>
+                  {remoteProjectButtonLabel ?? "Continue"}
+                </span>
+              </KbdGroup>
+            ) : !canSubmitBrowsePath || hasHighlightedBrowseItem ? (
+              <KbdGroup className="items-center gap-1.5">
+                <Kbd>Enter</Kbd>
+                <span className={cn("text-muted-foreground/80")}>Select</span>
+              </KbdGroup>
+            ) : null}
+            {isSubmenu ? (
+              <KbdGroup className="items-center gap-1.5">
+                <Kbd>Backspace</Kbd>
+                <span className={cn("text-muted-foreground/80")}>Back</span>
+              </KbdGroup>
+            ) : null}
+            <KbdGroup className="items-center gap-1.5">
+              <Kbd>Esc</Kbd>
+              <span className={cn("text-muted-foreground/80")}>Close</span>
+            </KbdGroup>
+          </div>
+          {canOpenProjectFromFileManager ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="h-auto px-2 text-xs text-muted-foreground/80 hover:bg-transparent hover:text-foreground"
+              disabled={isPickingProjectFolder}
+              onClick={() => {
+                void handleOpenProjectFromFileManager();
+              }}
+            >
+              {`Open in ${fileManagerName}`}
+            </Button>
+          ) : null}
+        </CommandFooter>
+      </Command>
+    </CommandDialogPopup>
+  );
+}

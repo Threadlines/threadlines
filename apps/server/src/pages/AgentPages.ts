@@ -40,10 +40,10 @@ import {
   agentPageFrameHeight,
   agentPageShareLink,
   agentPageTheme,
-  buildAgentPageDocument,
   clampAgentPageHeight,
   threadHasTurn,
 } from "@threadlines/shared/agentPages";
+import { buildAgentPageDocument } from "@threadlines/shared/agentPageDocument";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";

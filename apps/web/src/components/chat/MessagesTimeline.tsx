@@ -37,7 +37,6 @@ import {
   type OnViewableItemsChangedInfo,
 } from "@legendapp/list/react";
 import { useQueries } from "@tanstack/react-query";
-import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import {
   deriveTimelineEntries,
   formatSubagentListName,
@@ -80,6 +79,8 @@ import {
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
 import { environmentRequiresRpcAssetTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
+import { isProviderAuthErrorChatMessage } from "../../lib/providerAuthMessages";
+import { useWsConnectionStatus } from "../../rpc/wsConnectionState";
 import ChatMarkdown from "../ChatMarkdown";
 import {
   ArrowDownIcon,
@@ -133,6 +134,7 @@ import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  deriveRememberedMessagesTimelineRows,
   estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
   shouldCollapseUserMessage,
@@ -731,6 +733,12 @@ const VISIBLE_TURN_SETTLE_MS = 150;
 
 interface MessagesTimelineProps {
   emptyState?: ReactNode;
+  /** The thread's detail has not landed yet: an empty list means "not
+   *  loaded", not "nothing said" (PendingThreadDetailState). */
+  detailPending?: boolean | undefined;
+  /** For a thread on a saved (remote) environment, whether that connection is
+   *  up; undefined for this app's own server, whose connection the app tracks. */
+  savedEnvironmentConnected?: boolean | undefined;
   isWorking: boolean;
   /** The turn settled but provider background work (a command, an agent)
    *  will wake it again; the anchor stays up as "Waiting" until then. */
@@ -825,6 +833,8 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   emptyState,
+  detailPending = false,
+  savedEnvironmentConnected,
   isWorking,
   isWaitingOnBackgroundTasks = false,
   awaitedTasks = null,
@@ -953,7 +963,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       revertTurnCountByUserMessageId,
     ],
   );
-  const rawRows = useMemo(() => deriveMessagesTimelineRows(rowsInput), [rowsInput]);
+  const rawRows = useMemo(
+    () => deriveRememberedMessagesTimelineRows(routeThreadKey, rowsInput),
+    [routeThreadKey, rowsInput],
+  );
   const rows = useStableRows(rawRows);
   // Find in chat searches the rows as drawn, plus answers still being written
   // under a folded side question: they open where they already sit.
@@ -1962,6 +1975,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   if (rows.length === 0 && !isWorking) {
+    if (detailPending) {
+      return <PendingThreadDetailState savedEnvironmentConnected={savedEnvironmentConnected} />;
+    }
     if (emptyState) {
       return (
         // In the new-thread hero the chat column scrolls as one, so this stops
@@ -2360,6 +2376,27 @@ function findTranscriptMessageBody(node: Node): HTMLElement | null {
   return element?.closest<HTMLElement>("[data-transcript-message-body='true']") ?? null;
 }
 
+/**
+ * What a chat whose detail has not landed says in place of its messages:
+ * loading while its connection is up, and while it is down (the connection
+ * notices say why) that it loads once the connection is back, so it never
+ * claims to be loading forever. Held back a beat so a fast load never
+ * flashes it.
+ */
+function PendingThreadDetailState(props: { savedEnvironmentConnected: boolean | undefined }) {
+  const appConnection = useWsConnectionStatus();
+  const connected = props.savedEnvironmentConnected ?? appConnection.phase === "connected";
+  return (
+    <div className="flex h-full items-center justify-center px-4">
+      <p className="loading-reveal text-center text-sm text-muted-foreground" role="status">
+        {connected
+          ? "Loading conversation…"
+          : "This conversation loads when the connection is back."}
+      </p>
+    </div>
+  );
+}
+
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
 }
@@ -2368,8 +2405,7 @@ function isResolvedProviderAuthRecoverySignal(row: MessagesTimelineRow): boolean
   if (row.kind !== "message" || row.message.role !== "assistant" || row.message.streaming) {
     return false;
   }
-  const text = row.message.text.trim();
-  return Boolean(text && !isProviderAuthErrorMessage(text));
+  return row.message.text.trim().length > 0 && !isProviderAuthErrorChatMessage(row.message);
 }
 
 function deriveResolvedProviderAuthReconnectIds(
@@ -2394,8 +2430,7 @@ function deriveResolvedProviderAuthReconnectIds(
     }
 
     if (row.kind === "message" && row.message.role === "assistant") {
-      const text = row.message.text.trim();
-      if (isProviderAuthErrorMessage(text)) {
+      if (isProviderAuthErrorChatMessage(row.message)) {
         resolvedIds.add(row.id);
       }
       continue;
@@ -3401,7 +3436,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   const writing = streaming && (isWorking || row.message.sideTurnId !== undefined);
   useStreamingHeightFloor(revealRef, writing || (!streaming && revealing));
   const authReconnect =
-    ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
+    ctx.providerAuthReconnect && isProviderAuthErrorChatMessage(row.message)
       ? ctx.providerAuthReconnect
       : null;
   // Notes carry the story while the agent works, on its line. A finished

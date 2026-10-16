@@ -88,9 +88,6 @@ import {
   dedupeShadowedSkills,
   EXTENSION_SKILL_GROUP_LABELS,
   type ExtensionSkillPluginBucket,
-  parseExtensionsSettingsTab,
-  resolveExtensionsSettingsTab,
-  type ExtensionsSettingsTab,
   rankPluginsAcrossProviders,
   resolveExtensionScope,
   selectCuratedPlugins,
@@ -110,6 +107,11 @@ import {
   shouldRenderExtensionBrowserGroups,
   type ExtensionItemKind,
 } from "./ExtensionsSettings.logic";
+import {
+  parseExtensionsSettingsTab,
+  resolveExtensionsSettingsTab,
+  type ExtensionsSettingsTab,
+} from "./extensionsSettingsTabs";
 import {
   deriveProviderInstanceEntries,
   sortProviderInstanceEntries,
