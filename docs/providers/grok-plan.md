@@ -580,13 +580,18 @@ Decisions that differ from the plan above:
   server's environment), as Claude and Codex read their main folders: an
   account folder with sessions of its own isn't counted.
 
-- **Grok's own turns: one edge left.** Its turn starts and ends arrive as
-  notices beside the update stream. A turn it starts after a prompt's answer
-  waits for that prompt's turn to close, and gets its own output. One that
-  starts before the answer arrives, or a second one inside the same few
-  milliseconds of closing, shares the earlier turn. The full fix carries
-  turn boundaries through the event queue in order with the updates, for
-  every ACP agent; pitched as a follow-up.
+- **Grok's own turns, in order with its updates.** Its turn starts
+  (`queue/changed` naming a prompt that isn't ours, once per prompt id: the
+  notice repeats as the queue moves) and ends (`turn_completed`) arrive as
+  notices beside the update stream. Each one is queued where it arrived
+  among the updates (`markAgentTurnBoundary` ends the reply there, `inOrder`
+  hands the work to the reader), so a wake-up that starts before the
+  prompt's answer, or two back to back, each get their own output. A prompt
+  whose turn is still open when its wake-up begins closes without waiting
+  for the reader (it has had all its output); the wake-up opens once it has,
+  held back at most 30 s for an answer that never comes. What the extension
+  emits that names the running turn (tasks, subagents, plans) goes through
+  the reader too.
 
 - **Setup on a fresh install, live (temp HOME):** tile, one-click Install
   (no `~/.local/bin` links), then Sign in with Grok, Ready. Seen there, in a
