@@ -338,6 +338,7 @@ export const previewSetNavigationPolicy = makeIpcMethod({
     yield* automation.setNavigationPolicy(input.webContentsId, {
       allowAll: input.allowAll === true,
       approvedHosts: input.approvedDomains,
+      trustedCertificates: input.trustedCertificates ?? [],
     });
   }),
 });

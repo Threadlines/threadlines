@@ -3,7 +3,10 @@ import {
   resolveBrowserSiteAccess,
   withBrowserApproval,
   withoutBrowserApproval,
+  withoutTrustedCertificate,
+  withTrustedCertificate,
   type BrowserSiteAccess,
+  type BrowserTrustedCertificate,
 } from "@threadlines/shared/preview";
 import { useCallback, useMemo } from "react";
 
@@ -31,6 +34,7 @@ import { selectEnvironmentState, useStore, type AppState } from "../../store";
 
 /** A stable identity for "nothing approved", so effects do not re-run on every read. */
 const NO_APPROVALS: ReadonlyArray<string> = Object.freeze([]);
+const NO_TRUSTED_CERTIFICATES: ReadonlyArray<BrowserTrustedCertificate> = Object.freeze([]);
 
 export interface BrowserApprovals {
   /** Null only when no shell has arrived and the caller knew no project either. */
@@ -49,6 +53,8 @@ export interface BrowserApprovals {
   /** Lets every site through for this project, or hands it back to the default. */
   readonly setProjectPolicy: (policy: AgentBrowserSitePolicy | null) => BrowserSiteAccess;
   readonly removeHost: (hostname: string) => void;
+  /** Stops trusting a certificate for this project; its next connection is asked about again. */
+  readonly removeTrustedCertificate: (certificate: BrowserTrustedCertificate) => void;
 }
 
 /**
@@ -63,6 +69,7 @@ export function pushNavigationPolicy(webContentsId: number, access: BrowserSiteA
       webContentsId,
       approvedDomains: [...access.approvedHosts],
       allowAll: access.allowAll,
+      trustedCertificates: [...(access.trustedCertificates ?? [])],
     })
     .catch(() => {});
 }
@@ -78,6 +85,10 @@ export function readBrowserSiteAccess(projectId: ProjectId | null): BrowserSiteA
       projectId === null
         ? NO_APPROVALS
         : (settings.agentBrowserApprovedDomains[projectId] ?? NO_APPROVALS),
+    trustedCertificates:
+      projectId === null
+        ? NO_TRUSTED_CERTIFICATES
+        : (settings.agentBrowserTrustedCertificates[projectId] ?? NO_TRUSTED_CERTIFICATES),
   });
 }
 
@@ -98,6 +109,24 @@ export function approveBrowserHostForProject(
   const next = withBrowserApproval(existing, hostname);
   if (next !== existing) {
     updateSettings({ agentBrowserApprovedDomains: { ...current, [projectId]: next } });
+  }
+  return readBrowserSiteAccess(projectId);
+}
+
+/**
+ * Trusts a certificate for a project's pages, outside React, and returns the
+ * access in force afterwards so the caller can arm a page before reloading it.
+ * Like a site approval, read at the moment of writing.
+ */
+export function trustCertificateForProject(
+  projectId: ProjectId,
+  certificate: BrowserTrustedCertificate,
+): BrowserSiteAccess {
+  const current = getClientSettings().agentBrowserTrustedCertificates;
+  const existing = current[projectId] ?? NO_TRUSTED_CERTIFICATES;
+  const next = withTrustedCertificate(existing, certificate);
+  if (next !== existing) {
+    updateSettings({ agentBrowserTrustedCertificates: { ...current, [projectId]: next } });
   }
   return readBrowserSiteAccess(projectId);
 }
@@ -142,19 +171,25 @@ export function useBrowserApprovals(
   // the draft window before it does.
   const projectId = shellProjectId ?? knownProjectId ?? null;
   const approvedByProject = useSettings((settings) => settings.agentBrowserApprovedDomains);
+  const certificatesByProject = useSettings((settings) => settings.agentBrowserTrustedCertificates);
   const defaultPolicy = useSettings((settings) => settings.agentBrowserSitePolicy);
   const policyByProject = useSettings((settings) => settings.agentBrowserProjectSitePolicy);
   const approvedHosts =
     projectId === null ? NO_APPROVALS : (approvedByProject[projectId] ?? NO_APPROVALS);
   const projectPolicy = projectId === null ? null : (policyByProject[projectId] ?? null);
+  const trustedCertificates =
+    projectId === null
+      ? NO_TRUSTED_CERTIFICATES
+      : (certificatesByProject[projectId] ?? NO_TRUSTED_CERTIFICATES);
   const access = useMemo(
     () =>
       resolveBrowserSiteAccess({
         defaultPolicy,
         projectPolicy: projectPolicy ?? undefined,
         approvedHosts,
+        trustedCertificates,
       }),
-    [approvedHosts, defaultPolicy, projectPolicy],
+    [approvedHosts, defaultPolicy, projectPolicy, trustedCertificates],
   );
   const approveHost = useCallback(
     (hostname: string): BrowserSiteAccess =>
@@ -183,6 +218,19 @@ export function useBrowserApprovals(
     [projectId],
   );
 
+  const removeTrustedCertificate = useCallback(
+    (certificate: BrowserTrustedCertificate) => {
+      if (projectId === null) return;
+      const current = getClientSettings().agentBrowserTrustedCertificates;
+      const existing = current[projectId] ?? NO_TRUSTED_CERTIFICATES;
+      const next = withoutTrustedCertificate(existing, certificate);
+      if (next !== existing) {
+        updateSettings({ agentBrowserTrustedCertificates: { ...current, [projectId]: next } });
+      }
+    },
+    [projectId],
+  );
+
   return {
     projectId,
     access,
@@ -191,5 +239,6 @@ export function useBrowserApprovals(
     approveHost,
     setProjectPolicy,
     removeHost,
+    removeTrustedCertificate,
   };
 }

@@ -150,6 +150,20 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(IpcChannels.PREVIEW_NAVIGATION_BLOCKED_CHANNEL, wrappedListener);
     };
   },
+  onPreviewCertificateUntrusted: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, untrusted: unknown) => {
+      if (typeof untrusted !== "object" || untrusted === null) return;
+      listener(untrusted as Parameters<typeof listener>[0]);
+    };
+
+    ipcRenderer.on(IpcChannels.PREVIEW_CERTIFICATE_UNTRUSTED_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(
+        IpcChannels.PREVIEW_CERTIFICATE_UNTRUSTED_CHANNEL,
+        wrappedListener,
+      );
+    };
+  },
   onPreviewOpenTab: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, request: unknown) => {
       if (typeof request !== "object" || request === null) return;

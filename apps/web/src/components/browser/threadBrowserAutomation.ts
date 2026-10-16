@@ -1,6 +1,6 @@
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type { ProjectId, PreviewAutomationRequest, ScopedThreadRef } from "@threadlines/contracts";
-import { isBrowserHostAllowed } from "@threadlines/shared/preview";
+import { isBrowserHostAllowed, isPrivateNetworkHost } from "@threadlines/shared/preview";
 
 import {
   PREVIEW_WEBVIEW_WAIT_MS,
@@ -32,7 +32,7 @@ import {
 import { withPageKeyboard } from "./browserFocusGuard";
 import { beginAgentWork, reviveEvictedPage } from "./browserLifecycle";
 import type { PreviewAutomationHostTarget } from "./previewAutomationHost";
-import { normalizePreviewUrl } from "./previewUrl";
+import { hostOf, normalizePreviewUrl } from "./previewUrl";
 import { signInPopupsOf } from "./signInPopups";
 
 /**
@@ -348,9 +348,17 @@ export function resolveThreadBrowserTarget(
       .catch((cause: unknown) => {
         // A page that immediately redirects aborts the load it interrupts,
         // which is a successful navigation wearing an error.
-        if (!String(cause).includes("ERR_ABORTED")) {
-          throw cause;
+        const message = String(cause);
+        if (message.includes("ERR_ABORTED")) return;
+        const certificateError = /ERR_CERT_[A-Z_]+/.exec(message)?.[0];
+        if (certificateError !== undefined) {
+          throw new Error(
+            isPrivateNetworkHost(hostOf(url))
+              ? `${url} was refused: its certificate is not trusted (${certificateError}). The user can trust it for this project from the browser panel; ask them to, then load the page again.`
+              : `${url} was refused: its certificate is not valid (${certificateError}). The browser does not open public sites with certificate errors.`,
+          );
         }
+        throw cause;
       });
     // A load settles only when the whole page has, and one slow image can
     // hold that for minutes. Past the wait the agent is answered with the

@@ -27,6 +27,7 @@ export const PREVIEW_REVEAL_ELEMENT_CHANNEL = "desktop:preview-reveal-element";
 export const PREVIEW_SET_VIEWPORT_CHANNEL = "desktop:preview-set-viewport";
 export const PREVIEW_SET_NAVIGATION_POLICY_CHANNEL = "desktop:preview-set-navigation-policy";
 export const PREVIEW_NAVIGATION_BLOCKED_CHANNEL = "desktop:preview-navigation-blocked";
+export const PREVIEW_CERTIFICATE_UNTRUSTED_CHANNEL = "desktop:preview-certificate-untrusted";
 export const PREVIEW_OPEN_TAB_CHANNEL = "desktop:preview-open-tab";
 export const PREVIEW_POPUP_CHANNEL = "desktop:preview-popup";
 export const PREVIEW_SITE_ALLOWED_CHANNEL = "desktop:preview-site-allowed";

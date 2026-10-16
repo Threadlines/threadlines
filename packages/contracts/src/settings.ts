@@ -70,6 +70,14 @@ export const AgentBrowserSitePolicy = Schema.Literals(["ask", "any"]);
 export type AgentBrowserSitePolicy = typeof AgentBrowserSitePolicy.Type;
 export const DEFAULT_AGENT_BROWSER_SITE_POLICY: AgentBrowserSitePolicy = "ask";
 
+/** A certificate trusted for a project's pages; see `isBrowserCertificateTrusted`. */
+export const BrowserTrustedCertificate = Schema.Struct({
+  host: TrimmedNonEmptyString,
+  /** As Electron reports it: `sha256/` and the base64 digest. */
+  fingerprint: TrimmedNonEmptyString,
+});
+export type BrowserTrustedCertificate = typeof BrowserTrustedCertificate.Type;
+
 export const ClientSettingsSchema = Schema.Struct({
   // Sites the browser panel may be driven to, per project, while that project
   // asks first. Values are approval keys: the exact lowercased host, with `www.`
@@ -87,6 +95,14 @@ export const ClientSettingsSchema = Schema.Struct({
   agentBrowserProjectSitePolicy: Schema.Record(ProjectId, AgentBrowserSitePolicy).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  // Certificates the user chose to trust, per project, for pages on this
+  // machine or network: a dev server serving HTTPS with a certificate it made
+  // itself. By host and certificate fingerprint, so a different certificate
+  // is asked about again. Never consulted for public sites.
+  agentBrowserTrustedCertificates: Schema.Record(
+    ProjectId,
+    Schema.Array(BrowserTrustedCertificate),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // Whether a thread's first subagent opens the right panel on its Agents tab.
   // Off, only the user opens the panel. Per device: it is a choice about how
   // much room this screen has.
@@ -1042,6 +1058,9 @@ export const ClientSettingsPatch = Schema.Struct({
   agentBrowserSitePolicy: Schema.optionalKey(AgentBrowserSitePolicy),
   agentBrowserProjectSitePolicy: Schema.optionalKey(
     Schema.Record(ProjectId, AgentBrowserSitePolicy),
+  ),
+  agentBrowserTrustedCertificates: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.Array(BrowserTrustedCertificate)),
   ),
   autoOpenAgentsPanel: Schema.optionalKey(Schema.Boolean),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),

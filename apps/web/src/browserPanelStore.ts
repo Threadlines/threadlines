@@ -401,6 +401,13 @@ export interface PendingBrowserApproval {
    * that -- instead of loading the site over the page that asked.
    */
   readonly newTab?: { readonly background: boolean } | undefined;
+  /**
+   * Set when the question is about a certificate rather than a site: a page
+   * on the user's own machine or network whose certificate the system does
+   * not trust. Allowing trusts this one certificate for the project and loads
+   * the page again.
+   */
+  readonly certificate?: { readonly fingerprint: string } | undefined;
 }
 
 interface BrowserPanelStoreState {
@@ -928,6 +935,7 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
               entry.tabId === approval.tabId &&
               entry.host === approval.host &&
               (entry.newTab === undefined) === (approval.newTab === undefined) &&
+              entry.certificate?.fingerprint === approval.certificate?.fingerprint &&
               // Each address a page asks to open is a tab of its own.
               (approval.newTab === undefined || entry.url === approval.url),
           );

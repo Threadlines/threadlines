@@ -120,6 +120,7 @@ describe("openUrlInBrowserPanel", () => {
       webContentsId: 42,
       approvedDomains: expect.arrayContaining(["example.com"]),
       allowAll: false,
+      trustedCertificates: [],
     });
     expect(order).toEqual(["policy", "load"]);
   });
