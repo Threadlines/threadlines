@@ -27,9 +27,10 @@ const toolRow = (
   createdAt: "2026-10-15T10:00:00.000Z",
 });
 
-const contentOf = (activity: OrchestrationThreadActivity | undefined) =>
-  ((activity?.payload as { data: { result: { content: unknown[] } } }).data.result.content ?? [])
-    .length;
+type ToolResultPayload = { readonly data: { readonly result: { readonly content: unknown[] } } };
+
+const contentOf = (activity: OrchestrationThreadActivity) =>
+  (activity.payload as ToolResultPayload).data.result.content.length;
 
 it("drops screenshot copies only from progress rows of calls that completed with them", () => {
   const caption = { type: "text", text: "Captured the page" };
@@ -50,12 +51,9 @@ it("drops screenshot copies only from progress rows of calls that completed with
     [1, 1, 1, 2, 1],
   );
   // The caption stays; the completion keeps its image; stored rows are untouched.
-  assert.deepEqual(
-    (sent[0]!.payload as { data: { result: { content: unknown[] } } }).data.result.content,
-    [caption],
-  );
+  assert.deepEqual((sent[0]!.payload as ToolResultPayload).data.result.content, [caption]);
   assert.equal(sent[3], activities[3]);
-  assert.equal(contentOf(activities[0]), 2);
+  assert.equal(contentOf(activities[0]!), 2);
 });
 
 it("returns the same list when nothing is superseded", () => {

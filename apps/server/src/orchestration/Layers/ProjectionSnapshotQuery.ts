@@ -922,7 +922,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   // Read in index order (idx_projection_thread_messages_event_order, no sort)
   // and keep each thread's newest rows here: a ROW_NUMBER window over every
   // message sorted the whole table first, and this read gates HTTP at boot.
-  const listCappedThreadMessageRows = (_: void) =>
+  const listCappedThreadMessageRows = () =>
     listThreadMessageRows(undefined).pipe(Effect.map(keepNewestMessagesPerThread));
 
   const listThreadProposedPlanRows = SqlSchema.findAll({
@@ -2340,7 +2340,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listCappedThreadMessageRows(undefined).pipe(
+          listCappedThreadMessageRows().pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getCommandReadModel:listThreadMessages:query",
