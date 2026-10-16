@@ -868,8 +868,16 @@ export const CommandRunSource = Schema.Union([
 ]);
 export type CommandRunSource = typeof CommandRunSource.Type;
 
-/** Why output that would have gone back to the agent by itself was held. */
-export const CommandRunHoldReason = Schema.Literals(["stopped", "agent-left", "skipped"]);
+/**
+ * Why output that would have gone back to the agent by itself was held, or
+ * (`undelivered`) why a send was taken back: the agent's provider refused it.
+ */
+export const CommandRunHoldReason = Schema.Literals([
+  "stopped",
+  "agent-left",
+  "skipped",
+  "undelivered",
+]);
 export type CommandRunHoldReason = typeof CommandRunHoldReason.Type;
 
 /** A run as the user's click started it. */
@@ -2843,6 +2851,8 @@ const ThreadCommandRunUpdateCommand = Schema.Struct({
   threadId: ThreadId,
   progress: CommandRunProgress,
   output: Schema.optional(Schema.String),
+  /** Applies only while the run's output is still the one sent as this message. */
+  ifOutputMessageId: Schema.optional(MessageId),
   createdAt: IsoDateTime,
 });
 

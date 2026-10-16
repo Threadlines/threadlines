@@ -84,6 +84,7 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
+  steerRejectedError,
 } from "../Errors.ts";
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import {
@@ -2518,14 +2519,12 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     const steerTurn: NonNullable<OpenCodeAdapterShape["steerTurn"]> = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
-        const notRunning = new ProviderAdapterValidationError({
-          provider: PROVIDER,
-          operation: "steerTurn",
-          issue: "No running turn to add this message to.",
-        });
         const turn = ctx.activeTurn;
-        if (!turn || turn.turnId !== input.expectedTurnId || turn.stopRequested) {
-          return yield* notRunning;
+        if (!turn || turn.turnId !== input.expectedTurnId) {
+          return yield* steerRejectedError(PROVIDER, "OpenCode", "no-active-turn");
+        }
+        if (turn.stopRequested) {
+          return yield* steerRejectedError(PROVIDER, "OpenCode", "turn-finishing");
         }
         const content = yield* promptContent(input.threadId, input);
         const promptId = openCodePromptId(input.messageId, yield* randomUUIDv4);
@@ -2533,7 +2532,12 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           Effect.gen(function* () {
             // The turn may have ended or been stopped while the attachments
             // were read; a steer must never start work after either.
-            if (ctx.activeTurn !== turn || turn.stopRequested) return yield* notRunning;
+            if (ctx.activeTurn !== turn) {
+              return yield* steerRejectedError(PROVIDER, "OpenCode", "no-active-turn");
+            }
+            if (turn.stopRequested) {
+              return yield* steerRejectedError(PROVIDER, "OpenCode", "turn-finishing");
+            }
             turn.undelivered.add(promptId);
             yield* runOpenCode("session.prompt", (signal) =>
               ctx.client.session.prompt(

@@ -59,6 +59,7 @@ import {
   clipCommandOutput,
   COMMAND_RUN_CAPTURE_LIMIT,
   COMMAND_RUN_ENV,
+  type CommandRunMarker,
   parseCommandRunMarker,
   posixCommandRunWrapper,
   POWERSHELL_COMMAND_RUN_WRAPPER,
@@ -218,9 +219,11 @@ interface ActiveCommandRun {
   phase: "starting" | "running" | "waiting";
   /** When its process started. */
   startedAt: string | null;
-  /** A `run`'s raw output so far, end kept. */
+  /** A `run`'s raw output so far, end kept; collected from its start marker on. */
   output: string;
   outputClipped: boolean;
+  /** The wrapper's start marker arrived: what follows is the command's output. */
+  outputStarted: boolean;
 }
 
 interface PendingHistoryControlSequence {
@@ -737,14 +740,14 @@ function sanitizeTerminalHistoryChunk(
   /** Line editor on/off switches, in order. */
   lineEditorSignals: boolean[];
   /** End-of-run markers, with the length of visible text before each. */
-  runMarkers: Array<{ runId: string; exitCode: number | null; visibleOffset: number }>;
+  runMarkers: Array<CommandRunMarker & { visibleOffset: number }>;
 } {
   const pendingData = pendingControlSequence?.data ?? "";
   const input = `${pendingData}${data}`;
   let visibleText = "";
   const commandFinishedGenerations: number[] = [];
   const lineEditorSignals: boolean[] = [];
-  const runMarkers: Array<{ runId: string; exitCode: number | null; visibleOffset: number }> = [];
+  const runMarkers: Array<CommandRunMarker & { visibleOffset: number }> = [];
   let index = 0;
 
   const generationAt = (offset: number) =>
@@ -1869,15 +1872,25 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             if (run !== null && run.pid === expectedPid) {
               const promptMarker = sanitized.commandFinishedGenerations.length > 0;
               if (run.mode === "run" && run.phase === "running") {
-                const marker = sanitized.runMarkers.find((entry) => entry.runId === run.runId);
-                appendRunOutput(
-                  run,
-                  marker
-                    ? sanitized.visibleText.slice(0, marker.visibleOffset)
-                    : sanitized.visibleText,
+                const ownMarkers = sanitized.runMarkers.filter(
+                  (entry) => entry.runId === run.runId,
                 );
-                if (marker) {
-                  runEnd = { kind: "finished", run, exitCode: marker.exitCode, cols: session.cols };
+                const start = ownMarkers.find((entry) => entry.kind === "start");
+                const end = ownMarkers.find((entry) => entry.kind === "end");
+                // What comes before the start marker (the shell's startup files,
+                // the echoed command line) is not the command's output.
+                if (start) run.outputStarted = true;
+                if (run.outputStarted) {
+                  appendRunOutput(
+                    run,
+                    sanitized.visibleText.slice(
+                      start?.visibleOffset ?? 0,
+                      end?.visibleOffset ?? sanitized.visibleText.length,
+                    ),
+                  );
+                }
+                if (end?.kind === "end") {
+                  runEnd = { kind: "finished", run, exitCode: end.exitCode, cols: session.cols };
                 } else if (session.commandCompletionMarkersEnabled && promptMarker) {
                   // PowerShell stopped the whole script (Ctrl+C) and is back at its prompt.
                   runEnd = { kind: "interrupted", run, exitCode: null, cols: session.cols };
@@ -2964,6 +2977,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             startedAt: null,
             output: "",
             outputClipped: false,
+            outputStarted: false,
           };
           yield* modifyManagerState((state) => {
             const sessions = new Map(state.sessions);

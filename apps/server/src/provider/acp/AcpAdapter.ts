@@ -70,6 +70,7 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
+  steerRejectedError,
 } from "../Errors.ts";
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
@@ -2001,14 +2002,18 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             const ctx = yield* requireSession(input.threadId);
             const turnId = ctx.activeTurnId;
             const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
-            if (turnId === undefined || turnId !== input.expectedTurnId || !sessionId) {
+            if (turnId === undefined) {
+              return yield* steerRejectedError(
+                PROVIDER,
+                descriptor.presentation.displayName,
+                "no-active-turn",
+              );
+            }
+            if (turnId !== input.expectedTurnId || !sessionId) {
               return yield* new ProviderAdapterRequestError({
                 provider: PROVIDER,
                 method: "turn/steer",
-                detail:
-                  turnId === undefined
-                    ? `No active ${descriptor.presentation.displayName} turn is available to steer.`
-                    : `Expected active turn '${input.expectedTurnId}' but ${descriptor.presentation.displayName} is running '${turnId}'.`,
+                detail: `Expected active turn '${input.expectedTurnId}' but ${descriptor.presentation.displayName} is running '${turnId}'.`,
               });
             }
             const text = input.input?.trim() ?? "";

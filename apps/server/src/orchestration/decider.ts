@@ -3592,10 +3592,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (!(thread.commandRuns ?? []).some((run) => run.runId === command.progress.runId)) {
+      const run = (thread.commandRuns ?? []).find(
+        (entry) => entry.runId === command.progress.runId,
+      );
+      if (run === undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Command run '${command.progress.runId}' is not part of thread '${command.threadId}'.`,
+        });
+      }
+      // A take-back of one send never undoes a later one.
+      if (
+        command.ifOutputMessageId !== undefined &&
+        run.outputMessageId !== command.ifOutputMessageId
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Command run '${command.progress.runId}' was sent again since.`,
         });
       }
       const base = () =>

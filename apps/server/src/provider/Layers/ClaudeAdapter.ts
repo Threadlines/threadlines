@@ -178,6 +178,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
   type ProviderAdapterError,
+  steerRejectedError,
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { estimatePartialFileChangeStat } from "./claudePartialToolInput.ts";
@@ -7879,11 +7880,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const context = yield* requireSession(input.threadId);
     const activeTurn = context.turnState;
     if (!activeTurn) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/steer",
-        detail: "No active Claude turn is available to steer.",
-      });
+      return yield* steerRejectedError(PROVIDER, "Claude", "no-active-turn");
     }
     if (activeTurn.turnId !== input.expectedTurnId) {
       return yield* new ProviderAdapterRequestError({

@@ -21,8 +21,8 @@ Nothing runs until you click.
 
 **Run** starts the command in a new terminal tab as its own process, so
 Threadlines knows exactly when it ends and how (its exit code), and keeps its
-output. The tab shows the output as it comes and stays open as a normal shell
-afterwards. Ctrl+C stops the command, not the tab. Under the block or on the
+output. The tab shows the command line, then the output as it comes, and stays
+open as a normal shell afterwards. Ctrl+C stops the command, not the tab. Under the block or on the
 card a line says how it is going: running, finished (and how long it took),
 exited with a code, or stopped.
 
@@ -60,8 +60,9 @@ runs could differ from what you see.
 
 When you click **Run** on an agent's card, the output goes back to that agent
 by itself when the command finishes, as a message from you. If the agent is
-still working, the message goes into its turn; otherwise it waits for it, like
-a message you type. It shows in the chat as one line ("You ran `pnpm install`
+still working, the message goes into its turn; if the turn is already
+wrapping up, or the agent is idle, it goes out as the next turn, like a message
+you type. It shows in the chat as one line ("You ran `pnpm install`
 · Finished after 14s") that opens to the full text.
 
 Everything else is sent by hand with **Send output to …**: a code block's run,
@@ -76,7 +77,8 @@ Output that would have gone back by itself is held, and says why, when:
 - you skipped the card
 - the agent it was for left the room (it never goes to another agent)
 
-You can still send held output by hand.
+You can still send held output by hand. If the agent's provider refuses the
+message, the line says it didn't reach the agent and offers the send again.
 
 ## Where it runs
 
@@ -99,9 +101,11 @@ on code blocks stay, since they only act when you click them.
   Put in terminal, or nothing. The server checks every run against it again.
 - The terminal manager (`apps/server/src/terminal/`) starts a run as
   `<shell> -i -c <wrapper>`. The wrapper, in `commandRunShell.ts`, takes the
-  command from an environment variable, runs it in a subshell, prints an
-  end-of-run marker carrying the run id and exit status (OSC 6973, stripped
-  from the terminal history), then execs a normal interactive shell. An insert
+  command from an environment variable, prints it dimmed and a start marker
+  (output is kept from there, so shell startup noise and the echo stay out),
+  runs it in a subshell, prints an end-of-run marker carrying the run id and
+  exit status (OSC 6973, stripped from the terminal history), then execs a
+  normal interactive shell. An insert
   waits for the shell's line editor to switch on bracketed paste, then pastes.
 - Requests and runs are orchestration events (`thread.command-requested`,
   `thread.command-run-started`, `thread.command-run-updated`), kept in
@@ -111,7 +115,11 @@ on code blocks stay, since they only act when you click them.
   its agent is told they existed.
 - Sending output is one decision (`thread.command-run.deliver-output`) that
   either steers into the agent's running turn or queues the message, and marks
-  the run sent in the same step. A server restart marks runs it cut off as
+  the run sent in the same step. A provider that refuses a steer says why
+  (`steerRejectedError` in `apps/server/src/provider/Errors.ts`): the turn
+  ended, so the message becomes the next turn, or the turn is finishing, so it
+  waits in the queue. Any other refusal takes the output back to "not sent"
+  (`heldReason: "undelivered"`). A server restart marks runs it cut off as
   stopped and sends any finished output that never went out.
 - `ask_user_to_run` is served at `/mcp/commands` (`threadlines_commands`), its
   own MCP server so Codex can approve it without asking, as pages do.

@@ -185,6 +185,31 @@ describe("decider suggested commands", () => {
     ).rejects.toThrow(/left the room/);
   });
 
+  it("never lets a take-back of one send undo a later one", async () => {
+    const takeBack = (messageId: string): OrchestrationCommand => ({
+      type: "thread.command-run.update",
+      commandId: CommandId.make(`take-back-${messageId}`),
+      threadId: THREAD,
+      progress: {
+        runId: RUN,
+        heldReason: "undelivered",
+        outputSentAt: null,
+        outputMessageId: null,
+      },
+      ifOutputMessageId: MessageId.make(messageId),
+      createdAt: now,
+    });
+    const resent = readModelWith({
+      commandRuns: [
+        run({ outputSentAt: now, outputMessageId: MessageId.make("command-output:run-1:second") }),
+      ],
+    });
+    await expect(decide(takeBack("command-output:run-1"), resent)).rejects.toThrow(/sent again/);
+    expect(await decide(takeBack("command-output:run-1:second"), resent)).toMatchObject([
+      { type: "thread.command-run-updated", payload: { progress: { heldReason: "undelivered" } } },
+    ]);
+  });
+
   it("takes queued output back when its agent leaves the room before it went out", async () => {
     const LEFT = ThreadParticipantId.make("agent-left");
     const messageId = MessageId.make("command-output:run-1");

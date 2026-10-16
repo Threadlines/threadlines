@@ -3,16 +3,20 @@
  * (docs/terminal-command-runs.md).
  *
  * A `run` spawns the user's shell with a small wrapper instead of typing into
- * a prompt: the wrapper evaluates the command in a subshell, prints an OSC
- * marker carrying the run id and exit status, then execs a normal interactive
- * shell so the tab carries on. The command and run id travel in environment
- * variables the wrapper removes before anything else runs.
+ * a prompt: the wrapper shows the command line, marks where its output starts,
+ * evaluates it in a subshell, prints an OSC marker carrying the run id and
+ * exit status, then execs a normal interactive shell so the tab carries on.
+ * The command and run id travel in environment variables the wrapper removes
+ * before anything else runs.
  */
 import xtermHeadless from "@xterm/headless";
 
 const { Terminal: HeadlessTerminal } = xtermHeadless;
 
-/** OSC number of the end-of-run marker: `ESC ] 6973 ; <run id> ; <status> BEL`. */
+/**
+ * OSC number of the run markers: `ESC ] 6973 ; <run id> ; start BEL` where the
+ * command's output begins, and `ESC ] 6973 ; <run id> ; <status> BEL` at its end.
+ */
 export const COMMAND_RUN_MARKER_OSC = "6973";
 export const COMMAND_RUN_ENV = {
   command: "THREADLINES_RUN_COMMAND",
@@ -25,14 +29,17 @@ export const COMMAND_RUN_CAPTURE_LIMIT = 512 * 1024;
 /** Rendered output kept for the agent, from the end. */
 export const COMMAND_RUN_OUTPUT_LIMIT = 16_000;
 
-/** The run id and exit status in a marker's OSC content, or null for any other OSC. */
-export function parseCommandRunMarker(
-  content: string,
-): { readonly runId: string; readonly exitCode: number | null } | null {
-  const match = /^6973;([^;]+);(-?\d+)?$/.exec(content);
+export type CommandRunMarker =
+  | { readonly kind: "start"; readonly runId: string }
+  | { readonly kind: "end"; readonly runId: string; readonly exitCode: number | null };
+
+/** The run marker in an OSC's content, or null for any other OSC. */
+export function parseCommandRunMarker(content: string): CommandRunMarker | null {
+  const match = /^6973;([^;]+);(start|-?\d+)?$/.exec(content);
   if (!match) return null;
+  if (match[2] === "start") return { kind: "start", runId: match[1]! };
   const exitCode = match[2] === undefined ? null : Number.parseInt(match[2], 10);
-  return { runId: match[1]!, exitCode: Number.isFinite(exitCode) ? exitCode : null };
+  return { kind: "end", runId: match[1]!, exitCode: Number.isFinite(exitCode) ? exitCode : null };
 }
 
 function posixQuote(value: string): string {
@@ -51,6 +58,9 @@ export function posixCommandRunWrapper(afterShellArgs: ReadonlyArray<string>): s
     `__tl_cmd=$${COMMAND_RUN_ENV.command}; __tl_id=$${COMMAND_RUN_ENV.runId}; __tl_sh=$${COMMAND_RUN_ENV.shell}`,
     `unset ${COMMAND_RUN_ENV.command} ${COMMAND_RUN_ENV.runId} ${COMMAND_RUN_ENV.shell}`,
     "trap : INT QUIT",
+    // The command line, dimmed, as if typed at a prompt; its output starts after it.
+    `printf '\\033[2m$ %s\\033[22m\\n' "$__tl_cmd"`,
+    `printf '\\033]${COMMAND_RUN_MARKER_OSC};%s;start\\007' "$__tl_id"`,
     `( trap - INT QUIT; trap '' TSTP; eval "$__tl_cmd" )`,
     "__tl_status=$?",
     `printf '\\033]${COMMAND_RUN_MARKER_OSC};%s;%s\\007' "$__tl_id" "$__tl_status"`,
@@ -68,6 +78,8 @@ export const POWERSHELL_COMMAND_RUN_WRAPPER = [
   `$__tl_cmd = $env:${COMMAND_RUN_ENV.command}`,
   `$__tl_id = $env:${COMMAND_RUN_ENV.runId}`,
   `Remove-Item Env:${COMMAND_RUN_ENV.command}, Env:${COMMAND_RUN_ENV.runId}, Env:${COMMAND_RUN_ENV.shell} -ErrorAction SilentlyContinue`,
+  "[Console]::Write(([char]27).ToString() + '[2mPS> ' + $__tl_cmd + ([char]27).ToString() + '[22m' + [Environment]::NewLine)",
+  `[Console]::Write(([char]27).ToString() + ']${COMMAND_RUN_MARKER_OSC};' + $__tl_id + ';start' + ([char]7).ToString())`,
   "$global:LASTEXITCODE = 0",
   "$__tl_ok = $true",
   "try { Invoke-Expression $__tl_cmd; $__tl_ok = $? } catch { Write-Error $_; $__tl_ok = $false }",

@@ -72,6 +72,51 @@ export class ProviderAdapterRequestError extends Schema.TaggedError<ProviderAdap
 }
 
 /**
+ * Why a steer could not reach its turn, as `ProviderAdapterRequestError.code`.
+ * The command reactor reads it: `no-active-turn` means the turn already ended,
+ * so the message becomes the next turn at once; `turn-finishing` means the
+ * turn is still closing (Stop was pressed, or its visible work is done), so
+ * the message waits in the queue until it has.
+ */
+export type SteerRejection = "no-active-turn" | "turn-finishing";
+
+const STEER_REJECTION_CODES: Record<SteerRejection, string> = {
+  "no-active-turn": "steer-no-active-turn",
+  "turn-finishing": "steer-turn-finishing",
+};
+
+/** An adapter's refusal of a steer: `agent` is the name the user sees. */
+export function steerRejectedError(
+  provider: string,
+  agent: string,
+  rejection: SteerRejection,
+): ProviderAdapterRequestError {
+  return new ProviderAdapterRequestError({
+    provider,
+    method: "turn/steer",
+    code: STEER_REJECTION_CODES[rejection],
+    detail:
+      rejection === "no-active-turn"
+        ? `No active ${agent} turn is available to steer.`
+        : `The ${agent} turn is finishing and can't take more input.`,
+  });
+}
+
+/**
+ * The steer rejection an error carries. Providers that answer for themselves
+ * (Codex's app server) say "no active turn to steer" in words, not a code.
+ */
+export function steerRejectionOf(error: ProviderAdapterRequestError): SteerRejection | undefined {
+  if (error.method !== "turn/steer") return undefined;
+  if (error.code === STEER_REJECTION_CODES["turn-finishing"]) return "turn-finishing";
+  if (error.code === STEER_REJECTION_CODES["no-active-turn"]) return "no-active-turn";
+  const detail = error.detail.toLowerCase();
+  return detail.includes("no active") && detail.includes("turn") && detail.includes("steer")
+    ? "no-active-turn"
+    : undefined;
+}
+
+/**
  * ProviderAdapterProcessError - Provider process lifecycle failure.
  */
 export class ProviderAdapterProcessError extends Schema.TaggedError<ProviderAdapterProcessError>()(

@@ -1740,7 +1740,15 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       expect(ptyAdapter.spawnInputs).toHaveLength(1);
 
       const pty = ptyAdapter.processes[0]!;
-      pty.emitData("Progress 1/3\rProgress 3/3\r\ndone\r\n");
+      // Startup-file noise and the echoed command line come before the output.
+      pty.emitData("Last login: today\r\n\u001b[2m$ pnpm install\u001b[22m\r\n");
+      yield* waitFor(
+        manager
+          .open(openInput({ terminalId: "terminal-run" }))
+          .pipe(Effect.map((snapshot) => snapshot.history.includes("$ pnpm install"))),
+      );
+      expect(yield* manager.readCommandRunOutput("run-1")).toBe("");
+      pty.emitData("\u001b]6973;run-1;start\u0007Progress 1/3\rProgress 3/3\r\ndone\r\n");
       pty.emitData("\u001b]6973;run-1;0\u0007prompt % \u001b[?2004h");
       yield* waitFor(
         Ref.get(updates).pipe(Effect.map((list) => list.some((u) => u.type === "finished"))),
@@ -1817,7 +1825,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       });
       const updates = yield* collectRunUpdates(manager);
       yield* manager.startCommandRun(commandRunInput({ command: "npm run dev" }));
-      ptyAdapter.processes[0]!.emitData("ready on :3000\r\n");
+      ptyAdapter.processes[0]!.emitData("\u001b]6973;run-1;start\u0007ready on :3000\r\n");
       yield* waitFor(
         manager.readCommandRunOutput("run-1").pipe(Effect.map((out) => out === "ready on :3000")),
       );

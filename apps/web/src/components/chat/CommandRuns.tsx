@@ -160,7 +160,9 @@ const CommandRunStatusLine = memo(function CommandRunStatusLine(props: {
       ? `You pressed Stop, so it wasn't sent to ${agent}.`
       : run.heldReason === "agent-left"
         ? `${agent} left the room, so it wasn't sent.`
-        : null;
+        : run.heldReason === "undelivered"
+          ? `It didn't reach ${agent}.`
+          : null;
 
   return (
     <div
