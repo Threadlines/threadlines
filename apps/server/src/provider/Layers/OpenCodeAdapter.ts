@@ -1193,6 +1193,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               isBackgrounded: true,
               ...(child.agent ? { subagentType: child.agent } : {}),
               ...(typeof input.description === "string" ? { description: input.description } : {}),
+              stoppable: true,
             },
           } as ProviderRuntimeEvent);
         }
@@ -1433,6 +1434,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                     taskType: "local_bash",
                     toolUseId: tool.callId,
                     isBackgrounded: true,
+                    stoppable: true,
                     ...(openCodeToolDetail(tool.identity, tool.input)
                       ? { description: openCodeToolDetail(tool.identity, tool.input)! }
                       : {}),
@@ -2970,6 +2972,53 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         yield* stopContext(ctx, undefined);
       });
 
+    // One background task: a shell left running (its id is the shell's) or a
+    // subagent working on in the background (its id is the child session's).
+    // The agent itself is not stopped, so a report the stop causes still
+    // reaches it, as it would for any task that ended.
+    const stopBackgroundTask: NonNullable<OpenCodeAdapterShape["stopBackgroundTask"]> = (
+      threadId,
+      taskId,
+    ) =>
+      Effect.gen(function* () {
+        const ctx = sessions.get(threadId);
+        if (!ctx) return false;
+        const shell = ctx.backgroundShells.get(taskId);
+        if (shell) {
+          yield* runOpenCode("shell.remove", (signal) =>
+            ctx.client.shell.remove(
+              { id: taskId, location: { directory: ctx.directory } },
+              { signal },
+            ),
+          ).pipe(Effect.mapError(toRequestError("shell.remove")));
+          // Nothing promises a shell.exited after a removal: whichever of the
+          // two takes the shell out of the map first ends the task, once.
+          if (ctx.backgroundShells.delete(taskId)) {
+            yield* emit({
+              type: "task.completed",
+              ...(yield* eventBase(ctx, ctx.rootSessionId, undefined)),
+              payload: {
+                taskId: RuntimeTaskId.make(taskId),
+                taskType: "local_bash",
+                toolUseId: shell.callId,
+                status: "stopped",
+              },
+            } as ProviderRuntimeEvent);
+          }
+          return true;
+        }
+        const child = ctx.children.get(taskId);
+        if (!child || !child.background || child.status !== "running") return false;
+        const result = yield* runOpenCode("session.interrupt", (signal) =>
+          ctx.client.session.interrupt({ sessionID: child.sessionId }, { signal }),
+        ).pipe(Effect.mapError(toRequestError("session.interrupt")));
+        // Nothing was executing, so no interrupted event will end it.
+        if (!result.interrupted) {
+          yield* childEnded(ctx, child, { kind: "interrupted", reason: "user" });
+        }
+        return true;
+      });
+
     const stopAll: OpenCodeAdapterShape["stopAll"] = () =>
       Effect.forEach([...sessions.keys()], stopSession, { discard: true });
 
@@ -2993,6 +3042,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       respondToRequest,
       respondToUserInput,
       stopSession,
+      stopBackgroundTask,
       listSessions: () =>
         Effect.sync(() =>
           [...sessions.values()].map((ctx) => ({

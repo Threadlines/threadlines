@@ -14,6 +14,7 @@ import {
   MessageId,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  RuntimeTaskId,
   ThreadId,
 } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
@@ -278,6 +279,93 @@ describe("OpenCodeAdapter", () => {
             (call.input as { sessionID: string }).sessionID === "ses_child",
         ),
       ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("stops one background shell, and its end is reported once", () =>
+    Effect.gen(function* () {
+      const { adapter, calls, send, next, threadId, cwd } = yield* harness;
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, messageId: MessageId.make("m1"), input: "serve" });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* send("session.inbox.delivered", { sessionID: ROOT, inboxID: "msg_tl_m1" });
+      yield* send("session.tool.input.started", {
+        sessionID: ROOT,
+        assistantMessageID: "msg_a",
+        id: "call_sh",
+        name: "shell",
+      });
+      yield* send("session.tool.called", {
+        sessionID: ROOT,
+        assistantMessageID: "msg_a",
+        id: "call_sh",
+        input: { command: "npm run dev" },
+        executed: false,
+      });
+      yield* send("session.tool.success", {
+        sessionID: ROOT,
+        id: "call_sh",
+        metadata: { status: "running", shellID: "sh_1" },
+      });
+      const started = yield* next((event) => event.type === "task.started");
+      expect(started.payload).toMatchObject({ taskId: "sh_1", stoppable: true });
+
+      expect(yield* adapter.stopBackgroundTask!(threadId, RuntimeTaskId.make("sh_1"))).toBe(true);
+      expect(calls.find((call) => call.method === "shell.remove")?.input).toMatchObject({
+        id: "sh_1",
+      });
+      const stopped = yield* next((event) => event.type === "task.completed");
+      expect(stopped.payload).toMatchObject({ taskId: "sh_1", status: "stopped" });
+      // The shell's own exit that follows ends nothing a second time: up to
+      // the turn's end, no other task.completed arrives.
+      yield* send("shell.exited", { id: "sh_1", exit: 143 });
+      yield* send("session.execution.succeeded", { sessionID: ROOT });
+      const later: Array<ProviderRuntimeEvent> = [];
+      yield* next((event) => {
+        later.push(event);
+        return event.type === "turn.completed";
+      });
+      expect(later.some((event) => event.type === "task.completed")).toBe(false);
+      expect(yield* adapter.stopBackgroundTask!(threadId, RuntimeTaskId.make("sh_1"))).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("stops one background subagent without stopping the agent", () =>
+    Effect.gen(function* () {
+      const { adapter, calls, send, next, threadId, cwd } = yield* harness;
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, messageId: MessageId.make("m1"), input: "delegate" });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* send("session.tool.input.started", {
+        sessionID: ROOT,
+        assistantMessageID: "msg_a",
+        id: "call_bg",
+        name: "subagent",
+      });
+      yield* send("session.tool.called", {
+        sessionID: ROOT,
+        assistantMessageID: "msg_a",
+        id: "call_bg",
+        input: { agent: "general", description: "Audit deps", prompt: "Audit", background: true },
+        executed: false,
+      });
+      yield* send("session.created", { sessionID: "ses_bg", parentID: ROOT, agent: "general" });
+      yield* send("session.tool.progress", {
+        sessionID: ROOT,
+        id: "call_bg",
+        metadata: { sessionID: "ses_bg", status: "running" },
+      });
+      const started = yield* next((event) => event.type === "task.started");
+      expect(started.payload).toMatchObject({ taskId: "ses_bg", stoppable: true });
+
+      expect(yield* adapter.stopBackgroundTask!(threadId, RuntimeTaskId.make("ses_bg"))).toBe(true);
+      const interrupts = calls
+        .filter((call) => call.method === "session.interrupt")
+        .map((call) => (call.input as { sessionID: string }).sessionID);
+      expect(interrupts).toEqual(["ses_bg"]);
+      yield* send("session.execution.interrupted", { sessionID: "ses_bg" });
+      const stopped = yield* next((event) => event.type === "task.completed");
+      expect(stopped.payload).toMatchObject({ taskId: "ses_bg", status: "stopped" });
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
