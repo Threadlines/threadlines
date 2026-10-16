@@ -161,6 +161,7 @@ import {
   type SessionCredentialChange,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
+import { dropSupersededToolUpdateImages } from "./orchestration/clientActivityImages.ts";
 import { isInternalClientSession } from "./auth/utils.ts";
 
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
@@ -786,7 +787,9 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTurnActivities,
             projectionSnapshotQuery.getTurnActivities(input).pipe(
-              Effect.map((activities) => ({ activities })),
+              Effect.map((activities) => ({
+                activities: dropSupersededToolUpdateImages(activities),
+              })),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetTurnActivitiesError({
@@ -993,7 +996,10 @@ const makeWsRpcLayer = (currentSession: {
                       kind: "snapshot" as const,
                       snapshot: {
                         snapshotSequence,
-                        thread: threadDetail.value,
+                        thread: {
+                          ...threadDetail.value,
+                          activities: dropSupersededToolUpdateImages(threadDetail.value.activities),
+                        },
                       },
                     }),
                     liveStream,
