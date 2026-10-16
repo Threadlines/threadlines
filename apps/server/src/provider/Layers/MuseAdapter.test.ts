@@ -29,6 +29,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
 import { ServerConfig } from "../../config.ts";
+import { steerRejectionOf } from "../Errors.ts";
 import {
   type MuseHost,
   MuseHostError,
@@ -293,6 +294,56 @@ describe("MuseAdapter", () => {
       yield* send("again");
       const second = host.calls.filter((call) => call.method === "turn/start")[1]!;
       expect(JSON.stringify(second.params.input)).not.toContain("threadlines_browser");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("sends a message to the next turn once the turn's visible work is done", () =>
+    Effect.gen(function* () {
+      const { hosts, adapter, threadId, nextEvent, start, send } = yield* setup();
+      yield* start();
+      const turn = yield* send("hi");
+      const host = hosts[0]!;
+      const steer = (text: string) =>
+        adapter.steerTurn({
+          threadId,
+          expectedTurnId: turn.turnId,
+          messageId: MessageId.make(`message-${text}`),
+          input: text,
+        });
+      yield* host.notify("turn/started", { sessionId: SESSION, turnId: turn.turnId });
+      yield* steer("while it works");
+      expect(host.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
+
+      // Muse's order: the answer starts, the visible work is done while
+      // background checks hold the turn open, then the answer completes.
+      const answer = { itemId: "msg-1", kind: "agentMessage", turnId: turn.turnId };
+      yield* host.notify("item/started", {
+        sessionId: SESSION,
+        item: { ...answer, revision: 1, status: "inProgress", text: "" },
+      });
+      yield* host.notify("turn/foregroundCompleted", {
+        sessionId: SESSION,
+        turnId: turn.turnId,
+        blockingAgents: ["reminder-1"],
+      });
+      yield* host.notify("item/completed", {
+        sessionId: SESSION,
+        item: {
+          ...answer,
+          revision: 2,
+          status: "completed",
+          text: "Done.",
+          messagePhase: "finalAnswer",
+        },
+      });
+      yield* nextEvent((event) => event.type === "content.delta");
+
+      // Steered in now, it would reach only the background checks.
+      const refused = yield* steer("what did it print?").pipe(Effect.flip);
+      expect(refused._tag === "ProviderAdapterRequestError" && steerRejectionOf(refused)).toBe(
+        "turn-finishing",
+      );
+      expect(host.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

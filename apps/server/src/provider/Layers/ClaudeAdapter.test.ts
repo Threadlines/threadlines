@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -3851,6 +3852,136 @@ describe("ClaudeAdapterLive", () => {
       );
     },
   );
+
+  it.effect("follows the agent's own edits into another checkout, never a helper's", () => {
+    // Real git, so the checkout lookup reads the pointers git writes: the
+    // session starts in its own worktree (`home`), next to a second one.
+    const dir = mkdtempSync(path.join(os.tmpdir(), "claude-edit-checkout-"));
+    const repo = path.join(dir, "repo");
+    const home = path.join(dir, "home");
+    const other = path.join(dir, "other");
+    const git = (...args: ReadonlyArray<string>) =>
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+        cwd: repo,
+        stdio: "ignore",
+      });
+    mkdirSync(repo);
+    git("init", "-q");
+    git("commit", "-q", "--allow-empty", "-m", "init");
+    git("worktree", "add", "-q", "-b", "home", home);
+    git("worktree", "add", "-q", "-b", "other", other);
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        cwd: home,
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+
+      const ownEdit = (index: number, filePath: string) => {
+        const id = `tool-own-edit-${index}`;
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-moves",
+          uuid: `stream-start-${index}`,
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index,
+            content_block: {
+              type: "tool_use",
+              id,
+              name: "Write",
+              input: { file_path: filePath, content: "x" },
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-moves",
+          uuid: `stream-stop-${index}`,
+          parent_tool_use_id: null,
+          event: { type: "content_block_stop", index },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-moves",
+          uuid: `result-${index}`,
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: id, content: "ok" }],
+          },
+        } as unknown as SDKMessage);
+      };
+      const helperEdit = (filePath: string) => {
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-moves",
+          uuid: "helper-edit",
+          parent_tool_use_id: "tool-task-helper",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-helper-edit",
+                name: "Write",
+                input: { file_path: filePath, content: "x" },
+              },
+            ],
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-moves",
+          uuid: "helper-edit-result",
+          parent_tool_use_id: "tool-task-helper",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "tool-helper-edit", content: "ok" }],
+          },
+        } as unknown as SDKMessage);
+      };
+
+      ownEdit(1, path.join(other, "src", "a.ts"));
+      ownEdit(2, path.join(other, "src", "b.ts"));
+      helperEdit(path.join(home, "src", "helper.ts"));
+      ownEdit(3, path.join(dir, "notes.md"));
+      ownEdit(4, path.join(home, "src", "a.ts"));
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-moves",
+        uuid: "result-moves",
+      } as unknown as SDKMessage);
+
+      const moves = Array.from(yield* Fiber.join(runtimeEventsFiber)).flatMap((event) =>
+        event.type === "session.cwd.changed" ? [event.payload] : [],
+      );
+      // Out to `other` once (the second edit there is no new move), the
+      // helper's edit and the file outside every checkout say nothing, then
+      // back home.
+      assert.deepStrictEqual(moves, [
+        { cwd: realpathSync(other), reason: "file-edited" },
+        { cwd: home, reason: "file-edited" },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      Effect.ensuring(Effect.sync(() => rmSync(dir, { recursive: true, force: true }))),
+    );
+  });
 
   it.effect("publishes a subagent's file edits as agent-attributed file changes", () => {
     const harness = makeHarness();

@@ -35,6 +35,7 @@ import {
   formatAwaitedTasks,
   formatBackgroundWaitWord,
   isLatestTurnSettled,
+  isWholeBase64,
 } from "./session-logic";
 
 function makeActivity(overrides: {
@@ -1658,6 +1659,36 @@ describe("findSidebarProposedPlan", () => {
         threadId: ThreadId.make("thread-1"),
       })?.planMarkdown,
     ).toBe("# Latest");
+  });
+});
+
+describe("isWholeBase64", () => {
+  it("answers exactly as the whole-string base64 pattern does", () => {
+    const pattern = /^[A-Za-z0-9+/]+={0,2}$/u;
+    const samples = [
+      "",
+      "=",
+      "==",
+      "A",
+      "A=",
+      "A==",
+      "A===",
+      "=A",
+      "A=A",
+      "AB=C=",
+      "AB+/09az",
+      "AB-_",
+      "AB\n",
+      "AB=\n",
+      " AB",
+      "AB é",
+      "AB😀",
+      "...uLW518pMPMrvYRRZoMTJG",
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+    ];
+    for (const sample of samples) {
+      expect(isWholeBase64(sample), JSON.stringify(sample)).toBe(pattern.test(sample));
+    }
   });
 });
 
@@ -3417,6 +3448,36 @@ describe("deriveWorkLogEntries", () => {
     ]);
   });
 
+  it("reads each payload's own image bytes when a step's payload is replaced", () => {
+    const screenshot = (data: string) =>
+      makeActivity({
+        id: "mcp-screenshot",
+        kind: "tool.completed",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "browser_screenshot",
+          data: {
+            toolName: "browser_screenshot",
+            result: {
+              type: "tool_result",
+              content: [
+                { type: "image", source: { type: "base64", media_type: "image/png", data } },
+              ],
+            },
+            item: { id: "toolu_shot" },
+          },
+        },
+      });
+    const before = screenshot("iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB");
+    const after = screenshot("iVBORw0KGgoAAAANSUhEUgAAAAIAAAAC");
+    const previewOf = (activity: OrchestrationThreadActivity) =>
+      deriveWorkLogEntries([activity])[0]?.images?.[0]?.previewUrl;
+
+    expect(previewOf(before)).toBe("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB");
+    expect(previewOf(after)).toBe("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAAC");
+    expect(previewOf(before)).toBe("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB");
+  });
+
   it("extracts changed file paths for file-change tool activities", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -4680,6 +4741,7 @@ describe("deriveTimelineEntries", () => {
       ],
       [],
       work,
+      [],
       [],
       [],
       [],

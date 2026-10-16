@@ -16,6 +16,7 @@ import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../..
 import { type RoomAgentNames, roomAgentKey, roomTurnOwners } from "../../rooms";
 import {
   type OrchestrationAgentPage,
+  type OrchestrationCommandRequest,
   type MessageAgentModel,
   type MessageId,
   type OrchestrationAwaitedBackgroundTask,
@@ -25,6 +26,8 @@ import {
   type OrchestrationWorkflowRun,
 } from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
+import { threadMemoOfInput } from "../../lib/derivationMemo";
+import { shallow } from "zustand/vanilla/shallow";
 import { deriveDisplayedUserMessageState } from "../../lib/terminalContext";
 import {
   activityStepFromWorkLogEntry,
@@ -217,6 +220,13 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         updated: boolean;
       }
     | {
+        /** A command an agent asked the user to run (CommandRequestRow). */
+        kind: "command-request";
+        id: string;
+        createdAt: string;
+        request: OrchestrationCommandRequest;
+      }
+    | {
         kind: "working";
         id: string;
         createdAt: string | null;
@@ -385,6 +395,18 @@ function deriveModelFallbackByTurn(
   }
   return fallbackByTurn;
 }
+
+/**
+ * `deriveMessagesTimelineRows`, remembered per thread (threadMemoOfInput): the
+ * list remounts with each chat it shows, so without this a chat opened again
+ * would place every row again. Reused only when every input field is the same
+ * value; a room's agent names count as the same when they name the same
+ * agents the same way, since the list builds them afresh as it mounts.
+ */
+export const deriveRememberedMessagesTimelineRows = threadMemoOfInput(
+  (input: Parameters<typeof deriveMessagesTimelineRows>[0]) => deriveMessagesTimelineRows(input),
+  { roomAgentNames: (left, right) => shallow(left, right) },
+);
 
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
@@ -579,6 +601,17 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         forkContext: timelineEntry.forkContext,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "command-request") {
+      nextRows.push({
+        ...UNPLACED,
+        kind: "command-request",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        request: timelineEntry.request,
       });
       continue;
     }
@@ -1694,7 +1727,13 @@ function settleTurnsAboveResponse(
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
     const turnId =
-      entry.kind === "work" ? entry.entry.turnId : entry.kind === "page" ? entry.page.turnId : null;
+      entry.kind === "work"
+        ? entry.entry.turnId
+        : entry.kind === "page"
+          ? entry.page.turnId
+          : entry.kind === "command-request"
+            ? entry.request.turnId
+            : null;
     if (turnId == null) {
       continue;
     }
@@ -1702,7 +1741,8 @@ function settleTurnsAboveResponse(
     if (anchorIndex === undefined) {
       continue;
     }
-    if (entry.kind !== "page") {
+    // Pages and command cards are part of the answer: they go right above it.
+    if (entry.kind !== "page" && entry.kind !== "command-request") {
       if (index > anchorIndex) {
         const trailing = trailingWorkByAnchorIndex.get(anchorIndex) ?? [];
         trailing.push(entry);
@@ -1984,6 +2024,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "page":
       return a.page === (b as typeof a).page && a.updated === (b as typeof a).updated;
 
+    case "command-request":
+      return a.request === (b as typeof a).request;
+
     case "side-status": {
       const bs = b as typeof a;
       return (
@@ -2207,6 +2250,9 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
     case "page":
       // Its title line, then the page at the height measured for this width.
       return AGENT_PAGE_TITLE_LINE_PX + agentPageFrameHeight(row.page, column);
+    case "command-request":
+      // Header, reason, the command's lines, the folder line and the buttons.
+      return 150 + 20 * Math.min(row.request.command.split("\n").length, 12);
     case "side-status":
       return 30;
   }

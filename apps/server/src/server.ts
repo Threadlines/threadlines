@@ -14,6 +14,7 @@ import {
   staticAndDevRouteLayer,
   browserApiCorsLayer,
 } from "./http.ts";
+import { scheduleServerCompileCacheFlush } from "./compileCache.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import { relayDirectRouteLayer } from "./relay/directRoute.ts";
@@ -48,7 +49,6 @@ import { ServerRuntimeStartup, ServerRuntimeStartupLive } from "./serverRuntimeS
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
-import { SubagentWorktreeFollowerLive } from "./orchestration/Layers/SubagentWorktreeFollower.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { ChildThreadReactorLive } from "./orchestration/Layers/ChildThreadReactor.ts";
 import { ThreadContextSeedBuilderLive } from "./provider/contextSeed/ThreadContextSeedBuilder.ts";
@@ -60,7 +60,9 @@ import { StorageMaintenanceDaemonLive } from "./persistence/Layers/StorageMainte
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import * as McpPagesServer from "./mcp/McpPagesServer.ts";
+import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
 import * as AgentPages from "./pages/AgentPages.ts";
+import * as CommandRuns from "./commandRuns/CommandRuns.ts";
 import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
 import * as PagePreview from "./pages/preview/PagePreview.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
@@ -225,7 +227,6 @@ const PlatformServicesLive = Layer.unwrap(
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
-  Layer.provideMerge(SubagentWorktreeFollowerLive),
   Layer.provideMerge(ProviderCommandReactorLive),
   Layer.provideMerge(ChildThreadReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
@@ -388,8 +389,12 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // `ProviderRuntimeLayerLive` so that layer's `ProjectionSnapshotQuery` output
   // satisfies the builder's dependency; consumed by `ProviderCommandReactorLive`.
   // Agent pages (what `show_page` does) sit here for the same reason: they
-  // record pages through the engine and projections that layer supplies.
-  Layer.provideMerge(Layer.mergeAll(ThreadContextSeedBuilderLive, AgentPages.layer)),
+  // record pages through the engine and projections that layer supplies. So
+  // do suggested commands (`ask_user_to_run` and the chat's Run buttons),
+  // which also run in the terminal layer below.
+  Layer.provideMerge(
+    Layer.mergeAll(ThreadContextSeedBuilderLive, AgentPages.layer, CommandRuns.layer),
+  ),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   // Settings-owned provider sign-in. Listed before the terminal layer so it
   // receives that layer's PTY adapter, but it keeps its own ephemeral,
@@ -465,6 +470,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   McpHttpServer.layer,
   McpRoomServer.layer,
   McpPagesServer.layer,
+  McpCommandsServer.layer,
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,
@@ -502,13 +508,15 @@ export const makeServerLayer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig;
 
-    fixPath();
+    fixPath({ shellEnvironmentPrepared: config.shellEnvironmentPrepared });
 
     const httpListeningLayer = Layer.effectDiscard(
       Effect.gen(function* () {
         yield* HttpServer.HttpServer;
         const startup = yield* ServerRuntimeStartup;
         yield* startup.markHttpListening;
+        // Startup has compiled nearly every module by now.
+        scheduleServerCompileCacheFlush();
       }),
     );
     const runtimeStateLayer = Layer.effectDiscard(

@@ -19,6 +19,8 @@ import {
   type OrchestrationProjectShell,
   type OrchestrationProposedPlan,
   type OrchestrationAgentPage,
+  OrchestrationCommandRequest,
+  OrchestrationCommandRun,
   type OrchestrationProject,
   type OrchestrationSession,
   type OrchestrationSubagent,
@@ -69,6 +71,10 @@ import {
   hasPendingChildApproval,
 } from "@threadlines/shared/childThreads";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
+import {
+  MAX_THREAD_COMMAND_REQUESTS,
+  MAX_THREAD_COMMAND_RUNS,
+} from "@threadlines/shared/commandRuns";
 import {
   MAX_RETAINED_PLAN_UPDATES,
   retainThreadActivities,
@@ -606,6 +612,32 @@ function pagesByThreadOf(
   return byThread;
 }
 
+const CommandRequestJsonRow = Schema.Struct({
+  threadId: ThreadId,
+  json: Schema.fromJsonString(OrchestrationCommandRequest),
+});
+const CommandRunJsonRow = Schema.Struct({
+  threadId: ThreadId,
+  json: Schema.fromJsonString(OrchestrationCommandRun),
+});
+
+/** Suggested command rows grouped by thread, newest kept past the cap. */
+function commandItemsByThreadOf<Item>(
+  rows: ReadonlyArray<{ readonly threadId: string; readonly json: Item }>,
+  cap: number,
+): Map<string, Array<Item>> {
+  const byThread = new Map<string, Array<Item>>();
+  for (const row of rows) {
+    const items = byThread.get(row.threadId) ?? [];
+    items.push(row.json);
+    byThread.set(row.threadId, items);
+  }
+  for (const [threadId, items] of byThread) {
+    byThread.set(threadId, items.slice(-cap));
+  }
+  return byThread;
+}
+
 function mapProposedPlanRow(
   row: Schema.Schema.Type<typeof ProjectionThreadProposedPlanDbRowSchema>,
 ): OrchestrationProposedPlan {
@@ -913,7 +945,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   // projector keeps in memory (MAX_THREAD_MESSAGES) so decider invariants
   // that consult message history (turn retry, fork source lookup) behave the
   // same after a server restart as they do on a long-running process.
-  const listCappedThreadMessageRows = SqlSchema.findAll({
+  //
+  // Almost no install has a thread past the cap, and there the plain read in
+  // index order (idx_projection_thread_messages_event_order, no sort) returns
+  // the same rows: the ROW_NUMBER window below sorts every message first, and
+  // this read gates HTTP at boot. Past the cap the window keeps the discarded
+  // rows out of memory.
+  const listRankedThreadMessageRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionThreadMessageDbRowSchema,
     execute: () =>
@@ -959,6 +997,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ORDER BY thread_id ASC, event_sequence ASC, created_at ASC, message_id ASC
       `,
   });
+
+  const countThreadsOverMessageCap = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({ threads: Schema.Number }),
+    execute: () =>
+      sql`
+        SELECT COUNT(*) AS "threads"
+        FROM (
+          SELECT thread_id
+          FROM projection_thread_messages
+          GROUP BY thread_id
+          HAVING COUNT(*) > ${MAX_THREAD_MESSAGES}
+        )
+      `,
+  });
+
+  const listCappedThreadMessageRows = () =>
+    countThreadsOverMessageCap(undefined).pipe(
+      Effect.flatMap((rows) =>
+        (rows[0]?.threads ?? 0) === 0
+          ? listThreadMessageRows(undefined)
+          : listRankedThreadMessageRows(undefined),
+      ),
+    );
 
   const listThreadProposedPlanRows = SqlSchema.findAll({
     Request: Schema.Void,
@@ -1314,6 +1376,23 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE threads.deleted_at IS NULL
           AND projects.deleted_at IS NULL
         ORDER BY threads.thread_id ASC
+      `,
+  });
+
+  const listThreadAgentRequestRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      threadId: ThreadId,
+      agentRequests: Schema.fromJsonString(OrchestrationAgentRequestState),
+    }),
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          agent_requests AS "agentRequests"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND agent_requests IS NOT NULL
       `,
   });
 
@@ -1719,6 +1798,49 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_thread_pages
         WHERE thread_id = ${threadId}
         ORDER BY placement_sequence ASC, created_at ASC, version_id ASC
+      `,
+  });
+
+  const listCommandRequestRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: CommandRequestJsonRow,
+    execute: () =>
+      sql`
+        SELECT thread_id AS "threadId", request_json AS "json"
+        FROM projection_thread_command_requests
+        ORDER BY thread_id ASC, event_sequence ASC, request_id ASC
+      `,
+  });
+  const listCommandRequestRowsByThread = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: CommandRequestJsonRow,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT thread_id AS "threadId", request_json AS "json"
+        FROM projection_thread_command_requests
+        WHERE thread_id = ${threadId}
+        ORDER BY event_sequence ASC, request_id ASC
+      `,
+  });
+  const listCommandRunRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: CommandRunJsonRow,
+    execute: () =>
+      sql`
+        SELECT thread_id AS "threadId", run_json AS "json"
+        FROM projection_thread_command_runs
+        ORDER BY thread_id ASC, event_sequence ASC, run_id ASC
+      `,
+  });
+  const listCommandRunRowsByThread = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: CommandRunJsonRow,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT thread_id AS "threadId", run_json AS "json"
+        FROM projection_thread_command_runs
+        WHERE thread_id = ${threadId}
+        ORDER BY event_sequence ASC, run_id ASC
       `,
   });
 
@@ -2177,6 +2299,22 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listCommandRequestRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getSnapshot:listCommandRequests:query",
+                "ProjectionSnapshotQuery.getSnapshot:listCommandRequests:decodeRows",
+              ),
+            ),
+          ),
+          listCommandRunRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getSnapshot:listCommandRuns:query",
+                "ProjectionSnapshotQuery.getSnapshot:listCommandRuns:decodeRows",
+              ),
+            ),
+          ),
         ]),
       )
       .pipe(
@@ -2194,10 +2332,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             stateRows,
             pageRows,
             workflowRunRows,
+            commandRequestRows,
+            commandRunRows,
           ]) =>
             Effect.gen(function* () {
               const pagesByThread = pagesByThreadOf(pageRows);
               const workflowRunsByThread = workflowRunsByThreadOf(workflowRunRows);
+              const commandRequestsByThread = commandItemsByThreadOf(
+                commandRequestRows,
+                MAX_THREAD_COMMAND_REQUESTS,
+              );
+              const commandRunsByThread = commandItemsByThreadOf(
+                commandRunRows,
+                MAX_THREAD_COMMAND_RUNS,
+              );
               const messagesByThread = new Map<string, Array<OrchestrationMessage>>();
               const proposedPlansByThread = new Map<string, Array<OrchestrationProposedPlan>>();
               const activitiesByThread = new Map<string, Array<OrchestrationThreadActivity>>();
@@ -2361,6 +2509,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 messages: messagesByThread.get(row.threadId) ?? [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                 pages: pagesByThread.get(row.threadId) ?? [],
+                commandRequests: commandRequestsByThread.get(row.threadId) ?? [],
+                commandRuns: commandRunsByThread.get(row.threadId) ?? [],
                 activities: dropStaleContextWindowActivities(
                   retainThreadActivities(
                     activitiesByThread.get(row.threadId) ?? [],
@@ -2416,7 +2566,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listCappedThreadMessageRows(undefined).pipe(
+          listCappedThreadMessageRows().pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getCommandReadModel:listThreadMessages:query",
@@ -2472,6 +2622,22 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listCommandRequestRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listCommandRequests:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listCommandRequests:decodeRows",
+              ),
+            ),
+          ),
+          listCommandRunRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listCommandRuns:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listCommandRuns:decodeRows",
+              ),
+            ),
+          ),
         ]),
       )
       .pipe(
@@ -2486,6 +2652,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             stateRows,
             pageRows,
             workflowRunRows,
+            commandRequestRows,
+            commandRunRows,
           ]) =>
             Effect.sync(() => {
               const pagesByThread = pagesByThreadOf(pageRows);
@@ -2494,6 +2662,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               // This model loads no checkpoints, so it could not tell which
               // finished run a later revert takes back anyway.
               const workflowRunsByThread = workflowRunsByThreadOf(workflowRunRows);
+              const commandRequestsByThread = commandItemsByThreadOf(
+                commandRequestRows,
+                MAX_THREAD_COMMAND_REQUESTS,
+              );
+              const commandRunsByThread = commandItemsByThreadOf(
+                commandRunRows,
+                MAX_THREAD_COMMAND_RUNS,
+              );
               let updatedAt: string | null = null;
               const projects: OrchestrationProject[] = [];
               const threads: OrchestrationThread[] = [];
@@ -2648,6 +2824,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                   pages: pagesByThread.get(row.threadId) ?? [],
+                  commandRequests: commandRequestsByThread.get(row.threadId) ?? [],
+                  commandRuns: commandRunsByThread.get(row.threadId) ?? [],
                   activities: [],
                   workflowRuns: workflowRunsByThread.get(row.threadId) ?? [],
                   checkpoints: [],
@@ -3164,6 +3342,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
 
+  const listThreadIdsWithOpenAgentRequests: ProjectionSnapshotQueryShape["listThreadIdsWithOpenAgentRequests"] =
+    () =>
+      listThreadAgentRequestRows(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.listThreadIdsWithOpenAgentRequests:query",
+            "ProjectionSnapshotQuery.listThreadIdsWithOpenAgentRequests:decodeRows",
+          ),
+        ),
+        Effect.map((rows) =>
+          rows.filter((row) => row.agentRequests.open.length > 0).map((row) => row.threadId),
+        ),
+      );
+
   const listThreadTurnOverlapsSince: ProjectionSnapshotQueryShape["listThreadTurnOverlapsSince"] = (
     input,
   ) =>
@@ -3273,8 +3465,21 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
   const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
     Effect.gen(function* () {
+      // An archived, deleted or unknown thread answers none before the eight
+      // detail reads below, the activity history among them.
+      const threadRow = yield* getActiveThreadRowById({ threadId }).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",
+            "ProjectionSnapshotQuery.getThreadDetailById:getThread:decodeRow",
+          ),
+        ),
+      );
+      if (Option.isNone(threadRow)) {
+        return Option.none<OrchestrationThread>();
+      }
+
       const [
-        threadRow,
         messageRows,
         proposedPlanRows,
         activityRows,
@@ -3284,15 +3489,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         sessionRow,
         pageRows,
         workflowRunRows,
+        commandRequestRows,
+        commandRunRows,
       ] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",
-              "ProjectionSnapshotQuery.getThreadDetailById:getThread:decodeRow",
-            ),
-          ),
-        ),
         listThreadMessageRowsByThread({ threadId }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
@@ -3365,11 +3564,23 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
+        listCommandRequestRowsByThread({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailById:listCommandRequests:query",
+              "ProjectionSnapshotQuery.getThreadDetailById:listCommandRequests:decodeRows",
+            ),
+          ),
+        ),
+        listCommandRunRowsByThread({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailById:listCommandRuns:query",
+              "ProjectionSnapshotQuery.getThreadDetailById:listCommandRuns:decodeRows",
+            ),
+          ),
+        ),
       ]);
-
-      if (Option.isNone(threadRow)) {
-        return Option.none<OrchestrationThread>();
-      }
 
       const thread = {
         id: threadRow.value.threadId,
@@ -3410,6 +3621,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         messages: messageRows.map(mapThreadMessageRow),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
         pages: pageRows.map(mapPageRow),
+        commandRequests: commandRequestRows
+          .map((row) => row.json)
+          .slice(-MAX_THREAD_COMMAND_REQUESTS),
+        commandRuns: commandRunRows.map((row) => row.json).slice(-MAX_THREAD_COMMAND_RUNS),
         activities: dropStaleContextWindowActivities(
           retainThreadActivities(activityRows.map(mapThreadActivityRow), MAX_THREAD_ACTIVITIES),
         ),
@@ -3445,6 +3660,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getFullThreadDiffContext,
     listThreadDiffStatBaselines,
     listThreadTurnOverlapsSince,
+    listThreadIdsWithOpenAgentRequests,
     getThreadShellById,
     getThreadDetailById,
     getTurnActivities,

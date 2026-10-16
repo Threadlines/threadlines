@@ -34,12 +34,6 @@ export interface ClaudeSubagentTranscriptMeta {
   readonly toolUseId?: string;
   readonly model?: string;
   readonly spawnDepth?: number;
-  /** Checkout the subagent runs in, when it was spawned with worktree
-   *  isolation. The event stream never carries this, so the sidecar is the
-   *  only place the path is stated. */
-  readonly worktreePath?: string;
-  /** Branch checked out in `worktreePath`, when the sidecar states one. */
-  readonly worktreeBranch?: string;
 }
 
 export interface ClaudeSubagentTranscriptLocation {
@@ -102,8 +96,6 @@ function parseMeta(value: string): ClaudeSubagentTranscriptMeta | undefined {
   const description = readOptionalString("description");
   const toolUseId = readOptionalString("toolUseId");
   const model = readOptionalString("model");
-  const worktreePath = readOptionalString("worktreePath");
-  const worktreeBranch = readOptionalString("worktreeBranch");
   const rawSpawnDepth = record["spawnDepth"];
   const spawnDepth =
     typeof rawSpawnDepth === "number" && Number.isInteger(rawSpawnDepth) && rawSpawnDepth >= 0
@@ -115,8 +107,6 @@ function parseMeta(value: string): ClaudeSubagentTranscriptMeta | undefined {
     ...(toolUseId ? { toolUseId } : {}),
     ...(model ? { model } : {}),
     ...(spawnDepth !== undefined ? { spawnDepth } : {}),
-    ...(worktreePath ? { worktreePath } : {}),
-    ...(worktreeBranch ? { worktreeBranch } : {}),
   };
 }
 
@@ -182,46 +172,6 @@ const subagentSearchDirectories = Effect.fn("subagentSearchDirectories")(functio
     }
   }
   return directories;
-});
-
-/**
- * Read the sidecar metadata for an agent without requiring its transcript to
- * exist. Claude writes `agent-<id>.meta.json` as soon as the subagent is
- * spawned, so this resolves facts the event stream never carries (notably the
- * isolation worktree) while the agent is still starting up.
- */
-export const locateClaudeSubagentMeta = Effect.fn("locateClaudeSubagentMeta")(function* (
-  input: ClaudeSubagentLookupInput,
-): Effect.fn.Return<
-  ClaudeSubagentTranscriptMeta | null,
-  PlatformError.PlatformError,
-  FileSystem.FileSystem | Path.Path
-> {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const directories = yield* subagentSearchDirectories(input);
-  for (const searchedDirectory of directories) {
-    const directMetaPath = path.join(searchedDirectory, `agent-${input.agentId}.meta.json`);
-    if (yield* fileExists(fileSystem, directMetaPath)) {
-      const meta = yield* readMetaFile(fileSystem, directMetaPath);
-      if (meta) {
-        return meta;
-      }
-    }
-    const entries = yield* fileSystem
-      .readDirectory(searchedDirectory)
-      .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
-    for (const entry of entries.sort()) {
-      if (!/^agent-.+\.meta\.json$/u.test(entry)) {
-        continue;
-      }
-      const meta = yield* readMetaFile(fileSystem, path.join(searchedDirectory, entry));
-      if (meta?.toolUseId === input.agentId) {
-        return meta;
-      }
-    }
-  }
-  return null;
 });
 
 /**

@@ -199,10 +199,13 @@ export const GrokPromptComplete = Schema.Struct({
 });
 export type GrokPromptComplete = typeof GrokPromptComplete.Type;
 
-/** A turn Grok started itself began: `queue/changed` names a running prompt that isn't ours. */
-export function grokAgentTurnStarted(notification: GrokQueueChanged): boolean {
+/**
+ * The turn Grok runs of its own, by prompt id: `queue/changed` names a
+ * running prompt that isn't ours. Undefined while ours (or nothing) runs.
+ */
+export function grokAgentTurnPromptId(notification: GrokQueueChanged): string | undefined {
   const running = nonEmpty(notification.runningPromptId);
-  return running !== undefined && !isOwnPromptId(running);
+  return running !== undefined && !isOwnPromptId(running) ? running : undefined;
 }
 
 /** How Grok's `stop_reason` and `agent_result` read as a turn's end. */

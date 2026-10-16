@@ -87,6 +87,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       pullRequests: true,
       browserApprovalWait: true,
       browserClientHosts: true,
+      commandRuns: true,
     },
   };
 

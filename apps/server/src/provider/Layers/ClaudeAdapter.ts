@@ -78,6 +78,7 @@ import {
   classifySpawnFailure,
   isLinkedWorktreeCheckout,
   missingWorkingDirectoryDetail,
+  resolveEditedCheckout,
   resolveFollowedSessionCwd,
 } from "../../vcs/CheckoutPresence.ts";
 import {
@@ -105,7 +106,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
-import { isFilesystemPathWithin } from "@threadlines/shared/path";
+import { areFilesystemPathsEqual, isFilesystemPathWithin } from "@threadlines/shared/path";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -125,10 +126,16 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
+  mcpCommandsEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
+import {
+  buildCommandRequestInstructions,
+  CLAUDE_COMMAND_TOOL_IDS,
+  COMMANDS_MCP_SERVER_NAME,
+} from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { ROOM_TOOL_CALL_TIMEOUT } from "../../mcp/roomToolTimeouts.ts";
 import {
@@ -152,7 +159,6 @@ import {
   saveClaudeWorkflowCommand,
 } from "../Drivers/ClaudeWorkflowFiles.ts";
 import {
-  locateClaudeSubagentMeta,
   locateClaudeSubagentTranscript,
   readClaudeSubagentTranscriptEntries,
 } from "../Drivers/ClaudeSubagentTranscripts.ts";
@@ -190,6 +196,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
   type ProviderAdapterError,
+  steerRejectedError,
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { estimatePartialFileChangeStat } from "./claudePartialToolInput.ts";
@@ -527,6 +534,10 @@ interface ClaudeSessionContext {
    *  The CLI answers each with a zero-turn result that ends nothing. */
   pendingAppendOnlyResults: number;
   lastEmittedPlanTrackerFingerprint: string | undefined;
+  /** Where this session last said it works (`session.cwd.changed`), so an
+   *  edit only reports a move when it lands somewhere else. Undefined until
+   *  the first report, which means the configured checkout. */
+  reportedCwd: string | undefined;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
@@ -2575,6 +2586,14 @@ const SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS = 2_000;
 /** Agent ids come from the client and end up in a filesystem path; anything
  *  outside this shape is rejected before it can traverse. */
 const SUBAGENT_AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** Tools whose successful call writes the file their input names. */
+const CLAUDE_FILE_EDIT_TOOLS: ReadonlySet<string> = new Set([
+  "Edit",
+  "Write",
+  "MultiEdit",
+  "NotebookEdit",
+]);
 /** Spawn-ancestry entries kept per session; oldest evict first. Sized well
  *  past any real session's subagent count while bounding a runaway. */
 const SUBAGENT_SPAWN_ANCESTRY_MAX_ENTRIES = 1_024;
@@ -5253,6 +5272,34 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  /**
+   * The checkout an edit by the session's own agent shows it working in, when
+   * that is not where it last reported working. A helper's edits never get
+   * here: subagent messages are routed to the helper's item before the main
+   * handlers, so an isolated subagent's worktree never moves the thread.
+   */
+  const editedCheckoutMove = Effect.fn("editedCheckoutMove")(function* (
+    context: ClaudeSessionContext,
+    tool: ToolInFlight,
+  ) {
+    const configuredCwd = context.session.cwd;
+    if (!CLAUDE_FILE_EDIT_TOOLS.has(tool.toolName) || configuredCwd === undefined) {
+      return undefined;
+    }
+    const filePath = tool.input.file_path ?? tool.input.notebook_path;
+    if (typeof filePath !== "string" || !path.isAbsolute(filePath)) {
+      return undefined;
+    }
+    const checkout = yield* resolveEditedCheckout({ filePath, configuredCwd }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+    return checkout === undefined ||
+      areFilesystemPathsEqual(checkout, context.reportedCwd ?? configuredCwd)
+      ? undefined
+      : checkout;
+  });
+
   const handleUserMessage = Effect.fn("handleUserMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -5452,14 +5499,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // EnterWorktree/ExitWorktree move the session's working directory
       // mid-turn; report it immediately instead of waiting for the next
       // session init. A parse miss is safe — the next init self-corrects.
+      // An edit is the evidence for the same move made by hand (`cd` and
+      // absolute paths), which nothing else reports; it counts only when it
+      // lands in a different checkout than the one last reported.
       if (!toolResult.isError) {
         const movedCwd =
           tool.toolName === "EnterWorktree"
             ? parseEnterWorktreeCwd(tool.input, toolResult.text)
             : tool.toolName === "ExitWorktree"
               ? context.session.cwd
-              : undefined;
+              : yield* editedCheckoutMove(context, tool);
         if (movedCwd !== undefined && movedCwd.length > 0) {
+          context.reportedCwd = movedCwd;
           const cwdStamp = yield* makeEventStamp();
           yield* offerRuntimeEvent({
             type: "session.cwd.changed",
@@ -5470,7 +5521,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
             payload: {
               cwd: movedCwd,
-              reason: tool.toolName === "EnterWorktree" ? "worktree-entered" : "worktree-exited",
+              reason:
+                tool.toolName === "EnterWorktree"
+                  ? "worktree-entered"
+                  : tool.toolName === "ExitWorktree"
+                    ? "worktree-exited"
+                    : "file-edited",
             },
             providerRefs: nativeProviderRefs(context),
             raw: {
@@ -5942,6 +5998,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(Path.Path, path),
           );
+          context.reportedCwd = followedCwd;
           yield* offerRuntimeEvent({
             ...base,
             type: "session.cwd.changed",
@@ -7671,6 +7728,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // Claude's own Artifact tool, which uploads a page to claude.ai. Only
       // beside agent pages: the chat shows the local copy of each publish.
       const artifacts = input.artifacts === true && agentPages;
+      // `ask_user_to_run`: a command card the user runs from the chat.
+      const commandRequests = input.commandRequests === true && !lockdown;
       const credential =
         !lockdown || roomTools
           ? yield* mcpSessionRegistry.credentialFor({
@@ -7678,6 +7737,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               browser: !lockdown,
               room: roomTools,
               pages: agentPages,
+              commands: commandRequests,
               sideKind,
             })
           : undefined;
@@ -7727,6 +7787,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 },
               }
             : {}),
+          ...(credential !== undefined && commandRequests
+            ? {
+                [COMMANDS_MCP_SERVER_NAME]: {
+                  type: "http" as const,
+                  url: mcpCommandsEndpointUrl(serverConfig.port),
+                  headers: { Authorization: `Bearer ${credential.token}` },
+                  // In the prompt too: deferred, the model tells the user to
+                  // copy the command into a terminal instead.
+                  alwaysLoad: true,
+                },
+              }
+            : {}),
         },
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
@@ -7739,6 +7811,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               ? [buildAgentPageInstructions({ assetsDir: pageAssets })]
               : []),
             ...(artifacts ? [CLAUDE_ARTIFACT_INSTRUCTIONS] : []),
+            ...(credential !== undefined && commandRequests
+              ? [buildCommandRequestInstructions({})]
+              : []),
             FILE_LINK_INSTRUCTIONS,
             ...(runsInManagedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
           ].join("\n\n"),
@@ -7760,6 +7835,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(roomServer !== undefined ? ROOM_TOOL_NAMES.map(claudeRoomToolId) : []),
           // A page shows only in the caller's own thread; nothing to approve.
           ...(credential !== undefined && agentPages ? CLAUDE_PAGE_TOOL_IDS : []),
+          // Asking the user to run a command only shows a card; they decide.
+          ...(credential !== undefined && commandRequests ? CLAUDE_COMMAND_TOOL_IDS : []),
         ],
         ...(effectiveEffort
           ? {
@@ -7940,6 +8017,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         workflowRuns: new ClaudeWorkflowRunTracker(),
         pendingAppendOnlyResults: 0,
         lastEmittedPlanTrackerFingerprint: undefined,
+        reportedCwd: undefined,
         turnState: undefined,
         lastKnownContextWindow: undefined,
         lastKnownTokenUsage: undefined,
@@ -8247,11 +8325,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const context = yield* requireSession(input.threadId);
     const activeTurn = context.turnState;
     if (!activeTurn) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/steer",
-        detail: "No active Claude turn is available to steer.",
-      });
+      return yield* steerRejectedError(PROVIDER, "Claude", "no-active-turn");
     }
     if (activeTurn.turnId !== input.expectedTurnId) {
       return yield* new ProviderAdapterRequestError({
@@ -8569,52 +8643,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   })();
 
-  /**
-   * Read where an isolated subagent is working from its sidecar record.
-   *
-   * The SDK event stream states only that a Task was spawned with worktree
-   * isolation, never the path, so the sidecar Claude writes next to the
-   * subagent transcript is the only source. It appears shortly *after* the
-   * task starts, so a null here means "not yet", and callers retry.
-   */
-  const resolveSubagentWorktree: NonNullable<ClaudeAdapterShape["resolveSubagentWorktree"]> =
-    Effect.fn("resolveSubagentWorktree")(function* (threadId, input) {
-      if (!SUBAGENT_AGENT_ID_PATTERN.test(input.toolUseId)) {
-        return null;
-      }
-      const context = yield* requireSession(threadId);
-      const sessionId = context.resumeSessionId;
-      const cwd = context.session.cwd;
-      if (!sessionId || !cwd) {
-        return null;
-      }
-      const meta = yield* locateClaudeSubagentMeta({
-        environment: claudeEnvironment,
-        cwd,
-        sessionId,
-        agentId: input.toolUseId,
-      }).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        // Inference is best effort: a transient read failure must never break
-        // the caller, which is reacting to unrelated task lifecycle events.
-        Effect.catch((cause) =>
-          Effect.logDebug("claude.subagent-worktree.read-failed", {
-            threadId,
-            toolUseId: input.toolUseId,
-            detail: cause.message,
-          }).pipe(Effect.as(null)),
-        ),
-      );
-      if (!meta?.worktreePath) {
-        return null;
-      }
-      return {
-        worktreePath: meta.worktreePath,
-        ...(meta.worktreeBranch ? { worktreeBranch: meta.worktreeBranch } : {}),
-      };
-    });
-
   const rewindFilesForRollback = Effect.fn("rewindFilesForRollback")(function* (
     context: ClaudeSessionContext,
     targetUserMessageId: MessageId | undefined,
@@ -8787,7 +8815,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     compactContext,
     readThread,
     readSubagentTranscript,
-    resolveSubagentWorktree,
     rollbackThread,
     respondToRequest,
     respondToUserInput,

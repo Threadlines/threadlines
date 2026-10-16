@@ -39,7 +39,6 @@ import {
   type OnViewableItemsChangedInfo,
 } from "@legendapp/list/react";
 import { useQueries } from "@tanstack/react-query";
-import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import {
   deriveTimelineEntries,
   formatSubagentListName,
@@ -67,6 +66,13 @@ import {
 } from "../ChatView.logic";
 import { AgentPageRow } from "./AgentPageRow";
 import {
+  CodeBlockRunScopeContext,
+  CommandOutputMessage,
+  CommandRequestRow,
+  isCommandOutputMessage,
+  type CodeBlockRunScope,
+} from "./CommandRuns";
+import {
   type ChatAttachment,
   type ChatMessage,
   type SidebarThreadSummary,
@@ -75,6 +81,8 @@ import {
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
 import { environmentRequiresRpcAssetTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
+import { isProviderAuthErrorChatMessage } from "../../lib/providerAuthMessages";
+import { useWsConnectionStatus } from "../../rpc/wsConnectionState";
 import ChatMarkdown from "../ChatMarkdown";
 import {
   ArrowDownIcon,
@@ -128,6 +136,7 @@ import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  deriveRememberedMessagesTimelineRows,
   estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
   shouldCollapseUserMessage,
@@ -728,6 +737,12 @@ const VISIBLE_TURN_SETTLE_MS = 150;
 
 interface MessagesTimelineProps {
   emptyState?: ReactNode;
+  /** The thread's detail has not landed yet: an empty list means "not
+   *  loaded", not "nothing said" (PendingThreadDetailState). */
+  detailPending?: boolean | undefined;
+  /** For a thread on a saved (remote) environment, whether that connection is
+   *  up; undefined for this app's own server, whose connection the app tracks. */
+  savedEnvironmentConnected?: boolean | undefined;
   isWorking: boolean;
   /** The turn settled but provider background work (a command, an agent)
    *  will wake it again; the anchor stays up as "Waiting" until then. */
@@ -824,6 +839,8 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   emptyState,
+  detailPending = false,
+  savedEnvironmentConnected,
   isWorking,
   isWaitingOnBackgroundTasks = false,
   awaitedTasks = null,
@@ -953,7 +970,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       revertTurnCountByUserMessageId,
     ],
   );
-  const rawRows = useMemo(() => deriveMessagesTimelineRows(rowsInput), [rowsInput]);
+  const rawRows = useMemo(
+    () => deriveRememberedMessagesTimelineRows(routeThreadKey, rowsInput),
+    [routeThreadKey, rowsInput],
+  );
   const rows = useStableRows(rawRows);
   // Find in chat searches the rows as drawn, plus answers still being written
   // under a folded side question: they open where they already sit.
@@ -1964,6 +1984,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   if (rows.length === 0 && !isWorking) {
+    if (detailPending) {
+      return <PendingThreadDetailState savedEnvironmentConnected={savedEnvironmentConnected} />;
+    }
     if (emptyState) {
       return (
         // In the new-thread hero the chat column scrolls as one, so this stops
@@ -2362,6 +2385,27 @@ function findTranscriptMessageBody(node: Node): HTMLElement | null {
   return element?.closest<HTMLElement>("[data-transcript-message-body='true']") ?? null;
 }
 
+/**
+ * What a chat whose detail has not landed says in place of its messages:
+ * loading while its connection is up, and while it is down (the connection
+ * notices say why) that it loads once the connection is back, so it never
+ * claims to be loading forever. Held back a beat so a fast load never
+ * flashes it.
+ */
+function PendingThreadDetailState(props: { savedEnvironmentConnected: boolean | undefined }) {
+  const appConnection = useWsConnectionStatus();
+  const connected = props.savedEnvironmentConnected ?? appConnection.phase === "connected";
+  return (
+    <div className="flex h-full items-center justify-center px-4">
+      <p className="loading-reveal text-center text-sm text-muted-foreground" role="status">
+        {connected
+          ? "Loading conversation…"
+          : "This conversation loads when the connection is back."}
+      </p>
+    </div>
+  );
+}
+
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
 }
@@ -2370,8 +2414,7 @@ function isResolvedProviderAuthRecoverySignal(row: MessagesTimelineRow): boolean
   if (row.kind !== "message" || row.message.role !== "assistant" || row.message.streaming) {
     return false;
   }
-  const text = row.message.text.trim();
-  return Boolean(text && !isProviderAuthErrorMessage(text));
+  return row.message.text.trim().length > 0 && !isProviderAuthErrorChatMessage(row.message);
 }
 
 function deriveResolvedProviderAuthReconnectIds(
@@ -2396,8 +2439,7 @@ function deriveResolvedProviderAuthReconnectIds(
     }
 
     if (row.kind === "message" && row.message.role === "assistant") {
-      const text = row.message.text.trim();
-      if (isProviderAuthErrorMessage(text)) {
+      if (isProviderAuthErrorChatMessage(row.message)) {
         resolvedIds.add(row.id);
       }
       continue;
@@ -2525,6 +2567,11 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
           page={row.page}
           updated={row.updated}
         />
+      ) : null}
+      {row.kind === "command-request" ? (
+        <div className="mx-auto max-w-4xl px-1">
+          <CommandRequestRow request={row.request} />
+        </div>
       ) : null}
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
       {row.kind === "workflow-run" ? <WorkflowRunTimelineRow row={row} /> : null}
@@ -2706,6 +2753,53 @@ function TimelineFileAttachmentChips(props: {
 }
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  if (isCommandOutputMessage(row.message.id)) {
+    return <CommandOutputTimelineRow row={row} />;
+  }
+  return <UserMessageTimelineRow row={row} />;
+}
+
+/**
+ * The output of a suggested command, sent to its agent as your message: one
+ * line in your bubble, the full text a click away.
+ */
+function CommandOutputTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const canRevertAgentWork = typeof row.revertTurnCount === "number";
+  return (
+    <div className="flex flex-col items-end">
+      <div className="flex w-full justify-end">
+        <div className="group relative max-w-[80%] min-w-0 rounded-4xl bg-secondary px-3.5 py-2.5">
+          <CommandOutputMessage
+            messageId={row.message.id}
+            text={row.message.text}
+            renderText={(text) => (
+              <ChatMarkdown
+                text={text}
+                cwd={ctx.markdownCwd}
+                environmentId={ctx.activeThreadEnvironmentId}
+                threadId={ctx.activeThreadId ?? undefined}
+              />
+            )}
+            footer={
+              <div className="flex items-center justify-end gap-1.5">
+                <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+                  <MessageCopyButton text={row.message.text} />
+                  {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+                </div>
+                <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
+                  {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
+                </p>
+              </div>
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageAttachments = row.message.attachments ?? [];
   const userImages = useResolvedAttachmentPreviews(
@@ -3353,7 +3447,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   const writing = streaming && (isWorking || row.message.sideTurnId !== undefined);
   useStreamingHeightFloor(revealRef, writing || (!streaming && revealing));
   const authReconnect =
-    ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
+    ctx.providerAuthReconnect && isProviderAuthErrorChatMessage(row.message)
       ? ctx.providerAuthReconnect
       : null;
   // Notes carry the story while the agent works, on its line. A finished
@@ -3361,6 +3455,20 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   // full strength and carries the turn's footer, while the notes before it
   // fade to the steps' grey. A note's time stays one hover away.
   const summary = row.turnSummary;
+  // A settled reply of a main turn: its shell code blocks get a Run button.
+  const runScope = useMemo<CodeBlockRunScope | null>(
+    () =>
+      streaming || row.message.sideTurnId !== undefined || row.message.turnId == null
+        ? null
+        : { messageId: row.message.id, participantId: row.message.participantId ?? null },
+    [
+      streaming,
+      row.message.id,
+      row.message.participantId,
+      row.message.sideTurnId,
+      row.message.turnId,
+    ],
+  );
 
   return (
     <>
@@ -3414,19 +3522,21 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                 data-transcript-message-streaming={row.message.streaming ? "true" : undefined}
                 data-chat-find-body=""
               >
-                <ChatMarkdown
-                  text={messageText}
-                  cwd={ctx.markdownCwd}
-                  environmentId={ctx.activeThreadEnvironmentId}
-                  threadId={ctx.activeThreadId ?? undefined}
-                  isStreaming={Boolean(row.message.streaming)}
-                  skills={ctx.skills}
-                  searchHighlightQuery={
-                    ctx.activeSearchTargetMessageId === row.message.id
-                      ? ctx.searchTargetQuery
-                      : undefined
-                  }
-                />
+                <CodeBlockRunScopeContext value={runScope}>
+                  <ChatMarkdown
+                    text={messageText}
+                    cwd={ctx.markdownCwd}
+                    environmentId={ctx.activeThreadEnvironmentId}
+                    threadId={ctx.activeThreadId ?? undefined}
+                    isStreaming={Boolean(row.message.streaming)}
+                    skills={ctx.skills}
+                    searchHighlightQuery={
+                      ctx.activeSearchTargetMessageId === row.message.id
+                        ? ctx.searchTargetQuery
+                        : undefined
+                    }
+                  />
+                </CodeBlockRunScopeContext>
               </div>
             </FallbackAssistantResponseContainer>
           )}

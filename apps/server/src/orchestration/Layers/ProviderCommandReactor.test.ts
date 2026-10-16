@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  CommandRequestId,
+  CommandRunId,
   ModelSelection,
+  type OrchestrationCommand,
   type OrchestrationSession,
   type OrchestrationWorkflowRunPatch,
   ProviderRuntimeEvent,
@@ -50,6 +53,7 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterValidationError,
   ProviderUnsupportedError,
+  steerRejectedError,
 } from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -508,7 +512,6 @@ describe("ProviderCommandReactor", () => {
       rollbackConversation: () => unsupported(),
       readSubagentTranscript: () => unsupported(),
       sendSubagentInput: () => unsupported(),
-      resolveSubagentWorktree: () => Effect.succeed(null),
       deleteThread: () => unsupported(),
       get streamEvents() {
         return Stream.fromPubSub(runtimeEventPubSub);
@@ -3229,6 +3232,107 @@ describe("ProviderCommandReactor", () => {
       expect((await readThread(harness))?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(
         [queued],
       );
+    });
+
+    it("holds a steer whose turn is finishing until that turn ends", async () => {
+      const harness = await createHarness();
+      const messageId = asMessageId("steer-while-finishing");
+      harness.steerTurn.mockImplementationOnce(() =>
+        Effect.fail(steerRejectedError("codex", "Codex", "turn-finishing")),
+      );
+      await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+      await submit(harness, { messageId, text: "what did it print?" });
+
+      await waitFor(async () => (await readThread(harness))?.queuedFollowUps?.length === 1);
+      // The turn is still closing: nothing marks it idle or starts another.
+      expect((await readThread(harness))?.session).toMatchObject({
+        status: "running",
+        activeTurnId: turnId,
+      });
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+
+      await setSession(harness, "ready", "2026-01-01T00:00:03.000Z");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        messageId,
+        input: "what did it print?",
+      });
+    });
+
+    it("takes back command output its agent refused, so the card offers the send again", async () => {
+      const harness = await createHarness();
+      const runId = CommandRunId.make("run-refused");
+      const requestId = CommandRequestId.make("request-refused");
+      const messageId = asMessageId("command-output:run-refused");
+      const dispatch = (command: OrchestrationCommand) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+      await dispatch({
+        type: "thread.command-request.create",
+        commandId: CommandId.make("cmd-request-refused"),
+        threadId,
+        request: {
+          requestId,
+          turnId,
+          participantId: null,
+          command: "pnpm install",
+          reason: "It needs your sign-in.",
+          dialect: "posix",
+        },
+        createdAt: "2026-01-01T00:00:01.500Z",
+      });
+      await dispatch({
+        type: "thread.command-run.start",
+        commandId: CommandId.make("cmd-run-refused"),
+        threadId,
+        run: {
+          runId,
+          terminalId: "terminal-refused",
+          mode: "run",
+          dialect: "posix",
+          command: "pnpm install",
+          source: { kind: "request", requestId },
+          turnId,
+          participantId: null,
+          cwd: "/repo",
+          autoSend: true,
+        },
+        createdAt: "2026-01-01T00:00:01.600Z",
+      });
+      await dispatch({
+        type: "thread.command-run.update",
+        commandId: CommandId.make("cmd-run-refused-finished"),
+        threadId,
+        progress: { runId, status: "finished", exitCode: 0, hasOutput: true },
+        createdAt: "2026-01-01T00:00:01.700Z",
+      });
+      harness.steerTurn.mockImplementationOnce(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "codex",
+            method: "turn/steer",
+            detail: "The provider rejected the input.",
+          }),
+        ),
+      );
+      await dispatch({
+        type: "thread.command-run.deliver-output",
+        commandId: CommandId.make("cmd-run-refused-deliver"),
+        threadId,
+        runId,
+        automatic: true,
+        message: { messageId, text: "I ran this command" },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+
+      await waitFor(
+        async () => (await readThread(harness))?.commandRuns?.[0]?.heldReason === "undelivered",
+      );
+      expect((await readThread(harness))?.commandRuns?.[0]).toMatchObject({
+        autoSend: false,
+        outputSentAt: null,
+        outputMessageId: null,
+      });
     });
 
     it("queues a steer for a provider that cannot steer", async () => {

@@ -63,10 +63,13 @@ import {
   type VcsStatusResult,
 } from "@threadlines/contracts";
 
-import { GitManager, type GitRunStackedActionOptions } from "./GitManager.ts";
+import {
+  GitManager,
+  type GitRunStackedActionOptions,
+  type RemoteStatusReadOptions,
+} from "./GitManager.ts";
 import {
   GitVcsDriver,
-  type GitRemoteStatusOptions,
   type GitWorktreeBaseRef,
   type GitWorktreeEntry,
 } from "../vcs/GitVcsDriver.ts";
@@ -82,7 +85,7 @@ export interface GitWorkflowServiceShape {
   ) => Effect.Effect<VcsStatusLocalResult, GitManagerServiceError>;
   readonly remoteStatus: (
     input: VcsStatusInput,
-    options?: GitRemoteStatusOptions,
+    options?: RemoteStatusReadOptions,
   ) => Effect.Effect<VcsStatusRemoteResult | null, GitManagerServiceError>;
   readonly invalidateLocalStatus: (cwd: string) => Effect.Effect<void, never>;
   readonly invalidateRemoteStatus: (cwd: string) => Effect.Effect<void, never>;

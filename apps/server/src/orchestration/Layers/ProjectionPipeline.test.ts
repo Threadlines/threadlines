@@ -1825,6 +1825,169 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("summarizes the user's own messages and the questions still open", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-summary");
+      const threadId = ThreadId.make("thread-summary");
+      let eventIndex = 0;
+      const appendAndProject = (
+        type: string,
+        occurredAt: string,
+        payload: Record<string, unknown>,
+      ) => {
+        eventIndex += 1;
+        const id = `summary-${eventIndex}`;
+        return eventStore
+          .append({
+            type,
+            eventId: EventId.make(`evt-${id}`),
+            aggregateKind: type.startsWith("project.") ? "project" : "thread",
+            aggregateId: type.startsWith("project.") ? projectId : threadId,
+            occurredAt,
+            commandId: CommandId.make(`cmd-${id}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-${id}`),
+            metadata: {},
+            payload,
+          } as Parameters<typeof eventStore.append>[0])
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      };
+      const message = (
+        messageId: string,
+        role: "user" | "assistant",
+        createdAt: string,
+        origin: Record<string, unknown> = {},
+      ) =>
+        appendAndProject("thread.message-sent", createdAt, {
+          threadId,
+          messageId: MessageId.make(messageId),
+          role,
+          text: messageId,
+          turnId: null,
+          streaming: false,
+          createdAt,
+          updatedAt: createdAt,
+          ...origin,
+        });
+      const activity = (
+        activityId: string,
+        kind: string,
+        createdAt: string,
+        payload: Record<string, unknown>,
+      ) =>
+        appendAndProject("thread.activity-appended", createdAt, {
+          threadId,
+          activity: {
+            id: EventId.make(activityId),
+            tone: "info",
+            kind,
+            summary: kind,
+            payload,
+            turnId: null,
+            createdAt,
+          },
+        });
+
+      yield* appendAndProject("project.created", "2026-03-01T10:00:00.000Z", {
+        projectId,
+        title: "Summary",
+        workspaceRoot: "/tmp/project-summary",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: "2026-03-01T10:00:00.000Z",
+        updatedAt: "2026-03-01T10:00:00.000Z",
+      });
+      yield* appendAndProject("thread.created", "2026-03-01T10:00:00.000Z", {
+        threadId,
+        projectId,
+        title: "Summary",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-03-01T10:00:00.000Z",
+        updatedAt: "2026-03-01T10:00:00.000Z",
+      });
+
+      // The user's newest message is not the last one recorded: one arrives
+      // with an older clock, and later user-role messages come from a room
+      // agent and from a child thread, which the user did not write.
+      yield* message("user-newest", "user", "2026-03-01T10:00:03.000Z");
+      yield* message("user-older-clock", "user", "2026-03-01T10:00:01.000Z");
+      yield* message("from-room-agent", "user", "2026-03-01T10:00:09.000Z", {
+        fromAgent: { participantId: null },
+      });
+      yield* message("from-child-thread", "user", "2026-03-01T10:00:10.000Z", {
+        fromThread: {
+          threadId: ThreadId.make("thread-summary-child"),
+          requestId: ChildRequestId.make("child-request-summary"),
+          kind: "report",
+        },
+      });
+      yield* message("assistant-reply", "assistant", "2026-03-01T10:00:11.000Z");
+
+      // Questions among ordinary steps: one answered, one whose answer failed
+      // for a reason that leaves it open, one still waiting.
+      yield* activity("tool-1", "tool.completed", "2026-03-01T10:00:04.000Z", { detail: "ls" });
+      yield* activity("ask-answered", "user-input.requested", "2026-03-01T10:00:05.000Z", {
+        requestId: "request-answered",
+      });
+      yield* activity("tool-2", "tool.completed", "2026-03-01T10:00:06.000Z", { detail: "cat" });
+      yield* activity("ask-retryable", "user-input.requested", "2026-03-01T10:00:07.000Z", {
+        requestId: "request-retryable",
+        isBlocking: false,
+      });
+      // Recorded after the question it answers, with an earlier clock.
+      yield* activity("answer", "user-input.resolved", "2026-03-01T10:00:02.000Z", {
+        requestId: "request-answered",
+      });
+      yield* activity(
+        "answer-failed",
+        "provider.user-input.respond.failed",
+        "2026-03-01T10:00:08.000Z",
+        { requestId: "request-retryable", detail: "The connection to the provider dropped." },
+      );
+      yield* activity("ask-open", "user-input.requested", "2026-03-01T10:00:12.000Z", {
+        requestId: "request-open",
+      });
+      yield* activity("tool-3", "tool.completed", "2026-03-01T10:00:13.000Z", { detail: "rg" });
+      yield* appendAndProject("thread.session-set", "2026-03-01T10:00:14.000Z", {
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-03-01T10:00:14.000Z",
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly latestUserMessageAt: string | null;
+        readonly pendingUserInputCount: number;
+        readonly blockingUserInputCount: number;
+      }>`
+        SELECT latest_user_message_at AS "latestUserMessageAt",
+               pending_user_input_count AS "pendingUserInputCount",
+               blocking_user_input_count AS "blockingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(rows, [
+        {
+          latestUserMessageAt: "2026-03-01T10:00:03.000Z",
+          pendingUserInputCount: 2,
+          blockingUserInputCount: 1,
+        },
+      ]);
+    }),
+  );
+
   it.effect("ignores non-stale provider approval response failures", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

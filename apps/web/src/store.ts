@@ -10,6 +10,8 @@ import type {
   OrchestrationMessage,
   OrchestrationProposedPlan,
   OrchestrationAgentPage,
+  OrchestrationCommandRequest,
+  OrchestrationCommandRun,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamEvent,
@@ -35,6 +37,7 @@ import type { ThreadId, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
+import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import {
   MAX_THREAD_ACTIVITIES,
   MAX_THREAD_CHECKPOINTS,
@@ -87,6 +90,12 @@ import {
   retainWorkflowRunsAfterRevert,
   sameAwaitedWorkflowProgress,
 } from "@threadlines/shared/workflowRuns";
+import {
+  applyCommandRequestDismissed,
+  applyCommandRequested,
+  applyCommandRunProgress,
+  applyCommandRunStarted,
+} from "@threadlines/shared/commandRuns";
 import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import {
   awaitedChildRequestCount,
@@ -139,6 +148,17 @@ export interface EnvironmentState {
   pagesByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationAgentPage>>;
   /** Workflow runs per thread (OrchestrationWorkflowRun); absent until a thread's detail loads. */
   workflowRunsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationWorkflowRun>>;
+  /** Suggested commands per thread (docs/terminal-command-runs.md); absent until a thread's detail loads. */
+  commandRequestsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRequest>>;
+  commandRunsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRun>>;
+  /**
+   * Threads whose detail snapshot has landed (syncServerThreadDetail). Events
+   * and optimistic writes fill the detail slices too, so only this says a
+   * thread's messages are its history rather than a partial view: until then
+   * the chat says it is loading, not that the thread is empty. Dropped with
+   * the thread, or by `markThreadDetailUnloaded` when its detail feed ends.
+   */
+  threadDetailLoadedById?: Record<ThreadId, true>;
   /** Child threads: what each thread's agent asked of the threads it started. */
   childRequestsByThreadId: Record<ThreadId, OrchestrationChildRequestState>;
 
@@ -177,6 +197,9 @@ const initialEnvironmentState: EnvironmentState = {
   agentRequestsByThreadId: {},
   pagesByThreadId: {},
   workflowRunsByThreadId: {},
+  commandRequestsByThreadId: {},
+  commandRunsByThreadId: {},
+  threadDetailLoadedById: {},
   childRequestsByThreadId: {},
   sidebarThreadSummaryById: {},
   bootstrapComplete: false,
@@ -438,6 +461,8 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     messages: thread.messages.map((message) => mapMessage(environmentId, message)),
     proposedPlans: thread.proposedPlans.map(mapProposedPlan),
     pages: thread.pages ?? [],
+    commandRequests: thread.commandRequests ?? [],
+    commandRuns: thread.commandRuns ?? [],
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
@@ -460,7 +485,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pendingSourceProposedPlan: thread.latestTurn?.sourceProposedPlan,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     goal: thread.goal,
     voiceActive: thread.voiceActive ?? false,
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
@@ -508,7 +533,7 @@ function mapThreadShell(
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     goal: thread.goal,
     voiceActive: thread.voiceActive ?? false,
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
@@ -534,7 +559,7 @@ function mapThreadShell(
     latestTurn: thread.latestTurn,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     latestUserMessageAt: thread.latestUserMessageAt,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
@@ -587,7 +612,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     goal: thread.goal,
     voiceActive: thread.voiceActive ?? false,
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
@@ -647,7 +672,7 @@ function toSidebarThreadSummary(
     latestTurn: thread.latestTurn,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     latestUserMessageAt,
     hasPendingApprovals: hasActivityEvidence
       ? derivePendingApprovals(thread.activities).length > 0
@@ -1230,6 +1255,32 @@ function writeThreadState(
   }
 
   if (
+    nextThread.commandRequests !== undefined &&
+    previousThread?.commandRequests !== nextThread.commandRequests
+  ) {
+    nextState = {
+      ...nextState,
+      commandRequestsByThreadId: {
+        ...nextState.commandRequestsByThreadId,
+        [nextThread.id]: nextThread.commandRequests,
+      },
+    };
+  }
+
+  if (
+    nextThread.commandRuns !== undefined &&
+    previousThread?.commandRuns !== nextThread.commandRuns
+  ) {
+    nextState = {
+      ...nextState,
+      commandRunsByThreadId: {
+        ...nextState.commandRunsByThreadId,
+        [nextThread.id]: nextThread.commandRuns,
+      },
+    };
+  }
+
+  if (
     nextThread.agentRequests !== undefined &&
     previousThread?.agentRequests !== nextThread.agentRequests
   ) {
@@ -1403,6 +1454,12 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedPages, ...pagesByThreadId } = state.pagesByThreadId ?? {};
   const { [threadId]: _removedWorkflowRuns, ...workflowRunsByThreadId } =
     state.workflowRunsByThreadId ?? {};
+  const { [threadId]: _removedCommandRequests, ...commandRequestsByThreadId } =
+    state.commandRequestsByThreadId ?? {};
+  const { [threadId]: _removedCommandRuns, ...commandRunsByThreadId } =
+    state.commandRunsByThreadId ?? {};
+  const { [threadId]: _removedDetailLoaded, ...threadDetailLoadedById } =
+    state.threadDetailLoadedById ?? {};
   const { [threadId]: _removedChildRequests, ...childRequestsByThreadId } =
     state.childRequestsByThreadId;
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
@@ -1426,6 +1483,9 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     agentRequestsByThreadId,
     pagesByThreadId,
     workflowRunsByThreadId,
+    commandRequestsByThreadId,
+    commandRunsByThreadId,
+    threadDetailLoadedById,
     childRequestsByThreadId,
     sidebarThreadSummaryById,
   };
@@ -1788,6 +1848,18 @@ function syncEnvironmentShellSnapshot(
       state.workflowRunsByThreadId ?? {},
       nextThreadIds,
     ),
+    commandRequestsByThreadId: retainThreadScopedRecord(
+      state.commandRequestsByThreadId ?? {},
+      nextThreadIds,
+    ),
+    commandRunsByThreadId: retainThreadScopedRecord(
+      state.commandRunsByThreadId ?? {},
+      nextThreadIds,
+    ),
+    threadDetailLoadedById: retainThreadScopedRecord(
+      state.threadDetailLoadedById ?? {},
+      nextThreadIds,
+    ),
     childRequestsByThreadId: retainThreadScopedRecord(state.childRequestsByThreadId, nextThreadIds),
     bootstrapComplete: true,
   };
@@ -1822,11 +1894,42 @@ export function syncServerThreadDetail(
 ): AppState {
   const environmentState = getStoredEnvironmentState(state, environmentId);
   const previousThread = getThreadFromEnvironmentState(environmentState, thread.id);
+  const nextEnvironmentState = writeThreadState(
+    environmentState,
+    mapThread(thread, environmentId),
+    previousThread,
+  );
   return commitEnvironmentState(
     state,
     environmentId,
-    writeThreadState(environmentState, mapThread(thread, environmentId), previousThread),
+    nextEnvironmentState.threadDetailLoadedById?.[thread.id]
+      ? nextEnvironmentState
+      : {
+          ...nextEnvironmentState,
+          threadDetailLoadedById: {
+            ...nextEnvironmentState.threadDetailLoadedById,
+            [thread.id]: true,
+          },
+        },
   );
+}
+
+/**
+ * The thread's detail feed ended (its subscription was released and
+ * disposed): what the store holds may fall behind, so the chat waits for the
+ * next snapshot before it calls an empty thread empty.
+ */
+export function markThreadDetailUnloaded(state: AppState, threadRef: ScopedThreadRef): AppState {
+  const environmentState = state.environmentStateById[threadRef.environmentId];
+  if (!environmentState?.threadDetailLoadedById?.[threadRef.threadId]) {
+    return state;
+  }
+  const { [threadRef.threadId]: _unloaded, ...threadDetailLoadedById } =
+    environmentState.threadDetailLoadedById;
+  return commitEnvironmentState(state, threadRef.environmentId, {
+    ...environmentState,
+    threadDetailLoadedById,
+  });
 }
 
 function applyEnvironmentOrchestrationEvent(
@@ -2155,7 +2258,7 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.effective-cwd-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
-        effectiveCwd: event.payload.effectiveCwd,
+        effectiveCwd: effectiveCwdOf(event.payload).effectiveCwd,
         updatedAt: event.payload.updatedAt,
       }));
 
@@ -2487,6 +2590,49 @@ function applyEnvironmentOrchestrationEvent(
         return pages === current ? thread : { ...thread, pages };
       });
 
+    // Suggested commands (docs/terminal-command-runs.md).
+    case "thread.command-requested":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        commandRequests: applyCommandRequested(
+          thread.commandRequests ?? [],
+          event.payload.request,
+          {
+            sequence: event.sequence,
+            occurredAt: event.occurredAt,
+          },
+        ),
+      }));
+
+    case "thread.command-request-dismissed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        commandRequests: applyCommandRequestDismissed(
+          thread.commandRequests ?? [],
+          event.payload,
+          event.occurredAt,
+        ),
+      }));
+
+    case "thread.command-run-started":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        commandRuns: applyCommandRunStarted(thread.commandRuns ?? [], event.payload.run, {
+          sequence: event.sequence,
+          occurredAt: event.occurredAt,
+        }),
+      }));
+
+    case "thread.command-run-updated":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        commandRuns: applyCommandRunProgress(
+          thread.commandRuns ?? [],
+          event.payload.progress,
+          event.occurredAt,
+        ),
+      }));
+
     case "thread.turn-diff-completed":
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const checkpoint = mapTurnDiffSummary({
@@ -2605,6 +2751,8 @@ function applyEnvironmentOrchestrationEvent(
         const messages = reverted.messages.slice(-MAX_THREAD_MESSAGES);
         // Pages go with the messages after the cut (agentPages.ts).
         const pages = retainTurnItemsAfterRevert(thread.pages ?? [], reverted);
+        const commandRequests = retainTurnItemsAfterRevert(thread.commandRequests ?? [], reverted);
+        const commandRuns = retainTurnItemsAfterRevert(thread.commandRuns ?? [], reverted);
         const proposedPlans = retainThreadProposedPlansAfterRevert(
           thread.proposedPlans,
           retainedTurnIds,
@@ -2631,6 +2779,8 @@ function applyEnvironmentOrchestrationEvent(
           messages,
           proposedPlans,
           pages,
+          commandRequests,
+          commandRuns,
           activities,
           workflowRuns,
           pendingSourceProposedPlan: undefined,
@@ -3054,6 +3204,36 @@ export function selectThreadExistsByRef(
     : false;
 }
 
+/**
+ * Whether the store lists this thread as `selectThreadsAcrossEnvironments`
+ * returns it (registered in its environment's `threadIds`, with a shell),
+ * without building every thread to find out.
+ */
+export function selectThreadListedByRef(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+): boolean {
+  if (!ref) {
+    return false;
+  }
+  const environmentState = selectEnvironmentState(state, ref.environmentId);
+  return (
+    environmentState.threadShellById[ref.threadId]?.environmentId === ref.environmentId &&
+    environmentState.threadIds.includes(ref.threadId)
+  );
+}
+
+/** Whether the thread's detail snapshot has landed (see `threadDetailLoadedById`). */
+export function selectThreadDetailLoaded(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+): boolean {
+  return ref
+    ? selectEnvironmentState(state, ref.environmentId).threadDetailLoadedById?.[ref.threadId] ===
+        true
+    : false;
+}
+
 export function selectSidebarThreadSummaryByRef(
   state: AppState,
   ref: ScopedThreadRef | null | undefined,
@@ -3248,6 +3428,7 @@ interface AppStore extends AppState {
     environmentId: EnvironmentId,
   ) => void;
   syncServerThreadDetail: (thread: OrchestrationThread, environmentId: EnvironmentId) => void;
+  markThreadDetailUnloaded: (threadRef: ScopedThreadRef) => void;
   applyOrchestrationEvent: (event: OrchestrationEvent, environmentId: EnvironmentId) => void;
   applyOrchestrationEvents: (
     events: ReadonlyArray<OrchestrationEvent>,
@@ -3286,6 +3467,8 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncServerShellSnapshot(state, snapshot, environmentId)),
   syncServerThreadDetail: (thread, environmentId) =>
     set((state) => syncServerThreadDetail(state, thread, environmentId)),
+  markThreadDetailUnloaded: (threadRef) =>
+    set((state) => markThreadDetailUnloaded(state, threadRef)),
   applyOrchestrationEvent: (event, environmentId) =>
     set((state) => applyOrchestrationEvent(state, event, environmentId)),
   applyOrchestrationEvents: (events, environmentId) =>

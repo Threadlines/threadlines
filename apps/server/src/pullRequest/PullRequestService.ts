@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import {
   ProjectId,
@@ -677,12 +678,16 @@ export const make = Effect.fn("makePullRequestService")(function* () {
    * the project, because a pull request the viewer opened on a repository
    * nobody here has checked out is read through a project on the same host.
    */
+  // One project's row and repository identity, not the whole shell snapshot:
+  // that resolves every project's repository on each pull request read.
   const requireTarget = (operation: string, projectId: ProjectId, repository: string) =>
-    projections.getShellSnapshot().pipe(
+    projections.getProjectShellById(projectId).pipe(
       Effect.mapError((error) => new PullRequestServiceError({ operation, detail: error.message })),
-      Effect.flatMap((snapshot) => {
-        const found = snapshot.projects.find((candidate) => candidate.id === projectId);
-        const project = found === undefined ? null : toPullRequestProject(found, registry);
+      Effect.flatMap((found) => {
+        const project = Option.match(found, {
+          onNone: () => null,
+          onSome: (shell) => toPullRequestProject(shell, registry),
+        });
         const provider = project === null ? null : registry.get(project.provider);
         return project === null || provider === null
           ? Effect.fail(

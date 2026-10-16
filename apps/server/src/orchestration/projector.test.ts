@@ -115,6 +115,8 @@ describe("orchestration projector", () => {
         messages: [],
         proposedPlans: [],
         pages: [],
+        commandRequests: [],
+        commandRuns: [],
         activities: [],
         subagents: [],
         workflowRuns: [],

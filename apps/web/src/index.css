@@ -1006,11 +1006,15 @@ label:has(> select#reasoning-effort) select {
   background: color-mix(in srgb, var(--border) 78%, transparent);
 }
 
+.chat-markdown .chat-markdown-codeblock-group {
+  min-width: 0;
+  margin: 0.65rem 0;
+}
+
 .chat-markdown .chat-markdown-codeblock {
   --chat-markdown-codeblock-copy-button-space: 1.5rem;
   position: relative;
   min-width: 0;
-  margin: 0.65rem 0;
 }
 
 .chat-markdown .chat-markdown-codeblock pre {
@@ -1026,6 +1030,29 @@ label:has(> select#reasoning-effort) select {
   /* A plain row action, with a faint backing so it stays legible over code. */
   background: color-mix(in srgb, var(--background) 75%, transparent);
   color: var(--muted-foreground);
+}
+
+/* Run in terminal (CommandRuns.tsx): beside the copy button, shown while the
+   block is hovered or focused, and always on touch screens. */
+.chat-markdown .chat-markdown-run-button {
+  position: absolute;
+  top: 0.5rem;
+  right: calc(0.5rem + 1.75rem);
+  z-index: 1;
+  background: color-mix(in srgb, var(--background) 75%, transparent);
+  color: var(--muted-foreground);
+  opacity: 0;
+}
+
+.chat-markdown .chat-markdown-codeblock:hover .chat-markdown-run-button,
+.chat-markdown .chat-markdown-codeblock:focus-within .chat-markdown-run-button {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .chat-markdown .chat-markdown-run-button {
+    opacity: 1;
+  }
 }
 
 .chat-markdown .chat-markdown-shiki .shiki {
@@ -1207,15 +1234,16 @@ label:has(> select#reasoning-effort) select {
   animation: diff-file-flash 1.1s ease-out 150ms both;
 }
 
-/* Loading rows hold back a beat so a diff that lands fast never flashes them. */
-@keyframes diff-panel-loading-reveal {
+/* A loading state holds back a beat, so content that lands fast (a diff, a
+   chat's messages) never flashes it. */
+@keyframes loading-reveal {
   from {
     opacity: 0;
   }
 }
 
-.diff-panel-loading {
-  animation: diff-panel-loading-reveal 160ms ease-out 120ms both;
+.loading-reveal {
+  animation: loading-reveal 160ms ease-out 120ms both;
 }
 
 /* Drill-in entrance for the diff panel body when it replaces source control. */
@@ -1915,7 +1943,7 @@ label:has(> select#reasoning-effort) select {
 
 @media (prefers-reduced-motion: reduce) {
   .diff-file-flash,
-  .diff-panel-loading,
+  .loading-reveal,
   .diff-panel-enter,
   .terminal-context-attachment-updated {
     animation: none;

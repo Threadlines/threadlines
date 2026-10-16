@@ -858,6 +858,13 @@ export const ServerSettings = Schema.Struct({
    */
   enableClaudeArtifacts: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
+   * Command requests: agents may ask the user to run a shell command with
+   * `ask_user_to_run`, shown as a card with Run, Put in terminal and Skip
+   * (docs/terminal-command-runs.md). Read when a provider session starts and
+   * on every call. Cards already in threads stay. Never chosen: on.
+   */
+  enableCommandRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
    * The model and reasoning a new thread starts with on this computer.
    * `null`: the model last picked on the device opening the thread.
    */
@@ -1020,6 +1027,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableRooms: Schema.optionalKey(Schema.Boolean),
   enableAgentPages: Schema.optionalKey(Schema.Boolean),
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
+  enableCommandRequests: Schema.optionalKey(Schema.Boolean),
   // Whole values, replaced as sent: a new default never keeps an old one's
   // reasoning, and the list is the whole list.
   newThreadModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),

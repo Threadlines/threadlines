@@ -1,8 +1,8 @@
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
+import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
 import {
   agentRequestStateOn,
-  isUserWrittenMessage,
   withInviteChoice,
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
@@ -59,6 +59,14 @@ import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers
 import { ProjectionThreadMessageRepositoryLive } from "../../persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/Layers/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadPageRepositoryLive } from "../../persistence/Layers/ProjectionThreadPages.ts";
+import { ProjectionThreadCommandRepositoryLive } from "../../persistence/Layers/ProjectionThreadCommands.ts";
+import { ProjectionThreadCommandRepository } from "../../persistence/Services/ProjectionThreadCommands.ts";
+import {
+  applyCommandRequestDismissed,
+  applyCommandRequested,
+  applyCommandRunProgress,
+  applyCommandRunStarted,
+} from "@threadlines/shared/commandRuns";
 import {
   type ProjectionThreadPage,
   ProjectionThreadPageRepository,
@@ -426,6 +434,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
     const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
     const projectionThreadPageRepository = yield* ProjectionThreadPageRepository;
+    const projectionThreadCommandRepository = yield* ProjectionThreadCommandRepository;
     const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
     const projectionThreadSubagentRepository = yield* ProjectionThreadSubagentRepository;
@@ -507,26 +516,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         return;
       }
 
-      const [messages, proposedPlans, activities, pendingApprovals] = yield* Effect.all([
-        projectionThreadMessageRepository.listByThreadId({ threadId }),
-        projectionThreadProposedPlanRepository.listByThreadId({ threadId }),
-        projectionThreadActivityRepository.listByThreadId({ threadId }),
-        projectionPendingApprovalRepository.listByThreadId({ threadId }),
-      ]);
-
-      const latestUserMessageAt =
-        messages
-          .filter(isUserWrittenMessage)
-          .map((message) => message.createdAt)
-          .toSorted()
-          .at(-1) ?? null;
+      // This runs inside the projection transaction on every streamed message
+      // and session change, so it reads only the rows the summary depends on,
+      // never the thread's whole history.
+      const [latestUserMessageAt, proposedPlans, promptActivities, pendingApprovals] =
+        yield* Effect.all([
+          projectionThreadMessageRepository.getLatestUserWrittenAt({ threadId }),
+          projectionThreadProposedPlanRepository.listByThreadId({ threadId }),
+          projectionThreadActivityRepository.listPromptsByThreadId({ threadId }),
+          projectionPendingApprovalRepository.listByThreadId({ threadId }),
+        ]);
 
       const pendingApprovalCount = pendingApprovals.filter(
         (approval) => approval.status === "pending",
       ).length;
       // Provider timestamps can arrive out of order; count in transcript order.
       const userInputCounts = countPendingUserInputs(
-        [...activities].toSorted(
+        [...promptActivities].toSorted(
           (left, right) =>
             compareTranscriptOrder(left, right) || left.activityId.localeCompare(right.activityId),
         ),
@@ -1049,10 +1055,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            effectiveCwd: event.payload.effectiveCwd,
-            effectiveCwdSource:
-              event.payload.effectiveCwdSource ??
-              (event.payload.effectiveCwd === null ? null : "session"),
+            ...effectiveCwdOf(event.payload),
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -1514,6 +1517,86 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        // Suggested commands live with the transcript too (see the revert below).
+        case "thread.command-requested": {
+          const threadId = event.payload.threadId;
+          const existing = yield* projectionThreadCommandRepository.listRequests({ threadId });
+          const next = applyCommandRequested(existing, event.payload.request, {
+            sequence: event.sequence,
+            occurredAt: event.occurredAt,
+          });
+          const nextIds = new Set(next.map((request) => request.requestId));
+          yield* projectionThreadCommandRepository.deleteRequests({
+            threadId,
+            requestIds: existing
+              .filter((request) => !nextIds.has(request.requestId))
+              .map((request) => request.requestId),
+          });
+          const added = next.find(
+            (request) => request.requestId === event.payload.request.requestId,
+          );
+          if (added !== undefined) {
+            yield* projectionThreadCommandRepository.upsertRequest({ threadId, request: added });
+          }
+          return;
+        }
+
+        case "thread.command-request-dismissed": {
+          const threadId = event.payload.threadId;
+          const existing = yield* projectionThreadCommandRepository.listRequests({ threadId });
+          const changed = applyCommandRequestDismissed(
+            existing,
+            event.payload,
+            event.occurredAt,
+          ).find((request) => request.requestId === event.payload.requestId);
+          if (changed !== undefined) {
+            yield* projectionThreadCommandRepository.upsertRequest({ threadId, request: changed });
+          }
+          return;
+        }
+
+        case "thread.command-run-started": {
+          const threadId = event.payload.threadId;
+          const existing = yield* projectionThreadCommandRepository.listRuns({ threadId });
+          const next = applyCommandRunStarted(existing, event.payload.run, {
+            sequence: event.sequence,
+            occurredAt: event.occurredAt,
+          });
+          const nextIds = new Set(next.map((run) => run.runId));
+          yield* projectionThreadCommandRepository.deleteRuns({
+            threadId,
+            runIds: existing.filter((run) => !nextIds.has(run.runId)).map((run) => run.runId),
+          });
+          const added = next.find((run) => run.runId === event.payload.run.runId);
+          if (added !== undefined) {
+            yield* projectionThreadCommandRepository.upsertRun({ threadId, run: added });
+          }
+          return;
+        }
+
+        case "thread.command-run-updated": {
+          const threadId = event.payload.threadId;
+          const existing = yield* projectionThreadCommandRepository.listRuns({ threadId });
+          const changed = applyCommandRunProgress(
+            existing,
+            event.payload.progress,
+            event.occurredAt,
+          ).find((run) => run.runId === event.payload.progress.runId);
+          if (changed !== undefined) {
+            yield* projectionThreadCommandRepository.upsertRun({ threadId, run: changed });
+          }
+          return;
+        }
+
+        case "thread.command-run-output-recorded": {
+          yield* projectionThreadCommandRepository.setRunOutput({
+            threadId: event.payload.threadId,
+            runId: event.payload.runId,
+            output: event.payload.output,
+          });
+          return;
+        }
+
         case "thread.reverted": {
           const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
             threadId: event.payload.threadId,
@@ -1551,6 +1634,33 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               concurrency: 1,
             }).pipe(Effect.asVoid);
           }
+          // Suggested commands and their runs go the same way as pages.
+          const existingRequests = yield* projectionThreadCommandRepository.listRequests({
+            threadId: event.payload.threadId,
+          });
+          const keptRequestIds = new Set(
+            retainTurnItemsAfterRevert(existingRequests, reverted).map(
+              (request) => request.requestId,
+            ),
+          );
+          yield* projectionThreadCommandRepository.deleteRequests({
+            threadId: event.payload.threadId,
+            requestIds: existingRequests
+              .filter((request) => !keptRequestIds.has(request.requestId))
+              .map((request) => request.requestId),
+          });
+          const existingRuns = yield* projectionThreadCommandRepository.listRuns({
+            threadId: event.payload.threadId,
+          });
+          const keptRunIds = new Set(
+            retainTurnItemsAfterRevert(existingRuns, reverted).map((run) => run.runId),
+          );
+          yield* projectionThreadCommandRepository.deleteRuns({
+            threadId: event.payload.threadId,
+            runIds: existingRuns
+              .filter((run) => !keptRunIds.has(run.runId))
+              .map((run) => run.runId),
+          });
 
           yield* projectionThreadMessageRepository.deleteByThreadId({
             threadId: event.payload.threadId,
@@ -2500,6 +2610,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
   Layer.provideMerge(ProjectionThreadProposedPlanRepositoryLive),
   Layer.provideMerge(ProjectionThreadPageRepositoryLive),
+  Layer.provideMerge(ProjectionThreadCommandRepositoryLive),
   Layer.provideMerge(ProjectionThreadActivityRepositoryLive),
   Layer.provideMerge(ProjectionThreadSessionRepositoryLive),
   Layer.provideMerge(ProjectionThreadSubagentRepositoryLive),

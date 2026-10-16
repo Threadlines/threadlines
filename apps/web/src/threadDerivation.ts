@@ -38,6 +38,8 @@ const threadCache = new WeakMap<
     childRequests: Thread["childRequests"];
     pages: Thread["pages"];
     workflowRuns: Thread["workflowRuns"];
+    commandRequests: Thread["commandRequests"];
+    commandRuns: Thread["commandRuns"];
     thread: Thread;
   }
 >();
@@ -127,6 +129,8 @@ export function getThreadFromEnvironmentState(
   const childRequests = state.childRequestsByThreadId[threadId];
   const pages = state.pagesByThreadId?.[threadId];
   const workflowRuns = state.workflowRunsByThreadId?.[threadId];
+  const commandRequests = state.commandRequestsByThreadId?.[threadId];
+  const commandRuns = state.commandRunsByThreadId?.[threadId];
   const cached = threadCache.get(shell);
 
   if (
@@ -140,7 +144,9 @@ export function getThreadFromEnvironmentState(
     cached.agentRequests === agentRequests &&
     cached.childRequests === childRequests &&
     cached.pages === pages &&
-    cached.workflowRuns === workflowRuns
+    cached.workflowRuns === workflowRuns &&
+    cached.commandRequests === commandRequests &&
+    cached.commandRuns === commandRuns
   ) {
     return cached.thread;
   }
@@ -158,6 +164,8 @@ export function getThreadFromEnvironmentState(
     ...(childRequests !== undefined ? { childRequests } : {}),
     ...(pages !== undefined ? { pages } : {}),
     ...(workflowRuns !== undefined ? { workflowRuns } : {}),
+    ...(commandRequests !== undefined ? { commandRequests } : {}),
+    ...(commandRuns !== undefined ? { commandRuns } : {}),
   };
 
   threadCache.set(shell, {
@@ -171,6 +179,8 @@ export function getThreadFromEnvironmentState(
     childRequests,
     pages,
     workflowRuns,
+    commandRequests,
+    commandRuns,
     thread,
   });
 

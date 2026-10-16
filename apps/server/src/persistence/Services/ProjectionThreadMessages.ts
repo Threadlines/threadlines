@@ -119,6 +119,14 @@ export interface ProjectionThreadMessageRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessage>, ProjectionRepositoryError>;
 
   /**
+   * When the user last wrote in the thread: the newest user-role message that
+   * no agent or other thread wrote (see `isUserWrittenMessage`), or null.
+   */
+  readonly getLatestUserWrittenAt: (
+    input: ListProjectionThreadMessagesInput,
+  ) => Effect.Effect<IsoDateTime | null, ProjectionRepositoryError>;
+
+  /**
    * Delete projected thread messages by thread.
    */
   readonly deleteByThreadId: (

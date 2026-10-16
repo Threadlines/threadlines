@@ -1,9 +1,11 @@
+import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
   AgentPageReadError,
+  CommandRunError,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -144,6 +146,7 @@ import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriver from "./vcs/VcsDriver.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
+import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -339,6 +342,36 @@ const makeThreadMessageEvent = (
   };
 };
 
+const makeThreadActivityEvent = (
+  sequence: number,
+): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> => {
+  const now = "2026-01-01T00:00:00.000Z";
+  return {
+    sequence,
+    eventId: EventId.make(`event-thread-activity-${sequence}`),
+    aggregateKind: "thread",
+    aggregateId: defaultThreadId,
+    occurredAt: now,
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.activity-appended",
+    payload: {
+      threadId: defaultThreadId,
+      activity: {
+        id: EventId.make(`activity-${sequence}`),
+        tone: "tool",
+        kind: "tool.completed",
+        summary: "Ran a command",
+        payload: {},
+        turnId: null,
+        createdAt: now,
+      },
+    },
+  };
+};
+
 const browserOtlpTracingLayer = Layer.mergeAll(
   FetchHttpClient.layer,
   OtlpSerialization.layerJson,
@@ -513,6 +546,7 @@ const buildAppUnderTest = (options?: {
       startupPresentation: "browser",
       desktopBootstrapToken: defaultDesktopBootstrapToken,
       desktopLaunchId: undefined,
+      shellEnvironmentPrepared: false,
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
       tailscaleServeEnabled: false,
@@ -694,6 +728,14 @@ const buildAppUnderTest = (options?: {
             read: () => Effect.fail(new AgentPageReadError({ message: "No pages in this test." })),
             pendingVersionIds: Effect.succeed(new Set<string>()),
             assetsDirOf: () => null,
+          }),
+          // Suggested commands are tested on their own; here only the routes
+          // and the tool endpoint need something to call.
+          Layer.mock(CommandRuns)({
+            request: () => Effect.succeed({ outcome: "off" as const, detail: "off in this test" }),
+            start: () => Effect.fail(new CommandRunError({ message: "No runs in this test." })),
+            sendOutput: () =>
+              Effect.fail(new CommandRunError({ message: "No runs in this test." })),
           }),
           // Real too: with no models on disk it only reports "missing" and
           // never starts the worker, so a mock would assert nothing.
@@ -4065,7 +4107,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("resumes recent thread subscriptions and snapshots stale cursors", () =>
+  it.effect("resumes threads that missed few events and snapshots ones that missed many", () =>
     Effect.gen(function* () {
       const replayedEvent = makeThreadMessageEvent(595);
       const readEventCursors: number[] = [];
@@ -4075,11 +4117,44 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
-            readEvents: (fromSequenceExclusive) => {
-              readEventCursors.push(fromSequenceExclusive);
-              return Stream.make(replayedEvent);
-            },
-            subscribeDomainEvents: Effect.succeed(Stream.empty),
+            // The thread missed one event since 590 or 99, however busy other
+            // threads were; since 50 it missed more than a replay may carry.
+            // Since 70 what is stored is a full activity window, which storage
+            // maintenance may have trimmed from a longer run. Since 80 only the
+            // tombstone of the deleted thread is left.
+            readThreadEvents: (input) =>
+              Effect.sync(() => {
+                readEventCursors.push(input.fromSequenceExclusive);
+                // Counted with no upper bound: a prune can keep events newer
+                // than the snapshot boundary in place of older missed ones.
+                assert.equal(input.toSequenceInclusive, Number.MAX_SAFE_INTEGER);
+                // Since 95 one missed event plus one committed after the
+                // snapshot boundary, which the live stream delivers instead.
+                if (input.fromSequenceExclusive === 95) {
+                  return [makeThreadMessageEvent(597), makeThreadMessageEvent(650)];
+                }
+                if (input.fromSequenceExclusive === 80) {
+                  return [
+                    {
+                      ...makeThreadMessageEvent(599),
+                      type: "thread.deleted",
+                      payload: { threadId: defaultThreadId, deletedAt: "2026-01-01T00:00:00.000Z" },
+                    } as OrchestrationEvent,
+                  ];
+                }
+                if (input.fromSequenceExclusive === 50) {
+                  return Array.from({ length: input.limit }, (_, index) =>
+                    makeThreadMessageEvent(51 + index),
+                  );
+                }
+                if (input.fromSequenceExclusive === 70) {
+                  return Array.from({ length: MAX_THREAD_ACTIVITIES }, (_, index) =>
+                    makeThreadActivityEvent(100 + index),
+                  );
+                }
+                return [replayedEvent];
+              }),
+            subscribeDomainEvents: Effect.succeed(Stream.make(makeThreadMessageEvent(650))),
           },
           projectionSnapshotQuery: {
             getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 600 }),
@@ -4104,14 +4179,26 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
       assert.equal(recentItems[0]?.kind, "event");
       assert.equal(recentItems[0]?.kind === "event" ? recentItems[0].event.sequence : null, 595);
-      assert.deepEqual(readEventCursors, [590]);
+      assert.equal(threadDetailReads, 0);
+
+      // 500 events were committed elsewhere since 99, but only one in this thread.
+      const idleItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            fromSequenceExclusive: 99,
+          }).pipe(Stream.take(1), Stream.runCollect),
+        ),
+      );
+      assert.equal(idleItems[0]?.kind, "event");
+      assert.equal(idleItems[0]?.kind === "event" ? idleItems[0].event.sequence : null, 595);
       assert.equal(threadDetailReads, 0);
 
       const staleItems = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-            fromSequenceExclusive: 99,
+            fromSequenceExclusive: 50,
           }).pipe(Stream.take(1), Stream.runCollect),
         ),
       );
@@ -4120,8 +4207,39 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         staleItems[0]?.kind === "snapshot" ? staleItems[0].snapshot.snapshotSequence : null,
         600,
       );
-      assert.deepEqual(readEventCursors, [590]);
-      assert.equal(threadDetailReads, 1);
+      const prunedItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            fromSequenceExclusive: 70,
+          }).pipe(Stream.take(1), Stream.runCollect),
+        ),
+      );
+      assert.equal(prunedItems[0]?.kind, "snapshot");
+
+      const deletedItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            fromSequenceExclusive: 80,
+          }).pipe(Stream.take(1), Stream.runCollect),
+        ),
+      );
+      assert.equal(deletedItems[0]?.kind, "snapshot");
+      const boundaryItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            fromSequenceExclusive: 95,
+          }).pipe(Stream.runCollect),
+        ),
+      );
+      assert.deepEqual(
+        Array.from(boundaryItems, (item) => (item.kind === "event" ? item.event.sequence : null)),
+        [597, 650],
+      );
+      assert.deepEqual(readEventCursors, [590, 99, 50, 70, 80, 95]);
+      assert.equal(threadDetailReads, 3);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

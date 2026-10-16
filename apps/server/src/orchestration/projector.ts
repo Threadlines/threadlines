@@ -22,12 +22,19 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
+import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import {
   agentRequestStateOn,
   withInviteChoice,
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
+import {
+  applyCommandRequestDismissed,
+  applyCommandRequested,
+  applyCommandRunProgress,
+  applyCommandRunStarted,
+} from "@threadlines/shared/commandRuns";
 import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
 import { applyWorkflowRunPatch } from "@threadlines/shared/workflowRuns";
@@ -47,6 +54,10 @@ import {
   ThreadMetaUpdatedPayload,
   ThreadPinnedPayload,
   ThreadPagePublishedPayload,
+  ThreadCommandRequestedPayload,
+  ThreadCommandRequestDismissedPayload,
+  ThreadCommandRunStartedPayload,
+  ThreadCommandRunUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadSeenSetPayload,
@@ -1326,9 +1337,7 @@ export function projectEvent(
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            effectiveCwd: payload.effectiveCwd,
-            effectiveCwdSource:
-              payload.effectiveCwdSource ?? (payload.effectiveCwd === null ? null : "session"),
+            ...effectiveCwdOf(payload),
             updatedAt: event.occurredAt,
           }),
         };
@@ -1405,6 +1414,102 @@ export function projectEvent(
                 sequence: event.sequence,
                 occurredAt: event.occurredAt,
               }),
+            }),
+          };
+        }),
+      );
+
+    // Suggested commands. Like pages, no updatedAt bump: they belong to a turn
+    // whose messages already move the thread.
+    case "thread.command-requested":
+      return decodeForEvent(
+        ThreadCommandRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) return nextBase;
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              commandRequests: applyCommandRequested(
+                thread.commandRequests ?? [],
+                payload.request,
+                {
+                  sequence: event.sequence,
+                  occurredAt: event.occurredAt,
+                },
+              ),
+            }),
+          };
+        }),
+      );
+
+    case "thread.command-request-dismissed":
+      return decodeForEvent(
+        ThreadCommandRequestDismissedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) return nextBase;
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              commandRequests: applyCommandRequestDismissed(
+                thread.commandRequests ?? [],
+                payload,
+                event.occurredAt,
+              ),
+            }),
+          };
+        }),
+      );
+
+    case "thread.command-run-started":
+      return decodeForEvent(
+        ThreadCommandRunStartedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) return nextBase;
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              commandRuns: applyCommandRunStarted(thread.commandRuns ?? [], payload.run, {
+                sequence: event.sequence,
+                occurredAt: event.occurredAt,
+              }),
+            }),
+          };
+        }),
+      );
+
+    case "thread.command-run-updated":
+      return decodeForEvent(
+        ThreadCommandRunUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) return nextBase;
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              commandRuns: applyCommandRunProgress(
+                thread.commandRuns ?? [],
+                payload.progress,
+                event.occurredAt,
+              ),
             }),
           };
         }),
@@ -1592,8 +1697,14 @@ export function projectEvent(
             payload.turnCount,
           );
           const messages = reverted.messages.slice(-MAX_THREAD_MESSAGES);
-          // Pages go with the messages of the turns that showed them.
+          // Pages go with the messages of the turns that showed them, and so
+          // do suggested commands and the runs started from them.
           const pages = retainTurnItemsAfterRevert(thread.pages ?? [], reverted);
+          const commandRequests = retainTurnItemsAfterRevert(
+            thread.commandRequests ?? [],
+            reverted,
+          );
+          const commandRuns = retainTurnItemsAfterRevert(thread.commandRuns ?? [], reverted);
           const proposedPlans = retainThreadProposedPlansAfterRevert(
             thread.proposedPlans,
             retainedTurnIds,
@@ -1624,6 +1735,8 @@ export function projectEvent(
               messages,
               proposedPlans,
               pages,
+              commandRequests,
+              commandRuns,
               activities,
               subagents,
               latestTurn,

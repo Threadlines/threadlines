@@ -246,6 +246,15 @@ export const MuseTurnUnqueued = Schema.Struct({
   turnId: NonEmptyString,
 });
 
+/**
+ * `turn/foregroundCompleted`: the turn's visible work is done, but background
+ * reminder checks hold it open until `turn/completed`.
+ */
+export const MuseTurnForegroundCompleted = Schema.Struct({
+  sessionId: NonEmptyString,
+  turnId: NonEmptyString,
+});
+
 export const MuseTurnRetry = Schema.Struct({
   sessionId: NonEmptyString,
   turnId: NonEmptyString,

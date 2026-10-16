@@ -109,6 +109,7 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           listThreadDiffStatBaselines: () => Effect.succeed([]),
           listThreadTurnOverlapsSince: () => Effect.succeed([]),
+          listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getTurnActivities: () => Effect.succeed([]),
           getThreadDetailById: () => Effect.succeed(Option.none()),
@@ -177,12 +178,14 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getFullThreadDiffContext: () => Effect.succeed(Option.none()),
         listThreadDiffStatBaselines: () => Effect.succeed([]),
         listThreadTurnOverlapsSince: () => Effect.succeed([]),
+        listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
         getThreadShellById: () => Effect.die("unused"),
         getTurnActivities: () => Effect.succeed([]),
         getThreadDetailById: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
         readEvents: () => Stream.empty,
+        readThreadEvents: () => Effect.succeed([]),
         getCommandReceipt: () => Effect.succeed(Option.none()),
         dispatch: (command) =>
           Ref.update(dispatchCalls, (calls) => [...calls, command.type]).pipe(
@@ -226,12 +229,14 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
         getFullThreadDiffContext: () => Effect.succeed(Option.none()),
         listThreadDiffStatBaselines: () => Effect.succeed([]),
         listThreadTurnOverlapsSince: () => Effect.succeed([]),
+        listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
         getThreadShellById: () => Effect.die("unused"),
         getTurnActivities: () => Effect.succeed([]),
         getThreadDetailById: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
         readEvents: () => Stream.empty,
+        readThreadEvents: () => Effect.succeed([]),
         getCommandReceipt: () => Effect.succeed(Option.none()),
         dispatch: (command) =>
           Ref.update(dispatchCalls, (calls) => [...calls, command]).pipe(

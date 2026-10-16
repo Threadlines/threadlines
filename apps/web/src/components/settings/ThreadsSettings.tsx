@@ -64,6 +64,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <AgentThreadsRow />
         <AgentPagesRow />
         <ClaudeArtifactsRow />
+        <CommandRequestsRow />
       </SettingsSection>
 
       <SettingsSection title="Rooms" description={computerNote}>
@@ -386,6 +387,34 @@ function AgentPagesRow() {
           checked={pagesOn}
           onCheckedChange={(checked) => updateSettings({ enableAgentPages: Boolean(checked) })}
           aria-label="Enable agent pages"
+        />
+      }
+    />
+  );
+}
+
+/** `ask_user_to_run` (docs/terminal-command-runs.md): on unless turned off. */
+function CommandRequestsRow() {
+  const settings = useSettings();
+  const requestsOn = settings.enableCommandRequests !== false;
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Command requests"
+      description="Agents can ask you to run a command they can't run themselves, as a card you run from the chat. Cards already shown stay when this is off."
+      resetAction={
+        !requestsOn ? (
+          <SettingResetButton
+            label="command requests"
+            onClick={() => updateSettings({ enableCommandRequests: true })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={requestsOn}
+          onCheckedChange={(checked) => updateSettings({ enableCommandRequests: Boolean(checked) })}
+          aria-label="Enable command requests"
         />
       }
     />

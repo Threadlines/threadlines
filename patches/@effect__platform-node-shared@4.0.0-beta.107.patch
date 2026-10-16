@@ -1,8 +1,30 @@
 diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
-index aa8abbe..c5c2d2e 100644
+index aa8abbe375f40350f9a5a12f36143d5d85802485..0d50bcb6b804493bd5a5f844c8977f9e44c66963 100644
 --- a/dist/NodeChildProcessSpawner.js
 +++ b/dist/NodeChildProcessSpawner.js
-@@ -152,6 +152,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+@@ -26,9 +26,18 @@ const toPlatformError = (method, error, command) => {
+   }, "");
+   return handleErrnoException("ChildProcess", method)(error, [commandStr]);
+ };
+-const taskkill = (childProcess, onExit = () => {}) => NodeChildProcess.execFile("taskkill", ["/pid", String(childProcess.pid), "/T", "/F"], {
+-  windowsHide: true
+-}, onExit);
++const taskkill = (childProcess, onExit = () => {}) => {
++  // Once Node has seen the child exit there is nothing left to stop through
++  // its PID, which Windows may already have given to another process. It also
++  // spares two taskkill processes for every command that exits non-zero.
++  if (childProcess.exitCode !== null || childProcess.signalCode !== null) {
++    onExit(null);
++    return;
++  }
++  NodeChildProcess.execFile("taskkill", ["/pid", String(childProcess.pid), "/T", "/F"], {
++    windowsHide: true
++  }, onExit);
++};
+ const make = /*#__PURE__*/Effect.gen(function* () {
+   const fs = yield* FileSystem.FileSystem;
+   const path = yield* Path.Path;
+@@ -152,6 +161,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
              // Create a sink to write to for input file descriptors
              let sink = Sink.drain;
              if (nodeStream && "write" in nodeStream) {
@@ -10,7 +32,7 @@ index aa8abbe..c5c2d2e 100644
                sink = NodeSink.fromWritable({
                  evaluate: () => nodeStream,
                  onError: error => toPlatformError(`fromWritable(fd${fd})`, toError(error), command)
-@@ -191,11 +192,20 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+@@ -191,11 +201,20 @@ const make = /*#__PURE__*/Effect.gen(function* () {
        getOutputFd: fd => outputStreams.get(fd) ?? Stream.empty
      };
    });
@@ -32,10 +54,33 @@ index aa8abbe..c5c2d2e 100644
          evaluate: () => childProcess.stdin,
          onError: error => toPlatformError("fromWritable(stdin)", toError(error), command),
 diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
-index 38299e2..519d9d2 100644
+index 38299e217c557dc5e1fe318814769b99507fb0ae..374d17bc8eed4483170088650063525581472acd 100644
 --- a/src/NodeChildProcessSpawner.ts
 +++ b/src/NodeChildProcessSpawner.ts
-@@ -214,6 +214,7 @@ const make = Effect.gen(function*() {
+@@ -69,13 +69,21 @@ type ExitSignal = Deferred.Deferred<ExitCodeWithSignal>
+ const taskkill = (
+   childProcess: NodeChildProcess.ChildProcess,
+   onExit: (error: NodeChildProcess.ExecException | null) => void = () => {}
+-) =>
++) => {
++  // Once Node has seen the child exit there is nothing left to stop through
++  // its PID, which Windows may already have given to another process. It also
++  // spares two taskkill processes for every command that exits non-zero.
++  if (childProcess.exitCode !== null || childProcess.signalCode !== null) {
++    onExit(null)
++    return
++  }
+   NodeChildProcess.execFile(
+     "taskkill",
+     ["/pid", String(childProcess.pid!), "/T", "/F"],
+     { windowsHide: true },
+     onExit
+   )
++}
+ 
+ const make = Effect.gen(function*() {
+   const fs = yield* FileSystem.FileSystem
+@@ -214,6 +222,7 @@ const make = Effect.gen(function*() {
            // Create a sink to write to for input file descriptors
            let sink: Sink.Sink<void, Uint8Array, never, PlatformError.PlatformError> = Sink.drain
            if (nodeStream && "write" in nodeStream) {
@@ -43,7 +88,7 @@ index 38299e2..519d9d2 100644
              sink = NodeSink.fromWritable({
                evaluate: () => nodeStream,
                onError: (error) => toPlatformError(`fromWritable(fd${fd})`, toError(error), command)
-@@ -260,6 +261,15 @@ const make = Effect.gen(function*() {
+@@ -260,6 +269,15 @@ const make = Effect.gen(function*() {
      }
    })
  
@@ -59,7 +104,7 @@ index 38299e2..519d9d2 100644
    const setupChildStdin = (
      command: ChildProcess.StandardCommand,
      childProcess: NodeChildProcess.ChildProcess,
-@@ -270,6 +280,7 @@ const make = Effect.gen(function*() {
+@@ -270,6 +288,7 @@ const make = Effect.gen(function*() {
        // sink that will attached to the process handle
        let sink: Sink.Sink<void, unknown, never, PlatformError.PlatformError> = Sink.drain
        if (Predicate.isNotNull(childProcess.stdin)) {

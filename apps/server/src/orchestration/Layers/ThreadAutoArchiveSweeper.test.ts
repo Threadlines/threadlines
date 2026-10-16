@@ -127,6 +127,7 @@ function makeSnapshotQuery(
     getFullThreadDiffContext: () => Effect.succeed(Option.none()),
     listThreadDiffStatBaselines: () => Effect.succeed([]),
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
+    listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
     getThreadShellById: () => Effect.succeed(Option.none()),
     getTurnActivities: () => Effect.succeed([]),
     getThreadDetailById: () => Effect.succeed(Option.none()),
@@ -164,6 +165,7 @@ describe("ThreadAutoArchiveSweeper", () => {
       });
     const orchestrationEngine: OrchestrationEngineShape = {
       readEvents: () => Stream.empty,
+      readThreadEvents: () => Effect.succeed([]),
       getCommandReceipt: () => Effect.succeed(Option.none()),
       dispatch: (command) => {
         if (command.type === "thread.session.stop") {

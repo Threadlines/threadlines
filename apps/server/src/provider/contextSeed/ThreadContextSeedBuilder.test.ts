@@ -54,6 +54,7 @@ function fakeSnapshotQuery(thread: OrchestrationThread | null): ProjectionSnapsh
     getFullThreadDiffContext: unusedProjectionQueryMethod,
     listThreadDiffStatBaselines: unusedProjectionQueryMethod,
     listThreadTurnOverlapsSince: unusedProjectionQueryMethod,
+    listThreadIdsWithOpenAgentRequests: unusedProjectionQueryMethod,
     getThreadShellById: unusedProjectionQueryMethod,
     getTurnActivities: () => Effect.succeed([]),
     getThreadDetailById: () =>
@@ -78,6 +79,7 @@ function failingSnapshotQuery(): ProjectionSnapshotQueryShape {
     getFullThreadDiffContext: unusedProjectionQueryMethod,
     listThreadDiffStatBaselines: unusedProjectionQueryMethod,
     listThreadTurnOverlapsSince: unusedProjectionQueryMethod,
+    listThreadIdsWithOpenAgentRequests: unusedProjectionQueryMethod,
     getThreadShellById: unusedProjectionQueryMethod,
     getTurnActivities: () => Effect.succeed([]),
     getThreadDetailById: () =>

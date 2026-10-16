@@ -110,7 +110,13 @@ export interface DesktopWindowShape {
   readonly revealOrCreateMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
   readonly activate: Effect.Effect<void, DesktopWindowError>;
   readonly createMainIfBackendReady: Effect.Effect<void, DesktopWindowError>;
+  /**
+   * Opens the main window for a backend that has answered. Waits, when needed,
+   * for allowMainWindowOpen: the backend can be ready before startup is.
+   */
   readonly handleBackendReady: Effect.Effect<void, DesktopWindowError>;
+  /** Startup calls this once menus, the file protocol and IPC handlers exist. */
+  readonly allowMainWindowOpen: Effect.Effect<void>;
   readonly allowMainWindowClose: Effect.Effect<void>;
   readonly requestQuitConfirmation: (
     runningThreadCount: number,
@@ -398,6 +404,10 @@ const make = Effect.gen(function* () {
   const runPromise = Effect.runPromiseWith(context);
   const runSyncExit = Effect.runSyncExitWith(context);
   let mainWindowCloseAllowed = false;
+  // Startup spawns the backend before it builds menus, the file protocol and
+  // the IPC handlers, so readiness alone must not open the window. Completed
+  // once by allowMainWindowOpen, after all of those exist.
+  const mainWindowOpenAllowed = yield* Deferred.make<void>();
   const pendingQuitConfirmation = yield* Ref.make<Option.Option<Deferred.Deferred<boolean>>>(
     Option.none(),
   );
@@ -909,7 +919,7 @@ const make = Effect.gen(function* () {
 
   const createMainIfBackendReady = Effect.gen(function* () {
     const backendReady = yield* Ref.get(state.backendReady);
-    if (!backendReady) return;
+    if (!backendReady || !(yield* Deferred.isDone(mainWindowOpenAllowed))) return;
     const existingWindow = yield* electronWindow.currentMainOrFirst;
     if (Option.isSome(existingWindow)) return;
     yield* createMain;
@@ -994,9 +1004,11 @@ const make = Effect.gen(function* () {
     handleBackendReady: Effect.gen(function* () {
       yield* Ref.set(state.backendReady, true);
       yield* logWindowInfo("backend ready", { source: "http" });
+      yield* Deferred.await(mainWindowOpenAllowed);
       yield* repointMainWindowIfBackendMoved;
       yield* createMainIfBackendReady;
     }).pipe(Effect.withSpan("desktop.window.handleBackendReady")),
+    allowMainWindowOpen: Deferred.succeed(mainWindowOpenAllowed, void 0).pipe(Effect.asVoid),
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action, payload) {
       if (action === OPEN_SCREEN_CLIP_MENU_ACTION) {
         yield* openWindowsScreenClip(electronShell);

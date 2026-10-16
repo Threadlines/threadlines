@@ -661,11 +661,31 @@ function preparePullRequestThread(
   return manager.preparePullRequestThread(input);
 }
 
+/** Real processes, each one's command line recorded as it starts. */
+function recordingSpawnerLayer(started: Array<ReadonlyArray<string>>) {
+  return Layer.effect(
+    ChildProcessSpawner.ChildProcessSpawner,
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      return ChildProcessSpawner.make((command) => {
+        const { command: executable, args } = command as unknown as {
+          readonly command: string;
+          readonly args: ReadonlyArray<string>;
+        };
+        started.push([executable, ...args]);
+        return spawner.spawn(command);
+      });
+    }),
+  ).pipe(Layer.provide(NodeServices.layer));
+}
+
 function makeManager(input?: {
   ghScenario?: FakeGhScenario;
   textGeneration?: Partial<FakeGitTextGeneration>;
   setupScriptRunner?: ProjectSetupScriptRunnerShape;
   settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
+  /** Records every process the git driver starts. */
+  startedProcesses?: Array<ReadonlyArray<string>>;
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
@@ -675,11 +695,22 @@ function makeManager(input?: {
 
   const serverSettingsLayer = ServerSettingsService.layerTest(input?.settings ?? {});
 
-  const vcsDriverLayer = GitVcsDriver.layer.pipe(
-    Layer.provideMerge(VcsProcess.layer),
-    Layer.provideMerge(NodeServices.layer),
-    Layer.provideMerge(ServerConfigLayer),
-  );
+  const startedProcesses = input?.startedProcesses;
+  const vcsDriverLayer =
+    startedProcesses === undefined
+      ? GitVcsDriver.layer.pipe(
+          Layer.provideMerge(VcsProcess.layer),
+          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(ServerConfigLayer),
+        )
+      : // Fresh copies: the suite's shared driver would otherwise be reused
+        // with the plain spawner.
+        Layer.fresh(GitVcsDriver.layer).pipe(
+          Layer.provideMerge(Layer.fresh(VcsProcess.layer)),
+          Layer.provide(recordingSpawnerLayer(startedProcesses)),
+          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(ServerConfigLayer),
+        );
   const sourceControlRegistryLayer = Layer.effect(
     SourceControlProviderRegistry.SourceControlProviderRegistry,
     GitHubSourceControlProvider.make().pipe(
@@ -1060,6 +1091,103 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(first.pr?.number).toBe(113);
       expect(second.pr?.number).toBe(113);
       expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+    }),
+  );
+
+  it.effect("a screen refresh reuses the pull request answer until its inputs change", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("threadlines-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/reuse-pr"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/reuse-pr"]);
+
+      const openPr = {
+        number: 211,
+        title: "Reused PR",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/211",
+        baseRefName: "main",
+        headRefName: "feature/reuse-pr",
+      };
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          prListByHeadSelector: { "feature/reuse-pr": JSON.stringify([openPr]) },
+        },
+      });
+      const lookups = () => ghCalls.filter((call) => call.startsWith("pr list ")).length;
+      const screenRead = () =>
+        manager.remoteStatus({ cwd: repoDir }, { allowRecentPullRequest: true });
+
+      expect((yield* screenRead())?.pr?.number).toBe(211);
+      expect((yield* screenRead())?.pr?.number).toBe(211);
+      expect(lookups()).toBe(1);
+
+      // Automation always asks the host, even right after a screen read.
+      yield* manager.remoteStatus({ cwd: repoDir });
+      expect(lookups()).toBe(2);
+
+      // A push moves the upstream's commit.
+      fs.writeFileSync(path.join(repoDir, "next.txt"), "next\n");
+      yield* runGit(repoDir, ["add", "next.txt"]);
+      yield* runGit(repoDir, ["commit", "-m", "next"]);
+      yield* runGit(repoDir, ["push"]);
+      yield* screenRead();
+      expect(lookups()).toBe(3);
+
+      // Our own git actions can open a pull request without moving anything.
+      yield* manager.invalidateStatus(repoDir);
+      yield* screenRead();
+      expect(lookups()).toBe(4);
+      yield* screenRead();
+      expect(lookups()).toBe(4);
+
+      // Pointing origin elsewhere asks about the other repository.
+      yield* runGit(repoDir, ["remote", "set-url", "origin", `${remoteDir}/.`]);
+      yield* screenRead();
+      expect(lookups()).toBe(5);
+    }),
+  );
+
+  // Status refreshes run on every commit, stage and poll in every open
+  // checkout; each git process they start is felt, most of all on Windows.
+  it.effect("a status refresh starts a bounded number of git processes", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("threadlines-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["remote", "set-head", "origin", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/process-count"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/process-count"]);
+      fs.writeFileSync(path.join(repoDir, "change.txt"), "change\n");
+      yield* runGit(repoDir, ["add", "change.txt"]);
+      yield* runGit(repoDir, ["commit", "-m", "unpushed change"]);
+      fs.writeFileSync(path.join(repoDir, "draft.txt"), "draft\n");
+
+      const startedProcesses: Array<ReadonlyArray<string>> = [];
+      const { manager } = yield* makeManager({ startedProcesses });
+      const gitProcesses = () => startedProcesses.filter(([executable]) => executable === "git");
+      // The first remote read may fetch the upstream; measure the reads after it.
+      yield* manager.remoteStatus({ cwd: repoDir });
+
+      startedProcesses.length = 0;
+      const local = yield* manager.localStatus({ cwd: repoDir });
+      const localProcesses = gitProcesses().length;
+      startedProcesses.length = 0;
+      yield* manager.invalidateRemoteStatus(repoDir);
+      const remote = yield* manager.remoteStatus({ cwd: repoDir });
+      const remoteProcesses = gitProcesses().length;
+
+      expect(local?.workingTree.files.map((file) => file.path)).toEqual(["draft.txt"]);
+      expect(remote?.aheadCount).toBe(1);
+      expect(remote?.aheadOfDefaultCount).toBe(1);
+      expect({ localProcesses, remoteProcesses }).toEqual({
+        localProcesses: 5,
+        remoteProcesses: 10,
+      });
     }),
   );
 

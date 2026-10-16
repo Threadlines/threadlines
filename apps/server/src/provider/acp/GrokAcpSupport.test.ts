@@ -623,6 +623,26 @@ describe("Grok sessions", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
   );
 
+  it.live("keeps a wake-up that starts before the prompt's answer out of the prompt's turn", () =>
+    Effect.gen(function* () {
+      const grok = yield* startGrok("wake-early");
+      yield* grok.adapter.sendTurn({ threadId: grok.threadId, input: "go", attachments: [] });
+      yield* grok.waitFor((events) => completedTurns(events).length === 2);
+      const [userTurn, agentTurn] = completedTurns(grok.events);
+      expect(replyTo(grok.events, userTurn!.turnId!)).toBe("ROOT_DONE");
+      expect(replyTo(grok.events, agentTurn!.turnId!)).toBe("WAKE_PART_1 WAKE_PART_2");
+      // One message, though the prompt's answer arrived in the middle of it.
+      const wakeItems = new Set(
+        grok.events.flatMap((event) =>
+          event.type === "content.delta" && event.turnId === agentTurn?.turnId
+            ? [event.itemId]
+            : [],
+        ),
+      );
+      expect(wakeItems.size).toBe(1);
+    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+  );
+
   it.live("gives back-to-back wake-ups each a message of their own", () =>
     Effect.gen(function* () {
       const grok = yield* startGrok("wake-twice");

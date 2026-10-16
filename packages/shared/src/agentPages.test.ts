@@ -14,10 +14,10 @@ import {
   agentPageFrameHeight,
   agentPageShareLink,
   applyAgentPagePublication,
-  buildAgentPageDocument,
   readAgentPageHeights,
   readAgentPageLinkRequest,
 } from "./agentPages.ts";
+import { buildAgentPageDocument } from "./agentPageDocument.ts";
 
 const theme = AGENT_PAGE_FALLBACK_THEMES.dark;
 

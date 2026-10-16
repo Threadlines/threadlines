@@ -61,7 +61,7 @@ export function DiffPanelShell(props: {
  * Placeholder rows in the shape of the list that is coming: one open file
  * with a run of lines, then a few closed ones. Bars only, no frame, so it
  * reads as the same edge-to-edge list before the data lands. The reveal is
- * held back a beat (see `.diff-panel-loading`) so a fast load never flashes it.
+ * held back a beat (see `.loading-reveal`) so a fast load never flashes it.
  */
 const LOADING_ROWS: ReadonlyArray<{
   readonly path: string;
@@ -76,7 +76,7 @@ const LOADING_ROWS: ReadonlyArray<{
 export function DiffPanelLoadingState(props: { label: string }) {
   return (
     <div
-      className="diff-panel-loading min-h-0 flex-1 overflow-hidden"
+      className="loading-reveal min-h-0 flex-1 overflow-hidden"
       role="status"
       aria-live="polite"
       data-diff-panel-loading="true"

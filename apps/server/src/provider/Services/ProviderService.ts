@@ -52,7 +52,7 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities, ProviderSubagentWorktree } from "./ProviderAdapter.ts";
+import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -283,20 +283,6 @@ export interface ProviderServiceShape {
   readonly sendSubagentInput: (
     input: ProviderSubagentInputRequest,
   ) => Effect.Effect<ProviderSubagentInputResult, ProviderServiceError>;
-
-  /**
-   * Where an isolated subagent is working, or null when that is unknown —
-   * because the provider does not record it, the session is not routable, or
-   * the record has not been written yet.
-   *
-   * Never fails and never starts or recovers a session: callers poll this
-   * while reacting to unrelated task events, so it must stay free of side
-   * effects on the session lifecycle.
-   */
-  readonly resolveSubagentWorktree: (input: {
-    readonly threadId: ThreadId;
-    readonly toolUseId: string;
-  }) => Effect.Effect<ProviderSubagentWorktree | null, never>;
 
   /**
    * Delete provider-owned runtime state for a thread.

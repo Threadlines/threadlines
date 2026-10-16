@@ -345,6 +345,33 @@ const program = Effect.gen(function* () {
             yield* turnEnded(wakeId, "end_turn");
           }
         }).pipe(Effect.forkDetach);
+      } else if (scenario === "wake-early") {
+        // Grok's own turn starting before our prompt's answer goes out: the
+        // prompt's end notices, then a wake-up (its queue notice repeated as
+        // the queue moves), with the answer landing inside its reply.
+        yield* say("ROOT_DONE", promptId);
+        yield* turnEnded(promptId, "end_turn");
+        yield* agent.client.extNotification("_x.ai/session/prompt_complete", {
+          sessionId: currentSessionId,
+          promptId,
+          stopReason: "end_turn",
+          agentResult: null,
+        });
+        const wakeId = "task-completed-shell-1";
+        for (let repeat = 0; repeat < 2; repeat += 1) {
+          yield* agent.client.extNotification("_x.ai/queue/changed", {
+            sessionId,
+            entries: [],
+            runningPromptId: wakeId,
+          });
+        }
+        yield* say("WAKE_PART_1 ", wakeId);
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("30 millis");
+          yield* say("WAKE_PART_2", wakeId);
+          yield* turnEnded(wakeId, "end_turn");
+        }).pipe(Effect.forkDetach);
+        return { stopReason: "end_turn" as const };
       } else if (scenario === "remember") {
         // What this session remembers, oldest first, as its reply.
         yield* say(

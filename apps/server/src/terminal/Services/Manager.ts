@@ -26,6 +26,7 @@ import type { TerminalCommandInputState } from "@threadlines/shared/terminalComm
 import type { PtyProcess } from "./PTY.ts";
 import * as Effect from "effect/Effect";
 import * as Context from "effect/Context";
+import * as Schema from "effect/Schema";
 
 export {
   TerminalCwdError,
@@ -71,6 +72,65 @@ export interface TerminalStartInput extends TerminalOpenInput {
   cols: number;
   rows: number;
 }
+
+/** Why a suggested command could not start in a new terminal tab. */
+export class TerminalCommandRunError extends Schema.TaggedError<TerminalCommandRunError>()(
+  "TerminalCommandRunError",
+  {
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A suggested command for a new terminal tab (docs/terminal-command-runs.md).
+ * `run` spawns it as its own tracked process; `insert` types it at the prompt
+ * of a fresh shell and leaves Enter to the user.
+ */
+export interface TerminalCommandRunInput {
+  readonly threadId: string;
+  readonly terminalId: string;
+  readonly runId: string;
+  readonly mode: "run" | "insert";
+  readonly dialect: "posix" | "powershell";
+  readonly command: string;
+  readonly cwd: string;
+  readonly worktreePath?: string | null;
+  readonly env?: Record<string, string>;
+  readonly cols?: number;
+  readonly rows?: number;
+}
+
+/**
+ * How a run moved on. `output` is the rendered text (redraws collapsed, end
+ * kept) a `run` left when it stopped.
+ */
+export type TerminalCommandRunUpdate =
+  | { readonly type: "running"; readonly runId: string; readonly at: string }
+  | { readonly type: "waiting"; readonly runId: string; readonly at: string }
+  | { readonly type: "submitted"; readonly runId: string; readonly at: string }
+  | { readonly type: "cancelled"; readonly runId: string; readonly at: string }
+  | {
+      readonly type: "finished";
+      readonly runId: string;
+      readonly at: string;
+      /** When its process started; the "running" update may come after this one. */
+      readonly startedAt: string | null;
+      readonly exitCode: number | null;
+      readonly output: string;
+    }
+  | {
+      readonly type: "interrupted";
+      readonly runId: string;
+      readonly at: string;
+      readonly startedAt: string | null;
+      readonly output: string | null;
+    }
+  | {
+      readonly type: "failed";
+      readonly runId: string;
+      readonly at: string;
+      readonly error: string;
+    };
 
 /**
  * TerminalManagerShape - Service API for terminal session lifecycle operations.
@@ -127,6 +187,27 @@ export interface TerminalManagerShape {
    */
   readonly subscribe: (
     listener: (event: TerminalEvent) => Effect.Effect<void>,
+  ) => Effect.Effect<() => void>;
+
+  /**
+   * Open a new terminal tab for a suggested command. Returns once the shell is
+   * spawned; how the run goes arrives through `subscribeCommandRuns`. Fails
+   * when the tab id is taken or the shell can't run commands this way.
+   */
+  readonly startCommandRun: (
+    input: TerminalCommandRunInput,
+  ) => Effect.Effect<void, TerminalCommandRunError | TerminalCwdError>;
+
+  /**
+   * The output a run has so far, while its tab is open: a `run` still going,
+   * or everything an `insert`'s tab printed since the command went in.
+   * Null once the tab is gone.
+   */
+  readonly readCommandRunOutput: (runId: string) => Effect.Effect<string | null>;
+
+  /** Subscribe to run updates. Returns an unsubscribe function. */
+  readonly subscribeCommandRuns: (
+    listener: (update: TerminalCommandRunUpdate) => Effect.Effect<void>,
   ) => Effect.Effect<() => void>;
 }
 

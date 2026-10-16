@@ -223,6 +223,16 @@ export interface ProjectionSnapshotQueryShape {
   }) => Effect.Effect<ReadonlyArray<ProjectionThreadTurnOverlap>, ProjectionRepositoryError>;
 
   /**
+   * Read the ids of non-deleted threads with at least one open room agent
+   * request (`agentRequests.open`), without hydrating thread detail. Restart
+   * cleanup uses it to skip the room threads that have nothing to close.
+   */
+  readonly listThreadIdsWithOpenAgentRequests: () => Effect.Effect<
+    ReadonlyArray<ThreadId>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Read a single active thread shell row by id.
    */
   readonly getThreadShellById: (

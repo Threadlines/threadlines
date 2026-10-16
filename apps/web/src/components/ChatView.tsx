@@ -1,6 +1,7 @@
 import {
   type OrchestrationAgentPage,
   type OrchestrationWorkflowRun,
+  type OrchestrationCommandRequest,
   type ApprovalRequestId,
   type ChatSkillReference,
   DEFAULT_MODEL,
@@ -38,7 +39,6 @@ import {
 } from "@threadlines/client-runtime";
 import { isAcpRegistryInstanceId } from "@threadlines/shared/acpRegistry";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
-import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
@@ -50,6 +50,7 @@ import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
+import { isProviderAuthErrorChatMessage } from "~/lib/providerAuthMessages";
 import { shouldShowCheckoutPicker } from "~/lib/checkoutRecovery";
 import { useCheckoutRecovery } from "../hooks/useCheckoutRecovery";
 import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
@@ -96,17 +97,12 @@ import {
   derivePendingUserInputs,
   isBlockingUserInput,
   derivePhase,
-  deriveRevertTurnCountByUserMessageId,
-  deriveTimelineEntries,
-  deriveForkContextEntries,
   deriveActiveStatusLabel,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
-  deriveSubagentActivityState,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveTurnDispatchedModelSelections,
-  deriveWorkLogEntries,
   hasActionableProposedPlan,
   isLatestTurnSettled,
   describedAwaitedTasks,
@@ -126,7 +122,8 @@ import {
 import {
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
-  selectThreadsAcrossEnvironments,
+  selectThreadDetailLoaded,
+  selectThreadListedByRef,
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
 } from "../store";
@@ -143,9 +140,9 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
+  type ProposedPlan,
   type SessionPhase,
   type Thread,
-  type TurnDiffSummary,
   type ChatAttachment,
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
@@ -178,9 +175,10 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { ChevronDownIcon } from "lucide-react";
 import { ComposerFollowUpQueue } from "./chat/ComposerFollowUpQueue";
-import { deriveSideAnswers, isSideActivity, isSideMessage } from "./chat/sideAnswers";
 import { loadChatAttachmentBlob } from "~/lib/attachmentPreviewQuery";
 import { cn, randomUUID } from "~/lib/utils";
+import { CommandRunActionsContext } from "./chat/CommandRuns";
+import { useCommandRunActions } from "./chat/useCommandRunActions";
 import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
@@ -303,7 +301,6 @@ import {
   buildLocalDraftThread,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
-  deriveProviderBackgroundRuns,
   deriveDetectedBackgroundRunLabel,
   matchDetectedProviderRun,
   deriveFailedTurnRetryMessageId,
@@ -348,6 +345,17 @@ import {
   resolveWorkingTreeChanges,
   type RevertConfirmView,
   resolveThreadBranchToRecord,
+  deriveOwnThreadActivities,
+  deriveSubagentSpawnCallIds,
+  deriveThreadForkContextEntries,
+  deriveThreadProviderBackgroundRuns,
+  deriveThreadSideAnswers,
+  deriveThreadSubagentActivityState,
+  deriveThreadTimelineEntries,
+  deriveThreadWorkLogEntries,
+  deriveThreadRevertTurnCountByUserMessageId,
+  deriveTurnDiffSummaryByAssistantMessageId,
+  deriveThreadContextCompactionInProgress,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
@@ -369,7 +377,6 @@ import {
   refreshThreadDetailSubscription,
   retainThreadDetailSubscription,
 } from "../environments/runtime/service";
-import { hasActiveContextCompactionActivity } from "~/lib/contextCompactionActivities";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import {
@@ -408,7 +415,11 @@ const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
 const EMPTY_WORKFLOW_RUNS: ReadonlyArray<OrchestrationWorkflowRun> = [];
 const EMPTY_AGENT_PAGES: ReadonlyArray<OrchestrationAgentPage> = [];
+const EMPTY_COMMAND_REQUESTS: ReadonlyArray<OrchestrationCommandRequest> = [];
+const EMPTY_PROPOSED_PLANS: ProposedPlan[] = [];
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_MESSAGES: ChatMessage[] = [];
+const NO_THREAD_DERIVATION_KEY = "";
 const EMPTY_TURN_IDS: ReadonlyArray<TurnId> = [];
 const NO_SEEN_TURNS = { threadId: null, turnIds: EMPTY_TURN_IDS } as const;
 const EMPTY_QUEUED_FOLLOW_UPS: ReadonlyArray<OrchestrationQueuedFollowUp> = [];
@@ -1331,10 +1342,13 @@ export default function ChatView(props: ChatViewProps) {
   const removeComposerDraftTerminalContextsForTerminal = useComposerDraftStore(
     (store) => store.removeTerminalContextsForTerminal,
   );
-  const serverThreadKeys = useStore(
+  // Of the threads with a terminal open, the ones the store still lists. Only
+  // those few keys are looked up, so a store update (every streamed delta)
+  // never builds the whole thread list.
+  const openTerminalServerThreadKeys = useStore(
     useShallow((state) =>
-      selectThreadsAcrossEnvironments(state).map((thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      openTerminalThreadKeys.filter((nextThreadKey) =>
+        selectThreadListedByRef(state, parseScopedThreadKey(nextThreadKey)),
       ),
     ),
   );
@@ -1427,9 +1441,12 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThreadKey]);
   activeThreadKeyRef.current = activeThreadKey;
   const existingOpenTerminalThreadKeys = useMemo(() => {
-    const existingThreadKeys = new Set<string>([...serverThreadKeys, ...draftThreadKeys]);
+    const existingThreadKeys = new Set<string>([
+      ...openTerminalServerThreadKeys,
+      ...draftThreadKeys,
+    ]);
     return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
-  }, [draftThreadKeys, openTerminalThreadKeys, serverThreadKeys]);
+  }, [draftThreadKeys, openTerminalServerThreadKeys, openTerminalThreadKeys]);
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const threadPlanCatalog = useThreadPlanCatalog(
     useMemo(() => {
@@ -1949,16 +1966,15 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [environmentId, phase, shouldRetainThreadDetailSubscription, threadId]);
   const isSessionStarting = activeThread?.session?.orchestrationStatus === "starting";
+  // Which thread's remembered derivations (ChatView.logic, threadMemo) to use.
+  const derivationThreadKey = activeThreadKey ?? NO_THREAD_DERIVATION_KEY;
   const allThreadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   // A side answer's steps are its own: only its block reads them. Everything
   // else here (the working turn's steps, prompts, plans, the context meter)
   // describes the agent at work.
   const threadActivities = useMemo(
-    () =>
-      allThreadActivities.some(isSideActivity)
-        ? allThreadActivities.filter((activity) => !isSideActivity(activity))
-        : allThreadActivities,
-    [allThreadActivities],
+    () => deriveOwnThreadActivities(derivationThreadKey, allThreadActivities),
+    [allThreadActivities, derivationThreadKey],
   );
   // What the chat calls the thread's own agent, turn by turn: the model each
   // turn was sent with.
@@ -1978,12 +1994,12 @@ export default function ChatView(props: ChatViewProps) {
   );
   const activeTurnId = activeThread?.session?.activeTurnId ?? null;
   const workLogEntries = useMemo(
-    () => deriveWorkLogEntries(threadActivities, activeTurnId),
-    [activeTurnId, threadActivities],
+    () => deriveThreadWorkLogEntries(derivationThreadKey, threadActivities, activeTurnId),
+    [activeTurnId, derivationThreadKey, threadActivities],
   );
   const forkContextEntries = useMemo(
-    () => deriveForkContextEntries(threadActivities),
-    [threadActivities],
+    () => deriveThreadForkContextEntries(derivationThreadKey, threadActivities),
+    [derivationThreadKey, threadActivities],
   );
   const forkHeaderContext = useMemo<ForkHeaderContext | null>(() => {
     const payload = forkContextEntries[0]?.payload;
@@ -2079,13 +2095,20 @@ export default function ChatView(props: ChatViewProps) {
   );
   const subagentActivityState = useMemo(
     () =>
-      deriveSubagentActivityState({
-        activities: threadActivities,
-        subagents: activeThread?.subagents ?? [],
-        latestTurnId: activeLatestTurn?.turnId ?? null,
+      deriveThreadSubagentActivityState(
+        derivationThreadKey,
+        threadActivities,
+        activeThread?.subagents,
+        activeLatestTurn?.turnId ?? null,
         latestTurnSettled,
-      }),
-    [activeLatestTurn?.turnId, activeThread?.subagents, latestTurnSettled, threadActivities],
+      ),
+    [
+      activeLatestTurn?.turnId,
+      activeThread?.subagents,
+      derivationThreadKey,
+      latestTurnSettled,
+      threadActivities,
+    ],
   );
   const subagentProgress = subagentActivityState.progress;
   // The turn-scoped progress above empties when the turn settles. The panel's
@@ -2465,12 +2488,13 @@ export default function ChatView(props: ChatViewProps) {
   ]);
   const sideAnswers = useMemo(
     () =>
-      deriveSideAnswers({
-        messages: timelineMessages,
-        activities: allThreadActivities,
-        sideTurn: activeThread?.sideTurn,
-      }),
-    [activeThread?.sideTurn, allThreadActivities, timelineMessages],
+      deriveThreadSideAnswers(
+        derivationThreadKey,
+        timelineMessages,
+        allThreadActivities,
+        activeThread?.sideTurn,
+      ),
+    [activeThread?.sideTurn, allThreadActivities, derivationThreadKey, timelineMessages],
   );
   // Every turn that has come near the screen in this thread. Those whose steps
   // the live feed cut are fetched, and stay fetched while the thread is open.
@@ -2518,17 +2542,20 @@ export default function ChatView(props: ChatViewProps) {
   );
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(
-        timelineMessages.filter((message) => !isSideMessage(message)),
-        activeThread?.proposedPlans ?? [],
+      deriveThreadTimelineEntries(
+        derivationThreadKey,
+        timelineMessages,
+        activeThread?.proposedPlans ?? EMPTY_PROPOSED_PLANS,
         timelineWorkEntries,
         subagentActivityState.resultEntries,
         forkContextEntries,
         subagentActivityState.liveEntries,
         activeThread?.pages ?? EMPTY_AGENT_PAGES,
+        activeThread?.commandRequests ?? EMPTY_COMMAND_REQUESTS,
         workflowRunsAsShown(activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS),
       ),
     [
+      activeThread?.commandRequests,
       activeThread?.pages,
       activeThread?.workflowRuns,
       activeThread?.proposedPlans,
@@ -2537,25 +2564,20 @@ export default function ChatView(props: ChatViewProps) {
       subagentActivityState.resultEntries,
       timelineMessages,
       timelineWorkEntries,
+      derivationThreadKey,
     ],
   );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
-  const turnDiffSummaryByAssistantMessageId = useMemo(() => {
-    const byMessageId = new Map<MessageId, TurnDiffSummary>();
-    const assistantTurnIdByMessageId = new Map<MessageId, TurnId | null | undefined>();
-    for (const message of activeThread?.messages ?? []) {
-      if (message.role === "assistant") {
-        assistantTurnIdByMessageId.set(message.id, message.turnId);
-      }
-    }
-    for (const summary of turnDiffSummaries) {
-      if (!summary.assistantMessageId) continue;
-      if (assistantTurnIdByMessageId.get(summary.assistantMessageId) !== summary.turnId) continue;
-      byMessageId.set(summary.assistantMessageId, summary);
-    }
-    return byMessageId;
-  }, [activeThread?.messages, turnDiffSummaries]);
+  const turnDiffSummaryByAssistantMessageId = useMemo(
+    () =>
+      deriveTurnDiffSummaryByAssistantMessageId(
+        derivationThreadKey,
+        activeThread?.messages ?? EMPTY_MESSAGES,
+        turnDiffSummaries,
+      ),
+    [activeThread?.messages, derivationThreadKey, turnDiffSummaries],
+  );
   const threadHasRoomHistory = hasRoomHistory(activeThread);
   // An agent's invite still open, or its review on the way back, would land
   // after a revert and talk about work that is gone; the server refuses it.
@@ -2565,25 +2587,24 @@ export default function ChatView(props: ChatViewProps) {
     (activeThread?.agentRequests?.open.length ?? 0) > 0 ||
     (activeThread?.childRequests?.open.length ?? 0) > 0 ||
     (activeThread?.queuedFollowUps ?? []).some(isAgentOrigin);
-  const revertTurnCountByUserMessageId = useMemo(() => {
-    // Rooms have no revert, even once their added agents left: rewinding one
-    // agent cannot take back what the others already read. The server
-    // refuses it too.
-    if (threadHasRoomHistory || agentRequestsInFlight) {
-      return new Map<MessageId, number>();
-    }
-    return deriveRevertTurnCountByUserMessageId({
+  const revertTurnCountByUserMessageId = useMemo(
+    () =>
+      deriveThreadRevertTurnCountByUserMessageId(
+        derivationThreadKey,
+        timelineEntries,
+        turnDiffSummaryByAssistantMessageId,
+        inferredCheckpointTurnCountByTurnId,
+        threadHasRoomHistory || agentRequestsInFlight,
+      ),
+    [
+      inferredCheckpointTurnCountByTurnId,
       timelineEntries,
       turnDiffSummaryByAssistantMessageId,
-      inferredCheckpointTurnCountByTurnId,
-    });
-  }, [
-    inferredCheckpointTurnCountByTurnId,
-    timelineEntries,
-    turnDiffSummaryByAssistantMessageId,
-    threadHasRoomHistory,
-    agentRequestsInFlight,
-  ]);
+      threadHasRoomHistory,
+      agentRequestsInFlight,
+      derivationThreadKey,
+    ],
+  );
 
   const gitCwd = activeProject
     ? resolveThreadWorkingCwd({
@@ -2708,7 +2729,10 @@ export default function ChatView(props: ChatViewProps) {
     activeProviderStatus,
     activeProviderDriver,
   );
-  const contextCompactActivityInProgress = hasActiveContextCompactionActivity(threadActivities);
+  const contextCompactActivityInProgress = useMemo(
+    () => deriveThreadContextCompactionInProgress(derivationThreadKey, threadActivities),
+    [derivationThreadKey, threadActivities],
+  );
   const contextCompactInFlight =
     contextCompactActivityInProgress || contextCompactDispatchingThreadId === activeThread?.id;
   const contextCompactDisabledReason =
@@ -2791,7 +2815,7 @@ export default function ChatView(props: ChatViewProps) {
       providerAuthReconnectPrompt !== null &&
       (workLogEntries.some((entry) => entry.authReconnect !== undefined) ||
         timelineMessages.some(
-          (message) => message.role === "assistant" && isProviderAuthErrorMessage(message.text),
+          (message) => message.role === "assistant" && isProviderAuthErrorChatMessage(message),
         )),
     [providerAuthReconnectPrompt, timelineMessages, workLogEntries],
   );
@@ -3167,6 +3191,44 @@ export default function ChatView(props: ChatViewProps) {
     storeNewTerminal(activeThreadRef, terminalId);
     setTerminalFocusRequestId((value) => value + 1);
   }, [activeThreadRef, storeNewTerminal]);
+  // Suggested commands (docs/terminal-command-runs.md): a run's tab, brought
+  // forward with the keyboard in it. A tab the server just opened may not have
+  // reached this store yet; adding it here is what its started event does too.
+  const focusCommandRunTerminal = useCallback(
+    (terminalId: string) => {
+      if (!activeThreadRef) return;
+      if (terminalState.terminalIds.includes(terminalId)) {
+        storeSetActiveTerminal(activeThreadRef, terminalId);
+      } else {
+        storeNewTerminal(activeThreadRef, terminalId);
+      }
+      setTerminalOpen(true);
+      setTerminalFocusRequestId((value) => value + 1);
+    },
+    [
+      activeThreadRef,
+      setTerminalOpen,
+      storeNewTerminal,
+      storeSetActiveTerminal,
+      terminalState.terminalIds,
+    ],
+  );
+  const commandRunAgentLabel = useCallback(
+    (participantId: ThreadParticipantId | null) =>
+      roomAgentLabels?.get(roomAgentKey(participantId))?.name ?? activeProviderLabel,
+    [activeProviderLabel, roomAgentLabels],
+  );
+  const commandRunActions = useCommandRunActions({
+    environmentId: activeThread?.environmentId ?? null,
+    threadId: activeThread?.id ?? null,
+    runs: activeThread?.commandRuns,
+    cwd: gitCwd,
+    projectCwd: activeProject?.cwd ?? null,
+    worktreePath: activeThread?.worktreePath ?? null,
+    terminalIds: terminalState.terminalIds,
+    focusTerminal: focusCommandRunTerminal,
+    agentLabel: commandRunAgentLabel,
+  });
   const performCloseTerminal = useCallback(
     (
       targetThreadRef: { environmentId: EnvironmentId; threadId: ThreadId },
@@ -3243,28 +3305,23 @@ export default function ChatView(props: ChatViewProps) {
   // A tool call the thread already tracks as an agent is not a separate
   // background run. History is consulted alongside the live turn so a promoted
   // agent stays promoted after its spawning turn settles.
-  const subagentSpawnCallIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const item of subagentProgress?.items ?? []) {
-      if (item.spawnCallId) ids.add(item.spawnCallId);
-    }
-    for (const entry of subagentHistory) {
-      if (entry.item.spawnCallId) ids.add(entry.item.spawnCallId);
-    }
-    return ids;
-  }, [subagentHistory, subagentProgress?.items]);
+  const subagentSpawnCallIds = useMemo(
+    () => deriveSubagentSpawnCallIds(derivationThreadKey, subagentHistory, subagentProgress?.items),
+    [derivationThreadKey, subagentHistory, subagentProgress?.items],
+  );
   const providerBackgroundSnapshot = useMemo(
     () =>
-      deriveProviderBackgroundRuns({
-        activities: threadActivities,
-        messages: timelineMessages,
-        pendingBackgroundTaskCount: activeThread?.session?.pendingBackgroundTaskCount ?? 0,
-        activeSubagentCount: subagentProgress?.activeCount ?? 0,
-        activeCommandTurnId: activeTurnInProgress
+      deriveThreadProviderBackgroundRuns(
+        derivationThreadKey,
+        threadActivities,
+        timelineMessages,
+        activeThread?.session?.pendingBackgroundTaskCount ?? 0,
+        subagentProgress?.activeCount ?? 0,
+        activeTurnInProgress
           ? (activeThread?.session?.activeTurnId ?? activeLatestTurn?.turnId ?? null)
           : null,
         subagentSpawnCallIds,
-      }),
+      ),
     [
       activeLatestTurn?.turnId,
       activeThread?.session?.pendingBackgroundTaskCount,
@@ -3274,6 +3331,7 @@ export default function ChatView(props: ChatViewProps) {
       subagentSpawnCallIds,
       threadActivities,
       timelineMessages,
+      derivationThreadKey,
     ],
   );
   const providerBackgroundRuns = useMemo(
@@ -3645,6 +3703,9 @@ export default function ChatView(props: ChatViewProps) {
         ] !== undefined
       : false,
   );
+  // Whether the thread's messages are its history yet, or only what events and
+  // this client wrote before its detail snapshot landed (threadDetailLoadedById).
+  const threadDetailLoaded = useStore((state) => selectThreadDetailLoaded(state, activeThreadRef));
   // The agents panel mounts in the route's right-panel slot, beside the chat
   // column, so the live turn state it renders has to be published out of here.
   useEffect(() => {
@@ -7421,61 +7482,67 @@ export default function ChatView(props: ChatViewProps) {
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col draft-hero:mt-auto draft-hero:flex-none">
             {/* Messages — LegendList handles virtualization and scrolling internally */}
-            <MessagesTimeline
-              key={activeThread.id}
-              emptyState={draftTimelineEmptyState}
-              isWorking={isWorking}
-              isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
-              awaitedTasks={awaitedTasks}
-              activeStatusLabel={activeStatusLabel}
-              activeTurnInProgress={isWorking || !latestTurnSettled}
-              activeTurnId={activeLatestTurn?.turnId ?? null}
-              activeTurnStartedAt={activeWorkStartedAt}
-              listRef={legendListRef}
-              stickToBottomRequestKey={stickToBottomRequestKey}
-              timelineEntries={timelineEntries}
-              sideAnswers={sideAnswers}
-              onStopSideAnswer={stopSideAnswer}
-              turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
-              activeThreadEnvironmentId={activeThread.environmentId}
-              activeThreadId={activeThread.id}
-              routeThreadKey={routeThreadKey}
-              onOpenTurnDiff={onOpenTurnDiff}
-              revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
-              roomAgents={roomAgentLabels}
-              agentModelLabeler={agentModelLabeler}
-              ownAgentLabels={ownAgentLabels}
-              workingParticipantId={activeThread.session?.participantId ?? null}
-              {...(activeThread.agentRequests
-                ? { openAgentRequests: activeThread.agentRequests.open }
-                : {})}
-              onRevertUserMessage={onRevertUserMessage}
-              onContinueInNewThread={onContinueMessageInNewThread}
-              onRevealPickedElement={isElectron ? revealPickedElement : undefined}
-              onAddTranscriptHighlightContext={addTranscriptHighlightContextToDraft}
-              isRevertingCheckpoint={isRevertingCheckpoint}
-              onImageExpand={onExpandTimelineImage}
-              onPreviewFile={onPreviewFile}
-              markdownCwd={gitCwd ?? undefined}
-              resolvedTheme={resolvedTheme}
-              timestampFormat={timestampFormat}
-              workspaceRoot={activeWorkspaceRoot}
-              skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
-              providerAuthReconnect={providerAuthReconnectPrompt}
-              failedTurnRetry={failedTurnRetryAction}
-              onRunProviderAuthReconnect={runProviderAuthReconnect}
-              mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
-              onRunMcpAuthReconnect={runMcpAuthReconnect}
-              onIsAtEndChange={onIsAtEndChange}
-              onVisibleTurnIdsChange={handleVisibleTurnIdsChange}
-              searchTarget={timelineSearchTarget}
-              planScrollTarget={planScrollTarget}
-              proposedPlanState={timelineProposedPlanState}
-              turnAgents={timelineTurnAgents}
-              onOpenAgentsPanel={onOpenAgentsPanel}
-              workflowRunActions={workflowRunActions}
-              onOpenThread={onOpenForkSourceThread}
-            />
+            <CommandRunActionsContext value={commandRunActions}>
+              <MessagesTimeline
+                key={activeThread.id}
+                emptyState={draftTimelineEmptyState}
+                detailPending={isServerThread && !threadDetailLoaded}
+                savedEnvironmentConnected={
+                  activeSavedEnvironmentRecord === null ? undefined : !activeEnvironmentUnavailable
+                }
+                isWorking={isWorking}
+                isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
+                awaitedTasks={awaitedTasks}
+                activeStatusLabel={activeStatusLabel}
+                activeTurnInProgress={isWorking || !latestTurnSettled}
+                activeTurnId={activeLatestTurn?.turnId ?? null}
+                activeTurnStartedAt={activeWorkStartedAt}
+                listRef={legendListRef}
+                stickToBottomRequestKey={stickToBottomRequestKey}
+                timelineEntries={timelineEntries}
+                sideAnswers={sideAnswers}
+                onStopSideAnswer={stopSideAnswer}
+                turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+                activeThreadEnvironmentId={activeThread.environmentId}
+                activeThreadId={activeThread.id}
+                routeThreadKey={routeThreadKey}
+                onOpenTurnDiff={onOpenTurnDiff}
+                revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
+                roomAgents={roomAgentLabels}
+                agentModelLabeler={agentModelLabeler}
+                ownAgentLabels={ownAgentLabels}
+                workingParticipantId={activeThread.session?.participantId ?? null}
+                {...(activeThread.agentRequests
+                  ? { openAgentRequests: activeThread.agentRequests.open }
+                  : {})}
+                onRevertUserMessage={onRevertUserMessage}
+                onContinueInNewThread={onContinueMessageInNewThread}
+                onRevealPickedElement={isElectron ? revealPickedElement : undefined}
+                onAddTranscriptHighlightContext={addTranscriptHighlightContextToDraft}
+                isRevertingCheckpoint={isRevertingCheckpoint}
+                onImageExpand={onExpandTimelineImage}
+                onPreviewFile={onPreviewFile}
+                markdownCwd={gitCwd ?? undefined}
+                resolvedTheme={resolvedTheme}
+                timestampFormat={timestampFormat}
+                workspaceRoot={activeWorkspaceRoot}
+                skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+                providerAuthReconnect={providerAuthReconnectPrompt}
+                failedTurnRetry={failedTurnRetryAction}
+                onRunProviderAuthReconnect={runProviderAuthReconnect}
+                mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
+                onRunMcpAuthReconnect={runMcpAuthReconnect}
+                onIsAtEndChange={onIsAtEndChange}
+                onVisibleTurnIdsChange={handleVisibleTurnIdsChange}
+                searchTarget={timelineSearchTarget}
+                planScrollTarget={planScrollTarget}
+                proposedPlanState={timelineProposedPlanState}
+                turnAgents={timelineTurnAgents}
+                onOpenAgentsPanel={onOpenAgentsPanel}
+                workflowRunActions={workflowRunActions}
+                onOpenThread={onOpenForkSourceThread}
+              />
+            </CommandRunActionsContext>
 
             {/* scroll to bottom button — shown when user has scrolled away from the bottom. */}
             {showScrollToBottom && (

@@ -133,6 +133,10 @@ import {
   CodexInlineVisualizationReadResult,
   AgentPageReadError,
   AgentPageReadInput,
+  CommandRunError,
+  CommandRunSendOutputInput,
+  CommandRunSendOutputResult,
+  CommandRunStartInput,
   AgentPageReadResult,
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
@@ -346,6 +350,10 @@ export const WS_METHODS = {
 
   // Agent page methods
   pagesRead: "pages.read",
+
+  // Suggested commands run from the chat (docs/terminal-command-runs.md)
+  commandRunsStart: "commandRuns.start",
+  commandRunsSendOutput: "commandRuns.sendOutput",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -1011,6 +1019,17 @@ export const WsPagesReadRpc = Rpc.make(WS_METHODS.pagesRead, {
   error: AgentPageReadError,
 });
 
+export const WsCommandRunsStartRpc = Rpc.make(WS_METHODS.commandRunsStart, {
+  payload: CommandRunStartInput,
+  error: CommandRunError,
+});
+
+export const WsCommandRunsSendOutputRpc = Rpc.make(WS_METHODS.commandRunsSendOutput, {
+  payload: CommandRunSendOutputInput,
+  success: CommandRunSendOutputResult,
+  error: CommandRunError,
+});
+
 export const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: ExternalLauncherError,
@@ -1663,6 +1682,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsReadRpc,
   WsVisualizationsReadRpc,
   WsPagesReadRpc,
+  WsCommandRunsStartRpc,
+  WsCommandRunsSendOutputRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsPreviewAutomationConnectRpc,

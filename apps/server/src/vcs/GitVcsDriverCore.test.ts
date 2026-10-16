@@ -12,10 +12,14 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { GitCommandError } from "@threadlines/contracts";
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { GitInstallProbe } from "./gitLaunch.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-git-vcs-driver-test-",
@@ -204,6 +208,72 @@ const pushRemoteBranchFromPeer = (input: {
     yield* git(peer, ["commit", "-m", input.subject]);
     yield* git(peer, ["push", "origin", input.branch]);
   });
+
+describe("GitVcsDriver git launch", () => {
+  // On Git for Windows, the driver's own reads start on the real git.exe
+  // without a console; commands that can run hooks keep the launcher.
+  it.effect("starts Windows git reads on the real git.exe without a console", () => {
+    const realGit = "C:\\Program Files\\Git\\mingw64\\bin\\git.exe";
+    const spawned: Array<{
+      readonly command: string;
+      readonly options: {
+        readonly detached?: boolean;
+        readonly windowsHide?: boolean;
+        readonly env?: Record<string, string | undefined>;
+      };
+    }> = [];
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        spawned.push(command as unknown as (typeof spawned)[number]);
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.encodeText(Stream.make("ok\n")),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        });
+      }),
+    );
+    const layer = Layer.fresh(GitVcsDriver.layer).pipe(
+      Layer.provide(ServerConfigLayer),
+      Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* driver.execute({
+        operation: "test.read",
+        cwd: process.cwd(),
+        args: ["rev-parse", "HEAD"],
+      });
+      yield* driver.execute({ operation: "test.status", cwd: process.cwd(), args: ["status"] });
+
+      const [read, status] = spawned;
+      assert.equal(read?.command, realGit);
+      assert.equal(read?.options.detached, true);
+      assert.equal(read?.options.windowsHide, true);
+      assert.equal(read?.options.env?.LC_ALL, "C");
+      assert.equal(status?.command, "git");
+      assert.equal(status?.options.detached, undefined);
+      assert.equal(status?.options.env?.LC_ALL, undefined);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(GitInstallProbe, {
+        platform: "win32",
+        findOnPath: () => "C:\\Program Files\\Git\\cmd\\git.exe",
+        isFile: () => true,
+        readExecPath: async () => "C:/Program Files/Git/mingw64/libexec/git-core",
+      }),
+    );
+  });
+});
 
 it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   describe("repository status", () => {
@@ -488,6 +558,41 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(featureFile?.unstagedDeletions, 0);
         assert.equal(status.workingTree.insertions, 2);
         assert.equal(status.workingTree.deletions, 0);
+      }),
+    );
+
+    // Saving a refreshed index takes `.git/index.lock`, which makes an agent's
+    // own `git commit` in the same checkout fail if it lands at that moment.
+    it.effect("reads status without rewriting the index", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        yield* fileSystem.writeFile(
+          pathService.join(cwd, "logo.bin"),
+          new Uint8Array([0, 1, 2, 3, 0, 255]),
+        );
+        yield* git(cwd, ["add", "logo.bin"]);
+        yield* git(cwd, ["commit", "-m", "add binary"]);
+        // Same content, older timestamp: git would refresh these entries, and
+        // the binary one still gets a numstat row when it doesn't.
+        const touchedAt = new Date("2020-01-01T00:00:00Z");
+        for (const fileName of ["README.md", "logo.bin"]) {
+          yield* fileSystem.utimes(pathService.join(cwd, fileName), touchedAt, touchedAt);
+        }
+        yield* writeTextFile(cwd, "feature.ts", "export const value = 1;\n");
+        yield* git(cwd, ["add", "feature.ts"]);
+        const indexPath = pathService.join(cwd, ".git", "index");
+        const indexBefore = yield* fileSystem.readFile(indexPath);
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+
+        assert.deepStrictEqual(
+          status.workingTree.files.map((file) => file.path),
+          ["feature.ts"],
+        );
+        assert.deepStrictEqual(yield* fileSystem.readFile(indexPath), indexBefore);
       }),
     );
 

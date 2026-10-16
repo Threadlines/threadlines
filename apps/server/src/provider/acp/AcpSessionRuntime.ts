@@ -200,9 +200,24 @@ export interface AcpSessionRuntimeShape {
   /**
    * Resolves once every event queued so far has been consumed by the
    * `getEvents` reader (which must acknowledge the barrier). Lets a prompt's
-   * completion be reported strictly after the deltas it produced.
+   * completion be reported strictly after the deltas it produced. With
+   * `holdUntil`, the reader then waits for it before going on.
    */
-  readonly flushEvents: Effect.Effect<void>;
+  readonly flushEvents: (holdUntil?: Deferred.Deferred<void>) => Effect.Effect<void>;
+  /**
+   * Hands `run` to the `getEvents` reader behind every event queued so far,
+   * so work a notification handler starts stays in order with the updates
+   * around it. Returns once queued.
+   */
+  readonly inOrder: (run: Effect.Effect<void>) => Effect.Effect<void>;
+  /**
+   * Marks where a turn the agent started or ended itself falls among its
+   * updates: the reply streamed so far ends here, and a prompt answered
+   * after this point leaves the reply that follows alone. Call it from the
+   * notification handler that saw the boundary (handlers run in arrival
+   * order).
+   */
+  readonly markAgentTurnBoundary: Effect.Effect<void>;
   /**
    * Ends the reply being streamed outside a prompt (an agent's own turn):
    * text after it starts a new message. Prompts end theirs themselves.
@@ -242,9 +257,20 @@ export interface AcpSessionRuntimeShape {
 export interface AcpSessionEventStreamBarrier {
   readonly _tag: "EventStreamBarrier";
   readonly acknowledge: Deferred.Deferred<void>;
+  /** What the reader waits for after acknowledging, before the next event. */
+  readonly holdUntil?: Deferred.Deferred<void>;
 }
 
-export type AcpSessionRuntimeEvent = AcpParsedSessionEvent | AcpSessionEventStreamBarrier;
+/** Work for the reader to run where it was queued (see `inOrder`). */
+export interface AcpSessionInOrderWork {
+  readonly _tag: "InOrder";
+  readonly run: Effect.Effect<void>;
+}
+
+export type AcpSessionRuntimeEvent =
+  | AcpParsedSessionEvent
+  | AcpSessionEventStreamBarrier
+  | AcpSessionInOrderWork;
 
 /** Upper bound on waiting for the reader; a dead consumer must not wedge a turn. */
 const EVENT_FLUSH_TIMEOUT = "5 seconds";
@@ -446,6 +472,8 @@ const makeAcpSessionRuntime = (
     // updates produced by a prompt we sent are live content, or, for an agent
     // that starts turns of its own, anything after the session opened.
     const promptInFlightRef = yield* Ref.make(false);
+    /** Turns the agent started or ended itself so far (`markAgentTurnBoundary`). */
+    const agentTurnBoundariesRef = yield* Ref.make(0);
     const liveOutsidePromptRef = yield* Ref.make(false);
     // This session's id once known; updates for any other id are a subagent's.
     const ownSessionIdRef = yield* Ref.make<string | undefined>(options.resumeSessionId);
@@ -886,11 +914,24 @@ const makeAcpSessionRuntime = (
       handleForeignSessionUpdate: (handler) => Ref.set(foreignUpdateHandlerRef, handler),
       start: () => start,
       getEvents: () => Stream.fromQueue(eventQueue),
-      flushEvents: Effect.gen(function* () {
-        const acknowledge = yield* Deferred.make<void>();
-        yield* Queue.offer(eventQueue, { _tag: "EventStreamBarrier", acknowledge });
-        yield* Deferred.await(acknowledge).pipe(Effect.timeout(EVENT_FLUSH_TIMEOUT), Effect.ignore);
-      }),
+      flushEvents: (holdUntil) =>
+        Effect.gen(function* () {
+          const acknowledge = yield* Deferred.make<void>();
+          yield* Queue.offer(eventQueue, {
+            _tag: "EventStreamBarrier",
+            acknowledge,
+            ...(holdUntil ? { holdUntil } : {}),
+          });
+          yield* Deferred.await(acknowledge).pipe(
+            Effect.timeout(EVENT_FLUSH_TIMEOUT),
+            Effect.ignore,
+          );
+        }),
+      inOrder: (run) => Queue.offer(eventQueue, { _tag: "InOrder", run }).pipe(Effect.asVoid),
+      markAgentTurnBoundary: closeActiveAssistantSegment({
+        queue: eventQueue,
+        assistantSegmentRef,
+      }).pipe(Effect.andThen(Ref.update(agentTurnBoundariesRef, (count) => count + 1))),
       closeAssistantSegment: closeActiveAssistantSegment({
         queue: eventQueue,
         assistantSegmentRef,
@@ -905,26 +946,22 @@ const makeAcpSessionRuntime = (
               sessionId: started.sessionId,
               ...payload,
             } satisfies EffectAcpSchema.PromptRequest;
-            return closeActiveAssistantSegment({
-              queue: eventQueue,
-              assistantSegmentRef,
-            }).pipe(
-              Effect.andThen(Ref.set(promptInFlightRef, true)),
-              Effect.andThen(
-                runLoggedRequest(
-                  "session/prompt",
-                  requestPayload,
-                  acp.agent.prompt(requestPayload),
-                ),
-              ),
-              Effect.ensuring(Ref.set(promptInFlightRef, false)),
-              Effect.tap(() =>
-                closeActiveAssistantSegment({
-                  queue: eventQueue,
-                  assistantSegmentRef,
-                }),
-              ),
-            );
+            return Effect.gen(function* () {
+              yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
+              const boundariesBefore = yield* Ref.get(agentTurnBoundariesRef);
+              yield* Ref.set(promptInFlightRef, true);
+              const response = yield* runLoggedRequest(
+                "session/prompt",
+                requestPayload,
+                acp.agent.prompt(requestPayload),
+              ).pipe(Effect.ensuring(Ref.set(promptInFlightRef, false)));
+              // A turn the agent began before this answer already ended the
+              // prompt's reply; the reply streaming now is that turn's.
+              if ((yield* Ref.get(agentTurnBoundariesRef)) === boundariesBefore) {
+                yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
+              }
+              return response;
+            });
           }),
         ),
       cancel: getStartedState.pipe(

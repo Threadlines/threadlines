@@ -1,7 +1,15 @@
 import "../index.css";
 
 import { scopeThreadRef } from "@threadlines/client-runtime";
-import { EnvironmentId, type EnvironmentApi, ThreadId } from "@threadlines/contracts";
+import {
+  CommandRunId,
+  EnvironmentId,
+  type EnvironmentApi,
+  MessageId,
+  type OrchestrationCommandRun,
+  ThreadId,
+  TurnId,
+} from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement, ReactNode } from "react";
 import { page } from "vite-plus/test/browser";
@@ -52,6 +60,11 @@ vi.mock("../localApi", () => ({
 
 import ChatMarkdown from "./ChatMarkdown";
 import { ThreadPullRequestLinkContext } from "./chat/ThreadPullRequestLinkContext";
+import {
+  CodeBlockRunScopeContext,
+  CommandRunActionsContext,
+  type CommandRunActions,
+} from "./chat/CommandRuns";
 import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
@@ -1110,4 +1123,113 @@ describe("find in chat reads what ChatMarkdown draws", () => {
       }
     });
   }
+});
+
+describe("ChatMarkdown code block commands", () => {
+  const REPLY = MessageId.make("reply-1");
+  const actionsWith = (runs: ReadonlyArray<OrchestrationCommandRun> = []): CommandRunActions => ({
+    supported: true,
+    dialect: "posix",
+    cwdLabel: "~/repo",
+    runs,
+    startRun: vi.fn(),
+    sendOutput: vi.fn(),
+    setRequestDismissed: vi.fn(),
+    showTerminal: vi.fn(),
+    terminalLabel: () => "Terminal 2",
+    agentLabel: () => "Codex",
+  });
+  const renderReply = (text: string, actions: CommandRunActions) =>
+    renderWithQueryClient(
+      <CommandRunActionsContext value={actions}>
+        <CodeBlockRunScopeContext value={{ messageId: REPLY, participantId: null }}>
+          <ChatMarkdown text={text} cwd="/repo" />
+        </CodeBlockRunScopeContext>
+      </CommandRunActionsContext>,
+    );
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("runs an everyday command, and only puts a risky one in the terminal", async () => {
+    const actions = actionsWith();
+    const screen = await renderReply(
+      "Run this:\n\n```bash\n# deps\npnpm install\n```\n\nThen:\n\n```bash\ngit reset --hard origin/main\n```\n",
+      actions,
+    );
+    try {
+      await page.getByRole("button", { name: "Run in terminal" }).click();
+      expect(actions.startRun).toHaveBeenCalledWith({
+        command: "pnpm install",
+        mode: "run",
+        source: { kind: "message", messageId: REPLY },
+      });
+      await expect.element(page.getByText("Throws away uncommitted changes.")).toBeInTheDocument();
+      await page.getByRole("button", { name: "Put in terminal" }).click();
+      expect(actions.startRun).toHaveBeenLastCalledWith({
+        command: "git reset --hard origin/main",
+        mode: "insert",
+        source: { kind: "message", messageId: REPLY },
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows how the block's last run went and sends its output", async () => {
+    const runId = CommandRunId.make("run-1");
+    const actions = actionsWith([
+      {
+        runId,
+        terminalId: "terminal-run",
+        mode: "run",
+        dialect: "posix",
+        command: "pnpm install",
+        source: { kind: "message", messageId: REPLY },
+        turnId: TurnId.make("turn-1"),
+        participantId: null,
+        cwd: "/repo",
+        autoSend: false,
+        status: "finished",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: "2026-01-01T00:00:14.000Z",
+        exitCode: 0,
+        error: null,
+        hasOutput: true,
+        heldReason: null,
+        outputSentAt: null,
+        outputMessageId: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:14.000Z",
+      },
+    ]);
+    const screen = await renderReply("```bash\npnpm install\n```\n", actions);
+    try {
+      await expect.element(page.getByText("Finished in Terminal 2 · 14s")).toBeInTheDocument();
+      await page.getByRole("button", { name: "Send output to Codex" }).click();
+      expect(actions.sendOutput).toHaveBeenCalledWith(runId);
+      await page.getByRole("button", { name: "Show terminal" }).click();
+      expect(actions.showTerminal).toHaveBeenCalledWith("terminal-run");
+      await expect.element(page.getByRole("button", { name: "Run again" })).toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("leaves code blocks alone outside a settled agent reply", async () => {
+    const screen = await renderWithQueryClient(
+      <CommandRunActionsContext value={actionsWith()}>
+        <ChatMarkdown text={"```bash\npnpm install\n```\n"} cwd="/repo" />
+      </CommandRunActionsContext>,
+    );
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "Copy code block" }))
+        .toBeInTheDocument();
+      expect(document.querySelector(".chat-markdown-run-button")).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

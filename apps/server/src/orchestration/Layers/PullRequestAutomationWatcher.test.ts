@@ -386,6 +386,7 @@ function makeSnapshotQuery(input: {
     getFullThreadDiffContext: () => Effect.succeed(Option.none()),
     listThreadDiffStatBaselines: () => Effect.succeed([]),
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
+    listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
     getThreadShellById: (threadId) =>
       Effect.sync(() => {
         input.onThreadRead();
@@ -432,6 +433,7 @@ describe("PullRequestAutomationWatcher", () => {
 
     const orchestrationEngine: OrchestrationEngineShape = {
       readEvents: () => Stream.empty,
+      readThreadEvents: () => Effect.succeed([]),
       getCommandReceipt: () => Effect.succeed(Option.none()),
       dispatch: (command) => {
         if (

@@ -25,10 +25,15 @@ describe("terminalCommandTracker", () => {
     expect(result.state).toEqual({ draft: "", cursor: 0 });
   });
 
-  it("captures the last command from a pasted multi-line input", () => {
-    const result = applyInput("\u001b[200~cd apps/web\rvp run dev:desktop\r\u001b[201~");
+  it("holds a bracketed multi-line paste until Enter, then submits all of it", () => {
+    // A shell with bracketed paste on keeps pasted lines in its editor; none
+    // runs until the user presses Enter.
+    const pasted = applyInput("\u001b[200~cd apps/web\rvp run dev:desktop\r\u001b[201~");
+    expect(pasted.submittedCommand).toBeNull();
 
-    expect(result.submittedCommand).toBe("vp run dev:desktop");
+    // The paste can arrive in pieces.
+    const result = applyInput("\u001b[200~cd apps/web\rvp run", " dev:desktop\u001b[201~", "\r");
+    expect(result.submittedCommand).toBe("cd apps/web vp run dev:desktop");
   });
 
   it("tracks common line editing controls before submit", () => {
