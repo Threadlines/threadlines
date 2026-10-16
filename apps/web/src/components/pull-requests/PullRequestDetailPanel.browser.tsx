@@ -564,6 +564,105 @@ describe("Composer pull request merge controls", () => {
   });
 });
 
+describe("Composer pull request row", () => {
+  afterEach(() => __resetEnvironmentApiOverridesForTests());
+
+  it("keeps the chip and the close button inside a narrow composer", async () => {
+    const merged: PullRequestDetail = {
+      ...DETAIL,
+      state: "merged",
+      mergedAt: "2026-09-02T10:00:00.000Z",
+      additions: 10337,
+      deletions: 158,
+    };
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
+      pullRequests: { detail: async () => merged },
+    } as unknown as EnvironmentApi);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(
+      pullRequestQueryKeys.detail(ENVIRONMENT_ID, PROJECT_ID, REFERENCE.number),
+      merged,
+    );
+    // Sized the way the composer's dock is: its width never comes from the row.
+    const host = document.createElement("div");
+    host.style.width = "640px";
+    host.style.contain = "inline-size";
+    document.body.append(host);
+    const router = createTestRouter(
+      <QueryClientProvider client={queryClient}>
+        <ComposerPullRequestRow
+          divided={false}
+          pullRequest={{
+            environmentId: ENVIRONMENT_ID,
+            reference: REFERENCE,
+            pullRequest: {
+              ...merged,
+              autoMergeEnabled: false,
+              settledAt: merged.mergedAt,
+              diffStat: { additions: merged.additions, deletions: merged.deletions },
+            },
+            pushedHead: null,
+            projectTitle: merged.projectTitle,
+            onOpen: vi.fn(),
+            onDismiss: vi.fn(),
+            autoFix: { checked: true, onChange: vi.fn() },
+            autoMerge: null,
+            onAutoMergeChange: vi.fn(),
+            agentWorking: false,
+            unpushedCommits: 0,
+            wrapUpOnSettled: false,
+            onWrapUpOnSettledChange: vi.fn(),
+          }}
+        />
+      </QueryClientProvider>,
+    );
+    const screen = await render(<RouterProvider router={router} />, { container: host });
+    try {
+      const close = page.getByRole("button", { name: "Hide pull request #42 from the composer" });
+      await expect.element(close).toBeVisible();
+      const rowElement = host.querySelector<HTMLElement>("[data-composer-pull-request-row]")!;
+      const title = page.getByText("Threadlines", { exact: true });
+      const diffStat = page.getByText("+10337");
+      /** Whether the whole element is on screen, end to end, inside the row. */
+      const shown = (element: Element) => {
+        const box = element.getBoundingClientRect();
+        const row = rowElement.getBoundingClientRect();
+        const middle = box.top + box.height / 2;
+        return (
+          box.width > 0 &&
+          box.left >= row.left &&
+          box.right <= row.right &&
+          // Hit-testing respects clipping, so a clipped end is not drawn.
+          [box.left + 1, box.right - 1].every((x) => {
+            const hit = document.elementFromPoint(x, middle);
+            return hit !== null && element.contains(hit);
+          })
+        );
+      };
+
+      // With room, the row says everything.
+      expect(shown(title.element())).toBe(true);
+      expect(shown(diffStat.element())).toBe(true);
+      expect(shown(page.getByText("feature/pull-requests").element())).toBe(true);
+
+      // Narrow, the project and the count step out, and nothing is drawn past the edge.
+      host.style.width = "260px";
+      expect(shown(title.element())).toBe(false);
+      expect(shown(diffStat.element())).toBe(false);
+      expect(rowElement.scrollWidth).toBeLessThanOrEqual(rowElement.clientWidth);
+      expect(shown(close.element())).toBe(true);
+      expect(shown(page.getByText("Merged", { exact: true }).element())).toBe(true);
+      expect(shown(page.getByRole("button", { name: "Open pull request #42" }).element())).toBe(
+        true,
+      );
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+      host.remove();
+    }
+  });
+});
+
 function makeComment(id: string, createdAt: string, body = `body ${id}`): PullRequestComment {
   return {
     id,
