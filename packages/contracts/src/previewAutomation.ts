@@ -480,6 +480,12 @@ export const PreviewAutomationActionStatusSchema = Schema.Struct({
   openedTabs: Schema.optionalKey(
     Schema.Array(Schema.Struct({ id: Schema.String, url: Schema.String })),
   ),
+  /**
+   * Sign-in pop-ups the action made the page open. Each is a window of its own
+   * for the user to finish in; no browser tool acts in it. Omitted when none
+   * opened.
+   */
+  openedWindows: Schema.optionalKey(Schema.Array(Schema.Struct({ url: Schema.String }))),
 });
 export type PreviewAutomationActionStatus = typeof PreviewAutomationActionStatusSchema.Type;
 

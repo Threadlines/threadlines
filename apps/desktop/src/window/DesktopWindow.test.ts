@@ -19,6 +19,7 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
+import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
@@ -27,6 +28,7 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as IpcChannels from "../ipc/channels.ts";
+import * as PreviewAutomation from "../preview/PreviewAutomation.ts";
 import * as PreviewSession from "../preview/PreviewSession.ts";
 import { previewProfilePartition } from "../preview/previewPartitions.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
@@ -78,6 +80,7 @@ function makeFakeBrowserWindow(input?: {
     center: vi.fn(),
     focus: vi.fn(),
     getBounds: vi.fn(() => bounds),
+    getChildWindows: vi.fn(() => []),
     getNormalBounds: vi.fn(() => normalBounds),
     hide: vi.fn(),
     isDestroyed: vi.fn(() => false),
@@ -223,6 +226,8 @@ function makeTestLayer(input: {
   /** Leave the window gate shut, as if startup were still building menus and IPC. */
   readonly startupInProgress?: boolean;
   readonly guests?: ReadonlyArray<Electron.WebContents>;
+  readonly previewAutomation?: Partial<PreviewAutomation.PreviewAutomation["Service"]>;
+  readonly showMessageBox?: ElectronDialog.ElectronDialogShape["showMessageBox"];
 }) {
   const desktopStateLayer =
     input.initialRunningThreadCount === undefined
@@ -305,6 +310,17 @@ function makeTestLayer(input: {
         ),
         electronThemeLayer,
         electronWindowLayer,
+        Layer.succeed(PreviewAutomation.PreviewAutomation, {
+          guardPopup: () => Effect.void,
+          allowSite: () => Effect.void,
+          ...input.previewAutomation,
+        } as PreviewAutomation.PreviewAutomation["Service"]),
+        Layer.succeed(ElectronDialog.ElectronDialog, {
+          pickFolder: () => Effect.die("unexpected folder picker"),
+          confirm: () => Effect.die("unexpected confirm"),
+          showMessageBox: input.showMessageBox ?? (() => Effect.die("unexpected message box")),
+          showErrorBox: () => Effect.void,
+        } satisfies ElectronDialog.ElectronDialogShape),
         Layer.succeed(
           PreviewSession.PreviewSession,
           input.previewSession ?? {
@@ -897,14 +913,27 @@ describe("DesktopWindow", () => {
         };
         fakeWindow.emitWebContents("did-attach-webview", {}, guest);
 
-        const pageOpens = (url: string, disposition: Electron.HandlerDetails["disposition"]) =>
+        const pageOpens = (
+          url: string,
+          disposition: Electron.HandlerDetails["disposition"],
+          features = "",
+        ) =>
           windowOpenHandler({
             url,
             disposition,
             frameName: "",
-            features: "",
+            features,
             referrer: { url: "", policy: "default" },
           });
+        // A sign-in pop-up, asked for with window features, gets a window of
+        // its own so it can answer the page; it never becomes a tab.
+        const signIn = pageOpens(
+          "https://accounts.example.com/o/auth",
+          "new-window",
+          "width=500,height=600",
+        );
+        assert.equal(signIn.action, "allow");
+        assert.equal(typeof (signIn as { createWindow?: unknown }).createWindow, "function");
         assert.deepEqual(pageOpens("https://example.com/docs", "foreground-tab"), {
           action: "deny",
         });
@@ -917,8 +946,8 @@ describe("DesktopWindow", () => {
           action: "deny",
         });
         assert.deepEqual(pageOpens("about:blank", "foreground-tab"), { action: "deny" });
-        // A page opening tabs in a loop gets a burst, not one per call: three
-        // went above, so three more and then nothing.
+        // A page opening tabs in a loop gets a burst, not one per call: four
+        // went above, so two more and then nothing.
         for (let index = 0; index < 20; index += 1) {
           pageOpens(`https://example.com/loop-${index}`, "foreground-tab");
         }
@@ -952,7 +981,6 @@ describe("DesktopWindow", () => {
           { webContentsId: 7, url: "https://example.com/sign-in", background: false },
           { webContentsId: 7, url: "https://example.com/loop-0", background: false },
           { webContentsId: 7, url: "https://example.com/loop-1", background: false },
-          { webContentsId: 7, url: "https://example.com/loop-2", background: false },
           // The menu is the user asking, so it never runs out.
           { webContentsId: 7, url: "https://example.com/menu", background: true },
         ]);

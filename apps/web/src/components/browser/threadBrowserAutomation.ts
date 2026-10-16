@@ -33,6 +33,7 @@ import { withPageKeyboard } from "./browserFocusGuard";
 import { beginAgentWork, reviveEvictedPage } from "./browserLifecycle";
 import type { PreviewAutomationHostTarget } from "./previewAutomationHost";
 import { normalizePreviewUrl } from "./previewUrl";
+import { signInPopupsOf } from "./signInPopups";
 
 /**
  * An agent's browser requests, for any thread.
@@ -397,6 +398,8 @@ export function resolveThreadBrowserTarget(
     onAgentActivity: (activity) =>
       useBrowserPanelStore.getState().setAgentActivity(threadRef, activity),
     onUserTakeover: () => useBrowserPanelStore.getState().markBrowserUserControlled(threadRef),
+    windowsOpenedByPage: () =>
+      signInPopupsOf(webview === null ? null : attachedWebContentsId(webview)),
     tabsOpenedByPage: () =>
       tabId === ""
         ? []

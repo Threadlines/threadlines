@@ -261,10 +261,13 @@ const desktopServerExposureLayer = DesktopServerExposure.layer.pipe(
   Layer.provideMerge(desktopFoundationLayer),
 );
 
-// The window configures each preview session as its <webview> attaches, so the
-// preview sessions sit beneath it rather than beside the IPC handlers.
+// The window configures each preview session as its <webview> attaches, and
+// guards the sign-in pop-ups its pages open, so the preview sessions and the
+// automation that owns the navigation guards sit beneath it rather than beside
+// the IPC handlers.
 const desktopWindowLayer = DesktopWindow.layer.pipe(
   Layer.provideMerge(PreviewSession.layer),
+  Layer.provideMerge(PreviewAutomation.layer),
   Layer.provideMerge(desktopServerExposureLayer),
 );
 
@@ -285,7 +288,6 @@ const desktopApplicationLayer = Layer.mergeAll(
   DesktopApplicationMenu.layer,
   DesktopStatusIndicator.layer,
   DesktopScreenCapture.layer,
-  PreviewAutomation.layer,
   LocalServers.layer,
   PreviewProfiles.layer,
   DesktopRelayRetirement.layer,

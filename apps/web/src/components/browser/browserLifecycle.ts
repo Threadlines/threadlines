@@ -15,6 +15,7 @@ import {
   type LifecyclePage,
   type PageRunState,
 } from "./browserLifecyclePlan";
+import { signInPopupsOf } from "./signInPopups";
 
 /**
  * Carries out `planBrowserLifecycle` against the real pages.
@@ -222,7 +223,11 @@ export async function runBrowserLifecycleCheck(now = Date.now()): Promise<void> 
         drawn: page.drawn,
         state: runStateByPage.get(key) ?? "active",
         inFlight: activity?.inFlight ?? 0,
-        awaitingUser: questions.some((question) => question.tabId === tab.id),
+        // A sign-in pop-up it opened waits on the user too, and the page must
+        // be awake and in memory to hear back from it.
+        awaitingUser:
+          questions.some((question) => question.tabId === tab.id) ||
+          signInPopupsOf(webContentsId).length > 0,
         lastAgentAt: activity?.lastAgentAt ?? 0,
         lastShownAt: lastShownAtByPage.get(key) ?? now,
         memoryKb: webContentsId === null ? null : (shareByWebContents.get(webContentsId) ?? null),
