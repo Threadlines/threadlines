@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { ExtensionsSettingsPanel } from "../components/settings/ExtensionsSettings";
-import { parseExtensionsSettingsTab } from "../components/settings/ExtensionsSettings.logic";
+import { parseExtensionsSettingsTab } from "../components/settings/extensionsSettingsTabs";
 
 function SettingsPluginsRoute() {
   return <ExtensionsSettingsPanel />;

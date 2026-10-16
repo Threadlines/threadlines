@@ -54,7 +54,10 @@ import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useRelativeTimeTick } from "../hooks/useRelativeTimeTick";
-import { retainThreadDetailSubscription } from "../environments/runtime/service";
+import {
+  prewarmThreadJumpTargets,
+  requestIdleThreadDetailPrewarm,
+} from "../environments/runtime/service";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useNavigateBackWithinApp } from "../hooks/useNavigateBackWithinApp";
 import {
@@ -86,7 +89,7 @@ import {
   buildProjectScopeOptions,
   canMarkThreadDone,
   childThreadsHoverLine,
-  getSidebarThreadIdsToPrewarm,
+  getSidebarIdlePrewarmThreadIds,
   inboxLiveRowHasAttention,
   inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
@@ -222,6 +225,18 @@ function SidebarInboxLoadingSkeleton() {
       </div>
     </div>
   );
+}
+
+/**
+ * Thread refs from scoped thread keys joined by newlines. Prewarm effects
+ * depend on the joined string, so a list that re-renders with the same rows
+ * does not restart them.
+ */
+function threadRefsFromKeyList(keyList: string): ScopedThreadRef[] {
+  return keyList.split("\n").flatMap((threadKey) => {
+    const ref = threadKey ? parseScopedThreadKey(threadKey) : null;
+    return ref ? [ref] : [];
+  });
 }
 
 interface InboxEntry {
@@ -1768,26 +1783,27 @@ export default function Sidebar() {
     ? threadJumpLabelByKey
     : EMPTY_THREAD_JUMP_LABELS;
 
-  const prewarmedSidebarThreadRefs = useMemo(
-    () =>
-      getSidebarThreadIdsToPrewarm(traversalThreadKeys).flatMap((threadKey) => {
-        const ref = parseScopedThreadKey(threadKey);
-        return ref ? [ref] : [];
-      }),
-    [traversalThreadKeys],
+  // On a phone the sidebar is a sheet that mounts each time it opens, so it
+  // prewarms nothing on its own there; rows still load on a touch.
+  const idlePrewarmThreadKeyList = isMobile
+    ? ""
+    : getSidebarIdlePrewarmThreadIds({
+        traversalThreadIds: traversalThreadKeys,
+        activeThreadId: routeThreadKey,
+      }).join("\n");
+  useEffect(
+    () => requestIdleThreadDetailPrewarm(threadRefsFromKeyList(idlePrewarmThreadKeyList)),
+    [idlePrewarmThreadKeyList],
   );
 
+  // While the jump numbers are on screen the user is about to press one.
+  const threadJumpThreadKeyList = threadJumpThreadKeys.join("\n");
   useEffect(() => {
-    const releases = prewarmedSidebarThreadRefs.map((ref) =>
-      retainThreadDetailSubscription(ref.environmentId, ref.threadId),
-    );
-
-    return () => {
-      for (const release of releases) {
-        release();
-      }
-    };
-  }, [prewarmedSidebarThreadRefs]);
+    if (!showThreadJumpHints) {
+      return;
+    }
+    return prewarmThreadJumpTargets(threadRefsFromKeyList(threadJumpThreadKeyList));
+  }, [showThreadJumpHints, threadJumpThreadKeyList]);
 
   useEffect(() => {
     updateThreadJumpHintsVisibility(shouldShowThreadJumpHintsNow);

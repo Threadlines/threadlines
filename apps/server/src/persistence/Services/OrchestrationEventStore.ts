@@ -9,7 +9,7 @@
  *
  * @module OrchestrationEventStore
  */
-import { OrchestrationEvent } from "@threadlines/contracts";
+import { OrchestrationEvent, ThreadId } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -45,6 +45,20 @@ export interface OrchestrationEventStoreShape {
     sequenceExclusive: number,
     limit?: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
+
+  /**
+   * Read one thread's events with a sequence in `(fromSequenceExclusive,
+   * toSequenceInclusive]`, oldest first, at most `limit` of them.
+   *
+   * Uses the per-stream index, so the cost follows this thread's events, not
+   * every event committed meanwhile.
+   */
+  readonly readThreadEvents: (input: {
+    readonly threadId: ThreadId;
+    readonly fromSequenceExclusive: number;
+    readonly toSequenceInclusive: number;
+    readonly limit: number;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationEvent>, OrchestrationEventStoreError>;
 
   /**
    * Read all events from the beginning of the stream.

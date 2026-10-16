@@ -54,7 +54,10 @@ import {
   THREAD_DETAIL_STALL_REFRESH_THRESHOLD_MS,
   waitForStartedServerThread,
   resolveThreadBranchToRecord,
+  deriveThreadTimelineEntries,
+  deriveThreadWorkLogEntries,
 } from "./ChatView.logic";
+import { deriveWorkLogEntries } from "../session-logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
@@ -506,6 +509,22 @@ describe("deriveProviderAuthReconnectPrompt", () => {
       command: "claude auth login",
       message: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
     });
+  });
+
+  it("reads each version of a streamed message by its own text", () => {
+    // Streaming replaces the message object while its id stays the same.
+    const partial = { id: "msg-1", role: "assistant" as const, text: "Working on" };
+    const failed = {
+      id: "msg-1",
+      role: "assistant" as const,
+      text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    };
+    const prompt = (message: Pick<ChatMessage, "role" | "text">) =>
+      deriveProviderAuthReconnectPrompt({ provider: claudeProvider, messages: [message] });
+
+    expect(prompt(partial)).toBeNull();
+    expect(prompt(failed)?.message).toBe(failed.text);
+    expect(prompt(partial)).toBeNull();
   });
 
   it("detects Codex authentication failures with the Codex login command", () => {
@@ -3069,5 +3088,76 @@ describe("createUpwardScrollDetector", () => {
     const detector = createUpwardScrollDetector();
     detector.observe(at(4_200));
     expect(detector.observe(at(4_190))).toBe(false);
+  });
+});
+
+describe("a chat's derivations remembered per thread", () => {
+  const activity = (
+    overrides: Pick<OrchestrationThreadActivity, "id" | "kind" | "summary" | "tone" | "payload"> & {
+      readonly turnId?: string;
+    },
+  ): OrchestrationThreadActivity => ({
+    ...overrides,
+    turnId: overrides.turnId ? TurnId.make(overrides.turnId) : null,
+    createdAt: "2026-10-15T00:00:01.000Z",
+  });
+
+  it("derives a thread's steps again when only its active turn changes", () => {
+    const activities = [
+      activity({
+        id: EventId.make("buffering"),
+        kind: "provider.model.safety-buffering",
+        summary: "Additional safety checks",
+        tone: "thinking",
+        payload: { showBufferingUi: true, status: "inProgress" },
+        turnId: "turn-1",
+      }),
+    ];
+    const turnOne = TurnId.make("turn-1");
+    const steps = (activeTurnId: TurnId | null) =>
+      deriveThreadWorkLogEntries("environment-local:thread-1", activities, activeTurnId);
+
+    expect(steps(turnOne)).toEqual(deriveWorkLogEntries(activities, turnOne));
+    expect(steps(turnOne)).toHaveLength(1);
+    // The turn ends with the same activities array: the buffering row goes.
+    expect(steps(null)).toEqual([]);
+    expect(steps(TurnId.make("turn-2"))).toEqual([]);
+    expect(steps(turnOne)).toHaveLength(1);
+  });
+
+  it("places steps that arrive later into the same messages' timeline", () => {
+    const messages: ChatMessage[] = [
+      {
+        id: MessageId.make("message-1"),
+        role: "user",
+        text: "Read the config",
+        createdAt: "2026-10-15T00:00:00.000Z",
+        streaming: false,
+      },
+    ];
+    // Steps of an older turn, fetched once the reader scrolls back to it.
+    const fetchedSteps = deriveWorkLogEntries([
+      activity({
+        id: EventId.make("read"),
+        kind: "tool.completed",
+        summary: "Read file",
+        tone: "tool",
+        payload: { itemType: "dynamic_tool_call", title: "Read file" },
+      }),
+    ]);
+    const kinds = (workEntries: typeof fetchedSteps) =>
+      deriveThreadTimelineEntries(
+        "environment-local:thread-1",
+        messages,
+        [],
+        workEntries,
+        [],
+        [],
+        [],
+        [],
+      ).map((entry) => entry.kind);
+
+    expect(kinds([])).toEqual(["message"]);
+    expect(kinds(fetchedSteps)).toEqual(["message", "work"]);
   });
 });

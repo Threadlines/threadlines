@@ -104,6 +104,7 @@ const runConfirmHarness = (input: {
           activate: Effect.void,
           createMainIfBackendReady: Effect.void,
           handleBackendReady: Effect.void,
+          allowMainWindowOpen: Effect.void,
           allowMainWindowClose: Effect.void,
           requestQuitConfirmation: (runningThreadCount) =>
             Effect.sync(() => {

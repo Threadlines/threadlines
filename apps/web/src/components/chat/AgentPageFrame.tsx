@@ -4,11 +4,11 @@ import {
   type AgentPageTheme,
   agentPageResult,
   agentPageThemeMessage,
-  buildAgentPageDocument,
   isAgentPageLeftMessage,
   readAgentPageContentHeight,
   readAgentPageLinkRequest,
 } from "@threadlines/shared/agentPages";
+import { buildAgentPageDocument } from "@threadlines/shared/agentPageDocument";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { openExternalUrl } from "../../lib/externalLinks";

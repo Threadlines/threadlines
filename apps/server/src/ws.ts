@@ -161,6 +161,7 @@ import {
   type SessionCredentialChange,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
+import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { isInternalClientSession } from "./auth/utils.ts";
 
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
@@ -242,7 +243,38 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
 }
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
-export const ORCHESTRATION_THREAD_RESUME_MAX_SEQUENCE_GAP = 500;
+/**
+ * The most events a thread may have missed and still resume by replay rather
+ * than a fresh snapshot, counted in that thread's own events.
+ */
+export const ORCHESTRATION_THREAD_RESUME_MAX_EVENTS = 500;
+
+/**
+ * Whether a thread's stored events after a client's cursor, every one up to
+ * now, are all it missed: then replaying them resumes the thread exactly.
+ *
+ * Storage maintenance deletes events of deleted threads, keeping the
+ * `thread.deleted` tombstone, and a thread's activity events older than its
+ * newest MAX_THREAD_ACTIVITIES. A prune that reaches past the cursor leaves at
+ * least MAX_THREAD_ACTIVITIES activity events after it (the ones it kept, all
+ * newer), and later prunes only trade those for newer ones; so fewer than
+ * that, counted with no upper bound, means nothing after the cursor is gone.
+ */
+function isCompleteThreadReplay(eventsAfterCursor: ReadonlyArray<OrchestrationEvent>): boolean {
+  if (eventsAfterCursor.length > ORCHESTRATION_THREAD_RESUME_MAX_EVENTS) {
+    return false;
+  }
+  let activityEvents = 0;
+  for (const event of eventsAfterCursor) {
+    if (event.type === "thread.deleted") {
+      return false;
+    }
+    if (event.type === "thread.activity-appended") {
+      activityEvents += 1;
+    }
+  }
+  return activityEvents < MAX_THREAD_ACTIVITIES;
+}
 
 function toAuthAccessStreamEvent(
   change: BootstrapCredentialChange | SessionCredentialChange,
@@ -925,32 +957,46 @@ const makeWsRpcLayer = (currentSession: {
                     })),
                   );
 
+                  // Resume from the client's cursor when this thread missed few
+                  // events. The gap is counted in this thread's own events: a
+                  // cached chat that sat idle while other chats worked replays
+                  // a handful of events after a reconnect, instead of
+                  // downloading its whole snapshot again.
                   const resumeSequence = input.fromSequenceExclusive;
-                  const canResume =
-                    resumeSequence !== undefined &&
-                    resumeSequence <= snapshotSequence &&
-                    snapshotSequence - resumeSequence <=
-                      ORCHESTRATION_THREAD_RESUME_MAX_SEQUENCE_GAP;
-                  if (canResume) {
-                    const replayStream = orchestrationEngine.readEvents(resumeSequence).pipe(
+                  if (resumeSequence !== undefined && resumeSequence <= snapshotSequence) {
+                    // Read past snapshotSequence too: the completeness check
+                    // must count every stored event after the cursor (see
+                    // isCompleteThreadReplay), even ones committed since.
+                    const eventsAfterCursor = yield* orchestrationEngine
+                      .readThreadEvents({
+                        threadId: input.threadId,
+                        fromSequenceExclusive: resumeSequence,
+                        toSequenceInclusive: Number.MAX_SAFE_INTEGER,
+                        limit: ORCHESTRATION_THREAD_RESUME_MAX_EVENTS + 1,
+                      })
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new OrchestrationGetSnapshotError({
+                              message: `Failed to resume thread ${input.threadId}`,
+                              cause,
+                            }),
+                        ),
+                      );
+                    if (isCompleteThreadReplay(eventsAfterCursor)) {
                       // The hot subscription already buffers everything after
-                      // this boundary. Keeping the persisted side bounded also
-                      // prevents duplicates if commits race the replay query.
-                      Stream.takeWhile((event) => event.sequence <= snapshotSequence),
-                      Stream.filter(isThreadEvent),
-                      Stream.map((event) => ({
-                        kind: "event" as const,
-                        event,
-                      })),
-                      Stream.mapError(
-                        (cause) =>
-                          new OrchestrationGetSnapshotError({
-                            message: `Failed to resume thread ${input.threadId}`,
-                            cause,
-                          }),
-                      ),
-                    );
-                    return Stream.concat(replayStream, liveStream);
+                      // snapshotSequence, so the replay stops there.
+                      return Stream.concat(
+                        Stream.fromIterable(
+                          eventsAfterCursor
+                            .filter(
+                              (event) => event.sequence <= snapshotSequence && isThreadEvent(event),
+                            )
+                            .map((event) => ({ kind: "event" as const, event })),
+                        ),
+                        liveStream,
+                      );
+                    }
                   }
 
                   const threadDetail = yield* projectionSnapshotQuery

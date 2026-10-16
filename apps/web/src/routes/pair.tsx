@@ -1,8 +1,8 @@
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 
+import { PairingPendingSurface } from "../components/auth/PairingPendingSurface";
 import {
   HostedPairingRouteSurface,
-  PairingPendingSurface,
   PairingRouteSurface,
 } from "../components/auth/PairingRouteSurface";
 

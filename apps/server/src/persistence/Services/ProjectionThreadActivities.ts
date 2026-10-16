@@ -75,6 +75,17 @@ export interface ProjectionThreadActivityRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
 
   /**
+   * List a thread's prompt activities (approval and user-input requests,
+   * resolutions and respond failures), in the same order as `listByThreadId`.
+   *
+   * Reads only those rows through their partial index, so it stays cheap on
+   * threads with tens of thousands of activities.
+   */
+  readonly listPromptsByThreadId: (
+    input: ListProjectionThreadActivitiesInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  /**
    * Delete projected thread activity rows by thread.
    */
   readonly deleteByThreadId: (

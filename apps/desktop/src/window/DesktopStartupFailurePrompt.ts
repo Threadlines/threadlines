@@ -48,13 +48,21 @@ export interface DesktopStartupFailurePromptShape {
   /** Shows where the damaged database was preserved after startup recovers. */
   readonly notifyDatabaseRecovery: (result: DesktopDatabaseRecoveryResult) => Effect.Effect<void>;
   /**
-   * Tells the user a database migration is still running at the readiness
-   * deadline. Closes itself when interrupted. Never fails.
+   * Tells the user a database migration is keeping the first startup busy.
+   * Closes itself when interrupted, where migrationNoticeClosesItself says it
+   * can. Never fails.
    */
   readonly notifyMigrationInProgress: (info: {
     readonly migrationId: number;
     readonly totalMigrations: number;
   }) => Effect.Effect<void>;
+  /**
+   * Whether interrupting notifyMigrationInProgress closes its box. Not on
+   * macOS: a message box with no parent window runs there as a synchronous
+   * modal that ignores the abort signal (see Electron's dialog docs), so it
+   * holds the main process, readiness checks included, until it is answered.
+   */
+  readonly migrationNoticeClosesItself: boolean;
 }
 
 export class DesktopStartupFailurePrompt extends Context.Service<
@@ -235,6 +243,7 @@ const makeDesktopStartupFailurePrompt = Effect.gen(function* () {
     handle,
     notifyDatabaseRecovery,
     notifyMigrationInProgress,
+    migrationNoticeClosesItself: environment.platform !== "darwin",
   });
 });
 

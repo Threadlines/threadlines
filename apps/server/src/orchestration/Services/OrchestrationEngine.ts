@@ -23,6 +23,7 @@ import type {
   OrchestrationEventStoreError,
 } from "../../persistence/Errors.ts";
 import type { OrchestrationCommandReceipt } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
+import type { OrchestrationEventStoreShape } from "../../persistence/Services/OrchestrationEventStore.ts";
 
 /**
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
@@ -37,6 +38,13 @@ export interface OrchestrationEngineShape {
   readonly readEvents: (
     fromSequenceExclusive: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError, never>;
+
+  /**
+   * Read one thread's persisted events in `(fromSequenceExclusive,
+   * toSequenceInclusive]`, oldest first, at most `limit`. See
+   * OrchestrationEventStore.readThreadEvents.
+   */
+  readonly readThreadEvents: OrchestrationEventStoreShape["readThreadEvents"];
 
   /**
    * Dispatch a validated orchestration command.

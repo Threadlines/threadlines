@@ -13,9 +13,10 @@ import { isHandedBackCompletion } from "@threadlines/shared/childThreads";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
-// Visible sidebar rows are prewarmed into the thread-detail cache so opening a
-// nearby thread usually reuses an already-hot subscription.
-export const SIDEBAR_THREAD_PREWARM_LIMIT = 10;
+// The top sidebar rows are prewarmed into the thread-detail cache, one at a
+// time while the page is idle, so opening one usually reuses a hot
+// subscription. Other rows warm when the pointer rests on them.
+export const SIDEBAR_THREAD_PREWARM_LIMIT = 3;
 type SidebarProject = {
   id: string;
   name: string;
@@ -207,6 +208,33 @@ export function getSidebarThreadIdsToPrewarm<TThreadId>(
   limit = SIDEBAR_THREAD_PREWARM_LIMIT,
 ): TThreadId[] {
   return visibleThreadIds.slice(0, Math.max(0, limit));
+}
+
+/**
+ * What the sidebar prewarms while the page is idle, in order: the open
+ * thread's neighbours first (previous/next traversal lands there), then the
+ * top rows. The open thread itself already loads as the foreground.
+ */
+export function getSidebarIdlePrewarmThreadIds<TThreadId>(input: {
+  traversalThreadIds: readonly TThreadId[];
+  activeThreadId: TThreadId | null;
+  limit?: number;
+}): TThreadId[] {
+  const { activeThreadId, traversalThreadIds } = input;
+  const neighbours =
+    activeThreadId === null
+      ? []
+      : (["previous", "next"] as const).map((direction) =>
+          resolveAdjacentThreadId({
+            threadIds: traversalThreadIds,
+            currentThreadId: activeThreadId,
+            direction,
+          }),
+        );
+  const ordered = [...neighbours, ...getSidebarThreadIdsToPrewarm(traversalThreadIds, input.limit)];
+  return [
+    ...new Set(ordered.filter((id): id is TThreadId => id !== null && id !== activeThreadId)),
+  ];
 }
 
 export function resolveAdjacentThreadId<T>(input: {
