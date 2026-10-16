@@ -5804,11 +5804,12 @@ export function deriveTimelineEntries(
     const launch = run.toolCallId
       ? workEntries.find((entry) => entry.toolCallId === run.toolCallId)
       : undefined;
+    const eventSequence = launch?.eventSequence ?? run.eventSequence;
     return {
       id: `workflow-run:${run.taskId}`,
       kind: "workflow-run",
       createdAt: launch?.createdAt ?? run.startedAt,
-      ...(launch?.eventSequence !== undefined ? { eventSequence: launch.eventSequence } : {}),
+      ...(eventSequence !== undefined ? { eventSequence } : {}),
       run,
     };
   });

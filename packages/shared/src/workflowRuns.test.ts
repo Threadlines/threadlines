@@ -88,8 +88,8 @@ describe("applyWorkflowRunPatch", () => {
     expect(runs[0]?.statusReason).toBeNull();
   });
 
-  it("never moves a run to another owner or turn once known", () => {
-    let runs = applyWorkflowRunPatch([], launch, "t0");
+  it("never moves a run to another owner, turn or place in the transcript once known", () => {
+    let runs = applyWorkflowRunPatch([], launch, "t0", 10);
     runs = applyWorkflowRunPatch(
       runs,
       {
@@ -98,9 +98,11 @@ describe("applyWorkflowRunPatch", () => {
         owner: { participantId: "p-2" as never, providerInstanceId: "claudeOther" as never },
       },
       "t1",
+      42,
     );
     expect(runs[0]?.turnId).toBe("turn-1");
     expect(runs[0]?.owner.providerInstanceId).toBe("claudeAgent");
+    expect(runs[0]?.eventSequence).toBe(10);
   });
 });
 

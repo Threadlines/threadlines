@@ -303,13 +303,25 @@ export function WorkflowRunPanel({
           </Button>
           <WorkflowIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
           <h2 className="min-w-0 truncate text-[13px] font-semibold">{title}</h2>
+          {endWord ? (
+            <span
+              className={cn(
+                "shrink-0 text-[12px]",
+                run.status === "failed" || run.status === "lost"
+                  ? "text-destructive"
+                  : "text-muted-foreground",
+              )}
+            >
+              {endWord}
+            </span>
+          ) : null}
           <span className="ml-auto flex shrink-0 items-center">
             {running ? (
               <Button
                 type="button"
                 variant="ghost"
                 size="xs"
-                className="text-destructive"
+                className="text-muted-foreground hover:text-destructive"
                 onClick={() => onStop(run.taskId)}
               >
                 Stop workflow
@@ -321,19 +333,25 @@ export function WorkflowRunPanel({
             ) : null}
           </span>
         </div>
-        <div className="mt-0.5 truncate pl-8 font-mono text-[10.5px] text-muted-foreground tabular-nums">
-          {endWord ? `${endWord} · ` : "running · "}
-          {running ? (
-            <TickingText
-              active
-              compute={() => formatWorkflowClock(workflowRunElapsedMs(run, Date.now()))}
-            />
-          ) : (
-            formatWorkflowSpan(workflowRunElapsedMs(run, Date.now()))
-          )}
-          {` · ${pluralize(run.agents.length, "agent")}`}
-          {run.totalTokens > 0 ? ` · ${formatWorkflowTokens(run.totalTokens)}` : ""}
-          {run.totalToolCalls > 0 ? ` · ${pluralize(run.totalToolCalls, "step")}` : ""}
+        {/* Wraps between facts, never inside one: the panel can be narrow. */}
+        <div className="mt-0.5 flex flex-wrap pl-8 font-mono text-[10.5px] whitespace-pre text-muted-foreground tabular-nums">
+          <span>
+            {running ? (
+              <TickingText
+                active
+                compute={() => formatWorkflowClock(workflowRunElapsedMs(run, Date.now()))}
+              />
+            ) : (
+              formatWorkflowSpan(workflowRunElapsedMs(run, Date.now()))
+            )}
+          </span>
+          <span>{` · ${pluralize(run.agents.length, "agent")}`}</span>
+          {run.totalTokens > 0 ? (
+            <span>{` · ${formatWorkflowTokens(run.totalTokens)}`}</span>
+          ) : null}
+          {run.totalToolCalls > 0 ? (
+            <span>{` · ${pluralize(run.totalToolCalls, "step")}`}</span>
+          ) : null}
         </div>
         {subtitle ? (
           <p className="mt-0.5 line-clamp-2 pl-8 text-[12px] text-muted-foreground">{subtitle}</p>

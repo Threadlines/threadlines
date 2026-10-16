@@ -176,6 +176,8 @@ export const OrchestrationWorkflowRun = Schema.Struct({
   phases: Schema.Array(WorkflowPhase),
   agents: Schema.Array(WorkflowAgent),
   updatedAt: IsoDateTime,
+  /** The event that first recorded the run: where it sits in the transcript
+   *  when the call that launched it is gone. */
   eventSequence: Schema.optional(NonNegativeInt),
 });
 export type OrchestrationWorkflowRun = typeof OrchestrationWorkflowRun.Type;

@@ -138,7 +138,10 @@ export function mergeWorkflowRunPatch(
     phases: upsertByIndex(run.phases, patch.phases, MAX_PHASES_PER_RUN),
     agents: upsertByIndex(run.agents, patch.agents, MAX_AGENTS_PER_RUN),
     updatedAt,
-    ...(eventSequence !== undefined ? { eventSequence } : {}),
+    // First wins, like every transcript item's position.
+    ...((run.eventSequence ?? eventSequence) !== undefined
+      ? { eventSequence: run.eventSequence ?? eventSequence }
+      : {}),
   };
 }
 
