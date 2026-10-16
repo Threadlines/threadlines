@@ -3119,33 +3119,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.effective-cwd.set": {
-      const thread = yield* requireThread({
+      yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      // A lookup can finish after a user has explicitly moved the thread.
-      // Re-check authority here, inside the serialized decider, so that stale
-      // subagent inference cannot win the race after its earlier snapshot.
-      if (command.effectiveCwdSource === "subagent" && thread.effectiveCwdSource === "selection") {
-        const retainedAt = yield* nowIso;
-        return {
-          ...withEventBase({
-            aggregateKind: "thread",
-            aggregateId: command.threadId,
-            occurredAt: retainedAt,
-            commandId: command.commandId,
-            metadata: {},
-          }),
-          type: "thread.effective-cwd-set",
-          payload: {
-            threadId: command.threadId,
-            effectiveCwd: null,
-            effectiveCwdSource: "selection",
-            updatedAt: retainedAt,
-          },
-        };
-      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -3158,9 +3136,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           effectiveCwd: command.effectiveCwd,
-          ...(command.effectiveCwd !== null
-            ? { effectiveCwdSource: command.effectiveCwdSource ?? "session" }
-            : {}),
+          ...(command.effectiveCwd !== null ? { effectiveCwdSource: "session" as const } : {}),
           updatedAt: command.createdAt,
         },
       };

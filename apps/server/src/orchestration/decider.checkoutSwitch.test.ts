@@ -45,7 +45,7 @@ function makeSession(input: {
 function makeReadModel(input: {
   session: OrchestrationSession | null;
   effectiveCwd: string | null;
-  effectiveCwdSource?: "session" | "subagent" | "selection";
+  effectiveCwdSource?: "session" | "selection";
   worktreePath?: string | null;
 }): OrchestrationReadModel {
   return {
@@ -156,32 +156,19 @@ function sessionSetCommand(
   };
 }
 
-function subagentEffectiveCwdCommand(
-  effectiveCwd: string | null,
-): Extract<OrchestrationCommand, { type: "thread.effective-cwd.set" }> {
-  return {
-    type: "thread.effective-cwd.set",
-    commandId: CommandId.make("cmd-stale-subagent-cwd"),
-    threadId,
-    effectiveCwd,
-    effectiveCwdSource: "subagent",
-    createdAt: "2026-01-01T00:00:11.000Z",
-  };
-}
-
 async function decide(command: OrchestrationCommand, readModel: OrchestrationReadModel) {
   const decided = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
   return Array.isArray(decided) ? decided : [decided];
 }
 
 describe("decider checkout switch effectiveCwd", () => {
-  it("makes an explicit main selection override a lingering subagent worktree", async () => {
+  it("makes an explicit main selection override a worktree the session moved into", async () => {
     const events = await decide(
       checkoutSelectCommand({ branch: "main", worktreePath: null }),
       makeReadModel({
         session: makeSession({ status: "ready", checkoutCwd: workspaceRoot }),
         effectiveCwd: worktreeA,
-        effectiveCwdSource: "subagent",
+        effectiveCwdSource: "session",
         worktreePath: null,
       }),
     );
@@ -214,28 +201,6 @@ describe("decider checkout switch effectiveCwd", () => {
 
     expect(events).toHaveLength(2);
     expect(events[1]).toMatchObject({
-      type: "thread.effective-cwd-set",
-      payload: {
-        threadId,
-        effectiveCwd: null,
-        effectiveCwdSource: "selection",
-      },
-    });
-  });
-
-  it("rejects stale subagent inference after an explicit selection", async () => {
-    const events = await decide(
-      subagentEffectiveCwdCommand(worktreeA),
-      makeReadModel({
-        session: makeSession({ status: "running", checkoutCwd: workspaceRoot }),
-        effectiveCwd: null,
-        effectiveCwdSource: "selection",
-        worktreePath: null,
-      }),
-    );
-
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
       type: "thread.effective-cwd-set",
       payload: {
         threadId,

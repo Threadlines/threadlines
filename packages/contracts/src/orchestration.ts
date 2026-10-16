@@ -1601,7 +1601,12 @@ export const OrchestrationRoomContextCursor = Schema.Struct({
 });
 export type OrchestrationRoomContextCursor = typeof OrchestrationRoomContextCursor.Type;
 
-/** Where a thread's `effectiveCwd` came from. See OrchestrationThread. */
+/**
+ * Where a thread's `effectiveCwd` came from. See OrchestrationThread.
+ * `subagent` is legacy: servers before Oct 2026 inferred a checkout from an
+ * isolated subagent. Current servers never write it and read it as no move;
+ * it stays here so data from those servers still decodes.
+ */
 export const ThreadEffectiveCwdSource = Schema.Literals(["session", "subagent", "selection"]);
 export type ThreadEffectiveCwdSource = typeof ThreadEffectiveCwdSource.Type;
 
@@ -1627,11 +1632,11 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /**
    * Why the effective-cwd state is authoritative. `session` means the provider
-   * reported the divergent cwd; `subagent` means it was inferred from an
-   * isolated subagent; `selection` is a temporary marker that the user chose
-   * the configured checkout while prior work was still active. That marker has
-   * a null `effectiveCwd`, so configured and observed cwd remain distinct.
-   * Clients do not need to read it — only server-side inference does.
+   * reported the divergent cwd; `selection` is a temporary marker that the user
+   * chose the configured checkout while prior work was still active. That
+   * marker has a null `effectiveCwd`, so configured and observed cwd remain
+   * distinct. `subagent` is legacy (see ThreadEffectiveCwdSource). Clients do
+   * not need to read it.
    */
   effectiveCwdSource: Schema.optional(Schema.NullOr(ThreadEffectiveCwdSource)),
   goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
@@ -2756,9 +2761,6 @@ const ThreadEffectiveCwdSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString),
-  /** Omitted means `session` for a non-null cwd. Subagent emitters include
-   *  their source even when clearing so stale inference can be rejected. */
-  effectiveCwdSource: Schema.optional(ThreadEffectiveCwdSource),
   createdAt: IsoDateTime,
 });
 
@@ -3833,7 +3835,7 @@ export const ThreadEffectiveCwdSetPayload = Schema.Struct({
   threadId: ThreadId,
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString),
   /** Absent on events recorded before cwd source tracking shipped; those were
-   *  all session-sourced. */
+   *  all session-sourced. A legacy `subagent` value projects as no move. */
   effectiveCwdSource: Schema.optional(ThreadEffectiveCwdSource),
   updatedAt: IsoDateTime,
 });

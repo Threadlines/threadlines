@@ -36,6 +36,7 @@ import type { ThreadId, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
+import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import {
   MAX_THREAD_ACTIVITIES,
   MAX_THREAD_CHECKPOINTS,
@@ -475,7 +476,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pendingSourceProposedPlan: thread.latestTurn?.sourceProposedPlan,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     goal: thread.goal,
     voiceActive: thread.voiceActive ?? false,
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
@@ -522,7 +523,7 @@ function mapThreadShell(
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     goal: thread.goal,
     voiceActive: thread.voiceActive ?? false,
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
@@ -548,7 +549,7 @@ function mapThreadShell(
     latestTurn: thread.latestTurn,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     latestUserMessageAt: thread.latestUserMessageAt,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
@@ -601,7 +602,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     goal: thread.goal,
     voiceActive: thread.voiceActive ?? false,
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
@@ -661,7 +662,7 @@ function toSidebarThreadSummary(
     latestTurn: thread.latestTurn,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    effectiveCwd: thread.effectiveCwd,
+    effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     latestUserMessageAt,
     hasPendingApprovals: hasActivityEvidence
       ? derivePendingApprovals(thread.activities).length > 0
@@ -2226,7 +2227,7 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.effective-cwd-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
-        effectiveCwd: event.payload.effectiveCwd,
+        effectiveCwd: effectiveCwdOf(event.payload).effectiveCwd,
         updatedAt: event.payload.updatedAt,
       }));
 

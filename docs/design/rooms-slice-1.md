@@ -107,7 +107,7 @@ thread id, so threads without participants behave exactly as before.
   to add an agent or hand the slot over while it is on.
 - Forking a room always uses the summarized context seed, since no single
   provider transcript holds the whole room.
-- Subagent tools (transcripts, input, worktrees) try each of the thread's
+- Subagent tools (transcripts, input) try each of the thread's
   agents until one owns the subagent.
 
 ## Catch-up note
