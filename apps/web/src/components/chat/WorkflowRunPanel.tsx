@@ -39,6 +39,7 @@ import {
   workflowPhaseGroups,
   workflowPhaseMeta,
   workflowRunElapsedMs,
+  workflowRunEndNote,
   workflowRunEndWord,
   workflowRunSubtitle,
   workflowRunTitle,
@@ -272,6 +273,7 @@ export function WorkflowRunPanel({
   const title = workflowRunTitle(run);
   const subtitle = workflowRunSubtitle(run);
   const endWord = workflowRunEndWord(run);
+  const endNote = workflowRunEndNote(run);
   const [saveOpen, setSaveOpen] = useState(false);
   // The chat's "Save as command…" opens the panel asking for the dialog.
   useEffect(() => {
@@ -363,8 +365,15 @@ export function WorkflowRunPanel({
         {subtitle ? (
           <p className="mt-0.5 line-clamp-2 pl-8 text-[12px] text-muted-foreground">{subtitle}</p>
         ) : null}
-        {run.status !== "running" && run.status !== "completed" && run.summary ? (
-          <p className="mt-0.5 line-clamp-2 pl-8 text-[12px] text-destructive">{run.summary}</p>
+        {endNote ? (
+          <p
+            className={cn(
+              "mt-0.5 line-clamp-2 pl-8 text-[12px]",
+              run.status === "stopped" ? "text-muted-foreground" : "text-destructive",
+            )}
+          >
+            {endNote}
+          </p>
         ) : null}
       </div>
       <div

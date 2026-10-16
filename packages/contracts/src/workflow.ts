@@ -216,9 +216,12 @@ export const WorkflowReadRunFileResult = Schema.Struct({
   /** `javascript` for a script; `json`, `markdown` or `text` for a result. */
   format: Schema.Literals(["javascript", "json", "markdown", "text"]),
   truncated: Schema.Boolean,
+  /** `no-result`: the run ended (stopped, or in an error) before it had one. */
   unavailableReason: Schema.optional(
-    Schema.Literals(["hidden", "missing", "not-ended", "too-large", "unreadable"]),
+    Schema.Literals(["hidden", "missing", "not-ended", "too-large", "unreadable", "no-result"]),
   ),
+  /** For `no-result`: the error the run ended in, its message only. */
+  error: Schema.optional(Schema.String),
   /** Messages the script logged, for the result. */
   logs: Schema.optional(Schema.Array(Schema.String)),
 });

@@ -92,6 +92,17 @@ export function WorkflowRunFileView({
   if (state.status === "loading") return <Note>Loading…</Note>;
   if (state.status === "error") return <Note>{state.message}</Note>;
   const loaded = state.file;
+  if (loaded.unavailableReason === "no-result") {
+    return (
+      <Note>
+        {run.status === "stopped"
+          ? "Stopped before it had a result."
+          : loaded.error
+            ? `It ended without a result: ${loaded.error}.`
+            : "It ended without a result."}
+      </Note>
+    );
+  }
   if (loaded.text === null) {
     return <Note>{UNAVAILABLE_WORDS[loaded.unavailableReason ?? "unreadable"]!}</Note>;
   }

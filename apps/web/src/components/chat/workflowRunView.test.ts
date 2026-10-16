@@ -4,6 +4,7 @@ import type { OrchestrationWorkflowRun, WorkflowAgent } from "@threadlines/contr
 
 import {
   summarizeWorkflowRun,
+  workflowRunEndNote,
   workflowRunsAsShown,
   workflowAgentNowText,
   workflowLargeNote,
@@ -105,6 +106,20 @@ describe("workflowRunsAsShown", () => {
     expect(shown[1]?.agents[0]).toMatchObject({ state: "skipped", durationMs: 60_000 });
     // The same list gives the same result, so rows keep their identity.
     expect(workflowRunsAsShown(runs)).toBe(shown);
+  });
+});
+
+describe("workflowRunEndNote", () => {
+  it("says how a run ended only when Claude's summary adds to its description", () => {
+    const description = "Read two files";
+    // A stopped run's summary is its description: nothing to add.
+    expect(workflowRunEndNote({ status: "stopped", description, summary: description })).toBe(null);
+    expect(
+      workflowRunEndNote({ status: "failed", description, summary: "Agent look:a timed out" }),
+    ).toBe("Agent look:a timed out");
+    expect(workflowRunEndNote({ status: "completed", description, summary: "All clean" })).toBe(
+      null,
+    );
   });
 });
 

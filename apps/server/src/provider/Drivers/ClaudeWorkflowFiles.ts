@@ -129,7 +129,20 @@ export async function readClaudeWorkflowRunFile(input: {
   const logs = Array.isArray(saved.logs)
     ? saved.logs.filter((entry): entry is string => typeof entry === "string").slice(0, MAX_LOGS)
     : [];
-  const result = saved.result ?? (typeof saved.error === "string" ? saved.error : null);
+  // A run stopped or failed before its result: Claude saves the error with
+  // its stack instead. Its message says what happened; the stack does not.
+  if (saved.result === undefined || saved.result === null) {
+    const error = typeof saved.error === "string" ? errorMessageOf(saved.error) : undefined;
+    return {
+      text: null,
+      format: "text",
+      truncated: false,
+      unavailableReason: "no-result",
+      ...(error ? { error } : {}),
+      ...(logs.length > 0 ? { logs } : {}),
+    };
+  }
+  const result = saved.result;
   const format = typeof result === "string" ? "markdown" : "json";
   const full = typeof result === "string" ? result : JSON.stringify(result, null, 2);
   const truncated = full.length > RESULT_TEXT_MAX_CHARS;
@@ -139,6 +152,16 @@ export async function readClaudeWorkflowRunFile(input: {
     truncated,
     ...(logs.length > 0 ? { logs } : {}),
   };
+}
+
+/** "Error: Workflow aborted\n    at y (...)" reads "Workflow aborted". */
+function errorMessageOf(error: string): string | undefined {
+  const firstLine =
+    error
+      .split("\n", 1)[0]
+      ?.replace(/^\w*Error:\s*/u, "")
+      .trim() ?? "";
+  return firstLine.length > 0 ? firstLine.slice(0, 300) : undefined;
 }
 
 /**

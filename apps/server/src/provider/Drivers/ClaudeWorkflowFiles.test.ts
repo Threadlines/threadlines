@@ -112,6 +112,32 @@ describe("readClaudeWorkflowRunFile", () => {
       (await readClaudeWorkflowRunFile({ configDir, run, file: "result" })).unavailableReason,
     ).toBe("missing");
   });
+
+  it("says a stopped run has no result, with its error's message and not its stack", async () => {
+    // As CLI 2.1.296 saved a run stopped mid-way.
+    fs.writeFileSync(
+      resultPath(),
+      JSON.stringify({
+        result: null,
+        status: "killed",
+        logs: [],
+        error: "Error: Workflow aborted\n    at y (/$bunfs/root/chunk-mhnsvpzs.js:95:5511)",
+      }),
+    );
+    expect(
+      await readClaudeWorkflowRunFile({
+        configDir,
+        run: { ...run, status: "stopped" },
+        file: "result",
+      }),
+    ).toEqual({
+      text: null,
+      format: "text",
+      truncated: false,
+      unavailableReason: "no-result",
+      error: "Workflow aborted",
+    });
+  });
 });
 
 describe("saveClaudeWorkflowCommand", () => {

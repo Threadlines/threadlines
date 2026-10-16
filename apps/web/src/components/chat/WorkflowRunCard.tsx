@@ -30,6 +30,7 @@ import {
   workflowPhaseGroups,
   workflowPhaseMeta,
   workflowRunElapsedMs,
+  workflowRunEndNote,
   workflowRunEndWord,
   workflowRunSubtitle,
   workflowRunTitle,
@@ -233,6 +234,7 @@ export const WorkflowRunCard = memo(function WorkflowRunCard({
   const title = workflowRunTitle(run);
   const subtitle = workflowRunSubtitle(run);
   const endWord = workflowRunEndWord(run);
+  const endNote = workflowRunEndNote(run);
   const largeNote = actions
     ? workflowLargeNote({
         run,
@@ -359,9 +361,7 @@ export const WorkflowRunCard = memo(function WorkflowRunCard({
               {group.title} {group.agents.length}
             </span>
           ))}
-          {run.status !== "completed" && run.summary ? (
-            <span className="min-w-0 truncate">{run.summary}</span>
-          ) : null}
+          {endNote ? <span className="min-w-0 truncate">{endNote}</span> : null}
         </p>
       )}
 

@@ -332,6 +332,17 @@ export function workflowLiveLineText(run: OrchestrationWorkflowRun): string {
   return summary.phaseTitle ? `${summary.phaseTitle} · ${agents}` : agents;
 }
 
+/**
+ * What Claude said about a run that ended without finishing, when it says
+ * more than the run's description (for a stopped run it is the description).
+ */
+export function workflowRunEndNote(
+  run: Pick<OrchestrationWorkflowRun, "status" | "summary" | "description">,
+): string | null {
+  if (run.status === "running" || run.status === "completed" || !run.summary) return null;
+  return run.summary === run.description ? null : run.summary;
+}
+
 /** How a run ended, in words; null while it runs. */
 export function workflowRunEndWord(run: Pick<OrchestrationWorkflowRun, "status">): string | null {
   switch (run.status) {
