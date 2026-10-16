@@ -92,6 +92,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   onImplementInNewThread,
   onOpenImplementationThread,
   onDismiss,
+  findOpenRequest = 0,
 }: {
   planMarkdown: string;
   environmentId: EnvironmentId;
@@ -103,8 +104,16 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   onImplementInNewThread?: (() => void) | undefined;
   onOpenImplementationThread?: (() => void) | undefined;
   onDismiss?: (() => void) | undefined;
+  /** Bumped each time find in chat opens it to show a match; it opens as a
+   *  click would, and the reader can collapse it again. */
+  findOpenRequest?: number | undefined;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(findOpenRequest > 0);
+  const [seenFindOpenRequest, setSeenFindOpenRequest] = useState(findOpenRequest);
+  if (findOpenRequest !== seenFindOpenRequest) {
+    setSeenFindOpenRequest(findOpenRequest);
+    if (findOpenRequest > 0) setExpanded(true);
+  }
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
   const [savePath, setSavePath] = useState("");
   const [isSavingToWorkspace, setIsSavingToWorkspace] = useState(false);
@@ -206,7 +215,12 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Badge variant="secondary">Plan</Badge>
-          <p className="min-w-0 truncate text-sm font-medium text-foreground">{title}</p>
+          <p
+            className="min-w-0 truncate text-sm font-medium text-foreground"
+            data-chat-find-body=""
+          >
+            {title}
+          </p>
           <PlanStatusChip status={status} onOpenImplementationThread={onOpenImplementationThread} />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -242,7 +256,11 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
         </div>
       </div>
       <div className="mt-4">
-        <div className={cn("relative", canCollapse && !expanded && "max-h-104 overflow-hidden")}>
+        <div
+          className={cn("relative", canCollapse && !expanded && "max-h-104 overflow-hidden")}
+          data-chat-find-body=""
+          data-chat-find-folded={canCollapse && !expanded ? "" : undefined}
+        >
           {canCollapse && !expanded ? (
             <ChatMarkdown
               text={collapsedPreview ?? ""}

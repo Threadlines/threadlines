@@ -38,6 +38,7 @@ export const MAINTAINED_PROVIDER_DRIVER_KINDS = [
   ProviderDriverKind.make("cursor"),
   ProviderDriverKind.make("opencode"),
   ProviderDriverKind.make("antigravity"),
+  ProviderDriverKind.make("muse"),
   ProviderDriverKind.make("grok"),
   ACP_REGISTRY_DRIVER_KIND,
 ] as const;

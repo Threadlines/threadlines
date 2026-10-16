@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { EventId, type OrchestrationThreadActivity } from "@threadlines/contracts";
+import { EventId, TurnId, type OrchestrationThreadActivity } from "@threadlines/contracts";
 import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import {
   computeStableMessagesTimelineRows,
@@ -237,6 +237,8 @@ describe("deriveMessagesTimelineRows", () => {
         createdAt: "2026-01-01T00:00:00Z",
         label: "Connecting",
         thought: null,
+        trackerTurnIds: [],
+        trackerAgentSpawnIds: [],
       },
     ]);
   });
@@ -268,6 +270,8 @@ describe("deriveMessagesTimelineRows", () => {
         createdAt: null,
         label: "Agent working",
         thought: null,
+        trackerTurnIds: [],
+        trackerAgentSpawnIds: [],
       },
     ]);
   });
@@ -300,6 +304,8 @@ describe("deriveMessagesTimelineRows", () => {
         createdAt: null,
         label: "Waiting",
         thought: null,
+        trackerTurnIds: [],
+        trackerAgentSpawnIds: [],
       },
     ]);
   });
@@ -1594,6 +1600,39 @@ describe("finished turns and the live step", () => {
     expect(trackerOf(settled)).toEqual([]);
     expect(messageRow(settled, "answer")?.turnSummary?.trackerTurnIds).toEqual(["turn-1"]);
     expect(trackerOf(stopped)).toEqual(["turn-1"]);
+  });
+
+  it("moves a finished turn's agent count to the working row while its agents run", () => {
+    const withLiveAgentsOf = (
+      timelineEntries: Parameters<typeof derive>[0],
+      turnId: string,
+    ): ReturnType<typeof derive> =>
+      derive(timelineEntries, {
+        liveAgentCount: 1,
+        liveAgentTrackerKeys: { turnIds: new Set([TurnId.make(turnId)]), spawnCallIds: new Set() },
+      });
+    const workingRow = (rows: ReturnType<typeof derive>) =>
+      rows.find((row) => row.kind === "working");
+
+    // The count shows once, beside "Agent working", not on the footer too.
+    const running = withLiveAgentsOf(settledTurn, "turn-1");
+    expect(messageRow(running, "answer")?.turnSummary?.trackerTurnIds).toEqual([]);
+    expect(workingRow(running)).toMatchObject({
+      label: "Agent working",
+      trackerTurnIds: ["turn-1"],
+    });
+    // A turn with no answer hands over its group's tracker the same way.
+    const stopped = withLiveAgentsOf([settledTurn[0]!, settledTurn[2]!], "turn-1");
+    expect(stopped.find((row) => row.kind === "work")?.trackerTurnIds).toEqual([]);
+    expect(workingRow(stopped)).toMatchObject({ trackerTurnIds: ["turn-1"] });
+    // Another turn's agent leaves this turn's count where it is.
+    const elsewhere = withLiveAgentsOf(settledTurn, "turn-0");
+    expect(messageRow(elsewhere, "answer")?.turnSummary?.trackerTurnIds).toEqual(["turn-1"]);
+    expect(workingRow(elsewhere)).toMatchObject({ trackerTurnIds: [] });
+    // The last one landed: the count is back under the answer.
+    const landed = derive(settledTurn);
+    expect(messageRow(landed, "answer")?.turnSummary?.trackerTurnIds).toEqual(["turn-1"]);
+    expect(workingRow(landed)).toBeUndefined();
   });
 
   it("names the step running right now on the working row", () => {

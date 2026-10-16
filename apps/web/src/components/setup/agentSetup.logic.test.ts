@@ -93,6 +93,18 @@ describe("agent setup", () => {
     expect(stepAfterAgents(agents, new Set([CLAUDE]))).toBe("folder");
     expect(stepAfterAgents(agents, new Set([CLAUDE, CODEX]))).toBe("connect");
     expect(stepAfterAgents(agents, new Set())).toBe("connect");
+
+    // A ready agent with an open data-sharing choice still stops on Connect,
+    // where the choice is asked once.
+    const unanswered = agentsFor({ [CLAUDE]: "ready" }).map((agent) =>
+      agent.snapshot
+        ? {
+            ...agent,
+            snapshot: { ...agent.snapshot, dataSharing: { enabled: true, acknowledged: false } },
+          }
+        : agent,
+    );
+    expect(stepAfterAgents(unanswered, new Set([CLAUDE]))).toBe("connect");
   });
 
   it("turns picked agents on and the rest off in one write that keeps custom instances", () => {

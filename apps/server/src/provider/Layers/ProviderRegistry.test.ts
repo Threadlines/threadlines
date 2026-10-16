@@ -2691,6 +2691,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 "cursor",
                 "fx",
                 "grok",
+                "muse",
                 "opencode",
               ]);
               assert.strictEqual(codexProvider?.enabled, false);

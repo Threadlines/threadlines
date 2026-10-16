@@ -1,5 +1,5 @@
 import { Children, cloneElement, isValidElement, type ReactNode } from "react";
-import type { ScopedThreadRef, ServerProviderSkill } from "@threadlines/contracts";
+import type { ScopedThreadRef } from "@threadlines/contracts";
 
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import {
@@ -9,12 +9,8 @@ import {
   SKILL_CHIP_ICON_SVG,
 } from "../composerInlineChip";
 import { splitSearchTextHighlightSegments } from "../../lib/searchTextHighlight";
-import { findBareImagePaths, findBareLocalhostUrls } from "../../markdown-links";
+import { findInlineTokenSpans, type InlineSkill } from "../../lib/inlineMarkdownTokens";
 import { ChatWebLink } from "./ChatWebLink";
-
-const SKILL_TOKEN_REGEX = /(^|\s)\$([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
-
-type InlineSkill = Pick<ServerProviderSkill, "name" | "displayName">;
 
 /**
  * What the inline pass needs to know beyond the text itself: which skills are
@@ -41,73 +37,34 @@ interface InlineToken {
   readonly node: ReactNode;
 }
 
-/**
- * Every replacement to make in one string, in order and without overlaps.
- *
- * Both passes run over the same text, so they are collected together rather
- * than chained: a second pass over the first one's output would have to walk
- * back into elements it did not make.
- */
+/** The nodes that replace each token span, in order. */
 function collectInlineTokens(text: string, context: InlineMarkdownContext): InlineToken[] {
-  const tokens: InlineToken[] = [];
-
-  for (const match of text.matchAll(SKILL_TOKEN_REGEX)) {
-    const prefix = match[1] ?? "";
-    const name = match[2] ?? "";
-    const start = (match.index ?? 0) + prefix.length;
-    const rawText = `$${name}`;
-    const skill = context.skills.find((candidate) => candidate.name === name);
-    if (!skill) {
-      continue;
-    }
-    tokens.push({
-      start,
-      end: start + rawText.length,
-      node: <SkillChip key={`${start}:${name}`} skill={skill} rawText={rawText} />,
-    });
-  }
-
-  for (const match of findBareLocalhostUrls(text)) {
-    tokens.push({
-      start: match.start,
-      end: match.end,
-      node: (
+  const renderBareImagePath = context.renderBareImagePath;
+  return findInlineTokenSpans(text, {
+    skills: context.skills,
+    bareImagePaths: renderBareImagePath !== undefined,
+  }).map((span) => ({
+    start: span.start,
+    end: span.end,
+    node:
+      span.kind === "skill" ? (
+        <SkillChip
+          key={`${span.start}:${span.skill.name}`}
+          skill={span.skill}
+          rawText={span.rawText}
+        />
+      ) : span.kind === "localhost" ? (
         <ChatWebLink
-          key={`link:${match.start}`}
-          href={match.url}
+          key={`link:${span.start}`}
+          href={span.url}
           threadRef={context.threadRef ?? null}
         >
-          {match.text}
+          {span.text}
         </ChatWebLink>
+      ) : (
+        renderBareImagePath?.({ path: span.path, key: `image:${span.start}` })
       ),
-    });
-  }
-
-  if (context.renderBareImagePath) {
-    for (const match of findBareImagePaths(text)) {
-      tokens.push({
-        start: match.start,
-        end: match.end,
-        node: context.renderBareImagePath({
-          path: match.text,
-          key: `image:${match.start}`,
-        }),
-      });
-    }
-  }
-
-  tokens.sort((left, right) => left.start - right.start);
-
-  const ordered: InlineToken[] = [];
-  let consumed = 0;
-  for (const token of tokens) {
-    if (token.start < consumed) {
-      continue;
-    }
-    ordered.push(token);
-    consumed = token.end;
-  }
-  return ordered;
+  }));
 }
 
 export function SearchHighlightedInlineText(props: { text: string; query?: string | undefined }) {

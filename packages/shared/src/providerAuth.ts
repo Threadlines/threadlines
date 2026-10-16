@@ -8,6 +8,7 @@ export const PROVIDER_AUTH_RECONNECT_COMMANDS = {
   cursor: "cursor-agent login",
   fx: "fx login",
   opencode: "opencode auth login --standalone",
+  muse: "muse login",
 } as const;
 
 const AUTH_ERROR_PATTERNS = [

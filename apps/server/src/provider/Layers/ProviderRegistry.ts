@@ -27,6 +27,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
+  ServerProviderDataSharingError,
   ServerProviderRateLimitResetCreditError,
   type ServerProviderUpdateState,
 } from "@threadlines/contracts";
@@ -753,6 +754,31 @@ export const ProviderRegistryLive = Layer.effect(
       return { outcome, providers };
     });
 
+    const setDataSharing = Effect.fn("setDataSharing")(function* (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly enabled: boolean;
+    }) {
+      const instance = yield* instanceRegistry.getInstance(input.instanceId);
+      const set = instance?.dataSharing?.set;
+      if (!set) {
+        return yield* new ServerProviderDataSharingError({
+          instanceId: input.instanceId,
+          reason: "This provider has no data-sharing choice.",
+        });
+      }
+      yield* set(input.enabled).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ServerProviderDataSharingError({
+              instanceId: input.instanceId,
+              reason: cause.message,
+            }),
+        ),
+      );
+      const providers = yield* refreshInstance(input.instanceId);
+      return { providers };
+    });
+
     const getProviderMaintenanceCapabilitiesForInstance = Effect.fn(
       "getProviderMaintenanceCapabilitiesForInstance",
     )(function* (instanceId: ProviderInstanceId, provider: ProviderDriverKind) {
@@ -973,6 +999,7 @@ export const ProviderRegistryLive = Layer.effect(
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       consumeRateLimitResetCredit,
+      setDataSharing,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
       get streamChanges() {

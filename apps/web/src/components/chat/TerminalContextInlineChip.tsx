@@ -27,6 +27,9 @@ export function TerminalContextInlineChip(props: TerminalContextInlineChipProps)
               expired && "border-destructive/35 bg-destructive/8 text-destructive",
             )}
             data-terminal-context-expired={expired ? "true" : undefined}
+            // A reference the message carries, not words of the message:
+            // find in chat reads past it.
+            data-chat-find-ignore=""
           >
             <TerminalIcon
               className={cn(

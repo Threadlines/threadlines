@@ -8,6 +8,7 @@ export type AnalyticsModelFamily =
   | "gemini"
   | "cursor"
   | "opencode"
+  | "muse"
   | "grok"
   | "auto"
   | "other"
@@ -107,6 +108,7 @@ function inferModelFamily(model: string | undefined): AnalyticsModelFamily {
   if (model.includes("gemini")) return "gemini";
   if (model.includes("composer") || model.includes("cursor")) return "cursor";
   if (model.includes("opencode")) return "opencode";
+  if (model.startsWith("muse")) return "muse";
   if (model.includes("grok")) return "grok";
   if (model === "auto" || model === "default") return "auto";
   return "other";

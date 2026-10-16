@@ -18,6 +18,7 @@ export type TextGenerationProvider =
   | "fx"
   | "opencode"
   | "antigravity"
+  | "muse"
   | "grok";
 
 export interface CommitMessageGenerationInput {

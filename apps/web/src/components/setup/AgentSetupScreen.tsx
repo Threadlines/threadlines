@@ -53,6 +53,7 @@ import {
   SourceControlToolProgress,
 } from "../settings/CompactVersionAdvisory";
 import { GitHubSignInAction, GitHubSignInStatus } from "../settings/GitHubSignInAction";
+import { ProviderDataSharingSetupChoice } from "../settings/ProviderDataSharing";
 import { ProviderInstallAction } from "../settings/ProviderInstallAction";
 import {
   buildProviderEnablementPatch,
@@ -77,6 +78,7 @@ import {
   deriveInitialPicks,
   deriveSetupAgents,
   describeFoundAgents,
+  hasOpenSetupChoice,
   setupEnablementChanges,
   stepAfterAgents,
   type SetupAgent,
@@ -253,6 +255,16 @@ function SetupAgentRow({
       break;
     case "ready":
       actions = <ReadyLabel />;
+      // A provider that trades training data for usage asks once, here.
+      if (agent.snapshot && hasOpenSetupChoice(agent)) {
+        return (
+          <SetupAgentRowFrame agent={agent} updateControls={updateControls} actions={actions}>
+            <div className="pb-3 pl-9 pr-1">
+              <ProviderDataSharingSetupChoice provider={agent.snapshot} />
+            </div>
+          </SetupAgentRowFrame>
+        );
+      }
       break;
     case "problem":
       actions = updateControls.candidate ? (
@@ -455,11 +467,11 @@ function SourceControlRows({ environmentId }: { readonly environmentId: Environm
 
 function SectionLabel({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 border-b border-border/60 px-1 pb-1.5">
-      <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/55">
+    <div className="mb-2 flex items-baseline justify-between gap-3 px-1">
+      <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
         {children}
       </span>
-      {aside ? <span className="text-[11.5px] text-muted-foreground/62">{aside}</span> : null}
+      {aside ? <span className="text-[11.5px] text-muted-foreground">{aside}</span> : null}
     </div>
   );
 }

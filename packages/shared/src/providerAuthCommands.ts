@@ -22,6 +22,7 @@ export const CURSOR_DRIVER_KIND = "cursor";
 export const FX_DRIVER_KIND = "fx";
 export const OPENCODE_DRIVER_KIND = "opencode";
 export const ANTIGRAVITY_DRIVER_KIND = "antigravity";
+export const MUSE_DRIVER_KIND = "muse";
 export const GROK_DRIVER_KIND = "grok";
 
 /**
@@ -195,6 +196,14 @@ export function buildFxLoginCommand(input: { readonly binaryPath: string }): str
   return `${shellWord(input.binaryPath.trim() || "fx")} login`;
 }
 
+/**
+ * `muse login` — Muse Code's Meta account sign-in: it prints a code to
+ * approve in the browser. The login is the same one the terminal `muse` uses.
+ */
+export function buildMuseLoginCommand(input: { readonly binaryPath: string }): string {
+  return `${shellWord(input.binaryPath.trim() || "muse")} login`;
+}
+
 const OPENCODE_LOGIN_ARGS = ["auth", "login", "--standalone"] as const;
 
 /**
@@ -283,6 +292,19 @@ export function buildProviderAuthCommand(
     const args = [...OPENCODE_LOGIN_ARGS];
     const env = openCodeAccountEnvironment(input);
     return { file, args, env, display: renderDisplayCommand({ file, args, env }) };
+  }
+
+  // Muse keeps its login in its own config folder (the Keychain on macOS),
+  // shared with the terminal `muse`.
+  if (input.driver === MUSE_DRIVER_KIND) {
+    if (input.flow !== "login") return null;
+    const file = binaryPath || "muse";
+    return {
+      file,
+      args: ["login"],
+      env: {},
+      display: renderDisplayCommand({ file, args: ["login"], env: {} }),
+    };
   }
 
   return null;

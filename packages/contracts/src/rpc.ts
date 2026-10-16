@@ -271,6 +271,9 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  ServerProviderDataSharingError,
+  ServerProviderDataSharingSetInput,
+  ServerProviderDataSharingSetResult,
   ServerProviderRateLimitResetCreditConsumeInput,
   ServerProviderRateLimitResetCreditConsumeResult,
   ServerProviderRateLimitResetCreditError,
@@ -428,6 +431,7 @@ export const WS_METHODS = {
   serverListExternalProviderThreads: "server.listExternalProviderThreads",
   serverImportExternalProviderThread: "server.importExternalProviderThread",
   serverConsumeProviderRateLimitResetCredit: "server.consumeProviderRateLimitResetCredit",
+  serverSetProviderDataSharing: "server.setProviderDataSharing",
   serverUpdateProvider: "server.updateProvider",
   serverResolveProviderUpdateBlockers: "server.resolveProviderUpdateBlockers",
   serverUpsertKeybinding: "server.upsertKeybinding",
@@ -578,6 +582,12 @@ export const WsServerConsumeProviderRateLimitResetCreditRpc = Rpc.make(
     error: ServerProviderRateLimitResetCreditError,
   },
 );
+
+export const WsServerSetProviderDataSharingRpc = Rpc.make(WS_METHODS.serverSetProviderDataSharing, {
+  payload: ServerProviderDataSharingSetInput,
+  success: ServerProviderDataSharingSetResult,
+  error: ServerProviderDataSharingError,
+});
 
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
@@ -1561,6 +1571,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerListExternalProviderThreadsRpc,
   WsServerImportExternalProviderThreadRpc,
   WsServerConsumeProviderRateLimitResetCreditRpc,
+  WsServerSetProviderDataSharingRpc,
   WsServerUpdateProviderRpc,
   WsServerResolveProviderUpdateBlockersRpc,
   WsServerUpsertKeybindingRpc,

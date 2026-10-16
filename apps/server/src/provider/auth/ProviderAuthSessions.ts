@@ -56,6 +56,7 @@ import * as Semaphore from "effect/Semaphore";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "../../serverSettings.ts";
 import { throwawayClaudeSpawnViolation } from "../claudeThrowawayIsolation.ts";
+import { resolveMuseBinary } from "../muse/MuseBinary.ts";
 import { resolveOpenCodeBinary } from "../opencode/OpenCodeBinary.ts";
 import { PtyAdapter, type PtyAdapterShape, type PtyProcess } from "../../terminal/Services/PTY.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
@@ -776,12 +777,15 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             }),
           );
         }
-        // OpenCode's installer leaves the binary off this server's PATH until
-        // a restart; sign-in right after a one-click install must still work.
+        // OpenCode's and Muse's installers leave the binary off this server's
+        // PATH until a restart; sign-in right after a one-click install must
+        // still work.
         const command =
           String(instance.driver) === "opencode"
             ? { ...builtCommand, file: resolveOpenCodeBinary(builtCommand.file, spawnEnv) }
-            : builtCommand;
+            : String(instance.driver) === "muse"
+              ? { ...builtCommand, file: resolveMuseBinary(builtCommand.file, spawnEnv) }
+              : builtCommand;
         return yield* startTerminal(instanceId, input, {
           command,
           spawnEnv,

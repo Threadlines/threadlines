@@ -10,6 +10,9 @@ import type {
   ProviderInstanceId,
   ProviderDriverKind,
   ServerProvider,
+  ServerProviderDataSharingError,
+  ServerProviderDataSharingSetInput,
+  ServerProviderDataSharingSetResult,
   ServerProviderRateLimitResetCreditConsumeInput,
   ServerProviderRateLimitResetCreditConsumeResult,
   ServerProviderRateLimitResetCreditError,
@@ -61,6 +64,14 @@ export interface ProviderRegistryShape {
     ServerProviderRateLimitResetCreditConsumeResult,
     ServerProviderRateLimitResetCreditError
   >;
+
+  /**
+   * Save one instance's data-sharing choice (`ServerProvider.dataSharing`)
+   * and return the refreshed snapshot list.
+   */
+  readonly setDataSharing: (
+    input: ServerProviderDataSharingSetInput,
+  ) => Effect.Effect<ServerProviderDataSharingSetResult, ServerProviderDataSharingError>;
 
   /**
    * Resolve the maintenance capabilities owned by one live provider instance.

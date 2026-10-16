@@ -356,13 +356,17 @@ export function CodexInlineVisualization({
         role="status"
         aria-label={`Loading visualization ${file}`}
         className="my-3 h-60 w-full animate-pulse border-y border-border bg-muted/25"
+        data-chat-find-ignore=""
       />
     );
   }
 
   if (loadState.status === "error") {
     return (
-      <div className="my-3 border-y border-border py-3 text-xs text-muted-foreground">
+      <div
+        className="my-3 border-y border-border py-3 text-xs text-muted-foreground"
+        data-chat-find-ignore=""
+      >
         <span className="font-medium text-foreground/80">Visualization unavailable.</span>{" "}
         {loadState.message}
       </div>
@@ -370,7 +374,11 @@ export function CodexInlineVisualization({
   }
 
   return (
-    <div className="relative my-3 w-full border-y border-border bg-background">
+    // A visualization is not the message's words: find in chat reads past it.
+    <div
+      className="relative my-3 w-full border-y border-border bg-background"
+      data-chat-find-ignore=""
+    >
       {pendingExternalUrl ? (
         <div className="flex min-w-0 items-center gap-2 border-b border-border px-2 py-1.5 text-xs">
           <span className="min-w-0 flex-1 truncate text-muted-foreground">

@@ -282,6 +282,36 @@ export const OpenCodeIcon: Icon = (props) => (
   </svg>
 );
 
+/** Meta's symbol, as Muse Code's own pages show it, in Meta blue. */
+/** Muse's "M", redrawn as one stroke from Meta's Muse logo. */
+export const MuseIcon: Icon = (props) => {
+  const gradientId = `${useId().replaceAll(":", "")}-muse`;
+  return (
+    <svg {...props} viewBox="31 31 258 258" fill="none">
+      <defs>
+        <linearGradient
+          id={gradientId}
+          x1="60"
+          y1="90"
+          x2="270"
+          y2="230"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0" stopColor="#0056E6" />
+          <stop offset="1" stopColor="#007BFB" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M46 147C47.3 144.5 50.7 137.3 54 132C57.3 126.7 61.7 120.7 66 115C70.3 109.3 75.2 102.7 80 98C84.8 93.3 92.3 84.7 95 87C97.7 89.3 96.7 103.2 96 112C95.3 120.8 92.5 129.5 91 140C89.5 150.5 88.2 163 87 175C85.8 187 84.3 202.7 84 212C83.7 221.3 82.2 232.5 85 231C87.8 229.5 94.2 215.5 101 203C107.8 190.5 117.8 171.2 126 156C134.2 140.8 144.2 121.5 150 112C155.8 102.5 159 97 161 99C163 101 162.3 112.5 162 124C161.7 135.5 160 153.7 159 168C158 182.3 156.5 199.5 156 210C155.5 220.5 153.2 232 156 231C158.8 230 167 213.5 173 204C179 194.5 185.5 184.3 192 174C198.5 163.7 206.5 149.8 212 142C217.5 134.2 222.7 125.5 225 127C227.3 128.5 226.2 140.5 226 151C225.8 161.5 224.5 178.8 224 190C223.5 201.2 222.5 210.8 223 218C223.5 225.2 223.2 233 227 233C230.8 233 241 223.2 246 218C251 212.8 253.5 207 257 202C260.5 197 264.3 192.5 267 188C269.7 183.5 272 177.2 273 175"
+        stroke={`url(#${gradientId})`}
+        strokeWidth={27}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+};
+
 export const TraeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 24 24" fill="currentColor">
     {/* Back rectangle: left strip + bottom strip drawn separately — empty bottom-left corner is the gap between them */}

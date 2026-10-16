@@ -8,12 +8,14 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type ProviderDriverKind,
   type ProviderInstanceId,
-  type TurnId,
+  TurnId,
 } from "@threadlines/contracts";
 import { formatDiffLineStats } from "@threadlines/shared/diffStats";
 
 import {
   formatSubagentDisplayName,
+  formatSubagentListName,
+  isActiveSubagentStatus,
   type SubagentProgressItem,
   type ThreadSubagentHistoryEntry,
 } from "../../session-logic";
@@ -386,6 +388,7 @@ export type LiveAgentBranchStatus = Extract<AgentBranchStatus, "running" | "wait
 export interface LiveAgentStatusRow {
   readonly id: string;
   readonly agentThreadId: string | null;
+  /** Its own name, else its task in a few words (formatSubagentListName). */
   readonly name: string;
   /** The freshest thing the agent has said it is doing. */
   readonly step: string;
@@ -417,7 +420,7 @@ export function formatLiveAgentStatusRows(
     rows: liveBranches.slice(0, visibleLimit).map((branch) => ({
       id: branch.item.id,
       agentThreadId: branch.item.agentThreadId,
-      name: branch.name,
+      name: formatSubagentListName(branch.item),
       step:
         liveAgentStep(branch.item) ??
         (branch.status === "waiting" ? "Needs input" : branch.statusLabel.trim() || "Working"),
@@ -450,6 +453,7 @@ function liveAgentStep(item: SubagentProgressItem): string | null {
 /** One live agent as the header draws it: a face, and a line in its tooltip. */
 export interface LiveAgentFace {
   readonly id: string;
+  /** Its own name, else its task in a few words (formatSubagentListName). */
   readonly name: string;
   /** Blocked on the user; its face is outlined in amber. */
   readonly waiting: boolean;
@@ -521,7 +525,7 @@ export function summarizeLiveAgents(input: {
       return [
         {
           id: item.id,
-          name: formatSubagentDisplayName(item),
+          name: formatSubagentListName(item),
           waiting: status === "waiting",
           startedAt: item.createdAt,
           provider: resolveSubagentProvider(item),
@@ -653,13 +657,74 @@ export function selectTurnAgents(input: {
   if (input.history === undefined || input.history.length === 0) {
     return live;
   }
-  const liveIdentities = new Set(live.map(subagentIdentity));
-  return [
-    ...live,
-    ...select(input.history.map((entry) => entry.item)).filter(
-      (item) => !liveIdentities.has(subagentIdentity(item)),
-    ),
-  ];
+  return mergeSubagentLists(live, select(input.history.map((entry) => entry.item)));
+}
+
+/** `primary`, then each agent of `extra` it does not already hold. The primary
+ *  record wins per agent, so pass the live one first: only it carries
+ *  streaming status and telemetry. */
+export function mergeSubagentLists(
+  primary: ReadonlyArray<SubagentProgressItem>,
+  extra: ReadonlyArray<SubagentProgressItem>,
+): ReadonlyArray<SubagentProgressItem> {
+  if (extra.length === 0) {
+    return primary;
+  }
+  const identities = new Set(primary.map(subagentIdentity));
+  return [...primary, ...extra.filter((item) => !identities.has(subagentIdentity(item)))];
+}
+
+/** What a turn's tracker can name an agent still working by: the turn that
+ *  spawned it, or for a turnless group, any id its spawn call answers to (see
+ *  selectSubagentsForSpawnIds). A tracker that names one hands its chip to the
+ *  working row until the last of them lands. */
+export interface LiveAgentTrackerKeys {
+  readonly turnIds: ReadonlySet<TurnId>;
+  readonly spawnCallIds: ReadonlySet<string>;
+}
+
+export const NO_LIVE_AGENT_TRACKER_KEYS: LiveAgentTrackerKeys = {
+  turnIds: new Set(),
+  spawnCallIds: new Set(),
+};
+
+/**
+ * The keys of the agents still working, as one line per key, sorted: equal
+ * exactly when the keys are. A memo keyed on it re-derives the rows when an
+ * agent starts or lands, not on every step an agent reports.
+ */
+export function liveAgentTrackerSignature(subagents: ReadonlyArray<SubagentProgressItem>): string {
+  const keys = new Set<string>();
+  for (const item of subagents) {
+    // The same test that keeps the working row up for agents (liveAgentCount).
+    if (!isActiveSubagentStatus(item.status)) {
+      continue;
+    }
+    if (item.turnId !== null) {
+      keys.add(`turn ${item.turnId}`);
+      continue;
+    }
+    // Only a turnless agent is named by spawn id, as in selectTurnAgents.
+    for (const id of [item.id, item.spawnCallId, item.agentThreadId]) {
+      if (id != null) keys.add(`spawn ${id}`);
+    }
+  }
+  return [...keys].toSorted().join("\n");
+}
+
+export function parseLiveAgentTrackerSignature(signature: string): LiveAgentTrackerKeys {
+  if (signature.length === 0) {
+    return NO_LIVE_AGENT_TRACKER_KEYS;
+  }
+  const turnIds = new Set<TurnId>();
+  const spawnCallIds = new Set<string>();
+  for (const key of signature.split("\n")) {
+    const [kind, ...rest] = key.split(" ");
+    const id = rest.join(" ");
+    if (kind === "turn") turnIds.add(TurnId.make(id));
+    else spawnCallIds.add(id);
+  }
+  return { turnIds, spawnCallIds };
 }
 
 /**

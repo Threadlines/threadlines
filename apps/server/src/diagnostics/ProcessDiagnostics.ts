@@ -1248,9 +1248,9 @@ function selectHintedProcessOnlyRows(input: {
 
 /** Command shapes of the provider CLIs the server spawns for sessions. Path
  *  segments count (`/opt/x/codex app-server`), dotted dirs (`.claude/…` in a
- *  wrapper's args) do not. */
+ *  wrapper's args) do not. Muse's launcher execs `muse-bin-<version>`. */
 const PROVIDER_SESSION_COMMAND_PATTERN =
-  /(?:^|[\s/])(?:claude|codex|cursor-agent|opencode)(?=$|[\s.])/i;
+  /(?:^|[\s/])(?:claude|codex|cursor-agent|opencode|muse(?:-bin-[\w.-]+)?)(?=$|[\s.])/i;
 
 /**
  * Pids living under a live provider session's process subtree. A session's

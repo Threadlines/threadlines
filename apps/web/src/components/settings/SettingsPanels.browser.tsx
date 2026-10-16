@@ -2767,9 +2767,9 @@ describe("GeneralSettingsPanel observability", () => {
     // Off, but still where it was: a wrong click is one click to undo.
     expect(sitsUnderNotInUse()).toBe(false);
 
-    // Off the list, onto the usage row above it. (`unhover` points at the
-    // middle of the page, which a long enough list covers.)
-    await page.getByTestId("settings-usage-link").hover();
+    // Onto the page's lede, above the list. A plain unhover can leave the
+    // pointer over a lower row once the list is long, and the row never lets go.
+    await userEvent.hover(page.getByText(/^Agents run on this computer/));
     await vi.waitFor(() => {
       expect(sitsUnderNotInUse()).toBe(true);
     });

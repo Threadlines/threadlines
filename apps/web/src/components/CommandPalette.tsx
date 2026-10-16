@@ -38,6 +38,7 @@ import {
   LinkIcon,
   MessageSquareIcon,
   MessagesSquareIcon,
+  SearchIcon,
   SettingsIcon,
   SquarePenIcon,
   UsersRoundIcon,
@@ -56,6 +57,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useRoomRecipientStore } from "../rooms";
+import { useChatFindStore } from "../chatFindStore";
 import { derivePendingApprovals } from "../session-logic";
 import { readEnvironmentApi } from "../environmentApi";
 import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
@@ -491,6 +493,7 @@ function CommandPaletteDialog() {
 function OpenCommandPaletteDialog() {
   const navigate = useNavigate();
   const setOpen = useCommandPaletteStore((store) => store.setOpen);
+  const chatFindAvailable = useChatFindStore((store) => store.available);
   const closeIfGeneration = useCommandPaletteStore((store) => store.closeIfGeneration);
   const openIntent = useCommandPaletteStore((store) => store.openIntent);
   const clearOpenIntent = useCommandPaletteStore((store) => store.clearOpenIntent);
@@ -1697,6 +1700,24 @@ function OpenCommandPaletteDialog() {
           params: buildThreadRouteParams(threadRef),
           search: (previous) => pullRequestTabSearchParams(previous, pullRequestNumber),
         });
+      },
+    });
+  }
+
+  // Where find in chat can open: a saved chat on screen, off phones.
+  if (chatFindAvailable) {
+    actionItems.push({
+      kind: "action",
+      value: "action:find-in-chat",
+      searchTerms: ["find in chat", "find", "search this chat", "search messages", "ctrl f"],
+      title: "Find in chat",
+      description: "Search this chat's messages",
+      icon: <SearchIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "chat.find",
+      run: async () => {
+        // After the palette has closed and handed focus back, so the bar's
+        // field keeps it.
+        window.requestAnimationFrame(() => useChatFindStore.getState().requestOpen(null));
       },
     });
   }

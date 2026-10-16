@@ -237,7 +237,12 @@ export const ServerProviderAccountTokenUsage = Schema.Struct({
 export type ServerProviderAccountTokenUsage = typeof ServerProviderAccountTokenUsage.Type;
 
 export const ServerProviderAccountUsage = Schema.Struct({
-  source: Schema.Literals(["codex-rate-limits", "claude-oauth-usage", "grok-billing"]),
+  source: Schema.Literals([
+    "codex-rate-limits",
+    "claude-oauth-usage",
+    "muse-subscription-usage",
+    "grok-billing",
+  ]),
   checkedAt: IsoDateTime,
   primaryLimitId: Schema.optional(TrimmedNonEmptyString),
   rateLimitResetCredits: Schema.optional(ServerProviderRateLimitResetCredits),
@@ -379,6 +384,24 @@ export const ServerProviderDetection = Schema.Struct({
 });
 export type ServerProviderDetection = typeof ServerProviderDetection.Type;
 
+/**
+ * Whether the provider may train its models on this account's chats, for
+ * providers whose plan offers that trade (Muse Code's Contributor mode: the
+ * plan lasts longer, Meta may use the content). The choice lives in the
+ * provider's own settings, so it also applies outside Threadlines.
+ */
+export const ServerProviderDataSharing = Schema.Struct({
+  /** Chats may be used for training. */
+  enabled: Schema.Boolean,
+  /** The user has seen the choice (in Threadlines or the provider's own app). */
+  acknowledged: Schema.Boolean,
+  /** The provider's settings file the choice is stored in. */
+  settingsPath: Schema.optional(TrimmedNonEmptyString),
+  /** The choice could not be read or saved, in plain words. */
+  error: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderDataSharing = typeof ServerProviderDataSharing.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -403,6 +426,8 @@ export const ServerProvider = Schema.Struct({
   statusReason: Schema.optional(ServerProviderStatusReason),
   auth: ServerProviderAuth,
   accountUsage: Schema.optional(ServerProviderAccountUsage),
+  /** Set for providers that let the user trade training data for plan usage. */
+  dataSharing: Schema.optionalKey(ServerProviderDataSharing),
   checkedAt: IsoDateTime,
   message: Schema.optional(TrimmedNonEmptyString),
   // Optional for back-compat: every legacy producer omits this field and
@@ -868,6 +893,30 @@ export const ServerProviderRateLimitResetCreditConsumeResult = Schema.Struct({
 });
 export type ServerProviderRateLimitResetCreditConsumeResult =
   typeof ServerProviderRateLimitResetCreditConsumeResult.Type;
+
+/** Sets a provider's data-sharing choice (see `ServerProviderDataSharing`). */
+export const ServerProviderDataSharingSetInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  enabled: Schema.Boolean,
+});
+export type ServerProviderDataSharingSetInput = typeof ServerProviderDataSharingSetInput.Type;
+
+export const ServerProviderDataSharingSetResult = Schema.Struct({
+  providers: ServerProviders,
+});
+export type ServerProviderDataSharingSetResult = typeof ServerProviderDataSharingSetResult.Type;
+
+export class ServerProviderDataSharingError extends Schema.TaggedError<ServerProviderDataSharingError>()(
+  "ServerProviderDataSharingError",
+  {
+    instanceId: ProviderInstanceId,
+    reason: TrimmedNonEmptyString,
+  },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 /**
  * Which maintenance command the runner should run for the target instance.
