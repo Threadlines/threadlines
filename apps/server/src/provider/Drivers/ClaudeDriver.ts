@@ -559,6 +559,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           Effect.map((settings) => settings.enableAgentPages && settings.enableClaudeArtifacts),
           Effect.orElseSucceed(() => false),
         ),
+        // Read live too, so a size chosen in Settings applies from the next
+        // message. Unreadable settings leave Claude's own default.
+        workflowSize: serverSettings.getSettings.pipe(
+          Effect.map((settings) => settings.claudeWorkflowSize),
+          Effect.orElseSucceed(() => "default" as const),
+        ),
         onAccountRateLimitsUpdated: (rateLimitInfo) =>
           Effect.gen(function* () {
             const checkedAt = DateTime.formatIso(yield* DateTime.now);

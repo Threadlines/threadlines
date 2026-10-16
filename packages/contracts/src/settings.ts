@@ -17,6 +17,7 @@ import {
   RoomAgentRole,
 } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
+import { ClaudeWorkflowSize } from "./workflow.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -874,6 +875,14 @@ export const ServerSettings = Schema.Struct({
    */
   enableClaudeArtifacts: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
+   * How many agents Claude aims for when it writes a workflow, for every
+   * Claude account. Read when a Claude session starts and before each turn,
+   * so a change applies from the next message without a restart.
+   */
+  claudeWorkflowSize: ClaudeWorkflowSize.pipe(
+    Schema.withDecodingDefault(Effect.succeed("default" as const)),
+  ),
+  /**
    * Command requests: agents may ask the user to run a shell command with
    * `ask_user_to_run`, shown as a card with Run, Put in terminal and Skip
    * (docs/terminal-command-runs.md). Read when a provider session starts and
@@ -1043,6 +1052,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableRooms: Schema.optionalKey(Schema.Boolean),
   enableAgentPages: Schema.optionalKey(Schema.Boolean),
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
+  claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
   enableCommandRequests: Schema.optionalKey(Schema.Boolean),
   // Whole values, replaced as sent: a new default never keeps an old one's
   // reasoning, and the list is the whole list.

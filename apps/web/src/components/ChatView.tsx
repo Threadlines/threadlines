@@ -165,10 +165,7 @@ import {
   selectAgentsPanelAgent,
   selectAgentsPanelWorkflow,
 } from "../agentsPanelStore";
-import {
-  getModelSelectionBooleanOptionValue,
-  getModelSelectionStringOptionValue,
-} from "@threadlines/shared/model";
+import { getModelSelectionBooleanOptionValue } from "@threadlines/shared/model";
 import type { WorkflowRunActions, WorkflowRunViewTab } from "./chat/WorkflowRunCard";
 import { summarizeLiveAgents } from "./chat/agentsPanel.logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
@@ -7398,10 +7395,15 @@ export default function ChatView(props: ChatViewProps) {
       save: (taskId) => open(taskId, { tab: "script", saving: true }),
       ultracode:
         getModelSelectionBooleanOptionValue(activeThread?.modelSelection, "ultracode") === true,
-      sizeGuideline:
-        getModelSelectionStringOptionValue(activeThread?.modelSelection, "workflowSize") ?? null,
+      sizeGuideline: settings.claudeWorkflowSize === "default" ? null : settings.claudeWorkflowSize,
     };
-  }, [activeThread?.modelSelection, agentsPanelOpen, openRightPanelTab, stopWorkflowRun]);
+  }, [
+    activeThread?.modelSelection,
+    agentsPanelOpen,
+    openRightPanelTab,
+    settings.claudeWorkflowSize,
+    stopWorkflowRun,
+  ]);
   const openWorkflowRun = useCallback(
     (taskId: string) => workflowRunActions.open(taskId),
     [workflowRunActions],
