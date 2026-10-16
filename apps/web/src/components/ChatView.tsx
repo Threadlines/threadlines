@@ -1892,11 +1892,13 @@ export default function ChatView(props: ChatViewProps) {
     selectedProvider: selectedProviderDriver,
     threadProvider: threadProviderDriver,
   });
-  // The same rule the composer targets its instance by, so the agent here
-  // (the goal command, the provider notices) is the one the message goes to.
+  // The agent the next message goes to, by the composer's own rule and
+  // inputs, so the goal command and the composer agree. Like the composer it
+  // takes no lock: the lock above only decides when switching agents needs
+  // the handoff confirmation (classifyModelSwitch).
   const ownSessionInstanceId = ownAgentSession(activeThread)?.providerInstanceId;
   const ownSessionProvider = ownAgentSession(activeThread)?.provider;
-  const unlockedSelectedProvider = useMemo(
+  const selectedProvider: ProviderDriverKind = useMemo(
     () =>
       resolveComposerProviderSelection({
         entries: providerInstanceEntries,
@@ -1912,7 +1914,6 @@ export default function ChatView(props: ChatViewProps) {
       threadProvider,
     ],
   );
-  const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
   useEffect(() => {
     if (!shouldRetainThreadDetailSubscription || phase !== "running") {
