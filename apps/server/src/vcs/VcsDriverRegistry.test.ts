@@ -60,14 +60,8 @@ describe("VcsDriverRegistry", () => {
               const normalizedArgs =
                 input.args[0] === "-C" && input.args.length >= 2 ? input.args.slice(2) : input.args;
               const command = normalizedArgs.join(" ");
-              if (command === "rev-parse --is-inside-work-tree") {
-                return processOutput("true\n");
-              }
-              if (command === "rev-parse --show-toplevel") {
-                return processOutput("/repo\n");
-              }
-              if (command === "rev-parse --git-common-dir") {
-                return processOutput("/repo/.git\n");
+              if (command === "rev-parse --is-inside-work-tree --show-toplevel --git-common-dir") {
+                return processOutput("true\n/repo\n/repo/.git\n");
               }
               return processOutput("");
             }),
@@ -84,11 +78,7 @@ describe("VcsDriverRegistry", () => {
       assert.equal(second.repository.rootPath, "/repo");
       assert.deepStrictEqual(
         calls.map((call) => normalizeGitArgs(call.args).join(" ")),
-        [
-          "rev-parse --is-inside-work-tree",
-          "rev-parse --show-toplevel",
-          "rev-parse --git-common-dir",
-        ],
+        ["rev-parse --is-inside-work-tree --show-toplevel --git-common-dir"],
       );
     }).pipe(Effect.provide(layer));
   });

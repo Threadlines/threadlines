@@ -436,7 +436,12 @@ export const layer = Layer.effect(
       options?: { readonly forceRefresh?: boolean },
     ) {
       yield* workflow.invalidateRemoteStatus(cwd);
-      const remote = yield* workflow.remoteStatus({ cwd }, options);
+      // Refreshes this broadcaster starts on its own may reuse a pull request
+      // answer from the last minute; an explicit refresh asks the host.
+      const remote = yield* workflow.remoteStatus(
+        { cwd },
+        options?.forceRefresh === true ? options : { allowRecentPullRequest: true },
+      );
       return yield* updateCachedRemoteStatus(cwd, remote, { publish: true });
     });
 

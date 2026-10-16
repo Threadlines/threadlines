@@ -4,6 +4,7 @@ import { assert, afterEach, describe, expect, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
   ProjectId,
@@ -107,6 +108,12 @@ const mockGetShellSnapshot = vi.fn<() => Effect.Effect<OrchestrationShellSnapsho
 
 const projectionsLayer = Layer.mock(ProjectionSnapshotQuery)({
   getShellSnapshot: mockGetShellSnapshot,
+  getProjectShellById: (projectId) =>
+    mockGetShellSnapshot().pipe(
+      Effect.map((snapshot) =>
+        Option.fromNullishOr(snapshot.projects.find((project) => project.id === projectId)),
+      ),
+    ),
 });
 
 /** Every host the registry builds, so the service can pick between them. */
