@@ -2565,6 +2565,22 @@ describe("ProviderCommandReactor", () => {
       threadId: ThreadId.make("thread-1"),
       objective: "Ship the release",
     });
+
+    // A later restart (an access change) keeps Codex, which holds the goal.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-goal-switch-access"),
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 3);
+    const restart = harness.startSession.mock.calls[2]?.[1] as
+      | ProviderSessionStartInput
+      | undefined;
+    expect(restart?.providerInstanceId).toBe(ProviderInstanceId.make("codex"));
   });
 
   it("processes commands for different threads concurrently", async () => {

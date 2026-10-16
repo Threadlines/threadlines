@@ -2717,11 +2717,24 @@ const make = Effect.gen(function* () {
     // hands the thread over first, rather than asking the old agent, which
     // may not keep goals at all. (Room agents never change agent in place.)
     const goalHolderId = sessionSlotParticipantId(thread.session);
+    const ownModelSelection = goalHolderId === null ? thread.modelSelection : undefined;
     yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
       participantId: goalHolderId,
-      ...(goalHolderId === null ? { modelSelection: thread.modelSelection } : {}),
+      ...(ownModelSelection !== undefined ? { modelSelection: ownModelSelection } : {}),
     })
       .pipe(
+        // Remembered as a turn's selection is, so a later restart (an access
+        // change) keeps the agent the goal moved the thread to.
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (ownModelSelection !== undefined) {
+              threadModelSelections.set(
+                participantSessionKey(event.payload.threadId, null),
+                ownModelSelection,
+              );
+            }
+          }),
+        ),
         Effect.flatMap(() =>
           providerService.setThreadGoal({
             threadId: participantSessionKey(event.payload.threadId, goalHolderId),
