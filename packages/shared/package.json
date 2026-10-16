@@ -39,6 +39,10 @@
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
     },
+    "./activityPayloadRefs": {
+      "types": "./src/activityPayloadRefs.ts",
+      "import": "./src/activityPayloadRefs.ts"
+    },
     "./agentPageDocument": {
       "types": "./src/agentPageDocument.ts",
       "import": "./src/agentPageDocument.ts"

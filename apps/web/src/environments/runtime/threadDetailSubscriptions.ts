@@ -46,6 +46,7 @@ import {
   useStore,
 } from "~/store";
 import type { EnvironmentConnection } from "./connection";
+import { restoreSharedPayloadValues } from "@threadlines/shared/activityPayloadRefs";
 
 const THREAD_DETAIL_SUBSCRIPTION_IDLE_EVICTION_MS = 15 * 60 * 1000;
 const MAX_CACHED_THREAD_DETAIL_SUBSCRIPTIONS = 32;
@@ -85,6 +86,8 @@ type ThreadDetailSubscriptionEntry = {
   readonly resumeInput: {
     readonly threadId: ThreadId;
     fromSequenceExclusive?: number;
+    /** Snapshots may share repeated payload values; see attach. */
+    readonly acceptsPayloadRefs: true;
   };
   unsubscribe: () => void;
   unsubscribeConnectionListener: (() => void) | null;
@@ -312,7 +315,17 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
       (item) => {
         entry.failed = false;
         if (item.kind === "snapshot") {
-          useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
+          // Put shared values back before anything reads the activities.
+          const thread = item.snapshot.thread;
+          const activities = item.snapshot.sharedPayloadValues
+            ? restoreSharedPayloadValues(thread.activities)
+            : thread.activities;
+          useStore
+            .getState()
+            .syncServerThreadDetail(
+              activities === thread.activities ? thread : { ...thread, activities },
+              entry.environmentId,
+            );
           entry.resumeInput.fromSequenceExclusive = item.snapshot.snapshotSequence;
           entry.hydrated = true;
         } else {
@@ -371,7 +384,7 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
       key,
       environmentId,
       threadId,
-      resumeInput: { threadId },
+      resumeInput: { threadId, acceptsPayloadRefs: true },
       unsubscribe: NOOP,
       unsubscribeConnectionListener: null,
       refCount: 0,
