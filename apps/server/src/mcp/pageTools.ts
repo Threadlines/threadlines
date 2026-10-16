@@ -25,8 +25,13 @@ export const CLAUDE_PAGE_TOOL_IDS = [
   `mcp__${PAGES_MCP_SERVER_NAME}__${AGENT_PAGE_PREVIEW_TOOL_NAME}`,
 ] as const;
 
+// The page itself: show_page and preview_page each take exactly one.
 const Html = Schema.String.annotate({
   description: "A complete, self-contained HTML document or fragment.",
+});
+const Markdown = Schema.String.annotate({
+  description:
+    "A document in GitHub-flavored Markdown, shown as a styled page (raw HTML in it is shown as text). Give html or markdown, not both.",
 });
 
 export const ShowPageParameters = Schema.Struct({
@@ -35,12 +40,7 @@ export const ShowPageParameters = Schema.Struct({
     Schema.isMaxLength(AGENT_PAGE_MAX_TITLE_LENGTH),
   ).annotate({ description: "A short, distinctive name for the page." }),
   html: Schema.optional(Html),
-  markdown: Schema.optional(
-    Schema.String.annotate({
-      description:
-        "A document in GitHub-flavored Markdown, shown as a styled page (raw HTML in it is shown as text). Give html or markdown, not both.",
-    }),
-  ),
+  markdown: Schema.optional(Markdown),
   height: Schema.optional(
     Schema.Int.annotate({
       description: `The frame height in CSS pixels, ${AGENT_PAGE_MIN_HEIGHT}-${AGENT_PAGE_MAX_HEIGHT}. Usually leave it out: Threadlines fits the frame to the page. Set it below the page's contentHeight (from preview_page) to make long content scroll inside the frame.`,
@@ -68,7 +68,8 @@ export const ShowPageResult = Schema.Struct({
 });
 
 export const PreviewPageParameters = Schema.Struct({
-  html: Html,
+  html: Schema.optional(Html),
+  markdown: Schema.optional(Markdown),
   width: Schema.optional(
     Schema.Int.annotate({
       description: `Viewport width in CSS pixels, 240-1600. Defaults to ${AGENT_PAGE_COLUMN_WIDTH}, the reply column; use about 390 to check phones.`,
@@ -87,7 +88,7 @@ export const ShowPageTool = Tool.make(AGENT_PAGE_SHOW_TOOL_NAME, {
   description: [
     "Show a page inline in this thread, above your final text reply: a chart, table, diagram, image collage, UI mockup, or a written document (markdown). Use it when a visual says more than prose, or when the user asks for one. Call it before writing that reply.",
     "The reader already sees the page, so the reply should not announce it, say where it is, or restate it: add only what the page doesn't say.",
-    "Check an HTML page with preview_page first.",
+    "Check a page with preview_page first.",
     AGENT_PAGE_NETWORK_GUIDE,
     AGENT_PAGE_LAYOUT_GUIDE,
     AGENT_PAGE_THEME_GUIDE,
@@ -103,7 +104,7 @@ export const ShowPageTool = Tool.make(AGENT_PAGE_SHOW_TOOL_NAME, {
 
 export const PreviewPageTool = Tool.make(AGENT_PAGE_PREVIEW_TOOL_NAME, {
   description: [
-    "Render an HTML page exactly as show_page would show it and get back a PNG screenshot, contentHeight (the height the page needs at this width), and its console output: log, info, warning, error and uncaught exceptions. console.log is a fine way to report your own checks.",
+    "Render an HTML or Markdown page exactly as show_page would show it and get back a PNG screenshot, contentHeight (the height the page needs at this width), and its console output: log, info, warning, error and uncaught exceptions. console.log is a fine way to report your own checks.",
     "Use it to check and fix a page before show_page. The first preview on a machine can report that Threadlines is still installing its preview browser; try again a minute later.",
     AGENT_PAGE_NETWORK_GUIDE,
   ].join(" "),
@@ -129,7 +130,7 @@ export function buildAgentPageInstructions(input: {
 }): string {
   const prefix = input.toolPrefix ?? `mcp__${PAGES_MCP_SERVER_NAME}__`;
   return `<threadlines_pages>
-When a chart, table, diagram, image collage, UI mockup or written document would say more than prose, show it as a page with \`${prefix}${AGENT_PAGE_SHOW_TOOL_NAME}\` (check HTML first with \`${prefix}${AGENT_PAGE_PREVIEW_TOOL_NAME}\`); it appears in the chat above your reply. Do not write HTML files for the user to open instead.${input.rival !== undefined ? ` ${input.rival}` : ""} Local images for a page go in ${input.assetsDir}; reference them there by absolute path.
+When a chart, table, diagram, image collage, UI mockup or written document would say more than prose, show it as a page with \`${prefix}${AGENT_PAGE_SHOW_TOOL_NAME}\` (check it first with \`${prefix}${AGENT_PAGE_PREVIEW_TOOL_NAME}\`); it appears in the chat above your reply. Do not write HTML files for the user to open instead.${input.rival !== undefined ? ` ${input.rival}` : ""} Local images for a page go in ${input.assetsDir}; reference them there by absolute path.
 </threadlines_pages>`;
 }
 

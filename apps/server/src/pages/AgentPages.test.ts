@@ -74,6 +74,8 @@ const makeLayer = (options: {
   readonly thread: OrchestrationThread | ReadonlyArray<OrchestrationThread>;
   readonly dispatched: Array<OrchestrationCommand>;
   readonly enabled?: boolean;
+  /** Each document handed to the preview browser. */
+  readonly previewed?: Array<string>;
 }) =>
   AgentPagesLayer.pipe(
     Layer.provide(
@@ -96,6 +98,11 @@ const makeLayer = (options: {
         ServerSettingsService.layerTest({ enableAgentPages: options.enabled ?? true }),
         Layer.mock(PagePreview.PagePreview)({
           measure: () => Effect.succeed(Option.none()),
+          preview: ({ document, width }) =>
+            Effect.sync(() => {
+              options.previewed?.push(document);
+              return { png: "", width, contentHeight: 0, capturedHeight: 0, consoleMessages: [] };
+            }),
         }),
         ServerConfig.layerTest(process.cwd(), { prefix: "tl-agent-pages-test-" }),
       ),
@@ -208,6 +215,29 @@ it.layer(NodeServices.layer)("AgentPages.show", (it) => {
         makeLayer({
           thread: threadWith({ participantId: null, activeTurnId: TURN }),
           dispatched,
+        }),
+      ),
+    );
+  });
+});
+
+it.layer(NodeServices.layer)("AgentPages.preview", (it) => {
+  it.effect("renders a Markdown page as the chat shows it, and refuses one given both ways", () => {
+    const previewed: Array<string> = [];
+    return Effect.gen(function* () {
+      const pages = yield* AgentPages;
+      const outcome = yield* pages.preview(caller(), { markdown: "# Plan\n\n- ship it" });
+      assert.strictEqual(outcome.outcome, "previewed");
+      assert.include(previewed[0], '<article class="tl-document"><h1>Plan</h1>');
+      const both = yield* pages.preview(caller(), { html: "<p>plan</p>", markdown: "# Plan" });
+      assert.strictEqual(both.outcome, "refused");
+      assert.strictEqual(previewed.length, 1);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          thread: threadWith({ participantId: null, activeTurnId: TURN }),
+          dispatched: [],
+          previewed,
         }),
       ),
     );
