@@ -152,20 +152,18 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
           direction: "outgoing",
           stage: "decoded",
           payload: {
-            _tag: "Request",
-            id: "",
+            _tag: "Notification",
             tag: "session/cancel",
             payload: {
               sessionId: "session-1",
             },
-            headers: [],
           },
         },
         {
           direction: "outgoing",
           stage: "raw",
           payload:
-            '{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"session-1"},"id":"","headers":[]}\n',
+            '{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"session-1"}}\n',
         },
       ]);
     }),

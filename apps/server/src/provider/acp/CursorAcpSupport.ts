@@ -1,8 +1,8 @@
 /**
- * CursorAcpSupport — the Cursor Agent (`agent acp`) descriptor for the
+ * CursorAcpSupport — the Cursor Agent (`cursor-agent acp`) descriptor for the
  * generic ACP driver.
  *
- * Cursor-specific pieces: the `agent about` health probe with its
+ * Cursor-specific pieces: the `cursor-agent about` health probe with its
  * minimum-version gate for the parameterized model picker, the
  * per-model option mapping (reasoning / context / fast / thinking), bracket
  * traits on model ids, and the `cursor/*` extension methods.
@@ -65,7 +65,7 @@ const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 export const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const CURSOR_PARAMETERIZED_MODEL_PICKER_MIN_VERSION_DATE = 2026_04_08;
-/** Timeout for `agent about` — it's slower than a simple `--version` probe. */
+/** Timeout for `cursor-agent about` — it's slower than a simple `--version` probe. */
 const ABOUT_TIMEOUT_MS = 8_000;
 const CURSOR_SHELL_INSTALL = {
   executable: "bash",
@@ -88,7 +88,7 @@ export function buildCursorAcpSpawnInput(
   environment?: NodeJS.ProcessEnv,
 ): AcpSpawnInput {
   return {
-    command: cursorSettings?.binaryPath || "agent",
+    command: cursorSettings?.binaryPath || "cursor-agent",
     args: [
       ...(cursorSettings?.apiEndpoint ? (["-e", cursorSettings.apiEndpoint] as const) : []),
       "acp",
@@ -401,7 +401,7 @@ export const CURSOR_MODEL_OPTION_MAPPING: AcpModelOptionMapping = {
   configUpdatesFromSelections: resolveCursorAcpConfigUpdates,
 };
 
-// ── `agent about` probe ───────────────────────────────────────────────
+// ── `cursor-agent about` probe ───────────────────────────────────────────────
 
 /** Strip ANSI escape sequences so we can parse plain key-value lines. */
 function stripAnsi(text: string): string {
@@ -410,7 +410,7 @@ function stripAnsi(text: string): string {
 }
 
 /**
- * Extract a value from `agent about` key-value output.
+ * Extract a value from `cursor-agent about` key-value output.
  * Lines look like: `CLI Version         2026.03.20-44cb435`
  */
 function extractAboutField(plain: string, key: string): string | undefined {
@@ -433,7 +433,7 @@ interface CursorAboutJsonPayload {
   readonly userEmail?: unknown;
 }
 
-/** Newest CLI release `agent about --format json` reports (its own update check). */
+/** Newest CLI release `cursor-agent about --format json` reports (its own update check). */
 export function parseCursorAboutLatestVersion(stdout: string): string | undefined {
   const latest = parseCursorAboutJsonPayload(stdout)?.latestVersion;
   return typeof latest === "string" && latest.trim().length > 0 ? latest.trim() : undefined;
@@ -519,7 +519,7 @@ function isCursorAboutJsonFormatUnsupported(result: CommandResult): boolean {
 }
 
 const CURSOR_UNAUTHENTICATED_MESSAGE =
-  "Cursor Agent isn't signed in. Use Sign in, or run `agent login` in a terminal.";
+  "Cursor Agent isn't signed in. Use Sign in, or run `cursor-agent login` in a terminal.";
 
 function isLoggedOutEmail(userEmail: string): boolean {
   const lowerEmail = userEmail.toLowerCase();
@@ -531,7 +531,7 @@ function isLoggedOutEmail(userEmail: string): boolean {
 }
 
 /**
- * Parse the output of `agent about` (JSON when supported, plain text
+ * Parse the output of `cursor-agent about` (JSON when supported, plain text
  * otherwise) to extract version and authentication status in one probe.
  */
 export function parseCursorAboutOutput(result: CommandResult): CursorAboutResult {
@@ -598,7 +598,8 @@ export function parseCursorAboutOutput(result: CommandResult): CursorAboutResult
       version: null,
       status: "warning",
       auth: { status: "unknown" },
-      message: "The `agent about` command is unavailable in this version of the Cursor Agent CLI.",
+      message:
+        "The `cursor-agent about` command is unavailable in this version of the Cursor Agent CLI.",
     };
   }
 
@@ -645,7 +646,7 @@ export function getCursorParameterizedModelPickerUnsupportedMessage(input: {
   ) {
     return undefined;
   }
-  return `Cursor Agent CLI ${input.version} is too old for Threadlines. Run \`agent update\` to get 2026.04.08 or newer.`;
+  return `Cursor Agent CLI ${input.version} is too old for Threadlines. Run \`cursor-agent update\` to get 2026.04.08 or newer.`;
 }
 
 const runCursorCommand = (
@@ -675,7 +676,7 @@ const runCursorAboutCommand = (cursorSettings: CursorSettings, environment: Node
     return yield* runCursorCommand(cursorSettings, ["about"], environment);
   });
 
-/** Single `agent about` probe: version + auth, then the minimum-version gate. */
+/** Single `cursor-agent about` probe: version + auth, then the minimum-version gate. */
 export const probeCursor = Effect.fn("probeCursor")(function* (
   cursorSettings: CursorSettings,
   environment: NodeJS.ProcessEnv,
@@ -693,7 +694,7 @@ export const probeCursor = Effect.fn("probeCursor")(function* (
       status: "error",
       auth: { status: "unknown" },
       message: isCommandMissingCause(error)
-        ? "Cursor Agent CLI (`agent`) is not installed or not on PATH."
+        ? "Cursor Agent CLI (`cursor-agent`) is not installed or not on PATH."
         : `Failed to execute Cursor Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
     };
   }
@@ -704,7 +705,7 @@ export const probeCursor = Effect.fn("probeCursor")(function* (
       version: null,
       status: "error",
       auth: { status: "unknown" },
-      message: "Cursor Agent CLI is installed but timed out while running `agent about`.",
+      message: "Cursor Agent CLI is installed but timed out while running `cursor-agent about`.",
     };
   }
 
@@ -752,7 +753,7 @@ export const CURSOR_ACP_DESCRIPTOR: AcpProviderDescriptor<CursorSettings> = {
   maintenance: makeProviderMaintenanceCapabilities({
     provider: CURSOR_DRIVER_KIND,
     packageName: null,
-    updateExecutable: "agent",
+    updateExecutable: "cursor-agent",
     updateArgs: ["update"],
     updateLockKey: "cursor-agent",
   }),
@@ -770,7 +771,7 @@ export const CURSOR_ACP_DESCRIPTOR: AcpProviderDescriptor<CursorSettings> = {
   spawn: buildCursorAcpSpawnInput,
   authMethodId: "cursor_login",
   clientCapabilities: CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES,
-  notInstalledMessage: "Cursor Agent CLI (`agent`) is not installed or not on PATH.",
+  notInstalledMessage: "Cursor Agent CLI (`cursor-agent`) is not installed or not on PATH.",
   probe: probeCursor,
   modelOptions: CURSOR_MODEL_OPTION_MAPPING,
   modelCapabilitiesVaryByModel: true,

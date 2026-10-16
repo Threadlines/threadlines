@@ -176,6 +176,15 @@ describe("buildProviderAuthCommand", () => {
       env: {},
       display: "/opt/cursor/agent login",
     });
+    // `agent`, Cursor's old default, can be Grok Build's own `agent` on PATH.
+    expect(
+      buildProviderAuthCommand({
+        driver: "cursor",
+        flow: "login",
+        binaryPath: "agent",
+        homePath: "",
+      }),
+    ).toEqual({ file: "cursor-agent", args: ["login"], env: {}, display: "cursor-agent login" });
     expect(
       buildProviderAuthCommand({
         driver: "fx",

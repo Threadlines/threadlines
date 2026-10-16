@@ -397,7 +397,7 @@ const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
 describe("buildCursorAcpSpawnInput", () => {
   it("builds the default Cursor ACP command", () => {
     expect(buildCursorAcpSpawnInput(undefined, "/tmp/project")).toEqual({
-      command: "agent",
+      command: "cursor-agent",
       args: ["acp"],
       cwd: "/tmp/project",
     });
@@ -463,14 +463,15 @@ describe("buildAcpProviderSnapshot", () => {
           version: "2026.04.09-f2b0fcd",
           status: "error",
           auth: { status: "unauthenticated" },
-          message: "Cursor Agent isn't signed in. Use Sign in, or run `agent login` in a terminal.",
+          message:
+            "Cursor Agent isn't signed in. Use Sign in, or run `cursor-agent login` in a terminal.",
         },
         discoveryWarning: "Cursor ACP model discovery failed. Check server logs for details.",
       }),
     ).toMatchObject({
       status: "error",
       message:
-        "Cursor Agent isn't signed in. Use Sign in, or run `agent login` in a terminal. Cursor ACP model discovery failed. Check server logs for details.",
+        "Cursor Agent isn't signed in. Use Sign in, or run `cursor-agent login` in a terminal. Cursor ACP model discovery failed. Check server logs for details.",
       models: [
         {
           slug: "claude-sonnet-4-6",
@@ -757,7 +758,8 @@ describe("parseCursorAboutOutput", () => {
       auth: {
         status: "unauthenticated",
       },
-      message: "Cursor Agent isn't signed in. Use Sign in, or run `agent login` in a terminal.",
+      message:
+        "Cursor Agent isn't signed in. Use Sign in, or run `cursor-agent login` in a terminal.",
     });
   });
 
@@ -778,7 +780,8 @@ describe("parseCursorAboutOutput", () => {
       auth: {
         status: "unauthenticated",
       },
-      message: "Cursor Agent isn't signed in. Use Sign in, or run `agent login` in a terminal.",
+      message:
+        "Cursor Agent isn't signed in. Use Sign in, or run `cursor-agent login` in a terminal.",
     });
   });
 });

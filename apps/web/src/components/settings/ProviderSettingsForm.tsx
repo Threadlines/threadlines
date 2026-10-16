@@ -24,6 +24,8 @@ export interface ProviderSettingsFieldModel {
   readonly placeholder?: string | undefined;
   readonly clearWhenEmpty: "omit" | "persist";
   readonly defaultBooleanValue?: boolean | undefined;
+  /** Saved values that now mean the default, shown as empty (see `retiredValues`). */
+  readonly retiredValues?: ReadonlyArray<string> | undefined;
 }
 
 function titleizeFieldKey(key: string): string {
@@ -103,6 +105,9 @@ export function deriveProviderSettingsFields(
             ? { placeholder: formAnnotation.placeholder }
             : {}),
           clearWhenEmpty: formAnnotation.clearWhenEmpty ?? "omit",
+          ...(formAnnotation.retiredValues !== undefined
+            ? { retiredValues: formAnnotation.retiredValues }
+            : {}),
           ...(formAnnotation.control === "switch"
             ? { defaultBooleanValue: readFieldBooleanDefault(fieldSchema) }
             : {}),
@@ -115,6 +120,16 @@ export function readProviderConfigString(config: unknown, key: string): string {
   if (config === null || typeof config !== "object") return "";
   const value = (config as Record<string, unknown>)[key];
   return typeof value === "string" ? value : "";
+}
+
+/**
+ * A saved text value as the form shows it: a retired default reads as empty,
+ * so the placeholder (the current default) shows. Only for inputs that show
+ * the saved value; an input that saves on every keystroke would lose text.
+ */
+function readSavedProviderFieldText(config: unknown, field: ProviderSettingsFieldModel): string {
+  const value = readProviderConfigString(config, field.key);
+  return field.retiredValues?.includes(value.trim()) ? "" : value;
 }
 
 export function readProviderConfigBoolean(
@@ -264,7 +279,7 @@ function ProviderSettingsFieldRow({
             className="mt-1.5"
             type={type}
             autoComplete={field.control === "password" ? "off" : undefined}
-            value={readProviderConfigString(value, field.key)}
+            value={readSavedProviderFieldText(value, field)}
             onCommit={(next) => onChange(nextProviderConfigWithFieldValue(value, field, next))}
             placeholder={field.placeholder}
             spellCheck={false}

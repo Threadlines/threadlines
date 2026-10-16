@@ -190,12 +190,18 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientS
 export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
 export type ThreadEnvMode = typeof ThreadEnvMode.Type;
 
-const makeBinaryPathSetting = (fallback: string) =>
+/**
+ * A binary path that falls back to `fallback` when empty. `retiredDefaults`
+ * are earlier defaults that saved settings still hold; they decode to the
+ * current default too.
+ */
+const makeBinaryPathSetting = (fallback: string, retiredDefaults: ReadonlyArray<string> = []) =>
   TrimmedString.pipe(
     Schema.decodeTo(
       Schema.String,
       SchemaTransformation.transformOrFail({
-        decode: (value) => Effect.succeed(value || fallback),
+        decode: (value) =>
+          Effect.succeed(value === "" || retiredDefaults.includes(value) ? fallback : value),
         encode: (value) => Effect.succeed(value),
       }),
     ),
@@ -209,6 +215,8 @@ export interface ProviderSettingsFormAnnotation {
   readonly placeholder?: string | undefined;
   readonly hidden?: boolean | undefined;
   readonly clearWhenEmpty?: "omit" | "persist" | undefined;
+  /** Saved values that now mean the default; the form shows them as empty. */
+  readonly retiredValues?: ReadonlyArray<string> | undefined;
 }
 
 export interface ProviderSettingsFormSchemaAnnotation {
@@ -382,17 +390,29 @@ export const ClaudeSettings = makeProviderSettingsSchema(
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
 
+/**
+ * Cursor's installer adds both `agent` and `cursor-agent`, Homebrew only
+ * `cursor-agent`, and Grok Build's installer puts its own `agent` ahead of
+ * Cursor's on PATH. So the default is `cursor-agent`, and `agent`, the old
+ * default most saved Cursor settings hold, means it too.
+ */
+const CURSOR_RETIRED_BINARY_NAMES = ["agent"];
+
 export const CursorSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(false)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
-    binaryPath: makeBinaryPathSetting("agent").pipe(
+    binaryPath: makeBinaryPathSetting("cursor-agent", CURSOR_RETIRED_BINARY_NAMES).pipe(
       Schema.annotateKey({
         title: "Binary path",
         description: "Path to the Cursor agent binary.",
-        providerSettingsForm: { placeholder: "agent", clearWhenEmpty: "omit" },
+        providerSettingsForm: {
+          placeholder: "cursor-agent",
+          clearWhenEmpty: "omit",
+          retiredValues: CURSOR_RETIRED_BINARY_NAMES,
+        },
       }),
     ),
     apiEndpoint: TrimmedString.pipe(

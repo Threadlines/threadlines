@@ -11,7 +11,8 @@
  *
  * @module providerAuthCommands
  */
-import type { ProviderInstanceEnvironmentVariable } from "@threadlines/contracts";
+import { CursorSettings, type ProviderInstanceEnvironmentVariable } from "@threadlines/contracts";
+import * as Schema from "effect/Schema";
 
 import { bashWord, wslCommand } from "./wsl.ts";
 
@@ -172,9 +173,16 @@ export function buildCodexLoginCommand(input: {
   return authHomePath ? `CODEX_HOME=${shellWord(authHomePath)} ${command}` : command;
 }
 
-/** `agent login` — Cursor's browser sign-in. */
+const decodeCursorSettings = Schema.decodeSync(CursorSettings);
+
+/** The Cursor binary a configured path runs: the settings default, retired names included. */
+function cursorBinary(binaryPath: string): string {
+  return decodeCursorSettings({ binaryPath }).binaryPath;
+}
+
+/** `cursor-agent login` — Cursor's browser sign-in. */
 export function buildCursorLoginCommand(input: { readonly binaryPath: string }): string {
-  return `${shellWord(input.binaryPath.trim() || "agent")} login`;
+  return `${shellWord(cursorBinary(input.binaryPath))} login`;
 }
 
 /** `fx login` — Vercel AI Gateway sign-in (device/browser flow). */
@@ -251,7 +259,8 @@ export function buildProviderAuthCommand(
   // user's home; nothing to override in the environment.
   if (input.driver === CURSOR_DRIVER_KIND || input.driver === FX_DRIVER_KIND) {
     if (input.flow !== "login") return null;
-    const binary = binaryPath || (input.driver === CURSOR_DRIVER_KIND ? "agent" : "fx");
+    const binary =
+      input.driver === CURSOR_DRIVER_KIND ? cursorBinary(binaryPath) : binaryPath || "fx";
     if (input.driver === FX_DRIVER_KIND && input.platform === "win32") {
       const command = wslCommand(binary, ["login"]);
       return {
