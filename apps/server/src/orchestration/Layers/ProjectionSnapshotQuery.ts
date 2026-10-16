@@ -1294,6 +1294,23 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listThreadAgentRequestRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      threadId: ThreadId,
+      agentRequests: Schema.fromJsonString(OrchestrationAgentRequestState),
+    }),
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          agent_requests AS "agentRequests"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND agent_requests IS NOT NULL
+      `,
+  });
+
   // ISO-8601 UTC stamps compare lexicographically, so the window predicate is
   // plain string comparison. A turn overlaps the window if it started or
   // completed at/after `sinceIso`; a turn that started earlier and is still
@@ -3068,6 +3085,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
 
+  const listThreadIdsWithOpenAgentRequests: ProjectionSnapshotQueryShape["listThreadIdsWithOpenAgentRequests"] =
+    () =>
+      listThreadAgentRequestRows(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.listThreadIdsWithOpenAgentRequests:query",
+            "ProjectionSnapshotQuery.listThreadIdsWithOpenAgentRequests:decodeRows",
+          ),
+        ),
+        Effect.map((rows) =>
+          rows.filter((row) => row.agentRequests.open.length > 0).map((row) => row.threadId),
+        ),
+      );
+
   const listThreadTurnOverlapsSince: ProjectionSnapshotQueryShape["listThreadTurnOverlapsSince"] = (
     input,
   ) =>
@@ -3338,6 +3369,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getFullThreadDiffContext,
     listThreadDiffStatBaselines,
     listThreadTurnOverlapsSince,
+    listThreadIdsWithOpenAgentRequests,
     getThreadShellById,
     getThreadDetailById,
     getTurnActivities,
