@@ -4108,11 +4108,23 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             // The thread missed one event since 590 or 99, however busy other
             // threads were; since 50 it missed more than a replay may carry.
             // Since 70 what is stored is a full activity window, which storage
-            // maintenance may have trimmed from a longer run.
+            // maintenance may have trimmed from a longer run. Since 80 only the
+            // tombstone of the deleted thread is left.
             readThreadEvents: (input) =>
               Effect.sync(() => {
                 readEventCursors.push(input.fromSequenceExclusive);
-                assert.equal(input.toSequenceInclusive, 600);
+                // Counted with no upper bound: a prune can keep events newer
+                // than the snapshot boundary in place of older missed ones.
+                assert.equal(input.toSequenceInclusive, Number.MAX_SAFE_INTEGER);
+                if (input.fromSequenceExclusive === 80) {
+                  return [
+                    {
+                      ...makeThreadMessageEvent(599),
+                      type: "thread.deleted",
+                      payload: { threadId: defaultThreadId, deletedAt: "2026-01-01T00:00:00.000Z" },
+                    } as OrchestrationEvent,
+                  ];
+                }
                 if (input.fromSequenceExclusive === 50) {
                   return Array.from({ length: input.limit }, (_, index) =>
                     makeThreadMessageEvent(51 + index),
@@ -4187,8 +4199,18 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.equal(prunedItems[0]?.kind, "snapshot");
-      assert.deepEqual(readEventCursors, [590, 99, 50, 70]);
-      assert.equal(threadDetailReads, 2);
+
+      const deletedItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            fromSequenceExclusive: 80,
+          }).pipe(Stream.take(1), Stream.runCollect),
+        ),
+      );
+      assert.equal(deletedItems[0]?.kind, "snapshot");
+      assert.deepEqual(readEventCursors, [590, 99, 50, 70, 80]);
+      assert.equal(threadDetailReads, 3);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

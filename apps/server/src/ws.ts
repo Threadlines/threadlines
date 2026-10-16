@@ -250,18 +250,25 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 export const ORCHESTRATION_THREAD_RESUME_MAX_EVENTS = 500;
 
 /**
- * Whether a thread's stored events after a client's cursor are all it missed.
- * Storage maintenance deletes a thread's activity events older than its newest
- * MAX_THREAD_ACTIVITIES, so once that many activity events follow the cursor,
- * older ones after it may be gone and what is left only looks like a short
- * replay. Below that, nothing after the cursor was pruned.
+ * Whether a thread's stored events after a client's cursor, every one up to
+ * now, are all it missed: then replaying them resumes the thread exactly.
+ *
+ * Storage maintenance deletes events of deleted threads, keeping the
+ * `thread.deleted` tombstone, and a thread's activity events older than its
+ * newest MAX_THREAD_ACTIVITIES. A prune that reaches past the cursor leaves at
+ * least MAX_THREAD_ACTIVITIES activity events after it (the ones it kept, all
+ * newer), and later prunes only trade those for newer ones; so fewer than
+ * that, counted with no upper bound, means nothing after the cursor is gone.
  */
-function isCompleteThreadReplay(events: ReadonlyArray<OrchestrationEvent>): boolean {
-  if (events.length > ORCHESTRATION_THREAD_RESUME_MAX_EVENTS) {
+function isCompleteThreadReplay(eventsAfterCursor: ReadonlyArray<OrchestrationEvent>): boolean {
+  if (eventsAfterCursor.length > ORCHESTRATION_THREAD_RESUME_MAX_EVENTS) {
     return false;
   }
   let activityEvents = 0;
-  for (const event of events) {
+  for (const event of eventsAfterCursor) {
+    if (event.type === "thread.deleted") {
+      return false;
+    }
     if (event.type === "thread.activity-appended") {
       activityEvents += 1;
     }
@@ -957,14 +964,14 @@ const makeWsRpcLayer = (currentSession: {
                   // downloading its whole snapshot again.
                   const resumeSequence = input.fromSequenceExclusive;
                   if (resumeSequence !== undefined && resumeSequence <= snapshotSequence) {
-                    const missedEvents = yield* orchestrationEngine
+                    // Read past snapshotSequence too: the completeness check
+                    // must count every stored event after the cursor (see
+                    // isCompleteThreadReplay), even ones committed since.
+                    const eventsAfterCursor = yield* orchestrationEngine
                       .readThreadEvents({
                         threadId: input.threadId,
                         fromSequenceExclusive: resumeSequence,
-                        // The hot subscription already buffers everything after
-                        // this boundary, so bounding the replay here prevents
-                        // duplicates if commits race the query.
-                        toSequenceInclusive: snapshotSequence,
+                        toSequenceInclusive: Number.MAX_SAFE_INTEGER,
                         limit: ORCHESTRATION_THREAD_RESUME_MAX_EVENTS + 1,
                       })
                       .pipe(
@@ -976,13 +983,16 @@ const makeWsRpcLayer = (currentSession: {
                             }),
                         ),
                       );
-                    if (isCompleteThreadReplay(missedEvents)) {
+                    if (isCompleteThreadReplay(eventsAfterCursor)) {
+                      // The hot subscription already buffers everything after
+                      // snapshotSequence, so the replay stops there.
                       return Stream.concat(
                         Stream.fromIterable(
-                          missedEvents.filter(isThreadEvent).map((event) => ({
-                            kind: "event" as const,
-                            event,
-                          })),
+                          eventsAfterCursor
+                            .filter(
+                              (event) => event.sequence <= snapshotSequence && isThreadEvent(event),
+                            )
+                            .map((event) => ({ kind: "event" as const, event })),
                         ),
                         liveStream,
                       );
