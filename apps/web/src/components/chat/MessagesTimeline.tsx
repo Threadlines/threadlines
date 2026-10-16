@@ -37,7 +37,6 @@ import {
   type OnViewableItemsChangedInfo,
 } from "@legendapp/list/react";
 import { useQueries } from "@tanstack/react-query";
-import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import {
   deriveTimelineEntries,
   formatSubagentListName,
@@ -73,6 +72,7 @@ import {
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
 import { environmentRequiresRpcAssetTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
+import { isProviderAuthErrorChatMessage } from "../../lib/providerAuthMessages";
 import ChatMarkdown from "../ChatMarkdown";
 import {
   ArrowDownIcon,
@@ -2361,8 +2361,7 @@ function isResolvedProviderAuthRecoverySignal(row: MessagesTimelineRow): boolean
   if (row.kind !== "message" || row.message.role !== "assistant" || row.message.streaming) {
     return false;
   }
-  const text = row.message.text.trim();
-  return Boolean(text && !isProviderAuthErrorMessage(text));
+  return row.message.text.trim().length > 0 && !isProviderAuthErrorChatMessage(row.message);
 }
 
 function deriveResolvedProviderAuthReconnectIds(
@@ -2387,8 +2386,7 @@ function deriveResolvedProviderAuthReconnectIds(
     }
 
     if (row.kind === "message" && row.message.role === "assistant") {
-      const text = row.message.text.trim();
-      if (isProviderAuthErrorMessage(text)) {
+      if (isProviderAuthErrorChatMessage(row.message)) {
         resolvedIds.add(row.id);
       }
       continue;
@@ -3342,7 +3340,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   const writing = streaming && (isWorking || row.message.sideTurnId !== undefined);
   useStreamingHeightFloor(revealRef, writing || (!streaming && revealing));
   const authReconnect =
-    ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
+    ctx.providerAuthReconnect && isProviderAuthErrorChatMessage(row.message)
       ? ctx.providerAuthReconnect
       : null;
   // Notes carry the story while the agent works, on its line. A finished

@@ -8,8 +8,8 @@
  * side answer's delivery line). Each row's text follows the component that
  * draws it (TimelineRowContent), so what is counted is what is on screen.
  */
-import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 
+import { isProviderAuthErrorChatMessage } from "../../../lib/providerAuthMessages";
 import { deriveDisplayedUserMessageState } from "../../../lib/terminalContext";
 import type { InlineSkill } from "../../../lib/inlineMarkdownTokens";
 import { proposedPlanTitle, stripDisplayedPlanMarkdown } from "../../../proposedPlan";
@@ -55,7 +55,7 @@ function messageBlocks(
       return null;
     case "assistant": {
       const text = message.text || (message.streaming ? "" : "(empty response)");
-      if (context.providerAuthReconnect && isProviderAuthErrorMessage(text)) return null;
+      if (context.providerAuthReconnect && isProviderAuthErrorChatMessage(message)) return null;
       const streaming = Boolean(message.streaming);
       return cached(message, `${view}|${streaming}|${contextKey}`, () =>
         findableMarkdownBlocks({

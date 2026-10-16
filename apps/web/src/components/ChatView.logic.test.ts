@@ -508,6 +508,22 @@ describe("deriveProviderAuthReconnectPrompt", () => {
     });
   });
 
+  it("reads each version of a streamed message by its own text", () => {
+    // Streaming replaces the message object while its id stays the same.
+    const partial = { id: "msg-1", role: "assistant" as const, text: "Working on" };
+    const failed = {
+      id: "msg-1",
+      role: "assistant" as const,
+      text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    };
+    const prompt = (message: Pick<ChatMessage, "role" | "text">) =>
+      deriveProviderAuthReconnectPrompt({ provider: claudeProvider, messages: [message] });
+
+    expect(prompt(partial)).toBeNull();
+    expect(prompt(failed)?.message).toBe(failed.text);
+    expect(prompt(partial)).toBeNull();
+  });
+
   it("detects Codex authentication failures with the Codex login command", () => {
     expect(
       deriveProviderAuthReconnectPrompt({

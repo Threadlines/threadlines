@@ -35,7 +35,6 @@ import {
 } from "@threadlines/client-runtime";
 import { isAcpRegistryInstanceId } from "@threadlines/shared/acpRegistry";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
-import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
@@ -47,6 +46,7 @@ import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
+import { isProviderAuthErrorChatMessage } from "~/lib/providerAuthMessages";
 import { shouldShowCheckoutPicker } from "~/lib/checkoutRecovery";
 import { useCheckoutRecovery } from "../hooks/useCheckoutRecovery";
 import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
@@ -2767,7 +2767,7 @@ export default function ChatView(props: ChatViewProps) {
       providerAuthReconnectPrompt !== null &&
       (workLogEntries.some((entry) => entry.authReconnect !== undefined) ||
         timelineMessages.some(
-          (message) => message.role === "assistant" && isProviderAuthErrorMessage(message.text),
+          (message) => message.role === "assistant" && isProviderAuthErrorChatMessage(message),
         )),
     [providerAuthReconnectPrompt, timelineMessages, workLogEntries],
   );

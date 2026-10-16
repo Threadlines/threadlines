@@ -40,6 +40,7 @@ import {
 import type { TranscriptHighlightContextDraft } from "../lib/transcriptHighlightContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 import { ownAgentSession } from "../rooms";
+import { isProviderAuthErrorChatMessage } from "../lib/providerAuthMessages";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "threadlines:last-invoked-script-by-project";
 export const LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS = [
@@ -1795,17 +1796,13 @@ export function deriveProviderAuthReconnectPrompt(input: {
   const messages = input.messages ?? [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (!message || message.role !== "assistant") {
-      continue;
-    }
-    const text = message.text.trim();
-    if (!isProviderAuthErrorMessage(text)) {
+    if (!message || message.role !== "assistant" || !isProviderAuthErrorChatMessage(message)) {
       continue;
     }
     return {
       provider,
       command,
-      message: text,
+      message: message.text.trim(),
     };
   }
 
