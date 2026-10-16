@@ -142,6 +142,7 @@ type ProviderIntentEvent = Extract<
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested"
+      | "thread.background-task-stop-requested"
       | "thread.session-set"
       | "thread.goal-set-requested"
       | "thread.goal-clear-requested"
@@ -1686,6 +1687,14 @@ const make = Effect.gen(function* () {
         ? withContextSeedPreamble(providerContext, input.messageText)
         : input.messageText;
     const normalizedInput = toNonEmptyProviderInput(messageText);
+    // The user's own words, apart from the context put in front of them, so
+    // a driver can tell its provider which words a person typed. Only for a
+    // message the user wrote in their composer and did not send as plain
+    // text; never for an agent's, another thread's or automation's.
+    const typedText =
+      thread.messages.find((message) => message.id === input.messageId)?.composer === "typed"
+        ? toNonEmptyProviderInput(input.messageText)
+        : undefined;
     const normalizedAttachments = [
       ...(nativeForkApplied ? [] : (input.providerAttachments ?? [])),
       ...(input.attachments ?? []),
@@ -1763,6 +1772,14 @@ const make = Effect.gen(function* () {
         ...(normalizedInput ? { input: normalizedInput } : {}),
         ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
         ...(input.skills !== undefined && input.skills.length > 0 ? { skills: input.skills } : {}),
+        ...(typedText !== undefined
+          ? {
+              typed: {
+                text: typedText,
+                ...(providerContext.length > 0 ? { context: providerContext } : {}),
+              },
+            }
+          : {}),
         ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(telemetryContext !== undefined ? { telemetryContext } : {}),
@@ -2503,6 +2520,10 @@ const make = Effect.gen(function* () {
         ...(normalizedInput ? { input: normalizedInput } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
+        // The user's steer, typed in their composer: nothing is put in front.
+        ...(event.payload.composer === "typed" && normalizedInput
+          ? { typed: { text: normalizedInput } }
+          : {}),
       })
       .pipe(
         Effect.as(true),
@@ -2537,6 +2558,7 @@ const make = Effect.gen(function* () {
         attachments,
         ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
       },
+      ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
       createdAt: event.payload.createdAt,
     });
   });
@@ -3055,6 +3077,56 @@ const make = Effect.gen(function* () {
       );
     }
   });
+
+  /**
+   * Stop one workflow run in the runtime that owns it: the agent and provider
+   * instance recorded on the run, never whichever agent holds the thread now.
+   * A run whose runtime is gone can not be stopped; it is marked lost so it
+   * stops reading as running.
+   */
+  const processBackgroundTaskStopRequested = Effect.fn("processBackgroundTaskStopRequested")(
+    function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.background-task-stop-requested" }>,
+    ) {
+      const thread = yield* resolveThread(event.payload.threadId);
+      const run = thread?.workflowRuns?.find((entry) => entry.taskId === event.payload.taskId);
+      if (!thread || !run || run.status !== "running") {
+        return;
+      }
+      const stopped = yield* providerService
+        .stopBackgroundTask({
+          threadId: participantSessionKey(thread.id, run.owner.participantId),
+          taskId: run.taskId,
+          ...(run.owner.providerInstanceId !== undefined
+            ? { providerInstanceId: run.owner.providerInstanceId }
+            : {}),
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider command reactor could not stop a workflow run", {
+              threadId: thread.id,
+              taskId: run.taskId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(null)),
+          ),
+        );
+      if (stopped === false) {
+        const createdAt = yield* nowIso;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.workflow-run.record",
+          commandId: serverCommandId("workflow-run-lost"),
+          threadId: thread.id,
+          patch: {
+            taskId: run.taskId,
+            status: "lost",
+            statusReason: "runtime-gone",
+            endedAt: createdAt,
+          },
+          createdAt,
+        });
+      }
+    },
+  );
 
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
@@ -4246,6 +4318,9 @@ const make = Effect.gen(function* () {
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
         return;
+      case "thread.background-task-stop-requested":
+        yield* processBackgroundTaskStopRequested(event);
+        return;
       case "thread.session-set":
         yield* processSessionSet(event);
         return;
@@ -4550,7 +4625,38 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // Workflow runs lived in the previous process's provider runtimes too: none
+  // is still running, and none can report its end now.
+  const settleWorkflowRunsFromPreviousProcess = Effect.fn(
+    "settleWorkflowRunsFromPreviousProcess",
+  )(function* () {
+    const running = yield* projectionSnapshotQuery.listRunningWorkflowRuns();
+    for (const { threadId, run } of running) {
+      const createdAt = yield* nowIso;
+      yield* orchestrationEngine.dispatch({
+        type: "thread.workflow-run.record",
+        commandId: serverCommandId("workflow-run-restart-lost"),
+        threadId,
+        patch: {
+          taskId: run.taskId,
+          status: "lost",
+          statusReason: "server-restarted",
+          endedAt: createdAt,
+        },
+        createdAt,
+      });
+    }
+  });
+
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
+    yield* settleWorkflowRunsFromPreviousProcess().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          "provider command reactor failed to settle workflow runs left by the previous process",
+          { cause: Cause.pretty(cause) },
+        ),
+      ),
+    );
     yield* settleSessionsFromPreviousProcess().pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning(
@@ -4577,6 +4683,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested" ||
+        event.type === "thread.background-task-stop-requested" ||
         event.type === "thread.session-set" ||
         event.type === "thread.goal-set-requested" ||
         event.type === "thread.goal-clear-requested" ||

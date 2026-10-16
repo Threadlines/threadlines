@@ -334,6 +334,9 @@ describe("ProviderCommandReactor", () => {
     const releaseBackgroundCommands = vi.fn<ProviderServiceShape["releaseBackgroundCommands"]>(
       () => Effect.void,
     );
+    const stopBackgroundTask = vi.fn<ProviderServiceShape["stopBackgroundTask"]>(() =>
+      Effect.succeed(true),
+    );
     const readConversation = vi.fn<ProviderServiceShape["readConversation"]>(() =>
       Effect.succeed(null),
     );
@@ -446,6 +449,10 @@ describe("ProviderCommandReactor", () => {
       realtimeAppendAudio: () => unsupported(),
       realtimeListVoices: () => unsupported(),
       releaseBackgroundCommands,
+      stopBackgroundTask,
+      readWorkflowRunFile: () => Effect.die("unused"),
+      readWorkflowAgentTranscript: () => Effect.die("unused"),
+      saveWorkflowCommand: () => Effect.die("unused"),
       noteExtensionsChanged: () => Effect.void,
       readConversation,
       compactContext,

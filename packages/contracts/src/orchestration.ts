@@ -2781,6 +2781,8 @@ const ThreadFollowUpAcceptCommand = Schema.Struct({
     attachments: Schema.Array(ChatAttachment),
     skills: Schema.optional(ChatSkillReferenceList),
   }),
+  /** See MessageComposer. */
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
 });
 

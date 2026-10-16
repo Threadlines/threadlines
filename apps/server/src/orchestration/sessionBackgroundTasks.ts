@@ -1,8 +1,10 @@
 import type {
+  AwaitedWorkflowProgress,
   OrchestrationAwaitedBackgroundTask,
   OrchestrationBackgroundTaskKind,
   OrchestrationSession,
 } from "@threadlines/contracts";
+import { sameAwaitedWorkflowProgress } from "@threadlines/shared/workflowRuns";
 
 /**
  * The background-task fields of a thread's session, kept together: every
@@ -47,14 +49,17 @@ export function carriedBackgroundTasks(
  *  (Claude: 1000 characters), and the sidebar shows one line of it. */
 const AWAITED_TASK_DESCRIPTION_MAX_LENGTH = 120;
 
-/** One awaited task as the session carries it: its kind and a clipped description. */
+/** One awaited task as the session carries it: its kind, a clipped
+ *  description, and a workflow's progress. */
 export function toAwaitedBackgroundTask(task: {
   readonly kind?: OrchestrationBackgroundTaskKind | undefined;
   readonly description?: string | undefined;
+  readonly workflow?: AwaitedWorkflowProgress | undefined;
 }): OrchestrationAwaitedBackgroundTask {
   const description = task.description?.trim();
   return {
     kind: task.kind ?? "other",
+    ...(task.workflow !== undefined ? { workflow: task.workflow } : {}),
     ...(description
       ? {
           description:
@@ -74,7 +79,9 @@ export function sameAwaitedBackgroundTasks(
     left.length === right.length &&
     left.every(
       (task, index) =>
-        task.kind === right[index]?.kind && task.description === right[index]?.description,
+        task.kind === right[index]?.kind &&
+        task.description === right[index]?.description &&
+        sameAwaitedWorkflowProgress(task.workflow, right[index]?.workflow),
     )
   );
 }

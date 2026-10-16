@@ -530,11 +530,15 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       command.threadId,
     );
 
+    // A message from the client's own route is one the user wrote in their
+    // composer. Only here is that stamped; nothing a client sends can claim it.
+    const { suppressWorkflowKeyword, ...rest } = command;
     return {
-      ...command,
+      ...rest,
       message: {
         ...command.message,
         attachments: normalizedAttachments,
       },
+      composer: suppressWorkflowKeyword === true ? "plain" : "typed",
     } satisfies OrchestrationCommand;
   });

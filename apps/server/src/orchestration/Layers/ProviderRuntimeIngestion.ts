@@ -2737,6 +2737,41 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /**
+   * A workflow run's update, recorded as the driver reported it with who runs
+   * it: the agent and the provider session it lives in, so Stop and transcript
+   * reads reach that owner even after another agent or provider takes the
+   * thread. Only the first update's owner and turn count (applyWorkflowRunPatch).
+   */
+  const recordWorkflowRunUpdate = (
+    event: Extract<ProviderRuntimeEvent, { readonly type: "task.workflow.updated" }>,
+    thread: NonNullable<Effect.Success<ReturnType<typeof resolveThreadShell>>>,
+  ) =>
+    Effect.gen(function* () {
+      const participantId = event.participantId ?? null;
+      const providerThreadId =
+        participantId === sessionSlotParticipantId(thread.session)
+          ? (thread.session?.providerThreadId ?? undefined)
+          : undefined;
+      yield* orchestrationEngine.dispatch({
+        type: "thread.workflow-run.record",
+        commandId: providerCommandId(event, "workflow-run-record"),
+        threadId: thread.id,
+        patch: {
+          ...event.payload,
+          turnId: toTurnId(event.turnId) ?? null,
+          owner: {
+            participantId,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            ...(providerThreadId ? { providerThreadId } : {}),
+          },
+        },
+        createdAt: event.createdAt,
+      });
+    });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       // Realtime audio/item traffic is intentionally in-memory only. Keep this
@@ -2752,6 +2787,14 @@ const make = Effect.gen(function* () {
       if (!thread) return;
       if (event.sideTurnId !== undefined) {
         yield* processSideTurnEvent({ ...event, sideTurnId: event.sideTurnId }, thread);
+        return;
+      }
+      // A workflow run keeps running in the runtime that started it after its
+      // agent hands the thread on, or the thread moves to another provider,
+      // so its updates are recorded before the slot and session checks below,
+      // which would drop them as an idle agent's or a stale session's.
+      if (event.type === "task.workflow.updated") {
+        yield* recordWorkflowRunUpdate(event, thread);
         return;
       }
       // In a room, only the agent holding the session slot is working; an

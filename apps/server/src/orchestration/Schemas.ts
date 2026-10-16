@@ -59,6 +59,8 @@ import {
   ThreadApprovalResponseRequestedPayload as ContractsThreadApprovalResponseRequestedPayloadSchema,
   ThreadCheckpointRevertRequestedPayload as ContractsThreadCheckpointRevertRequestedPayloadSchema,
   ThreadSessionStopRequestedPayload as ContractsThreadSessionStopRequestedPayloadSchema,
+  ThreadBackgroundTaskStopRequestedPayload as ContractsThreadBackgroundTaskStopRequestedPayloadSchema,
+  ThreadWorkflowRunRecordedPayload as ContractsThreadWorkflowRunRecordedPayloadSchema,
 } from "@threadlines/contracts";
 
 // Server-internal alias surface, backed by contract schemas as the source of truth.
@@ -132,3 +134,6 @@ export const ThreadApprovalResponseRequestedPayload =
 export const ThreadCheckpointRevertRequestedPayload =
   ContractsThreadCheckpointRevertRequestedPayloadSchema;
 export const ThreadSessionStopRequestedPayload = ContractsThreadSessionStopRequestedPayloadSchema;
+export const ThreadBackgroundTaskStopRequestedPayload =
+  ContractsThreadBackgroundTaskStopRequestedPayloadSchema;
+export const ThreadWorkflowRunRecordedPayload = ContractsThreadWorkflowRunRecordedPayloadSchema;

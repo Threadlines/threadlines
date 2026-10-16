@@ -30,6 +30,10 @@ import {
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
 import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
+import {
+  applyWorkflowRunPatch,
+  retainWorkflowRunsAfterRevert,
+} from "@threadlines/shared/workflowRuns";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -89,6 +93,7 @@ import {
   ThreadTurnCompletedPayload,
   ThreadTurnDiffSummaryUpdatedPayload,
   ThreadDiffStatRebasedPayload,
+  ThreadWorkflowRunRecordedPayload,
 } from "./Schemas.ts";
 import { projectSubagentActivity } from "./subagentProjection.ts";
 
@@ -382,6 +387,7 @@ export function projectEvent(
             messages: [],
             activities: [],
             subagents: [],
+            workflowRuns: [],
             checkpoints: [],
             session: null,
             queuedFollowUps: [],
@@ -1061,6 +1067,7 @@ export function projectEvent(
             ...(payload.invite !== undefined ? { invite: payload.invite } : {}),
             ...(payload.fromThread !== undefined ? { fromThread: payload.fromThread } : {}),
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
+            ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -1089,6 +1096,10 @@ export function projectEvent(
                       : {}),
                     ...(message.skills !== undefined ? { skills: message.skills } : {}),
                     ...keptAgentModels(entry, message),
+                    // Who wrote it is settled by the write that names it first.
+                    ...(entry.composer === undefined && message.composer !== undefined
+                      ? { composer: message.composer }
+                      : {}),
                   }
                 : entry,
             )
@@ -1145,6 +1156,7 @@ export function projectEvent(
               ? { participantId: payload.participantId }
               : {}),
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
+            ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             turnId: payload.turnId,
             streaming: false,
             createdAt: payload.createdAt,
@@ -1594,6 +1606,17 @@ export function projectEvent(
             thread.subagents ?? [],
             retainedTurnIds,
           );
+          // Workflow runs are never capped, so they are not filtered by the
+          // capped checkpoint list: only runs of the turns the revert removed go.
+          const removedTurnIds = new Set(
+            thread.checkpoints
+              .filter((entry) => entry.checkpointTurnCount > payload.turnCount)
+              .map((entry) => entry.turnId),
+          );
+          const workflowRuns = retainWorkflowRunsAfterRevert(
+            thread.workflowRuns ?? [],
+            removedTurnIds,
+          );
 
           const latestCheckpoint = checkpoints.at(-1) ?? null;
           const latestTurn =
@@ -1617,8 +1640,35 @@ export function projectEvent(
               pages,
               activities,
               subagents,
+              workflowRuns,
               latestTurn,
               updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.workflow-run-recorded":
+      return decodeForEvent(
+        ThreadWorkflowRunRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              workflowRuns: applyWorkflowRunPatch(
+                thread.workflowRuns ?? [],
+                payload.patch,
+                event.occurredAt,
+                event.sequence,
+              ),
             }),
           };
         }),

@@ -20,6 +20,7 @@ import type {
   ProjectId,
   ThreadId,
   TurnId,
+  OrchestrationWorkflowRun,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Option from "effect/Option";
@@ -122,6 +123,15 @@ export interface ProjectionSnapshotQueryShape {
    * Returns only projects and thread shell summaries so clients can bootstrap
    * lightweight navigation state without hydrating every thread body.
    */
+  /**
+   * Workflow runs still recorded as running, with their threads. Used once
+   * at startup: their runtimes were the previous process's.
+   */
+  readonly listRunningWorkflowRuns: () => Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly run: OrchestrationWorkflowRun }>,
+    ProjectionRepositoryError
+  >;
+
   readonly getShellSnapshot: () => Effect.Effect<
     OrchestrationShellSnapshot,
     ProjectionRepositoryError

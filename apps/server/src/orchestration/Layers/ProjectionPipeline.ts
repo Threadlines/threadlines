@@ -65,6 +65,8 @@ import {
 } from "../../persistence/Services/ProjectionThreadPages.ts";
 import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/ProjectionThreadSessions.ts";
 import { ProjectionThreadSubagentRepositoryLive } from "../../persistence/Layers/ProjectionThreadSubagents.ts";
+import { ProjectionThreadWorkflowRunRepositoryLive } from "../../persistence/Layers/ProjectionThreadWorkflowRuns.ts";
+import { ProjectionThreadWorkflowRunRepository } from "../../persistence/Services/ProjectionThreadWorkflowRuns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
 import { ServerConfig } from "../../config.ts";
@@ -79,6 +81,10 @@ import {
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
 import { keepKnownSubagentProviders, projectSubagentActivity } from "../subagentProjection.ts";
+import {
+  applyWorkflowRunPatch,
+  retainWorkflowRunsAfterRevert,
+} from "@threadlines/shared/workflowRuns";
 import { carriedBackgroundTasks } from "../sessionBackgroundTasks.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
@@ -423,6 +429,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
     const projectionThreadSubagentRepository = yield* ProjectionThreadSubagentRepository;
+    const projectionThreadWorkflowRunRepository = yield* ProjectionThreadWorkflowRunRepository;
     const projectionTurnRepository = yield* ProjectionTurnRepository;
     const projectionPendingApprovalRepository = yield* ProjectionPendingApprovalRepository;
 
@@ -1422,6 +1429,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.agentModels !== undefined
               ? { agentModels: event.payload.agentModels }
               : {}),
+            ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1456,6 +1464,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.agentModels !== undefined
               ? { agentModels: event.payload.agentModels }
               : {}),
+            ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
             isStreaming: false,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.createdAt,
@@ -1666,16 +1675,56 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        // Workflow runs sit beside the subagent roster: never capped, folded
+        // here so this projector's one cursor covers both.
+        case "thread.workflow-run-recorded": {
+          const existingRuns = yield* projectionThreadWorkflowRunRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const nextRuns = applyWorkflowRunPatch(
+            existingRuns,
+            event.payload.patch,
+            event.occurredAt,
+            event.sequence,
+          );
+          const run = nextRuns.find((entry) => entry.taskId === event.payload.patch.taskId);
+          if (run !== undefined) {
+            yield* projectionThreadWorkflowRunRepository.upsert(event.payload.threadId, run);
+          }
+          return;
+        }
+
         case "thread.reverted": {
+          const existingTurns = yield* projectionTurnRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const existingRuns = yield* projectionThreadWorkflowRunRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          if (existingRuns.length > 0) {
+            const removedTurnIds = new Set(
+              existingTurns.flatMap((turn) =>
+                turn.turnId !== null &&
+                turn.checkpointTurnCount !== null &&
+                turn.checkpointTurnCount > event.payload.turnCount
+                  ? [turn.turnId]
+                  : [],
+              ),
+            );
+            const keptRuns = retainWorkflowRunsAfterRevert(existingRuns, removedTurnIds);
+            if (keptRuns !== existingRuns) {
+              yield* projectionThreadWorkflowRunRepository.replaceByThreadId(
+                event.payload.threadId,
+                keptRuns,
+              );
+            }
+          }
           const existingRows = yield* projectionThreadActivityRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
           if (existingRows.length === 0) {
             return;
           }
-          const existingTurns = yield* projectionTurnRepository.listByThreadId({
-            threadId: event.payload.threadId,
-          });
           const keptRows = retainProjectionActivitiesAfterRevert(
             existingRows,
             existingTurns,
@@ -2451,6 +2500,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionThreadActivityRepositoryLive),
   Layer.provideMerge(ProjectionThreadSessionRepositoryLive),
   Layer.provideMerge(ProjectionThreadSubagentRepositoryLive),
+  Layer.provideMerge(ProjectionThreadWorkflowRunRepositoryLive),
   Layer.provideMerge(ProjectionTurnRepositoryLive),
   Layer.provideMerge(ProjectionPendingApprovalRepositoryLive),
   Layer.provideMerge(ProjectionStateRepositoryLive),
