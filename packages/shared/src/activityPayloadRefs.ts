@@ -59,16 +59,23 @@ const refOf = (value: unknown): PayloadRef | null => {
   return Array.isArray(ref) && typeof ref[0] === "string" ? (ref as unknown as PayloadRef) : null;
 };
 
+interface FirstOccurrence {
+  readonly ref: PayloadRef;
+  /** Decided on the first repeat: a path longer than the value is not worth it. */
+  smaller?: boolean;
+}
+
 /**
  * Replaces each repeated large string in the activities' payloads with a
- * reference to its first occurrence (in activity order, then depth-first).
- * Returns the input unchanged when nothing repeats, or when any payload
- * already holds an object with ACTIVITY_PAYLOAD_REF_KEY.
+ * reference to its first occurrence (in activity order, then depth-first),
+ * when the reference is the smaller of the two. Returns the input unchanged
+ * when nothing is replaced, or when any payload already holds an object with
+ * ACTIVITY_PAYLOAD_REF_KEY where the client would look for one.
  */
 export function shareRepeatedPayloadValues<A extends ActivityLike>(
   activities: ReadonlyArray<A>,
 ): ReadonlyArray<A> {
-  const firstSeen = new Map<string, PayloadRef>();
+  const firstSeen = new Map<string, FirstOccurrence>();
   const path: PathSegment[] = [];
   let changed = false;
   let collided = false;
@@ -76,12 +83,21 @@ export function shareRepeatedPayloadValues<A extends ActivityLike>(
   const share = (value: unknown, depth: number): unknown => {
     if (typeof value === "string") {
       if (value.length < MIN_SHARED_VALUE_LENGTH) return value;
-      const ref = firstSeen.get(value);
-      if (ref !== undefined) {
-        changed = true;
-        return { [ACTIVITY_PAYLOAD_REF_KEY]: ref };
+      const seen = firstSeen.get(value);
+      if (seen === undefined) {
+        firstSeen.set(value, { ref: path.slice() as unknown as PayloadRef });
+        return value;
       }
-      firstSeen.set(value, path.slice() as unknown as PayloadRef);
+      const marker = { [ACTIVITY_PAYLOAD_REF_KEY]: seen.ref };
+      seen.smaller ??= JSON.stringify(marker).length < value.length;
+      if (!seen.smaller) return value;
+      changed = true;
+      return marker;
+    }
+    // Checked before the depth limit: restoring looks for a reference at the
+    // limit too.
+    if (isPlainObject(value) && Object.hasOwn(value, ACTIVITY_PAYLOAD_REF_KEY)) {
+      collided = true;
       return value;
     }
     if (depth >= MAX_SHARED_VALUE_DEPTH) return value;
@@ -99,10 +115,6 @@ export function shareRepeatedPayloadValues<A extends ActivityLike>(
       return copy ?? value;
     }
     if (isPlainObject(value)) {
-      if (Object.hasOwn(value, ACTIVITY_PAYLOAD_REF_KEY)) {
-        collided = true;
-        return value;
-      }
       let copy: Record<string, unknown> | null = null;
       for (const key of Object.keys(value)) {
         path.push(key);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   ACTIVITY_PAYLOAD_REF_KEY,
+  MAX_SHARED_VALUE_DEPTH,
   restoreSharedPayloadValues,
   shareRepeatedPayloadValues,
 } from "./activityPayloadRefs.ts";
@@ -59,6 +60,25 @@ describe("activity payload refs", () => {
       },
     ];
     expect(shareRepeatedPayloadValues(colliding)).toBe(colliding);
+
+    // As deep as the client looks for a reference: the payload is level 0.
+    let deepLookalike: unknown = { [ACTIVITY_PAYLOAD_REF_KEY]: ["a1", "text"] };
+    for (let level = 1; level < MAX_SHARED_VALUE_DEPTH; level += 1) {
+      deepLookalike = { next: deepLookalike };
+    }
+    const collidingDeep = [
+      { id: "a1", kind: "tool.updated", payload: { text: output } },
+      { id: "a2", kind: "tool.completed", payload: { text: output, deepLookalike } },
+    ];
+    expect(shareRepeatedPayloadValues(collidingDeep)).toBe(collidingDeep);
+
+    // A reference spelling out a key longer than the value would be bigger.
+    const longKey = "k".repeat(output.length);
+    const longPath = [
+      { id: "a1", kind: "tool.updated", payload: { [longKey]: output } },
+      { id: "a2", kind: "tool.completed", payload: { text: output } },
+    ];
+    expect(shareRepeatedPayloadValues(longPath)).toBe(longPath);
   });
 
   it("sends values nested past the depth limit as they are", () => {
