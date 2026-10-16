@@ -58,7 +58,6 @@ import { ChildThreadReactor } from "../src/orchestration/Services/ChildThreadRea
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ThreadContextSeedBuilderLive } from "../src/provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
-import { SubagentWorktreeFollower } from "../src/orchestration/Services/SubagentWorktreeFollower.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -309,15 +308,6 @@ export const makeOrchestrationIntegrationHarness = (
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
-      // These tests never spawn an isolated subagent, so following one is out
-      // of scope; the real layer would drag the git stack in with it.
-      Layer.provideMerge(
-        Layer.succeed(SubagentWorktreeFollower, {
-          observeAgentTaskStarted: () => Effect.void,
-          observeTaskEnded: () => Effect.void,
-          observeSessionEnded: () => Effect.void,
-        }),
-      ),
       // No provider publishes a page in these tests.
       Layer.provideMerge(Layer.mock(AgentPages)({ assetsDirOf: () => null })),
       Layer.provideMerge(runtimeServicesLayer),

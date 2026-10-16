@@ -1,4 +1,5 @@
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
+import { effectiveCwdAfterSet } from "@threadlines/shared/threadCwd";
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
 import {
   agentRequestStateOn,
@@ -1042,10 +1043,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            effectiveCwd: event.payload.effectiveCwd,
-            effectiveCwdSource:
-              event.payload.effectiveCwdSource ??
-              (event.payload.effectiveCwd === null ? null : "session"),
+            ...effectiveCwdAfterSet(event.payload),
             updatedAt: event.payload.updatedAt,
           });
           return;

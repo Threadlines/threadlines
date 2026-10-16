@@ -17,6 +17,7 @@
  *
  * @module CheckoutPresence
  */
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -197,6 +198,101 @@ export const resolveFollowedSessionCwd = (input: {
       }
       candidate = parent;
     }
+  });
+
+/** The nearest checkout containing `start`, and whether it is a linked worktree. */
+const nearestCheckout = (
+  start: string,
+): Effect.Effect<
+  { readonly root: string; readonly linked: boolean } | undefined,
+  never,
+  FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    let candidate = path.resolve(start);
+    while (true) {
+      const dotGit = yield* fs
+        .stat(path.join(candidate, ".git"))
+        .pipe(Effect.orElseSucceed(() => null));
+      if (dotGit !== null) {
+        return { root: candidate, linked: dotGit.type === "File" };
+      }
+      const parent = path.dirname(candidate);
+      if (parent === candidate) {
+        return undefined;
+      }
+      candidate = parent;
+    }
+  });
+
+/**
+ * The repository a checkout belongs to, as the real path of its shared git
+ * directory. A primary clone owns `.git` itself; a linked worktree's `.git`
+ * file points at its own git dir, whose `commondir` file names the shared one.
+ * Undefined when the pointer can't be read.
+ */
+const repositoryOf = (checkout: {
+  readonly root: string;
+  readonly linked: boolean;
+}): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const realPath = (value: string) => fs.realPath(value).pipe(Effect.orElseSucceed(() => value));
+    if (!checkout.linked) {
+      return yield* realPath(path.join(checkout.root, ".git"));
+    }
+    const pointer = yield* fs
+      .readFileString(path.join(checkout.root, ".git"))
+      .pipe(Effect.orElseSucceed(() => ""));
+    const gitDirLine = /^gitdir:\s*(.+)$/mu.exec(pointer)?.[1]?.trim();
+    if (gitDirLine === undefined || gitDirLine.length === 0) {
+      return undefined;
+    }
+    const gitDir = path.resolve(checkout.root, gitDirLine);
+    const commonDir = yield* fs
+      .readFileString(path.join(gitDir, "commondir"))
+      .pipe(Effect.orElseSucceed(() => ""));
+    return yield* realPath(
+      commonDir.trim().length > 0 ? path.resolve(gitDir, commonDir.trim()) : gitDir,
+    );
+  });
+
+/**
+ * Where an edit to `filePath` shows a session working, judged against the
+ * checkout the session was started in.
+ *
+ * An agent can move into another checkout by hand (`cd` and absolute paths),
+ * which neither session init nor the worktree tools report; the files it
+ * edits are the evidence. A file in the configured checkout answers
+ * `configuredCwd` (working at home); a file in another checkout of the same
+ * repository answers that checkout's root. Anything else, such as a file
+ * outside every checkout or in another repository, answers undefined: it says
+ * nothing about where the session works.
+ */
+export const resolveEditedCheckout = (input: {
+  readonly filePath: string;
+  readonly configuredCwd: string;
+}): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const home = yield* nearestCheckout(input.configuredCwd);
+    const edited = yield* nearestCheckout(path.dirname(input.filePath));
+    if (home === undefined || edited === undefined) {
+      return undefined;
+    }
+    if (areFilesystemPathsEqual(home.root, edited.root)) {
+      return input.configuredCwd;
+    }
+    const homeRepository = yield* repositoryOf(home);
+    const editedRepository = yield* repositoryOf(edited);
+    return homeRepository !== undefined &&
+      editedRepository !== undefined &&
+      areFilesystemPathsEqual(homeRepository, editedRepository)
+      ? edited.root
+      : undefined;
   });
 
 /** User-facing explanation for a spawn that failed because its folder is gone. */

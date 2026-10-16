@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { assert, describe, it } from "@effect/vitest";
+import { execFileSync } from "node:child_process";
 import * as NodeFS from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -10,6 +11,7 @@ import {
   checkoutPresence,
   classifySpawnFailure,
   isLinkedWorktreeCheckout,
+  resolveEditedCheckout,
   resolveFollowedSessionCwd,
   systemErrorCode,
 } from "./CheckoutPresence.ts";
@@ -220,6 +222,54 @@ describe("resolveFollowedSessionCwd", () => {
           configuredCwd: repo,
         });
         assert.strictEqual(followed, repo);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("resolveEditedCheckout", () => {
+  // Real git, so the worktree pointers are exactly what git writes: a session
+  // started in its own linked worktree (`home`), a helper worktree nested in
+  // the primary clone the way Claude places isolated agents, an unrelated
+  // repository, and a folder outside every checkout.
+  const makeRepository = Effect.gen(function* () {
+    const dir = yield* makeTempDir;
+    const repo = NodePath.join(dir, "repo");
+    const home = NodePath.join(dir, "home");
+    const helper = NodePath.join(repo, ".claude", "worktrees", "agent-a");
+    const other = NodePath.join(dir, "other");
+    const notes = NodePath.join(dir, "notes");
+    const git = (cwd: string, ...args: ReadonlyArray<string>) =>
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+        cwd,
+        stdio: "ignore",
+      });
+    yield* Effect.promise(async () => {
+      await NodeFS.mkdir(repo);
+      await NodeFS.mkdir(other);
+      await NodeFS.mkdir(notes);
+    });
+    git(repo, "init", "-q");
+    git(repo, "commit", "-q", "--allow-empty", "-m", "init");
+    git(repo, "worktree", "add", "-q", "-b", "home", home);
+    git(repo, "worktree", "add", "-q", "-b", "agent-a", helper);
+    git(other, "init", "-q");
+    return { repo, home, helper, other, notes };
+  });
+
+  it.effect("places an edit in the checkout it belongs to, if it is this repository's", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { repo, home, helper, other, notes } = yield* makeRepository;
+        const edited = (filePath: string) =>
+          resolveEditedCheckout({ filePath, configuredCwd: home });
+
+        assert.strictEqual(yield* edited(NodePath.join(home, "src", "a.ts")), home);
+        assert.strictEqual(yield* edited(NodePath.join(helper, "src", "a.ts")), helper);
+        assert.strictEqual(yield* edited(NodePath.join(repo, "README.md")), repo);
+        // Another repository, or no repository at all, says nothing.
+        assert.isUndefined(yield* edited(NodePath.join(other, "a.ts")));
+        assert.isUndefined(yield* edited(NodePath.join(notes, "memory.md")));
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

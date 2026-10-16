@@ -1,11 +1,14 @@
+import type { ThreadEffectiveCwdSource } from "@threadlines/contracts";
+
 /**
  * Working directory a thread's workspace surfaces (source control, file
  * viewer, terminal, open-in-editor) operate in.
  *
  * The provider session's observed cwd wins when it moved away from the
- * configured checkout — e.g. the agent created and entered a git worktree
- * mid-session — so those surfaces show what the agent is actually doing.
- * Otherwise the thread's configured worktree applies, then the project root.
+ * configured checkout (the agent entered a git worktree mid-session, or
+ * edited files in one) so those surfaces show what the agent is actually
+ * doing. Otherwise the thread's configured worktree applies, then the
+ * project root.
  */
 export function resolveThreadWorkingCwd(input: {
   projectCwd: string;
@@ -27,6 +30,29 @@ export function resolveThreadWorkingCwd(input: {
   effectiveCwd?: string | null | undefined;
 }): string | null {
   return input.effectiveCwd ?? input.worktreePath ?? input.projectCwd ?? null;
+}
+
+/**
+ * What a `thread.effective-cwd-set` event leaves on the thread, for every
+ * projection of it. A legacy `subagent` value (a checkout once guessed from an
+ * isolated subagent, which never moved the thread's own agent) reads as no
+ * move.
+ */
+export function effectiveCwdAfterSet(payload: {
+  readonly effectiveCwd: string | null;
+  readonly effectiveCwdSource?: ThreadEffectiveCwdSource | undefined;
+}): {
+  readonly effectiveCwd: string | null;
+  readonly effectiveCwdSource: ThreadEffectiveCwdSource | null;
+} {
+  if (payload.effectiveCwdSource === "subagent") {
+    return { effectiveCwd: null, effectiveCwdSource: null };
+  }
+  return {
+    effectiveCwd: payload.effectiveCwd,
+    effectiveCwdSource:
+      payload.effectiveCwdSource ?? (payload.effectiveCwd === null ? null : "session"),
+  };
 }
 
 /** Compact label for an observed working directory (its basename). */
