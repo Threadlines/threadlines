@@ -325,6 +325,8 @@ describe("ClaudeWorkflowRunTracker", () => {
     const expected = {
       name: "provider-research",
       phaseTitle: "Verify",
+      phaseDoneAgents: 1,
+      phaseTotalAgents: 2,
       doneAgents: 3,
       totalAgents: 4,
     };

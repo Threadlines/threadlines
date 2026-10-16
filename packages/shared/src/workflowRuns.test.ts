@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   composerForTypedMessage,
   applyWorkflowRunPatch,
+  formatWorkflowProgress,
   retainWorkflowRunsAfterRevert,
   workflowAwaitedProgress,
 } from "./workflowRuns.ts";
@@ -34,6 +35,50 @@ describe("composerForTypedMessage", () => {
     // Only in a terminal's output that came along: not the user's word.
     expect(send("fix this", "fix this\n<terminal>ULTRACODE=1</terminal>")).toBe("plain");
     expect(send("fix this", "fix this")).toBe("typed");
+  });
+});
+
+describe("formatWorkflowProgress", () => {
+  // Every phase is known from the start; agents arrive phase by phase.
+  const phases = [
+    { index: 1, title: "Look" },
+    { index: 2, title: "Linger" },
+    { index: 3, title: "phase 3" },
+  ];
+  const line = (agents: ReadonlyArray<WorkflowAgent>) =>
+    formatWorkflowProgress(
+      workflowAwaitedProgress({ name: "look-and-linger", phases, agents: [...agents] }),
+    );
+
+  it("counts the phase it names, and names the phase the run is moving on to", () => {
+    expect(line([])).toBe("Look · starting");
+    expect(line([agent(1, "done"), agent(2, "running")])).toBe("Look · 1 of 2 agents");
+    // Look ended and Linger has no agent yet: the whole run's 2 of 2 would
+    // read as Linger's.
+    expect(line([agent(1, "done"), agent(2, "done")])).toBe("Linger · starting");
+    expect(line([agent(1, "done"), agent(2, "done"), agent(3, "running", 2)])).toBe(
+      "Linger · 0 of 1 agent",
+    );
+    // A withheld title reads as a step, and a skipped agent has ended.
+    expect(line([agent(1, "done"), agent(3, "skipped", 2), agent(4, "queued", 3)])).toBe(
+      "Step 3 · 0 of 1 agent",
+    );
+  });
+
+  it("counts the whole run when it has no phases", () => {
+    const progress = workflowAwaitedProgress({
+      name: null,
+      phases: [],
+      agents: [agent(1, "done"), agent(2, "failed"), agent(3, "running")],
+    });
+    expect(formatWorkflowProgress(progress)).toBe("2 of 3 agents");
+  });
+
+  it("shows only the phase when the progress carries no phase counts", () => {
+    // Sent by a server from before phase counts.
+    expect(formatWorkflowProgress({ phaseTitle: "Linger", doneAgents: 2, totalAgents: 3 })).toBe(
+      "Linger",
+    );
   });
 });
 
@@ -72,6 +117,8 @@ describe("applyWorkflowRunPatch", () => {
     expect(workflowAwaitedProgress(run)).toEqual({
       name: "grok-research",
       phaseTitle: "Verify",
+      phaseDoneAgents: 0,
+      phaseTotalAgents: 1,
       doneAgents: 1,
       totalAgents: 3,
     });

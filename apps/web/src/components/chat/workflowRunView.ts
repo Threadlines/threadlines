@@ -16,7 +16,9 @@ import type {
 import {
   countWorkflowAgents,
   currentWorkflowPhase,
+  formatWorkflowProgress,
   settleCutOffAgents,
+  workflowAwaitedProgress,
   workflowPhaseDisplayTitle,
 } from "@threadlines/shared/workflowRuns";
 import { humanizeWorkflowName } from "@threadlines/shared/workflowScript";
@@ -321,15 +323,10 @@ export function summarizeWorkflowRun(run: OrchestrationWorkflowRun): WorkflowRun
   };
 }
 
-/** The bottom line while a run goes on: "Verify · 2 of 4 agents". */
+/** The bottom line while a run goes on: "Verify · 2 of 4 agents", worded as
+ *  the thread list words it (formatWorkflowProgress). */
 export function workflowLiveLineText(run: OrchestrationWorkflowRun): string {
-  const summary = summarizeWorkflowRun(run);
-  const groups = workflowPhaseGroups(run, Date.now());
-  const live = groups.find((group) => group.state === "live");
-  const agents = live
-    ? `${live.done} of ${live.agents.length} agents`
-    : `${summary.done} of ${summary.total} agents`;
-  return summary.phaseTitle ? `${summary.phaseTitle} · ${agents}` : agents;
+  return formatWorkflowProgress(workflowAwaitedProgress(run));
 }
 
 /**
