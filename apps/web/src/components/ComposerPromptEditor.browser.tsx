@@ -15,6 +15,7 @@ function EditorHarness(props: {
   recognizedSlashCommands: ReadonlyArray<string>;
   initialValue?: string;
   skillAvailability?: ComposerSkillAvailability;
+  highlightWorkflowKeyword?: boolean;
 }) {
   const [value, setValue] = useState(props.initialValue ?? "");
   const [cursor, setCursor] = useState(0);
@@ -38,6 +39,7 @@ function EditorHarness(props: {
         onPaste={vi.fn()}
         editorRef={editorRef}
         {...(props.skillAvailability ? { skillAvailability: props.skillAvailability } : {})}
+        {...(props.highlightWorkflowKeyword ? { highlightWorkflowKeyword: true } : {})}
       />
       <span data-testid="composer-prompt-value">{value}</span>
     </>
@@ -116,6 +118,57 @@ describe("ComposerPromptEditor command token", () => {
     await expect
       .poll(() => page.getByTestId("composer-prompt-value").query()?.textContent)
       .toBe("/posthog:signals check the inbox");
+    await screen.unmount();
+  });
+});
+
+describe("ComposerPromptEditor workflow keyword", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  const keywordTokens = () =>
+    [...document.querySelectorAll(".composer-keyword-token")].map((node) => node.textContent);
+
+  it("marks the keyword as a whole word only, and keeps the text as typed", async () => {
+    const screen = await render(
+      <EditorHarness recognizedSlashCommands={[]} highlightWorkflowKeyword />,
+    );
+    await typeIntoEditor("fix it with ultracode");
+    await expect.poll(keywordTokens).toEqual(["ultracode"]);
+
+    // Typing on into a longer word takes the mark away.
+    await userEvent.keyboard("s");
+    await expect.poll(keywordTokens).toEqual([]);
+    await expect
+      .poll(() => page.getByTestId("composer-prompt-value").query()?.textContent)
+      .toBe("fix it with ultracodes");
+    await screen.unmount();
+  });
+
+  it("takes the mark away when a letter is typed right before the word", async () => {
+    const screen = await render(
+      <EditorHarness recognizedSlashCommands={[]} highlightWorkflowKeyword />,
+    );
+    await typeIntoEditor("ultracode");
+    await expect.poll(keywordTokens).toEqual(["ultracode"]);
+    await userEvent.keyboard("{ArrowLeft>9/}x");
+    await expect
+      .poll(() => page.getByTestId("composer-prompt-value").query()?.textContent)
+      .toBe("xultracode");
+    await expect.poll(keywordTokens).toEqual([]);
+    await screen.unmount();
+  });
+
+  it("settles on a word joined to a letter outside ASCII instead of flipping forever", async () => {
+    const screen = await render(
+      <EditorHarness recognizedSlashCommands={[]} highlightWorkflowKeyword />,
+    );
+    await typeIntoEditor("éultracode then ultracode");
+    await expect
+      .poll(() => page.getByTestId("composer-prompt-value").query()?.textContent)
+      .toBe("éultracode then ultracode");
+    expect(keywordTokens()).toContain("ultracode");
     await screen.unmount();
   });
 });

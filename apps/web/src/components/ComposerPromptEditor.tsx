@@ -668,9 +668,20 @@ function $createComposerKeywordTextNode(text: string): ComposerKeywordTextNode {
 }
 
 /** The keyword as a whole word. Linear: one fixed word between boundaries. */
-const WORKFLOW_KEYWORD_TOKEN_REGEX = /\bultracode\b/iu;
+const WORKFLOW_KEYWORD_TOKENS_REGEX = /\bultracode\b/giu;
 const WORKFLOW_KEYWORD_EXACT_REGEX = /^ultracode$/iu;
-const WORD_CHARACTER_REGEX = /[\p{L}\p{N}_]/u;
+/** What `\b` above counts as a word character, under the same flags. The two
+ *  transforms must agree: one that promoted a word the other demotes would
+ *  trade the node back and forth without end ("éultracode"). */
+const WORD_CHARACTER_REGEX = /\w/iu;
+
+/** Whether a neighbouring node's edge is a word character, which would make
+ *  the keyword part of a longer word. Both transforms ask the same. */
+function $touchesWordCharacter(sibling: LexicalNode | null, edge: "end" | "start"): boolean {
+  if (sibling === null || !$isTextNode(sibling)) return false;
+  const text = sibling.getTextContent();
+  return WORD_CHARACTER_REGEX.test(edge === "end" ? text.slice(-1) : text.slice(0, 1));
+}
 
 function ComposerKeywordHighlightPlugin(props: { enabled: boolean }) {
   const [editor] = useLexicalComposerContext();
@@ -682,31 +693,26 @@ function ComposerKeywordHighlightPlugin(props: { enabled: boolean }) {
       if (!enabledRef.current || node instanceof ComposerKeywordTextNode) return;
       if (node instanceof ComposerCommandTextNode || !node.isSimpleText()) return;
       const text = node.getTextContent();
-      const match = WORKFLOW_KEYWORD_TOKEN_REGEX.exec(text);
-      if (!match) return;
-      const start = match.index;
-      const end = start + match[0].length;
-      const parts = node.splitText(start, end);
-      const token = parts[start === 0 ? 0 : 1];
-      if (token === undefined) return;
-      token.replace($createComposerKeywordTextNode(token.getTextContent()));
+      for (const match of text.matchAll(WORKFLOW_KEYWORD_TOKENS_REGEX)) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (start === 0 && $touchesWordCharacter(node.getPreviousSibling(), "end")) continue;
+        if (end === text.length && $touchesWordCharacter(node.getNextSibling(), "start")) continue;
+        const parts = node.splitText(start, end);
+        const token = parts[start === 0 ? 0 : 1];
+        if (token === undefined) return;
+        token.replace($createComposerKeywordTextNode(token.getTextContent()));
+        return;
+      }
     });
 
     const unregisterDemote = editor.registerNodeTransform(ComposerKeywordTextNode, (node) => {
       const text = node.getTextContent();
-      const previous = node.getPreviousSibling();
-      const next = node.getNextSibling();
-      const touches = (sibling: typeof previous, edge: "end" | "start") => {
-        if (sibling === null || !$isTextNode(sibling)) return false;
-        const siblingText = sibling.getTextContent();
-        const character = edge === "end" ? siblingText.slice(-1) : siblingText.slice(0, 1);
-        return WORD_CHARACTER_REGEX.test(character);
-      };
       if (
         enabledRef.current &&
         WORKFLOW_KEYWORD_EXACT_REGEX.test(text) &&
-        !touches(previous, "end") &&
-        !touches(next, "start")
+        !$touchesWordCharacter(node.getPreviousSibling(), "end") &&
+        !$touchesWordCharacter(node.getNextSibling(), "start")
       ) {
         return;
       }
