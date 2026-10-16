@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   browserApprovalKey,
+  isBrowserCertificateTrusted,
   isBrowserHostAllowed,
   isBrowserHostApproved,
   isPrivateNetworkHost,
   resolveBrowserSiteAccess,
   withBrowserApproval,
+  withoutTrustedCertificate,
+  withTrustedCertificate,
 } from "./preview.ts";
 
 /**
@@ -152,5 +155,43 @@ describe("resolveBrowserSiteAccess", () => {
     // Asking first still honours what was already allowed, and private hosts.
     expect(isBrowserHostAllowed("docs.example.com", access("ask", undefined))).toBe(true);
     expect(isBrowserHostAllowed("localhost", access("ask", "ask"))).toBe(true);
+  });
+});
+
+describe("isBrowserCertificateTrusted", () => {
+  const fingerprint = "sha256/QHiX/6L4pzA8W3GbW6cWbW9/S0lVcxlCbxoSyy9+XMg=";
+  const access = (trusted: ReadonlyArray<{ host: string; fingerprint: string }>) =>
+    resolveBrowserSiteAccess({
+      defaultPolicy: "any",
+      projectPolicy: undefined,
+      approvedHosts: [],
+      trustedCertificates: trusted,
+    });
+
+  it("trusts only the exact certificate the user accepted, on that host", () => {
+    const trusted = access(withTrustedCertificate([], { host: "LocalHost", fingerprint }));
+
+    expect(isBrowserCertificateTrusted("localhost", fingerprint, trusted)).toBe(true);
+    // A new certificate on the same server is asked about again.
+    expect(isBrowserCertificateTrusted("localhost", "sha256/other", trusted)).toBe(false);
+    expect(isBrowserCertificateTrusted("192.168.1.20", fingerprint, trusted)).toBe(false);
+    expect(
+      isBrowserCertificateTrusted(
+        "localhost",
+        fingerprint,
+        access(
+          withoutTrustedCertificate(trusted.trustedCertificates ?? [], {
+            host: "localhost",
+            fingerprint,
+          }),
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("never lets a public site past a bad certificate, even when listed and any site is allowed", () => {
+    const listed = access([{ host: "example.com", fingerprint }]);
+
+    expect(isBrowserCertificateTrusted("example.com", fingerprint, listed)).toBe(false);
   });
 });

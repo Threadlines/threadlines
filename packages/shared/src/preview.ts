@@ -213,6 +213,19 @@ export const PREVIEW_AGENT_KEYS_DEADLINE_MS = PREVIEW_AGENT_KEYBOARD_HOLD_MS - 1
 export interface BrowserSiteAccess {
   readonly allowAll: boolean;
   readonly approvedHosts: ReadonlyArray<string>;
+  /** Certificates the user trusts for this project's pages; see `isBrowserCertificateTrusted`. */
+  readonly trustedCertificates?: ReadonlyArray<BrowserTrustedCertificate> | undefined;
+}
+
+/**
+ * A certificate the user chose to trust: a dev server on their own machine or
+ * network that made its own. By host and certificate fingerprint, so another
+ * certificate on the same host is asked about again.
+ */
+export interface BrowserTrustedCertificate {
+  readonly host: string;
+  /** As Electron reports it: `sha256/` and the base64 digest. */
+  readonly fingerprint: string;
 }
 
 /** The access a project has, from the user's default and its own override. */
@@ -220,11 +233,65 @@ export function resolveBrowserSiteAccess(input: {
   readonly defaultPolicy: "ask" | "any";
   readonly projectPolicy: "ask" | "any" | undefined;
   readonly approvedHosts: ReadonlyArray<string>;
+  readonly trustedCertificates?: ReadonlyArray<BrowserTrustedCertificate> | undefined;
 }): BrowserSiteAccess {
   return {
     allowAll: (input.projectPolicy ?? input.defaultPolicy) === "any",
     approvedHosts: input.approvedHosts,
+    trustedCertificates: input.trustedCertificates ?? [],
   };
+}
+
+/**
+ * Whether a page may load from `hostname` despite a certificate the system
+ * does not trust. Only on the user's own machine or network, where a
+ * self-made certificate is normal; a public site with a bad certificate is
+ * refused whatever the list says, since there it means something is wrong,
+ * and the "Any site" policy does not change that.
+ */
+export function isBrowserCertificateTrusted(
+  hostname: string,
+  fingerprint: string,
+  access: BrowserSiteAccess,
+): boolean {
+  if (!isPrivateNetworkHost(hostname)) {
+    return false;
+  }
+  const host = normalizeHostname(hostname);
+  return (access.trustedCertificates ?? []).some(
+    (entry) => normalizeHostname(entry.host) === host && entry.fingerprint === fingerprint,
+  );
+}
+
+/** The trusted list with this certificate added, or the same list if it is there already. */
+export function withTrustedCertificate(
+  trusted: ReadonlyArray<BrowserTrustedCertificate>,
+  certificate: BrowserTrustedCertificate,
+): ReadonlyArray<BrowserTrustedCertificate> {
+  const host = normalizeHostname(certificate.host);
+  if (
+    host === "" ||
+    trusted.some(
+      (entry) =>
+        normalizeHostname(entry.host) === host && entry.fingerprint === certificate.fingerprint,
+    )
+  ) {
+    return trusted;
+  }
+  return [...trusted, { host, fingerprint: certificate.fingerprint }];
+}
+
+/** The trusted list without this certificate (or the same list, if it was not there). */
+export function withoutTrustedCertificate(
+  trusted: ReadonlyArray<BrowserTrustedCertificate>,
+  certificate: BrowserTrustedCertificate,
+): ReadonlyArray<BrowserTrustedCertificate> {
+  const host = normalizeHostname(certificate.host);
+  const next = trusted.filter(
+    (entry) =>
+      !(normalizeHostname(entry.host) === host && entry.fingerprint === certificate.fingerprint),
+  );
+  return next.length === trusted.length ? trusted : next;
 }
 
 /** Whether the browser may go to this host without asking. */

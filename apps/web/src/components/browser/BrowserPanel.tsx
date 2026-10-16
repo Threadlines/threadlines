@@ -89,7 +89,11 @@ import { MINI_HORIZONTAL_SCROLLBAR_CLASS, ScrollArea } from "../ui/scroll-area";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RotateDeviceIcon } from "../Icons";
-import { pushNavigationPolicy, useBrowserApprovals } from "./browserApprovals";
+import {
+  pushNavigationPolicy,
+  trustCertificateForProject,
+  useBrowserApprovals,
+} from "./browserApprovals";
 import { answerBrowserApproval, type BrowserApprovalDecision } from "./browserApprovalRequests";
 import { noteBrowserUserIntent } from "./browserFocusGuard";
 import { completeUrl } from "./urlCompletion";
@@ -170,6 +174,7 @@ export function BrowserPanel({
     approveHost,
     setProjectPolicy,
     removeHost,
+    removeTrustedCertificate,
     projectPolicy,
     defaultPolicy,
     access,
@@ -395,6 +400,23 @@ export function BrowserPanel({
       if (answerBrowserApproval(threadRef, pendingApproval, decision) === "done") {
         return;
       }
+      if (pendingApproval.certificate !== undefined) {
+        // Trusting the certificate and loading the page again are one act, in
+        // the tab the page was refused in. The page is handed the trust before
+        // it loads (see `openAddress`).
+        if (approvalsProjectId === null) return;
+        trustCertificateForProject(approvalsProjectId, {
+          host: pendingApproval.host,
+          fingerprint: pendingApproval.certificate.fingerprint,
+        });
+        const refusedTab =
+          pendingApproval.tabId !== null &&
+          browserState.tabs.some((tab) => tab.id === pendingApproval.tabId)
+            ? pendingApproval.tabId
+            : activeTabId;
+        if (refusedTab !== "") openAddress(refusedTab, pendingApproval.url);
+        return;
+      }
       if (decision === "allowAllSites") {
         setProjectPolicy("any");
       }
@@ -442,6 +464,7 @@ export function BrowserPanel({
     [
       activeTabId,
       agentTabId,
+      approvalsProjectId,
       approveHost,
       browserState.tabs,
       openAddress,
@@ -1127,6 +1150,29 @@ export function BrowserPanel({
                     </MenuSubPopup>
                   </MenuSub>
                 )}
+                {(access.trustedCertificates ?? []).length === 0 ? null : (
+                  <MenuSub>
+                    <MenuSubTrigger data-testid="browser-trusted-certificates">
+                      Trusted certificates
+                    </MenuSubTrigger>
+                    <MenuSubPopup className="max-w-72">
+                      <MenuGroup>
+                        <MenuGroupLabel>Click one to stop trusting it</MenuGroupLabel>
+                        {(access.trustedCertificates ?? []).map((certificate) => (
+                          <MenuItem
+                            key={`${certificate.host} ${certificate.fingerprint}`}
+                            onClick={() => removeTrustedCertificate(certificate)}
+                          >
+                            <span className="truncate">{certificate.host}</span>
+                            <span className="ms-auto shrink-0 font-mono text-[11px] text-muted-foreground">
+                              {certificate.fingerprint.replace(/^sha256\//, "").slice(0, 8)}
+                            </span>
+                          </MenuItem>
+                        ))}
+                      </MenuGroup>
+                    </MenuSubPopup>
+                  </MenuSub>
+                )}
               </>
             )}
             <MenuSeparator />
@@ -1214,6 +1260,7 @@ export function BrowserPanel({
           source={pendingApproval.source}
           fromHost={pendingApproval.fromHost}
           newTab={pendingApproval.newTab !== undefined}
+          certificate={pendingApproval.certificate !== undefined}
           waitingCount={pendingApprovals.length - 1}
           onAllow={() => answerPendingApproval("allowSite")}
           onAllowAll={
@@ -1551,6 +1598,7 @@ export function AgentApprovalLine({
   source,
   fromHost,
   newTab = false,
+  certificate = false,
   waitingCount = 0,
   onAllow,
   onAllowAll,
@@ -1561,6 +1609,8 @@ export function AgentApprovalLine({
   fromHost: string | null;
   /** The page asked to open the site in a tab of its own. */
   newTab?: boolean;
+  /** The question is whether to trust a local page's certificate, not a site. */
+  certificate?: boolean;
   /** Further questions queued behind this one. */
   waitingCount?: number;
   onAllow: () => void;
@@ -1576,8 +1626,17 @@ export function AgentApprovalLine({
     >
       <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
       <span className="min-w-0 truncate">
-        <span className="text-foreground">{subject}</span>{" "}
-        {newTab ? `wants to open ${host} in a new tab` : `wants to visit ${host}`}
+        {certificate ? (
+          <>
+            <span className="text-foreground">{host}</span> uses a certificate this browser doesn't
+            trust
+          </>
+        ) : (
+          <>
+            <span className="text-foreground">{subject}</span>{" "}
+            {newTab ? `wants to open ${host} in a new tab` : `wants to visit ${host}`}
+          </>
+        )}
       </span>
       {waitingCount > 0 ? (
         <span className="shrink-0 text-muted-foreground/60" data-testid="browser-approval-more">
@@ -1587,13 +1646,17 @@ export function AgentApprovalLine({
       <button
         type="button"
         data-testid="browser-approval-allow"
-        title="Remembered for this project"
+        title={
+          certificate
+            ? "Trusts this certificate for this project, until you remove it from the browser menu"
+            : "Remembered for this project"
+        }
         className="ms-auto shrink-0 text-amber-600/70 hover:text-amber-600 dark:text-amber-400/70 dark:hover:text-amber-400"
         onClick={onAllow}
       >
-        Allow site
+        {certificate ? "Continue anyway" : "Allow site"}
       </button>
-      {onAllowAll === undefined ? null : (
+      {onAllowAll === undefined || certificate ? null : (
         <button
           type="button"
           data-testid="browser-approval-allow-all"

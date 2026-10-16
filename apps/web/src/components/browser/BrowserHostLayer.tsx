@@ -234,6 +234,7 @@ export function useBrowserPageWatchers(): void {
   const approvedDomains = useSettings((settings) => settings.agentBrowserApprovedDomains);
   const defaultPolicy = useSettings((settings) => settings.agentBrowserSitePolicy);
   const projectPolicies = useSettings((settings) => settings.agentBrowserProjectSitePolicy);
+  const trustedCertificates = useSettings((settings) => settings.agentBrowserTrustedCertificates);
 
   // Pushed on every attachment and every change rather than read from settings
   // in the main process: only this side knows which project a page belongs to,
@@ -248,13 +249,41 @@ export function useBrowserPageWatchers(): void {
             defaultPolicy,
             projectPolicy: projectPolicies[projectId],
             approvedHosts: approvedDomains[projectId] ?? [],
+            trustedCertificates: trustedCertificates[projectId] ?? [],
           }),
         );
       }
     };
     pushPolicies();
     return subscribePreviewWebviews(pushPolicies);
-  }, [approvedDomains, defaultPolicy, projectPolicies]);
+  }, [approvedDomains, defaultPolicy, projectPolicies, trustedCertificates]);
+
+  // A page on the user's own machine or network was refused for a certificate
+  // the system does not trust, which a dev server's self-made one is. Asked in
+  // the approval line, where allowing trusts that one certificate for the
+  // project and loads the page again.
+  useEffect(() => {
+    const subscribe = window.desktopBridge?.onPreviewCertificateUntrusted;
+    if (subscribe === undefined) return;
+    return subscribe((untrusted) => {
+      const page = attachedPages().find((entry) => entry.webContentsId === untrusted.webContentsId);
+      if (page === undefined) return;
+      const panel = useBrowserPanelStore.getState();
+      panel.enqueueBrowserApproval(page.threadRef, {
+        id: nextBrowserApprovalId(),
+        waiting: false,
+        host: untrusted.host,
+        url: untrusted.url,
+        source: "page",
+        fromHost: null,
+        tabId: page.tabId,
+        certificate: { fingerprint: untrusted.fingerprint },
+      });
+      if (!selectThreadBrowserState(panel.browserStateByThreadKey, page.threadRef).open) {
+        panel.setBrowserOpen(page.threadRef, true);
+      }
+    });
+  }, []);
 
   // A page that tried to take itself somewhere unapproved. The main process
   // refused it and says so here, because the block is silent on the page: a

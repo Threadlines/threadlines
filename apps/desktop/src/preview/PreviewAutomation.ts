@@ -25,6 +25,7 @@ import type {
   DesktopPreviewEvaluateInput,
   DesktopPreviewNetworkFailure,
   DesktopPreviewMoveInput,
+  DesktopPreviewCertificateUntrusted,
   DesktopPreviewNavigationBlocked,
   DesktopPreviewUserControl,
   DesktopPreviewPressInput,
@@ -40,7 +41,9 @@ import type {
   PreviewAutomationTarget,
 } from "@threadlines/contracts";
 import {
+  isBrowserCertificateTrusted,
   isBrowserHostAllowed,
+  isPrivateNetworkHost,
   normalizePreviewWaitForTimeoutMs,
   PREVIEW_AGENT_KEYBOARD_HOLD_MS,
   PREVIEW_AGENT_KEYS_DEADLINE_MS,
@@ -52,6 +55,7 @@ import {
   BrowserWindow,
   nativeImage,
   powerMonitor,
+  session,
   webContents,
   type NativeImage,
   type Session,
@@ -563,6 +567,88 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   app.on("web-contents-created", (_event, contents) => {
     if (contents.getType() === "webview" && accessBySession.has(contents.session)) {
       ensureNavigationGuard(contents);
+    }
+  });
+
+  /**
+   * The host a certificate was presented for. A page's own loads are `https:`,
+   * and a dev server's live reload runs over `wss:` on the same host with the
+   * same certificate, so both count.
+   */
+  const certificateHost = (url: string): string | null => {
+    try {
+      const parsed = new URL(url);
+      return (parsed.protocol === "https:" || parsed.protocol === "wss:") && parsed.hostname !== ""
+        ? parsed.hostname
+        : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Tells the panel a page on the user's own machine or network was refused
+   * for its certificate, so it can offer to trust it. Sent like a blocked
+   * navigation: to the window embedding the page, or every app window.
+   */
+  const reportUntrustedCertificate = (
+    contents: WebContents,
+    payload: DesktopPreviewCertificateUntrusted,
+  ) => {
+    const embedder = contents.hostWebContents;
+    if (embedder !== null && !embedder.isDestroyed()) {
+      embedder.send(IpcChannels.PREVIEW_CERTIFICATE_UNTRUSTED_CHANNEL, payload);
+      return;
+    }
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (isAppWindow(window)) {
+        window.webContents.send(IpcChannels.PREVIEW_CERTIFICATE_UNTRUSTED_CHANNEL, payload);
+      }
+    }
+  };
+
+  /**
+   * A certificate the system does not trust, met by a browser page.
+   *
+   * A dev server on the user's own machine or network often serves HTTPS with
+   * a certificate it made itself. One the user trusted for the project goes
+   * through; any other is refused, as Chromium would, and when it is the
+   * address of a page on a private host the panel is told so it can offer to
+   * trust it. Chromium asks again for every new connection, which is what
+   * lets taking trust back work (see `setNavigationPolicy`). The app's own
+   * window, in the default session, is left to Chromium.
+   */
+  app.on("certificate-error", (event, contents, url, error, certificate, callback, isMainFrame) => {
+    if (contents.isDestroyed() || contents.session === session.defaultSession) return;
+    // The profile's latest policy rather than this page's copy: trust taken
+    // back reaches the profile with the first page told, and a page told a
+    // moment later must not let the certificate back in meanwhile.
+    const access =
+      accessBySession.get(contents.session) ?? navigationGuards.get(contents.id)?.access;
+    const host = certificateHost(url);
+    if (
+      host !== null &&
+      access !== undefined &&
+      isBrowserCertificateTrusted(host, certificate.fingerprint, access)
+    ) {
+      event.preventDefault();
+      callback(true);
+      return;
+    }
+    callback(false);
+    if (
+      isMainFrame &&
+      host !== null &&
+      isPrivateNetworkHost(host) &&
+      contents.getType() === "webview"
+    ) {
+      reportUntrustedCertificate(contents, {
+        webContentsId: contents.id,
+        host,
+        url,
+        fingerprint: certificate.fingerprint,
+        error,
+      });
     }
   });
 
@@ -1512,8 +1598,17 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       access: BrowserSiteAccess,
     ) {
       const contents = yield* resolve(webContentsId);
+      const before = accessBySession.get(contents.session)?.trustedCertificates ?? [];
       ensureNavigationGuard(contents).access = access;
       accessBySession.set(contents.session, access);
+      // Trust taken back. Connections made under it stay open and Chromium
+      // reuses them without asking again, so the profile's connections close
+      // and the next load is asked about afresh.
+      if (
+        before.some((entry) => !isBrowserCertificateTrusted(entry.host, entry.fingerprint, access))
+      ) {
+        yield* Effect.promise(() => contents.session.closeAllConnections());
+      }
     }),
     guardPopup: Effect.fn("PreviewAutomation.guardPopup")(function* (
       openerWebContentsId: number,

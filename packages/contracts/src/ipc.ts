@@ -487,6 +487,13 @@ export const DesktopPreviewNavigationPolicyInputSchema = Schema.Struct({
   approvedDomains: Schema.Array(Schema.String),
   /** The project lets agents go to any site; the list above is then unused. */
   allowAll: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Certificates the user trusts for the project's pages on their own machine
+   * or network. Absent from older clients, which trust none.
+   */
+  trustedCertificates: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ host: Schema.String, fingerprint: Schema.String })),
+  ),
 });
 export type DesktopPreviewNavigationPolicyInput =
   typeof DesktopPreviewNavigationPolicyInputSchema.Type;
@@ -504,6 +511,24 @@ export const DesktopPreviewNavigationBlockedSchema = Schema.Struct({
   fromHost: Schema.NullOr(Schema.String),
 });
 export type DesktopPreviewNavigationBlocked = typeof DesktopPreviewNavigationBlockedSchema.Type;
+
+/**
+ * A page on the user's own machine or network was refused because its
+ * certificate is not trusted (a dev server's self-made one, usually), so the
+ * panel can offer to trust it. Not sent for public sites: there a bad
+ * certificate means something is wrong, and nothing offers a way past it.
+ */
+export const DesktopPreviewCertificateUntrustedSchema = Schema.Struct({
+  webContentsId: Schema.Number,
+  host: Schema.String,
+  url: Schema.String,
+  /** As Electron reports it: `sha256/` and the base64 digest. */
+  fingerprint: Schema.String,
+  /** Chromium's reason, such as `net::ERR_CERT_AUTHORITY_INVALID`. */
+  error: Schema.String,
+});
+export type DesktopPreviewCertificateUntrusted =
+  typeof DesktopPreviewCertificateUntrustedSchema.Type;
 
 /**
  * A page asked for a new tab or window: a `target="_blank"` link, a
@@ -1254,6 +1279,10 @@ export interface DesktopBridge {
   /** Fires when a page tried to navigate somewhere the guest is not allowed. */
   onPreviewNavigationBlocked?: (
     listener: (event: DesktopPreviewNavigationBlocked) => void,
+  ) => () => void;
+  /** Fires when a local page's certificate was refused; see `DesktopPreviewCertificateUntrustedSchema`. */
+  onPreviewCertificateUntrusted?: (
+    listener: (event: DesktopPreviewCertificateUntrusted) => void,
   ) => () => void;
   /** Fires when a page asked for a new tab or window; see `DesktopPreviewOpenTabSchema`. */
   onPreviewOpenTab?: (listener: (request: DesktopPreviewOpenTab) => void) => () => void;

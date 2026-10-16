@@ -1,10 +1,11 @@
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
-import { EnvironmentId, ThreadId } from "@threadlines/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@threadlines/contracts";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { makeBrowserTab, useBrowserPanelStore } from "../../browserPanelStore";
+import { getClientSettings, updateSettings } from "../../hooks/useSettings";
 import { AgentActivityLine, AgentApprovalLine, BrowserPanel } from "./BrowserPanel";
 import type { AgentActivity } from "./previewAutomationHost";
 
@@ -95,6 +96,60 @@ describe("BrowserPanel new tabs a page asked for", () => {
     } finally {
       screen.unmount();
       resetBrowserPanel();
+    }
+  });
+});
+
+describe("BrowserPanel untrusted local certificate", () => {
+  it("trusts the one certificate for the project and loads the page again", async () => {
+    const projectId = ProjectId.make("project-local-https");
+    const fingerprint = "sha256/QHiX/6L4pzA8W3GbW6cWbW9/S0lVcxlCbxoSyy9+XMg=";
+    const tab = { ...makeBrowserTab(), url: "https://localhost:8443/" };
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {
+        [THREAD_KEY]: { open: true, tabs: [tab], activeTabId: tab.id },
+      },
+      agentStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
+      pendingApprovalsByThreadKey: {
+        [THREAD_KEY]: [
+          {
+            id: "certificate",
+            waiting: false,
+            host: "localhost",
+            url: "https://localhost:8443/dashboard",
+            source: "page",
+            fromHost: null,
+            tabId: tab.id,
+            certificate: { fingerprint },
+          },
+        ],
+      },
+    });
+    const screen = await render(
+      <BrowserPanel threadRef={THREAD_REF} projectId={projectId} flexGrow={1} onClose={() => {}} />,
+    );
+
+    try {
+      await expect
+        .element(page.getByTestId("browser-approval-bar"))
+        .toHaveTextContent("localhost uses a certificate this browser doesn't trust");
+      // A certificate is trusted one at a time; there is no "every site" for it.
+      expect(document.querySelector('[data-testid="browser-approval-allow-all"]')).toBeNull();
+      await page.getByTestId("browser-approval-allow").click();
+
+      expect(getClientSettings().agentBrowserTrustedCertificates[projectId]).toEqual([
+        { host: "localhost", fingerprint },
+      ]);
+      const state = useBrowserPanelStore.getState();
+      expect(state.browserStateByThreadKey[THREAD_KEY]?.tabs[0]?.url).toBe(
+        "https://localhost:8443/dashboard",
+      );
+      expect(state.pendingApprovalsByThreadKey[THREAD_KEY]).toBeUndefined();
+    } finally {
+      screen.unmount();
+      resetBrowserPanel();
+      updateSettings({ agentBrowserTrustedCertificates: {} });
     }
   });
 });
