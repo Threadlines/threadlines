@@ -506,6 +506,22 @@ export const DesktopPreviewNavigationBlockedSchema = Schema.Struct({
 export type DesktopPreviewNavigationBlocked = typeof DesktopPreviewNavigationBlockedSchema.Type;
 
 /**
+ * A page asked for a new tab or window: a `target="_blank"` link, a
+ * `window.open`, a Cmd-click or middle click, or "Open Link in New Tab" from
+ * its menu. The desktop never opens a window for a page; it hands the address
+ * here, and the panel opens it as a tab beside the page that asked.
+ */
+export const DesktopPreviewOpenTabSchema = Schema.Struct({
+  /** The page that asked. */
+  webContentsId: Schema.Number,
+  /** Always http or https; the desktop drops anything else. */
+  url: Schema.String,
+  /** Opened behind the current tab, as a Cmd-click or middle click asks. */
+  background: Schema.Boolean,
+});
+export type DesktopPreviewOpenTab = typeof DesktopPreviewOpenTabSchema.Type;
+
+/**
  * The in-app browser keeps one profile per project: its own cookies, storage
  * and cache. The desktop names the partition; the renderer only asks for it.
  */
@@ -1187,6 +1203,8 @@ export interface DesktopBridge {
   onPreviewNavigationBlocked?: (
     listener: (event: DesktopPreviewNavigationBlocked) => void,
   ) => () => void;
+  /** Fires when a page asked for a new tab or window; see `DesktopPreviewOpenTabSchema`. */
+  onPreviewOpenTab?: (listener: (request: DesktopPreviewOpenTab) => void) => () => void;
   /** Fires for genuine keyboard, pointer, or wheel input inside a guest page. */
   onPreviewUserControl?: (listener: (event: DesktopPreviewUserControl) => void) => () => void;
   /** Fires for browser gestures the renderer cannot see itself: the mouse's

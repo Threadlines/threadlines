@@ -465,6 +465,24 @@ export const PreviewAutomationStatusSchema = Schema.Struct({
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatusSchema.Type;
 
+/**
+ * Where the page ended up after an action that can follow a link: a click, a
+ * key press, typing with submit.
+ */
+export const PreviewAutomationActionStatusSchema = Schema.Struct({
+  ...PreviewAutomationStatusSchema.fields,
+  /**
+   * Tabs the action made the page open: a link with `target="_blank"`, a
+   * `window.open`. They open beside the agent's tab without moving it there,
+   * so without this the click reads as having done nothing. Omitted when none
+   * opened.
+   */
+  openedTabs: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ id: Schema.String, url: Schema.String })),
+  ),
+});
+export type PreviewAutomationActionStatus = typeof PreviewAutomationActionStatusSchema.Type;
+
 export const PreviewAutomationSnapshotSchema = Schema.Struct({
   ...PreviewAutomationStatusSchema.fields,
   /**

@@ -215,6 +215,46 @@ describe("createPreviewAutomationHandler", () => {
     expect(points).toEqual([{ x: 120, y: 48 }]);
   });
 
+  it("names the tabs a click made the page open, and only those", async () => {
+    // A link into a new tab leaves the agent's page where it was. Without the
+    // tab named, the click reads as a miss and a retry opens a second one.
+    const openedByPage = [{ id: "tab-earlier", url: "https://example.com/earlier" }];
+    const handle = createPreviewAutomationHandler(
+      {
+        previewClick: (input: { target: { ref: string } }) => {
+          if (input.target.ref === "docs-link") {
+            openedByPage.push({ id: "tab-docs", url: "https://example.com/docs" });
+          }
+          return Promise.resolve({ x: 1, y: 1 });
+        },
+        previewStatus: () => Promise.resolve({ url: "http://x/", title: "X", loading: false }),
+      } as unknown as DesktopBridge,
+      () => ({
+        tabId: "tab-agent",
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
+        onAgentPoint: () => {},
+        tabs: () => [],
+        tabsOpenedByPage: () => openedByPage,
+        selectTab: () => {},
+        onAgentActivity: () => {},
+      }),
+    );
+
+    const followed = await handle(request("click", { target: { ref: "docs-link" } }));
+    expect(followed.result).toMatchObject({
+      tabId: "tab-agent",
+      url: "http://x/",
+      openedTabs: [{ id: "tab-docs", url: "https://example.com/docs" }],
+    });
+
+    const plain = await handle(request("click", { target: { ref: "button" } }));
+    expect(plain.result).toMatchObject({ tabId: "tab-agent" });
+    expect(plain.result).not.toHaveProperty("openedTabs");
+  });
+
   it("reports both ends of a drag, so the pointer can replay the gesture", async () => {
     // Only the destination would show where the drag finished and lose the
     // drag, which is the part a watching user cannot otherwise see.

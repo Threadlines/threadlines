@@ -150,6 +150,17 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(IpcChannels.PREVIEW_NAVIGATION_BLOCKED_CHANNEL, wrappedListener);
     };
   },
+  onPreviewOpenTab: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, request: unknown) => {
+      if (typeof request !== "object" || request === null) return;
+      listener(request as Parameters<typeof listener>[0]);
+    };
+
+    ipcRenderer.on(IpcChannels.PREVIEW_OPEN_TAB_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.PREVIEW_OPEN_TAB_CHANNEL, wrappedListener);
+    };
+  },
   onPreviewUserControl: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, control: unknown) => {
       if (typeof control !== "object" || control === null) return;

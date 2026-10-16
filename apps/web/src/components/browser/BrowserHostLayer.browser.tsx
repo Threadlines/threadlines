@@ -196,6 +196,19 @@ describe("LiveThreadBrowserView", () => {
     }
   });
 
+  it("lets every page ask for new tabs", async () => {
+    const tab = { ...makeBrowserTab(), url: "http://localhost:5173/" };
+    const screen = await renderThreadOnScreen([tab]);
+    try {
+      // Without it Chromium refuses every target="_blank" link before the
+      // desktop is asked, and the link does nothing. React drops a boolean.
+      const page = document.querySelector(`[data-testid="browser-frame-${tab.id}"] webview`);
+      expect(page?.hasAttribute("allowpopups")).toBe(true);
+    } finally {
+      screen.unmount();
+    }
+  });
+
   it("shows each thing the agent does once, and its pointer at rest when the thread comes back on screen", async () => {
     const tab = { ...makeBrowserTab(), url: "http://localhost:5173/" };
     const screen = await renderThreadOnScreen([tab]);

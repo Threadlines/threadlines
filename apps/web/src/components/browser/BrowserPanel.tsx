@@ -398,6 +398,31 @@ export function BrowserPanel({
       if (decision === "allowAllSites") {
         setProjectPolicy("any");
       }
+      if (pendingApproval.newTab !== undefined) {
+        // The page asked for a tab of its own, so allowing opens one beside it
+        // rather than loading the site over the page that asked -- and every
+        // other tab waiting on the same site with it: two links Cmd-clicked to
+        // one site are two tabs, not two questions. As when no question is
+        // needed, a tab comes to the front only over the page that asked.
+        approveHost(pendingApproval.host);
+        const store = useBrowserPanelStore.getState();
+        for (const request of pendingApprovals) {
+          if (
+            request.newTab === undefined ||
+            request.waiting ||
+            request.host !== pendingApproval.host
+          ) {
+            continue;
+          }
+          store.removeBrowserApproval(threadRef, request.id);
+          store.openTabFromPage(threadRef, {
+            openerTabId: request.tabId,
+            url: request.url,
+            activate: !request.newTab.background && request.tabId === activeTabId,
+          });
+        }
+        return;
+      }
       const blockedTabId =
         pendingApproval.tabId !== null &&
         browserState.tabs.some((tab) => tab.id === pendingApproval.tabId)
@@ -421,6 +446,7 @@ export function BrowserPanel({
       browserState.tabs,
       openAddress,
       pendingApproval,
+      pendingApprovals,
       setProjectPolicy,
       threadRef,
     ],
@@ -1187,6 +1213,7 @@ export function BrowserPanel({
           host={pendingApproval.host}
           source={pendingApproval.source}
           fromHost={pendingApproval.fromHost}
+          newTab={pendingApproval.newTab !== undefined}
           waitingCount={pendingApprovals.length - 1}
           onAllow={() => answerPendingApproval("allowSite")}
           onAllowAll={
@@ -1523,6 +1550,7 @@ export function AgentApprovalLine({
   host,
   source,
   fromHost,
+  newTab = false,
   waitingCount = 0,
   onAllow,
   onAllowAll,
@@ -1531,6 +1559,8 @@ export function AgentApprovalLine({
   host: string;
   source: "agent" | "page";
   fromHost: string | null;
+  /** The page asked to open the site in a tab of its own. */
+  newTab?: boolean;
   /** Further questions queued behind this one. */
   waitingCount?: number;
   onAllow: () => void;
@@ -1546,7 +1576,8 @@ export function AgentApprovalLine({
     >
       <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
       <span className="min-w-0 truncate">
-        <span className="text-foreground">{subject}</span> wants to visit {host}
+        <span className="text-foreground">{subject}</span>{" "}
+        {newTab ? `wants to open ${host} in a new tab` : `wants to visit ${host}`}
       </span>
       {waitingCount > 0 ? (
         <span className="shrink-0 text-muted-foreground/60" data-testid="browser-approval-more">

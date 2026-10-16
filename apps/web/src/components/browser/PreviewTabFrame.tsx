@@ -39,6 +39,17 @@ declare global {
   }
 }
 
+/**
+ * Lets the page ask for new tabs and windows at all: without it Chromium drops
+ * every `target="_blank"` link and `window.open` before anyone is asked. None
+ * is ever opened as a window; the desktop turns each request into a tab here.
+ *
+ * A string, though React's types call it a boolean: React drops `true` from any
+ * attribute it does not know, and Electron reads the attributes only once, as
+ * the element goes into the page.
+ */
+const ALLOW_POPUPS = { allowpopups: "" } as unknown as { allowpopups: boolean };
+
 export interface PreviewWebview extends HTMLElement {
   getWebContentsId: () => number;
   getURL: () => string;
@@ -310,6 +321,7 @@ export function PreviewTabFrame({
               : {}),
           }}
           partition={partition}
+          {...ALLOW_POPUPS}
           src={initialSrc}
         />
         {mode === "visible" ? (

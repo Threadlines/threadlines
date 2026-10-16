@@ -12,6 +12,7 @@
  * reproduce it, and show what it looks like.
  */
 import {
+  PreviewAutomationActionStatusSchema,
   PreviewAutomationClickInputSchema,
   PreviewAutomationCloseTabInputSchema,
   PreviewAutomationDragInputSchema,
@@ -140,9 +141,9 @@ export const BrowserNavigateTool = changesThePage(
 export const BrowserClickTool = changesThePage(
   Tool.make("browser_click", {
     description:
-      'Click one thing, and get back the page state afterwards so you can see what changed. Name it with a `ref` from browser_snapshot where you can. `locator` takes a Playwright locator for anything a ref cannot reach -- `internal:role=button[name="Save"i]`, or `tbody > tr:nth-child(3) >> internal:role=button` for the third row\'s button -- and refuses rather than guessing when it matches more than one thing. `selector` is plain CSS and `text` matches visible text. The page is real: a button that deletes something will delete it, so do not retry a click that reported success.',
+      'Click one thing, and get back the page state afterwards so you can see what changed. Name it with a `ref` from browser_snapshot where you can. `locator` takes a Playwright locator for anything a ref cannot reach -- `internal:role=button[name="Save"i]`, or `tbody > tr:nth-child(3) >> internal:role=button` for the third row\'s button -- and refuses rather than guessing when it matches more than one thing. `selector` is plain CSS and `text` matches visible text. The page is real: a button that deletes something will delete it, so do not retry a click that reported success. A link that opens a new tab opens it beside yours without moving you there; the result lists it under `openedTabs`, and browser_select_tab takes you to it.',
     parameters: PreviewAutomationClickInputSchema,
-    success: PreviewAutomationStatusSchema,
+    success: PreviewAutomationActionStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Click"),
@@ -175,7 +176,7 @@ export const BrowserTypeTool = changesThePage(
     description:
       "Type into a field. Set `clear` to replace what is already there rather than appending, and `submit` to press Enter afterwards, which is how most single-field forms are sent.",
     parameters: PreviewAutomationTypeInputSchema,
-    success: PreviewAutomationStatusSchema,
+    success: PreviewAutomationActionStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Type"),
@@ -186,7 +187,7 @@ export const BrowserPressTool = changesThePage(
     description:
       "Press a key on whatever has focus: Enter, Escape, Tab, an arrow, or a shortcut with modifiers. For entering text into a field, use browser_type.",
     parameters: PreviewAutomationPressInputSchema,
-    success: PreviewAutomationStatusSchema,
+    success: PreviewAutomationActionStatusSchema,
     failure: PreviewAutomationErrorSchema,
     dependencies,
   }).annotate(Tool.Title, "Press a key"),

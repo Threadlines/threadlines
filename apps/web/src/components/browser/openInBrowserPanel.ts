@@ -9,9 +9,14 @@
  *
  * The same rule as the address bar applies: going somewhere yourself is
  * approval, so the site is recorded for the project without a prompt.
+ *
+ * The tabs a page in the browser asks for open here too (`openTabForPage`).
+ * Those are the page's doing, not yours, so they ask first like any link the
+ * page follows.
  */
 
 import type { ProjectId, ScopedThreadRef } from "@threadlines/contracts";
+import { isBrowserHostAllowed } from "@threadlines/shared/preview";
 
 import {
   callWhenReady,
@@ -22,7 +27,12 @@ import {
 } from "../../browserPanelStore";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { selectEnvironmentState, useStore } from "../../store";
-import { approveBrowserHostForProject, pushNavigationPolicy } from "./browserApprovals";
+import {
+  approveBrowserHostForProject,
+  pushNavigationPolicy,
+  readBrowserSiteAccess,
+} from "./browserApprovals";
+import { nextBrowserApprovalId } from "./browserApprovalRequests";
 import { hostOf, normalizePreviewUrl } from "./previewUrl";
 
 /** Only web pages belong in the panel; a mailto: or vscode: link is the shell's. */
@@ -148,4 +158,52 @@ export function openUrlInBrowserPanel(threadRef: ScopedThreadRef, rawUrl: string
     });
   }
   return true;
+}
+
+/**
+ * Opens a tab a page asked for (see `DesktopPreviewOpenTab`), beside the page.
+ *
+ * Held to the same sites as a link followed in the same tab: one the project
+ * has not approved is asked about first, from the page that asked, and
+ * allowing it opens the tab. It comes to the front only when the page that
+ * asked is the tab in front: an agent working in a background tab must not
+ * pull its links over the page the user is reading.
+ */
+export function openTabForPage(input: {
+  readonly threadRef: ScopedThreadRef;
+  readonly projectId: ProjectId;
+  readonly openerTabId: string;
+  readonly url: string;
+  readonly background: boolean;
+}): void {
+  const host = isBrowserPanelHref(input.url) ? hostOf(input.url) : "";
+  if (host === "") {
+    return;
+  }
+  const store = useBrowserPanelStore.getState();
+  const panel = selectThreadBrowserState(store.browserStateByThreadKey, input.threadRef);
+  if (!isBrowserHostAllowed(host, readBrowserSiteAccess(input.projectId))) {
+    const opener = panel.tabs.find((tab) => tab.id === input.openerTabId);
+    store.enqueueBrowserApproval(input.threadRef, {
+      id: nextBrowserApprovalId(),
+      // Nothing waits on a page's new tab: allowing opens it.
+      waiting: false,
+      host,
+      url: input.url,
+      source: "page",
+      fromHost: opener?.url ? hostOf(opener.url) || null : null,
+      tabId: input.openerTabId,
+      newTab: { background: input.background },
+    });
+    if (!panel.open) {
+      // A question nobody can see is a stall, not a prompt.
+      store.setBrowserOpen(input.threadRef, true);
+    }
+    return;
+  }
+  store.openTabFromPage(input.threadRef, {
+    openerTabId: input.openerTabId,
+    url: input.url,
+    activate: !input.background && panel.activeTabId === input.openerTabId,
+  });
 }

@@ -106,6 +106,13 @@ describe("background tabs", () => {
     expect(queued()?.map((entry) => entry.id)).toEqual(["c", "b"]);
     store.removeBrowserApproval(THREAD_REF, "c");
     expect(queued()?.map((entry) => entry.id)).toEqual(["b"]);
+
+    // New tabs are asked about per address: two links to one site are two tabs.
+    const newTab = { ...question, host: "example.com", newTab: { background: true } };
+    store.enqueueBrowserApproval(THREAD_REF, { ...newTab, id: "d", url: "https://example.com/a" });
+    store.enqueueBrowserApproval(THREAD_REF, { ...newTab, id: "e", url: "https://example.com/b" });
+    store.enqueueBrowserApproval(THREAD_REF, { ...newTab, id: "f", url: "https://example.com/b" });
+    expect(queued()?.map((entry) => entry.id)).toEqual(["b", "d", "f"]);
   });
 
   it("keeps a later background tab behind, even in a browser the agent opened", () => {
@@ -236,6 +243,75 @@ describe("background tabs", () => {
       closed: true,
       panelOpen: true,
     });
+  });
+});
+
+describe("tabs a page opens", () => {
+  beforeEach(() => {
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
+    });
+  });
+
+  const currentTabs = () =>
+    selectThreadBrowserState(useBrowserPanelStore.getState().browserStateByThreadKey, THREAD_REF);
+
+  it("lines up beside the page that opened them, in the order they opened", () => {
+    const store = useBrowserPanelStore.getState();
+    const opener = store.openTabWithUrl(THREAD_REF, "http://localhost:5173/");
+    const later = store.openTabWithUrl(THREAD_REF, "http://localhost:5173/settings", false);
+
+    const first = store.openTabFromPage(THREAD_REF, {
+      openerTabId: opener,
+      url: "https://example.com/a",
+      activate: false,
+    });
+    const second = store.openTabFromPage(THREAD_REF, {
+      openerTabId: opener,
+      url: "https://example.com/b",
+      activate: false,
+    });
+    // A tab the first one opens stays with it, and the opener's next tab
+    // still goes after everything the opener started.
+    const nested = store.openTabFromPage(THREAD_REF, {
+      openerTabId: first,
+      url: "https://example.com/a/more",
+      activate: false,
+    });
+    const third = store.openTabFromPage(THREAD_REF, {
+      openerTabId: opener,
+      url: "https://example.com/c",
+      activate: false,
+    });
+
+    expect(
+      currentTabs()
+        .tabs.slice(1)
+        .map((tab) => tab.id),
+    ).toEqual([opener, first, nested, second, third, later]);
+    expect(currentTabs().activeTabId).toBe(opener);
+    const shown = store.openTabFromPage(THREAD_REF, {
+      openerTabId: opener,
+      url: "https://example.com/d",
+      activate: true,
+    });
+    expect(currentTabs().activeTabId).toBe(shown);
+  });
+
+  it("gives a tab opened by an agent's page to that agent, so it can close it", () => {
+    const store = useBrowserPanelStore.getState();
+    store.openBrowserForAgent(THREAD_REF, "agent-a");
+    const agentTab = store.openAgentTab(THREAD_REF, "agent-a", { url: "http://localhost:5173/" });
+
+    const opened = store.openTabFromPage(THREAD_REF, {
+      openerTabId: agentTab,
+      url: "https://example.com/",
+      activate: false,
+    });
+
+    expect(store.closeAgentTab(THREAD_REF, "agent-a", opened).closed).toBe(true);
+    expect(currentTabs().tabs.map((tab) => tab.id)).toEqual([agentTab]);
   });
 });
 
