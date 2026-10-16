@@ -1,5 +1,5 @@
 import * as Option from "effect/Option";
-import { workflowPhaseDisplayTitle } from "@threadlines/shared/workflowRuns";
+import { formatWorkflowProgress } from "@threadlines/shared/workflowRuns";
 import * as Schema from "effect/Schema";
 import * as Arr from "effect/Array";
 import { compareTranscriptPosition } from "@threadlines/shared/transcriptOrder";
@@ -744,18 +744,14 @@ export function formatBackgroundWaitWord(
 /**
  * The working row's words while a thread waits on one workflow and nothing
  * else: "Workflow · Verify · 2 of 4 agents". Null when it waits on anything
- * more, or the workflow has not reported agents yet.
+ * more, or the workflow has reported no progress.
  */
 export function formatSoleAwaitedWorkflow(
   tasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask>,
 ): string | null {
   if (tasks.length !== 1) return null;
   const progress = tasks[0]?.kind === "workflow" ? tasks[0].workflow : undefined;
-  if (!progress || progress.totalAgents === 0) return null;
-  const agents = `${progress.doneAgents} of ${progress.totalAgents} agents`;
-  return progress.phaseTitle
-    ? `Workflow · ${workflowPhaseDisplayTitle(progress.phaseTitle)} · ${agents}`
-    : `Workflow · ${agents}`;
+  return progress ? `Workflow · ${formatWorkflowProgress(progress)}` : null;
 }
 
 export function deriveActiveModelFallbackState(

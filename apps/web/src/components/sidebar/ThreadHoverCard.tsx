@@ -1,6 +1,6 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import type { AwaitedWorkflowProgress } from "@threadlines/contracts";
-import { workflowPhaseDisplayTitle } from "@threadlines/shared/workflowRuns";
+import { formatWorkflowProgress } from "@threadlines/shared/workflowRuns";
 import { humanizeWorkflowName } from "@threadlines/shared/workflowScript";
 import type {
   OrchestrationAwaitedBackgroundTask,
@@ -143,11 +143,7 @@ function describeAwaitedWorkflow(
   const name = progress.name
     ? humanizeWorkflowName(progress.name)
     : (description ?? AWAITED_TASK_FALLBACK_NAMES.workflow);
-  if (progress.totalAgents === 0) return name;
-  const agents = `${progress.doneAgents} of ${progress.totalAgents} agents`;
-  return progress.phaseTitle
-    ? `${name}: ${workflowPhaseDisplayTitle(progress.phaseTitle)}, ${agents}`
-    : `${name}: ${agents}`;
+  return `${name}: ${formatWorkflowProgress(progress)}`;
 }
 
 /** The card has room for a few tasks; past that, a count says the rest. */

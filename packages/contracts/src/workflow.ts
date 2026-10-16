@@ -191,6 +191,10 @@ export const AwaitedWorkflowProgress = Schema.Struct({
   name: Schema.optional(TrimmedNonEmptyString),
   /** The phase it is in now. */
   phaseTitle: Schema.optional(TrimmedNonEmptyString),
+  /** That phase's agents that ended, of all its agents. Absent without a phase. */
+  phaseDoneAgents: Schema.optional(NonNegativeInt),
+  phaseTotalAgents: Schema.optional(NonNegativeInt),
+  /** The whole run's agents that ended, of all its agents. */
   doneAgents: NonNegativeInt,
   totalAgents: NonNegativeInt,
 });

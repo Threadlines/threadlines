@@ -291,15 +291,21 @@ export function countWorkflowAgents(agents: ReadonlyArray<WorkflowAgent>): Workf
 
 /**
  * The phase the run is in: the newest phase holding an agent that has not
- * ended, else the newest phase reached. Undefined for a run without phases.
+ * ended; else the phase after the newest one that had agents (the run is
+ * moving on to it), or that one when it is the last; else the first phase.
+ * Phases can be known before they start, so the last one known is not
+ * necessarily reached. Undefined for a run without phases.
  */
 export function currentWorkflowPhase(
   run: Pick<OrchestrationWorkflowRun, "phases" | "agents">,
 ): WorkflowPhase | undefined {
   if (run.phases.length === 0) return undefined;
   let liveIndex: number | undefined;
+  let reachedIndex: number | undefined;
   for (const agent of run.agents) {
     if (agent.phaseIndex === undefined) continue;
+    reachedIndex =
+      reachedIndex === undefined ? agent.phaseIndex : Math.max(reachedIndex, agent.phaseIndex);
     if (agent.state === "running" || agent.state === "queued") {
       liveIndex =
         liveIndex === undefined ? agent.phaseIndex : Math.max(liveIndex, agent.phaseIndex);
@@ -309,7 +315,15 @@ export function currentWorkflowPhase(
     const live = run.phases.find((phase) => phase.index === liveIndex);
     if (live) return live;
   }
-  return run.phases.at(-1);
+  if (reachedIndex === undefined) return run.phases[0];
+  const position = run.phases.findIndex((phase) => phase.index === reachedIndex);
+  if (position === -1) return run.phases.at(-1);
+  return run.phases[position + 1] ?? run.phases[position];
+}
+
+/** A skipped or failed agent is over too: "6/8" means six of eight ended. */
+function endedAgentCount(counts: WorkflowRunCounts): number {
+  return counts.done + counts.failed + counts.skipped;
 }
 
 /** What the thread list shows about a run. See AwaitedWorkflowProgress. */
@@ -318,13 +332,45 @@ export function workflowAwaitedProgress(
 ): AwaitedWorkflowProgress {
   const counts = countWorkflowAgents(run.agents);
   const phase = currentWorkflowPhase(run);
+  const phaseCounts = phase
+    ? countWorkflowAgents(run.agents.filter((agent) => agent.phaseIndex === phase.index))
+    : undefined;
   return {
     ...(run.name ? { name: run.name } : {}),
-    ...(phase ? { phaseTitle: phase.title } : {}),
-    // A skipped or failed agent is over too: "6/8" means six of eight ended.
-    doneAgents: counts.done + counts.failed + counts.skipped,
+    ...(phase && phaseCounts
+      ? {
+          phaseTitle: phase.title,
+          phaseDoneAgents: endedAgentCount(phaseCounts),
+          phaseTotalAgents: phaseCounts.total,
+        }
+      : {}),
+    doneAgents: endedAgentCount(counts),
     totalAgents: counts.total,
   };
+}
+
+function agentProgress(done: number, total: number): string {
+  return `${done} of ${total} ${total === 1 ? "agent" : "agents"}`;
+}
+
+/**
+ * A running workflow's progress in one line, the same on every surface: the
+ * phase it is in with that phase's agents ("Verify · 2 of 4 agents", or
+ * "Verify · starting" before its first agent), else the whole run's agents.
+ * A count always counts what it sits beside.
+ */
+export function formatWorkflowProgress(progress: AwaitedWorkflowProgress): string {
+  if (progress.phaseTitle !== undefined) {
+    const phase = workflowPhaseDisplayTitle(progress.phaseTitle);
+    // A server from before phase counts: the phase alone, never another count.
+    if (progress.phaseTotalAgents === undefined) return phase;
+    return progress.phaseTotalAgents === 0
+      ? `${phase} · starting`
+      : `${phase} · ${agentProgress(progress.phaseDoneAgents ?? 0, progress.phaseTotalAgents)}`;
+  }
+  return progress.totalAgents === 0
+    ? "starting"
+    : agentProgress(progress.doneAgents, progress.totalAgents);
 }
 
 /** Same progress, compared by what a reader would see. */
@@ -337,6 +383,8 @@ export function sameAwaitedWorkflowProgress(
   return (
     left.name === right.name &&
     left.phaseTitle === right.phaseTitle &&
+    left.phaseDoneAgents === right.phaseDoneAgents &&
+    left.phaseTotalAgents === right.phaseTotalAgents &&
     left.doneAgents === right.doneAgents &&
     left.totalAgents === right.totalAgents
   );
