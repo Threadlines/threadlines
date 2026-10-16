@@ -1373,6 +1373,7 @@ describe("ClaudeAdapterLive", () => {
           alwaysThinkingEnabled: null,
           fastMode: null,
           ultracode: null,
+          workflowSizeGuideline: null,
         },
       ]);
     }).pipe(
@@ -8808,6 +8809,7 @@ describe("ClaudeAdapterLive", () => {
           alwaysThinkingEnabled: null,
           fastMode: null,
           ultracode: true,
+          workflowSizeGuideline: null,
         },
       ]);
     }).pipe(

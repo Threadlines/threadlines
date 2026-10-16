@@ -117,6 +117,7 @@ describe("orchestration projector", () => {
         pages: [],
         activities: [],
         subagents: [],
+        workflowRuns: [],
         checkpoints: [],
         session: null,
         voiceActive: false,

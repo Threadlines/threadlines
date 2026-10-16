@@ -439,6 +439,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             },
           ],
           subagents: [],
+          workflowRuns: [],
           checkpoints: [
             {
               turnId: asTurnId("turn-1"),
