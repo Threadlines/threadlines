@@ -46,7 +46,11 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/t
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@threadlines/contracts";
-import { ProviderAdapterRequestError, ProviderUnsupportedError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  ProviderAdapterValidationError,
+  ProviderUnsupportedError,
+} from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -211,7 +215,13 @@ describe("ProviderCommandReactor", () => {
     const projectStartingDuringRestart = input?.projectStartingDuringRestart === true;
     let projectRestartStarting: ((session: ProviderSession) => Effect.Effect<void>) | null = null;
     const startSession = vi.fn(
-      (_: unknown, input: unknown): Effect.Effect<ProviderSession, ProviderAdapterRequestError> => {
+      (
+        _: unknown,
+        input: unknown,
+      ): Effect.Effect<
+        ProviderSession,
+        ProviderAdapterRequestError | ProviderAdapterValidationError
+      > => {
         if (
           failNativeForkStart &&
           typeof input === "object" &&
@@ -884,6 +894,59 @@ describe("ProviderCommandReactor", () => {
     expect((harness.sendTurn.mock.calls[2]?.[0] as { readonly input?: string })?.input).toBe(
       "third question",
     );
+  });
+
+  it("says in the chat why an access change could not restart the session", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-refused-restart"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-refused-restart"),
+          role: "user",
+          text: "start a workflow",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    // The runtime refuses to restart under background work it would kill.
+    const issue = "Muse Code is still finishing background work from an earlier message.";
+    harness.startSession.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterValidationError({ provider: "muse", operation: "startSession", issue }),
+      ),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-runtime-mode-set-refused"),
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.activities.some((entry) => entry.kind === "provider.runtime-mode.failed") ?? false
+      );
+    });
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const refused = thread?.activities.find(
+      (entry) => entry.kind === "provider.runtime-mode.failed",
+    );
+    expect(refused).toMatchObject({ tone: "error", payload: { detail: issue } });
   });
 
   /** Sends a user message as a turn, written the way `composer` says. */

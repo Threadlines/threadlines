@@ -5,9 +5,10 @@ import { BROWSER_SIGN_IN_DRIVERS } from "./providerAuthCommands.ts";
 export const PROVIDER_AUTH_RECONNECT_COMMANDS = {
   claudeAgent: "claude auth login",
   codex: "codex login",
-  cursor: "agent login",
+  cursor: "cursor-agent login",
   fx: "fx login",
   opencode: "opencode auth login --standalone",
+  muse: "muse login",
 } as const;
 
 const AUTH_ERROR_PATTERNS = [
@@ -38,8 +39,9 @@ const GENERIC_AUTH_STATUS_PATTERNS = [
   /^(?:error:\s*)?not logged in[.!]?(?:\s*(?:[•·-]\s*)?(?:please\s+)?run\s+(?:\/login|`[^`]+`)(?: in a terminal)?(?:, then retry| and try again)?\.?)?$/u,
   /^(?:error:\s*)?(?:(?:codex|claude|cursor agent|openai|provider|model provider)\s+)?requires authentication[.!]?$/u,
   /^(?:error:\s*)?unauthenticated[.!]?$/u,
-  // The ACP providers' own status line (fx, Cursor Agent).
+  // The ACP providers' own status line (fx, Cursor Agent, Grok).
   /^(?:error:\s*)?(?:cursor agent|fx) isn't signed in(?: to [a-z .]+?)?\. use sign in, or run `[^`]+` in a terminal\.$/u,
+  /^(?:error:\s*)?grok isn't signed in\. use sign in\.$/u,
 ] as const;
 
 export function providerAuthReconnectCommand(provider: ProviderDriverKind): string | undefined {

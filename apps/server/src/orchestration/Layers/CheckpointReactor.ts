@@ -1,4 +1,5 @@
 import {
+  CHECKPOINT_FILES_ACTIVITY_ID_PREFIX,
   type CheckpointRef,
   CommandId,
   EventId,
@@ -307,7 +308,7 @@ const make = Effect.gen(function* () {
     }
 
     const activityId = EventId.make(
-      `checkpoint-files:${input.threadId}:${input.turnId}:${input.turnCount}`,
+      `${CHECKPOINT_FILES_ACTIVITY_ID_PREFIX}${input.threadId}:${input.turnId}:${input.turnCount}`,
     );
     const files = input.files.map((file) => ({ ...file }));
 

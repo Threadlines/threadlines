@@ -77,6 +77,15 @@ export interface ProviderInstance {
   readonly accountUsage?: ProviderAccountUsageActions | undefined;
   /** Sign-in and sign-out the instance runs itself, without a terminal. */
   readonly authFlows?: ProviderInstanceAuthFlows | undefined;
+  /**
+   * Saves the provider's data-sharing choice (`ServerProvider.dataSharing`),
+   * for providers that offer one (Muse Code's Contributor mode).
+   */
+  readonly dataSharing?: ProviderDataSharingActions | undefined;
+}
+
+export interface ProviderDataSharingActions {
+  readonly set: (enabled: boolean) => Effect.Effect<void, { readonly message: string }>;
 }
 
 /**

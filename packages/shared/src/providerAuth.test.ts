@@ -26,7 +26,7 @@ describe("provider auth helpers", () => {
     // The ACP providers' own status lines.
     expect(
       isProviderAuthErrorMessage(
-        "Cursor Agent isn't signed in. Use Sign in, or run `agent login` in a terminal.",
+        "Cursor Agent isn't signed in. Use Sign in, or run `cursor-agent login` in a terminal.",
       ),
     ).toBe(true);
     expect(

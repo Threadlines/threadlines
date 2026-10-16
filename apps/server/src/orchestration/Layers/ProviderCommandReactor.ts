@@ -97,7 +97,10 @@ import {
   providerSessionStartDuration,
   withMetrics,
 } from "../../observability/Metrics.ts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  ProviderAdapterValidationError,
+} from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -121,6 +124,7 @@ import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.t
 import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isCheckoutMissingError = Schema.is(CheckoutMissingError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isThreadForkContextPayload = Schema.is(ThreadForkContextPayload);
@@ -580,6 +584,7 @@ const make = Effect.gen(function* () {
       | "provider.user-input.respond.failed"
       | "provider.session.stop.failed"
       | "provider.session.restart-interrupted"
+      | "provider.runtime-mode.failed"
       | "provider.goal.failed";
     readonly summary: string;
     readonly detail: string;
@@ -672,6 +677,11 @@ const make = Effect.gen(function* () {
       : undefined;
     if (providerError) {
       return providerError.detail;
+    }
+    // A refusal states its reason for the user (Muse Code's background work
+    // or API key billing, a missing working directory).
+    if (isProviderAdapterValidationError(failReason?.error)) {
+      return failReason.error.issue;
     }
     return Cause.pretty(cause);
   };
@@ -4254,7 +4264,22 @@ const make = Effect.gen(function* () {
         yield* ensureSessionForThread(event.payload.threadId, event.occurredAt, {
           participantId: holderId,
           ...(cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {}),
-        });
+        }).pipe(
+          // A runtime that refuses the restart (Muse Code with background
+          // work running) keeps the old access level: the chat says why.
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : appendProviderFailureActivity({
+                  threadId: event.payload.threadId,
+                  kind: "provider.runtime-mode.failed",
+                  summary: "Access level not changed yet",
+                  detail: formatFailureDetail(cause),
+                  turnId: null,
+                  createdAt: event.occurredAt,
+                }),
+          ),
+        );
         return;
       }
       case "thread.meta-updated": {

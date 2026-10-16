@@ -154,6 +154,11 @@ export const RUNTIME_MODES: ReadonlyArray<RuntimeMode> = [
  * Used as the fallback when a provider snapshot does not advertise
  * `supportedRuntimeModes` (older servers, drivers without native auto).
  */
+/**
+ * Id prefix of the activity that lists a turn's changed files from its
+ * checkpoint (`checkpoint-files:<thread>:<turn>:<turn count>`).
+ */
+export const CHECKPOINT_FILES_ACTIVITY_ID_PREFIX = "checkpoint-files:";
 export const LEGACY_RUNTIME_MODES: ReadonlyArray<RuntimeMode> = [
   "approval-required",
   "auto-accept-edits",

@@ -75,7 +75,7 @@ export function makeAcpProviderMaintenanceResolver<Settings extends AcpProviderS
             platform,
             ...(options?.env ? { env: options.env } : {}),
           }));
-      // The updater is the agent's own CLI (`agent update`); find it where a
+      // The updater is the agent's own CLI (`cursor-agent update`); find it where a
       // session would, including installer dirs a stale server PATH misses.
       const update = descriptor.maintenance.update;
       const maintenance = update
@@ -148,10 +148,12 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
         const httpClient = yield* HttpClient.HttpClient;
         const eventLoggers = yield* ProviderEventLoggers;
         const processEnv = mergeProviderInstanceEnvironment(environment);
-        const continuationIdentity = defaultProviderContinuationIdentity({
-          driverKind: DRIVER_KIND,
-          instanceId,
-        });
+        const continuationIdentity = descriptor.continuationKey
+          ? {
+              driverKind: DRIVER_KIND,
+              continuationKey: descriptor.continuationKey(config, processEnv),
+            }
+          : defaultProviderContinuationIdentity({ driverKind: DRIVER_KIND, instanceId });
         const stampIdentity = (snapshot: ServerProviderDraft): ServerProvider => ({
           ...snapshot,
           instanceId,

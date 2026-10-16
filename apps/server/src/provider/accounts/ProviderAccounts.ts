@@ -52,6 +52,8 @@ import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { removeLinkIfPresent } from "../accountOverlay.ts";
 import { antigravityInstancePaths } from "../antigravity/AntigravityProfile.ts";
+import { grokProcessEnvironment } from "../acp/GrokAcpSupport.ts";
+import { resolveGrokBinary } from "../grok/GrokBinary.ts";
 import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
 import { claudeInstanceBaseEnvironment, resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../Drivers/CodexHomeLayout.ts";
@@ -222,6 +224,16 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
         }
         case "antigravity":
           return [antigravityInstancePaths(serverConfig.stateDir, instanceId).profileDir];
+        case "grok": {
+          const accountFolder = readConfigString(instance.config, "accountFolder");
+          if (accountFolder) return [path.resolve(expandHomePath(accountFolder))];
+          const grokHome = environment.GROK_HOME?.trim();
+          return [
+            grokHome
+              ? path.resolve(expandHomePath(grokHome))
+              : path.join(NodeOS.homedir(), ".grok"),
+          ];
+        }
         default:
           return [];
       }
@@ -338,14 +350,23 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
       }
       const command = buildProviderSignOutCommand({
         driver: record.driver,
-        binaryPath: record.binaryPath,
+        // Grok's installer folder may not be on the server's PATH.
+        binaryPath:
+          record.driver === "grok"
+            ? resolveGrokBinary(record.binaryPath, process.env)
+            : record.binaryPath,
         homePath: record.homePath,
         ...(isClaude ? { accountFolder: folder } : { shadowHomePath: folder }),
       });
       if (!command) return;
+      // Grok's environment for the folder: never a GROK_AUTH_PATH or
+      // GROK_AUTH from the server, which would point the sign-out at another
+      // sign-in (the terminal's).
       const baseEnv = isClaude
         ? claudeInstanceBaseEnvironment({ accountFolder: folder })
-        : process.env;
+        : record.driver === "grok"
+          ? grokProcessEnvironment({ accountFolder: folder, authMethod: "subscription" })
+          : process.env;
       const env: NodeJS.ProcessEnv = { ...baseEnv, ...command.env };
       if (isClaude) delete env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
       const result = yield* spawnAndCollect(

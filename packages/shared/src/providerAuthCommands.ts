@@ -11,7 +11,8 @@
  *
  * @module providerAuthCommands
  */
-import type { ProviderInstanceEnvironmentVariable } from "@threadlines/contracts";
+import { CursorSettings, type ProviderInstanceEnvironmentVariable } from "@threadlines/contracts";
+import * as Schema from "effect/Schema";
 
 import { bashWord, wslCommand } from "./wsl.ts";
 
@@ -21,15 +22,22 @@ export const CURSOR_DRIVER_KIND = "cursor";
 export const FX_DRIVER_KIND = "fx";
 export const OPENCODE_DRIVER_KIND = "opencode";
 export const ANTIGRAVITY_DRIVER_KIND = "antigravity";
+export const MUSE_DRIVER_KIND = "muse";
+export const GROK_DRIVER_KIND = "grok";
 
 /**
  * Drivers whose sign-in runs in the browser, inside the agent itself, with no
- * terminal command (Antigravity's Google sign-in). They also sign out.
+ * terminal command (Antigravity's Google sign-in, Grok's xAI sign-in).
  */
-export const BROWSER_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([ANTIGRAVITY_DRIVER_KIND]);
+export const BROWSER_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([
+  ANTIGRAVITY_DRIVER_KIND,
+  GROK_DRIVER_KIND,
+]);
 
-/** What a browser sign-in is called where a command would be shown. */
-export const BROWSER_SIGN_IN_LABEL = "Sign in with Google";
+/** What a driver's browser sign-in is called where a command would be shown. */
+export function browserSignInLabel(driver: string): string {
+  return driver === GROK_DRIVER_KIND ? "Sign in with Grok" : "Sign in with Google";
+}
 
 export const CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
@@ -171,14 +179,29 @@ export function buildCodexLoginCommand(input: {
   return authHomePath ? `CODEX_HOME=${shellWord(authHomePath)} ${command}` : command;
 }
 
-/** `agent login` — Cursor's browser sign-in. */
+const decodeCursorSettings = Schema.decodeSync(CursorSettings);
+
+/** The Cursor binary a configured path runs: the settings default, retired names included. */
+function cursorBinary(binaryPath: string): string {
+  return decodeCursorSettings({ binaryPath }).binaryPath;
+}
+
+/** `cursor-agent login` — Cursor's browser sign-in. */
 export function buildCursorLoginCommand(input: { readonly binaryPath: string }): string {
-  return `${shellWord(input.binaryPath.trim() || "agent")} login`;
+  return `${shellWord(cursorBinary(input.binaryPath))} login`;
 }
 
 /** `fx login` — Vercel AI Gateway sign-in (device/browser flow). */
 export function buildFxLoginCommand(input: { readonly binaryPath: string }): string {
   return `${shellWord(input.binaryPath.trim() || "fx")} login`;
+}
+
+/**
+ * `muse login` — Muse Code's Meta account sign-in: it prints a code to
+ * approve in the browser. The login is the same one the terminal `muse` uses.
+ */
+export function buildMuseLoginCommand(input: { readonly binaryPath: string }): string {
+  return `${shellWord(input.binaryPath.trim() || "muse")} login`;
 }
 
 const OPENCODE_LOGIN_ARGS = ["auth", "login", "--standalone"] as const;
@@ -242,7 +265,8 @@ export function buildProviderAuthCommand(
   // user's home; nothing to override in the environment.
   if (input.driver === CURSOR_DRIVER_KIND || input.driver === FX_DRIVER_KIND) {
     if (input.flow !== "login") return null;
-    const binary = binaryPath || (input.driver === CURSOR_DRIVER_KIND ? "agent" : "fx");
+    const binary =
+      input.driver === CURSOR_DRIVER_KIND ? cursorBinary(binaryPath) : binaryPath || "fx";
     if (input.driver === FX_DRIVER_KIND && input.platform === "win32") {
       const command = wslCommand(binary, ["login"]);
       return {
@@ -268,6 +292,19 @@ export function buildProviderAuthCommand(
     const args = [...OPENCODE_LOGIN_ARGS];
     const env = openCodeAccountEnvironment(input);
     return { file, args, env, display: renderDisplayCommand({ file, args, env }) };
+  }
+
+  // Muse keeps its login in its own config folder (the Keychain on macOS),
+  // shared with the terminal `muse`.
+  if (input.driver === MUSE_DRIVER_KIND) {
+    if (input.flow !== "login") return null;
+    const file = binaryPath || "muse";
+    return {
+      file,
+      args: ["login"],
+      env: {},
+      display: renderDisplayCommand({ file, args: ["login"], env: {} }),
+    };
   }
 
   return null;
@@ -300,6 +337,13 @@ export function buildProviderSignOutCommand(input: {
       args: ["auth", "logout"],
       env: claudeAuthEnvironment(input),
     };
+  }
+  // An extra Grok account's folder is its GROK_HOME (`shadowHomePath` here).
+  if (input.driver === GROK_DRIVER_KIND) {
+    const grokHome = input.shadowHomePath?.trim();
+    return grokHome
+      ? { file: binaryPath || "grok", args: ["logout"], env: { GROK_HOME: grokHome } }
+      : null;
   }
   return null;
 }

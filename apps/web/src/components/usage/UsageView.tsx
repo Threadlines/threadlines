@@ -25,7 +25,7 @@ import {
 import { useServerProviders } from "../../rpc/serverState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { PageTitlebar } from "../PageTitlebar";
-import { ClaudeAI, OpenAI, type Icon } from "../Icons";
+import { ClaudeAI, GrokIcon, OpenAI, type Icon } from "../Icons";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { ProviderUsageSignIn } from "../chat/providerSignIn";
 import { Button } from "../ui/button";
@@ -54,6 +54,7 @@ import {
   USAGE_PROVIDER_COLORS,
   USAGE_PROVIDER_LABELS,
   USAGE_PROVIDER_READING_ORDER,
+  USAGE_PROVIDER_SKELETON_ORDER,
   USAGE_PROVIDER_SHORT_LABELS,
   USAGE_TOKEN_KIND_LABELS,
   USAGE_TOKEN_MIX_ORDER,
@@ -109,6 +110,7 @@ const PERIOD_ROW_LIMIT = 10;
 const USAGE_PROVIDER_ICONS: Record<UsageProviderKind, Icon> = {
   claude: ClaudeAI,
   codex: OpenAI,
+  grok: GrokIcon,
 };
 
 function shareDigits(share: number): number {
@@ -1355,7 +1357,7 @@ function UsageLoadingSkeleton({ selectedWindow }: { readonly selectedWindow: Usa
           </div>
           <span className={cn(SECTION_LABEL_CLASS, "mt-6")}>By provider</span>
           <div className="mt-2 flex flex-col gap-2.5">
-            {USAGE_PROVIDER_READING_ORDER.map((provider) => {
+            {USAGE_PROVIDER_SKELETON_ORDER.map((provider) => {
               const ProviderIcon = USAGE_PROVIDER_ICONS[provider];
               return (
                 <div
@@ -1400,7 +1402,7 @@ function UsageLoadingSkeleton({ selectedWindow }: { readonly selectedWindow: Usa
         <h2 className={SECTION_LABEL_CLASS}>Models</h2>
         <UsageModelsHeader />
         <div className="flex flex-col divide-y divide-border/50">
-          {USAGE_PROVIDER_READING_ORDER.map((provider, index) => {
+          {USAGE_PROVIDER_SKELETON_ORDER.map((provider, index) => {
             const ProviderIcon = USAGE_PROVIDER_ICONS[provider];
             return (
               <div key={provider} className={cn(MODEL_GRID_CLASS, "py-2.5")}>
@@ -1438,7 +1440,7 @@ function UsageLoadingSkeleton({ selectedWindow }: { readonly selectedWindow: Usa
               <Skeleton className="h-4 w-28 rounded-full" />
               <Skeleton className="ml-auto h-3 w-16 rounded-full" />
             </span>
-            {USAGE_PROVIDER_READING_ORDER.map((provider) => (
+            {USAGE_PROVIDER_SKELETON_ORDER.map((provider) => (
               <span key={provider} className="flex min-w-0 items-baseline gap-2">
                 <span className="w-12 shrink-0 text-xs text-muted-foreground/45">
                   {USAGE_PROVIDER_SHORT_LABELS[provider]}

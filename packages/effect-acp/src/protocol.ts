@@ -1,6 +1,7 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -72,11 +73,22 @@ const decodeElicitationComplete = Schema.decodeUnknownEffect(
   AcpSchema.ElicitationCompleteNotification,
 );
 const parserFactory = RpcSerialization.ndJsonRpc();
+/** An outgoing JSON-RPC notification: no `id`, so no peer takes it for a request. */
+const encodeJsonRpcNotification = Schema.encodeUnknownExit(
+  Schema.fromJsonString(
+    Schema.Struct({
+      jsonrpc: Schema.Literal("2.0"),
+      method: Schema.String,
+      params: Schema.Unknown,
+    }),
+  ),
+);
 
 export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(function* (
   options: AcpPatchedProtocolOptions,
 ): Effect.fn.Return<AcpPatchedProtocol, never, Scope.Scope> {
   const parser = parserFactory.makeUnsafe();
+  const protocolScope = yield* Scope.Scope;
   const serverQueue = yield* Queue.unbounded<RpcMessage.FromClientEncoded>();
   const clientQueue = yield* Queue.unbounded<RpcMessage.FromServerEncoded>();
   const notificationQueue = yield* Queue.unbounded<AcpIncomingNotification>();
@@ -104,6 +116,9 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const offerOutgoing = Effect.fn("offerOutgoing")(function* (
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
   ) {
+    // The RPC client's own control messages (an interrupted request, a stream
+    // ack) would go out as `@effect/rpc/*` methods no ACP agent knows.
+    if (message._tag === "Interrupt" || message._tag === "Ack") return;
     yield* logProtocol({
       direction: "outgoing",
       stage: "decoded",
@@ -299,8 +314,12 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     }
 
     if (!options.serverRequestMethods.has(message.tag)) {
+      // A handler can wait on a person (a question card), so it runs beside
+      // the reader: every later message, including the answer to our own
+      // requests, must not wait for it. It ends with the protocol's scope.
       return handleExtRequest(message).pipe(
         Effect.catch(() => respondWithError(message.id, AcpError.AcpRequestError.internalError())),
+        Effect.forkIn(protocolScope),
         Effect.asVoid,
       );
     }
@@ -464,17 +483,28 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     supportsSpanPropagation: true,
   });
 
+  // Notifications are written directly: the RPC request encoder adds `"id":""`
+  // and `headers`, and agents read that as a request for an unknown method
+  // (Cursor and Grok answer `session/cancel` with -32601 and keep running).
   const sendNotification = Effect.fn("sendNotification")(function* (
     method: string,
     payload: unknown,
   ) {
-    yield* offerOutgoing({
-      _tag: "Request",
-      id: "",
-      tag: method,
-      payload,
-      headers: [],
+    yield* logProtocol({
+      direction: "outgoing",
+      stage: "decoded",
+      payload: { _tag: "Notification", tag: method, payload },
     });
+    const exit = encodeJsonRpcNotification({ jsonrpc: "2.0", method, params: payload });
+    if (Exit.isFailure(exit)) {
+      return yield* new AcpError.AcpProtocolParseError({
+        detail: "Failed to encode ACP message",
+        cause: Cause.squash(exit.cause),
+      });
+    }
+    const encoded = `${exit.value}\n`;
+    yield* logProtocol({ direction: "outgoing", stage: "raw", payload: encoded });
+    yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
   });
 
   const sendRequest = Effect.fn("sendRequest")(function* (method: string, payload: unknown) {

@@ -282,6 +282,36 @@ export const OpenCodeIcon: Icon = (props) => (
   </svg>
 );
 
+/** Meta's symbol, as Muse Code's own pages show it, in Meta blue. */
+/** Muse's "M", redrawn as one stroke from Meta's Muse logo. */
+export const MuseIcon: Icon = (props) => {
+  const gradientId = `${useId().replaceAll(":", "")}-muse`;
+  return (
+    <svg {...props} viewBox="31 31 258 258" fill="none">
+      <defs>
+        <linearGradient
+          id={gradientId}
+          x1="60"
+          y1="90"
+          x2="270"
+          y2="230"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0" stopColor="#0056E6" />
+          <stop offset="1" stopColor="#007BFB" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M46 147C47.3 144.5 50.7 137.3 54 132C57.3 126.7 61.7 120.7 66 115C70.3 109.3 75.2 102.7 80 98C84.8 93.3 92.3 84.7 95 87C97.7 89.3 96.7 103.2 96 112C95.3 120.8 92.5 129.5 91 140C89.5 150.5 88.2 163 87 175C85.8 187 84.3 202.7 84 212C83.7 221.3 82.2 232.5 85 231C87.8 229.5 94.2 215.5 101 203C107.8 190.5 117.8 171.2 126 156C134.2 140.8 144.2 121.5 150 112C155.8 102.5 159 97 161 99C163 101 162.3 112.5 162 124C161.7 135.5 160 153.7 159 168C158 182.3 156.5 199.5 156 210C155.5 220.5 153.2 232 156 231C158.8 230 167 213.5 173 204C179 194.5 185.5 184.3 192 174C198.5 163.7 206.5 149.8 212 142C217.5 134.2 222.7 125.5 225 127C227.3 128.5 226.2 140.5 226 151C225.8 161.5 224.5 178.8 224 190C223.5 201.2 222.5 210.8 223 218C223.5 225.2 223.2 233 227 233C230.8 233 241 223.2 246 218C251 212.8 253.5 207 257 202C260.5 197 264.3 192.5 267 188C269.7 183.5 272 177.2 273 175"
+        stroke={`url(#${gradientId})`}
+        strokeWidth={27}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+};
+
 export const TraeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 24 24" fill="currentColor">
     {/* Back rectangle: left strip + bottom strip drawn separately — empty bottom-left corner is the gap between them */}
@@ -592,6 +622,13 @@ const ANTIGRAVITY_ICON_DATA_URL =
 export const AntigravityIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 128 128" fill="none">
     <image href={ANTIGRAVITY_ICON_DATA_URL} width="128" height="128" />
+  </svg>
+);
+
+/** xAI's mark, for Grok Build. */
+export const GrokIcon: Icon = (props) => (
+  <svg {...props} viewBox="0 0 16 16" fill="currentColor">
+    <path d="M0.58392448,14.9254204 L0.8326,14.66295 C2.004465,13.42985 3.1678,12.2082 2.45814,10.48105 C1.50813,8.1701 2.061355,5.4619 3.820575,3.70057 C5.6495,1.8709 8.3431,1.40957 10.59295,2.336505 C11.0907,2.52161 11.5245,2.785025 11.86295,3.02993 L9.98425,3.89849 C8.235,3.163775 6.23115,3.66355 5.0081,4.88809 C3.354105,6.5426 3.019895,9.4117 4.95835,11.2656 L-0.335,15.99995 C-0.066496,15.62975 0.2538896,15.275934 0.58392448,14.9254204 Z M14.0391,2.288155 L16.33165,2.57749377e-12 L16.20795,0.172288 C14.4658,2.574355 13.6153,3.749045 14.29795,6.6879 C14.76445,8.68415 14.261,10.90255 12.63545,12.53005 C10.5861,14.58325 7.3066,15.0403 4.6059,13.19215 L6.48885,12.3193 C8.2125,12.99705 10.0983,12.69945 11.4536,11.34255 C12.80895,9.9856 13.1133,8.00925 12.4321,6.3647 C12.30265,6.05285 11.9144,5.97455 11.64275,6.1753 L6.102,10.27035 L14.0391,2.288155 Z" />
   </svg>
 );
 

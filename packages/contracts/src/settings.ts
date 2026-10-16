@@ -190,12 +190,18 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientS
 export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
 export type ThreadEnvMode = typeof ThreadEnvMode.Type;
 
-const makeBinaryPathSetting = (fallback: string) =>
+/**
+ * A binary path that falls back to `fallback` when empty. `retiredDefaults`
+ * are earlier defaults that saved settings still hold; they decode to the
+ * current default too.
+ */
+const makeBinaryPathSetting = (fallback: string, retiredDefaults: ReadonlyArray<string> = []) =>
   TrimmedString.pipe(
     Schema.decodeTo(
       Schema.String,
       SchemaTransformation.transformOrFail({
-        decode: (value) => Effect.succeed(value || fallback),
+        decode: (value) =>
+          Effect.succeed(value === "" || retiredDefaults.includes(value) ? fallback : value),
         encode: (value) => Effect.succeed(value),
       }),
     ),
@@ -209,6 +215,8 @@ export interface ProviderSettingsFormAnnotation {
   readonly placeholder?: string | undefined;
   readonly hidden?: boolean | undefined;
   readonly clearWhenEmpty?: "omit" | "persist" | undefined;
+  /** Saved values that now mean the default; the form shows them as empty. */
+  readonly retiredValues?: ReadonlyArray<string> | undefined;
 }
 
 export interface ProviderSettingsFormSchemaAnnotation {
@@ -382,17 +390,29 @@ export const ClaudeSettings = makeProviderSettingsSchema(
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
 
+/**
+ * Cursor's installer adds both `agent` and `cursor-agent`, Homebrew only
+ * `cursor-agent`, and Grok Build's installer puts its own `agent` ahead of
+ * Cursor's on PATH. So the default is `cursor-agent`, and `agent`, the old
+ * default most saved Cursor settings hold, means it too.
+ */
+const CURSOR_RETIRED_BINARY_NAMES = ["agent"];
+
 export const CursorSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(false)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
-    binaryPath: makeBinaryPathSetting("agent").pipe(
+    binaryPath: makeBinaryPathSetting("cursor-agent", CURSOR_RETIRED_BINARY_NAMES).pipe(
       Schema.annotateKey({
         title: "Binary path",
         description: "Path to the Cursor agent binary.",
-        providerSettingsForm: { placeholder: "agent", clearWhenEmpty: "omit" },
+        providerSettingsForm: {
+          placeholder: "cursor-agent",
+          clearWhenEmpty: "omit",
+          retiredValues: CURSOR_RETIRED_BINARY_NAMES,
+        },
       }),
     ),
     apiEndpoint: TrimmedString.pipe(
@@ -498,6 +518,56 @@ export const AntigravitySettings = makeProviderSettingsSchema(
 );
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
+/** How a Grok instance is billed: the user's xAI subscription, or an API key per use. */
+export const GrokAuthMethod = Schema.Literals(["subscription", "api-key"]);
+export type GrokAuthMethod = typeof GrokAuthMethod.Type;
+
+/**
+ * Grok Build (`grok`, xAI's coding agent) over ACP. Its sign-in, sessions and
+ * settings live in its home folder (`GROK_HOME`, `~/.grok` by default).
+ */
+export const GrokSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("grok").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Grok Build CLI.",
+        providerSettingsForm: { placeholder: "grok", clearWhenEmpty: "omit" },
+      }),
+    ),
+    accountFolder: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Account folder",
+        description:
+          "Keeps this account's sign-in in its own Grok folder (GROK_HOME) instead of ~/.grok.",
+        providerSettingsForm: {
+          placeholder: "Grok's own folder (~/.grok)",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    // The Account tab owns it; an API key lives in the instance's environment
+    // as the secret XAI_API_KEY.
+    authMethod: GrokAuthMethod.pipe(
+      Schema.withDecodingDefault(Effect.succeed("subscription" as const)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "accountFolder"],
+  },
+);
+export type GrokSettings = typeof GrokSettings.Type;
+
 /**
  * A community agent (driver `acpRegistry`). Which version runs is not a
  * setting: it is the one the user confirmed, kept with the agent's files.
@@ -590,6 +660,48 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
   },
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
+
+export const MuseSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("muse").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Muse Code binary.",
+        providerSettingsForm: {
+          placeholder: "muse",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    /**
+     * Muse uses an API key ahead of the Meta account sign-in, and a key is
+     * billed per use. Off: Muse refuses to run on a key, so a key saved long
+     * ago in the terminal never bills by surprise.
+     */
+    allowApiKeyBilling: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Allow API key billing",
+        description:
+          "Lets Muse run on an API key, which Meta bills per use. Off, Muse only runs on your Meta account's plan.",
+        // Shown on the Account tab, next to the sign-in it competes with.
+        providerSettingsForm: { control: "switch", hidden: true },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath"],
+  },
+);
+export type MuseSettings = typeof MuseSettings.Type;
 
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -697,6 +809,8 @@ export const ServerSettings = Schema.Struct({
     fx: FxSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    muse: MuseSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -834,12 +948,27 @@ const AntigravitySettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const GrokSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  accountFolder: Schema.optionalKey(TrimmedString),
+  authMethod: Schema.optionalKey(GrokAuthMethod),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const OpenCodeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
   serverUrl: Schema.optionalKey(TrimmedString),
   serverPassword: Schema.optionalKey(TrimmedString),
   accountFolder: Schema.optionalKey(TrimmedString),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
+const MuseSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  allowApiKeyBilling: Schema.optionalKey(Schema.Boolean),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
@@ -877,6 +1006,8 @@ export const ServerSettingsPatch = Schema.Struct({
       fx: Schema.optionalKey(FxSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       antigravity: Schema.optionalKey(AntigravitySettingsPatch),
+      muse: Schema.optionalKey(MuseSettingsPatch),
+      grok: Schema.optionalKey(GrokSettingsPatch),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual

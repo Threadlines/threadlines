@@ -1,6 +1,5 @@
 import type { ProviderInstanceEnvironment } from "@threadlines/contracts";
 
-/** Refresh inherited PATH in the environment already held by a driver's runtimes. */
 /**
  * Re-reads the server's environment (PATH changes after an install) into an
  * instance's retained environment. `baseEnv` is what the instance started
@@ -28,4 +27,14 @@ export function mergeProviderInstanceEnvironment(
     next[variable.name] = variable.value;
   }
   return next;
+}
+
+/**
+ * The instance's own variables, names and values, as one comparable key: two
+ * configurations with the same key start their agent with the same variables.
+ */
+export function providerInstanceEnvironmentKey(
+  environment: ProviderInstanceEnvironment | undefined,
+): string {
+  return JSON.stringify((environment ?? []).map((variable) => [variable.name, variable.value]));
 }
