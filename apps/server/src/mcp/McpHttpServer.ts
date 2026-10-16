@@ -10,6 +10,7 @@
  * that is the only thing that decides which browser it can drive -- see
  * McpSessionRegistry for why the model is not asked.
  */
+import type { PreviewAutomationScreenshot } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
@@ -224,24 +225,18 @@ const registerScreenshot = Effect.fn("McpHttpServer.registerScreenshot")(functio
           Effect.matchCauseEffect({
             onFailure: screenshotFailure,
             onSuccess: ({ encodedResult }) => {
-              const shot = encodedResult as {
-                readonly data: string;
-                readonly width: number;
-                readonly height: number;
-              };
+              const shot = encodedResult as PreviewAutomationScreenshot;
               return Effect.succeed(
                 new McpSchema.CallToolResult({
                   isError: false,
                   structuredContent: { width: shot.width, height: shot.height },
                   content: [
-                    {
-                      type: "text",
-                      text: `Screenshot of the page, ${shot.width}x${shot.height} CSS pixels.`,
-                    },
+                    { type: "text", text: describeScreenshot(shot) },
                     {
                       type: "image",
                       data: new Uint8Array(Buffer.from(shot.data, "base64")),
-                      mimeType: "image/png",
+                      // Older clients only ever sent PNG, and did not say.
+                      mimeType: shot.mimeType ?? "image/png",
                     },
                   ],
                 }),
@@ -252,6 +247,20 @@ const registerScreenshot = Effect.fn("McpHttpServer.registerScreenshot")(functio
       }),
   });
 });
+
+/**
+ * The words beside the picture. The size is in CSS pixels, the unit every
+ * other browser tool takes; a picture shrunk to fit also says by how much, so
+ * a point read off it can be turned back into a point on the page.
+ */
+const describeScreenshot = (shot: PreviewAutomationScreenshot): string => {
+  const size = `${shot.width}x${shot.height} CSS pixels`;
+  if (shot.scale === undefined || shot.scale === 1) {
+    return `Screenshot of the page, ${size}.`;
+  }
+  const percent = Math.round(shot.scale * 100);
+  return `Screenshot of the page, ${size}, shown at ${percent}% to fit: divide a position in the image by ${shot.scale} to get the page position.`;
+};
 
 /** A hand-registered tool has to build its own failure result; nothing above it
  *  will turn a cause into something the model can read. */

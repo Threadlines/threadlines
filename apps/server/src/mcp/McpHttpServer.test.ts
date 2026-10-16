@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { McpProtocol, McpServer, Tool, Toolkit } from "effect/unstable/ai";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import * as NodeHttp from "node:http";
@@ -244,7 +245,11 @@ const callTool = async (url: string, token: string, name: string) => {
     opened.session,
   );
   const body = (await response.json()) as {
-    result: { isError: boolean; structuredContent: Record<string, unknown> };
+    result: {
+      isError: boolean;
+      structuredContent: Record<string, unknown>;
+      content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+    };
   };
   return body.result;
 };
@@ -332,6 +337,62 @@ describe("MCP endpoints", () => {
         }),
       ).pipe(onLoopback),
     );
+  });
+
+  it("answers a screenshot with a picture of the type the browser sent", async () => {
+    // A few bytes of JPEG header are enough: the server carries them, it does not decode them.
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]).toString("base64");
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const broker = yield* PreviewAutomationBroker.make;
+          const base = yield* serve(
+            McpHttpServer.layer.pipe(
+              Layer.provide(Layer.succeed(PreviewAutomationBroker.PreviewAutomationBroker, broker)),
+            ),
+          );
+          // The desktop's side: answers every request with a shrunk JPEG.
+          const requests = yield* broker.connectClient({
+            hostId: "desktop",
+            operations: ["screenshot"],
+            features: [],
+            machineLocal: true,
+          });
+          yield* Stream.runForEach(requests, (message) =>
+            "_tag" in message
+              ? Effect.void
+              : broker.respond({
+                  requestId: message.requestId,
+                  result: {
+                    data: jpeg,
+                    width: 2560,
+                    height: 1440,
+                    mimeType: "image/jpeg",
+                    scale: 0.5,
+                  },
+                }),
+          ).pipe(Effect.forkScoped);
+          const credential = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: THREAD,
+            browser: true,
+            room: false,
+          });
+          const called = yield* Effect.promise(() =>
+            callTool(`${base}/mcp`, credential.token, "browser_screenshot"),
+          );
+          yield* mcpSessionRegistry.revoke(THREAD, credential.generation);
+          return called;
+        }),
+      ).pipe(onLoopback),
+    );
+
+    expect(result.isError).toBe(false);
+    const image = result.content.find((block) => block.type === "image");
+    expect(image).toEqual({ type: "image", data: jpeg, mimeType: "image/jpeg" });
+    // The page's size, and how to read a point off a picture shown at half size.
+    const text = result.content.find((block) => block.type === "text")?.text ?? "";
+    expect(text).toContain("2560x1440 CSS pixels");
+    expect(text).toContain("50%");
   });
 
   /**

@@ -13,6 +13,7 @@ import {
   DesktopPreviewPartitionSchema,
   DesktopPreviewProfileInputSchema,
   DesktopPreviewProfileSchema,
+  DesktopPreviewScreenshotInputSchema,
   DesktopPreviewScreenshotSchema,
   DesktopPreviewSnapshotSchema,
   DesktopPreviewTypeInputSchema,
@@ -170,11 +171,11 @@ export const previewLocalServers = makeIpcMethod({
 
 export const previewScreenshot = makeIpcMethod({
   channel: IpcChannels.PREVIEW_SCREENSHOT_CHANNEL,
-  payload: DesktopPreviewTargetSchema,
+  payload: DesktopPreviewScreenshotInputSchema,
   result: DesktopPreviewScreenshotSchema,
   handler: Effect.fn("desktop.ipc.preview.screenshot")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
-    return yield* automation.screenshot(input.webContentsId);
+    return yield* automation.screenshot(input);
   }),
 });
 

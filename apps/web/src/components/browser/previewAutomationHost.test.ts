@@ -467,6 +467,33 @@ describe("createPreviewAutomationHandler", () => {
     expect(response.result).toEqual({ result: [1, 2, 3] });
   });
 
+  it("asks for a picture sized for the agent, and says what kind of image it is", async () => {
+    const asked: unknown[] = [];
+    const handle = handlerFor({
+      previewScreenshot: (input) => {
+        asked.push(input);
+        return Promise.resolve({
+          dataUrl: "data:image/jpeg;base64,/9j/4AAQ",
+          width: 2560,
+          height: 1440,
+          scale: 0.75,
+        });
+      },
+    });
+
+    const response = await handle(request("screenshot"));
+
+    expect(asked).toEqual([{ webContentsId: 42, forAgent: true }]);
+    // A JPEG labelled as PNG is a picture the model cannot open.
+    expect(response.result).toEqual({
+      data: "/9j/4AAQ",
+      width: 2560,
+      height: 1440,
+      mimeType: "image/jpeg",
+      scale: 0.75,
+    });
+  });
+
   it("says what it is doing in words, before and after", async () => {
     // The line under the toolbar is the only thing that distinguishes an agent
     // working from a page misbehaving on its own.

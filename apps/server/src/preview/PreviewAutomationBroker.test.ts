@@ -15,6 +15,7 @@ import * as TestClock from "effect/testing/TestClock";
 import {
   make,
   PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES,
+  PREVIEW_AUTOMATION_SCREENSHOT_LIMIT_BYTES,
   type PreviewAutomationBrokerService,
 } from "./PreviewAutomationBroker.ts";
 
@@ -35,7 +36,7 @@ const attachHost = Effect.fn(function* (
   broker: PreviewAutomationBrokerService,
   options?: {
     readonly threadId?: ThreadId;
-    readonly operations?: ReadonlyArray<"click" | "snapshot" | "waitFor">;
+    readonly operations?: ReadonlyArray<"click" | "snapshot" | "waitFor" | "screenshot">;
     readonly features?: ReadonlyArray<PreviewAutomationHostFeature>;
   },
 ) {
@@ -389,6 +390,42 @@ describe("PreviewAutomationBroker", () => {
         });
         const failure = yield* Fiber.join(call).pipe(Effect.flip);
         assert.strictEqual(failure._tag, "PreviewAutomationResultTooLargeError");
+      }),
+    ),
+  );
+
+  it.effect("carries a screenshot past the text limit, and refuses only an absurd one", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* make;
+        const { nextRequest } = yield* attachHost(broker, { operations: ["screenshot"] });
+        /** A screenshot call the browser answers with `data`, still to be joined. */
+        const screenshot = (data: string) =>
+          Effect.gen(function* () {
+            const call = yield* broker
+              .invoke({ threadId, agentId, operation: "screenshot", input: {} })
+              .pipe(Effect.forkChild);
+            const request = yield* nextRequest;
+            yield* broker.respond({
+              requestId: request.requestId,
+              result: { data, width: 1280, height: 800, mimeType: "image/jpeg" },
+            });
+            return call;
+          });
+
+        // A busy page as JPEG: over what a text result may be, and fine as a picture.
+        const busyData = "x".repeat(PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES + 1);
+        const busy = (yield* Fiber.join(yield* screenshot(busyData))) as Record<string, unknown>;
+        assert.strictEqual(busy.data, busyData);
+        assert.strictEqual(busy.mimeType, "image/jpeg");
+
+        const absurd = yield* screenshot("x".repeat(PREVIEW_AUTOMATION_SCREENSHOT_LIMIT_BYTES));
+        const failure = yield* Fiber.join(absurd).pipe(Effect.flip);
+        assert.strictEqual(failure._tag, "PreviewAutomationResultTooLargeError");
+        // A screenshot has nothing to narrow; the advice has to be something
+        // the agent can actually do.
+        assert.notInclude(failure.message, "Narrow the request");
+        assert.include(failure.message, "browser_resize");
       }),
     ),
   );

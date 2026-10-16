@@ -169,7 +169,11 @@ export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewA
   }
 }
 
-/** A page can hand back more than a context window can hold. Refuse, don't truncate silently. */
+/**
+ * A page can hand back more than a context window can hold. Refuse, don't
+ * truncate silently. A screenshot takes no options to narrow, so it names
+ * the moves the agent does have.
+ */
 export class PreviewAutomationResultTooLargeError extends Schema.TaggedError<PreviewAutomationResultTooLargeError>()(
   "PreviewAutomationResultTooLargeError",
   {
@@ -179,6 +183,9 @@ export class PreviewAutomationResultTooLargeError extends Schema.TaggedError<Pre
   },
 ) {
   override get message(): string {
+    if (this.operation === "screenshot") {
+      return `The screenshot came to ${this.bytes} bytes, over the ${this.limitBytes} byte limit. Make the page smaller with browser_resize and take it again, or read the page with browser_snapshot instead.`;
+    }
     return `${this.operation} returned ${this.bytes} bytes, over the ${this.limitBytes} byte limit. Narrow the request.`;
   }
 }
@@ -499,9 +506,18 @@ export const PreviewAutomationSnapshotSchema = Schema.Struct({
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshotSchema.Type;
 
 export const PreviewAutomationScreenshotSchema = Schema.Struct({
-  /** Base64 PNG, so it can go back as an image block the model actually sees. */
+  /** Base64 image, so it can go back as an image block the model actually sees. */
   data: Schema.String,
+  /** The page's size in CSS pixels. */
   width: Schema.Finite,
   height: Schema.Finite,
+  /** What `data` is. Absent from older clients, which only send PNG. */
+  mimeType: Schema.optionalKey(Schema.Literals(["image/png", "image/jpeg"])),
+  /**
+   * Image pixels per CSS pixel, when the picture had to be shrunk to fit; a
+   * point in the image divided by this is the point on the page. Absent means
+   * the picture is at the page's own scale, or an older client did not say.
+   */
+  scale: Schema.optionalKey(Schema.Finite),
 });
 export type PreviewAutomationScreenshot = typeof PreviewAutomationScreenshotSchema.Type;

@@ -623,13 +623,19 @@ async function dispatch(
       // perfectly good answer and used to fail validation *after* running.
       return { result: await call(bridge.previewEvaluate, input) };
     case "screenshot": {
-      const shot = await call(bridge.previewScreenshot, {});
+      // Sized for the model: the page's own CSS pixels, small enough to carry.
+      const shot = await call(bridge.previewScreenshot, { forAgent: true });
       // Base64 without the data-url header: the tool hands this to the model as
-      // an image block, which wants the bytes rather than a URL.
+      // an image block, which wants the bytes rather than a URL. The header
+      // still says what the bytes are, and the image block has to say it too.
+      const comma = shot.dataUrl.indexOf(",");
+      const mimeType = screenshotMimeType(shot.dataUrl.slice(0, Math.max(comma, 0)));
       return {
-        data: shot.dataUrl.slice(shot.dataUrl.indexOf(",") + 1),
+        data: shot.dataUrl.slice(comma + 1),
         width: shot.width,
         height: shot.height,
+        ...(mimeType === null ? {} : { mimeType }),
+        ...(shot.scale === undefined ? {} : { scale: shot.scale }),
       };
     }
     case "resize": {
@@ -644,6 +650,16 @@ async function dispatch(
       await call(bridge.previewSetColorScheme, input);
       return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
   }
+}
+
+/** The image type a data-url header (`data:image/jpeg;base64`) names, if it is one we send. */
+function screenshotMimeType(header: string): "image/png" | "image/jpeg" | null {
+  const type = header
+    .replace(/^data:/, "")
+    .split(";")[0]
+    ?.trim()
+    .toLowerCase();
+  return type === "image/png" || type === "image/jpeg" ? type : null;
 }
 
 /**

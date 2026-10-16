@@ -31,6 +31,7 @@ import type {
   DesktopPreviewScrollInput,
   DesktopPreviewSnapshot,
   DesktopPreviewScreenshot,
+  DesktopPreviewScreenshotInput,
   DesktopPreviewStatus,
   DesktopPreviewTypeInput,
   DesktopPreviewLifecycleState,
@@ -45,9 +46,19 @@ import {
   PREVIEW_AGENT_KEYS_DEADLINE_MS,
   type BrowserSiteAccess,
 } from "@threadlines/shared/preview";
-import { app, BrowserWindow, webContents, type Session, type WebContents } from "electron";
+import {
+  app,
+  BrowserWindow,
+  nativeImage,
+  powerMonitor,
+  webContents,
+  type NativeImage,
+  type Session,
+  type WebContents,
+} from "electron";
 
 import * as IpcChannels from "../ipc/channels.ts";
+import { fitScreenshot } from "./screenshotFit.ts";
 import { toCdpKeyDefinition, toCdpModifierBitmask } from "./keyEvents.ts";
 import {
   buildAriaSnapshotScript,
@@ -84,6 +95,17 @@ const DRAG_MOVE_STEPS = 10;
 const MAX_NETWORK_FAILURES = 100;
 /** See `sendCommand`: comfortably inside the broker's twenty second deadline. */
 const CDP_COMMAND_TIMEOUT = "15 seconds";
+const PAGE_DID_NOT_ANSWER = "the page did not answer in time";
+/**
+ * How long a capture may take while the screen is locked. A capture normally
+ * answers in well under a second, and a locked Mac's waits until the user is
+ * back, so this is only long enough to take a picture on a system that does
+ * paint while locked, if there is one, or after a missed unlock notice.
+ */
+const LOCKED_CAPTURE_TIMEOUT = "3 seconds";
+/** Said to the agent as the reason; it reads as "screenshot failed: ...". */
+const SCREEN_LOCKED =
+  "the screen is locked, so the page is not being painted and cannot be captured. browser_snapshot and browser_evaluate still work, and screenshots work again once the screen is unlocked";
 /**
  * How long an agent's keys wait for the page to take focus. The renderer
  * focuses it straight after sending them, so this is normally one poll.
@@ -217,7 +239,7 @@ export class PreviewAutomation extends Context.Service<
     /** Memory held by every browser page's process; see `DesktopPreviewMemorySchema`. */
     readonly memory: Effect.Effect<DesktopPreviewMemory>;
     readonly screenshot: (
-      webContentsId: number,
+      input: DesktopPreviewScreenshotInput,
     ) => Effect.Effect<DesktopPreviewScreenshot, PreviewAutomationError>;
     readonly click: (
       input: DesktopPreviewClickInput,
@@ -249,6 +271,53 @@ interface PickResult {
   styleChanges: ReadonlyArray<{ property: string; from: string; to: string }>;
 }
 
+/**
+ * A capture made fit for a model.
+ *
+ * At the page's CSS pixels rather than the display's -- half the width and a
+ * quarter of the bytes on a Retina screen -- so a point in the picture is the
+ * same point on the page, then encoded as the cheapest picture that fits (see
+ * `fitScreenshot`). Resized here rather than by asking CDP for a scaled clip:
+ * a clipped capture re-renders the page at the new scale, which the user sees
+ * as the page flashing at half size.
+ */
+const encodeForAgent = (
+  data: string,
+  width: number,
+  height: number,
+): { readonly dataUrl: string; readonly scale?: number } => {
+  const captured = nativeImage.createFromBuffer(Buffer.from(data, "base64"));
+  if (captured.isEmpty() || width <= 0 || height <= 0) {
+    // Nothing to work with; passed on as it came, and the caller sees it empty.
+    return { dataUrl: `data:image/png;base64,${data}` };
+  }
+  const sized = new Map<number, NativeImage>();
+  const atScale = (scale: number) => {
+    const existing = sized.get(scale);
+    if (existing !== undefined) return existing;
+    const target = {
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+    };
+    const current = captured.getSize();
+    const image =
+      current.width === target.width && current.height === target.height
+        ? captured
+        : captured.resize({ ...target, quality: "good" });
+    sized.set(scale, image);
+    return image;
+  };
+  const fitted = fitScreenshot((encoding) =>
+    encoding.mimeType === "image/png"
+      ? atScale(encoding.scale).toPNG()
+      : atScale(encoding.scale).toJPEG(encoding.quality),
+  );
+  return {
+    dataUrl: `data:${fitted.mimeType};base64,${Buffer.from(fitted.bytes).toString("base64")}`,
+    ...(fitted.scale === 1 ? {} : { scale: fitted.scale }),
+  };
+};
+
 export const make = Effect.sync(function PreviewAutomationMake() {
   const attached = new Map<number, AttachedTab>();
   /**
@@ -264,6 +333,27 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    *  can release them. */
   const drawWaiters = new Map<number, () => void>();
   const navigationGuards = new Map<number, NavigationGuard>();
+
+  /**
+   * Whether the screen is locked, from the system's own notices.
+   *
+   * Behind a locked screen the page is not painted, so a capture waits for a
+   * frame that comes only once the user is back: every screenshot timeout
+   * traced in the logs happened while the Mac was locked. Covered, minimised
+   * and hidden windows are not the same -- tried on a real window, all three
+   * captured a fresh picture in under a tenth of a second. `powerMonitor`
+   * cannot be used before the app is ready, which is after this service is
+   * built, hence the wait.
+   */
+  let screenLocked = false;
+  void app.whenReady().then(() => {
+    powerMonitor.on("lock-screen", () => {
+      screenLocked = true;
+    });
+    powerMonitor.on("unlock-screen", () => {
+      screenLocked = false;
+    });
+  });
 
   /**
    * The site a navigation is aimed at, or null when it is not aimed at one.
@@ -416,13 +506,17 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     contents: WebContents,
     method: string,
     params?: Record<string, unknown>,
-    timeout: Duration.Input = CDP_COMMAND_TIMEOUT,
-    /** Asked in the same synchronous step as the send; a reason refuses it. */
-    refusal?: () => string | null,
+    options?: {
+      readonly timeout?: Duration.Input;
+      /** Asked in the same synchronous step as the send; a reason refuses it. */
+      readonly refusal?: () => string | null;
+      /** Why the page did not answer, when the caller knows better. */
+      readonly timedOut?: () => string;
+    },
   ) =>
     Effect.tryPromise({
       try: () => {
-        const reason = refusal?.() ?? null;
+        const reason = options?.refusal?.() ?? null;
         return reason === null
           ? contents.debugger.sendCommand(method, params ?? {})
           : Promise.reject(reason);
@@ -430,13 +524,13 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       catch: (cause) => new PreviewCommandError({ webContentsId: contents.id, method, cause }),
     }).pipe(
       Effect.timeoutOrElse({
-        duration: timeout,
+        duration: options?.timeout ?? CDP_COMMAND_TIMEOUT,
         orElse: () =>
           Effect.fail(
             new PreviewCommandError({
               webContentsId: contents.id,
               method,
-              cause: "the page did not answer in time",
+              cause: options?.timedOut?.() ?? PAGE_DID_NOT_ANSWER,
             }),
           ),
       }),
@@ -501,25 +595,27 @@ export const make = Effect.sync(function PreviewAutomationMake() {
             }
             let sent = 0;
             const send = (method: string, params: Record<string, unknown>) =>
-              sendCommand(contents, method, params, CDP_COMMAND_TIMEOUT, () => {
-                const tab = attached.get(webContentsId);
-                const refusal =
-                  controlEpoch !== undefined &&
-                  tab !== undefined &&
-                  tab.controlEpoch !== controlEpoch
-                    ? "the user took control of this tab"
-                    : contents.focusedFrame === null
-                      ? "the page did not have keyboard focus"
-                      : Date.now() - startedAt > PREVIEW_AGENT_KEYS_DEADLINE_MS
-                        ? "the page took too long to take the keys"
-                        : null;
-                if (refusal === null) {
-                  sent += 1;
-                  return null;
-                }
-                return sent === 0
-                  ? `${refusal}, so nothing was typed; try again`
-                  : `${refusal}, so only part of the input reached it; check the field before trying again`;
+              sendCommand(contents, method, params, {
+                refusal: () => {
+                  const tab = attached.get(webContentsId);
+                  const refusal =
+                    controlEpoch !== undefined &&
+                    tab !== undefined &&
+                    tab.controlEpoch !== controlEpoch
+                      ? "the user took control of this tab"
+                      : contents.focusedFrame === null
+                        ? "the page did not have keyboard focus"
+                        : Date.now() - startedAt > PREVIEW_AGENT_KEYS_DEADLINE_MS
+                          ? "the page took too long to take the keys"
+                          : null;
+                  if (refusal === null) {
+                    sent += 1;
+                    return null;
+                  }
+                  return sent === 0
+                    ? `${refusal}, so nothing was typed; try again`
+                    : `${refusal}, so only part of the input reached it; check the field before trying again`;
+                },
               });
             return yield* keys(send);
           }),
@@ -1683,22 +1779,42 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         contents.openDevTools({ mode: "detach" });
       });
     }),
-    screenshot: Effect.fn("PreviewAutomation.screenshot")(function* (webContentsId: number) {
-      const contents = yield* resolveAttached(webContentsId);
+    screenshot: Effect.fn("PreviewAutomation.screenshot")(function* (
+      input: DesktopPreviewScreenshotInput,
+    ) {
+      const contents = yield* resolveAttached(input.webContentsId);
+      const forAgent = input.forAgent === true;
       // Captured through CDP rather than capturePage so the image is the page
-      // itself, unaffected by the window being occluded or offscreen.
-      const shot = (yield* sendCommand(contents, "Page.captureScreenshot", {
-        format: "png",
-        captureBeyondViewport: false,
-      })) as { data?: string };
+      // itself, whether the window is covered, minimised or hidden. Not while
+      // the screen is locked: nothing is painted, and the capture would wait
+      // until the user is back. So then it gets a short wait, and an answer
+      // that says why.
+      const lockedAtStart = screenLocked;
+      const shot = (yield* sendCommand(
+        contents,
+        "Page.captureScreenshot",
+        {
+          format: "png",
+          captureBeyondViewport: false,
+          // An agent's picture is decoded and re-encoded below, so a quicker,
+          // larger PNG is the better trade: on a busy page it holds up the
+          // main process for a fraction as long.
+          ...(forAgent ? { optimizeForSpeed: true } : {}),
+        },
+        {
+          timeout: lockedAtStart ? LOCKED_CAPTURE_TIMEOUT : CDP_COMMAND_TIMEOUT,
+          timedOut: () => (lockedAtStart || screenLocked ? SCREEN_LOCKED : PAGE_DID_NOT_ANSWER),
+        },
+      )) as { data?: string };
       const metrics = (yield* sendCommand(contents, "Page.getLayoutMetrics", {})) as {
         cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
       };
-      return {
-        dataUrl: `data:image/png;base64,${shot.data ?? ""}`,
-        width: Math.round(metrics.cssVisualViewport?.clientWidth ?? 0),
-        height: Math.round(metrics.cssVisualViewport?.clientHeight ?? 0),
-      };
+      const width = Math.round(metrics.cssVisualViewport?.clientWidth ?? 0);
+      const height = Math.round(metrics.cssVisualViewport?.clientHeight ?? 0);
+      if (!forAgent) {
+        return { dataUrl: `data:image/png;base64,${shot.data ?? ""}`, width, height };
+      }
+      return { ...encodeForAgent(shot.data ?? "", width, height), width, height };
     }),
     click: Effect.fn("PreviewAutomation.click")(function* (input: DesktopPreviewClickInput) {
       const contents = yield* resolveAttached(input.webContentsId);
@@ -1848,7 +1964,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
           returnByValue: true,
           awaitPromise: true,
         },
-        AGENT_SCRIPT_TIMEOUT,
+        { timeout: AGENT_SCRIPT_TIMEOUT },
       )) as {
         result?: { value?: unknown };
         exceptionDetails?: {
