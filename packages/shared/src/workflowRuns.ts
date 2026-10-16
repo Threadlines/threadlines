@@ -93,7 +93,7 @@ function newRun(
   updatedAt: string,
   eventSequence: number | undefined,
 ): OrchestrationWorkflowRun {
-  return settleCutOffAgents({
+  return settleFinalRunAgents({
     taskId: patch.taskId,
     runId: patch.runId ?? null,
     turnId: patch.turnId ?? null,
@@ -118,12 +118,21 @@ function newRun(
   });
 }
 
+function settleFinalRunAgents(run: OrchestrationWorkflowRun): OrchestrationWorkflowRun {
+  return run.status === "lost" ? run : settleCutOffAgents(run);
+}
+
 /**
  * Agents still running or waiting when their run ended ran no further: they
  * read as skipped, ending with the run, so no view keeps them live. A later
  * report of where they really got to replaces them.
+ *
+ * The projections keep this only for an end that is final; a run marked
+ * `lost` may still be running, and its next report sends only the agents
+ * that changed, so its agents are kept as reported. Views settle a lost
+ * run's agents as they show it (this same function).
  */
-function settleCutOffAgents(run: OrchestrationWorkflowRun): OrchestrationWorkflowRun {
+export function settleCutOffAgents(run: OrchestrationWorkflowRun): OrchestrationWorkflowRun {
   const cutOff = (agent: WorkflowAgent) => agent.state === "running" || agent.state === "queued";
   if (!isWorkflowRunTerminal(run.status) || !run.agents.some(cutOff)) return run;
   const endedMs = run.endedAt === null ? Number.NaN : Date.parse(run.endedAt);
@@ -156,7 +165,7 @@ export function mergeWorkflowRunPatch(
 ): OrchestrationWorkflowRun {
   const status = patch.status === undefined ? run.status : nextStatus(run.status, patch.status);
   const statusChanged = status !== run.status;
-  return settleCutOffAgents({
+  return settleFinalRunAgents({
     ...run,
     runId: patch.runId ?? run.runId,
     // Where a run came from is settled by the update that first names it.

@@ -16,6 +16,7 @@ import type {
 import {
   countWorkflowAgents,
   currentWorkflowPhase,
+  settleCutOffAgents,
   workflowPhaseDisplayTitle,
 } from "@threadlines/shared/workflowRuns";
 import { humanizeWorkflowName } from "@threadlines/shared/workflowScript";
@@ -37,6 +38,28 @@ const SIZE_GUIDELINE_AGENTS: Readonly<Record<string, number>> = {
   medium: 10,
   large: 50,
 };
+
+const shownRunsByList = new WeakMap<
+  ReadonlyArray<OrchestrationWorkflowRun>,
+  ReadonlyArray<OrchestrationWorkflowRun>
+>();
+
+/**
+ * A thread's runs as the views show them. A run marked lost is stored with
+ * its agents as last reported, in case it comes back (settleCutOffAgents);
+ * shown, the ones still going read as cut off. The same list when none is
+ * lost, and the same result for the same list, so re-renders keep identities.
+ */
+export function workflowRunsAsShown(
+  runs: ReadonlyArray<OrchestrationWorkflowRun>,
+): ReadonlyArray<OrchestrationWorkflowRun> {
+  if (!runs.some((run) => run.status === "lost")) return runs;
+  const cached = shownRunsByList.get(runs);
+  if (cached) return cached;
+  const shown = runs.map((run) => (run.status === "lost" ? settleCutOffAgents(run) : run));
+  shownRunsByList.set(runs, shown);
+  return shown;
+}
 
 export function workflowPhaseTitle(phase: Pick<WorkflowPhase, "title">): string {
   return workflowPhaseDisplayTitle(phase.title);

@@ -89,6 +89,31 @@ describe("applyWorkflowRunPatch", () => {
     expect(runs[0]?.endedAt).toBe("t2");
   });
 
+  it("keeps a lost run's agents as reported, so a run that comes back is whole", () => {
+    let runs = applyWorkflowRunPatch(
+      [],
+      { ...launch, agents: [agent(0, "running"), agent(1, "queued")] },
+      "t0",
+    );
+    runs = applyWorkflowRunPatch(
+      runs,
+      { taskId: "task-1", status: "lost", statusReason: "runtime-gone", endedAt: "t1" },
+      "t1",
+    );
+    expect(runs[0]?.agents.map((entry) => entry.state)).toEqual(["running", "queued"]);
+    // Its runtime was there after all: a live report sends only what changed.
+    runs = applyWorkflowRunPatch(
+      runs,
+      { taskId: "task-1", status: "running", startedAt: launch.startedAt!, totalTokens: 10 },
+      "t2",
+    );
+    expect(runs[0]?.status).toBe("running");
+    expect(runs[0]?.agents.map((entry) => entry.state)).toEqual(["running", "queued"]);
+    // A final end does settle them: nothing can run again.
+    runs = applyWorkflowRunPatch(runs, { taskId: "task-1", status: "stopped" }, "t3");
+    expect(runs[0]?.agents.map((entry) => entry.state)).toEqual(["skipped", "skipped"]);
+  });
+
   it("lets the provider's own report replace a run we marked lost", () => {
     let runs = applyWorkflowRunPatch([], launch, "t0");
     runs = applyWorkflowRunPatch(

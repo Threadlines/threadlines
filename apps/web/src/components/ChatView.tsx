@@ -56,6 +56,7 @@ import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
 import { getPickerModelName } from "./chat/providerIconUtils";
+import { workflowRunsAsShown } from "./chat/workflowRunView";
 import {
   buildOwnAgentLabels,
   buildRoomAgentLabels,
@@ -2525,7 +2526,7 @@ export default function ChatView(props: ChatViewProps) {
         forkContextEntries,
         subagentActivityState.liveEntries,
         activeThread?.pages ?? EMPTY_AGENT_PAGES,
-        activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS,
+        workflowRunsAsShown(activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS),
       ),
     [
       activeThread?.pages,
@@ -3662,7 +3663,7 @@ export default function ChatView(props: ChatViewProps) {
       turnInFlight: activeTurnInProgress,
       hydrated: threadDetailHydrated,
       threadCwd: gitCwd,
-      workflowRuns: activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS,
+      workflowRuns: workflowRunsAsShown(activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS),
       onStopBackgroundRun: stopBackgroundRun,
       onStopWorkflowRun: stopWorkflowRun,
     });

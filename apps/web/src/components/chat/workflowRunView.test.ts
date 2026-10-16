@@ -4,6 +4,7 @@ import type { OrchestrationWorkflowRun, WorkflowAgent } from "@threadlines/contr
 
 import {
   summarizeWorkflowRun,
+  workflowRunsAsShown,
   workflowAgentNowText,
   workflowLargeNote,
   workflowPhaseGroups,
@@ -85,6 +86,25 @@ describe("workflowPhaseGroups", () => {
     );
     // Nothing in it ran to the end: not a check mark.
     expect(group?.state).toBe("skipped");
+  });
+});
+
+describe("workflowRunsAsShown", () => {
+  it("shows a lost run's agents that were still going as cut off, and leaves the rest alone", () => {
+    const live = run({ taskId: "task-live", agents: [agent({ index: 0, state: "running" })] });
+    const lost = run({
+      taskId: "task-lost",
+      status: "lost",
+      endedAt: new Date(START_MS + 60_000).toISOString(),
+      agents: [agent({ index: 0, state: "running", startedAt: START_MS })],
+    });
+    expect(workflowRunsAsShown([live])).toEqual([live]);
+    const runs = [live, lost];
+    const shown = workflowRunsAsShown(runs);
+    expect(shown[0]).toBe(live);
+    expect(shown[1]?.agents[0]).toMatchObject({ state: "skipped", durationMs: 60_000 });
+    // The same list gives the same result, so rows keep their identity.
+    expect(workflowRunsAsShown(runs)).toBe(shown);
   });
 });
 
