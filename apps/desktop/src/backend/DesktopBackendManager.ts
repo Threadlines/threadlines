@@ -360,7 +360,10 @@ const runBackendProcess = Effect.fn("runBackendProcess")(function* (
   const onOutput = options.onOutput ?? (() => Effect.void);
   const command = ChildProcess.make(
     options.executablePath,
-    [options.entryPath, "--bootstrap-fd", "3"],
+    // --base-dir repeats the bootstrap's home where the server's launcher can
+    // see it: it keeps its compile cache there and runs before the bootstrap
+    // is read. Same value, so the server's resolved home does not change.
+    [options.entryPath, "--bootstrap-fd", "3", "--base-dir", options.bootstrap.threadlinesHome],
     hideWindowsConsole({
       cwd: options.cwd,
       env: options.env,

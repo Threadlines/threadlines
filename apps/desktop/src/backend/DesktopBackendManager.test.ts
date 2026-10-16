@@ -223,7 +223,13 @@ describe("DesktopBackendManager", () => {
         }
 
         assert.equal(spawnedCommand.command, "/electron");
-        assert.deepEqual(spawnedCommand.args, ["/server/bin.mjs", "--bootstrap-fd", "3"]);
+        assert.deepEqual(spawnedCommand.args, [
+          "/server/bin.mjs",
+          "--bootstrap-fd",
+          "3",
+          "--base-dir",
+          "/tmp/threadlines",
+        ]);
         assert.equal(spawnedCommand.options.cwd, "/server");
         assert.equal(spawnedCommand.options.extendEnv, true);
         assert.equal(spawnedCommand.options.stdout, "pipe");
