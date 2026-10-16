@@ -331,11 +331,14 @@ export type SessionStateChangedPayload = typeof SessionStateChangedPayload.Type;
 /**
  * The provider session's working directory no longer matches the checkout
  * the thread was configured with — e.g. the agent created and entered a git
- * worktree mid-session. `cwd` is the session's current absolute directory.
+ * worktree mid-session, or edited files in another worktree of the same
+ * repository. `cwd` is the session's current absolute directory.
  */
 const SessionCwdChangedPayload = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
-  reason: Schema.optional(Schema.Literals(["worktree-entered", "worktree-exited", "session-init"])),
+  reason: Schema.optional(
+    Schema.Literals(["worktree-entered", "worktree-exited", "session-init", "file-edited"]),
+  ),
 });
 export type SessionCwdChangedPayload = typeof SessionCwdChangedPayload.Type;
 

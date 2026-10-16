@@ -22,6 +22,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
+import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import {
   agentRequestStateOn,
   withInviteChoice,
@@ -1317,9 +1318,7 @@ export function projectEvent(
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            effectiveCwd: payload.effectiveCwd,
-            effectiveCwdSource:
-              payload.effectiveCwdSource ?? (payload.effectiveCwd === null ? null : "session"),
+            ...effectiveCwdOf(payload),
             updatedAt: event.occurredAt,
           }),
         };

@@ -2079,29 +2079,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
-  const resolveSubagentWorktree: ProviderServiceShape["resolveSubagentWorktree"] = Effect.fn(
-    "resolveSubagentWorktree",
-  )(function* (input) {
-    for (const sessionKey of yield* threadSessionKeys(input.threadId)) {
-      const routed = yield* resolveRoutableSession({
-        threadId: sessionKey,
-        operation: "ProviderService.resolveSubagentWorktree",
-        allowRecovery: false,
-      }).pipe(Effect.catch(() => Effect.succeed(undefined)));
-      const resolve = routed?.isActive ? routed.adapter.resolveSubagentWorktree : undefined;
-      if (routed === undefined || resolve === undefined) {
-        continue;
-      }
-      const worktree = yield* resolve(routed.threadId, { toolUseId: input.toolUseId }).pipe(
-        Effect.catch(() => Effect.succeed(null)),
-      );
-      if (worktree !== null) {
-        return worktree;
-      }
-    }
-    return null;
-  });
-
   const deleteThread: ProviderServiceShape["deleteThread"] = Effect.fn("deleteThread")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -2268,7 +2245,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     rollbackConversation,
     readSubagentTranscript,
     sendSubagentInput,
-    resolveSubagentWorktree,
     deleteThread,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
