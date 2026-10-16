@@ -108,7 +108,11 @@ describe("retainWorkflowRunsAfterRevert", () => {
   it("drops only runs started by a removed turn", () => {
     const runs = [
       ...applyWorkflowRunPatch([], launch, "t0"),
-      ...applyWorkflowRunPatch([], { ...launch, taskId: "task-2", turnId: "turn-2" as TurnId }, "t1"),
+      ...applyWorkflowRunPatch(
+        [],
+        { ...launch, taskId: "task-2", turnId: "turn-2" as TurnId },
+        "t1",
+      ),
       ...applyWorkflowRunPatch([], { ...launch, taskId: "task-3", turnId: null }, "t2"),
     ];
     const kept = retainWorkflowRunsAfterRevert(runs, new Set(["turn-2" as TurnId]));

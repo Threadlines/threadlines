@@ -4627,26 +4627,26 @@ const make = Effect.gen(function* () {
 
   // Workflow runs lived in the previous process's provider runtimes too: none
   // is still running, and none can report its end now.
-  const settleWorkflowRunsFromPreviousProcess = Effect.fn(
-    "settleWorkflowRunsFromPreviousProcess",
-  )(function* () {
-    const running = yield* projectionSnapshotQuery.listRunningWorkflowRuns();
-    for (const { threadId, run } of running) {
-      const createdAt = yield* nowIso;
-      yield* orchestrationEngine.dispatch({
-        type: "thread.workflow-run.record",
-        commandId: serverCommandId("workflow-run-restart-lost"),
-        threadId,
-        patch: {
-          taskId: run.taskId,
-          status: "lost",
-          statusReason: "server-restarted",
-          endedAt: createdAt,
-        },
-        createdAt,
-      });
-    }
-  });
+  const settleWorkflowRunsFromPreviousProcess = Effect.fn("settleWorkflowRunsFromPreviousProcess")(
+    function* () {
+      const running = yield* projectionSnapshotQuery.listRunningWorkflowRuns();
+      for (const { threadId, run } of running) {
+        const createdAt = yield* nowIso;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.workflow-run.record",
+          commandId: serverCommandId("workflow-run-restart-lost"),
+          threadId,
+          patch: {
+            taskId: run.taskId,
+            status: "lost",
+            statusReason: "server-restarted",
+            endedAt: createdAt,
+          },
+          createdAt,
+        });
+      }
+    },
+  );
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
     yield* settleWorkflowRunsFromPreviousProcess().pipe(

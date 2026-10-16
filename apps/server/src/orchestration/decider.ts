@@ -2630,9 +2630,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             interactionMode,
             ...(fromThread !== undefined ? { fromThread } : {}),
             // Only the user's own queued message carries it.
-            ...(!agentQueued && queued.composer !== undefined
-              ? { composer: queued.composer }
-              : {}),
+            ...(!agentQueued && queued.composer !== undefined ? { composer: queued.composer } : {}),
             createdAt: command.createdAt,
           },
         ],

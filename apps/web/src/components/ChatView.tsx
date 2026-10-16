@@ -7207,7 +7207,8 @@ export default function ChatView(props: ChatViewProps) {
       open,
       stop: stopWorkflowRun,
       save: (taskId) => open(taskId, { tab: "script", saving: true }),
-      ultracode: getModelSelectionBooleanOptionValue(activeThread?.modelSelection, "ultracode") === true,
+      ultracode:
+        getModelSelectionBooleanOptionValue(activeThread?.modelSelection, "ultracode") === true,
       sizeGuideline:
         getModelSelectionStringOptionValue(activeThread?.modelSelection, "workflowSize") ?? null,
     };
@@ -7217,7 +7218,8 @@ export default function ChatView(props: ChatViewProps) {
     [workflowRunActions],
   );
   const runningWorkflowRuns = useMemo(
-    () => (activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS).filter((run) => run.status === "running"),
+    () =>
+      (activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS).filter((run) => run.status === "running"),
     [activeThread?.workflowRuns],
   );
   /** The header's agent faces: the Agents tab on its list, not on one agent. */

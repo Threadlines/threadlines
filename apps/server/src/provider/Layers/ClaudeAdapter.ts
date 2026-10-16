@@ -2304,8 +2304,7 @@ const buildUserMessagesEffect = Effect.fn("buildUserMessagesEffect")(function* (
 ) {
   const typed = input.typed;
   const leadingContext =
-    (dependencies.seedPreamble?.trim().length ?? 0) > 0 ||
-    (typed?.context?.trim().length ?? 0) > 0;
+    (dependencies.seedPreamble?.trim().length ?? 0) > 0 || (typed?.context?.trim().length ?? 0) > 0;
   const appendOnlySupported =
     dependencies.cliVersion === undefined ||
     compareSemverVersions(dependencies.cliVersion, MINIMUM_CLAUDE_APPEND_ONLY_VERSION) >= 0;
@@ -6099,8 +6098,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
         // A workflow's progress is its run, not a task row: its frames name
         // whichever agent moved last, which says nothing about the run.
-        const workflowProgress = (message as typeof message & { readonly workflow_progress?: unknown })
-          .workflow_progress;
+        const workflowProgress = (
+          message as typeof message & { readonly workflow_progress?: unknown }
+        ).workflow_progress;
         if (previous?.taskType === "local_workflow" || workflowProgress !== undefined) {
           context.tasks.set(message.task_id, {
             ...previous,

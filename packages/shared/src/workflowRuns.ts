@@ -231,7 +231,8 @@ export function currentWorkflowPhase(
   for (const agent of run.agents) {
     if (agent.phaseIndex === undefined) continue;
     if (agent.state === "running" || agent.state === "queued") {
-      liveIndex = liveIndex === undefined ? agent.phaseIndex : Math.max(liveIndex, agent.phaseIndex);
+      liveIndex =
+        liveIndex === undefined ? agent.phaseIndex : Math.max(liveIndex, agent.phaseIndex);
     }
   }
   if (liveIndex !== undefined) {

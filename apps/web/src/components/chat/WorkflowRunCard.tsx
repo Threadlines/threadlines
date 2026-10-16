@@ -183,9 +183,7 @@ function PhaseAgents({
               key={agent.index}
               agent={agent}
               running={running}
-              onOpen={
-                onOpenAgent && agent.agentId ? () => onOpenAgent(agent.agentId!) : null
-              }
+              onOpen={onOpenAgent && agent.agentId ? () => onOpenAgent(agent.agentId!) : null}
             />
           ))}
         </div>

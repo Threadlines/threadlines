@@ -65,11 +65,10 @@ function agentDetailMeta(agent: WorkflowAgent, nowMs: number): string {
   if (agent.model) parts.push(agent.model);
   const timing = workflowAgentMeta(agent, nowMs);
   if (timing) parts.push(timing);
-  if (agent.tokens !== undefined && agent.tokens > 0) parts.push(formatWorkflowTokens(agent.tokens));
+  if (agent.tokens !== undefined && agent.tokens > 0)
+    parts.push(formatWorkflowTokens(agent.tokens));
   if ((agent.attempt ?? 1) > 1) {
-    parts.push(
-      `attempt ${agent.attempt}${agent.retryReason ? ` (${agent.retryReason})` : ""}`,
-    );
+    parts.push(`attempt ${agent.attempt}${agent.retryReason ? ` (${agent.retryReason})` : ""}`);
   }
   if (agent.isolation === "worktree") parts.push("own copy of the repo");
   return parts.join(" · ");
@@ -219,9 +218,7 @@ function AgentDetail({
           compute={() => agentDetailMeta(agent, Date.now())}
           className="mt-0.5 block truncate font-mono text-[10.5px] text-muted-foreground tabular-nums"
         />
-        {agent.error ? (
-          <p className="mt-1 text-[12px] text-destructive">{agent.error}</p>
-        ) : null}
+        {agent.error ? <p className="mt-1 text-[12px] text-destructive">{agent.error}</p> : null}
       </div>
       {agentIds.length > 0 ? (
         <SubagentTranscript

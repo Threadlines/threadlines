@@ -388,7 +388,7 @@ export function SubagentTranscript({
         clearTimeout(refreshTimeoutId);
       }
     };
-  }, [agentIdsKey, environmentId, follow, threadId]);
+  }, [agentIdsKey, follow, readTranscriptPage]);
 
   const revision = useMemo(() => {
     const transcript =
@@ -564,7 +564,7 @@ export function SubagentTranscript({
         setLoadingEarlierAgentId(null);
       }
     },
-    [environmentId, loadingEarlierAgentId, threadId],
+    [loadingEarlierAgentId, readTranscriptPage],
   );
 
   const timestampFormat = useSettings().timestampFormat;

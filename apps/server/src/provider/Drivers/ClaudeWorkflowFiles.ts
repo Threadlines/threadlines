@@ -56,7 +56,10 @@ function sessionDirectory(run: RunFiles, configDir: string): string | undefined 
   // <session>/subagents/workflows/<runId>
   const workflows = NodePath.dirname(NodePath.resolve(run.transcriptDir));
   const subagents = NodePath.dirname(workflows);
-  if (NodePath.basename(workflows) !== "workflows" || NodePath.basename(subagents) !== "subagents") {
+  if (
+    NodePath.basename(workflows) !== "workflows" ||
+    NodePath.basename(subagents) !== "subagents"
+  ) {
     return undefined;
   }
   return NodePath.dirname(subagents);

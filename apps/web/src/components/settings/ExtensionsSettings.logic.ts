@@ -408,7 +408,6 @@ export function groupPluginComponents(
   });
 }
 
-
 /**
  * A provider's plugin list is its entire catalog — Codex reports well over two thousand. Opening
  * Browse onto all of them is unusable, so an unsearched catalog shows a curated slice instead:

@@ -31,11 +31,7 @@ export function WorkflowRunTimeline({
   const hasBars = layout.groups.some((group) => group.bars.length > 0);
 
   if (!hasBars) {
-    return (
-      <p className="px-3 py-6 text-[12px] text-muted-foreground">
-        No agent has started yet.
-      </p>
-    );
+    return <p className="px-3 py-6 text-[12px] text-muted-foreground">No agent has started yet.</p>;
   }
 
   return (

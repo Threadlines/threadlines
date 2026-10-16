@@ -434,8 +434,7 @@ export function workflowTimelineLayout(
       ];
     }),
   }));
-  const step =
-    TICK_STEPS_MS.find((candidate) => spanMs / candidate <= 5) ?? TICK_STEPS_MS.at(-1)!;
+  const step = TICK_STEPS_MS.find((candidate) => spanMs / candidate <= 5) ?? TICK_STEPS_MS.at(-1)!;
   const ticks: Array<{ at: number; label: string }> = [];
   for (let at = 0; at <= spanMs; at += step) {
     ticks.push({ at: (at / spanMs) * 100, label: tickLabel(at) });

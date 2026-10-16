@@ -17,9 +17,7 @@ export function ComposerWorkflowKeywordHint({
       data-composer-workflow-keyword={suppressed ? "plain" : "workflow"}
     >
       <WorkflowIcon aria-hidden="true" className="size-3 shrink-0" />
-      <span className="truncate">
-        {suppressed ? "Sends as plain text" : "Runs as a workflow"}
-      </span>
+      <span className="truncate">{suppressed ? "Sends as plain text" : "Runs as a workflow"}</span>
       {onToggle ? (
         <>
           <span aria-hidden="true">·</span>

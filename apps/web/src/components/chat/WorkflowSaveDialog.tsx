@@ -142,9 +142,7 @@ export function WorkflowSaveDialog({
                 <Radio value={option.value} className="mt-0.5" />
                 <span className="min-w-0">
                   <span className="block text-[13.5px] font-medium">{option.label}</span>
-                  <span className="block text-[12.5px] text-muted-foreground">
-                    {option.detail}
-                  </span>
+                  <span className="block text-[12.5px] text-muted-foreground">{option.detail}</span>
                   {location === option.value && preview.status === "ready" ? (
                     <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
                       {preview.result.path}
@@ -168,11 +166,7 @@ export function WorkflowSaveDialog({
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button
-            size="sm"
-            disabled={preview.status !== "ready" || saving}
-            onClick={save}
-          >
+          <Button size="sm" disabled={preview.status !== "ready" || saving} onClick={save}>
             {exists ? "Replace" : "Save"}
           </Button>
         </DialogFooter>

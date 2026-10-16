@@ -384,9 +384,11 @@ const noopStopWorkflow = () => {};
  */
 function WorkflowRunsList({ runs }: { runs: ReadonlyArray<OrchestrationWorkflowRun> }) {
   if (runs.length === 0) return null;
-  const ordered = runs.toReversed().toSorted(
-    (left, right) => Number(right.status === "running") - Number(left.status === "running"),
-  );
+  const ordered = runs
+    .toReversed()
+    .toSorted(
+      (left, right) => Number(right.status === "running") - Number(left.status === "running"),
+    );
   return (
     <section aria-label="Workflows" data-agents-panel-workflows="true">
       <SectionLabel className="px-3 py-1.5" tick={false}>

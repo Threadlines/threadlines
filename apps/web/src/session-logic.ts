@@ -5835,12 +5835,12 @@ export function deriveTimelineEntries(
   const workRows: TimelineEntry[] = workEntries
     .filter((entry) => runsByToolCall.size === 0 || !isWorkflowEcho(entry))
     .map((entry) => ({
-    id: entry.id,
-    kind: "work",
-    createdAt: entry.createdAt,
-    ...(entry.eventSequence !== undefined ? { eventSequence: entry.eventSequence } : {}),
-    entry,
-  }));
+      id: entry.id,
+      kind: "work",
+      createdAt: entry.createdAt,
+      ...(entry.eventSequence !== undefined ? { eventSequence: entry.eventSequence } : {}),
+      entry,
+    }));
   const subagentResultRows: TimelineEntry[] = subagentResults.map((result) => ({
     id: result.id,
     kind: "subagent-result",
