@@ -4,6 +4,7 @@ import {
   type OrchestrationRevertPlan,
   ProjectId,
   type ModelSelection,
+  type OrchestrationAgentPage,
   type OrchestrationThreadActivity,
   type ProviderDriverKind,
   type ProviderInstanceId,
@@ -28,7 +29,14 @@ import type { DesktopCapturedScreenshot } from "@threadlines/contracts";
 import { getModelPickerProviderAvailability } from "./chat/modelPickerEmptyState";
 import { isProviderUsageLimitErrorMessage } from "./ProviderRateLimitResetCredit";
 import { formatProviderDriverKindLabel } from "../providerModels";
-import { type ChatMessage, type SessionPhase, type Thread, type ThreadSession } from "../types";
+import {
+  type ChatMessage,
+  type ProposedPlan,
+  type SessionPhase,
+  type Thread,
+  type ThreadSession,
+  type TurnDiffSummary,
+} from "../types";
 import { type ComposerAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { selectThreadByRef, useStore } from "../store";
@@ -40,7 +48,24 @@ import {
 import type { TranscriptHighlightContextDraft } from "../lib/transcriptHighlightContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 import { ownAgentSession } from "../rooms";
+import { hasActiveContextCompactionActivity } from "../lib/contextCompactionActivities";
+import { threadMemo } from "../lib/derivationMemo";
 import { isProviderAuthErrorChatMessage } from "../lib/providerAuthMessages";
+import {
+  deriveForkContextEntries,
+  deriveRevertTurnCountByUserMessageId,
+  deriveSubagentActivityState,
+  deriveTimelineEntries,
+  deriveWorkLogEntries,
+  type ForkContextEntry,
+  type SubagentLiveEntry,
+  type SubagentProgressItem,
+  type SubagentResultEntry,
+  type ThreadSubagentHistoryEntry,
+  type TimelineEntry,
+  type WorkLogEntry,
+} from "../session-logic";
+import { deriveSideAnswers, isSideActivity, isSideMessage } from "./chat/sideAnswers";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "threadlines:last-invoked-script-by-project";
 export const LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS = [
@@ -2400,3 +2425,159 @@ export function resolveThreadBranchToRecord(input: {
   if (thread.branch !== null && isTemporaryWorktreeBranch(thread.branch)) return null;
   return checkoutRef;
 }
+
+// ---------------------------------------------------------------------------
+// A chat's derivations, remembered per thread
+//
+// The chat derives its steps, timeline and side answers from the thread's
+// store arrays. Its own memos keep only the latest thread, so switching back
+// to a chat would derive everything again; these keep each recent thread's
+// last result (threadMemo), reused only while every input is the same value.
+// Each takes the thread's key and then exactly the inputs the chat's memo
+// used, and gives the same result the plain derivation would.
+// ---------------------------------------------------------------------------
+
+/** The thread's own activities: a side answer's steps belong to its block alone. */
+export const deriveOwnThreadActivities = threadMemo(
+  (activities: OrchestrationThreadActivity[]): OrchestrationThreadActivity[] =>
+    activities.some(isSideActivity)
+      ? activities.filter((activity) => !isSideActivity(activity))
+      : activities,
+);
+
+export const deriveThreadWorkLogEntries = threadMemo(
+  (activities: ReadonlyArray<OrchestrationThreadActivity>, activeTurnId: TurnId | null) =>
+    deriveWorkLogEntries(activities, activeTurnId),
+);
+
+export const deriveThreadForkContextEntries = threadMemo(
+  (activities: ReadonlyArray<OrchestrationThreadActivity>) => deriveForkContextEntries(activities),
+);
+
+export const deriveThreadSubagentActivityState = threadMemo(
+  (
+    activities: ReadonlyArray<OrchestrationThreadActivity>,
+    subagents: Thread["subagents"],
+    latestTurnId: TurnId | null,
+    latestTurnSettled: boolean,
+  ) =>
+    deriveSubagentActivityState({
+      activities,
+      subagents: subagents ?? [],
+      latestTurnId,
+      latestTurnSettled,
+    }),
+);
+
+export const deriveThreadSideAnswers = threadMemo(
+  (
+    messages: ReadonlyArray<ChatMessage>,
+    activities: ReadonlyArray<OrchestrationThreadActivity>,
+    sideTurn: Thread["sideTurn"],
+  ) => deriveSideAnswers({ messages, activities, sideTurn }),
+);
+
+/** The conversation's rows: messages (side questions aside), plans, steps, pages and agents. */
+export const deriveThreadTimelineEntries = threadMemo(
+  (
+    messages: ChatMessage[],
+    proposedPlans: ProposedPlan[],
+    workEntries: WorkLogEntry[],
+    subagentResults: SubagentResultEntry[],
+    forkContexts: ForkContextEntry[],
+    subagentLiveEntries: SubagentLiveEntry[],
+    pages: ReadonlyArray<OrchestrationAgentPage>,
+  ) =>
+    deriveTimelineEntries(
+      messages.filter((message) => !isSideMessage(message)),
+      proposedPlans,
+      workEntries,
+      subagentResults,
+      forkContexts,
+      subagentLiveEntries,
+      pages,
+    ),
+);
+
+/** Whether a context compaction is under way (it holds the Compact control). */
+export const deriveThreadContextCompactionInProgress = threadMemo(
+  (activities: ReadonlyArray<OrchestrationThreadActivity>) =>
+    hasActiveContextCompactionActivity(activities),
+);
+
+/** Each assistant message's turn diff, when the diff names that message in the same turn. */
+export const deriveTurnDiffSummaryByAssistantMessageId = threadMemo(
+  (messages: ReadonlyArray<ChatMessage>, turnDiffSummaries: ReadonlyArray<TurnDiffSummary>) => {
+    const byMessageId = new Map<MessageId, TurnDiffSummary>();
+    const assistantTurnIdByMessageId = new Map<MessageId, TurnId | null | undefined>();
+    for (const message of messages) {
+      if (message.role === "assistant") {
+        assistantTurnIdByMessageId.set(message.id, message.turnId);
+      }
+    }
+    for (const summary of turnDiffSummaries) {
+      if (!summary.assistantMessageId) continue;
+      if (assistantTurnIdByMessageId.get(summary.assistantMessageId) !== summary.turnId) continue;
+      byMessageId.set(summary.assistantMessageId, summary);
+    }
+    return byMessageId;
+  },
+);
+
+/**
+ * How many turns reverting to each user message takes back. None in a room,
+ * even once its added agents left: rewinding one agent cannot take back what
+ * the others already read (the server refuses it too). None either while
+ * agent requests are in flight, whose answers would land on a rewound chat.
+ */
+export const deriveThreadRevertTurnCountByUserMessageId = threadMemo(
+  (
+    timelineEntries: ReadonlyArray<TimelineEntry>,
+    turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>,
+    inferredCheckpointTurnCountByTurnId: Readonly<Record<TurnId, number>>,
+    revertBlocked: boolean,
+  ) =>
+    revertBlocked
+      ? new Map<MessageId, number>()
+      : deriveRevertTurnCountByUserMessageId({
+          timelineEntries,
+          turnDiffSummaryByAssistantMessageId,
+          inferredCheckpointTurnCountByTurnId,
+        }),
+);
+
+/** Tool calls the thread already tracks as agents, live or in its history. */
+export const deriveSubagentSpawnCallIds = threadMemo(
+  (
+    history: ReadonlyArray<ThreadSubagentHistoryEntry>,
+    liveItems: ReadonlyArray<SubagentProgressItem> | undefined,
+  ): ReadonlySet<string> => {
+    const ids = new Set<string>();
+    for (const item of liveItems ?? []) {
+      if (item.spawnCallId) ids.add(item.spawnCallId);
+    }
+    for (const entry of history) {
+      if (entry.item.spawnCallId) ids.add(entry.item.spawnCallId);
+    }
+    return ids;
+  },
+);
+
+export const deriveThreadProviderBackgroundRuns = threadMemo(
+  (
+    activities: ReadonlyArray<OrchestrationThreadActivity>,
+    messages: ReadonlyArray<ChatMessage>,
+    pendingBackgroundTaskCount: number,
+    activeSubagentCount: number,
+    activeCommandTurnId: TurnId | null,
+    subagentSpawnCallIds: ReadonlySet<string>,
+  ) =>
+    deriveProviderBackgroundRuns({
+      activities,
+      messages,
+      pendingBackgroundTaskCount,
+      activeSubagentCount,
+      activeCommandTurnId,
+      subagentSpawnCallIds,
+    }),
+);

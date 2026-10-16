@@ -126,6 +126,7 @@ import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  deriveRememberedMessagesTimelineRows,
   estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
   shouldCollapseUserMessage,
@@ -946,7 +947,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       revertTurnCountByUserMessageId,
     ],
   );
-  const rawRows = useMemo(() => deriveMessagesTimelineRows(rowsInput), [rowsInput]);
+  const rawRows = useMemo(
+    () => deriveRememberedMessagesTimelineRows(routeThreadKey, rowsInput),
+    [routeThreadKey, rowsInput],
+  );
   const rows = useStableRows(rawRows);
   // Find in chat searches the rows as drawn, plus answers still being written
   // under a folded side question: they open where they already sit.
