@@ -200,21 +200,34 @@ interface AcpSessionContext {
   agentTurn: { readonly turnId: TurnId; readonly ended: Deferred.Deferred<void> } | undefined;
   /** When the agent's own turn last produced anything (ms since epoch). */
   agentTurnLastActivityMs: number;
+  /**
+   * The agent's own turn as far as the reader has read: begun (its id chosen
+   * then, `after` the prompt open at that point) and not yet ended, though the
+   * event fiber may not have opened it.
+   */
+  agentTurnAhead:
+    | { readonly turnId: TurnId; readonly after: AcpSessionContext["openPrompt"] }
+    | undefined;
+  /**
+   * The agent's own turn starts (by id) and ends the reader has read and the
+   * event fiber has not reached yet, oldest first: output just ahead of a
+   * start notice opens that turn.
+   */
+  readonly queuedAgentTurns: Array<TurnId | "end">;
   /** The turn each running tool call started in, for updates that land after it. */
   readonly toolCallTurns: Map<string, TurnId>;
   /** How the agent said the running prompt ended, from its own notice. */
   promptOutcome: AcpTurnOutcome | undefined;
   /**
-   * Set from a prompt's answer until its turn has closed. What the reader
-   * gets after the prompt's last update waits for it, so a turn the agent
-   * starts right after the prompt gets its own output.
+   * The prompt whose turn is open. `drained` once the reader is past its
+   * last output (the agent began a turn of its own after it), `closed` once
+   * its turn has closed.
    */
-  promptClosing: Deferred.Deferred<void> | undefined;
-  /** The agent's own turn, begun (and maybe ended) while a prompt's turn closed. */
-  pendingAgentTurn:
+  openPrompt:
     | {
-        readonly raw: { readonly method: string; readonly payload: unknown };
-        outcome?: AcpTurnOutcome;
+        readonly turnId: TurnId;
+        readonly drained: Deferred.Deferred<void>;
+        readonly closed: Deferred.Deferred<void>;
       }
     | undefined;
   /** The newest position the agent has listed, so a later prompt is placed after it. */
@@ -730,19 +743,17 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
     /**
      * Opens a turn the agent started itself (`agentTurns`): its wake-up
-     * after background work, opened on the extension's notice or on the
-     * first output that arrives while no turn runs, the way Claude's
-     * synthetic turns open.
+     * after background work, opened on the extension's notice (in order with
+     * the updates, `beginAgentTurnInOrder`) or on the first output that
+     * arrives while no turn runs, the way Claude's synthetic turns open.
      */
-    const openAgentTurn = (ctx: AcpSessionContext, raw: { method: string; payload: unknown }) =>
+    const openAgentTurn = (
+      ctx: AcpSessionContext,
+      raw: { method: string; payload: unknown },
+      turnId: TurnId = TurnId.make(crypto.randomUUID()),
+    ) =>
       Effect.gen(function* () {
-        // Begun as a prompt's turn closes: it opens once that turn has.
-        if (ctx.promptClosing !== undefined && ctx.agentTurn === undefined) {
-          ctx.pendingAgentTurn ??= { raw };
-          return;
-        }
         if (ctx.stopped || ctx.activeTurnId !== undefined) return;
-        const turnId = TurnId.make(crypto.randomUUID());
         ctx.activeTurnId = turnId;
         ctx.agentTurn = { turnId, ended: yield* Deferred.make<void>() };
         ctx.agentTurnLastActivityMs = Date.now();
@@ -766,20 +777,57 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         yield* watchAgentTurnQuiet(ctx, turnId).pipe(Effect.forkIn(ctx.scope));
       });
 
-    /** Closes the agent's own turn once every update queued before the end is out. */
-    const closeAgentTurn = (ctx: AcpSessionContext, outcome: AcpTurnOutcome) =>
+    /**
+     * The extension's notice that the agent began a turn of its own, reached
+     * in order. `after` is the prompt that was open when the notice arrived:
+     * if its turn is still open it has had all its output by now, so it may
+     * close without waiting for the reader, and the agent's turn opens once
+     * it has. Its answer is due; one that never comes is a stuck prompt, which
+     * Stop recycles.
+     */
+    const beginAgentTurnInOrder = (
+      ctx: AcpSessionContext,
+      raw: { method: string; payload: unknown },
+      after: AcpSessionContext["openPrompt"],
+      turnId: TurnId,
+    ) =>
+      Effect.gen(function* () {
+        ctx.queuedAgentTurns.shift();
+        if (after !== undefined && ctx.openPrompt === after) {
+          yield* Deferred.succeed(after.drained, undefined);
+          yield* Deferred.await(after.closed);
+        }
+        // Opened already by the output just ahead of this notice, or opens now.
+        yield* openAgentTurn(ctx, raw, turnId);
+        // Not opened (a turn already runs): requests go to the running one.
+        if (ctx.agentTurn?.turnId !== turnId && ctx.agentTurnAhead?.turnId === turnId) {
+          ctx.agentTurnAhead = undefined;
+        }
+      });
+
+    /**
+     * Closes the agent's own turn. Reached in order (the extension's end
+     * notice), everything before it is out and the runtime ended the reply at
+     * the boundary. From anywhere else (a sent message, a long quiet) the
+     * reply is ended and the queue flushed first.
+     */
+    const closeAgentTurn = (
+      ctx: AcpSessionContext,
+      outcome: AcpTurnOutcome,
+      reached: "in-order" | "out-of-order" = "out-of-order",
+    ) =>
       Effect.gen(function* () {
         const agentTurn = ctx.agentTurn;
-        if (agentTurn === undefined) {
-          if (ctx.pendingAgentTurn !== undefined) ctx.pendingAgentTurn.outcome = outcome;
-          return;
+        if (agentTurn === undefined) return;
+        if (reached === "out-of-order") {
+          // Its reply ends with it: the next turn's text is a message of its own.
+          yield* ctx.acp.closeAssistantSegment;
+          yield* ctx.acp.flushEvents();
+          if (ctx.agentTurn !== agentTurn) return;
         }
-        // Its reply ends with it: the next turn's text is a message of its own.
-        yield* ctx.acp.closeAssistantSegment;
-        yield* ctx.acp.flushEvents;
-        if (ctx.agentTurn !== agentTurn) return;
         yield* closeReasoning(ctx);
         ctx.agentTurn = undefined;
+        if (ctx.agentTurnAhead?.turnId === agentTurn.turnId) ctx.agentTurnAhead = undefined;
         if (ctx.activeTurnId === agentTurn.turnId) ctx.activeTurnId = undefined;
         ctx.session = { ...ctx.session, activeTurnId: undefined, updatedAt: yield* nowIso };
         yield* offerRuntimeEvent({
@@ -825,7 +873,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         if (earlier !== undefined) return earlier;
         if (ctx.activeTurnId !== undefined) return ctx.activeTurnId;
         if (!descriptor.agentTurns) return undefined;
-        yield* openAgentTurn(ctx, { method: "session/update", payload: {} });
+        // Output just ahead of a start notice is that turn's.
+        const next = ctx.queuedAgentTurns[0];
+        yield* openAgentTurn(
+          ctx,
+          { method: "session/update", payload: {} },
+          next === "end" ? undefined : next,
+        );
         return ctx.activeTurnId;
       });
 
@@ -1134,38 +1188,70 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             ),
           );
 
+          /**
+           * Shows a request from the agent in order with the output before it,
+           * naming the turn running there, and resolves with that turn once
+           * shown. While the reader waits on a prompt's answer to open a turn
+           * the agent began, it shows at once under that turn instead: the
+           * agent may hold the answer back until this request is answered.
+           * A queued show can't end up behind a hand-off for an agent that
+           * announces each turn before its requests and answers a prompt when
+           * it finishes, as Grok (the one agent with turns of its own) does.
+           */
+          const showRequest = (show: (turnId: TurnId | undefined) => Effect.Effect<void>) =>
+            Effect.gen(function* () {
+              const shown = yield* Deferred.make<TurnId | undefined>();
+              const showAs = (turnId: TurnId | undefined) =>
+                show(turnId).pipe(Effect.andThen(Deferred.succeed(shown, turnId)), Effect.asVoid);
+              const context = ctx;
+              const ahead = context?.agentTurnAhead;
+              if (context === undefined) {
+                yield* showAs(undefined);
+              } else if (ahead?.after !== undefined && context.openPrompt === ahead.after) {
+                yield* showAs(ahead.turnId);
+              } else {
+                yield* acp.inOrder(Effect.suspend(() => showAs(context.activeTurnId)));
+              }
+              return shown;
+            });
+
           const requestUserInput: AcpExtensionContext["requestUserInput"] = (request) =>
             Effect.gen(function* () {
               const requestId = ApprovalRequestId.make(crypto.randomUUID());
               const runtimeRequestId = RuntimeRequestId.make(requestId);
               const answers = yield* Deferred.make<ProviderUserInputAnswers>();
               pendingUserInputs.set(requestId, { answers });
-              yield* offerRuntimeEvent({
-                type: "user-input.requested",
-                ...(yield* makeEventStamp()),
-                provider: PROVIDER,
-                threadId: input.threadId,
-                turnId: ctx?.activeTurnId,
-                requestId: runtimeRequestId,
-                payload: { questions: request.questions },
-                ...(extensionSource
-                  ? {
-                      raw: {
-                        source: extensionSource,
-                        method: request.method,
-                        payload: request.payload,
-                      },
-                    }
-                  : {}),
-              });
+              const shown = yield* showRequest((turnId) =>
+                Effect.gen(function* () {
+                  yield* offerRuntimeEvent({
+                    type: "user-input.requested",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId,
+                    requestId: runtimeRequestId,
+                    payload: { questions: request.questions },
+                    ...(extensionSource
+                      ? {
+                          raw: {
+                            source: extensionSource,
+                            method: request.method,
+                            payload: request.payload,
+                          },
+                        }
+                      : {}),
+                  });
+                }),
+              );
               const resolved = yield* Deferred.await(answers);
               pendingUserInputs.delete(requestId);
+              const turnId = yield* Deferred.await(shown);
               yield* offerRuntimeEvent({
                 type: "user-input.resolved",
                 ...(yield* makeEventStamp()),
                 provider: PROVIDER,
                 threadId: input.threadId,
-                turnId: ctx?.activeTurnId,
+                turnId,
                 requestId: runtimeRequestId,
                 payload: { answers: resolved },
               });
@@ -1179,59 +1265,94 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             activeTurnId: () => ctx?.activeTurnId,
             logNative: (method, payload) => logNative(input.threadId, method, payload),
             requestUserInput,
+            // What the extension emits names the running turn, so it goes
+            // through the reader, in order with the updates and the turns the
+            // agent starts and ends around it.
             emitProposedPlan: (request) =>
-              Effect.gen(function* () {
-                yield* offerRuntimeEvent({
-                  type: "turn.proposed.completed",
-                  ...(yield* makeEventStamp()),
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  turnId: ctx?.activeTurnId,
-                  payload: { planMarkdown: request.planMarkdown },
-                  ...(extensionSource
-                    ? {
-                        raw: {
-                          source: extensionSource,
-                          method: request.method,
-                          payload: request.payload,
-                        },
-                      }
-                    : {}),
-                });
-              }),
+              acp.inOrder(
+                Effect.gen(function* () {
+                  yield* offerRuntimeEvent({
+                    type: "turn.proposed.completed",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: ctx?.activeTurnId,
+                    payload: { planMarkdown: request.planMarkdown },
+                    ...(extensionSource
+                      ? {
+                          raw: {
+                            source: extensionSource,
+                            method: request.method,
+                            payload: request.payload,
+                          },
+                        }
+                      : {}),
+                  });
+                }),
+              ),
             emitPlanUpdate: (request) =>
               ctx && extensionSource
-                ? emitPlanUpdate(
-                    ctx,
-                    request.plan,
-                    request.payload,
-                    extensionSource,
-                    request.method,
+                ? acp.inOrder(
+                    emitPlanUpdate(
+                      ctx,
+                      request.plan,
+                      request.payload,
+                      extensionSource,
+                      request.method,
+                    ),
                   )
                 : Effect.void,
             emitRuntimeEvent: (request) =>
-              Effect.gen(function* () {
-                const turnId = request.event.turnId ?? ctx?.activeTurnId;
-                const event = {
-                  ...request.event,
-                  ...(turnId ? { turnId } : {}),
-                  ...(yield* makeEventStamp()),
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  ...(extensionSource
-                    ? {
-                        raw: {
-                          source: extensionSource,
-                          method: request.method,
-                          payload: request.payload,
-                        },
-                      }
-                    : {}),
-                } as ProviderRuntimeEvent;
-                yield* offerRuntimeEvent(event);
-              }),
-            beginAgentTurn: (request) => (ctx ? openAgentTurn(ctx, request) : Effect.void),
-            endAgentTurn: (request) => (ctx ? closeAgentTurn(ctx, request.outcome) : Effect.void),
+              acp.inOrder(
+                Effect.gen(function* () {
+                  const turnId = request.event.turnId ?? ctx?.activeTurnId;
+                  const event = {
+                    ...request.event,
+                    ...(turnId ? { turnId } : {}),
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    ...(extensionSource
+                      ? {
+                          raw: {
+                            source: extensionSource,
+                            method: request.method,
+                            payload: request.payload,
+                          },
+                        }
+                      : {}),
+                  } as ProviderRuntimeEvent;
+                  yield* offerRuntimeEvent(event);
+                }),
+              ),
+            // Both run on the reader, where the notice falls: the turn's id is
+            // chosen here, so a request read after the start names it at once.
+            beginAgentTurn: (request) => {
+              if (!ctx) return Effect.void;
+              const turnId = TurnId.make(crypto.randomUUID());
+              const after = ctx.openPrompt;
+              ctx.agentTurnAhead = { turnId, after };
+              ctx.queuedAgentTurns.push(turnId);
+              return acp.markAgentTurnBoundary.pipe(
+                Effect.andThen(acp.inOrder(beginAgentTurnInOrder(ctx, request, after, turnId))),
+              );
+            },
+            endAgentTurn: (request) => {
+              const context = ctx;
+              if (!context) return Effect.void;
+              context.agentTurnAhead = undefined;
+              context.queuedAgentTurns.push("end");
+              return acp.markAgentTurnBoundary.pipe(
+                Effect.andThen(
+                  acp.inOrder(
+                    Effect.suspend(() => {
+                      context.queuedAgentTurns.shift();
+                      return closeAgentTurn(context, request.outcome, "in-order");
+                    }),
+                  ),
+                ),
+              );
+            },
             reportPromptOutcome: (outcome) =>
               Effect.sync(() => {
                 if (ctx && ctx.activeTurnId !== undefined && ctx.agentTurn === undefined) {
@@ -1305,34 +1426,39 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       }
                     : undefined;
                 const availableDecisions = acpAvailableDecisions(offered);
-                yield* offerRuntimeEvent(
-                  makeAcpRequestOpenedEvent({
-                    stamp: yield* makeEventStamp(),
-                    provider: PROVIDER,
-                    threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
-                    requestId: runtimeRequestId,
-                    permissionRequest,
-                    detail:
-                      permissionRequest.detail ??
-                      encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
-                      "[unserializable params]",
-                    args: params,
-                    ...(availableDecisions ? { availableDecisions } : {}),
-                    ...(decisionWarnings ? { decisionWarnings } : {}),
-                    source: "acp.jsonrpc",
-                    method: "session/request_permission",
-                    rawPayload: params,
+                const shown = yield* showRequest((turnId) =>
+                  Effect.gen(function* () {
+                    yield* offerRuntimeEvent(
+                      makeAcpRequestOpenedEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId,
+                        requestId: runtimeRequestId,
+                        permissionRequest,
+                        detail:
+                          permissionRequest.detail ??
+                          encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
+                          "[unserializable params]",
+                        args: params,
+                        ...(availableDecisions ? { availableDecisions } : {}),
+                        ...(decisionWarnings ? { decisionWarnings } : {}),
+                        source: "acp.jsonrpc",
+                        method: "session/request_permission",
+                        rawPayload: params,
+                      }),
+                    );
                   }),
                 );
                 const resolved = yield* Deferred.await(decision);
                 pendingApprovals.delete(requestId);
+                const turnId = yield* Deferred.await(shown);
                 yield* offerRuntimeEvent(
                   makeAcpRequestResolvedEvent({
                     stamp: yield* makeEventStamp(),
                     provider: PROVIDER,
                     threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
+                    turnId,
                     requestId: runtimeRequestId,
                     permissionRequest,
                     decision: resolved,
@@ -1417,10 +1543,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             turnStartLock: yield* Semaphore.make(1),
             agentTurn: undefined,
             agentTurnLastActivityMs: 0,
+            agentTurnAhead: undefined,
+            queuedAgentTurns: [],
             toolCallTurns: new Map(),
             promptOutcome: undefined,
-            promptClosing: undefined,
-            pendingAgentTurn: undefined,
+            openPrompt: undefined,
             newestPosition: resumedNewestPosition,
             stopped: false,
           };
@@ -1432,12 +1559,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   case "EventStreamBarrier": {
                     yield* Deferred.succeed(event.acknowledge, undefined);
                     // Past a prompt's last update, what follows belongs to a
-                    // later turn: it waits until the prompt's turn has closed
-                    // (and a turn the agent began meanwhile has opened).
-                    const closing = ctx.promptClosing;
-                    if (closing !== undefined) yield* Deferred.await(closing);
+                    // later turn: it waits until the prompt's turn has closed.
+                    if (event.holdUntil !== undefined) yield* Deferred.await(event.holdUntil);
                     return;
                   }
+                  case "InOrder":
+                    yield* event.run;
+                    return;
                   case "SessionStatus":
                     if (event.message === ctx.lastProviderStatus) {
                       return;
@@ -1710,6 +1838,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           // flight starts after it, never interleaved with it.
           yield* Fiber.await(ctx.promptFiber);
         }
+        // The reader catches up first, so a turn the agent began before this
+        // message is open (and ended below) rather than taking its output.
+        yield* ctx.acp.flushEvents();
         if (ctx.stopped) {
           return yield* new ProviderAdapterSessionNotFoundError({
             provider: PROVIDER,
@@ -1773,6 +1904,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             );
         }
         ctx.activeTurnId = turnId;
+        const prompt = {
+          turnId,
+          drained: yield* Deferred.make<void>(),
+          closed: yield* Deferred.make<void>(),
+        };
+        ctx.openPrompt = prompt;
         resetTurnState(ctx);
         ctx.pendingContextPreamble = undefined;
         ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
@@ -1803,10 +1940,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               ...(promptMeta ? { _meta: { ...promptMeta } } : {}),
             }),
           );
-          ctx.promptClosing = yield* Deferred.make<void>();
           // Deltas travel through the notification fiber; make sure every one
           // queued before the prompt returned is out before the turn closes.
-          yield* ctx.acp.flushEvents;
+          // The reader may be past them already, held at a turn the agent
+          // began after them (`beginAgentTurnInOrder`).
+          yield* Effect.raceFirst(
+            ctx.acp.flushEvents(prompt.closed),
+            Deferred.await(prompt.drained),
+          );
           // A turn that ends mid-thought (or on one) still settles its row.
           yield* closeReasoning(ctx);
           // Where the prompt landed, known before the turn reads as ended,
@@ -1908,17 +2049,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               if (ctx.activeTurnId === turnId) {
                 ctx.activeTurnId = undefined;
               }
-              const closing = ctx.promptClosing;
-              const pending = ctx.pendingAgentTurn;
-              ctx.promptClosing = undefined;
-              ctx.pendingAgentTurn = undefined;
-              // A turn the agent began while this one closed opens before the
-              // reader goes on to its output, and closes if it already ended.
-              if (pending !== undefined && !ctx.stopped) yield* openAgentTurn(ctx, pending.raw);
-              if (closing !== undefined) yield* Deferred.succeed(closing, undefined);
-              if (pending?.outcome !== undefined && !ctx.stopped) {
-                yield* closeAgentTurn(ctx, pending.outcome);
-              }
+              if (ctx.openPrompt === prompt) ctx.openPrompt = undefined;
+              yield* Deferred.succeed(prompt.closed, undefined);
             }),
           ),
         );

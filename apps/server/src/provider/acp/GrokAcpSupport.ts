@@ -56,7 +56,7 @@ import {
   GROK_PLAN_CAPTURED_REPLY,
   GROK_SESSION_NOTIFICATION_METHODS,
   GrokAskUserQuestionRequest,
-  grokAgentTurnStarted,
+  grokAgentTurnPromptId,
   grokAskUserQuestionReply,
   grokBackgroundChange,
   GrokExitPlanModeRequest,
@@ -684,12 +684,18 @@ export const GROK_ACP_DESCRIPTOR: AcpProviderDescriptor<GrokSettings> = {
                 : Effect.void,
           );
         }
+        // `queue/changed` repeats whenever Grok's queue moves, naming the same
+        // running prompt; each of its own turns begins once.
+        let begunAgentPromptId: string | undefined;
         for (const method of xaiMethods("queue/changed")) {
-          yield* context.acp.handleExtNotification(method, GrokQueueChanged, (notification) =>
-            isOwnSession(notification.sessionId) && grokAgentTurnStarted(notification)
-              ? context.beginAgentTurn({ method, payload: notification })
-              : Effect.void,
-          );
+          yield* context.acp.handleExtNotification(method, GrokQueueChanged, (notification) => {
+            const running = isOwnSession(notification.sessionId)
+              ? grokAgentTurnPromptId(notification)
+              : undefined;
+            if (running === undefined || running === begunAgentPromptId) return Effect.void;
+            begunAgentPromptId = running;
+            return context.beginAgentTurn({ method, payload: notification });
+          });
         }
         for (const method of xaiMethods("session/prompt_complete")) {
           yield* context.acp.handleExtNotification(method, GrokPromptComplete, (notification) => {
