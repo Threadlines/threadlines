@@ -122,12 +122,6 @@ const ACP_CANCEL_DEADLINE = Duration.seconds(15);
  * running inside the turn reports nothing until it changes or ends.
  */
 const ACP_AGENT_TURN_QUIET_LIMIT = Duration.minutes(15);
-/**
- * How long the reader holds an agent's own turn back for the prompt before
- * it, whose answer is due (it has had all its output). Bounds an agent that
- * never answers: its turn's output then joins the prompt's.
- */
-const ACP_PROMPT_HANDOFF_LIMIT = Duration.seconds(30);
 const ACP_AGENT_TURN_QUIET_CHECK = Duration.seconds(30);
 /**
  * The most turns a resume cursor remembers the agent's prompt positions for
@@ -765,19 +759,21 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
     /**
      * The extension's notice that the agent began a turn of its own, reached
-     * in order. A prompt whose turn is still open has had all its output by
-     * now, so it may close without waiting for the reader; the agent's turn
-     * opens once it has.
+     * in order. `after` is the prompt that was open when the notice arrived:
+     * if its turn is still open it has had all its output by now, so it may
+     * close without waiting for the reader, and the agent's turn opens once
+     * it has. Its answer is due; one that never comes is a stuck prompt, which
+     * Stop recycles.
      */
     const beginAgentTurnInOrder = (
       ctx: AcpSessionContext,
       raw: { method: string; payload: unknown },
+      after: AcpSessionContext["openPrompt"],
     ) =>
       Effect.gen(function* () {
-        const prompt = ctx.openPrompt;
-        if (prompt !== undefined) {
-          yield* Deferred.succeed(prompt.drained, undefined);
-          yield* Deferred.await(prompt.closed).pipe(Effect.timeoutOption(ACP_PROMPT_HANDOFF_LIMIT));
+        if (after !== undefined && ctx.openPrompt === after) {
+          yield* Deferred.succeed(after.drained, undefined);
+          yield* Deferred.await(after.closed);
         }
         yield* openAgentTurn(ctx, raw);
       });
@@ -1145,8 +1141,21 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             ),
           );
 
+          /**
+           * The turn a request from the agent belongs to. The agent waits on
+           * the answer, so its turn can't move on: once the reader has caught
+           * up to the request (past a turn the agent began just before it),
+           * the running turn is the request's.
+           */
+          const turnOfRequest = Effect.gen(function* () {
+            if (ctx === undefined) return undefined;
+            yield* acp.flushEvents();
+            return ctx.activeTurnId;
+          });
+
           const requestUserInput: AcpExtensionContext["requestUserInput"] = (request) =>
             Effect.gen(function* () {
+              const turnId = yield* turnOfRequest;
               const requestId = ApprovalRequestId.make(crypto.randomUUID());
               const runtimeRequestId = RuntimeRequestId.make(requestId);
               const answers = yield* Deferred.make<ProviderUserInputAnswers>();
@@ -1156,7 +1165,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 ...(yield* makeEventStamp()),
                 provider: PROVIDER,
                 threadId: input.threadId,
-                turnId: ctx?.activeTurnId,
+                turnId,
                 requestId: runtimeRequestId,
                 payload: { questions: request.questions },
                 ...(extensionSource
@@ -1176,7 +1185,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 ...(yield* makeEventStamp()),
                 provider: PROVIDER,
                 threadId: input.threadId,
-                turnId: ctx?.activeTurnId,
+                turnId,
                 requestId: runtimeRequestId,
                 payload: { answers: resolved },
               });
@@ -1253,7 +1262,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             beginAgentTurn: (request) =>
               ctx
                 ? acp.markAgentTurnBoundary.pipe(
-                    Effect.andThen(acp.inOrder(beginAgentTurnInOrder(ctx, request))),
+                    Effect.andThen(
+                      acp.inOrder(beginAgentTurnInOrder(ctx, request, ctx.openPrompt)),
+                    ),
                   )
                 : Effect.void,
             endAgentTurn: (request) =>
@@ -1315,6 +1326,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   const once = acpPermissionOptionId("accept", offered);
                   if (once !== undefined) return selected(once);
                 }
+                const turnId = yield* turnOfRequest;
                 const requestId = ApprovalRequestId.make(crypto.randomUUID());
                 const runtimeRequestId = RuntimeRequestId.make(requestId);
                 const decision = yield* Deferred.make<ProviderApprovalDecision>();
@@ -1340,7 +1352,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     stamp: yield* makeEventStamp(),
                     provider: PROVIDER,
                     threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
+                    turnId,
                     requestId: runtimeRequestId,
                     permissionRequest,
                     detail:
@@ -1362,7 +1374,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     stamp: yield* makeEventStamp(),
                     provider: PROVIDER,
                     threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
+                    turnId,
                     requestId: runtimeRequestId,
                     permissionRequest,
                     decision: resolved,
@@ -1746,6 +1758,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             threadId: input.threadId,
           });
         }
+        // The reader catches up first, so a turn the agent began before this
+        // message is open (and ended below) rather than taking its output.
+        yield* ctx.acp.flushEvents();
         // A message sent while the agent runs a turn of its own ends that
         // turn here; the agent takes the message after it, as Claude does.
         if (ctx.agentTurn !== undefined) {

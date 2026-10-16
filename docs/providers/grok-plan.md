@@ -588,10 +588,11 @@ Decisions that differ from the plan above:
   hands the work to the reader), so a wake-up that starts before the
   prompt's answer, or two back to back, each get their own output. A prompt
   whose turn is still open when its wake-up begins closes without waiting
-  for the reader (it has had all its output); the wake-up opens once it has,
-  held back at most 30 s for an answer that never comes. What the extension
-  emits that names the running turn (tasks, subagents, plans) goes through
-  the reader too.
+  for the reader (it has had all its output); the wake-up opens once it has.
+  What the extension emits that names the running turn (tasks, subagents,
+  plans) goes through the reader too, a new message waits for the reader to
+  catch up before it starts, and a question or approval names its turn once
+  the reader has reached it.
 
 - **Setup on a fresh install, live (temp HOME):** tile, one-click Install
   (no `~/.local/bin` links), then Sign in with Grok, Ready. Seen there, in a
