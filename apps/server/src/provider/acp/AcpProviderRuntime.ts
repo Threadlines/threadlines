@@ -9,7 +9,7 @@
  *
  * @module provider/acp/AcpProviderRuntime
  */
-import type { ProviderOptionSelection } from "@threadlines/contracts";
+import type { ProviderOptionSelection, RuntimeMode } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
@@ -37,7 +37,10 @@ export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> e
   AcpSessionRuntimeOptions,
   | "authMethodId"
   | "authenticateTimeoutMs"
+  | "cancelMeta"
   | "clientCapabilities"
+  | "contextUsage"
+  | "initializeMeta"
   | "sessionControls"
   | "spawn"
   | "stderrFailure"
@@ -52,6 +55,8 @@ export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> e
   readonly onSignInUrl?: (url: string) => Effect.Effect<void>;
   /** Overrides the descriptor's `authMethodId` (a sign-in flow names its method). */
   readonly authMethodId?: string;
+  /** The thread's runtime mode, for a chat session's process. */
+  readonly runtimeMode?: RuntimeMode;
 }
 
 /** What a runtime that meets a sign-in prompt fails with. */
@@ -70,9 +75,15 @@ export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
       onSignInUrl,
       authMethodId,
       onStderrLine,
+      runtimeMode,
       ...runtimeOptions
     } = input;
-    const planned = descriptor.spawn(settings, input.cwd, environment);
+    const planned = descriptor.spawn(
+      settings,
+      input.cwd,
+      environment,
+      runtimeMode ? { runtimeMode } : undefined,
+    );
     const spawn = Effect.isEffect(planned) ? yield* planned : planned;
     const signInUrlFromStderr = descriptor.signInUrlFromStderr;
     const resolvedAuthMethodId =
@@ -109,6 +120,9 @@ export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
         ...(descriptor.clientCapabilities
           ? { clientCapabilities: descriptor.clientCapabilities }
           : {}),
+        ...(descriptor.initializeMeta ? { initializeMeta: descriptor.initializeMeta } : {}),
+        ...(descriptor.cancelMeta ? { cancelMeta: descriptor.cancelMeta } : {}),
+        ...(descriptor.contextUsage ? { contextUsage: descriptor.contextUsage } : {}),
       }).pipe(
         Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner)),
       ),

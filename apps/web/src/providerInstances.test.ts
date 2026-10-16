@@ -59,6 +59,7 @@ describe("filterMaintainedProviderInstanceEntries", () => {
       provider({ provider: ProviderDriverKind.make("fx"), instanceId: "fx" }),
       provider({ provider: ProviderDriverKind.make("cursor"), instanceId: "cursor" }),
       provider({ provider: ProviderDriverKind.make("opencode"), instanceId: "opencode" }),
+      provider({ provider: ProviderDriverKind.make("grok"), instanceId: "grok" }),
       provider({ provider: ProviderDriverKind.make("retiredDriver"), instanceId: "retired" }),
     ]);
 
@@ -70,6 +71,7 @@ describe("filterMaintainedProviderInstanceEntries", () => {
       ProviderInstanceId.make("fx"),
       ProviderInstanceId.make("cursor"),
       ProviderInstanceId.make("opencode"),
+      ProviderInstanceId.make("grok"),
     ]);
   });
 

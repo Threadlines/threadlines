@@ -9,12 +9,9 @@ import {
   GEMINI_API_KEY_PAGE,
   readAntigravitySignInSetup,
 } from "@threadlines/shared/antigravitySignIn";
-import { LoaderIcon } from "lucide-react";
 import { useState } from "react";
 
-import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
-import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import {
   antigravityApplyLabel,
@@ -27,7 +24,12 @@ import {
   applyAntigravityDraft,
   removeAntigravityKey,
 } from "./antigravitySignIn.logic";
-import { useProviderConnectFlow } from "./useProviderConnectFlow";
+import {
+  SignInKeyField,
+  SignInMethodActions,
+  SignInMethodChoice,
+  useSignInMethodSave,
+} from "./SignInMethodChoice";
 
 const LOCATION_PLACEHOLDER: Partial<Record<AntigravityAuthMethod, string>> = {
   "oauth-business": "global",
@@ -53,9 +55,14 @@ export function AntigravitySignInMethods(props: {
     antigravityDraftFor(setup, setup.method),
   );
   const [replacingKey, setReplacingKey] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const login = useProviderConnectFlow({ instanceId: props.instanceId, flow: "login" });
+  const { saving, error, clearError, save } = useSignInMethodSave({
+    instanceId: props.instanceId,
+    onSave: props.onSave,
+    onSaved: () => {
+      setReplacingKey(false);
+      setDraft((current) => ({ ...current, key: "" }));
+    },
+  });
 
   const info = antigravityAuthMethodInfo(draft.method);
   const switching = draft.method !== setup.method;
@@ -67,75 +74,19 @@ export function AntigravitySignInMethods(props: {
   const pick = (method: AntigravityAuthMethod) => {
     setDraft(antigravityDraftFor(setup, method));
     setReplacingKey(false);
-    setError(null);
-  };
-
-  const save = async (next: ProviderInstanceConfig, runAfter: boolean) => {
-    setSaving(true);
-    setError(null);
-    try {
-      // A sign-in still running belongs to the settings being replaced; it
-      // must be over before the new settings reach the profile.
-      await login.stopAnyRun();
-      await props.onSave(next);
-      setReplacingKey(false);
-      setDraft((current) => ({ ...current, key: "" }));
-      // The server waits for the instance to pick up the save before it runs.
-      if (runAfter) login.start();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Couldn't save the sign-in method.");
-    } finally {
-      setSaving(false);
-    }
+    clearError();
   };
 
   const fieldId = (name: string) => `${props.idPrefix}-antigravity-${name}`;
 
   return (
     <div className="grid gap-3">
-      <div className="grid gap-1">
-        <p className="text-xs font-semibold text-foreground">Sign-in method</p>
-        <div role="radiogroup" aria-label="Sign-in method" className="grid">
-          {ANTIGRAVITY_AUTH_METHODS.map((method) => {
-            const selected = draft.method === method.id;
-            return (
-              <button
-                key={method.id}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                onClick={() => pick(method.id)}
-                className={cn(
-                  "flex min-w-0 items-start gap-2.5 rounded-sm px-2 py-1.5 text-left transition-colors hover:bg-muted/40",
-                  selected && "bg-muted/50",
-                )}
-              >
-                <span
-                  aria-hidden
-                  className={cn(
-                    "mt-0.5 flex size-3 shrink-0 items-center justify-center rounded-full border",
-                    selected ? "border-primary" : "border-border",
-                  )}
-                >
-                  {selected ? <span className="size-1.5 rounded-full bg-primary" /> : null}
-                </span>
-                <span className="grid min-w-0 gap-0.5">
-                  <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs">
-                    <span className="font-medium text-foreground">{method.name}</span>
-                    <span className="font-mono text-[10px] text-muted-foreground">
-                      {method.billing === "perUse" ? "Per use" : "Plan"}
-                    </span>
-                    {method.id === setup.method ? (
-                      <span className="text-[10px] text-success-foreground">Current</span>
-                    ) : null}
-                  </span>
-                  <span className="text-xs text-muted-foreground">{method.description}</span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <SignInMethodChoice
+        methods={ANTIGRAVITY_AUTH_METHODS}
+        selected={draft.method}
+        current={setup.method}
+        onPick={pick}
+      />
 
       {info.project !== "none" ? (
         <div className="grid gap-2 sm:grid-cols-2">
@@ -167,50 +118,20 @@ export function AntigravitySignInMethods(props: {
       ) : null}
 
       {info.keyEnvName !== null ? (
-        <div className="grid gap-1.5">
-          {showKeyInput ? (
-            <label className="grid gap-1" htmlFor={fieldId("key")}>
-              <span className="text-xs text-muted-foreground">
-                {draft.method === "gemini-api-key" ? "Gemini API key" : "Vertex AI key (optional)"}
-              </span>
-              <Input
-                id={fieldId("key")}
-                size="sm"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                value={draft.key}
-                onChange={(event) => setDraft({ ...draft, key: event.currentTarget.value })}
-              />
-            </label>
-          ) : (
-            <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
-              <span className="text-muted-foreground">Key saved.</span>
-              <Button
-                type="button"
-                size="xs"
-                variant="ghost"
-                className="h-6 px-1.5 text-xs"
-                onClick={() => setReplacingKey(true)}
-              >
-                Replace key
-              </Button>
-              {!switching ? (
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  className="h-6 px-1.5 text-xs text-muted-foreground"
-                  disabled={saving}
-                  onClick={() =>
-                    void save(removeAntigravityKey(props.instance, draft.method), false)
-                  }
-                >
-                  Remove key
-                </Button>
-              ) : null}
-            </div>
-          )}
+        <SignInKeyField
+          id={fieldId("key")}
+          label={draft.method === "gemini-api-key" ? "Gemini API key" : "Vertex AI key (optional)"}
+          value={draft.key}
+          onChange={(key) => setDraft({ ...draft, key })}
+          editing={showKeyInput}
+          onReplace={() => setReplacingKey(true)}
+          onRemove={
+            switching
+              ? undefined
+              : () => void save(removeAntigravityKey(props.instance, draft.method), false)
+          }
+          busy={saving}
+        >
           {draft.method === "gemini-api-key" ? (
             <button
               type="button"
@@ -220,11 +141,7 @@ export function AntigravitySignInMethods(props: {
               Get a key in Google AI Studio
             </button>
           ) : null}
-          <p className="text-xs text-muted-foreground">
-            Keys are saved in a private file on the computer that runs Threadlines, never in
-            settings, and never shown again.
-          </p>
-        </div>
+        </SignInKeyField>
       ) : null}
 
       {draft.method === "agent-platform" ? (
@@ -239,35 +156,20 @@ export function AntigravitySignInMethods(props: {
         </p>
       ) : null}
 
-      {changed ? (
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            size="xs"
-            disabled={!ready || saving}
-            onClick={() =>
-              void save(
-                applyAntigravityDraft(props.instance, draft),
-                antigravityRunsAfterSave(setup, draft),
-              )
-            }
-          >
-            {saving ? <LoaderIcon className="size-2.5 animate-spin" /> : null}
-            {antigravityApplyLabel(setup, draft)}
-          </Button>
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost"
-            className="text-muted-foreground"
-            disabled={saving}
-            onClick={() => pick(setup.method)}
-          >
-            Cancel
-          </Button>
-        </div>
-      ) : null}
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      <SignInMethodActions
+        changed={changed}
+        ready={ready}
+        saving={saving}
+        applyLabel={antigravityApplyLabel(setup, draft)}
+        onApply={() =>
+          void save(
+            applyAntigravityDraft(props.instance, draft),
+            antigravityRunsAfterSave(setup, draft),
+          )
+        }
+        onCancel={() => pick(setup.method)}
+        error={error}
+      />
     </div>
   );
 }

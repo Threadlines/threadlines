@@ -31,6 +31,10 @@ export const runtimeModeConfig: Record<RuntimeMode, RuntimeModePresentation> = {
   "approval-required": {
     label: "Supervised",
     description: "Asks before commands and file changes.",
+    // Muse's strictest profile (Ask me) lets edits inside the project through.
+    descriptionByDriver: {
+      muse: "Edits in the project run; asks before commands and outside access.",
+    },
     icon: LockIcon,
   },
   "auto-accept-edits": {
@@ -39,6 +43,7 @@ export const runtimeModeConfig: Record<RuntimeMode, RuntimeModePresentation> = {
     descriptionByDriver: {
       claudeAgent: "Edits run without asking; commands still ask.",
       codex: "Edits and workspace commands run; asks to go outside or online.",
+      muse: "Same as Supervised: Muse never asks for edits in the project.",
     },
     icon: PenLineIcon,
   },

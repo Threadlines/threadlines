@@ -133,6 +133,8 @@ function createBrowserLocalApi(resolveRpcClient?: () => WsRpcClient | null): Loc
         ),
       consumeProviderRateLimitResetCredit: (input) =>
         withServer((server) => server.consumeProviderRateLimitResetCredit(input)),
+      setProviderDataSharing: (input) =>
+        withServer((server) => server.setProviderDataSharing(input)),
       updateProvider: (input) => withServer((server) => server.updateProvider(input)),
       addProviderAccount: (input) => withServer((server) => server.addProviderAccount(input)),
       removeProviderAccount: (input) => withServer((server) => server.removeProviderAccount(input)),

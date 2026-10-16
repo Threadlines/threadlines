@@ -9,6 +9,12 @@ export interface ServerProviderShape {
   readonly refresh: Effect.Effect<ServerProvider>;
   readonly streamChanges: Stream.Stream<ServerProvider>;
   /**
+   * The current snapshot, then every change after it, with nothing lost in
+   * between: joining and reading happen as one step. Sources without it only
+   * stream changes, and a reader reads `getSnapshot` beside them.
+   */
+  readonly streamSnapshots?: Stream.Stream<ServerProvider>;
+  /**
    * Apply an out-of-band update to the current snapshot without running a
    * probe — e.g. folding a mid-turn rate-limit notification into
    * `accountUsage`. The patch returns the next snapshot, or `null` to leave

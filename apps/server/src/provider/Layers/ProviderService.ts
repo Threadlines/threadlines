@@ -1800,7 +1800,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.kind": routed.adapter.provider,
           "provider.thread_id": input.threadId,
         });
+        // The cursor as the runtime last had it: an ACP agent records where
+        // each prompt landed after its turn ends, past the turn's own save.
+        let lastResumeCursor: unknown;
         if (routed.isActive) {
+          lastResumeCursor = (yield* routed.adapter.listSessions()).find(
+            (session) => session.threadId === routed.threadId,
+          )?.resumeCursor;
           yield* routed.adapter.stopSession(routed.threadId);
         }
         // A side answer's runtime is disposable: nothing ever resumes it, so
@@ -1813,6 +1819,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             provider: routed.adapter.provider,
             providerInstanceId: routed.instanceId,
             status: "stopped",
+            ...(lastResumeCursor !== undefined ? { resumeCursor: lastResumeCursor } : {}),
             runtimePayload: {
               activeTurnId: null,
             },
@@ -1943,7 +1950,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.rollback_turns": input.numTurns,
         "provider.rollback_target_user_message_id": input.targetUserMessageId ?? "",
       });
-      yield* routed.adapter.rollbackThread(
+      const rolledBack = yield* routed.adapter.rollbackThread(
         routed.threadId,
         input.numTurns,
         input.targetUserMessageId !== undefined
@@ -1964,7 +1971,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         turns: input.numTurns,
       });
       return {
-        conversationRolledBack: routed.adapter.capabilities.conversationRollback !== "none",
+        conversationRolledBack:
+          rolledBack.conversationRolledBack ??
+          routed.adapter.capabilities.conversationRollback !== "none",
       };
     }).pipe(
       withMetrics({

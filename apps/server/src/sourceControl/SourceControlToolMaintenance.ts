@@ -287,7 +287,7 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
               updaterStarted ||= output.exitCode === 2;
             }
           }
-          yield* Effect.sync(() => refreshWindowsPath({ platform }));
+          yield* Effect.promise(() => refreshWindowsPath({ platform, afterInstall: true }));
           yield* setState({
             target,
             operation,

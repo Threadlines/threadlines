@@ -20,7 +20,7 @@ import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { useIsCommunityAgent } from "../settings/communityAgents";
-import { useAntigravityNextStep } from "../settings/useAntigravityNextStep";
+import { useSignInNextStep } from "../settings/useSignInNextStep";
 import {
   type ProviderConnectFlowController,
   useProviderConnectFlow,
@@ -104,22 +104,22 @@ export function ProviderSignInButton({
   readonly variant?: "default" | "outline" | "ghost" | undefined;
   readonly className?: string | undefined;
 }): ReactNode {
-  // Antigravity's sign-in follows its method; a missing key or project can
-  // only be fixed on its Account tab.
-  const antigravityStep = useAntigravityNextStep(view.instanceId);
+  // Antigravity's and Grok's sign-in follow their method; a missing key or
+  // project can only be fixed on the Account tab.
+  const methodStep = useSignInNextStep(view.instanceId);
   // A community agent's sign-in may ask for a page to be opened, or be a
   // command to type into: both need the room its Account tab has.
   const isCommunityAgent = useIsCommunityAgent(view.instanceId);
-  if (antigravityStep?.kind === "settings") {
+  if (methodStep?.kind === "settings") {
     return (
       <ProviderSignInSettingsLink
         instanceId={view.instanceId}
         className={className}
-        label={antigravityStep.label}
+        label={methodStep.label}
       />
     );
   }
-  const buttonLabel = antigravityStep?.label ?? label;
+  const buttonLabel = methodStep?.label ?? label;
   if (isCommunityAgent) {
     return <ProviderSignInSettingsLink instanceId={view.instanceId} className={className} />;
   }

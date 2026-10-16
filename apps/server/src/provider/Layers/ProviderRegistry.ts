@@ -27,11 +27,14 @@ import {
   ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
+  ServerProviderDataSharingError,
   ServerProviderRateLimitResetCreditError,
   type ServerProviderUpdateState,
 } from "@threadlines/contracts";
 import { randomUUID } from "node:crypto";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
@@ -397,12 +400,18 @@ const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
 // after `ProviderInstanceRegistry` rebuilds an instance (e.g. because
 // its settings changed), a fresh source rides the new PubSub instead
 // of a closed one.
+/** How long a sync waits for a new instance's first snapshot. */
+const FIRST_SNAPSHOT_WAIT = Duration.seconds(10);
+
 const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource => ({
   instanceId: instance.instanceId,
   driverKind: instance.driverKind,
   getSnapshot: instance.snapshot.getSnapshot,
   refresh: instance.snapshot.refresh,
   streamChanges: instance.snapshot.streamChanges,
+  ...(instance.snapshot.streamSnapshots
+    ? { streamSnapshots: instance.snapshot.streamSnapshots }
+    : {}),
 });
 
 export const ProviderRegistryLive = Layer.effect(
@@ -745,6 +754,31 @@ export const ProviderRegistryLive = Layer.effect(
       return { outcome, providers };
     });
 
+    const setDataSharing = Effect.fn("setDataSharing")(function* (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly enabled: boolean;
+    }) {
+      const instance = yield* instanceRegistry.getInstance(input.instanceId);
+      const set = instance?.dataSharing?.set;
+      if (!set) {
+        return yield* new ServerProviderDataSharingError({
+          instanceId: input.instanceId,
+          reason: "This provider has no data-sharing choice.",
+        });
+      }
+      yield* set(input.enabled).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ServerProviderDataSharingError({
+              instanceId: input.instanceId,
+              reason: cause.message,
+            }),
+        ),
+      );
+      const providers = yield* refreshInstance(input.instanceId);
+      return { providers };
+    });
+
     const getProviderMaintenanceCapabilitiesForInstance = Effect.fn(
       "getProviderMaintenanceCapabilitiesForInstance",
     )(function* (instanceId: ProviderInstanceId, provider: ProviderDriverKind) {
@@ -812,32 +846,50 @@ export const ProviderRegistryLive = Layer.effect(
           newlyAdded.push([instanceId, instance] as const);
         }
 
-        // Fork long-lived subscriptions to each new/rebuilt instance's
-        // change stream before reading its current snapshot. If the
-        // driver's own initial probe finishes during this sync, either
-        // the current read or the active subscriber observes the result.
+        // Follow each new or rebuilt instance. One that opens on its current
+        // snapshot (every managed provider) is followed by a single fiber,
+        // which applies that snapshot and then each change in order, so a
+        // read and a change are never applied out of order; this sync waits
+        // for the first. One that only streams changes gets its stream forked
+        // first and is read once after, to cover its startup probe.
+        const firstApplied: Array<Deferred.Deferred<void>> = [];
+        const readOnce: Array<ProviderSnapshotSource> = [];
         for (const [, instance] of newlyAdded) {
           const source = buildSnapshotSource(instance);
-          yield* Stream.runForEach(source.streamChanges, (provider) =>
-            correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider)),
-          ).pipe(Effect.forkScoped);
+          const apply = (provider: ServerProvider) =>
+            correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider));
+          if (source.streamSnapshots !== undefined) {
+            const applied = yield* Deferred.make<void>();
+            firstApplied.push(applied);
+            yield* Stream.runForEach(source.streamSnapshots, (provider) =>
+              apply(provider).pipe(Effect.ensuring(Deferred.succeed(applied, undefined))),
+            ).pipe(Effect.ensuring(Deferred.succeed(applied, undefined)), Effect.forkScoped);
+          } else {
+            yield* Stream.runForEach(source.streamChanges, apply).pipe(Effect.forkScoped);
+            readOnce.push(source);
+          }
         }
         yield* Effect.yieldNow;
+        // Bounded: a source that never opens must not hold up every later
+        // reconcile; its fiber still applies the snapshot when it comes.
+        yield* Effect.forEach(
+          firstApplied,
+          (applied) => Deferred.await(applied).pipe(Effect.timeoutOption(FIRST_SNAPSHOT_WAIT)),
+          { discard: true },
+        );
 
         // Snapshot current state without starting a probe. Managed providers
         // launch their startup refresh independently, so this closes the
         // subscription race without putting external work on the registry
         // or HTTP server construction path.
         yield* Effect.forEach(
-          newlyAdded,
-          ([, instance]) =>
-            Effect.gen(function* () {
-              const source = buildSnapshotSource(instance);
-              const provider = yield* source.getSnapshot;
-              yield* correlateSnapshotWithSource(source, provider).pipe(
-                Effect.flatMap(syncProvider),
-              );
-            }).pipe(Effect.ignoreCause({ log: true })),
+          readOnce,
+          (source) =>
+            source.getSnapshot.pipe(
+              Effect.flatMap((provider) => correlateSnapshotWithSource(source, provider)),
+              Effect.flatMap(syncProvider),
+              Effect.ignoreCause({ log: true }),
+            ),
           { concurrency: "unbounded", discard: true },
         );
         yield* upsertProviders(unavailableProviders, {
@@ -947,6 +999,7 @@ export const ProviderRegistryLive = Layer.effect(
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       consumeRateLimitResetCredit,
+      setDataSharing,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
       get streamChanges() {

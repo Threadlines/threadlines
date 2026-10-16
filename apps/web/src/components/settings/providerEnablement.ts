@@ -4,7 +4,7 @@
  *
  * Both flip `enabled` on the instance envelope through
  * `buildProviderInstanceUpdatePatch`, which promotes a default slot to an
- * explicit instance the first time it is edited. Setup flips up to six at
+ * explicit instance the first time it is edited. Setup flips several at
  * once, so changes fold over one working copy of the settings: patching each
  * from the original would let the last write drop the others, and building a
  * fresh instance map would drop custom instances.

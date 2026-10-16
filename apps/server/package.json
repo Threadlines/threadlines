@@ -49,6 +49,7 @@
     "@effect/platform-node": "catalog:",
     "@effect/platform-node-shared": "catalog:",
     "@effect/sql-sqlite-bun": "catalog:",
+    "@muse-code/sdk": "1.4.9",
     "@opencode/client": "2.0.26",
     "@pierre/diffs": "catalog:",
     "effect": "catalog:",

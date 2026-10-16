@@ -40,16 +40,20 @@ import { formatProviderDriverKindLabel } from "~/providerModels";
 export const USAGE_PROVIDER_LABELS: Record<UsageProviderKind, string> = {
   claude: "Claude Code",
   codex: "Codex",
+  grok: "Grok",
 };
 
 /** For the narrow columns where the product name would not fit. */
 export const USAGE_PROVIDER_SHORT_LABELS: Record<UsageProviderKind, string> = {
   claude: "Claude",
   codex: "Codex",
+  grok: "Grok",
 };
 
 /**
- * The two brand hues, defined in `index.css` for both themes.
+ * The brand hues, defined in `index.css` for both themes. xAI's mark is
+ * black and white like OpenAI's, so Grok takes a neutral of its own, apart
+ * from Codex's near-black (near-white in dark) and the "Other models" grey.
  *
  * Held as CSS variables rather than utility classes because the page paints
  * them into inline styles for bars and meters.
@@ -57,10 +61,21 @@ export const USAGE_PROVIDER_SHORT_LABELS: Record<UsageProviderKind, string> = {
 export const USAGE_PROVIDER_COLORS: Record<UsageProviderKind, string> = {
   claude: "var(--provider-claude)",
   codex: "var(--provider-codex)",
+  grok: "var(--provider-grok)",
 };
 
 /** Reading order for legends and rows: the same order every time. */
-export const USAGE_PROVIDER_READING_ORDER: readonly UsageProviderKind[] = ["claude", "codex"];
+export const USAGE_PROVIDER_READING_ORDER: readonly UsageProviderKind[] = [
+  "claude",
+  "codex",
+  "grok",
+];
+
+/**
+ * The providers the loading rows stand in for: the two nearly everyone has.
+ * A row per provider would flash an empty Grok row for everyone without it.
+ */
+export const USAGE_PROVIDER_SKELETON_ORDER: readonly UsageProviderKind[] = ["claude", "codex"];
 
 /**
  * The per-model series colors from `index.css`, in stacking order. The order
@@ -970,6 +985,7 @@ export interface UsagePlanLimitRow {
 const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKind> = new Map([
   [ProviderDriverKind.make("claudeAgent"), "claude"],
   [ProviderDriverKind.make("codex"), "codex"],
+  [ProviderDriverKind.make("grok"), "grok"],
 ]);
 
 /**

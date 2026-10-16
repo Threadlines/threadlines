@@ -19,6 +19,8 @@ describe("deriveProviderInstanceConfigMap", () => {
       "codex",
       "cursor",
       "fx",
+      "grok",
+      "muse",
       "opencode",
     ]);
   });

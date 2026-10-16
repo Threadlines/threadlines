@@ -22,6 +22,8 @@ import { makeInMemoryStdio } from "./_internal/stdio.ts";
 
 const InitializeRequest = jsonRpcRequest("initialize", AcpSchema.InitializeRequest);
 const InitializeResponse = jsonRpcResponse(AcpSchema.InitializeResponse);
+const PromptRequest = jsonRpcRequest("session/prompt", AcpSchema.PromptRequest);
+const PromptResponse = jsonRpcResponse(AcpSchema.PromptResponse);
 const ExtRequest = jsonRpcRequest("x/test", Schema.Struct({ hello: Schema.String }));
 const ExtResponse = jsonRpcResponse(Schema.Struct({ ok: Schema.Boolean }));
 const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
@@ -371,6 +373,49 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
 
         assert.equal(yield* Ref.get(successfulHandlers), 1);
       }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
+    }),
+  );
+
+  it.effect("stops a prompt with a bare session/cancel and never sends RPC control messages", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const scope = yield* Scope.make();
+      const acp = yield* AcpClient.make(stdio).pipe(Effect.provideService(Scope.Scope, scope));
+      const decodePromptRequest = Schema.decodeEffect(Schema.fromJsonString(PromptRequest));
+      const startPrompt = Effect.gen(function* () {
+        const fiber = yield* acp.agent
+          .prompt({ sessionId: "session-1", prompt: [{ type: "text", text: "hello" }] })
+          .pipe(Effect.forkScoped);
+        const request = yield* decodePromptRequest(yield* Queue.take(output));
+        return { fiber, id: request.id };
+      });
+      const cancelFrame =
+        '{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"session-1"}}\n';
+
+      // Stop: the prompt stays pending while session/cancel goes out with no
+      // `id` (agents answer an `id` with "Method not found" and keep running),
+      // and the agent's cancelled answer ends it.
+      const first = yield* startPrompt;
+      yield* acp.agent.cancel({ sessionId: "session-1" });
+      assert.equal(yield* Queue.take(output), cancelFrame);
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(PromptResponse, {
+          jsonrpc: "2.0",
+          id: first.id,
+          result: { stopReason: "cancelled" },
+        }),
+      );
+      assert.equal((yield* Fiber.join(first.fiber)).stopReason, "cancelled");
+
+      // An abandoned prompt (a session torn down mid-turn) must not put the
+      // RPC client's `@effect/rpc/Interrupt` on the wire.
+      const second = yield* startPrompt;
+      yield* Fiber.interrupt(second.fiber);
+      yield* acp.agent.cancel({ sessionId: "session-1" });
+      assert.equal(yield* Queue.take(output), cancelFrame);
+      assert.equal(yield* Queue.size(output), 0);
+      yield* Scope.close(scope, Exit.void);
     }),
   );
 

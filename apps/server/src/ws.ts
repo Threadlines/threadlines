@@ -994,7 +994,7 @@ const makeWsRpcLayer = (currentSession: {
         [WS_METHODS.serverRefreshProviders]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
-            Effect.sync(() => refreshWindowsPath()).pipe(
+            Effect.promise(() => refreshWindowsPath()).pipe(
               Effect.andThen(
                 input.instanceId !== undefined
                   ? // "Check again" on a community agent starts it, whatever it last found.
@@ -1103,6 +1103,12 @@ const makeWsRpcLayer = (currentSession: {
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverSetProviderDataSharing]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSetProviderDataSharing,
+            providerRegistry.setDataSharing(input),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           // Through the community agents service: it sends everything but a
           // community agent straight on, and gives a community agent only
@@ -1181,7 +1187,7 @@ const makeWsRpcLayer = (currentSession: {
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
-            Effect.sync(() => refreshWindowsPath()).pipe(
+            Effect.promise(() => refreshWindowsPath()).pipe(
               Effect.andThen(sourceControlDiscovery.discover),
             ),
             {

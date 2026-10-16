@@ -8,7 +8,9 @@ import {
   ClaudeAI,
   CursorIcon,
   FxIcon,
+  GrokIcon,
   Icon,
+  MuseIcon,
   OpenAI,
   OpenCodeIcon,
 } from "../Icons";
@@ -27,6 +29,8 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>
   [ProviderDriverKind.make("cursor")]: CursorIcon,
   [ProviderDriverKind.make("opencode")]: OpenCodeIcon,
   [ProviderDriverKind.make("antigravity")]: AntigravityIcon,
+  [ProviderDriverKind.make("muse")]: MuseIcon,
+  [ProviderDriverKind.make("grok")]: GrokIcon,
 };
 
 /** The longest registry icon the contract allows (`ServerProviderCommunity.iconSvg`). */

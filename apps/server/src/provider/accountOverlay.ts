@@ -209,3 +209,208 @@ export const relinkSplitHardLink = Effect.fn("accountOverlay.relinkSplitHardLink
     });
   },
 );
+
+/**
+ * What an overlay made: every link (so a link the user made in a folder they
+ * chose is never replaced), which of them are Windows hard links (re-linked
+ * after an atomic save splits them), and where each link pointed (so one the
+ * user has since pointed elsewhere is never removed).
+ */
+const OVERLAY_STATE_FILE = ".threadlines-overlay.json";
+const OverlayState = Schema.Struct({
+  linked: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  hardLinked: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  targets: Schema.Record(Schema.String, Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+});
+const decodeOverlayState = Schema.decodeUnknownOption(Schema.fromJsonString(OverlayState));
+
+export interface AccountOverlayResult {
+  /** The history entry links to the main folder, so threads resume across the two. */
+  readonly sharesMainHistory: boolean;
+}
+
+/**
+ * Lays an account folder over an agent's main folder: an allowlist of
+ * entries links back to it, login files stay the account's own.
+ *
+ * Nothing real is ever moved or overwritten: an entry the account already has
+ * stays its own (and is logged), so pointing an account at an existing folder
+ * only adds links for what it lacks. Shared directories are created in the
+ * main folder first, so an account never starts a private copy of one.
+ */
+export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(function* (input: {
+  /** Names the agent in errors and logs, e.g. "Claude". */
+  readonly agent: string;
+  readonly mainDir: string;
+  readonly accountDir: string;
+  readonly sharedDirectories: ReadonlyArray<string>;
+  readonly sharedFiles: ReadonlyArray<string>;
+  /** Must be the account's own: a link here would share or leak a login. */
+  readonly privateFiles: ReadonlyArray<string>;
+  /** The shared directory that holds conversation history. */
+  readonly historyEntry: string;
+  readonly platform?: NodeJS.Platform;
+}): Effect.fn.Return<AccountOverlayResult, AccountOverlayError, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const platform = input.platform ?? process.platform;
+  const mainDir = path.resolve(input.mainDir);
+  const accountDir = path.resolve(input.accountDir);
+  if (mainDir === accountDir) {
+    return yield* new AccountOverlayError({
+      detail: `A ${input.agent} account folder must be different from the main ${input.agent} folder.`,
+    });
+  }
+
+  const mapFsError = (detail: string) =>
+    Effect.mapError((cause: unknown) => new AccountOverlayError({ detail, cause }));
+
+  yield* fileSystem
+    .makeDirectory(accountDir, { recursive: true, mode: 0o700 })
+    .pipe(mapFsError(`Could not create the ${input.agent} account folder '${accountDir}'.`));
+  yield* Effect.forEach(
+    input.sharedDirectories,
+    (name) =>
+      fileSystem
+        .makeDirectory(path.join(mainDir, name), { recursive: true })
+        .pipe(mapFsError(`Could not create '${path.join(mainDir, name)}'.`)),
+    { concurrency: "unbounded", discard: true },
+  );
+
+  // A login file that links into the main folder would share the terminal's
+  // login: removed. One that points elsewhere is the user's own arrangement
+  // in a folder they chose, and stays.
+  for (const entryName of input.privateFiles) {
+    const state = yield* readLinkState(fileSystem, path.join(accountDir, entryName));
+    if (state._tag !== "Symlink") continue;
+    const target = path.resolve(accountDir, state.target);
+    const relative = path.relative(mainDir, target);
+    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+      yield* removeLinkIfPresent({ fileSystem, accountPath: accountDir, entryName });
+    } else {
+      yield* Effect.logWarning(`${input.agent} account folder keeps a login link of its own`, {
+        accountDir,
+        entryName,
+      });
+    }
+  }
+
+  const statePath = path.join(accountDir, OVERLAY_STATE_FILE);
+  const previousState = yield* fileSystem.readFileString(statePath).pipe(
+    Effect.map((raw) => decodeOverlayState(raw)),
+    Effect.orElseSucceed(() => undefined),
+  );
+  const previouslyLinked = new Set(
+    previousState?._tag === "Some" ? previousState.value.linked : [],
+  );
+  const previouslyHardLinked = new Set(
+    previousState?._tag === "Some" ? previousState.value.hardLinked : [],
+  );
+  const previousTargets: Readonly<Record<string, string>> =
+    previousState?._tag === "Some" ? previousState.value.targets : {};
+  const linked = new Set<string>();
+  const hardLinked = new Set<string>();
+  const targets: Record<string, string> = {};
+  const kept: string[] = [];
+  let sharesMainHistory = false;
+
+  for (const entryName of input.sharedDirectories) {
+    const result = yield* linkSharedEntry({
+      fileSystem,
+      sharedPath: mainDir,
+      accountPath: accountDir,
+      entryName,
+      platform,
+      foreignLink: previouslyLinked.has(entryName) ? "replace" : "keep",
+    });
+    if (result._tag === "Conflict") {
+      kept.push(entryName);
+      continue;
+    }
+    linked.add(entryName);
+    targets[entryName] = path.join(mainDir, entryName);
+    if (entryName === input.historyEntry) sharesMainHistory = true;
+  }
+
+  for (const entryName of input.sharedFiles) {
+    const mainHasFile = yield* fileSystem
+      .exists(path.join(mainDir, entryName))
+      .pipe(Effect.orElseSucceed(() => false));
+    if (!mainHasFile) {
+      // A link this overlay made, to a file the main folder no longer has
+      // (or to a main folder it no longer follows), goes: while it still
+      // points where the overlay pointed it, or at nothing. The account's
+      // own copy, and a link the user pointed elsewhere, stay.
+      if (previouslyLinked.has(entryName)) {
+        const linkPath = path.join(accountDir, entryName);
+        const state = yield* readLinkState(fileSystem, linkPath);
+        const made = previousTargets[entryName];
+        const unchanged =
+          state._tag === "Symlink" &&
+          made !== undefined &&
+          path.resolve(accountDir, state.target) === made;
+        const dangling =
+          state._tag === "Symlink" &&
+          !(yield* fileSystem.exists(linkPath).pipe(Effect.orElseSucceed(() => false)));
+        if (unchanged || dangling) {
+          yield* removeLinkIfPresent({ fileSystem, accountPath: accountDir, entryName });
+        }
+      }
+      continue;
+    }
+    if (platform === "win32" && previouslyHardLinked.has(entryName)) {
+      yield* relinkSplitHardLink({
+        fileSystem,
+        sharedPath: mainDir,
+        accountPath: accountDir,
+        entryName,
+      });
+    }
+    const result = yield* linkSharedEntry({
+      fileSystem,
+      sharedPath: mainDir,
+      accountPath: accountDir,
+      entryName,
+      platform,
+      foreignLink: previouslyLinked.has(entryName) ? "replace" : "keep",
+    });
+    if (result._tag === "Conflict") {
+      kept.push(entryName);
+      continue;
+    }
+    linked.add(entryName);
+    targets[entryName] = path.join(mainDir, entryName);
+    if (result.kind === "hardLink") hardLinked.add(entryName);
+  }
+
+  if (kept.length > 0) {
+    yield* Effect.logWarning(`${input.agent} account folder keeps its own copies`, {
+      accountDir,
+      entries: kept,
+    });
+  }
+  const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) =>
+    a.size === b.size && [...a].every((name) => b.has(name));
+  const sameTargets =
+    Object.keys(targets).length === Object.keys(previousTargets).length &&
+    Object.entries(targets).every(([name, target]) => previousTargets[name] === target);
+  if (
+    !sameSet(linked, previouslyLinked) ||
+    !sameSet(hardLinked, previouslyHardLinked) ||
+    !sameTargets
+  ) {
+    yield* fileSystem
+      .writeFileString(
+        statePath,
+        JSON.stringify({
+          linked: [...linked].toSorted(),
+          hardLinked: [...hardLinked].toSorted(),
+          targets,
+        }),
+      )
+      .pipe(mapFsError(`Could not write '${statePath}'.`));
+  }
+  return { sharesMainHistory };
+});
