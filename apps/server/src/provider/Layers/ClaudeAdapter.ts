@@ -523,6 +523,9 @@ interface ClaudeSessionContext {
   /** The session's workflow runs: what was last reported of each, so only
    *  changes go out. See ClaudeWorkflowRuns.ts. */
   readonly workflowRuns: ClaudeWorkflowRunTracker;
+  /** Append-only messages sent whose own empty result has not come back yet.
+   *  The CLI answers each with a zero-turn result that ends nothing. */
+  pendingAppendOnlyResults: number;
   lastEmittedPlanTrackerFingerprint: string | undefined;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
@@ -2278,6 +2281,10 @@ function buildClaudeDocumentContentBlock(input: {
   };
 }
 
+function isAppendOnlyUserMessage(message: SDKUserMessage): boolean {
+  return (message as { readonly shouldQuery?: boolean }).shouldQuery === false;
+}
+
 /**
  * The SDK messages one turn or steer is sent as. Usually one. When the user
  * typed the message (`input.typed`), Claude is told so with a human origin,
@@ -2308,7 +2315,12 @@ const buildUserMessagesEffect = Effect.fn("buildUserMessagesEffect")(function* (
   const appendOnlySupported =
     dependencies.cliVersion === undefined ||
     compareSemverVersions(dependencies.cliVersion, MINIMUM_CLAUDE_APPEND_ONLY_VERSION) >= 0;
-  if (typed === undefined || (leadingContext && !appendOnlySupported)) {
+  // A steer keeps its context and words together: how the CLI treats an
+  // append-only message in the middle of a running turn is unverified.
+  if (
+    typed === undefined ||
+    (leadingContext && (!appendOnlySupported || dependencies.method === "turn/steer"))
+  ) {
     return [yield* buildUserMessageEffect(input, dependencies)];
   }
   const context = [dependencies.seedPreamble, typed.context]
@@ -5572,6 +5584,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (message.type !== "result") {
       return;
     }
+    // A context message sent ahead of the user's words (shouldQuery: false)
+    // gets a result of its own, with no turn in it; the turn is still to come.
+    if (context.pendingAppendOnlyResults > 0 && message.num_turns === 0 && !message.is_error) {
+      context.pendingAppendOnlyResults -= 1;
+      return;
+    }
 
     const status = turnStatusFromResult(message);
     const errorMessage = resultDisplayError(message, context.turnState?.apiErrorText);
@@ -7917,6 +7935,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         unawaitedBackgroundTaskIds: new Set(),
         planTracker: new Map(),
         workflowRuns: new ClaudeWorkflowRunTracker(),
+        pendingAppendOnlyResults: 0,
         lastEmittedPlanTrackerFingerprint: undefined,
         turnState: undefined,
         lastKnownContextWindow: undefined,
@@ -8203,6 +8222,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
     // Consume the handoff seed once; subsequent turns continue natively.
     context.pendingContextSeedText = undefined;
+    context.pendingAppendOnlyResults += messages.filter(isAppendOnlyUserMessage).length;
 
     yield* Queue.offerAll(
       context.promptQueue,
