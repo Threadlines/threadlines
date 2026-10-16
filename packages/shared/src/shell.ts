@@ -11,6 +11,15 @@ const WINDOWS_PATH_DELIMITER = ";";
 const POSIX_PATH_DELIMITER = ":";
 const WINDOWS_SHELL_CANDIDATES = ["pwsh.exe", "powershell.exe"] as const;
 
+/**
+ * Set to "1" by the desktop app on the backend it spawns, and only after the
+ * desktop read PATH from a login shell listed by `listLoginShellCandidates`.
+ * The server's own probe would ask the same shells for the same PATH, so it
+ * skips it. The server removes the variable before it spawns anything, so it
+ * never reaches provider processes.
+ */
+export const SHELL_ENVIRONMENT_HYDRATED_ENV_NAME = "THREADLINES_SHELL_ENV_HYDRATED";
+
 type ExecFileSyncLike = (
   file: string,
   args: ReadonlyArray<string>,
@@ -52,7 +61,8 @@ function trimNonEmpty(value: string | null | undefined): string | undefined {
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
-function readUserLoginShell(): string | undefined {
+/** The account's login shell from the user database, which `SHELL` may not match. */
+export function readUserLoginShell(): string | undefined {
   try {
     return trimNonEmpty(NodeOS.userInfo().shell);
   } catch {
@@ -60,6 +70,11 @@ function readUserLoginShell(): string | undefined {
   }
 }
 
+/**
+ * Login shells to ask for PATH, in order: `SHELL`, the account's login shell,
+ * then the platform default. The desktop app and the server both probe this
+ * list, which is what lets the server skip a probe the desktop already ran.
+ */
 export function listLoginShellCandidates(
   platform: NodeJS.Platform,
   shell: string | undefined,

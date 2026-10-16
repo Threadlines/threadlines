@@ -8,11 +8,13 @@ import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as NetService from "@threadlines/shared/Net";
+import { SHELL_ENVIRONMENT_HYDRATED_ENV_NAME } from "@threadlines/shared/shell";
 
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
+import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 
 const PersistedServerObservabilitySettingsDocument = Schema.Struct({
@@ -98,6 +100,12 @@ function makeEnvironmentLayer(
   );
 }
 
+const makeShellEnvironmentLayer = (loginShellPathHydrated = false) =>
+  Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
+    installIntoProcess: Effect.void,
+    loginShellPathHydrated: Effect.succeed(loginShellPathHydrated),
+  });
+
 const withHarness = <A, E, R>(
   effect: Effect.Effect<
     A,
@@ -107,7 +115,10 @@ const withHarness = <A, E, R>(
     | FileSystem.FileSystem
     | DesktopBackendConfiguration.DesktopBackendConfiguration
   >,
-  options?: { readonly occupiedPorts?: readonly number[] },
+  options?: {
+    readonly occupiedPorts?: readonly number[];
+    readonly loginShellPathHydrated?: boolean;
+  },
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -119,6 +130,7 @@ const withHarness = <A, E, R>(
       Effect.provide(
         DesktopBackendConfiguration.layer.pipe(
           Layer.provideMerge(serverExposureLayer),
+          Layer.provideMerge(makeShellEnvironmentLayer(options?.loginShellPathHydrated)),
           Layer.provideMerge(DesktopAppSettings.layerTest()),
           Layer.provideMerge(makeNetLayer(options?.occupiedPorts)),
           Layer.provideMerge(makeEnvironmentLayer(baseDir)),
@@ -167,6 +179,7 @@ const withLiveExposureHarness = <A, E, R>(
       Effect.provide(
         DesktopBackendConfiguration.layer.pipe(
           Layer.provideMerge(exposureLayer),
+          Layer.provideMerge(makeShellEnvironmentLayer()),
           Layer.provideMerge(makeNetLayer(input.occupiedPorts, input.listenerPorts)),
           Layer.provideMerge(makeEnvironmentLayer(baseDir)),
         ),
@@ -214,6 +227,22 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(second.bootstrap.desktopBootstrapToken, first.bootstrap.desktopBootstrapToken);
       }),
     ),
+  );
+
+  it.effect("lets the backend skip its PATH probe only after the login shell was read", () =>
+    Effect.gen(function* () {
+      const resolveConfig = Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        return yield* configuration.resolve;
+      });
+      const hydrated = yield* withHarness(resolveConfig, { loginShellPathHydrated: true });
+      assert.equal(hydrated.env[SHELL_ENVIRONMENT_HYDRATED_ENV_NAME], "1");
+
+      const notHydrated = yield* withHarness(resolveConfig);
+      // Present but undefined, so the spawn drops a value this process inherited.
+      assert.isTrue(SHELL_ENVIRONMENT_HYDRATED_ENV_NAME in notHydrated.env);
+      assert.isUndefined(notHydrated.env[SHELL_ENVIRONMENT_HYDRATED_ENV_NAME]);
+    }),
   );
 
   it.effect("issues a fresh launch id per resolved start config", () =>
@@ -354,6 +383,7 @@ describe("DesktopBackendConfiguration", () => {
         Effect.provide(
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(serverExposureLayer),
+            Layer.provideMerge(makeShellEnvironmentLayer()),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
             Layer.provideMerge(makeNetLayer()),
             Layer.provideMerge(

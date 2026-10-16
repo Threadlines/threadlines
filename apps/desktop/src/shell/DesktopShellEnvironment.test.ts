@@ -84,10 +84,13 @@ function commandWindowsHide(command: ChildProcess.Command): boolean | undefined 
   ).windowsHide;
 }
 
+/** Installs the environment and returns loginShellPathHydrated afterwards. */
 function runShellEnvironment(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
   readonly handler: (command: ChildProcess.Command) => string;
+  /** The account's login shell; none unless a test sets it. */
+  readonly userShell?: string;
 }) {
   const environmentLayer = Layer.succeed(
     DesktopEnvironment.DesktopEnvironment,
@@ -103,9 +106,10 @@ function runShellEnvironment(input: {
   const program = Effect.gen(function* () {
     const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
     yield* shellEnvironment.installIntoProcess;
+    return yield* shellEnvironment.loginShellPathHydrated;
   }).pipe(
     Effect.provide(
-      DesktopShellEnvironment.layer.pipe(
+      DesktopShellEnvironment.layerWithUserShell(() => input.userShell).pipe(
         Layer.provide(Layer.mergeAll(environmentLayer, spawnerLayer)),
       ),
     ),
@@ -123,7 +127,7 @@ describe("DesktopShellEnvironment", () => {
       };
       const commands: ChildProcess.Command[] = [];
 
-      yield* runShellEnvironment({
+      const hydrated = yield* runShellEnvironment({
         env,
         platform: "darwin",
         handler: (command) => {
@@ -141,6 +145,31 @@ describe("DesktopShellEnvironment", () => {
       assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin:/Users/test/.local/bin");
       assert.equal(env.SSH_AUTH_SOCK, "/tmp/secretive.sock");
       assert.equal(env.HOMEBREW_PREFIX, "/opt/homebrew");
+      assert.isTrue(hydrated);
+    }),
+  );
+
+  it.effect("asks the account's login shell before the platform default, like the server", () =>
+    Effect.gen(function* () {
+      // Launched from the dock without SHELL: the server would ask fish, so
+      // the desktop must too, or its PATH would not stand in for the server's.
+      const env: NodeJS.ProcessEnv = { PATH: "/usr/bin" };
+      const shells: string[] = [];
+
+      const hydrated = yield* runShellEnvironment({
+        env,
+        platform: "darwin",
+        userShell: "/opt/homebrew/bin/fish",
+        handler: (command) => {
+          if (command._tag !== "StandardCommand") return "";
+          shells.push(command.command);
+          return envOutput({ PATH: "/Users/test/.cargo/bin:/usr/bin" });
+        },
+      });
+
+      assert.deepEqual(shells, ["/opt/homebrew/bin/fish"]);
+      assert.equal(env.PATH, "/Users/test/.cargo/bin:/usr/bin");
+      assert.isTrue(hydrated);
     }),
   );
 
@@ -197,7 +226,7 @@ describe("DesktopShellEnvironment", () => {
       };
       const commands: string[] = [];
 
-      yield* runShellEnvironment({
+      const hydrated = yield* runShellEnvironment({
         env,
         platform: "darwin",
         handler: (command) => {
@@ -209,6 +238,8 @@ describe("DesktopShellEnvironment", () => {
 
       assert.deepEqual(commands, ["/opt/homebrew/bin/nu", "/bin/zsh", "/bin/launchctl"]);
       assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin");
+      // No login shell answered, so the backend must still try its own probe.
+      assert.isFalse(hydrated);
     }),
   );
 
@@ -225,7 +256,7 @@ describe("DesktopShellEnvironment", () => {
         };
         const commands: ChildProcess.Command[] = [];
 
-        yield* runShellEnvironment({
+        const hydrated = yield* runShellEnvironment({
           env,
           platform: "win32",
           handler: (command) => {
@@ -271,6 +302,8 @@ describe("DesktopShellEnvironment", () => {
           "C:\\Users\\testuser\\AppData\\Local\\fnm_multishells\\123",
         );
         assert.deepEqual(commands.map(commandWindowsHide), [true, true]);
+        // The server orders its Windows PATH differently, so it keeps its own repair.
+        assert.isFalse(hydrated);
       }),
     ),
   );
