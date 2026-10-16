@@ -22,6 +22,7 @@ import {
   callWhenReady,
   getPreviewWebview,
   selectActiveTab,
+  selectPendingBrowserApprovals,
   selectThreadBrowserState,
   useBrowserPanelStore,
 } from "../../browserPanelStore";
@@ -161,10 +162,11 @@ export function openUrlInBrowserPanel(threadRef: ScopedThreadRef, rawUrl: string
 }
 
 /**
- * How many tabs pages may have open in one thread. The desktop slows a page
- * that opens tabs in a loop; this stops one that keeps going from filling the
- * strip, and memory, with tabs nobody asked for. Tabs the user opens do not
- * count.
+ * How many tabs pages may have open in one thread, counting those waiting on
+ * a site question (allowing a site opens them all at once). The desktop slows
+ * a page that opens tabs in a loop; this stops one that keeps going from
+ * filling the strip, and memory, with tabs nobody asked for. Tabs the user
+ * opens do not count.
  */
 const PAGE_OPENED_TAB_LIMIT = 20;
 
@@ -190,7 +192,14 @@ export function openTabForPage(input: {
   }
   const store = useBrowserPanelStore.getState();
   const panel = selectThreadBrowserState(store.browserStateByThreadKey, input.threadRef);
-  if (panel.tabs.filter((tab) => tab.openerTabId !== undefined).length >= PAGE_OPENED_TAB_LIMIT) {
+  const waitingOnQuestions = selectPendingBrowserApprovals(
+    store.pendingApprovalsByThreadKey,
+    input.threadRef,
+  ).filter((question) => question.newTab !== undefined).length;
+  if (
+    panel.tabs.filter((tab) => tab.openerTabId !== undefined).length + waitingOnQuestions >=
+    PAGE_OPENED_TAB_LIMIT
+  ) {
     return;
   }
   if (!isBrowserHostAllowed(host, readBrowserSiteAccess(input.projectId))) {
