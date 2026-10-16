@@ -1142,53 +1142,63 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           );
 
           /**
-           * The turn a request from the agent belongs to. The agent waits on
-           * the answer, so its turn can't move on: once the reader has caught
-           * up to the request (past a turn the agent began just before it),
-           * the running turn is the request's.
+           * The turn a request from the agent belongs to, read on the reader
+           * where the request falls (past a turn the agent began just before
+           * it). The agent waits on the answer, so its turn can't move on.
+           * Stopping the session ends the wait along with the handler.
            */
           const turnOfRequest = Effect.gen(function* () {
-            if (ctx === undefined) return undefined;
-            yield* acp.flushEvents();
-            return ctx.activeTurnId;
+            const context = ctx;
+            if (context === undefined) return undefined;
+            const reached = yield* Deferred.make<TurnId | undefined>();
+            yield* acp.inOrder(
+              Effect.suspend(() => Deferred.succeed(reached, context.activeTurnId)).pipe(
+                Effect.asVoid,
+              ),
+            );
+            return yield* Deferred.await(reached);
           });
 
           const requestUserInput: AcpExtensionContext["requestUserInput"] = (request) =>
             Effect.gen(function* () {
-              const turnId = yield* turnOfRequest;
               const requestId = ApprovalRequestId.make(crypto.randomUUID());
               const runtimeRequestId = RuntimeRequestId.make(requestId);
               const answers = yield* Deferred.make<ProviderUserInputAnswers>();
               pendingUserInputs.set(requestId, { answers });
-              yield* offerRuntimeEvent({
-                type: "user-input.requested",
-                ...(yield* makeEventStamp()),
-                provider: PROVIDER,
-                threadId: input.threadId,
-                turnId,
-                requestId: runtimeRequestId,
-                payload: { questions: request.questions },
-                ...(extensionSource
-                  ? {
-                      raw: {
-                        source: extensionSource,
-                        method: request.method,
-                        payload: request.payload,
-                      },
-                    }
-                  : {}),
-              });
+              const turnId = yield* turnOfRequest;
+              // Settled while the reader caught up (a Stop): it never shows.
+              const shown = !(yield* Deferred.isDone(answers));
+              if (shown)
+                yield* offerRuntimeEvent({
+                  type: "user-input.requested",
+                  ...(yield* makeEventStamp()),
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  turnId,
+                  requestId: runtimeRequestId,
+                  payload: { questions: request.questions },
+                  ...(extensionSource
+                    ? {
+                        raw: {
+                          source: extensionSource,
+                          method: request.method,
+                          payload: request.payload,
+                        },
+                      }
+                    : {}),
+                });
               const resolved = yield* Deferred.await(answers);
               pendingUserInputs.delete(requestId);
-              yield* offerRuntimeEvent({
-                type: "user-input.resolved",
-                ...(yield* makeEventStamp()),
-                provider: PROVIDER,
-                threadId: input.threadId,
-                turnId,
-                requestId: runtimeRequestId,
-                payload: { answers: resolved },
-              });
+              if (shown)
+                yield* offerRuntimeEvent({
+                  type: "user-input.resolved",
+                  ...(yield* makeEventStamp()),
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  turnId,
+                  requestId: runtimeRequestId,
+                  payload: { answers: resolved },
+                });
               return resolved;
             });
 
@@ -1326,11 +1336,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   const once = acpPermissionOptionId("accept", offered);
                   if (once !== undefined) return selected(once);
                 }
-                const turnId = yield* turnOfRequest;
                 const requestId = ApprovalRequestId.make(crypto.randomUUID());
                 const runtimeRequestId = RuntimeRequestId.make(requestId);
                 const decision = yield* Deferred.make<ProviderApprovalDecision>();
                 pendingApprovals.set(requestId, { decision, kind: permissionRequest.kind });
+                const turnId = yield* turnOfRequest;
+                // Settled while the reader caught up (a Stop): it never shows.
+                const shown = !(yield* Deferred.isDone(decision));
                 const warningFor = (kind: EffectAcpSchema.PermissionOption["kind"]) => {
                   const option = offered.find((candidate) => candidate.kind === kind);
                   return option ? descriptor.permissionOptionWarning?.(option) : undefined;
@@ -1347,39 +1359,43 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       }
                     : undefined;
                 const availableDecisions = acpAvailableDecisions(offered);
-                yield* offerRuntimeEvent(
-                  makeAcpRequestOpenedEvent({
-                    stamp: yield* makeEventStamp(),
-                    provider: PROVIDER,
-                    threadId: input.threadId,
-                    turnId,
-                    requestId: runtimeRequestId,
-                    permissionRequest,
-                    detail:
-                      permissionRequest.detail ??
-                      encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
-                      "[unserializable params]",
-                    args: params,
-                    ...(availableDecisions ? { availableDecisions } : {}),
-                    ...(decisionWarnings ? { decisionWarnings } : {}),
-                    source: "acp.jsonrpc",
-                    method: "session/request_permission",
-                    rawPayload: params,
-                  }),
-                );
+                if (shown) {
+                  yield* offerRuntimeEvent(
+                    makeAcpRequestOpenedEvent({
+                      stamp: yield* makeEventStamp(),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId,
+                      requestId: runtimeRequestId,
+                      permissionRequest,
+                      detail:
+                        permissionRequest.detail ??
+                        encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
+                        "[unserializable params]",
+                      args: params,
+                      ...(availableDecisions ? { availableDecisions } : {}),
+                      ...(decisionWarnings ? { decisionWarnings } : {}),
+                      source: "acp.jsonrpc",
+                      method: "session/request_permission",
+                      rawPayload: params,
+                    }),
+                  );
+                }
                 const resolved = yield* Deferred.await(decision);
                 pendingApprovals.delete(requestId);
-                yield* offerRuntimeEvent(
-                  makeAcpRequestResolvedEvent({
-                    stamp: yield* makeEventStamp(),
-                    provider: PROVIDER,
-                    threadId: input.threadId,
-                    turnId,
-                    requestId: runtimeRequestId,
-                    permissionRequest,
-                    decision: resolved,
-                  }),
-                );
+                if (shown) {
+                  yield* offerRuntimeEvent(
+                    makeAcpRequestResolvedEvent({
+                      stamp: yield* makeEventStamp(),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId,
+                      requestId: runtimeRequestId,
+                      permissionRequest,
+                      decision: resolved,
+                    }),
+                  );
+                }
                 return resolved === "cancel"
                   ? { outcome: { outcome: "cancelled" as const } }
                   : selected(acpPermissionOptionId(resolved, offered));
@@ -1752,15 +1768,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           // flight starts after it, never interleaved with it.
           yield* Fiber.await(ctx.promptFiber);
         }
+        // The reader catches up first, so a turn the agent began before this
+        // message is open (and ended below) rather than taking its output.
+        yield* ctx.acp.flushEvents();
         if (ctx.stopped) {
           return yield* new ProviderAdapterSessionNotFoundError({
             provider: PROVIDER,
             threadId: input.threadId,
           });
         }
-        // The reader catches up first, so a turn the agent began before this
-        // message is open (and ended below) rather than taking its output.
-        yield* ctx.acp.flushEvents();
         // A message sent while the agent runs a turn of its own ends that
         // turn here; the agent takes the message after it, as Claude does.
         if (ctx.agentTurn !== undefined) {
