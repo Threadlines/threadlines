@@ -186,6 +186,9 @@ describe("LiveThreadBrowserView", () => {
       expect(getComputedStyle(frame(working.id)).visibility).toBe("visible");
       expect(getComputedStyle(frame(working.id)).filter).toBe("opacity(0)");
       expect(getComputedStyle(frame(working.id)).opacity).toBe("1");
+      // And above the tab on screen, which would cover it just the same.
+      expect(Number(getComputedStyle(frame(working.id)).zIndex)).toBeGreaterThan(0);
+      expect(getComputedStyle(frame(current.id)).zIndex).toBe("auto");
       // Another thread's page: not painted, and in a layer that takes no
       // clicks. Above the app, which would otherwise cover it: Chromium does
       // not draw what an opaque layer hides, drawn page or not.

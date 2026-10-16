@@ -85,7 +85,9 @@ export type PreviewFrameMode = "visible" | "drawn" | "hidden";
 
 const FRAME_MODE_STYLES: Record<PreviewFrameMode, CSSProperties> = {
   visible: { visibility: "visible" },
-  drawn: { visibility: "visible", filter: "opacity(0)", pointerEvents: "none" },
+  // Above the tab on screen, whatever their order: Chromium does not draw what
+  // an opaque layer covers either, and each tab's frame paints a background.
+  drawn: { visibility: "visible", filter: "opacity(0)", pointerEvents: "none", zIndex: 1 },
   hidden: { visibility: "hidden" },
 };
 
