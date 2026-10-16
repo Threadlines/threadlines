@@ -13,6 +13,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import { mergeProviderSnapshot } from "./Layers/ProviderRegistry.ts";
 import { makeManagedServerProvider } from "./makeManagedServerProvider.ts";
 import type { ProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
 
@@ -311,6 +312,72 @@ describe("makeManagedServerProvider", () => {
     ),
   );
 
+  it.effect(
+    "dates an enrichment after its check, so the plain snapshot arriving last can't undo it",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // A missing CLI's install offer is folded in at the check's own time.
+          const withInstallOffer: ServerProvider = {
+            ...refreshedSnapshot,
+            message: "Install offered.",
+          };
+          const releaseCheck = yield* Deferred.make<void>();
+          const provider = yield* makeManagedServerProvider<TestSettings>({
+            maintenanceCapabilities,
+            getSettings: Effect.succeed({ enabled: true }),
+            streamSettings: Stream.empty,
+            haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+            initialSnapshot: () => Effect.succeed(initialSnapshot),
+            checkProvider: Deferred.await(releaseCheck).pipe(Effect.as(refreshedSnapshot)),
+            enrichSnapshot: ({ publishSnapshot }) => publishSnapshot(withInstallOffer),
+            refreshInterval: "1 hour",
+          });
+          const updatesFiber = yield* Stream.take(provider.streamChanges, 2).pipe(
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          yield* Deferred.succeed(releaseCheck, undefined);
+          const [plain, enriched] = Array.from(yield* Fiber.join(updatesFiber));
+          assert.ok(enriched!.checkedAt > plain!.checkedAt);
+          // The registry reads a new instance and streams it at once; the plain
+          // copy may be merged second.
+          assert.strictEqual(mergeProviderSnapshot(enriched, plain!).message, "Install offered.");
+        }),
+      ),
+  );
+
+  it.effect("opens a late subscriber on the newest snapshot, then the changes after it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // The check and its enrichment finish before anyone follows the provider.
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Effect.succeed(refreshedSnapshot),
+          enrichSnapshot: ({ publishSnapshot }) => publishSnapshot(enrichedSnapshot),
+          refreshInterval: "1 hour",
+        });
+        while ((yield* provider.getSnapshot).models !== enrichedSnapshot.models) {
+          yield* Effect.yieldNow;
+        }
+        const followed = yield* Stream.take(provider.streamSnapshots!, 2).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* provider.patchSnapshot((current) => ({ ...current, message: "patched" }));
+        const [opened, changed] = Array.from(yield* Fiber.join(followed));
+        assert.deepStrictEqual(opened, enrichedSnapshot);
+        assert.strictEqual(changed!.message, "patched");
+      }),
+    ),
+  );
+
   it.effect("ignores stale enrichment callbacks after a newer refresh advances generation", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -418,10 +485,14 @@ describe("makeManagedServerProvider", () => {
         const updates = Array.from(yield* Fiber.join(settled));
 
         assert.deepStrictEqual(updates[1], { ...refreshedSnapshot, accountUsage: usage(10) });
-        assert.deepStrictEqual(yield* provider.getSnapshot, {
+        const latest = yield* provider.getSnapshot;
+        // Dated after the check it enriched (see the test above).
+        assert.ok(latest.checkedAt > refreshedSnapshot.checkedAt);
+        assert.deepStrictEqual(latest, {
           ...refreshedSnapshot,
           accountUsage: usage(20),
           message: "enriched",
+          checkedAt: latest.checkedAt,
         });
       }),
     ),

@@ -6,6 +6,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
+  CursorSettings,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
@@ -42,6 +43,18 @@ describe("ClientSettings defaults", () => {
   it("decodes cross-provider warning suppression patches", () => {
     const patch = decodeClientSettingsPatch({ suppressCrossProviderSwitchWarning: true });
     expect(patch.suppressCrossProviderSwitchWarning).toBe(true);
+  });
+});
+
+describe("CursorSettings.binaryPath", () => {
+  const decodeCursorSettings = Schema.decodeUnknownSync(CursorSettings);
+
+  it("runs cursor-agent by default and for the retired `agent` default saved settings hold", () => {
+    expect(decodeCursorSettings({}).binaryPath).toBe("cursor-agent");
+    expect(decodeCursorSettings({ binaryPath: "agent" }).binaryPath).toBe("cursor-agent");
+    expect(decodeCursorSettings({ binaryPath: "/usr/local/bin/agent" }).binaryPath).toBe(
+      "/usr/local/bin/agent",
+    );
   });
 });
 

@@ -1,4 +1,5 @@
 import {
+  CHECKPOINT_FILES_ACTIVITY_ID_PREFIX,
   type AssistantDeliveryMode,
   CommandId,
   EventId,
@@ -859,7 +860,7 @@ function checkpointFileChangeActivity(input: {
 
   return {
     id: EventId.make(
-      `checkpoint-files:${input.threadId}:${input.turnId}:${input.checkpointTurnCount}`,
+      `${CHECKPOINT_FILES_ACTIVITY_ID_PREFIX}${input.threadId}:${input.turnId}:${input.checkpointTurnCount}`,
     ),
     tone: "tool",
     kind: "tool.completed",
@@ -904,6 +905,9 @@ const PER_ITEM_DIFF_EVIDENCE_PROVIDERS: ReadonlySet<string> = new Set([
   "opencode",
   // Exact old/new text on every finished edit (ACP `diff` content).
   "antigravity",
+  "grok",
+  // Exact line counts from the stored patch or `patchSummary`; none otherwise.
+  "muse",
 ]);
 
 function providerThreadIdFromEvent(event: ProviderRuntimeEvent): string | undefined {

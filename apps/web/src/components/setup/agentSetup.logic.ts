@@ -2,7 +2,7 @@
  * The setup screen's rules: which agents start picked, when Connect is
  * skipped, when each step may continue, and what Continue writes.
  *
- * Setup manages the six built-in agents' default instances only; custom
+ * Setup manages the built-in agents' default instances only; custom
  * instances are Settings' business. Everything here is derived from the same
  * `deriveAgentStatus` the Providers page uses, so the two never disagree about
  * whether an agent is ready.
@@ -36,7 +36,7 @@ export interface SetupAgent {
   readonly status: AgentStatus;
 }
 
-/** The six built-in agents, in the order Settings lists them. */
+/** The built-in agents, in the order Settings lists them. */
 export function deriveSetupAgents(input: {
   readonly rows: ReadonlyArray<ProviderSettingsRow>;
   readonly providers: ReadonlyArray<ServerProvider>;
@@ -102,15 +102,27 @@ function pickedAgents(
 }
 
 /**
+ * A ready agent whose provider still wants a one-time answer on Connect: the
+ * data-sharing choice (Muse Code's Contributor mode) the user has not made
+ * here or in the provider's own app.
+ */
+export function hasOpenSetupChoice(agent: SetupAgent): boolean {
+  const sharing = agent.snapshot?.dataSharing;
+  return sharing !== undefined && !sharing.acknowledged && sharing.error === undefined;
+}
+
+/**
  * Where Continue on the Agents step goes. Connect is skipped when everything
- * picked already works, judged at the moment of the click.
+ * picked already works and has nothing left to ask, judged at the moment of
+ * the click.
  */
 export function stepAfterAgents(
   agents: ReadonlyArray<SetupAgent>,
   picks: ReadonlySet<ProviderDriverKind>,
 ): "connect" | "folder" {
   const picked = pickedAgents(agents, picks);
-  return picked.length > 0 && picked.every((agent) => isAgentReady(agent.status))
+  return picked.length > 0 &&
+    picked.every((agent) => isAgentReady(agent.status) && !hasOpenSetupChoice(agent))
     ? "folder"
     : "connect";
 }

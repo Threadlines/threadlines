@@ -70,12 +70,15 @@ describe("makeAcpProviderMaintenanceResolver", () => {
 
   it("runs the update with the agent CLI a session would find", () => {
     const binDir = mkdtempSync(path.join(os.tmpdir(), "acp-update-bin-"));
-    const agentFile = path.join(binDir, process.platform === "win32" ? "agent.cmd" : "agent");
+    const agentFile = path.join(
+      binDir,
+      process.platform === "win32" ? "cursor-agent.cmd" : "cursor-agent",
+    );
     writeFileSync(agentFile, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n");
     chmodSync(agentFile, 0o755);
 
     const update = makeAcpProviderMaintenanceResolver(CURSOR_ACP_DESCRIPTOR).resolve({
-      binaryPath: "agent",
+      binaryPath: "cursor-agent",
       platform: process.platform,
       env: { PATH: binDir },
     }).update;

@@ -410,6 +410,7 @@ export const resolveServerConfig = (
     );
     const desktopBootstrapToken = bootstrap?.desktopBootstrapToken;
     const desktopLaunchId = bootstrap?.desktopLaunchId;
+    const shellEnvironmentPrepared = bootstrap?.shellEnvironmentPrepared === true;
     const autoBootstrapProjectFromCwd = Option.getOrElse(
       resolveOptionPrecedence(
         Option.fromUndefinedOr(options?.forceAutoBootstrapProjectFromCwd),
@@ -500,6 +501,7 @@ export const resolveServerConfig = (
       startupPresentation,
       desktopBootstrapToken,
       desktopLaunchId,
+      shellEnvironmentPrepared,
       autoBootstrapProjectFromCwd,
       logWebSocketEvents,
       tailscaleServeEnabled,

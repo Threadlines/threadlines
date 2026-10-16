@@ -21,6 +21,12 @@ export const DesktopBackendBootstrap = Schema.Struct({
   tailscaleServePort: PortSchema,
   otlpTracesUrl: Schema.optional(Schema.String),
   otlpMetricsUrl: Schema.optional(Schema.String),
+  /**
+   * The desktop already read PATH and the other shell variables from the
+   * user's login shell (or PowerShell) before starting this backend, which
+   * inherits them. The server then skips its own blocking probe at startup.
+   */
+  shellEnvironmentPrepared: Schema.optional(Schema.Boolean),
 });
 
 export type DesktopBackendBootstrap = typeof DesktopBackendBootstrap.Type;

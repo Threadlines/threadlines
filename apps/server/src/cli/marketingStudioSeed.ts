@@ -153,6 +153,7 @@ const makeServerConfig = (input: MarketingStudioSeedInput): ServerConfigShape =>
     startupPresentation: "headless",
     desktopBootstrapToken: undefined,
     desktopLaunchId: undefined,
+    shellEnvironmentPrepared: false,
     autoBootstrapProjectFromCwd: false,
     logWebSocketEvents: false,
     tailscaleServeEnabled: false,

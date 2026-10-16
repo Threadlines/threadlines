@@ -18,6 +18,8 @@ describe("ProviderSettingsForm helpers", () => {
       ProviderDriverKind.make("cursor"),
       ProviderDriverKind.make("opencode"),
       ProviderDriverKind.make("antigravity"),
+      ProviderDriverKind.make("muse"),
+      ProviderDriverKind.make("grok"),
     ]);
   });
 

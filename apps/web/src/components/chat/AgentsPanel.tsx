@@ -133,6 +133,9 @@ function trunkColor(providerLabel: string | null | undefined): string {
   if (provider?.includes("codex")) {
     return "var(--provider-codex)";
   }
+  if (provider?.includes("grok")) {
+    return "var(--provider-grok)";
+  }
   return "var(--border)";
 }
 

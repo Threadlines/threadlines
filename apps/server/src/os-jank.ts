@@ -4,7 +4,9 @@ import * as Path from "effect/Path";
 import {
   readPathFromLoginShell,
   readEnvironmentFromWindowsShell,
+  resolveKnownWindowsCliDirs,
   resolveWindowsEnvironment,
+  mergePathValues,
   type CommandAvailabilityOptions,
   type WindowsShellEnvironmentReader,
   listLoginShellCandidates,
@@ -27,6 +29,11 @@ export function fixPath(
   options: {
     env?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;
+    /**
+     * The desktop app already read the user's shell environment into this
+     * process, so the blocking login-shell or PowerShell probe is skipped.
+     */
+    shellEnvironmentPrepared?: boolean;
     readPath?: typeof readPathFromLoginShell;
     readWindowsEnvironment?: WindowsShellEnvironmentReader;
     isWindowsCommandAvailable?: WindowsCommandAvailabilityChecker;
@@ -41,6 +48,19 @@ export function fixPath(
   const readPath = options.readPath ?? readPathFromLoginShell;
 
   try {
+    if (options.shellEnvironmentPrepared) {
+      if (platform === "win32") {
+        // Same order a probe would leave: known CLI folders first.
+        const path = mergePathValues(
+          resolveKnownWindowsCliDirs(env).join(";"),
+          env.PATH ?? env.Path ?? env.path,
+          "win32",
+        );
+        if (path) env.PATH = path;
+      }
+      return;
+    }
+
     if (platform === "win32") {
       const repairedEnvironment = resolveWindowsEnvironment(env, {
         readEnvironment: options.readWindowsEnvironment ?? readEnvironmentFromWindowsShell,

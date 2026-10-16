@@ -1,5 +1,5 @@
 /**
- * CursorDriver — `ProviderDriver` for the Cursor Agent (`agent acp`) runtime.
+ * CursorDriver — `ProviderDriver` for the Cursor Agent (`cursor-agent acp`) runtime.
  *
  * Everything Cursor-specific lives in `acp/CursorAcpSupport.ts`; this is the
  * generic ACP driver applied to that descriptor.
