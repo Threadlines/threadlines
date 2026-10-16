@@ -68,6 +68,10 @@ jobs:
       - name: Build desktop pipeline
         run: vp exec vp run build:desktop
 
+      - name: Check web startup bundle size
+        # The desktop build above also builds apps/web/dist.
+        run: node scripts/check-web-bundle-size.ts
+
       - name: Verify preload bundle output
         run: |
           test -f apps/desktop/dist-electron/preload.cjs
