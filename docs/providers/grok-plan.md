@@ -591,8 +591,8 @@ Decisions that differ from the plan above:
   for the reader (it has had all its output); the wake-up opens once it has.
   What the extension emits that names the running turn (tasks, subagents,
   plans) goes through the reader too, a new message waits for the reader to
-  catch up before it starts, and a question or approval names its turn once
-  the reader has reached it.
+  catch up before it starts, and a question or approval names the turn whose
+  start the reader read last (its id is chosen there), without waiting.
 
 - **Setup on a fresh install, live (temp HOME):** tile, one-click Install
   (no `~/.local/bin` links), then Sign in with Grok, Ready. Seen there, in a
