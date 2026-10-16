@@ -82,6 +82,8 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly desktopBootstrapToken: string | undefined;
   /** Non-secret per-spawn id echoed on the environment route; see contracts. */
   readonly desktopLaunchId: string | undefined;
+  /** The desktop already loaded the user's shell environment into this process. */
+  readonly shellEnvironmentPrepared: boolean;
   readonly autoBootstrapProjectFromCwd: boolean;
   readonly logWebSocketEvents: boolean;
   readonly tailscaleServeEnabled: boolean;
@@ -213,6 +215,7 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
           advertisedHost: undefined,
           desktopBootstrapToken: undefined,
           desktopLaunchId: undefined,
+          shellEnvironmentPrepared: false,
           staticDir: undefined,
           devUrl,
           noBrowser: false,

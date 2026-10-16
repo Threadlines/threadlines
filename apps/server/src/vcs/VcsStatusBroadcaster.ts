@@ -25,14 +25,14 @@ import { mergeGitStatusParts } from "@threadlines/shared/git";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { checkoutPresence } from "./CheckoutPresence.ts";
+import { isScratchIndexFileName } from "./scratchIndex.ts";
 
 const DEFAULT_VCS_STATUS_REFRESH_INTERVAL = Duration.minutes(2);
 const VCS_STATUS_REFRESH_FAILURE_BASE_DELAY = Duration.minutes(2);
 const VCS_STATUS_REFRESH_FAILURE_MAX_DELAY = Duration.minutes(15);
 const VCS_STATUS_REFRESH_UNCHANGED_MAX_DELAY = Duration.minutes(10);
 // Collapse the burst of git-dir events a single commit produces (index,
-// COMMIT_EDITMSG, ref update, reflog append) into one refresh, and absorb the
-// echo of our own `git status` opportunistically rewriting the index.
+// COMMIT_EDITMSG, ref update, reflog append) into one refresh.
 const GIT_DIR_WATCH_DEBOUNCE = Duration.millis(300);
 const GIT_DIR_RESOLVE_RETRY_INTERVAL = Duration.seconds(30);
 // Matches GitManager's local status cache TTL: subscribe bursts still coalesce
@@ -50,6 +50,76 @@ const CHECKOUT_PRESENCE_POLL_INTERVAL = Duration.seconds(2);
 // reads as missing once is not news. It has to still be missing after this
 // window before anyone is told about it.
 const CHECKOUT_MISSING_CONFIRMATION_WINDOW = Duration.seconds(2);
+
+/**
+ * What a git metadata change can have moved. An index write (staging, or
+ * someone else's `git status` saving its refresh) changes only the
+ * working-tree view; HEAD, reflogs, refs, config and packed-refs can also move
+ * the branch, its upstream and its divergence.
+ */
+type GitDirChange = "local" | "full";
+
+/**
+ * - `gitDir`: the checkout's own git dir (`.git`, or `.git/worktrees/<name>`
+ *   for a linked worktree).
+ * - `logs`: its reflog directory.
+ * - `commonRoot`: a linked worktree's shared git dir. Next to the shared
+ *   config and packed-refs it holds the main checkout's own HEAD, index and
+ *   pseudo-refs, which mostly say nothing about this checkout. Reacting to all
+ *   of it would wake every worktree of a repository for each change in any
+ *   one. The exceptions are the files a commit, merge, reset or rebase in the
+ *   main checkout leaves behind: those can move a branch this checkout tracks
+ *   or measures against, even one whose slash-nested ref file no watch here
+ *   can see.
+ * - `commonLogs`: a linked worktree's view of the main checkout's reflogs.
+ *   Its HEAD log moves with the same operations; the files above still catch
+ *   them where reflogs are turned off.
+ * - `sharedRefs`: loose branch and remote-tracking refs in the shared git dir.
+ */
+type GitDirWatchRootKind = "gitDir" | "logs" | "commonRoot" | "commonLogs" | "sharedRefs";
+
+interface GitDirWatchRoot {
+  readonly path: string;
+  readonly kind: GitDirWatchRootKind;
+}
+
+const COMMON_ROOT_ENTRIES_FOR_LINKED_WORKTREES: ReadonlySet<string> = new Set([
+  // Shared by every worktree.
+  "config",
+  "packed-refs",
+  "shallow",
+  // Left by the main checkout's commits, merges, resets and rebases.
+  "COMMIT_EDITMSG",
+  "ORIG_HEAD",
+]);
+const INDEX_ENTRY_PATTERN = /^(?:index|sharedindex\.[0-9a-f]+)$/;
+
+/** What an entry changing under a watch root means for the checkout, or null for nothing. */
+const classifyGitDirEvent = (kind: GitDirWatchRootKind, fileName: string): GitDirChange | null => {
+  // Lock files churn while git commands run.
+  if (fileName.endsWith(".lock")) {
+    return null;
+  }
+  switch (kind) {
+    case "gitDir":
+      // FETCH_HEAD is rewritten by our own staleness-gated background fetches,
+      // and scratch indexes are our own checkpoint and preview bookkeeping.
+      if (fileName === "FETCH_HEAD" || isScratchIndexFileName(fileName)) {
+        return null;
+      }
+      return INDEX_ENTRY_PATTERN.test(fileName) ? "local" : "full";
+    case "commonRoot":
+      return COMMON_ROOT_ENTRIES_FOR_LINKED_WORKTREES.has(fileName) ? "full" : null;
+    case "commonLogs":
+      return fileName === "HEAD" ? "full" : null;
+    case "logs":
+    case "sharedRefs":
+      return "full";
+  }
+};
+
+const mergeGitDirChanges = (pending: GitDirChange | null, next: GitDirChange): GitDirChange =>
+  pending === "full" || next === "full" ? "full" : "local";
 
 interface VcsStatusChange {
   readonly cwd: string;
@@ -366,7 +436,12 @@ export const layer = Layer.effect(
       options?: { readonly forceRefresh?: boolean },
     ) {
       yield* workflow.invalidateRemoteStatus(cwd);
-      const remote = yield* workflow.remoteStatus({ cwd }, options);
+      // Refreshes this broadcaster starts on its own may reuse a pull request
+      // answer from the last minute; an explicit refresh asks the host.
+      const remote = yield* workflow.remoteStatus(
+        { cwd },
+        options?.forceRefresh === true ? options : { allowRecentPullRequest: true },
+      );
       return yield* updateCachedRemoteStatus(cwd, remote, { publish: true });
     });
 
@@ -382,10 +457,13 @@ export const layer = Layer.effect(
     });
 
     const refreshAfterGitDirChange = Effect.fn("VcsStatusBroadcaster.refreshAfterGitDirChange")(
-      function* (cwd: string) {
-        yield* Effect.all([refreshLocalStatus(cwd), refreshRemoteStatus(cwd)], {
-          concurrency: "unbounded",
-        }).pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+      function* (cwd: string, change: GitDirChange) {
+        yield* Effect.all(
+          change === "full"
+            ? [refreshLocalStatus(cwd), refreshRemoteStatus(cwd)]
+            : [refreshLocalStatus(cwd)],
+          { concurrency: "unbounded" },
+        ).pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
       },
     );
 
@@ -417,11 +495,12 @@ export const layer = Layer.effect(
         Effect.orElseSucceed(() => false),
       );
 
-    // Directories whose direct entries change on local git activity: HEAD /
-    // index / packed-refs and reflog appends in the (work)tree git dir, plus
-    // loose ref updates in the shared git dir for commits, branch moves, and
-    // pushes updating remote-tracking refs. `fs.watch` is non-recursive, so
-    // slash-nested ref files are only caught indirectly (via the HEAD reflog).
+    // Directories whose direct entries change on local git activity: HEAD,
+    // index and reflog appends in the checkout's own git dir, plus shared
+    // config, packed-refs and loose ref updates in the common git dir for
+    // commits, branch moves, and pushes updating remote-tracking refs.
+    // `fs.watch` is non-recursive, so slash-nested ref files are only caught
+    // indirectly (via the HEAD reflog).
     const resolveGitDirWatchRoots = Effect.fn("VcsStatusBroadcaster.resolveGitDirWatchRoots")(
       function* (cwd: string) {
         const gitDir = yield* resolveGitDir(cwd);
@@ -435,30 +514,30 @@ export const layer = Layer.effect(
         const commonDir = trimmedCommonDirPointer
           ? path.resolve(gitDir, trimmedCommonDirPointer)
           : gitDir;
-        const candidates = [
-          gitDir,
-          path.join(gitDir, "logs"),
-          commonDir,
-          path.join(commonDir, "refs", "heads"),
-          path.join(commonDir, "refs", "remotes", "origin"),
+        // In the main checkout the common dir is its own git dir, so the
+        // `gitDir` and `logs` entries claim it and its reflogs.
+        const candidates: ReadonlyArray<GitDirWatchRoot> = [
+          { path: gitDir, kind: "gitDir" },
+          { path: path.join(gitDir, "logs"), kind: "logs" },
+          { path: commonDir, kind: "commonRoot" },
+          { path: path.join(commonDir, "logs"), kind: "commonLogs" },
+          { path: path.join(commonDir, "refs", "heads"), kind: "sharedRefs" },
+          { path: path.join(commonDir, "refs", "remotes", "origin"), kind: "sharedRefs" },
         ];
-        const roots: string[] = [];
-        for (const candidate of new Set(candidates)) {
-          if (yield* directoryExists(candidate)) {
+        const seen = new Set<string>();
+        const roots: GitDirWatchRoot[] = [];
+        for (const candidate of candidates) {
+          if (seen.has(candidate.path)) {
+            continue;
+          }
+          seen.add(candidate.path);
+          if (yield* directoryExists(candidate.path)) {
             roots.push(candidate);
           }
         }
         return roots;
       },
     );
-
-    const isRelevantGitDirEvent = (eventPath: string) => {
-      const base = path.basename(eventPath);
-      // Lock files churn while git commands run, and FETCH_HEAD is rewritten
-      // by our own staleness-gated background fetches; reacting to either
-      // would echo refreshes without any status change.
-      return !base.endsWith(".lock") && base !== "FETCH_HEAD";
-    };
 
     // Keeps working-tree-affecting git activity (commits, stages, branch
     // switches, merges) flowing to subscribers without polling: watch the git
@@ -468,17 +547,33 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         while (true) {
           const roots = yield* resolveGitDirWatchRoots(cwd).pipe(
-            Effect.orElseSucceed(() => [] as string[]),
+            Effect.orElseSucceed((): ReadonlyArray<GitDirWatchRoot> => []),
           );
           if (roots.length > 0) {
-            const events = roots
-              .map((root) => fs.watch(root))
+            // The debounce keeps only the last event of a burst, so what the
+            // burst touched is folded here first: an index write right after
+            // a HEAD move must not shrink the refresh to local-only.
+            const pendingChange = yield* Ref.make<GitDirChange | null>(null);
+            const changes = roots
+              .map((root) =>
+                fs.watch(root.path).pipe(
+                  Stream.map((event) => classifyGitDirEvent(root.kind, path.basename(event.path))),
+                  Stream.filter((change): change is GitDirChange => change !== null),
+                ),
+              )
               .reduce((merged, stream) => Stream.merge(merged, stream))
               .pipe(
-                Stream.filter((event) => isRelevantGitDirEvent(event.path)),
+                Stream.tap((change) =>
+                  Ref.update(pendingChange, (pending) => mergeGitDirChanges(pending, change)),
+                ),
                 Stream.debounce(GIT_DIR_WATCH_DEBOUNCE),
               );
-            yield* Stream.runForEach(events, () => refreshAfterGitDirChange(cwd)).pipe(
+            const refreshPending = Ref.getAndSet(pendingChange, null).pipe(
+              Effect.flatMap((change) =>
+                change === null ? Effect.void : refreshAfterGitDirChange(cwd, change),
+              ),
+            );
+            yield* Stream.runForEach(changes, () => refreshPending).pipe(
               Effect.tapCause((cause) =>
                 Effect.logWarning("VCS git dir watch failed", {
                   cwd,

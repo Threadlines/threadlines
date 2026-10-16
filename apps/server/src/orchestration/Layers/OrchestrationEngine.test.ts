@@ -104,6 +104,7 @@ describe("OrchestrationEngine", () => {
           return savedEvent;
         }),
       readFromSequence: () => Stream.empty,
+      readThreadEvents: () => Effect.succeed([]),
       readAll: () =>
         Stream.fail(
           new PersistenceSqlError({
@@ -223,6 +224,7 @@ describe("OrchestrationEngine", () => {
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           listThreadDiffStatBaselines: () => Effect.succeed([]),
           listThreadTurnOverlapsSince: () => Effect.succeed([]),
+          listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getTurnActivities: () => Effect.succeed([]),
           getThreadDetailById: () => Effect.succeed(Option.none()),
@@ -893,6 +895,19 @@ describe("OrchestrationEngine", () => {
       readFromSequence(sequenceExclusive) {
         return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
       },
+      readThreadEvents(input) {
+        return Effect.succeed(
+          events
+            .filter(
+              (event) =>
+                event.aggregateKind === "thread" &&
+                event.aggregateId === input.threadId &&
+                event.sequence > input.fromSequenceExclusive &&
+                event.sequence <= input.toSequenceInclusive,
+            )
+            .slice(0, input.limit),
+        );
+      },
       readAll() {
         return Stream.fromIterable(events);
       },
@@ -1125,6 +1140,19 @@ describe("OrchestrationEngine", () => {
       },
       readFromSequence(sequenceExclusive) {
         return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
+      },
+      readThreadEvents(input) {
+        return Effect.succeed(
+          events
+            .filter(
+              (event) =>
+                event.aggregateKind === "thread" &&
+                event.aggregateId === input.threadId &&
+                event.sequence > input.fromSequenceExclusive &&
+                event.sequence <= input.toSequenceInclusive,
+            )
+            .slice(0, input.limit),
+        );
       },
       readAll() {
         return Stream.fromIterable(events);

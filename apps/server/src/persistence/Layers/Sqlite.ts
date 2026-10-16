@@ -40,6 +40,11 @@ const setup = Layer.effectDiscard(
     yield* sql`PRAGMA synchronous = NORMAL;`;
     yield* sql`PRAGMA busy_timeout = 5000;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
+    // 32 MiB of page cache instead of SQLite's 2 MiB default. A big install's
+    // database runs to gigabytes, and the default let one chat open evict the
+    // pages the next one needed: repeated thread loads on payload-heavy chats
+    // took about twice as long.
+    yield* sql`PRAGMA cache_size = -32768;`;
     yield* runMigrations();
     yield* Effect.addFinalizer(() => Effect.ignore(sql`PRAGMA optimize;`));
   }),

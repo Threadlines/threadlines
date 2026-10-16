@@ -168,6 +168,13 @@ const desktopEnvironmentLayer = Layer.unwrap(
     return DesktopEnvironment.layer({
       dirname: __dirname,
       homeDirectory: NodeOS.homedir(),
+      accountLoginShell: (() => {
+        try {
+          return NodeOS.userInfo().shell ?? undefined;
+        } catch {
+          return undefined;
+        }
+      })(),
       platform: process.platform,
       processArch: process.arch,
       ...metadata,
@@ -266,6 +273,9 @@ const desktopBackendLayer = DesktopBackendManager.layer.pipe(
   Layer.provideMerge(DesktopCrashReport.layer),
   Layer.provideMerge(DesktopAppIdentity.layer),
   Layer.provideMerge(DesktopBackendConfiguration.layer),
+  // Startup installs the shell environment and the backend configuration
+  // reads whether that worked: both must see this one instance.
+  Layer.provideMerge(DesktopShellEnvironment.layer),
   Layer.provideMerge(DesktopDatabaseRecovery.layer),
   Layer.provideMerge(desktopWindowLayer),
 );
@@ -278,7 +288,6 @@ const desktopApplicationLayer = Layer.mergeAll(
   PreviewAutomation.layer,
   LocalServers.layer,
   PreviewProfiles.layer,
-  DesktopShellEnvironment.layer,
   DesktopRelayRetirement.layer,
   desktopSshLayer,
 ).pipe(Layer.provideMerge(DesktopUpdates.layer), Layer.provideMerge(desktopBackendLayer));

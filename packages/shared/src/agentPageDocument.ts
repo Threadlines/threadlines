@@ -1,0 +1,129 @@
+/**
+ * The document an agent page is shown in: the content policy, the theme and
+ * the bridge script, then the page as the agent wrote it (Markdown rendered
+ * first). See agentPages.ts for the page model and the bridge messages.
+ *
+ * Kept apart from agentPages.ts, which the web app's store loads at startup:
+ * the Markdown renderer here is only needed once a page is on screen.
+ */
+import { micromark } from "micromark";
+import { gfm, gfmHtml } from "micromark-extension-gfm";
+
+import {
+  AGENT_PAGE_CONTENT_SECURITY_POLICY,
+  type AgentPageKind,
+  type AgentPageTheme,
+  agentPageThemeRule,
+  HOST_CONTEXT_CHANGED_METHOD,
+  OPEN_LINK_METHOD,
+  PAGE_LEFT_METHOD,
+  SIZE_CHANGED_METHOD,
+} from "./agentPages.ts";
+
+// A scrollbar inside the reply reads as a box within the thread, so a page
+// taller than its frame scrolls without one. Focus rings paint inward so the
+// frame's edge never clips them.
+// The page paints `--tl-surface`, the host's exact background color, when the
+// host gives one: a hex copy can round a shade off the thread around it, and
+// the page then reads as a box.
+const BASE_CSS =
+  "html{background:var(--tl-surface,var(--background));color:var(--foreground);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;scrollbar-width:none}" +
+  "html::-webkit-scrollbar{display:none}body{margin:0}code,kbd,pre,samp{font-family:var(--font-mono)}" +
+  ":focus-visible{outline:2px solid var(--ring);outline-offset:-2px}";
+
+// Markdown documents: the chat's own reading styles, dense and flat.
+const DOCUMENT_CSS =
+  ".tl-document{max-width:72ch;font-size:14px;line-height:1.6;overflow-wrap:anywhere}" +
+  ".tl-document>:first-child{margin-top:0}.tl-document>:last-child{margin-bottom:0}" +
+  ".tl-document h1{font-size:18px;line-height:1.3;font-weight:600;margin:0 0 10px}" +
+  ".tl-document h2{font-size:15.5px;line-height:1.35;font-weight:600;margin:20px 0 6px}" +
+  ".tl-document h3,.tl-document h4,.tl-document h5,.tl-document h6{font-size:14px;line-height:1.4;font-weight:600;margin:16px 0 4px}" +
+  ".tl-document p,.tl-document ul,.tl-document ol,.tl-document blockquote,.tl-document pre,.tl-document table{margin:0 0 12px}" +
+  ".tl-document ul,.tl-document ol{padding-left:22px}.tl-document li+li{margin-top:2px}" +
+  // A task list item is its checkbox: no bullet beside it.
+  ".tl-document li:has(>input[type=checkbox]){list-style:none;margin-left:-22px}" +
+  ".tl-document a{color:var(--info-foreground);text-underline-offset:3px}" +
+  ".tl-document blockquote{padding-left:12px;border-left:2px solid var(--border);color:var(--muted-foreground)}" +
+  ".tl-document code{font-size:0.92em;padding:1px 4px;border-radius:4px;background:var(--muted)}" +
+  ".tl-document pre{padding:10px 12px;border-radius:var(--radius);background:var(--muted);overflow-x:auto;font-size:12.5px;line-height:1.5}" +
+  ".tl-document pre code{padding:0;background:none;font-size:inherit}" +
+  ".tl-document table{border-collapse:collapse;display:block;overflow-x:auto}" +
+  ".tl-document th,.tl-document td{padding:6px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}" +
+  ".tl-document th{font-weight:600}.tl-document hr{border:0;border-top:1px solid var(--border);margin:20px 0}" +
+  ".tl-document img{max-width:100%}.tl-document input[type=checkbox]{margin:0 6px 0 0}";
+
+/**
+ * A value as a script literal that nothing in it can end early: `<`, `>` and
+ * `/` (a closing script tag) and the two line separators JSON leaves bare are
+ * written as escapes, which read back as the same characters.
+ */
+const scriptLiteral = (value: unknown) =>
+  JSON.stringify(value).replace(
+    /[<>/\u2028\u2029]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+
+// Runs first, before anything the page says. It removes WebRTC, which no
+// content policy governs; rewrites its own theme <style> when the host's theme
+// changes (so a page's later `:root` rules still win); sends links the reader
+// clicks to the host instead of navigating the frame; reports the page's
+// height so the host can fit the frame to it; and tells the host when the
+// document goes away, which for a page only happens when it navigates itself,
+// even before it has finished loading.
+const BOOTSTRAP_SCRIPT = `(function(){var w=window,d=document,p=w.parent,n=0;["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCSessionDescription","RTCIceCandidate"].forEach(function(k){try{Object.defineProperty(w,k,{value:void 0,writable:false,configurable:false});}catch(e){}});var s=d.getElementById("tl-page-theme"),b=${scriptLiteral(BASE_CSS)};function a(t){if(!s||!t||typeof t!=="object"||!t.variables||typeof t.variables!=="object")return;var c=":root{color-scheme:"+(t.appearance==="light"?"light":"dark")+";";for(var k in t.variables){if(/^--[a-z0-9-]+$/.test(k))c+=k+":"+String(t.variables[k]).replace(/[;{}<>\\\\]/g,"")+";";}s.textContent=c+"}"+b;}w.addEventListener("message",function(e){if(e.source!==p)return;var m=e.data,q=m&&m.params;if(m&&m.jsonrpc==="2.0"&&m.method===${scriptLiteral(HOST_CONTEXT_CHANGED_METHOD)}&&q&&q.styles)a({appearance:q.theme,variables:q.styles.variables});});d.addEventListener("click",function(e){if(!e.isTrusted||e.defaultPrevented)return;var l=e.composedPath().find(function(t){return t&&t.matches&&t.matches("a[href]");}),h,u;if(!l)return;h=l.getAttribute("href")||"";if(h.charAt(0)==="#")return;e.preventDefault();try{u=new URL(h,d.baseURI);}catch(x){return;}if(!/^https?:$/.test(u.protocol))return;p.postMessage({jsonrpc:"2.0",id:"tl-link-"+(++n),method:${scriptLiteral(OPEN_LINK_METHOD)},params:{url:u.href}},"*");});var z,o,r=function(){var e=d.documentElement,v=Math.ceil(e.scrollHeight>e.clientHeight?e.scrollHeight:e.getBoundingClientRect().height);if(v===z)return;z=v;p.postMessage({jsonrpc:"2.0",method:${scriptLiteral(SIZE_CHANGED_METHOD)},params:{height:v}},"*");};if(w.ResizeObserver){o=new ResizeObserver(r);o.observe(d.documentElement);}d.addEventListener("DOMContentLoaded",function(){if(o&&d.body)o.observe(d.body);r();});w.addEventListener("load",r);w.addEventListener("pagehide",function(){p.postMessage({jsonrpc:"2.0",method:${scriptLiteral(PAGE_LEFT_METHOD)}},"*");});})();`;
+
+/** The page's own markup for a Markdown document: GitHub-flavored, raw HTML escaped. */
+export function renderAgentPageMarkdown(markdown: string): string {
+  const body = micromark(markdown, { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
+  return `<style>${DOCUMENT_CSS}</style><article class="tl-document">${body}</article>`;
+}
+
+/**
+ * Where a page's leading doctype ends, with anything a parser skips before it
+ * (a byte order mark, white space, comments); null when the page has none.
+ * The doctype must stay first, or the page drops into quirks mode; everything
+ * else goes after the wrapper. A scan, not a pattern: it reads each character
+ * once, however the page repeats comment markers.
+ */
+function leadingDoctypeEnd(content: string): number | null {
+  let index = content.startsWith("\uFEFF") ? 1 : 0;
+  for (;;) {
+    while (index < content.length && /\s/.test(content[index]!)) index += 1;
+    if (!content.startsWith("<!--", index)) break;
+    const commentEnd = content.indexOf("-->", index + 4);
+    if (commentEnd === -1) return null;
+    index = commentEnd + 3;
+  }
+  if (content.slice(index, index + 9).toLowerCase() !== "<!doctype") return null;
+  const end = content.indexOf(">", index + 9);
+  return end === -1 ? null : end + 1;
+}
+
+/**
+ * The whole document a host puts into a page's frame: the content policy,
+ * the theme and the bootstrap script first, then the page exactly as stored.
+ *
+ * Nothing the page says can come before the wrapper, so no page script runs
+ * outside the policy. A page's own `<html>` and `<head>` tags after it are
+ * merged by the parser as usual; a second content policy of its own can only
+ * narrow this one.
+ */
+export function buildAgentPageDocument(input: {
+  readonly content: string;
+  readonly kind: AgentPageKind;
+  readonly theme: AgentPageTheme;
+}): string {
+  const wrapper =
+    `<meta charset="utf-8">` +
+    `<meta http-equiv="Content-Security-Policy" content="${AGENT_PAGE_CONTENT_SECURITY_POLICY}">` +
+    `<meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<style id="tl-page-theme">${agentPageThemeRule(input.theme)}${BASE_CSS}</style>` +
+    `<script>${BOOTSTRAP_SCRIPT}</script>`;
+  if (input.kind === "markdown") {
+    return `<!doctype html><html><head>${wrapper}</head><body>${renderAgentPageMarkdown(input.content)}</body></html>`;
+  }
+  const doctypeEnd = leadingDoctypeEnd(input.content);
+  return doctypeEnd !== null
+    ? `${input.content.slice(0, doctypeEnd)}${wrapper}${input.content.slice(doctypeEnd)}`
+    : `<!doctype html>${wrapper}${input.content}`;
+}

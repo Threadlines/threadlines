@@ -14,6 +14,7 @@ import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
+import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import {
   canBindDesktopBackendPort,
   desktopBackendPortProbeHosts,
@@ -186,6 +187,8 @@ const resolveBackendStartConfig = Effect.fn("desktop.backendConfiguration.resolv
     readonly bootstrapToken: string;
     readonly launchId: string;
     readonly observabilitySettings: BackendObservabilitySettings;
+    /** The desktop already read the user's shell environment, which the backend inherits. */
+    readonly shellEnvironmentPrepared: boolean;
   }): Effect.fn.Return<
     DesktopBackendManager.DesktopBackendStartConfig,
     never,
@@ -216,6 +219,7 @@ const resolveBackendStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         appVersion: environment.appVersion,
         tailscaleServeEnabled: backendExposure.tailscaleServeEnabled,
         tailscaleServePort: backendExposure.tailscaleServePort,
+        ...(input.shellEnvironmentPrepared ? { shellEnvironmentPrepared: true } : {}),
         ...Option.match(input.observabilitySettings.otlpTracesUrl, {
           onNone: () => ({}),
           onSome: (otlpTracesUrl) => ({ otlpTracesUrl }),
@@ -239,6 +243,7 @@ export const layer = Layer.effect(
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
     const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
     const net = yield* NetService.NetService;
+    const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
     const tokenRef = yield* Ref.make(Option.none<string>());
 
     return DesktopBackendConfiguration.of({
@@ -261,6 +266,7 @@ export const layer = Layer.effect(
           bootstrapToken,
           launchId,
           observabilitySettings,
+          shellEnvironmentPrepared: yield* shellEnvironment.prepared,
         }).pipe(
           Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
           Effect.provideService(DesktopServerExposure.DesktopServerExposure, serverExposure),

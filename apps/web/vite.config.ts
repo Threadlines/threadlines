@@ -64,6 +64,59 @@ function resolveDevProxyTarget(wsUrl: string | undefined): string | undefined {
 }
 
 const devProxyTarget = resolveDevProxyTarget(configuredWsUrl);
+
+// The upright Latin faces the first paint draws with: the UI font, and the
+// mono face the sidebar's times and counts use. Matched against the font
+// file's source name, so the emitted hash does not matter.
+const FIRST_PAINT_FONT_FILES = [
+  "schibsted-grotesk-latin-wght-normal.woff2",
+  "cascadia-mono-latin-wght-normal.woff2",
+];
+
+/**
+ * Preloads the first-paint fonts from index.html. A font named only in CSS is
+ * requested once a styled text node is laid out, which is after the first
+ * text paint, so the page paints in a fallback face and then reflows. The
+ * `crossorigin` attribute matches the CORS mode font requests always use, so
+ * the preload is reused rather than fetched twice.
+ */
+function preloadFirstPaintFonts(): PluginOption {
+  let base = "/";
+  return {
+    name: "threadlines:preload-first-paint-fonts",
+    apply: "build",
+    configResolved(config) {
+      base = config.base;
+    },
+    transformIndexHtml: {
+      order: "post",
+      handler(_html, context) {
+        const assets = Object.values(context.bundle ?? {}).filter(
+          (output) =>
+            output.type === "asset" &&
+            output.names.some((name) => FIRST_PAINT_FONT_FILES.includes(name)),
+        );
+        if (assets.length !== FIRST_PAINT_FONT_FILES.length) {
+          // A renamed font package would silently drop the preload.
+          this.error(
+            `Expected ${FIRST_PAINT_FONT_FILES.length} first-paint fonts in the bundle, found ${assets.length}.`,
+          );
+        }
+        return assets.map((asset) => ({
+          tag: "link",
+          attrs: {
+            rel: "preload",
+            as: "font",
+            type: "font/woff2",
+            href: `${base}${asset.fileName}`,
+            crossorigin: "",
+          },
+          injectTo: "head",
+        }));
+      },
+    },
+  };
+}
 const unitTestProject = {
   extends: true,
   test: {
@@ -118,7 +171,7 @@ export default defineConfig({
       },
     },
   },
-  plugins: createWebPlugins(),
+  plugins: [...createWebPlugins(), preloadFirstPaintFonts()],
   // Module workers, matching what the dev server already serves. The default
   // IIFE build cannot code-split, so the highlighting worker's reach into
   // Shiki's bundled-grammar table would inline every grammar into one 11 MB

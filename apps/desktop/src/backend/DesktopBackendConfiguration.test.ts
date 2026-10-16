@@ -14,6 +14,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
+import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 
 const PersistedServerObservabilitySettingsDocument = Schema.Struct({
   observability: Schema.Struct({
@@ -98,6 +99,12 @@ function makeEnvironmentLayer(
   );
 }
 
+const shellEnvironmentLayer = (prepared: boolean) =>
+  Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
+    installIntoProcess: Effect.void,
+    prepared: Effect.succeed(prepared),
+  });
+
 const withHarness = <A, E, R>(
   effect: Effect.Effect<
     A,
@@ -107,7 +114,10 @@ const withHarness = <A, E, R>(
     | FileSystem.FileSystem
     | DesktopBackendConfiguration.DesktopBackendConfiguration
   >,
-  options?: { readonly occupiedPorts?: readonly number[] },
+  options?: {
+    readonly occupiedPorts?: readonly number[];
+    readonly shellEnvironmentPrepared?: boolean;
+  },
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -121,6 +131,7 @@ const withHarness = <A, E, R>(
           Layer.provideMerge(serverExposureLayer),
           Layer.provideMerge(DesktopAppSettings.layerTest()),
           Layer.provideMerge(makeNetLayer(options?.occupiedPorts)),
+          Layer.provideMerge(shellEnvironmentLayer(options?.shellEnvironmentPrepared ?? true)),
           Layer.provideMerge(makeEnvironmentLayer(baseDir)),
         ),
       ),
@@ -168,6 +179,7 @@ const withLiveExposureHarness = <A, E, R>(
         DesktopBackendConfiguration.layer.pipe(
           Layer.provideMerge(exposureLayer),
           Layer.provideMerge(makeNetLayer(input.occupiedPorts, input.listenerPorts)),
+          Layer.provideMerge(shellEnvironmentLayer(true)),
           Layer.provideMerge(makeEnvironmentLayer(baseDir)),
         ),
       ),
@@ -212,7 +224,19 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(first.bootstrap.tailscaleServePort, 8443);
         assert.match(first.bootstrap.desktopBootstrapToken, /^[0-9a-f]{48}$/i);
         assert.equal(second.bootstrap.desktopBootstrapToken, first.bootstrap.desktopBootstrapToken);
+        assert.equal(first.bootstrap.shellEnvironmentPrepared, true);
       }),
+    ),
+  );
+
+  // The backend then runs its own probe, as a server started on its own does.
+  it.effect("leaves the shell environment to the backend when the desktop's probe failed", () =>
+    withHarness(
+      Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        assert.isUndefined((yield* configuration.resolve).bootstrap.shellEnvironmentPrepared);
+      }),
+      { shellEnvironmentPrepared: false },
     ),
   );
 
@@ -356,6 +380,7 @@ describe("DesktopBackendConfiguration", () => {
             Layer.provideMerge(serverExposureLayer),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
             Layer.provideMerge(makeNetLayer()),
+            Layer.provideMerge(shellEnvironmentLayer(true)),
             Layer.provideMerge(
               makeEnvironmentLayer(baseDir, {
                 isPackaged: false,

@@ -4454,15 +4454,26 @@ const make = Effect.gen(function* () {
     }
   });
 
+  // Both sweeps below act only on open agent requests. Loading a room
+  // thread's full detail to find none cost seconds at startup (about 40 ms per
+  // thread, 80 room threads), all while the command gate held every command.
+  const openAgentRequestThreadIds = projectionSnapshotQuery
+    .listThreadIdsWithOpenAgentRequests()
+    .pipe(Effect.map((threadIds) => new Set<ThreadId>(threadIds)));
+
   /**
    * Invites turned off in Settings: the ones still waiting for the user are
    * taken back, so no card offers what the setting now refuses.
    */
   const cancelAwaitingInvites = Effect.fn("cancelAwaitingInvites")(function* () {
     const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+    const withOpenRequests = yield* openAgentRequestThreadIds;
     for (const shell of snapshot.threads) {
       // Every invite records its agent as a guest when it is made.
-      if (!shell.participants.some((participant) => participant.guest === true)) {
+      if (
+        !withOpenRequests.has(shell.id) ||
+        !shell.participants.some((participant) => participant.guest === true)
+      ) {
         continue;
       }
       const thread = yield* resolveThread(shell.id);
@@ -4488,8 +4499,9 @@ const make = Effect.gen(function* () {
   const closeRoomRequestsFromPreviousProcess = Effect.fn("closeRoomRequestsFromPreviousProcess")(
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+      const withOpenRequests = yield* openAgentRequestThreadIds;
       for (const thread of snapshot.threads) {
-        if (thread.participants.length > 0) {
+        if (thread.participants.length > 0 && withOpenRequests.has(thread.id)) {
           yield* closeRequestsFromPreviousProcess(thread.id);
         }
       }

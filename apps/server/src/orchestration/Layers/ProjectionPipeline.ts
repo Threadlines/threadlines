@@ -3,7 +3,6 @@ import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
 import {
   agentRequestStateOn,
-  isUserWrittenMessage,
   withInviteChoice,
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
@@ -501,26 +500,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         return;
       }
 
-      const [messages, proposedPlans, activities, pendingApprovals] = yield* Effect.all([
-        projectionThreadMessageRepository.listByThreadId({ threadId }),
-        projectionThreadProposedPlanRepository.listByThreadId({ threadId }),
-        projectionThreadActivityRepository.listByThreadId({ threadId }),
-        projectionPendingApprovalRepository.listByThreadId({ threadId }),
-      ]);
-
-      const latestUserMessageAt =
-        messages
-          .filter(isUserWrittenMessage)
-          .map((message) => message.createdAt)
-          .toSorted()
-          .at(-1) ?? null;
+      // This runs inside the projection transaction on every streamed message
+      // and session change, so it reads only the rows the summary depends on,
+      // never the thread's whole history.
+      const [latestUserMessageAt, proposedPlans, promptActivities, pendingApprovals] =
+        yield* Effect.all([
+          projectionThreadMessageRepository.getLatestUserWrittenAt({ threadId }),
+          projectionThreadProposedPlanRepository.listByThreadId({ threadId }),
+          projectionThreadActivityRepository.listPromptsByThreadId({ threadId }),
+          projectionPendingApprovalRepository.listByThreadId({ threadId }),
+        ]);
 
       const pendingApprovalCount = pendingApprovals.filter(
         (approval) => approval.status === "pending",
       ).length;
       // Provider timestamps can arrive out of order; count in transcript order.
       const userInputCounts = countPendingUserInputs(
-        [...activities].toSorted(
+        [...promptActivities].toSorted(
           (left, right) =>
             compareTranscriptOrder(left, right) || left.activityId.localeCompare(right.activityId),
         ),
