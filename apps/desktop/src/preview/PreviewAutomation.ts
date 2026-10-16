@@ -571,6 +571,22 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   });
 
   /**
+   * The host a certificate was presented for. A page's own loads are `https:`,
+   * and a dev server's live reload runs over `wss:` on the same host with the
+   * same certificate, so both count.
+   */
+  const certificateHost = (url: string): string | null => {
+    try {
+      const parsed = new URL(url);
+      return (parsed.protocol === "https:" || parsed.protocol === "wss:") && parsed.hostname !== ""
+        ? parsed.hostname
+        : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
    * Tells the panel a page on the user's own machine or network was refused
    * for its certificate, so it can offer to trust it. Sent like a blocked
    * navigation: to the window embedding the page, or every app window.
@@ -604,9 +620,12 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    */
   app.on("certificate-error", (event, contents, url, error, certificate, callback, isMainFrame) => {
     if (contents.isDestroyed() || contents.session === session.defaultSession) return;
+    // The profile's latest policy rather than this page's copy: trust taken
+    // back reaches the profile with the first page told, and a page told a
+    // moment later must not let the certificate back in meanwhile.
     const access =
-      navigationGuards.get(contents.id)?.access ?? accessBySession.get(contents.session);
-    const host = navigationHost(url);
+      accessBySession.get(contents.session) ?? navigationGuards.get(contents.id)?.access;
+    const host = certificateHost(url);
     if (
       host !== null &&
       access !== undefined &&

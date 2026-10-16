@@ -4,7 +4,9 @@ import { isBrowserHostAllowed, isPrivateNetworkHost } from "@threadlines/shared/
 
 import {
   PREVIEW_WEBVIEW_WAIT_MS,
+  callWhenReady,
   getPreviewWebview,
+  selectPendingBrowserApprovals,
   selectActiveTab,
   selectThreadBrowserState,
   subscribePreviewWebviews,
@@ -32,7 +34,7 @@ import {
 import { withPageKeyboard } from "./browserFocusGuard";
 import { beginAgentWork, reviveEvictedPage } from "./browserLifecycle";
 import type { PreviewAutomationHostTarget } from "./previewAutomationHost";
-import { hostOf, normalizePreviewUrl } from "./previewUrl";
+import { normalizePreviewUrl } from "./previewUrl";
 import { signInPopupsOf } from "./signInPopups";
 
 /**
@@ -326,6 +328,48 @@ export function resolveThreadBrowserTarget(
    * unless the request was cancelled while it waited to get here, since the
    * agent has already been told it timed out.
    */
+  /**
+   * Whether a tab opened at an address had that first load refused for a
+   * certificate the user is now being asked to trust. The tab loads the
+   * address by itself, so the refusal arrives as that question rather than as
+   * an error to catch: waited for until the page has stopped loading, and a
+   * moment more for the question to land. Only a page on the user's own
+   * machine or network over https can be asked about, so only those wait.
+   */
+  const refusedForCertificate = async (forTabId: string, url: string): Promise<boolean> => {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || !isPrivateNetworkHost(parsed.hostname)) return false;
+    const asked = () =>
+      selectPendingBrowserApprovals(
+        useBrowserPanelStore.getState().pendingApprovalsByThreadKey,
+        threadRef,
+      ).some((question) => question.tabId === forTabId && question.certificate !== undefined);
+    const deadline = Date.now() + 5_000;
+    let idleSince: number | null = null;
+    while (Date.now() < deadline) {
+      if (asked()) return true;
+      const webview = getPreviewWebview(threadRef, forTabId);
+      const webContentsId =
+        webview === null ? null : callWhenReady(() => webview.getWebContentsId());
+      const status = window.desktopBridge?.previewStatus;
+      const loading =
+        webContentsId === null || status === undefined
+          ? false
+          : await status({ webContentsId }).then(
+              (page) => page.loading,
+              () => false,
+            );
+      if (loading) {
+        idleSince = null;
+      } else {
+        idleSince ??= Date.now();
+        if (Date.now() - idleSince >= 200) return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return asked();
+  };
+
   const loadInTab = async (
     forTabId: string,
     url: string,
@@ -352,11 +396,7 @@ export function resolveThreadBrowserTarget(
         if (message.includes("ERR_ABORTED")) return;
         const certificateError = /ERR_CERT_[A-Z_]+/.exec(message)?.[0];
         if (certificateError !== undefined) {
-          throw new Error(
-            isPrivateNetworkHost(hostOf(url))
-              ? `${url} was refused: its certificate is not trusted (${certificateError}). The user can trust it for this project from the browser panel; ask them to, then load the page again.`
-              : `${url} was refused: its certificate is not valid (${certificateError}). The browser does not open public sites with certificate errors.`,
-          );
+          throw new Error(certificateRefusal(url, certificateError));
         }
         throw cause;
       });
@@ -451,7 +491,11 @@ export function resolveThreadBrowserTarget(
       });
       agentTabPins.set(key, openedId);
       panel.setAgentTab(threadRef, openedId);
-      return waitForTab(openedId);
+      const opened = await waitForTab(openedId);
+      if (normalized !== null && (await refusedForCertificate(openedId, normalized))) {
+        throw new Error(certificateRefusal(normalized, "ERR_CERT_AUTHORITY_INVALID"));
+      }
+      return opened;
     },
     closeTab: async (closingTabId) => {
       const closingTab = browserState.tabs.find((tab) => tab.id === closingTabId);
@@ -536,6 +580,15 @@ export function resolveThreadBrowserTarget(
       await loadInTab(tabId, normalized, signal);
     },
   };
+}
+
+/**
+ * What an agent is told when a load is refused for a certificate. Said
+ * without guessing which host failed: a redirect can end on another one than
+ * the agent asked for.
+ */
+function certificateRefusal(url: string, error: string): string {
+  return `${url} was refused because a certificate on the way to it is not trusted (${error}). For a server on this machine or network, the browser panel now asks the user whether to trust it: ask them, then load the page again. Public sites with certificate errors are never opened.`;
 }
 
 export function resetThreadBrowserAutomationForTests(): void {
