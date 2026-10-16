@@ -9,6 +9,7 @@ export type AnalyticsModelFamily =
   | "cursor"
   | "opencode"
   | "muse"
+  | "grok"
   | "auto"
   | "other"
   | "unknown";
@@ -88,6 +89,7 @@ const SAFE_PUBLIC_MODEL_PATTERNS = [
   /^gpt-\d+(?:[.-][a-z0-9]+)*(?:-codex(?:-[a-z0-9]+)?)?$/,
   /^claude-(?:fable|haiku|opus|sonnet)-\d+(?:-\d+)*(?:-\d{8})?$/,
   /^composer-\d+(?:\.\d+)?$/,
+  /^grok-\d+(?:\.\d+)?(?:-[a-z]+)*$/,
   /^(?:auto|default)$/,
 ];
 
@@ -107,6 +109,7 @@ function inferModelFamily(model: string | undefined): AnalyticsModelFamily {
   if (model.includes("composer") || model.includes("cursor")) return "cursor";
   if (model.includes("opencode")) return "opencode";
   if (model.startsWith("muse")) return "muse";
+  if (model.includes("grok")) return "grok";
   if (model === "auto" || model === "default") return "auto";
   return "other";
 }

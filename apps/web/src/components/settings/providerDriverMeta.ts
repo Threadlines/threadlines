@@ -8,6 +8,7 @@ import {
   MuseSettings,
   OpenCodeSettings,
   AntigravitySettings,
+  GrokSettings,
   ProviderDriverKind,
 } from "@threadlines/contracts";
 import type * as Schema from "effect/Schema";
@@ -17,6 +18,7 @@ import {
   ClaudeAI,
   CursorIcon,
   FxIcon,
+  GrokIcon,
   type Icon,
   MuseIcon,
   OpenAI,
@@ -96,6 +98,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     icon: MuseIcon,
     settingsSchema: MuseSettings,
     needs: "Meta account with a Muse plan",
+  },
+  {
+    value: ProviderDriverKind.make("grok"),
+    label: "Grok",
+    icon: GrokIcon,
+    settingsSchema: GrokSettings,
+    needs: "SuperGrok or X Premium, or xAI API key",
   },
 ];
 

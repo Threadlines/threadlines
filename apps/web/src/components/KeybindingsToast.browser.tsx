@@ -168,6 +168,13 @@ function createBaseServerConfig(): ServerConfig {
           allowApiKeyBilling: false,
           customModels: [],
         },
+        grok: {
+          enabled: false,
+          binaryPath: "",
+          accountFolder: "",
+          authMethod: "subscription",
+          customModels: [],
+        },
       },
     },
   };

@@ -93,8 +93,10 @@ export interface ProviderAdapterCapabilities {
 
   /**
    * Whether `rollbackThread` rewinds the provider's own conversation. `none`
-   * (ACP agents) trims only Threadlines' turn list: the agent still
-   * remembers the reverted turns, and a revert says so. Default `native`.
+   * (most ACP agents) trims only Threadlines' turn list: the agent still
+   * remembers the reverted turns, and a revert says so. Default `native`. A
+   * rollback's own `conversationRolledBack` overrides it, for an agent that
+   * can rewind only to the turns it knows the positions of (Grok).
    */
   readonly conversationRollback?: "native" | "none";
 }
@@ -107,6 +109,11 @@ export interface ProviderThreadTurnSnapshot {
 export interface ProviderThreadSnapshot {
   readonly threadId: ThreadId;
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
+  /**
+   * From `rollbackThread`: whether the provider's own conversation forgot the
+   * turns this time. Absent: as `capabilities.conversationRollback` says.
+   */
+  readonly conversationRolledBack?: boolean;
 }
 
 export interface ProviderRollbackThreadOptions {

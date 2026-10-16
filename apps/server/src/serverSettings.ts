@@ -101,7 +101,10 @@ function redactProviderEnvironmentVariable(
  * that forgets `sensitive` can't put a key in settings or send it back.
  */
 function isAlwaysSensitive(driver: string, name: string): boolean {
-  return driver === "antigravity" && isAntigravityKeyEnvName(name);
+  return (
+    (driver === "antigravity" && isAntigravityKeyEnvName(name)) ||
+    (driver === "grok" && name === "XAI_API_KEY")
+  );
 }
 
 function withEnforcedSensitivity(instance: ProviderInstanceConfig): ProviderInstanceConfig {

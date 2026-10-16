@@ -17,7 +17,7 @@ import { scopeProjectRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, ProviderDriverKind, ScopedProjectRef } from "@threadlines/contracts";
 import {
   BROWSER_SIGN_IN_DRIVERS,
-  BROWSER_SIGN_IN_LABEL,
+  browserSignInLabel,
 } from "@threadlines/shared/providerAuthCommands";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { CheckIcon, FolderIcon, GitBranchIcon, LoaderIcon } from "lucide-react";
@@ -304,7 +304,7 @@ function SetupSignInAgentRow({
         <>
           <ProviderSignInInlineStatus view={view} className="max-w-56" />
           {isBrowserFlow && !controller.isActive ? (
-            // Keys and Google Cloud sign-ins are chosen on the Account tab.
+            // API keys and the other sign-in methods are chosen on the Account tab.
             <Link
               to="/settings/providers"
               search={{ instance: String(agent.row.instanceId) }}
@@ -315,7 +315,7 @@ function SetupSignInAgentRow({
           ) : null}
           <ProviderSignInButton
             view={view}
-            label={isBrowserFlow ? BROWSER_SIGN_IN_LABEL : "Sign in"}
+            label={isBrowserFlow ? browserSignInLabel(String(agent.driverKind)) : "Sign in"}
             ariaLabel={`Sign in to ${agent.definition.label}`}
           />
         </>

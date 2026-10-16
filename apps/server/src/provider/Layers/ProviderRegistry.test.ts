@@ -2690,6 +2690,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 "codex",
                 "cursor",
                 "fx",
+                "grok",
                 "muse",
                 "opencode",
               ]);

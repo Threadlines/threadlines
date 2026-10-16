@@ -607,6 +607,7 @@ const PROVIDER_USAGE_SOURCE_LABELS: Record<ServerProviderAccountUsage["source"],
   "codex-rate-limits": "Codex usage",
   "claude-oauth-usage": "Claude usage",
   "muse-subscription-usage": "Muse Code usage",
+  "grok-billing": "Grok usage",
 };
 
 export function deriveProviderAccountUsagePresentation(

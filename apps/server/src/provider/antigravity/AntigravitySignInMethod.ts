@@ -42,9 +42,8 @@ import {
   antigravityMissingSetup as missingSetup,
 } from "@threadlines/shared/antigravitySignIn";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
+import { checkApiKeyWithModelList } from "../apiKeyCheck.ts";
 import { antigravityAgentDir, antigravityTokenPath } from "./AntigravityProfile.ts";
 
 export interface AntigravitySignInConfig {
@@ -345,12 +344,6 @@ export const readAntigravityGoogleSignIn = (profileDir: string) =>
 
 export const GEMINI_MODELS_URL =
   "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1";
-const KEY_CHECK_TIMEOUT_MS = 15_000;
-
-export type GeminiKeyCheck =
-  | { readonly verdict: "accepted" }
-  | { readonly verdict: "rejected"; readonly message: string }
-  | { readonly verdict: "unreachable"; readonly message: string };
 
 function googleErrorMessage(body: unknown): string | undefined {
   if (!isRecord(body) || !isRecord(body.error)) return undefined;
@@ -358,45 +351,13 @@ function googleErrorMessage(body: unknown): string | undefined {
   return typeof message === "string" && message.trim() ? message.trim().slice(0, 300) : undefined;
 }
 
-/**
- * Asks Google whether it accepts a Gemini API key: one model-list request,
- * which is free. It proves the key, not access to a given model or quota.
- */
+/** Asks Google whether it accepts a Gemini API key (see `checkApiKeyWithModelList`). */
 export const checkGeminiApiKey = (key: string, url: string = GEMINI_MODELS_URL) =>
-  Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
-    const response = yield* client
-      .execute(
-        HttpClientRequest.get(url).pipe(
-          HttpClientRequest.setHeaders({ "x-goog-api-key": key, accept: "application/json" }),
-        ),
-      )
-      .pipe(
-        Effect.timeoutOption(KEY_CHECK_TIMEOUT_MS),
-        Effect.catch(() => Effect.succeed(Option.none())),
-      );
-    if (Option.isNone(response)) {
-      return {
-        verdict: "unreachable",
-        message: "Couldn't reach Google to check the key. Check the connection and try again.",
-      } satisfies GeminiKeyCheck;
-    }
-    const status = response.value.status;
-    // Over quota still means Google knows the key.
-    if ((status >= 200 && status < 300) || status === 429) {
-      return { verdict: "accepted" } satisfies GeminiKeyCheck;
-    }
-    const body = yield* response.value.json.pipe(Effect.orElseSucceed(() => undefined));
-    if (status === 400 || status === 401 || status === 403) {
-      return {
-        verdict: "rejected",
-        message: googleErrorMessage(body) ?? "Google didn't accept this key.",
-      } satisfies GeminiKeyCheck;
-    }
-    return {
-      verdict: "unreachable",
-      message: `Google couldn't check the key right now (HTTP ${status}). Try again in a moment.`,
-    } satisfies GeminiKeyCheck;
+  checkApiKeyWithModelList({
+    vendor: "Google",
+    url,
+    headers: { "x-goog-api-key": key },
+    errorMessage: googleErrorMessage,
   });
 
 // ── Status ───────────────────────────────────────────────────────────

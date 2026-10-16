@@ -518,6 +518,56 @@ export const AntigravitySettings = makeProviderSettingsSchema(
 );
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
+/** How a Grok instance is billed: the user's xAI subscription, or an API key per use. */
+export const GrokAuthMethod = Schema.Literals(["subscription", "api-key"]);
+export type GrokAuthMethod = typeof GrokAuthMethod.Type;
+
+/**
+ * Grok Build (`grok`, xAI's coding agent) over ACP. Its sign-in, sessions and
+ * settings live in its home folder (`GROK_HOME`, `~/.grok` by default).
+ */
+export const GrokSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("grok").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Grok Build CLI.",
+        providerSettingsForm: { placeholder: "grok", clearWhenEmpty: "omit" },
+      }),
+    ),
+    accountFolder: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Account folder",
+        description:
+          "Keeps this account's sign-in in its own Grok folder (GROK_HOME) instead of ~/.grok.",
+        providerSettingsForm: {
+          placeholder: "Grok's own folder (~/.grok)",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    // The Account tab owns it; an API key lives in the instance's environment
+    // as the secret XAI_API_KEY.
+    authMethod: GrokAuthMethod.pipe(
+      Schema.withDecodingDefault(Effect.succeed("subscription" as const)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "accountFolder"],
+  },
+);
+export type GrokSettings = typeof GrokSettings.Type;
+
 /**
  * A community agent (driver `acpRegistry`). Which version runs is not a
  * setting: it is the one the user confirmed, kept with the agent's files.
@@ -760,6 +810,7 @@ export const ServerSettings = Schema.Struct({
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     muse: MuseSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -897,6 +948,14 @@ const AntigravitySettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const GrokSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  accountFolder: Schema.optionalKey(TrimmedString),
+  authMethod: Schema.optionalKey(GrokAuthMethod),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const OpenCodeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
@@ -948,6 +1007,7 @@ export const ServerSettingsPatch = Schema.Struct({
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       antigravity: Schema.optionalKey(AntigravitySettingsPatch),
       muse: Schema.optionalKey(MuseSettingsPatch),
+      grok: Schema.optionalKey(GrokSettingsPatch),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual

@@ -15,6 +15,7 @@ export const PROVIDER_ACCOUNT_DRIVER_KINDS = [
   "claudeAgent",
   "opencode",
   "antigravity",
+  "grok",
 ] as const;
 
 const PROVIDER_ACCOUNT_DRIVER_SET: ReadonlySet<string> = new Set(PROVIDER_ACCOUNT_DRIVER_KINDS);
@@ -25,7 +26,8 @@ export function supportsProviderAccounts(driver: string): boolean {
 
 /**
  * The instance config key that holds an account's folder: Codex's shadow
- * home, Claude's `CLAUDE_CONFIG_DIR`, OpenCode's database folder. `null` for
+ * home, Claude's `CLAUDE_CONFIG_DIR`, OpenCode's database folder, Grok's
+ * `GROK_HOME`. `null` for
  * Antigravity, which already keeps every instance in its own profile.
  */
 export function providerAccountFolderField(
@@ -36,6 +38,7 @@ export function providerAccountFolderField(
       return "shadowHomePath";
     case "claudeAgent":
     case "opencode":
+    case "grok":
       return "accountFolder";
     default:
       return null;

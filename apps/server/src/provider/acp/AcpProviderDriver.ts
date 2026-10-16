@@ -148,10 +148,12 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
         const httpClient = yield* HttpClient.HttpClient;
         const eventLoggers = yield* ProviderEventLoggers;
         const processEnv = mergeProviderInstanceEnvironment(environment);
-        const continuationIdentity = defaultProviderContinuationIdentity({
-          driverKind: DRIVER_KIND,
-          instanceId,
-        });
+        const continuationIdentity = descriptor.continuationKey
+          ? {
+              driverKind: DRIVER_KIND,
+              continuationKey: descriptor.continuationKey(config, processEnv),
+            }
+          : defaultProviderContinuationIdentity({ driverKind: DRIVER_KIND, instanceId });
         const stampIdentity = (snapshot: ServerProviderDraft): ServerProvider => ({
           ...snapshot,
           instanceId,
