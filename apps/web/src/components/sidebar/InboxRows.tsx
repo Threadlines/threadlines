@@ -816,6 +816,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
             role="button"
             tabIndex={0}
             data-testid={`thread-row-${thread.id}`}
+            data-thread-key={threadKey}
             data-active={isActive ? "true" : undefined}
             className={cn(ROW_SURFACE_CLASS_NAME, "px-3 pt-1.5", family ? "pb-0" : "pb-2")}
             onClick={handleRowClick}
@@ -1179,6 +1180,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
           role="button"
           tabIndex={0}
           data-testid={`child-row-${thread.id}`}
+          data-thread-key={threadKey}
           data-active={isActive ? "true" : undefined}
           data-wrapped={isDone ? "true" : undefined}
           className={cn(
@@ -1456,6 +1458,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
           role="button"
           tabIndex={0}
           data-testid={`done-row-${thread.id}`}
+          data-thread-key={threadKey}
           className={cn(
             ROW_SURFACE_CLASS_NAME,
             "flex items-center gap-2 px-3 py-1.5",

@@ -1,16 +1,20 @@
 import {
   type DesktopTaskbarStatusInput,
   type DesktopTaskbarThreadSummary,
+  type ScopedThreadRef,
   type ServerLifecycleWelcomePayload,
+  type ThreadId,
 } from "@threadlines/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
+import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import {
   Outlet,
   createRootRouteWithContext,
   type ErrorComponentProps,
+  type MakeRouteMatchUnion,
   useLocation,
   useMatches,
   useNavigate,
+  useRouter,
 } from "@tanstack/react-router";
 import { useEffect, useEffectEvent, useRef } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
@@ -72,6 +76,7 @@ import {
   listSavedEnvironmentRecords,
   waitForSavedEnvironmentRegistryHydration,
   startEnvironmentConnectionService,
+  bindThreadRowIntentPrewarm,
   startRelayJoinWatchers,
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
@@ -84,6 +89,9 @@ import {
   updatePrimaryEnvironmentDescriptor,
 } from "../environments/primary";
 import { hasHostedPairingRouteIntent, isHostedStaticApp } from "../hostedPairing";
+import { readLastVisitedThreadRoute } from "../lastVisitedThreadRoute";
+import { isLaunchVisitConsumed } from "../launchVisit";
+import { resolveThreadRouteRef } from "../threadRoutes";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -549,18 +557,54 @@ function AuthenticatedTracingBootstrap() {
   return null;
 }
 
+/**
+ * The chat this page load opens into, so its detail is requested before any
+ * other thread's: the routed thread, or on `/` the thread the launch visit
+ * restores (see the index route). Null for drafts, home, settings and setup.
+ * A restore target that no longer exists costs one request the shell
+ * snapshot then cancels.
+ */
+function resolveLaunchForegroundThreadRef(
+  matches: ReadonlyArray<MakeRouteMatchUnion>,
+): ScopedThreadRef | null {
+  const leaf = matches.at(-1);
+  if (leaf?.routeId === "/_chat/$environmentId/$threadId") {
+    return resolveThreadRouteRef(leaf.params);
+  }
+  if (leaf?.routeId !== "/_chat/" || isLaunchVisitConsumed()) {
+    return null;
+  }
+  const environmentId =
+    getPrimaryKnownEnvironment()?.environmentId ??
+    useStore.getState().activeEnvironmentId ??
+    listSavedEnvironmentRecords()[0]?.environmentId ??
+    null;
+  const entry = readLastVisitedThreadRoute(environmentId);
+  return environmentId && entry?.kind === "server"
+    ? scopeThreadRef(environmentId, entry.threadId as ThreadId)
+    : null;
+}
+
 function EnvironmentConnectionManagerBootstrap() {
   const queryClient = useQueryClient();
+  const router = useRouter();
 
   useEffect(() => {
-    const stopConnections = startEnvironmentConnectionService(queryClient);
+    const stopConnections = startEnvironmentConnectionService(queryClient, {
+      foregroundThreadRef: resolveLaunchForegroundThreadRef(router.state.matches),
+    });
     // Joins waiting for a host's Allow survive restarts; pick them back up.
     const stopRelayJoins = startRelayJoinWatchers();
+    // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
+    // rather than by the sidebar, which on a phone unmounts the moment a tap
+    // closes it, mid-prewarm.
+    const unbindRowIntent = bindThreadRowIntentPrewarm(document);
     return () => {
+      unbindRowIntent();
       stopRelayJoins();
       stopConnections();
     };
-  }, [queryClient]);
+  }, [queryClient, router]);
 
   return null;
 }
