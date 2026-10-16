@@ -8,6 +8,7 @@
  */
 import type {
   AwaitedWorkflowProgress,
+  MessageComposer,
   OrchestrationWorkflowRun,
   OrchestrationWorkflowRunPatch,
   TurnId,
@@ -34,6 +35,23 @@ export function workflowPhaseDisplayTitle(title: string): string {
 /** Claude's word for "run this message as a workflow". Claude acts on it
  *  only in words a person typed (see ProviderTypedInput). */
 const WORKFLOW_KEYWORD = /\bultracode\b/iu;
+
+/**
+ * How words a user sends from a composer go out (MessageComposer): typed, so
+ * Claude may act on "ultracode", unless the user chose plain text or the word
+ * is only in what came along with their words (a terminal's output, a quoted
+ * transcript) and never in what they wrote.
+ */
+export function composerForTypedMessage(input: {
+  /** What the user wrote. */
+  readonly typedText: string;
+  /** What goes out: their words plus anything attached to them. */
+  readonly sentText: string;
+  readonly plain: boolean;
+}): MessageComposer {
+  if (containsWorkflowKeyword(input.typedText)) return input.plain ? "plain" : "typed";
+  return containsWorkflowKeyword(input.sentText) ? "plain" : "typed";
+}
 
 export function containsWorkflowKeyword(text: string): boolean {
   return WORKFLOW_KEYWORD.test(text);

@@ -2,6 +2,7 @@ import type { OrchestrationWorkflowRunPatch, TurnId, WorkflowAgent } from "@thre
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  composerForTypedMessage,
   applyWorkflowRunPatch,
   retainWorkflowRunsAfterRevert,
   workflowAwaitedProgress,
@@ -23,6 +24,18 @@ const launch: OrchestrationWorkflowRunPatch = {
   status: "running",
   startedAt: "2026-10-15T15:04:24.000Z",
 };
+
+describe("composerForTypedMessage", () => {
+  it("lets Claude act on the keyword only when the user wrote it and did not say plain", () => {
+    const send = (typedText: string, sentText: string, plain = false) =>
+      composerForTypedMessage({ typedText, sentText, plain });
+    expect(send("ultracode the refactor", "ultracode the refactor")).toBe("typed");
+    expect(send("ultracode the refactor", "ultracode the refactor", true)).toBe("plain");
+    // Only in a terminal's output that came along: not the user's word.
+    expect(send("fix this", "fix this\n<terminal>ULTRACODE=1</terminal>")).toBe("plain");
+    expect(send("fix this", "fix this")).toBe("typed");
+  });
+});
 
 describe("applyWorkflowRunPatch", () => {
   it("adds a run on its first update and folds later deltas by index", () => {

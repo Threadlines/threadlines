@@ -572,11 +572,14 @@ export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "s
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
 /**
- * A user message the user wrote in their own composer, as opposed to one an
- * agent, another thread or the server's automation wrote. Only the server
- * sets it, from the client's command route; a client can not claim it.
- * `plain`: the user chose to send it as plain text, so words that switch on
- * provider features (Claude's "ultracode") are not acted on.
+ * A user message whose words the user wrote in their own composer, as opposed
+ * to one an agent, another thread or the server's automation wrote. Set only
+ * by a client, for what its user typed; server routes (rooms, child threads,
+ * automation) never set it, and a client leaves it off words it did not get
+ * from its user (a plan the user chose to implement).
+ * `plain`: the user chose to send it as plain text, or the word that switches
+ * on a provider feature (Claude's "ultracode") is only in what came along with
+ * their words, so it is not acted on.
  */
 export const MessageComposer = Schema.Literals(["typed", "plain"]);
 export type MessageComposer = typeof MessageComposer.Type;
@@ -1922,6 +1925,8 @@ const ClientThreadForkCommand = Schema.Struct({
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
     skills: Schema.optional(ChatSkillReferenceList),
   }),
+  /** Whether the user wrote the fork's instruction. See MessageComposer. */
+  composer: Schema.optional(MessageComposer),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode.pipe(
@@ -1952,6 +1957,7 @@ const ThreadForkCommand = Schema.Struct({
   ),
   workspaceMode: ThreadForkWorkspaceMode,
   includeAttachments: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -2253,8 +2259,8 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
-  /** The user chose to send it as plain text. See MessageComposer. */
-  suppressWorkflowKeyword: Schema.optional(Schema.Boolean),
+  /** Whether the user wrote these words. See MessageComposer. */
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
 });
 
@@ -2279,8 +2285,8 @@ const ClientThreadFollowUpSubmitCommand = Schema.Struct({
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
-  /** The user chose to send it as plain text. See MessageComposer. */
-  suppressWorkflowKeyword: Schema.optional(Schema.Boolean),
+  /** Whether the user wrote these words. See MessageComposer. */
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
 });
 

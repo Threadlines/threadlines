@@ -28,7 +28,7 @@ import {
   RuntimeMode,
   TerminalOpenInput,
 } from "@threadlines/contracts";
-import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
+import { composerForTypedMessage } from "@threadlines/shared/workflowRuns";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -5085,13 +5085,12 @@ export default function ChatView(props: ChatViewProps) {
     const outgoingMessageText = formatOutgoingPrompt(
       messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     );
-    // Claude acts on "ultracode" in words a person typed. Sent as plain text
-    // when the user said so, or when the word is only in what was attached
-    // (a terminal's output), never in what they wrote.
-    const typedWorkflowKeyword = containsWorkflowKeyword(promptForSend);
-    const suppressWorkflowKeyword =
-      (typedWorkflowKeyword && workflowKeywordSuppressed) ||
-      (!typedWorkflowKeyword && containsWorkflowKeyword(outgoingMessageText));
+    // The user wrote these words; Claude may act on "ultracode" in them.
+    const composer = composerForTypedMessage({
+      typedText: promptForSend,
+      sentText: outgoingMessageText,
+      plain: workflowKeywordSuppressed,
+    });
     setWorkflowKeywordSuppressed(false);
     // A drawing's picture is not shown in the composer as its own thumbnail --
     // it lives behind the chip -- but it still has to reach the model as an
@@ -5261,7 +5260,7 @@ export default function ChatView(props: ChatViewProps) {
             ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
           },
           delivery: followUpDelivery,
-          ...(suppressWorkflowKeyword ? { suppressWorkflowKeyword: true } : {}),
+          composer,
           // What a queued message runs with, like a normal send would.
           ...(followUpDelivery === "queue"
             ? {
@@ -5336,7 +5335,7 @@ export default function ChatView(props: ChatViewProps) {
         },
         modelSelection: roomRecipientModelSelection ?? ctxSelectedModelSelection,
         ...(roomRecipientId !== null ? { participantId: roomRecipientId } : {}),
-        ...(suppressWorkflowKeyword ? { suppressWorkflowKeyword: true } : {}),
+        composer,
         titleSeed: title,
         runtimeMode,
         interactionMode,
@@ -6695,6 +6694,11 @@ export default function ChatView(props: ChatViewProps) {
             : {}),
           ...(state.replacementSkills.length > 0 ? { skills: [...state.replacementSkills] } : {}),
         },
+        composer: composerForTypedMessage({
+          typedText: visibleInstruction,
+          sentText: instruction,
+          plain: false,
+        }),
         modelSelection: state.modelSelection,
         runtimeMode,
         interactionMode,
