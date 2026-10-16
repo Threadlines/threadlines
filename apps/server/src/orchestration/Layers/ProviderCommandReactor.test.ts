@@ -16,6 +16,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RoomAgentRequestId,
+  RuntimeTaskId,
   SideTurnId,
   type ThreadContextSeed,
   ThreadForkSeedOutcomeActivityKind,
@@ -188,7 +189,6 @@ describe("ProviderCommandReactor", () => {
     readonly failNativeForkStart?: boolean;
     readonly failRealtimeStart?: boolean;
     readonly interruptTurn?: ProviderServiceShape["interruptTurn"];
-    readonly stopBackgroundTask?: ProviderServiceShape["stopBackgroundTask"];
     /** Mirror the provider lifecycle's projected `starting` state while a
      *  replacement session is being bound. */
     readonly projectStartingDuringRestart?: boolean;
@@ -350,8 +350,8 @@ describe("ProviderCommandReactor", () => {
     const releaseBackgroundCommands = vi.fn<ProviderServiceShape["releaseBackgroundCommands"]>(
       () => Effect.void,
     );
-    const stopBackgroundTask = vi.fn<ProviderServiceShape["stopBackgroundTask"]>(
-      input?.stopBackgroundTask ?? (() => Effect.succeed(true)),
+    const stopBackgroundTask = vi.fn<ProviderServiceShape["stopBackgroundTask"]>(() =>
+      Effect.succeed(false),
     );
     const readConversation = vi.fn<ProviderServiceShape["readConversation"]>(() =>
       Effect.succeed(null),
@@ -1062,7 +1062,7 @@ describe("ProviderCommandReactor", () => {
         type: "thread.background-task.stop",
         commandId: CommandId.make(`cmd-stop-${taskId}`),
         threadId: ThreadId.make("thread-1"),
-        taskId,
+        taskId: RuntimeTaskId.make(taskId),
         createdAt: "2026-01-01T00:00:02.000Z",
       }),
     );
@@ -1096,13 +1096,27 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await stopWorkflowRun(harness, "task-astra");
-    await waitFor(() => harness.stopBackgroundTask.mock.calls.length === 1);
-
-    expect(harness.stopBackgroundTask.mock.calls[0]?.[0]).toEqual({
-      threadId: participantSessionKey(threadId, astraId),
-      taskId: "task-astra",
+    // Only astra's runtime holds the run.
+    const astraKey = participantSessionKey(threadId, astraId);
+    harness.runtimeSessions.push({
+      provider: ProviderDriverKind.make("claudeAgent"),
       providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      status: "ready",
+      runtimeMode: "full-access",
+      threadId: astraKey,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    harness.stopBackgroundTask.mockImplementation((input) =>
+      Effect.succeed(input.threadId === astraKey),
+    );
+
+    await stopWorkflowRun(harness, "task-astra");
+    await waitFor(() => harness.stopBackgroundTask.mock.calls.length > 0);
+
+    expect(harness.stopBackgroundTask.mock.calls.map(([input]) => input)).toContainEqual({
+      threadId: astraKey,
+      taskId: RuntimeTaskId.make("task-astra"),
     });
     // The runtime reports the end itself; nothing is assumed meanwhile.
     await harness.drain();
@@ -1110,7 +1124,7 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("marks a workflow run lost when the runtime that ran it is gone", async () => {
-    const harness = await createHarness({ stopBackgroundTask: () => Effect.succeed(false) });
+    const harness = await createHarness();
     const threadId = ThreadId.make("thread-1");
     await Effect.runPromise(
       recordWorkflowRun(harness.engine, threadId, {
@@ -2467,6 +2481,83 @@ describe("ProviderCommandReactor", () => {
         ([request]) => (request as { threadId: string }).threadId === toAstra,
       ),
     ).toBe(false);
+  });
+
+  it("stops one background task in the thread's runtime that holds it", async () => {
+    const { harness, threadId, dispatch, now } = await startRoomWithMessageQueuedForAstra();
+    harness.stopBackgroundTask.mockImplementation((input) =>
+      Effect.succeed(input.threadId === threadId),
+    );
+    await dispatch({
+      type: "thread.background-task.stop",
+      commandId: CommandId.make("cmd-stop-one-task"),
+      threadId,
+      taskId: RuntimeTaskId.make("task-dev-server"),
+      createdAt: now,
+    });
+    await waitFor(() => harness.stopBackgroundTask.mock.calls.length > 0);
+    await harness.drain();
+
+    expect(harness.stopBackgroundTask.mock.calls.map(([input]) => input)).toContainEqual({
+      threadId,
+      taskId: RuntimeTaskId.make("task-dev-server"),
+    });
+    // The session and its turn are left alone.
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+    expect(harness.interruptTurn.mock.calls.length).toBe(0);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.task.stop.failed"),
+    ).toBe(false);
+  });
+
+  it("settles a task it stopped in a room agent that no longer holds the thread", async () => {
+    const { harness, threadId, astraId, dispatch, now } =
+      await startRoomWithMessageQueuedForAstra();
+    // Astra's runtime still runs a dev server it left behind; the primary
+    // agent holds the thread, so ingestion ignores astra's own word on it.
+    const astraKey = participantSessionKey(threadId, astraId);
+    const primary = harness.runtimeSessions.find((session) => session.threadId === threadId);
+    if (!primary) throw new Error("expected the primary runtime");
+    harness.runtimeSessions.push({ ...primary, threadId: astraKey });
+    harness.stopBackgroundTask.mockImplementation((input) =>
+      Effect.succeed(input.threadId === astraKey),
+    );
+    await dispatch({
+      type: "thread.background-task.stop",
+      commandId: CommandId.make("cmd-stop-idle-agent-task"),
+      threadId,
+      taskId: RuntimeTaskId.make("task-astra-dev-server"),
+      createdAt: now,
+    });
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.some(
+          (activity) =>
+            activity.kind === "task.completed" &&
+            (activity.payload as { taskId?: string }).taskId === "task-astra-dev-server",
+        ) ?? false
+      );
+    });
+  });
+
+  it("says so in the thread when no runtime could stop the task", async () => {
+    const { harness, threadId, dispatch, now } = await startRoomWithMessageQueuedForAstra();
+    await dispatch({
+      type: "thread.background-task.stop",
+      commandId: CommandId.make("cmd-stop-gone-task"),
+      threadId,
+      taskId: RuntimeTaskId.make("task-already-ended"),
+      createdAt: now,
+    });
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.some((activity) => activity.kind === "provider.task.stop.failed") ??
+        false
+      );
+    });
   });
 
   it("holds a message queued for another room agent after Stop, even with no turn to stop", async () => {

@@ -18,6 +18,7 @@ import { scheduleServerCompileCacheFlush } from "./compileCache.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import { relayDirectRouteLayer } from "./relay/directRoute.ts";
+import * as ChildEnvironment from "./process/childEnvironment.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { ServerLifecycleEventsLive } from "./serverLifecycleEvents.ts";
@@ -212,16 +213,22 @@ const HttpServerLive = Layer.unwrap(
   }),
 );
 
-const PlatformServicesLive = Layer.unwrap(
-  Effect.gen(function* () {
-    if (typeof Bun !== "undefined") {
-      const { layer } = yield* Effect.promise(() => import("@effect/platform-bun/BunServices"));
-      return layer;
-    } else {
-      const { layer } = yield* Effect.promise(() => import("@effect/platform-node/NodeServices"));
-      return layer;
-    }
-  }),
+const PlatformServicesLive = ChildEnvironment.layer.pipe(
+  Layer.provideMerge(
+    Layer.unwrap(
+      Effect.gen(function* () {
+        if (typeof Bun !== "undefined") {
+          const { layer } = yield* Effect.promise(() => import("@effect/platform-bun/BunServices"));
+          return layer;
+        } else {
+          const { layer } = yield* Effect.promise(
+            () => import("@effect/platform-node/NodeServices"),
+          );
+          return layer;
+        }
+      }),
+    ),
+  ),
 );
 
 const ReactorLayerLive = Layer.empty.pipe(

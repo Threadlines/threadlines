@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { constants } from "node:fs";
+import { constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   extractPathFromShellOutput,
@@ -12,6 +14,7 @@ import {
   readPathFromLaunchctl,
   readPathFromLoginShell,
   refreshWindowsPath,
+  resolveCommandOutsideWorkingFolder,
   resolveCommandPath,
   resolveKnownWindowsCliDirs,
   resolveWindowsEnvironment,
@@ -408,6 +411,33 @@ describe("resolveCommandPath", () => {
       "C:\\Locked\\code.CMD",
       "C:\\Tools\\code.cmd",
     ]);
+  });
+
+  it("keeps a bare command away from PATH entries that mean the working folder", () => {
+    const tools = mkdtempSync(join(tmpdir(), "tl-outside-cwd-"));
+    try {
+      writeFileSync(join(tools, "git.exe"), "");
+      const outside = (path: string, command = "git") =>
+        resolveCommandOutsideWorkingFolder(command, { PATH: path }, "win32");
+
+      expect(outside(tools)).toBe("git");
+      expect(outside(`.;${tools}`)).toBe(join(tools, "git.exe"));
+      expect(outside(`"";${tools}`)).toBe(join(tools, "git.exe"));
+      expect(outside(`.;${tools}`, "gh")).toBeNull();
+      expect(resolveCommandOutsideWorkingFolder("gh", { PATH: "." }, "darwin")).toBe("gh");
+    } finally {
+      rmSync(tools, { recursive: true, force: true });
+    }
+  });
+
+  it("skips Windows PATH entries that would resolve against the working folder", () => {
+    const resolved = resolveCommandPath("git", {
+      platform: "win32",
+      env: { Path: '.;tools;C:relative;"C:\\Program Files\\Git\\cmd"', Pathext: ".EXE" },
+      fileSystem: { isFile: () => true, canAccess: () => true },
+    });
+
+    expect(resolved).toBe("C:\\Program Files\\Git\\cmd\\git.exe");
   });
 });
 

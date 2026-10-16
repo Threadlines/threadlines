@@ -3,8 +3,25 @@ import * as NodeOS from "node:os";
 import type { ClaudeSettings } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import { resolveCommandOutsideWorkingFolder } from "@threadlines/shared/shell";
 
 import { expandHomePath } from "../../pathExpansion.ts";
+
+/**
+ * The Claude binary to hand the SDK. The SDK starts it outside the server's
+ * spawner, so it is taken from PATH the way the spawner would: never from a
+ * relative entry such as `.`, which would mean the project folder. Throws
+ * when only such an entry could hold it.
+ */
+export function claudeSdkExecutable(binaryPath: string, environment: NodeJS.ProcessEnv): string {
+  const executable = resolveCommandOutsideWorkingFolder(binaryPath, environment);
+  if (executable === null) {
+    throw new Error(
+      `${binaryPath} was found only through a relative PATH entry, which means the project folder.`,
+    );
+  }
+  return executable;
+}
 
 /** The `HOME` Claude runs with: the instance's `homePath`, else the server's. */
 export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function* (

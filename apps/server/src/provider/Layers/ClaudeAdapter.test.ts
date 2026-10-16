@@ -25,8 +25,14 @@ import {
   ThreadId,
   ProviderInstanceId,
   TurnId,
+  RuntimeTaskId,
 } from "@threadlines/contracts";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
+import {
+  SERVER_ADDED_VARIABLE,
+  WORKING_FOLDER_LOOKUP_VARIABLE,
+  stopWorkingFolderCommandLookup,
+} from "@threadlines/shared/windowsCommandLookup";
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -110,6 +116,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   private failure: unknown | undefined;
 
   public readonly interruptCalls: Array<void> = [];
+  public readonly stopTaskCalls: Array<string> = [];
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
@@ -191,6 +198,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.interruptCalls.push(undefined);
   };
 
+  readonly stopTask = async (taskId: string): Promise<void> => {
+    this.stopTaskCalls.push(taskId);
+  };
+
   readonly setModel = async (model?: string): Promise<void> => {
     this.setModelCalls.push(model);
   };
@@ -226,12 +237,6 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly reloadSkills = async (): Promise<void> => {
     this.reloadCalls.push("skills");
-  };
-
-  public readonly stopTaskCalls: Array<string> = [];
-
-  readonly stopTask = async (taskId: string): Promise<void> => {
-    this.stopTaskCalls.push(taskId);
   };
 
   readonly rewindFiles = async (
@@ -1009,6 +1014,42 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.HOME, path.join(os.homedir(), ".claude-work"));
     }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("starts Claude SDK sessions with the user's command lookup, not the server's", () => {
+    const hostValue = process.env[WORKING_FOLDER_LOOKUP_VARIABLE];
+    // What the server does at startup on Windows, before the harness copies the
+    // environment (the host may have set the variable itself).
+    delete process.env[WORKING_FOLDER_LOOKUP_VARIABLE];
+    stopWorkingFolderCommandLookup(process.env, "win32");
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const env = harness.getLastCreateQueryInput()?.options.env;
+      assert.equal(env?.PATH, process.env.PATH);
+      assert.isUndefined(env?.[WORKING_FOLDER_LOOKUP_VARIABLE]);
+      assert.isUndefined(env?.[SERVER_ADDED_VARIABLE]);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          delete process.env[SERVER_ADDED_VARIABLE];
+          if (hostValue === undefined) delete process.env[WORKING_FOLDER_LOOKUP_VARIABLE];
+          else process.env[WORKING_FOLDER_LOOKUP_VARIABLE] = hostValue;
+        }),
+      ),
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
@@ -5520,43 +5561,6 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("stops a running task through the SDK, and only one it knows is running", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      const stopBackgroundTask = adapter.stopBackgroundTask;
-      assert.isDefined(stopBackgroundTask);
-      if (stopBackgroundTask === undefined) return;
-      const startedFiber = yield* Stream.filter(
-        adapter.streamEvents,
-        (event) => event.type === "task.started",
-      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        runtimeMode: "full-access",
-      });
-      harness.query.emit({
-        type: "system",
-        subtype: "task_started",
-        task_id: "task-wf",
-        description: "Research providers",
-        task_type: "local_workflow",
-        session_id: "sdk-session-stop-task",
-        uuid: "stop-task-started",
-      } as unknown as SDKMessage);
-      yield* Fiber.join(startedFiber);
-
-      assert.isTrue(yield* stopBackgroundTask(THREAD_ID, "task-wf"));
-      // The SDK reports success for any id; one this session never saw is not sent.
-      assert.isFalse(yield* stopBackgroundTask(THREAD_ID, "task-unknown"));
-      assert.deepEqual(harness.query.stopTaskCalls, ["task-wf"]);
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
   it.effect("ends a session's live workflow runs as stopped when the session stops", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -6225,6 +6229,77 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(flagUpdates[0].payload.callId, "tool-backgrounded-agent");
         assert.equal(flagUpdates[0].payload.isBackgrounded, true);
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("stops one background task through the CLI, and only one it has running", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const startedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.started"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const completedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-dev-server",
+        description: "Start the web dev server",
+        task_type: "local_bash",
+        tool_use_id: "tool-dev-server",
+        session_id: "sdk-session-stop-task",
+        uuid: "task-dev-server-started",
+      } as unknown as SDKMessage);
+
+      const [started] = Array.from(yield* Fiber.join(startedFiber));
+      assert.equal(started?.type === "task.started" && started.payload.stoppable, true);
+
+      assert.equal(
+        yield* adapter.stopBackgroundTask!(THREAD_ID, RuntimeTaskId.make("task-dev-server")),
+        true,
+      );
+      assert.equal(
+        yield* adapter.stopBackgroundTask!(THREAD_ID, RuntimeTaskId.make("task-never-started")),
+        false,
+      );
+      assert.deepEqual(harness.query.stopTaskCalls, ["task-dev-server"]);
+
+      // The CLI's answer ends it the usual way; a second Stop finds nothing.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-dev-server",
+        tool_use_id: "tool-dev-server",
+        status: "stopped",
+        summary: "Stopped",
+        output_file: "/tmp/tasks/task-dev-server.output",
+        session_id: "sdk-session-stop-task",
+        uuid: "task-dev-server-stopped",
+      } as unknown as SDKMessage);
+      const [completed] = Array.from(yield* Fiber.join(completedFiber));
+      assert.equal(completed?.type === "task.completed" && completed.payload.status, "stopped");
+      assert.equal(
+        yield* adapter.stopBackgroundTask!(THREAD_ID, RuntimeTaskId.make("task-dev-server")),
+        false,
+      );
+      assert.deepEqual(harness.query.stopTaskCalls, ["task-dev-server"]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

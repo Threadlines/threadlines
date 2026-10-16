@@ -38,6 +38,7 @@ export const PREVIEW_FORGET_PROFILE_CHANNEL = "desktop:preview-forget-profile";
 export const SET_THEME_CHANNEL = "desktop:set-theme";
 export const SET_TASKBAR_STATUS_CHANNEL = "desktop:set-taskbar-status";
 export const QUIT_CONFIRMATION_REQUEST_CHANNEL = "desktop:quit-confirmation-request";
+export const QUIT_CONFIRMATION_SHOWN_CHANNEL = "desktop:quit-confirmation-shown";
 export const QUIT_CONFIRMATION_RESOLVE_CHANNEL = "desktop:quit-confirmation-resolve";
 export const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 export const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";

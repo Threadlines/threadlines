@@ -122,6 +122,7 @@ import * as Stream from "effect/Stream";
 import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/shared/diffStats";
 
 import { parseSessionKey } from "@threadlines/shared/threadParticipants";
+import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -145,7 +146,7 @@ import {
   roomSideKindOf,
   roomToolsFor,
 } from "../../mcp/roomToolAccess.ts";
-import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { claudeSdkExecutable, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   ensureClaudeSessionTranscript,
   readClaudeTranscriptWorktreePath,
@@ -578,13 +579,14 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   /** Optional: absent on CLIs that predate in-session plugin and skill reloads. */
   readonly reloadPlugins?: () => Promise<unknown>;
   readonly reloadSkills?: () => Promise<unknown>;
-  /** Stops one background task (an agent, a command, a workflow). Optional:
-   *  test doubles and very old CLIs lack it. */
-  readonly stopTask?: (taskId: string) => Promise<void>;
   readonly rewindFiles?: (
     userMessageId: string,
     options?: { readonly dryRun?: boolean },
   ) => Promise<RewindFilesResult>;
+  /** Stops one task (an agent, a command, a workflow); the CLI answers with a
+   *  `stopped` task notification. Optional: absent on CLIs that predate the
+   *  stop_task control request. */
+  readonly stopTask?: (taskId: string) => Promise<void>;
   readonly close: () => void;
 }
 
@@ -783,7 +785,10 @@ export function lockDownClaudeQueryOptions(
       ? { pathToClaudeCodeExecutable: base.pathToClaudeCodeExecutable }
       : {}),
     // The setting and the switch both: the switch wins over any setting.
-    env: { ...(base.env ?? process.env), CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+    env: {
+      ...withUsualCommandLookup(base.env ?? process.env),
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    },
     settings,
     extraArgs: { "thinking-display": "summarized" },
     includePartialMessages: true,
@@ -1738,6 +1743,22 @@ function normalizeClaudeTaskStatus(value: unknown): ClaudeTaskStatus | undefined
     default:
       return undefined;
   }
+}
+
+/**
+ * The Stop the CLI expects us to offer for a task (perTaskStopAffordance),
+ * stated on every task edge so a long-lived task keeps it after its start
+ * leaves the recent activity window. Housekeeping tasks get none.
+ */
+function stoppableTaskFlag(
+  context: { readonly query: { readonly stopTask?: unknown } },
+  ambient: boolean | undefined,
+): { readonly stoppable?: true } {
+  return ambient !== true && context.query.stopTask !== undefined ? { stoppable: true } : {};
+}
+
+function launchingToolUse(toolUseId: string | undefined): { readonly toolUseId?: string } {
+  return toolUseId !== undefined && toolUseId.trim().length > 0 ? { toolUseId } : {};
 }
 
 function completedTaskStatusFromClaudeStatus(
@@ -4779,6 +4800,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(context.backgroundTaskSnapshotObserved || task.ambient === true
           ? { pendingCountManagedBySnapshot: true }
           : {}),
+        ...stoppableTaskFlag(context, task.ambient),
       },
       providerRefs: nativeProviderRefs(context),
       raw: {
@@ -5732,6 +5754,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...task,
             kind: claudeBackgroundTaskKind(task.taskType, context.codexExecRuns.has(task.taskId)),
             ...(context.unawaitedBackgroundTaskIds.has(task.taskId) ? { awaited: false } : {}),
+            ...stoppableTaskFlag(context, task.ambient),
+            ...launchingToolUse(context.tasks.get(task.taskId)?.toolUseId),
             ...(workflow ? { workflow } : {}),
           };
         }),
@@ -6223,6 +6247,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(toolUseId ? { toolUseId } : {}),
             ...(subagentType ? { subagentType } : {}),
             ...(ownerAgentToolUseId ? { ownerAgentToolUseId } : {}),
+            ...stoppableTaskFlag(context, previous?.ambient),
           },
         });
         return;
@@ -6309,6 +6334,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(previous?.ownerAgentToolUseId
               ? { ownerAgentToolUseId: previous.ownerAgentToolUseId }
               : {}),
+            ...stoppableTaskFlag(context, previous?.ambient),
           },
         });
         return;
@@ -7643,7 +7669,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ),
         );
 
-      const claudeBinaryPath = claudeSettings.binaryPath;
+      const claudeBinaryPath = yield* Effect.try({
+        try: () => claudeSdkExecutable(claudeSettings.binaryPath, claudeEnvironment),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: toMessage(cause, "Claude was not found on PATH."),
+            cause,
+          }),
+      });
       const extraArgs = {
         // Claude hides its thinking unless asked, which leaves the working row
         // with nothing to say for minutes. Display only: whether Claude thinks
@@ -7862,7 +7897,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // control-protocol initConfig, so older CLIs just ignore it.
         forwardSubagentText: true,
         // Stop ends the current turn only; background agents and workflows
-        // keep running and are stopped one at a time from the Agents tab.
+        // keep running and are stopped one at a time from their rows (the
+        // agents panel, the runs list), through `stopBackgroundTask`.
         // Without this the CLI fails closed and an interrupt kills them all.
         perTaskStopAffordance: true,
         canUseTool,
@@ -7884,8 +7920,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
         // The setting decides, whatever the environment Threadlines was
         // started in says: on asks for the tool, off refuses it.
+        // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
         env: {
-          ...claudeEnvironment,
+          ...withUsualCommandLookup(claudeEnvironment),
           ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
         },
         ...(input.cwd || pageAssets !== undefined
@@ -8381,39 +8418,32 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
-  const releaseBackgroundCommandsForThread: NonNullable<
-    ClaudeAdapterShape["releaseBackgroundCommands"]
-  > = Effect.fn("releaseBackgroundCommandsForThread")(function* (threadId) {
-    const context = yield* requireSession(threadId);
-    yield* releaseBackgroundCommands(context);
-  });
-
-  // A task this session never saw start, or saw end, is not stopped: the
-  // SDK accepts any id and reports success for one it does not know.
+  // One task, by the SDK task id the UI was given on `task.started`. Its end
+  // comes back from the CLI as a `stopped` notification and settles the row,
+  // the wait and the counts the usual way, so nothing is settled here.
   const stopBackgroundTask: NonNullable<ClaudeAdapterShape["stopBackgroundTask"]> = Effect.fn(
     "stopBackgroundTask",
   )(function* (threadId, taskId) {
     const context = yield* requireSession(threadId);
     const task = context.tasks.get(taskId);
-    const stopTask = context.query.stopTask;
-    if (
-      task === undefined ||
-      completedTaskStatusFromClaudeStatus(task.status) !== undefined ||
-      stopTask === undefined
-    ) {
+    const running =
+      context.backgroundTasks.some((entry) => entry.taskId === taskId) ||
+      (task !== undefined && completedTaskStatusFromClaudeStatus(task.status) === undefined);
+    if (!running || context.query.stopTask === undefined) {
       return false;
     }
     yield* Effect.tryPromise({
-      try: () => stopTask.call(context.query, taskId),
-      catch: (cause) =>
-        new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "task/stop",
-          detail: toMessage(cause, "Claude could not stop the task."),
-          cause,
-        }),
+      try: () => context.query.stopTask!(taskId),
+      catch: (cause) => toRequestError(threadId, "task/stop", cause),
     });
     return true;
+  });
+
+  const releaseBackgroundCommandsForThread: NonNullable<
+    ClaudeAdapterShape["releaseBackgroundCommands"]
+  > = Effect.fn("releaseBackgroundCommandsForThread")(function* (threadId) {
+    const context = yield* requireSession(threadId);
+    yield* releaseBackgroundCommands(context);
   });
 
   // Marks every live session; each reloads before its next turn (see sendTurn).

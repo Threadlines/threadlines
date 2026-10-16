@@ -46,6 +46,7 @@ import type {
   WorkflowReadRunFileResult,
   WorkflowRunFileKind,
   WorkflowSaveCommandResult,
+  RuntimeTaskId,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -128,16 +129,13 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
-   * Stop one background task of a running session (see
-   * ProviderAdapter.stopBackgroundTask). Never starts or recovers a runtime,
-   * and never reaches a session on another provider instance than the one
-   * named: a task belongs to the runtime that started it. Resolves to whether
-   * a running task was asked to stop.
+   * Stop one background task in a live session (see
+   * ProviderAdapter.stopBackgroundTask). False when the session is not
+   * running, its driver can't stop one task, or it has no such task.
    */
   readonly stopBackgroundTask: (input: {
     readonly threadId: ThreadId;
-    readonly taskId: string;
-    readonly providerInstanceId?: ProviderInstanceId;
+    readonly taskId: RuntimeTaskId;
   }) => Effect.Effect<boolean, ProviderServiceError>;
 
   /**

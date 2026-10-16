@@ -883,6 +883,7 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.ownerAgentToolUseId
               ? { ownerAgentToolUseId: event.payload.ownerAgentToolUseId }
               : {}),
+            ...(event.payload.stoppable === true ? { stoppable: true } : {}),
           },
         }),
       ];
@@ -910,6 +911,7 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.ownerAgentToolUseId
               ? { ownerAgentToolUseId: event.payload.ownerAgentToolUseId }
               : {}),
+            ...(event.payload.stoppable === true ? { stoppable: true } : {}),
           },
         }),
       ];

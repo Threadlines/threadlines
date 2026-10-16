@@ -2877,6 +2877,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.background-task.stop": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.background-task-stop-requested",
+        payload: {
+          threadId: command.threadId,
+          taskId: command.taskId,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.context-compact.request": {
       yield* requireThread({
         readModel,
@@ -3876,44 +3898,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           turnCount: command.turnCount,
-        },
-      };
-    }
-
-    // Stop one workflow run, leaving the turn and the session alone. Only a
-    // run the thread recorded and that has not ended can be stopped; the
-    // reactor asks the run's own session.
-    case "thread.background-task.stop": {
-      const thread = yield* requireThread({
-        readModel,
-        command,
-        threadId: command.threadId,
-      });
-      const run = (thread.workflowRuns ?? []).find((entry) => entry.taskId === command.taskId);
-      if (run === undefined) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Thread '${command.threadId}' has no workflow run '${command.taskId}'.`,
-        });
-      }
-      if (run.status !== "running") {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: "That workflow has already ended.",
-        });
-      }
-      return {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        }),
-        type: "thread.background-task-stop-requested",
-        payload: {
-          threadId: command.threadId,
-          taskId: command.taskId,
-          createdAt: command.createdAt,
         },
       };
     }

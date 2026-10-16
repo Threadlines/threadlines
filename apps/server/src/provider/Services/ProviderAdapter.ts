@@ -35,6 +35,7 @@ import type {
   ThreadId,
   ProviderTurnStartResult,
   TurnId,
+  RuntimeTaskId,
 } from "@threadlines/contracts";
 import type {
   OrchestrationWorkflowRun,
@@ -220,14 +221,15 @@ export interface ProviderAdapterShape<TError> {
   readonly releaseBackgroundCommands?: (threadId: ThreadId) => Effect.Effect<void, TError>;
 
   /**
-   * Stop one background task of a live session (a workflow run) and leave the
-   * turn and the session running. Resolves to whether a running task by that
-   * id was asked to stop; its end arrives through the task's own events.
-   * Drivers whose providers can not stop a task on its own omit it.
+   * Stops one background task (an agent, a workflow, a command) this session
+   * started, leaving the session and its other tasks running. Resolves to
+   * false when the session has no such task. The task's end comes back as the
+   * usual `task.completed`. Drivers that set `stoppable` on `task.started`
+   * implement it; others omit it.
    */
   readonly stopBackgroundTask?: (
     threadId: ThreadId,
-    taskId: string,
+    taskId: RuntimeTaskId,
   ) => Effect.Effect<boolean, TError>;
 
   /**

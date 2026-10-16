@@ -17,6 +17,7 @@ import {
   type ProviderRuntimeEvent,
   type RuntimeMode,
   ThreadId,
+  RuntimeTaskId,
 } from "@threadlines/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -513,6 +514,54 @@ describe("MuseAdapter", () => {
         return event.payload.status === "completed";
       });
       expect(named).toEqual(new Set(["child-1"]));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("stops one subagent left running past its turn, and nothing else", () =>
+    Effect.gen(function* () {
+      const { hosts, adapter, nextEvent, start, send, threadId } = yield* setup();
+      yield* start();
+      const turn = yield* send("research");
+      const host = hosts[0]!;
+      yield* host.notify("turn/started", { sessionId: SESSION, turnId: turn.turnId });
+      const subagent = (revision: number, status: string) =>
+        host.notify(revision === 1 ? "item/started" : "item/updated", {
+          sessionId: SESSION,
+          item: {
+            itemId: "sub-bg",
+            kind: "subagent",
+            revision,
+            status,
+            turnId: turn.turnId,
+            subagentId: "agent-bg",
+            childSessionId: "child-bg",
+            objective: "audit dependencies",
+          },
+        });
+      yield* subagent(1, "inProgress");
+      yield* host.notify("turn/completed", {
+        sessionId: SESSION,
+        turnId: turn.turnId,
+        terminal: "completed",
+      });
+      // The turn ended with the subagent still at work: it is background work now.
+      const started = yield* nextEvent((event) => event.type === "task.started");
+      expect(started.payload).toMatchObject({ taskId: "sub-bg", stoppable: true });
+
+      expect(yield* adapter.stopBackgroundTask!(threadId, RuntimeTaskId.make("sub-bg"))).toBe(true);
+      const methods = host.calls.map((call) => call.method);
+      expect(host.calls.find((call) => call.method === "subagent/stop")?.params).toMatchObject({
+        subagentId: "agent-bg",
+      });
+      expect(methods).not.toContain("task/stopAll");
+      expect(methods).not.toContain("turn/interrupt");
+
+      yield* subagent(2, "cancelled");
+      const stopped = yield* nextEvent((event) => event.type === "task.completed");
+      expect(stopped.payload).toMatchObject({ taskId: "sub-bg", status: "stopped" });
+      expect(yield* adapter.stopBackgroundTask!(threadId, RuntimeTaskId.make("sub-bg"))).toBe(
+        false,
+      );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

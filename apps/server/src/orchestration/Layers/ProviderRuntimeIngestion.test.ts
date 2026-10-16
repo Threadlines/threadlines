@@ -1268,6 +1268,7 @@ describe("ProviderRuntimeIngestion", () => {
             taskType: "local_agent",
             kind: "agent",
             description: "Review the diff",
+            stoppable: true,
           },
           // Defensive duplicate: snapshot semantics are a set even if a
           // provider accidentally repeats an id in its array.
@@ -1276,6 +1277,7 @@ describe("ProviderRuntimeIngestion", () => {
             taskType: "local_agent",
             kind: "agent",
             description: "Review the diff",
+            stoppable: true,
           },
           {
             taskId: "background-task-snapshot-2",
@@ -1301,7 +1303,16 @@ describe("ProviderRuntimeIngestion", () => {
         thread.session.awaitedBackgroundTaskCount === 2,
     );
     const [awaitedAgent, awaitedCommand] = snapshotThread.session?.awaitedBackgroundTasks ?? [];
-    expect(awaitedAgent).toEqual({ kind: "agent", description: "Review the diff" });
+    // Each task keeps its id and whether it can be stopped on its own, so a
+    // quiet one's row outlives the recent activity window.
+    expect(awaitedAgent).toEqual({
+      kind: "agent",
+      description: "Review the diff",
+      taskId: "background-task-snapshot-1",
+      stoppable: true,
+    });
+    expect(awaitedCommand?.taskId).toBe("background-task-snapshot-2");
+    expect(awaitedCommand?.stoppable).toBeUndefined();
     // Descriptions are clipped to one sidebar line's worth.
     expect(awaitedCommand?.kind).toBe("command");
     expect(awaitedCommand?.description?.startsWith("Watch CI until every check")).toBe(true);
@@ -1439,7 +1450,7 @@ describe("ProviderRuntimeIngestion", () => {
         thread.session.awaitedBackgroundTaskCount === 1,
     );
     expect(releasedThread.session?.awaitedBackgroundTasks).toEqual([
-      { kind: "agent", description: "Review the diff" },
+      { kind: "agent", description: "Review the diff", taskId: "background-task-snapshot-1" },
     ]);
 
     harness.emit({

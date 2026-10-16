@@ -95,6 +95,10 @@
       "types": "./src/shell.ts",
       "import": "./src/shell.ts"
     },
+    "./windowsCommandLookup": {
+      "types": "./src/windowsCommandLookup.ts",
+      "import": "./src/windowsCommandLookup.ts"
+    },
     "./childProcess": {
       "types": "./src/childProcess.ts",
       "import": "./src/childProcess.ts"
@@ -218,6 +222,10 @@
     "./pendingRequests": {
       "types": "./src/pendingRequests.ts",
       "import": "./src/pendingRequests.ts"
+    },
+    "./awaitedBackgroundTasks": {
+      "types": "./src/awaitedBackgroundTasks.ts",
+      "import": "./src/awaitedBackgroundTasks.ts"
     },
     "./threadActivityRetention": {
       "types": "./src/threadActivityRetention.ts",

@@ -40,6 +40,7 @@ import {
 } from "@threadlines/shared/model";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
@@ -337,7 +338,7 @@ export const validateAntigravityRuntime = (
         });
         const child = spawnChild(paths.executable, [...antigravityLaunchArgs(process.platform)], {
           cwd: scratch,
-          env: { ...env, ANTIGRAVITY_HARNESS_PATH: paths.harness },
+          env: { ...withUsualCommandLookup(env), ANTIGRAVITY_HARNESS_PATH: paths.harness },
           stdio: ["pipe", "pipe", "ignore"],
           windowsHide: true,
         });

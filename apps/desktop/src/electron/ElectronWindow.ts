@@ -32,6 +32,14 @@ export interface ElectronWindowShape {
   readonly setMain: (window: Electron.BrowserWindow) => Effect.Effect<void>;
   readonly clearMain: (window: Option.Option<Electron.BrowserWindow>) => Effect.Effect<void>;
   readonly reveal: (window: Electron.BrowserWindow) => Effect.Effect<void>;
+  /**
+   * The browser panel's pages in a window: its webview guests. Here rather
+   * than read from `Electron.webContents` at the call site so what the window
+   * does to them stays testable.
+   */
+  readonly guestsOf: (
+    window: Electron.BrowserWindow,
+  ) => Effect.Effect<ReadonlyArray<Electron.WebContents>>;
   readonly sendAll: (channel: string, ...args: readonly unknown[]) => Effect.Effect<void>;
   readonly destroyAll: Effect.Effect<void>;
   readonly syncAllAppearance: <E, R>(
@@ -111,6 +119,19 @@ const make = Effect.gen(function* () {
         }
 
         window.focus();
+      }),
+    guestsOf: (window) =>
+      Effect.sync(() => {
+        if (window.isDestroyed()) return [];
+        const hostId = window.webContents.id;
+        return Electron.webContents
+          .getAllWebContents()
+          .filter(
+            (contents) =>
+              !contents.isDestroyed() &&
+              contents.getType() === "webview" &&
+              contents.hostWebContents?.id === hostId,
+          );
       }),
     sendAll: (channel, ...args) =>
       Effect.sync(() => {

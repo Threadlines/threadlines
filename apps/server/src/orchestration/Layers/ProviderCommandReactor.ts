@@ -143,11 +143,11 @@ type ProviderIntentEvent = Extract<
       | "thread.activity-appended"
       | "thread.realtime-start-requested"
       | "thread.realtime-stop-requested"
+      | "thread.background-task-stop-requested"
       | "thread.context-compact-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested"
-      | "thread.background-task-stop-requested"
       | "thread.session-set"
       | "thread.goal-set-requested"
       | "thread.goal-clear-requested"
@@ -331,6 +331,22 @@ const nextQueuedFollowUp = (
 
 const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
   event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
+
+/** The tool call that launched a task, from the newest task activity naming it. */
+function launchingToolUseIdOf(
+  activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>,
+  taskId: string,
+): string | null {
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index]!;
+    if (activity.kind !== "task.started" && activity.kind !== "task.progress") continue;
+    const payload = activity.payload as { readonly taskId?: unknown; readonly toolUseId?: unknown };
+    if (payload?.taskId === taskId && typeof payload.toolUseId === "string") {
+      return payload.toolUseId;
+    }
+  }
+  return null;
+}
 
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
@@ -575,6 +591,7 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.realtime.start.failed"
       | "provider.realtime.stop.failed"
+      | "provider.task.stop.failed"
       | "provider.context-compact.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
@@ -2756,6 +2773,107 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * Stop one background task, a workflow run included. The event names the
+   * thread, not a session: in a room each agent's runtime holds its own tasks
+   * (a workflow run stays in the runtime that started it), so every live
+   * runtime for the thread is asked until the one holding the task stops it.
+   * When none can, the thread says so, so a Stop that did nothing does not
+   * look like one that worked.
+   */
+  const processBackgroundTaskStopRequested = Effect.fn("processBackgroundTaskStopRequested")(
+    function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.background-task-stop-requested" }>,
+    ) {
+      const { threadId, taskId } = event.payload;
+      const thread = yield* resolveThread(threadId);
+      if (!thread) return;
+      const holderKey = participantSessionKey(thread.id, sessionSlotParticipantId(thread.session));
+      const roomKeys = new Set([
+        thread.id,
+        ...thread.participants.map((entry) => participantSessionKey(thread.id, entry.id)),
+      ]);
+      const sessions = yield* providerService
+        .listSessions()
+        .pipe(Effect.orElseSucceed(() => [] as const));
+      const live = sessions.filter(
+        (session) => session.status !== "closed" && roomKeys.has(session.threadId),
+      );
+      let failure: string | null = null;
+      for (const session of live) {
+        const stopped = yield* providerService
+          .stopBackgroundTask({ threadId: session.threadId, taskId })
+          .pipe(
+            Effect.catchCause((cause) => {
+              failure = Cause.pretty(cause);
+              return Effect.succeed(false);
+            }),
+          );
+        if (!stopped) continue;
+        // Ingestion ignores a room agent's runtime while another agent holds
+        // the thread, so that runtime's own word that the task ended never
+        // lands. The stop it just confirmed settles the row instead.
+        if (session.threadId !== holderKey) {
+          // The launching call settles an agent row its task id can't name
+          // (a `codex exec` run's row is keyed by the call).
+          const toolUseId = launchingToolUseIdOf(thread.activities, taskId);
+          yield* orchestrationEngine
+            .dispatch({
+              type: "thread.activity.append",
+              commandId: serverCommandId("background-task-stopped"),
+              threadId,
+              activity: {
+                id: EventId.make(crypto.randomUUID()),
+                tone: "info",
+                kind: "task.completed",
+                summary: "Task stopped",
+                payload: { taskId, status: "stopped", ...(toolUseId ? { toolUseId } : {}) },
+                turnId: null,
+                createdAt: event.payload.createdAt,
+              },
+              createdAt: event.payload.createdAt,
+            })
+            .pipe(Effect.ignore);
+        }
+        return;
+      }
+      // A workflow run no live runtime holds can never report its end: its
+      // runtime is gone, so it is marked lost and stops reading as running.
+      // A runtime that failed to answer may still hold it, so it waits.
+      const run = thread.workflowRuns?.find(
+        (entry) => entry.taskId === taskId && entry.status === "running",
+      );
+      if (run !== undefined && failure === null) {
+        const endedAt = yield* nowIso;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.workflow-run.record",
+          commandId: serverCommandId("workflow-run-lost"),
+          threadId,
+          patch: { taskId, status: "lost", statusReason: "runtime-gone", endedAt },
+          createdAt: endedAt,
+        });
+        return;
+      }
+      yield* Effect.logWarning("provider command reactor could not stop a background task", {
+        threadId,
+        taskId,
+        liveSessions: live.length,
+        ...(failure !== null ? { cause: failure } : {}),
+      });
+      yield* appendProviderFailureActivity({
+        threadId,
+        kind: "provider.task.stop.failed",
+        summary: "Could not stop the task",
+        detail:
+          failure !== null
+            ? "The agent did not stop it. Try again, or stop everything with Stop."
+            : "It already ended, or the agent that started it is no longer running.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      }).pipe(Effect.ignore);
+    },
+  );
+
   const processGoalSetRequested = Effect.fn("processGoalSetRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.goal-set-requested" }>,
   ) {
@@ -3137,56 +3255,6 @@ const make = Effect.gen(function* () {
       );
     }
   });
-
-  /**
-   * Stop one workflow run in the runtime that owns it: the agent and provider
-   * instance recorded on the run, never whichever agent holds the thread now.
-   * A run whose runtime is gone can not be stopped; it is marked lost so it
-   * stops reading as running.
-   */
-  const processBackgroundTaskStopRequested = Effect.fn("processBackgroundTaskStopRequested")(
-    function* (
-      event: Extract<ProviderIntentEvent, { type: "thread.background-task-stop-requested" }>,
-    ) {
-      const thread = yield* resolveThread(event.payload.threadId);
-      const run = thread?.workflowRuns?.find((entry) => entry.taskId === event.payload.taskId);
-      if (!thread || !run || run.status !== "running") {
-        return;
-      }
-      const stopped = yield* providerService
-        .stopBackgroundTask({
-          threadId: participantSessionKey(thread.id, run.owner.participantId),
-          taskId: run.taskId,
-          ...(run.owner.providerInstanceId !== undefined
-            ? { providerInstanceId: run.owner.providerInstanceId }
-            : {}),
-        })
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("provider command reactor could not stop a workflow run", {
-              threadId: thread.id,
-              taskId: run.taskId,
-              cause: Cause.pretty(cause),
-            }).pipe(Effect.as(null)),
-          ),
-        );
-      if (stopped === false) {
-        const createdAt = yield* nowIso;
-        yield* orchestrationEngine.dispatch({
-          type: "thread.workflow-run.record",
-          commandId: serverCommandId("workflow-run-lost"),
-          threadId: thread.id,
-          patch: {
-            taskId: run.taskId,
-            status: "lost",
-            statusReason: "runtime-gone",
-            endedAt: createdAt,
-          },
-          createdAt,
-        });
-      }
-    },
-  );
 
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
@@ -4372,6 +4440,9 @@ const make = Effect.gen(function* () {
       case "thread.realtime-stop-requested":
         yield* processRealtimeStopRequested(event);
         return;
+      case "thread.background-task-stop-requested":
+        yield* processBackgroundTaskStopRequested(event);
+        return;
       case "thread.context-compact-requested":
         yield* processContextCompactRequested(event);
         return;
@@ -4392,9 +4463,6 @@ const make = Effect.gen(function* () {
         return;
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
-        return;
-      case "thread.background-task-stop-requested":
-        yield* processBackgroundTaskStopRequested(event);
         return;
       case "thread.session-set":
         yield* processSessionSet(event);
@@ -4766,11 +4834,11 @@ const make = Effect.gen(function* () {
         isPendingRequestActivityAppended(event) ||
         event.type === "thread.realtime-start-requested" ||
         event.type === "thread.realtime-stop-requested" ||
+        event.type === "thread.background-task-stop-requested" ||
         event.type === "thread.context-compact-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested" ||
-        event.type === "thread.background-task-stop-requested" ||
         event.type === "thread.session-set" ||
         event.type === "thread.goal-set-requested" ||
         event.type === "thread.goal-clear-requested" ||

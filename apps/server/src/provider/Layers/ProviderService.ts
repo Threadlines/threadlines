@@ -1453,16 +1453,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const stopBackgroundTask: ProviderServiceShape["stopBackgroundTask"] = Effect.fn(
     "stopBackgroundTask",
   )(function* (input) {
+    // Never starts a runtime: a task lives only as long as its session does.
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.stopBackgroundTask",
       allowRecovery: false,
     });
-    if (
-      !routed.isActive ||
-      routed.adapter.stopBackgroundTask === undefined ||
-      (input.providerInstanceId !== undefined && routed.instanceId !== input.providerInstanceId)
-    ) {
+    if (!routed.isActive || routed.adapter.stopBackgroundTask === undefined) {
       return false;
     }
     return yield* routed.adapter.stopBackgroundTask(routed.threadId, input.taskId);

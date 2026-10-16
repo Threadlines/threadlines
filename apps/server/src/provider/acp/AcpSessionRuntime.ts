@@ -16,6 +16,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
+import { planCliSpawn } from "../../cliSpawn.ts";
 import {
   collectSessionConfigOptionValues,
   extractModelConfigId,
@@ -68,7 +69,10 @@ export interface AcpSpawnInput {
    * not carry the server's ambient credentials (Antigravity).
    */
   readonly inheritEnv?: boolean;
-  /** Override the default (`true` on Windows so `.cmd` shims resolve). */
+  /**
+   * Starts the command through a shell or not, instead of the plan
+   * planCliSpawn makes (which finds `.cmd` shims on Windows by itself).
+   */
   readonly shell?: boolean;
   /** Told the agent's pid once it is running. */
   readonly onSpawned?: (pid: number) => Effect.Effect<void>;
@@ -403,27 +407,34 @@ const makeAcpSessionRuntime = (
         ),
       );
 
+    const spawnEnv = options.spawn.env
+      ? options.spawn.inheritEnv === false
+        ? options.spawn.env
+        : { ...process.env, ...options.spawn.env }
+      : undefined;
+    // A launch that chose a shell keeps its choice: cmd.exe re-splits quoted
+    // argv (`bash -lc "fx acp"` → `bash -lc fx acp`), so wrappers like wsl.exe
+    // opt out. The rest start like every agent CLI (planCliSpawn).
+    const plan =
+      options.spawn.shell === undefined
+        ? planCliSpawn(options.spawn.command, options.spawn.args, spawnEnv ?? process.env)
+        : {
+            command: options.spawn.command,
+            args: options.spawn.args,
+            options: options.spawn.shell ? { shell: true as const } : {},
+          };
     const child = yield* spawner
       .spawn(
         ChildProcess.make(
-          options.spawn.command,
-          [...options.spawn.args],
+          plan.command,
+          [...plan.args],
           hideWindowsConsole({
+            ...plan.options,
             ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
-            ...(options.spawn.env
-              ? {
-                  env:
-                    options.spawn.inheritEnv === false
-                      ? options.spawn.env
-                      : { ...process.env, ...options.spawn.env },
-                }
-              : {}),
+            ...(spawnEnv ? { env: spawnEnv } : {}),
             // Closing the session scope must end the agent even when it
             // ignores SIGTERM, or a stuck agent blocks every teardown.
             forceKillAfter: FORCE_KILL_AFTER,
-            // cmd.exe re-splits quoted argv (`bash -lc "fx acp"` → `bash -lc fx acp`),
-            // so wrappers like wsl.exe opt out via `spawn.shell`.
-            shell: options.spawn.shell ?? process.platform === "win32",
           }),
         ),
       )

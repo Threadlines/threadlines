@@ -28,6 +28,7 @@ import {
   ProviderInteractionMode,
   ProviderDriverKind,
   RuntimeMode,
+  RuntimeTaskId,
   TerminalOpenInput,
 } from "@threadlines/contracts";
 import { composerForTypedMessage } from "@threadlines/shared/workflowRuns";
@@ -206,6 +207,7 @@ import {
   resolveAppModelSelectionForInstance,
 } from "../modelSelection";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { stopThreadSession } from "../lib/threadSessionCommands";
 import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
@@ -429,8 +431,9 @@ const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const EMPTY_SUBAGENT_ITEMS: ReadonlyArray<SubagentProgressItem> = [];
 /** A provider-tracked run as the run list renders it. The provider never gives
- *  us a pid or a terminal for one, so stopping it goes through the command and
- *  URL hints — which is also what decides whether it can be stopped at all. */
+ *  us a pid or a terminal for one, so stopping it goes through the agent when
+ *  its driver can stop the task, else the command and URL hints — which is
+ *  also what decides whether it can be stopped at all. */
 function toThreadBackgroundRunItem<Run extends ProviderBackgroundRunState>(
   run: Run,
 ): Run & {
@@ -448,6 +451,7 @@ function toThreadBackgroundRunItem<Run extends ProviderBackgroundRunState>(
     port: null,
     elapsed: null,
     canStop:
+      run.providerTaskId !== undefined ||
       run.command !== null ||
       run.commandHints.length > 0 ||
       run.urls.length > 0 ||
@@ -1282,6 +1286,7 @@ export default function ChatView(props: ChatViewProps) {
     ApprovalRequestId[]
   >([]);
   const interruptInFlightTurnByThreadRef = useRef(new Map<ThreadId, TurnId | null>());
+  const backgroundWorkStopInFlightRef = useRef(new Set<ThreadId>());
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -3339,9 +3344,13 @@ export default function ChatView(props: ChatViewProps) {
           ? (activeThread?.session?.activeTurnId ?? activeLatestTurn?.turnId ?? null)
           : null,
         subagentSpawnCallIds,
+        activeThread?.session?.awaitedBackgroundTasks,
+        activeThread?.workflowRuns,
       ),
     [
       activeLatestTurn?.turnId,
+      activeThread?.session?.awaitedBackgroundTasks,
+      activeThread?.workflowRuns,
       activeThread?.session?.pendingBackgroundTaskCount,
       activeThread?.session?.activeTurnId,
       activeTurnInProgress,
@@ -3356,16 +3365,46 @@ export default function ChatView(props: ChatViewProps) {
     () => providerBackgroundSnapshot.runs.map(toThreadBackgroundRunItem),
     [providerBackgroundSnapshot],
   );
-  const promotedSubagentRuns = useMemo(
-    () =>
-      new Map(
-        [...providerBackgroundSnapshot.promotedSubagentRuns].map(([spawnCallId, run]) => [
-          spawnCallId,
-          toThreadBackgroundRunItem(run),
-        ]),
-      ),
-    [providerBackgroundSnapshot],
-  );
+  // Each live agent row's Stop, keyed by the call that launched the agent: a
+  // `codex exec` run's process, or the agent's own task when its driver can
+  // stop one task at a time.
+  const promotedSubagentRuns = useMemo(() => {
+    const runs = new Map<string, ThreadBackgroundRunItem>(
+      [...providerBackgroundSnapshot.promotedSubagentRuns].map(([spawnCallId, run]) => [
+        spawnCallId,
+        toThreadBackgroundRunItem(run),
+      ]),
+    );
+    const stoppable = providerBackgroundSnapshot.stoppableSubagentTasks;
+    for (const item of subagentProgress?.items ?? EMPTY_SUBAGENT_ITEMS) {
+      const spawnCallId = item.spawnCallId;
+      if (!spawnCallId || runs.has(spawnCallId)) continue;
+      const taskId =
+        (item.transcriptAgentId !== null && stoppable.has(item.transcriptAgentId)
+          ? item.transcriptAgentId
+          : null) ??
+        [...stoppable].find(([, toolUseId]) => toolUseId === spawnCallId)?.[0] ??
+        null;
+      if (taskId === null) continue;
+      runs.set(spawnCallId, {
+        id: `provider:${taskId}`,
+        source: "provider",
+        providerKind: "task",
+        label: "the agent",
+        detail: null,
+        cwd: null,
+        statusLabel: "Running",
+        urls: [],
+        terminalId: null,
+        pid: null,
+        port: null,
+        elapsed: null,
+        canStop: true,
+        providerTaskId: taskId,
+      });
+    }
+    return runs;
+  }, [providerBackgroundSnapshot, subagentProgress?.items]);
   const backgroundRunDetectionUrls = useMemo(
     () => [...providerBackgroundSnapshot.detectionSeeds.urls].sort(),
     [providerBackgroundSnapshot],
@@ -3596,7 +3635,7 @@ export default function ChatView(props: ChatViewProps) {
       terminalState.terminalOpen,
     ],
   );
-  /** Stops one workflow run in the runtime that owns it (the reactor routes it). */
+  /** Stops one workflow run; the reactor finds the runtime that holds it. */
   const stopWorkflowRun = useCallback(
     (taskId: string) => {
       if (!activeThreadId) return;
@@ -3607,7 +3646,7 @@ export default function ChatView(props: ChatViewProps) {
           type: "thread.background-task.stop",
           commandId: newCommandId(),
           threadId: activeThreadId,
-          taskId,
+          taskId: RuntimeTaskId.make(taskId),
           createdAt: new Date().toISOString(),
         })
         .catch((error: unknown) => {
@@ -3625,6 +3664,27 @@ export default function ChatView(props: ChatViewProps) {
       if (!activeThreadRef || !activeThreadId) return;
       if (run.terminalId) {
         requestCloseTerminal(activeThreadRef, activeThreadId, run.terminalId);
+        return;
+      }
+      // The agent stops its own task: it learns the task ended, and the wait
+      // and counts settle from its answer. A pid would only kill the process.
+      if (run.providerTaskId) {
+        const api = readEnvironmentApi(activeThreadRef.environmentId);
+        if (!api) return;
+        void api.orchestration
+          .dispatchCommand({
+            type: "thread.background-task.stop",
+            commandId: newCommandId(),
+            threadId: activeThreadId,
+            taskId: RuntimeTaskId.make(run.providerTaskId),
+            createdAt: new Date().toISOString(),
+          })
+          .catch((error: unknown) => {
+            setThreadError(
+              activeThreadId,
+              error instanceof Error ? error.message : `Could not stop ${run.label}.`,
+            );
+          });
         return;
       }
 
@@ -5749,6 +5809,34 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
 
+  /**
+   * Stop for a thread whose turn settled but which still waits on background
+   * work. There is no turn to interrupt, so this stops the session, which
+   * ends the commands and agents running in it. It is the only way out when
+   * the agent can't be asked to stop them (a usage limit, an error).
+   */
+  const stopBackgroundWork = async () => {
+    if (!activeThread) return;
+    const threadId = activeThread.id;
+    if (backgroundWorkStopInFlightRef.current.has(threadId)) return;
+    backgroundWorkStopInFlightRef.current.add(threadId);
+    // As with Stop on a turn, nothing queued goes out afterwards.
+    void returnQueuedFollowUpsToComposer(activeThread.queuedFollowUps ?? []);
+    try {
+      await stopThreadSession(scopeThreadRef(environmentId, threadId));
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not stop the background work",
+          description: error instanceof Error ? error.message : "Try again.",
+        }),
+      );
+    } finally {
+      backgroundWorkStopInFlightRef.current.delete(threadId);
+    }
+  };
+
   const [goalDispatchingThreadId, setGoalDispatchingThreadId] = useState<ThreadId | null>(null);
   // Bridges the gap between dispatching a goal and its authoritative state
   // arriving through the projection stream — without it the bar flickers out
@@ -7667,6 +7755,7 @@ export default function ChatView(props: ChatViewProps) {
                   workflowKeywordSuppressed={workflowKeywordSuppressed}
                   onToggleWorkflowKeyword={toggleWorkflowKeyword}
                   onInterrupt={onInterrupt}
+                  onStopBackgroundWork={stopBackgroundWork}
                   onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
                   goalDispatching={
                     activeThread !== undefined && goalDispatchingThreadId === activeThread.id

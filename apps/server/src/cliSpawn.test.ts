@@ -1,118 +1,148 @@
-// @effect-diagnostics nodeBuiltinImport:off
-import { delimiter, join, resolve } from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
-import { cliSpawnNeedsShell, planCliSpawn } from "./cliSpawn.ts";
+import { planCliSpawn, type CliSpawnFileSystem } from "./cliSpawn.ts";
 
-const BIN = join(resolve("/"), "fake", "bin");
-const ALT = join(resolve("/"), "alt", "bin");
-const WIN_ENV = { PATH: [BIN, ALT].join(delimiter), PATHEXT: ".EXE;.CMD;.BAT;.COM" };
+const NPM = "C:\\Users\\me\\AppData\\Roaming\\npm";
+const NODE_DIR = "C:\\Program Files\\nodejs";
+const WIN_ENV = { Path: `${NPM};${NODE_DIR}`, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
 
-/** Build an `exists` predicate over a fixed set of present files. */
-const existsOver = (present: ReadonlyArray<string>) => {
-  const set = new Set(present);
-  return (path: string) => set.has(path);
-};
+/** npm's launcher for `codex`, as cmd-shim 9 writes it. */
+const NPM_SHIM = [
+  "@ECHO off",
+  "GOTO start",
+  ":find_dp0",
+  "SET dp0=%~dp0",
+  "EXIT /b",
+  ":start",
+  "SETLOCAL",
+  "CALL :find_dp0",
+  "",
+  'IF EXIST "%dp0%\\node.exe" (',
+  '  SET "_prog=%dp0%\\node.exe"',
+  ") ELSE (",
+  '  SET "_prog=node"',
+  ")",
+  "",
+  'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & "%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*',
+  "",
+].join("\r\n");
+const CODEX_SCRIPT = `${NPM}\\node_modules\\@openai\\codex\\bin\\codex.js`;
 
-describe("cliSpawnNeedsShell", () => {
-  it("never requests a shell on non-Windows platforms", () => {
-    const exists = existsOver([join(BIN, "claude.cmd")]);
-    expect(cliSpawnNeedsShell("claude", WIN_ENV, { platform: "linux", exists })).toBe(false);
-    expect(cliSpawnNeedsShell("claude.cmd", WIN_ENV, { platform: "darwin", exists })).toBe(false);
-  });
+/** A Windows filesystem holding `files` (path → launcher text, or "" for a binary). */
+function windowsFiles(files: Record<string, string>): CliSpawnFileSystem {
+  const byPath = new Map(Object.entries(files).map(([path, text]) => [path.toLowerCase(), text]));
+  return {
+    isFile: (path) => byPath.has(path.toLowerCase()),
+    canAccess: () => true,
+    readSmallTextFile: (path) => byPath.get(path.toLowerCase()) ?? null,
+  };
+}
 
-  it("does not request a shell for a bare name resolving to a native .exe", () => {
-    const exists = existsOver([join(BIN, "claude.EXE")]);
-    expect(cliSpawnNeedsShell("claude", WIN_ENV, { platform: "win32", exists })).toBe(false);
-  });
-
-  it("requests a shell for a bare name resolving to a .cmd shim", () => {
-    const exists = existsOver([join(BIN, "claude.CMD")]);
-    expect(cliSpawnNeedsShell("claude", WIN_ENV, { platform: "win32", exists })).toBe(true);
-  });
-
-  it("resolves through the registry env casing GUI-launched processes inherit", () => {
-    // A spread of a GUI process env keys PATH as "Path" and loses process.env's
-    // case-insensitive lookup, which must not break shim resolution.
-    const guiCasedEnv = { Path: WIN_ENV.PATH, PathExt: WIN_ENV.PATHEXT };
-    const exists = existsOver([join(BIN, "codex.CMD")]);
-    expect(cliSpawnNeedsShell("codex", guiCasedEnv, { platform: "win32", exists })).toBe(true);
-    const plan = planCliSpawn("codex", ["--version"], guiCasedEnv, { platform: "win32", exists });
-    expect(plan.options).toEqual({ shell: true });
-    expect(plan.command).toBe("codex --version");
-  });
-
-  it("prefers the executable found earliest in PATH (mirrors the OS)", () => {
-    // .cmd sits in the first PATH dir, .exe in the second: the shim wins.
-    const exists = existsOver([join(BIN, "claude.CMD"), join(ALT, "claude.EXE")]);
-    expect(cliSpawnNeedsShell("claude", WIN_ENV, { platform: "win32", exists })).toBe(true);
-  });
-
-  it("prefers an earlier PATHEXT entry within the same directory", () => {
-    // Both extensions exist in the same dir: .EXE precedes .CMD in PATHEXT.
-    const exists = existsOver([join(BIN, "claude.EXE"), join(BIN, "claude.CMD")]);
-    expect(cliSpawnNeedsShell("claude", WIN_ENV, { platform: "win32", exists })).toBe(false);
-  });
-
-  it("honors an explicit executable extension on an absolute path", () => {
-    const exe = join(BIN, "claude.exe");
-    const cmd = join(BIN, "claude.cmd");
-    expect(cliSpawnNeedsShell(exe, WIN_ENV, { platform: "win32", exists: existsOver([exe]) })).toBe(
-      false,
-    );
-    expect(cliSpawnNeedsShell(cmd, WIN_ENV, { platform: "win32", exists: existsOver([cmd]) })).toBe(
-      true,
-    );
-  });
-
-  it("defaults to no shell when a bare name cannot be resolved", () => {
-    const exists = existsOver([]);
-    expect(cliSpawnNeedsShell("claude", WIN_ENV, { platform: "win32", exists })).toBe(false);
-  });
-});
+const plan = (command: string, args: ReadonlyArray<string>, files: Record<string, string>) =>
+  planCliSpawn(command, args, WIN_ENV, { platform: "win32", fileSystem: windowsFiles(files) });
 
 describe("planCliSpawn", () => {
-  it("passes argv verbatim for native executables", () => {
-    const exists = existsOver([join(BIN, "claude.exe")]);
-    const plan = planCliSpawn("claude", ["--json-schema", '{"a":"b c"}'], WIN_ENV, {
-      platform: "win32",
-      exists,
-    });
-    expect(plan).toEqual({
+  it("leaves the command and argv alone off Windows", () => {
+    expect(planCliSpawn("claude", ["--version"], WIN_ENV, { platform: "darwin" })).toEqual({
       command: "claude",
+      args: ["--version"],
+      options: {},
+    });
+  });
+
+  it("starts a native executable by its full PATH location with argv verbatim", () => {
+    expect(
+      plan("claude", ["--json-schema", '{"a":"b c"}'], { [`${NODE_DIR}\\claude.exe`]: "" }),
+    ).toEqual({
+      command: `${NODE_DIR}\\claude.exe`,
       args: ["--json-schema", '{"a":"b c"}'],
       options: {},
     });
   });
 
-  it("composes a quoted single-string command for batch shims", () => {
-    const exists = existsOver([join(BIN, "claude.CMD")]);
-    const plan = planCliSpawn("claude", ["--json-schema", '{"a":"b c"}'], WIN_ENV, {
-      platform: "win32",
-      exists,
+  it("starts npm's launcher as node and its script, never the working folder's node", () => {
+    expect(
+      plan("codex", ["app-server"], {
+        [`${NPM}\\codex.cmd`]: NPM_SHIM,
+        [CODEX_SCRIPT]: "",
+        [`${NODE_DIR}\\node.exe`]: "",
+      }),
+    ).toEqual({
+      command: `${NODE_DIR}\\node.exe`,
+      args: [CODEX_SCRIPT, "app-server"],
+      options: {},
     });
-    expect(plan.args).toEqual([]);
-    expect(plan.options).toEqual({ shell: true });
-    expect(plan.command).toBe('claude --json-schema "{\\"a\\":\\"b c\\"}"');
   });
 
-  it("leaves plain flags unquoted and quotes args with spaces", () => {
-    const exists = existsOver([join(BIN, "codex.CMD")]);
-    const plan = planCliSpawn(
-      "codex",
-      ["app-server", "-c", "features.mode=true", "two words"],
-      WIN_ENV,
-      { platform: "win32", exists },
+  it("uses the node.exe beside npm's launcher first, and accepts cmd-shim 8's text and node flags", () => {
+    const cmdShim8 = NPM_SHIM.replace(
+      '  SET "_prog=node"\r\n',
+      '  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n',
+    )
+      .replace("set PATHEXT=%PATHEXT:;.JS;=;% & ", "")
+      .replace('"%_prog%"  "', '"%_prog%" --no-warnings "');
+    expect(
+      plan("codex", [], {
+        [`${NPM}\\codex.cmd`]: cmdShim8,
+        [CODEX_SCRIPT]: "",
+        [`${NPM}\\node.exe`]: "",
+        [`${NODE_DIR}\\node.exe`]: "",
+      }),
+    ).toEqual({ command: `${NPM}\\node.exe`, args: ["--no-warnings", CODEX_SCRIPT], options: {} });
+  });
+
+  it("runs any other batch launcher through cmd.exe by its full path, quoted", () => {
+    const withVariable = NPM_SHIM.replace("CALL :find_dp0\r\n", "CALL :find_dp0\r\nSET X=1\r\n");
+    expect(
+      plan("codex", ["--json-schema", '{"a":"b c"}', "C:\\path with space\\"], {
+        [`${NPM}\\codex.cmd`]: withVariable,
+        [CODEX_SCRIPT]: "",
+        [`${NODE_DIR}\\node.exe`]: "",
+      }),
+    ).toEqual({
+      command: `${NPM}\\codex.cmd --json-schema "{\\"a\\":\\"b c\\"}" "C:\\path with space\\\\"`,
+      args: [],
+      options: { shell: true },
+    });
+    expect(plan("npx", ["x"], { [`${NODE_DIR}\\npx.cmd`]: "@echo off" }).command).toBe(
+      `"${NODE_DIR}\\npx.cmd" x`,
     );
-    expect(plan.command).toBe('codex app-server -c features.mode=true "two words"');
   });
 
-  it("doubles trailing backslashes before the closing quote", () => {
-    const exists = existsOver([join(BIN, "tool.CMD")]);
-    const plan = planCliSpawn("tool", ["C:\\path with space\\"], WIN_ENV, {
-      platform: "win32",
-      exists,
+  it("follows PATH order before PATHEXT order, as Windows does", () => {
+    expect(
+      plan("claude", [], { [`${NPM}\\claude.cmd`]: "@echo off", [`${NODE_DIR}\\claude.exe`]: "" })
+        .options,
+    ).toEqual({ shell: true });
+    expect(
+      plan("claude", [], { [`${NPM}\\claude.cmd`]: "@echo off", [`${NPM}\\claude.exe`]: "" }),
+    ).toEqual({ command: `${NPM}\\claude.exe`, args: [], options: {} });
+  });
+
+  it("takes a command named with its extension as exactly that file", () => {
+    expect(
+      planCliSpawn(
+        "C:\\tools\\tool.exe",
+        [],
+        { Path: NPM, PATHEXT: ".CMD" },
+        {
+          platform: "win32",
+          fileSystem: windowsFiles({ "C:\\tools\\tool.exe": "", "C:\\tools\\tool.exe.cmd": "" }),
+        },
+      ),
+    ).toEqual({ command: "C:\\tools\\tool.exe", args: [], options: {} });
+  });
+
+  it("spawns an unresolved command as given, through cmd.exe only for a batch file", () => {
+    expect(plan("claude", ["--version"], {})).toEqual({
+      command: "claude",
+      args: ["--version"],
+      options: {},
     });
-    expect(plan.command).toBe('tool "C:\\path with space\\\\"');
+    expect(plan("C:\\tools\\npm.cmd", ["install"], {})).toEqual({
+      command: "C:\\tools\\npm.cmd install",
+      args: [],
+      options: { shell: true },
+    });
   });
 });

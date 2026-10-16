@@ -5,6 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { resolveCommandPath } from "@threadlines/shared/shell";
+import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import { PtyAdapter } from "../Services/PTY.ts";
 import {
   PtySpawnError,
@@ -146,13 +147,15 @@ export const layer = Layer.effect(
     return {
       spawn: Effect.fn(function* (input) {
         yield* ensureNodePtySpawnHelperExecutableCached;
+        // Terminals and sign-in prompts look up commands as they would outside Threadlines.
+        const env = withUsualCommandLookup(input.env);
         const ptyProcess = yield* Effect.try({
           try: () =>
-            nodePty.spawn(resolveNodePtyShell(input.shell, input.env), input.args ?? [], {
+            nodePty.spawn(resolveNodePtyShell(input.shell, env), input.args ?? [], {
               cwd: input.cwd,
               cols: input.cols,
               rows: input.rows,
-              env: input.env,
+              env,
               name: globalThis.process.platform === "win32" ? "xterm-color" : "xterm-256color",
             }),
           catch: (cause) =>

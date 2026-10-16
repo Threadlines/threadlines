@@ -3,8 +3,8 @@ import type {
   OrchestrationAwaitedBackgroundTask,
   OrchestrationBackgroundTaskKind,
   OrchestrationSession,
+  RuntimeTaskId,
 } from "@threadlines/contracts";
-import { sameAwaitedWorkflowProgress } from "@threadlines/shared/workflowRuns";
 
 /**
  * The background-task fields of a thread's session, kept together: every
@@ -50,15 +50,23 @@ export function carriedBackgroundTasks(
 const AWAITED_TASK_DESCRIPTION_MAX_LENGTH = 120;
 
 /** One awaited task as the session carries it: its kind, a clipped
- *  description, and a workflow's progress. */
+ *  description, how to stop it on its own when its driver can, and a
+ *  workflow's progress. */
 export function toAwaitedBackgroundTask(task: {
   readonly kind?: OrchestrationBackgroundTaskKind | undefined;
   readonly description?: string | undefined;
+  readonly taskId?: RuntimeTaskId | undefined;
+  readonly toolUseId?: string | undefined;
+  readonly stoppable?: boolean | undefined;
   readonly workflow?: AwaitedWorkflowProgress | undefined;
 }): OrchestrationAwaitedBackgroundTask {
   const description = task.description?.trim();
+  const toolUseId = task.toolUseId?.trim();
   return {
     kind: task.kind ?? "other",
+    ...(task.taskId !== undefined ? { taskId: task.taskId } : {}),
+    ...(toolUseId ? { toolUseId } : {}),
+    ...(task.stoppable === true ? { stoppable: true } : {}),
     ...(task.workflow !== undefined ? { workflow: task.workflow } : {}),
     ...(description
       ? {
@@ -71,17 +79,4 @@ export function toAwaitedBackgroundTask(task: {
   };
 }
 
-export function sameAwaitedBackgroundTasks(
-  left: ReadonlyArray<OrchestrationAwaitedBackgroundTask>,
-  right: ReadonlyArray<OrchestrationAwaitedBackgroundTask>,
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every(
-      (task, index) =>
-        task.kind === right[index]?.kind &&
-        task.description === right[index]?.description &&
-        sameAwaitedWorkflowProgress(task.workflow, right[index]?.workflow),
-    )
-  );
-}
+export { sameAwaitedBackgroundTasks } from "@threadlines/shared/awaitedBackgroundTasks";

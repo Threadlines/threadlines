@@ -40,6 +40,12 @@ interface ComposerPrimaryActionsProps {
   roomDelivery?: ComposerRoomDelivery | null;
   /** Picks, for this message only, between asking now and waiting. */
   onRoomDeliveryChange?: (delivery: FollowUpDelivery) => void;
+  /**
+   * Set while the turn is over but the thread still waits on background work
+   * (a command, an agent). With nothing typed, Stop ends that work; typing
+   * brings Send back.
+   */
+  onStopBackgroundWork?: (() => void) | undefined;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
 }
@@ -105,9 +111,12 @@ const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
 export const ComposerStopButton = memo(function ComposerStopButton({
   onInterrupt,
   preserveComposerFocusOnPointerDown = false,
+  stops = "turn",
 }: {
   onInterrupt: () => void;
   preserveComposerFocusOnPointerDown?: boolean;
+  /** What pressing it ends: the turn, or the background work a settled turn left. */
+  stops?: "turn" | "background-work";
 }) {
   return (
     <Button
@@ -117,8 +126,8 @@ export const ComposerStopButton = memo(function ComposerStopButton({
       className="rounded-full before:hidden"
       onPointerDown={preserveComposerFocusOnPointerDown ? preventPointerFocus : undefined}
       onClick={onInterrupt}
-      aria-label="Stop generation"
-      tooltip="Stop"
+      aria-label={stops === "turn" ? "Stop generation" : "Stop background work"}
+      tooltip={stops === "turn" ? "Stop" : "Stop background work"}
     >
       <SquareIcon className="size-2.5 fill-current" strokeWidth={0} />
     </Button>
@@ -219,6 +228,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   onFollowUpDeliveryChange,
   roomDelivery = null,
   onRoomDeliveryChange,
+  onStopBackgroundWork,
   onInterrupt,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
@@ -309,6 +319,15 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
+  const backgroundWorkStop =
+    onStopBackgroundWork && !isSendBusy && !isConnecting ? (
+      <ComposerStopButton
+        onInterrupt={onStopBackgroundWork}
+        preserveComposerFocusOnPointerDown={preserveComposerFocusOnPointerDown}
+        stops="background-work"
+      />
+    ) : null;
+
   if (showPlanFollowUpPrompt) {
     if (promptHasText) {
       return (
@@ -324,7 +343,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       );
     }
 
-    return (
+    const implementActions = (
       <div data-chat-composer-implement-actions="true" className="flex items-center justify-end">
         <Button
           type="submit"
@@ -391,6 +410,19 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         </Menu>
       </div>
     );
+    // Typing turns this into Refine, as it turns Stop into Send elsewhere.
+    return backgroundWorkStop ? (
+      <div className="flex shrink-0 items-center gap-1.5">
+        {backgroundWorkStop}
+        {implementActions}
+      </div>
+    ) : (
+      implementActions
+    );
+  }
+
+  if (backgroundWorkStop && !hasSendableContent) {
+    return backgroundWorkStop;
   }
 
   return (

@@ -1,6 +1,7 @@
 import {
   CommandId,
   ProviderInstanceId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
   type OrchestrationCommand,
@@ -57,7 +58,7 @@ const stop = (
   type: "thread.background-task.stop",
   commandId: CommandId.make(`cmd-stop-${taskId}`),
   threadId: THREAD,
-  taskId,
+  taskId: RuntimeTaskId.make(taskId),
   createdAt: now,
 });
 
@@ -74,18 +75,6 @@ describe("decider workflow runs", () => {
       type: "thread.background-task-stop-requested",
       payload: { threadId: THREAD, taskId: "task-running" },
     });
-  });
-
-  it("refuses to stop a workflow run the thread never recorded", async () => {
-    await expect(
-      decide(stop("task-unknown"), readModelWith({ workflowRuns: [run("task-other", "running")] })),
-    ).rejects.toThrow(/no workflow run 'task-unknown'/);
-  });
-
-  it("refuses to stop a workflow run that already ended", async () => {
-    await expect(
-      decide(stop("task-done"), readModelWith({ workflowRuns: [run("task-done", "completed")] })),
-    ).rejects.toThrow(/already ended/);
   });
 
   it("records a workflow run update as the driver reported it", async () => {

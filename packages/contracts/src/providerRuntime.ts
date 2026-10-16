@@ -729,6 +729,9 @@ const TaskStartedPayload = Schema.Struct({
   /** Housekeeping the provider does not count as user work (e.g. live-update
    *  watchers). Never counts toward pending background work. */
   ambient: Schema.optional(Schema.Boolean),
+  /** The driver can stop this task on its own, without ending the session
+   *  (`thread.background-task.stop`). Absent means it can't. */
+  stoppable: Schema.optional(Schema.Boolean),
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 
@@ -754,6 +757,10 @@ const TaskSnapshotUpdatedPayload = Schema.Struct({
       /** A workflow run's progress. The driver re-sends the snapshot when it
        *  changes (an agent finished, a phase began), not on every step. */
       workflow: Schema.optional(AwaitedWorkflowProgress),
+      /** See TaskStartedPayload.stoppable. */
+      stoppable: Schema.optional(Schema.Boolean),
+      /** See TaskStartedPayload.toolUseId. */
+      toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
     }),
   ),
 });
@@ -769,6 +776,9 @@ const TaskProgressPayload = Schema.Struct({
   subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
   /** See TaskStartedPayload.ownerAgentToolUseId. */
   ownerAgentToolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** See TaskStartedPayload.stoppable. Restated here because a long-lived
+   *  task's start can leave the thread's recent activity window. */
+  stoppable: Schema.optional(Schema.Boolean),
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;
 

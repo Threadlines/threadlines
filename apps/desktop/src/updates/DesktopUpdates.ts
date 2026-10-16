@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { resolveCommandPath } from "@threadlines/shared/shell";
 
 import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -287,11 +288,15 @@ const readGitHubCliToken: Effect.Effect<
   never,
   ChildProcessSpawner.ChildProcessSpawner
 > = Effect.gen(function* () {
+  // By its place on PATH: on Windows a bare `gh` would also be looked for in
+  // the folder the app was started from.
+  const gh = resolveCommandPath("gh");
+  if (gh === null) return Option.none<string>();
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   return yield* spawner
     .string(
       ChildProcess.make(
-        "gh",
+        gh,
         ["auth", "token"],
         hideWindowsConsole({
           stdin: "ignore",
