@@ -125,33 +125,6 @@ const ProjectionProjectCatalogDbRowSchema = Schema.Struct({
   deletedAt: ProjectionProject.fields.deletedAt,
 });
 /** An agent's invite waits for the user: the thread needs them, like a question. */
-/**
- * Keeps each thread's newest MAX_THREAD_MESSAGES rows from rows grouped by
- * thread, oldest first within a thread.
- */
-function keepNewestMessagesPerThread<Row extends { readonly threadId: string }>(
-  rows: ReadonlyArray<Row>,
-): ReadonlyArray<Row> {
-  const kept: Row[] = [];
-  let groupStart = 0;
-  while (groupStart < rows.length) {
-    const threadId = rows[groupStart]!.threadId;
-    let groupEnd = groupStart;
-    while (groupEnd < rows.length && rows[groupEnd]!.threadId === threadId) {
-      groupEnd += 1;
-    }
-    for (
-      let index = Math.max(groupStart, groupEnd - MAX_THREAD_MESSAGES);
-      index < groupEnd;
-      index += 1
-    ) {
-      kept.push(rows[index]!);
-    }
-    groupStart = groupEnd;
-  }
-  return kept;
-}
-
 const hasAwaitingInvite = (state: OrchestrationAgentRequestState | null | undefined) =>
   state != null && awaitingInvite(state) !== undefined;
 
@@ -919,11 +892,80 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   // that consult message history (turn retry, fork source lookup) behave the
   // same after a server restart as they do on a long-running process.
   //
-  // Read in index order (idx_projection_thread_messages_event_order, no sort)
-  // and keep each thread's newest rows here: a ROW_NUMBER window over every
-  // message sorted the whole table first, and this read gates HTTP at boot.
+  // Almost no install has a thread past the cap, and there the plain read in
+  // index order (idx_projection_thread_messages_event_order, no sort) returns
+  // the same rows: the ROW_NUMBER window below sorts every message first, and
+  // this read gates HTTP at boot. Past the cap the window keeps the discarded
+  // rows out of memory.
+  const listRankedThreadMessageRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: () =>
+      sql`
+        WITH ranked_messages AS (
+          SELECT
+            message.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY message.thread_id
+              ORDER BY
+                message.event_sequence DESC,
+                message.created_at DESC,
+                message.message_id DESC
+            ) AS message_rank
+          FROM projection_thread_messages AS message
+        )
+        SELECT
+          message_id AS "messageId",
+          event_sequence AS "eventSequence",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          role,
+          text,
+          attachments_json AS "attachments",
+          skills_json AS "skills",
+          participant_id AS "participantId",
+          side_turn_id AS "sideTurnId",
+          from_agent AS "fromAgent",
+          from_thread AS "fromThread",
+          request_id AS "requestId",
+          request_kind AS "requestKind",
+          request_outcome AS "requestOutcome",
+          request_error AS "requestError",
+          review_input AS "reviewInput",
+          invite,
+          agent_models AS "agentModels",
+          is_streaming AS "isStreaming",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM ranked_messages
+        WHERE message_rank <= ${MAX_THREAD_MESSAGES}
+        ORDER BY thread_id ASC, event_sequence ASC, created_at ASC, message_id ASC
+      `,
+  });
+
+  const countThreadsOverMessageCap = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({ threads: Schema.Number }),
+    execute: () =>
+      sql`
+        SELECT COUNT(*) AS "threads"
+        FROM (
+          SELECT thread_id
+          FROM projection_thread_messages
+          GROUP BY thread_id
+          HAVING COUNT(*) > ${MAX_THREAD_MESSAGES}
+        )
+      `,
+  });
+
   const listCappedThreadMessageRows = () =>
-    listThreadMessageRows(undefined).pipe(Effect.map(keepNewestMessagesPerThread));
+    countThreadsOverMessageCap(undefined).pipe(
+      Effect.flatMap((rows) =>
+        (rows[0]?.threads ?? 0) === 0
+          ? listThreadMessageRows(undefined)
+          : listRankedThreadMessageRows(undefined),
+      ),
+    );
 
   const listThreadProposedPlanRows = SqlSchema.findAll({
     Request: Schema.Void,
