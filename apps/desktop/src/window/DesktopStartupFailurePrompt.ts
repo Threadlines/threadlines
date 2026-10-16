@@ -48,8 +48,8 @@ export interface DesktopStartupFailurePromptShape {
   /** Shows where the damaged database was preserved after startup recovers. */
   readonly notifyDatabaseRecovery: (result: DesktopDatabaseRecoveryResult) => Effect.Effect<void>;
   /**
-   * Tells the user a database migration is still running at the readiness
-   * deadline. Closes itself when interrupted. Never fails.
+   * Tells the user a database migration is keeping the first startup busy
+   * (shown a few seconds into it). Closes itself when interrupted. Never fails.
    */
   readonly notifyMigrationInProgress: (info: {
     readonly migrationId: number;

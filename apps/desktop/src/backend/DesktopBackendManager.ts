@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
@@ -55,6 +56,11 @@ const BACKEND_READINESS_FAST_INTERVAL = Duration.millis(25);
 const BACKEND_READINESS_FAST_PHASE = Duration.seconds(5);
 const BACKEND_READINESS_SLOW_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
+// Before the first window there is nothing on screen, so a migration still
+// running after this long gets the "updating its data" notice. Shorter ones
+// finish before anyone wonders, and see no dialog at all.
+const MIGRATION_NOTICE_DELAY = Duration.seconds(4);
+const MIGRATION_NOTICE_CHECK_INTERVAL = Duration.millis(250);
 // Give the server's shutdown finalizers time to pause and persist active
 // provider goals before falling back to a force kill.
 const DEFAULT_BACKEND_TERMINATE_GRACE = Duration.seconds(8);
@@ -568,8 +574,36 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
         const stdoutDecoder = new TextDecoder();
         const stderrDecoder = new TextDecoder();
         const readinessTimeoutRef = yield* Ref.make(Option.none<BackendTimeoutError>());
-        // The "still migrating" dialog belongs to this run: readiness and the
-        // run ending both close it.
+        // The "still migrating" dialog belongs to this run. A watcher fiber
+        // shows it once a migration has kept the first startup busy for
+        // MIGRATION_NOTICE_DELAY, and holds it open; readiness and the run
+        // ending both interrupt the watcher, which closes the dialog.
+        const watchForLongMigration = Effect.gen(function* () {
+          const delayMs = Duration.toMillis(MIGRATION_NOTICE_DELAY);
+          let firstSeenAt: number | undefined;
+          while (true) {
+            yield* Effect.sleep(MIGRATION_NOTICE_CHECK_INTERVAL);
+            // Once a window has existed, a slow restart is already visible.
+            if ((yield* Ref.get(state)).everReady) return;
+            const migration = findMigrationInProgress(yield* Ref.get(outputTailRef));
+            if (Option.isNone(migration)) continue;
+            // From the first migration seen, so a run of short ones that
+            // together pass the delay still gets the notice.
+            const now = yield* Clock.currentTimeMillis;
+            firstSeenAt ??= now;
+            if (now - firstSeenAt < delayMs) continue;
+            yield* logBackendManagerInfo("backend still migrating before first readiness", {
+              migrationId: migration.value.id,
+              migrationName: migration.value.name,
+              totalMigrations: migration.value.total,
+              elapsedMs: now - firstSeenAt,
+            });
+            return yield* startupFailurePrompt.notifyMigrationInProgress({
+              migrationId: migration.value.id,
+              totalMigrations: migration.value.total,
+            });
+          }
+        });
         const migrationNoticeRef = yield* Ref.make(Option.none<Fiber.Fiber<void, never>>());
         const closeMigrationNotice = Ref.getAndSet(
           migrationNoticeRef,
@@ -773,6 +807,9 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               phase: "START",
               details: `pid=${pid} port=${config.bootstrap.port} cwd=${config.cwd}`,
             });
+            // In the run's scope, so the watcher cannot outlive its process.
+            const noticeFiber = yield* Effect.forkIn(watchForLongMigration, runScope);
+            yield* Ref.set(migrationNoticeRef, Option.some(noticeFiber));
           }),
           onReady: Effect.fn("desktop.backendManager.onReady")(function* () {
             const { isCurrentRun, recoveryNotice } = yield* Ref.modify(
@@ -842,7 +879,8 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
           // failure. Once a window exists, an unresponsive restart is visible
           // and recoverable, so keep probing quietly. Before the first window
           // a migration still running is healthy work that a kill would only
-          // make restart from zero, so keep probing and say so. Anything else
+          // make restart from zero, so keep probing (the migration watcher has
+          // already said so, or will within MIGRATION_NOTICE_DELAY). Anything else
           // is a process that is alive but unresponsive and would sit
           // invisible forever: mark the run and kill it so finalizeRun
           // surfaces the failure instead of scheduling a restart.
@@ -862,14 +900,6 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                   migrationName: migration.value.name,
                   totalMigrations: migration.value.total,
                 });
-                const noticeFiber = yield* Effect.forkIn(
-                  startupFailurePrompt.notifyMigrationInProgress({
-                    migrationId: migration.value.id,
-                    totalMigrations: migration.value.total,
-                  }),
-                  parentScope,
-                );
-                yield* Ref.set(migrationNoticeRef, Option.some(noticeFiber));
                 return "keep-waiting" as const;
               }
               yield* Ref.set(readinessTimeoutRef, Option.some(error));

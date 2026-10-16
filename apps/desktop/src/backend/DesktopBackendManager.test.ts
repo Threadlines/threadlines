@@ -918,7 +918,7 @@ describe("DesktopBackendManager", () => {
   );
 
   it.effect(
-    "keeps waiting and shows the migration notice when the backend is mid-migration at the readiness deadline",
+    "shows the migration notice a few seconds into a first-start migration and keeps waiting past the deadline",
     () =>
       Effect.gen(function* () {
         const noticeInfo = yield* Queue.unbounded<{
@@ -985,14 +985,23 @@ describe("DesktopBackendManager", () => {
           const manager = yield* DesktopBackendManager.DesktopBackendManager;
           yield* manager.start;
 
-          // The 60s budget elapses while migration 50 of 51 is still running.
-          // The backend is busy, not hung, so it must survive the deadline.
-          yield* TestClock.adjust(Duration.minutes(1));
+          // A migration that ends within a few seconds never gets a dialog.
+          yield* TestClock.adjust(Duration.seconds(3));
+          assert.equal(yield* Queue.size(noticeInfo), 0);
+
+          // One still running past that says why nothing is on screen yet.
+          yield* TestClock.adjust(Duration.seconds(2));
           assert.deepEqual(yield* Queue.take(noticeInfo), {
             migrationId: 50,
             totalMigrations: 51,
           });
+
+          // The 60s budget elapses while migration 50 of 51 is still running.
+          // The backend is busy, not hung, so it must survive the deadline,
+          // and the notice already on screen is not shown a second time.
+          yield* TestClock.adjust(Duration.minutes(1));
           assert.equal(yield* Ref.get(terminations), 0);
+          assert.equal(yield* Queue.size(noticeInfo), 0);
 
           // Once the migration finishes the backend answers, and the notice
           // closes itself instead of outliving the wait.
