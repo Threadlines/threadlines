@@ -17,6 +17,8 @@ import type {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
+import { ComposerWorkflowKeywordHint } from "./ComposerWorkflowKeywordHint";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -242,6 +244,7 @@ const ALL_ATTACHMENT_ACCEPT = `image/*,${FILE_ATTACHMENT_ACCEPT}`;
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const CODEX_AGENT_PROVIDER = ProviderDriverKind.make("codex");
+const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 /** A thread with no agents besides its own, while there is no thread yet. */
@@ -661,6 +664,9 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
+  /** The user chose to send a message holding "ultracode" as plain text. */
+  workflowKeywordSuppressed?: boolean | undefined;
+  onToggleWorkflowKeyword?: (() => void) | undefined;
   // Goal (Codex goal mode)
   goalDispatching?: boolean | undefined;
   /** Freshly dispatched goal state not yet confirmed by the projection —
@@ -752,6 +758,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     shouldAutoScrollRef,
     scheduleStickToBottom,
     onSend,
+    workflowKeywordSuppressed,
+    onToggleWorkflowKeyword,
     onInterrupt,
     goalDispatching,
     optimisticGoal,
@@ -932,6 +940,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ownSession?.provider ??
     ProviderDriverKind.make("codex");
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
+  // Claude runs a message holding "ultracode" as a workflow; the composer says
+  // so as it is typed (and offers to send it as plain text instead).
+  const workflowKeywordActive =
+    selectedProvider === CLAUDE_AGENT_PROVIDER && containsWorkflowKeyword(prompt);
   const threadGoal = optimisticGoal ?? activeThread?.goal ?? null;
   const goalSupported =
     selectedProvider === CODEX_AGENT_PROVIDER &&
@@ -3933,6 +3945,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     terminalContexts={[]}
                     skills={composerSkills}
                     recognizedSlashCommands={recognizedSlashCommands}
+                    highlightWorkflowKeyword={workflowKeywordActive && !workflowKeywordSuppressed}
                     skillAvailability={composerSkillAvailability}
                     onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                     onChange={onPromptChange}
@@ -3962,6 +3975,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     }
                   />
                 </div>
+                {workflowKeywordActive && !isComposerApprovalState ? (
+                  <ComposerWorkflowKeywordHint
+                    suppressed={workflowKeywordSuppressed === true}
+                    onToggle={onToggleWorkflowKeyword}
+                  />
+                ) : null}
               </div>
 
               {/* Bottom toolbar */}

@@ -31,6 +31,14 @@ export function workflowPhaseDisplayTitle(title: string): string {
   return hidden !== null ? `Step ${hidden}` : title;
 }
 
+/** Claude's word for "run this message as a workflow". Claude acts on it
+ *  only in words a person typed (see ProviderTypedInput). */
+const WORKFLOW_KEYWORD = /\bultracode\b/iu;
+
+export function containsWorkflowKeyword(text: string): boolean {
+  return WORKFLOW_KEYWORD.test(text);
+}
+
 /** Claude caps a run at 1,000 agents; anything past this is a bad report. */
 const MAX_AGENTS_PER_RUN = 2_000;
 const MAX_PHASES_PER_RUN = 200;

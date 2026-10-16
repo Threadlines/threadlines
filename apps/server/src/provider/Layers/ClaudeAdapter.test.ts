@@ -116,6 +116,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly alwaysThinkingEnabled?: boolean | null;
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
+    readonly workflowSizeGuideline?: string | null;
   }> = [];
   public readonly getContextUsageCalls: Array<void> = [];
   public readonly rewindFilesCalls: Array<{
@@ -205,6 +206,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly alwaysThinkingEnabled?: boolean | null;
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
+    readonly workflowSizeGuideline?: string | null;
   }): Promise<void> => {
     this.applyFlagSettingsCalls.push(settings);
   };

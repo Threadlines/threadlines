@@ -262,6 +262,39 @@ export interface PendingApproval {
   toolName?: string;
   /** What is being approved: the command, path, or tool summary. */
   detail?: string;
+  /** A workflow asking to run: its plan, from the script's own header. */
+  workflow?: PendingWorkflowApproval;
+}
+
+export interface PendingWorkflowApproval {
+  readonly name?: string;
+  readonly description?: string;
+  readonly phases: ReadonlyArray<{ readonly title: string; readonly detail?: string }>;
+  /** The script, for "View script". Absent: Claude keeps it to itself. */
+  readonly script?: string;
+}
+
+function readWorkflowApprovalPreview(value: unknown): PendingWorkflowApproval | undefined {
+  const preview = asRecord(value);
+  if (!preview) return undefined;
+  const phases = Array.isArray(preview.phases)
+    ? preview.phases.flatMap((phase) => {
+        const entry = asRecord(phase);
+        const title = asTrimmedString(entry?.title);
+        if (!title) return [];
+        const detail = asTrimmedString(entry?.detail);
+        return [{ title, ...(detail ? { detail } : {}) }];
+      })
+    : [];
+  const name = asTrimmedString(preview.name);
+  const description = asTrimmedString(preview.description);
+  const script = typeof preview.script === "string" ? preview.script : undefined;
+  return {
+    phases,
+    ...(name ? { name } : {}),
+    ...(description ? { description } : {}),
+    ...(script ? { script } : {}),
+  };
 }
 
 export interface PendingUserInput {
@@ -864,6 +897,7 @@ export function derivePendingApprovals(
         payload && typeof payload.toolName === "string" ? payload.toolName : undefined;
       const environmentId =
         payload && typeof payload.environmentId === "string" ? payload.environmentId : undefined;
+      const workflow = readWorkflowApprovalPreview(payload?.workflowPreview);
       return [
         {
           requestId: ApprovalRequestId.make(requestId),
@@ -872,6 +906,7 @@ export function derivePendingApprovals(
           ...(environmentId ? { environmentId } : {}),
           ...(toolName ? { toolName } : {}),
           ...(detail ? { detail } : {}),
+          ...(workflow ? { workflow } : {}),
           ...(availableDecisions && availableDecisions.length > 0 ? { availableDecisions } : {}),
           ...(decisionWarnings ? { decisionWarnings } : {}),
         },

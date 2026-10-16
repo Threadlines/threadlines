@@ -28,6 +28,7 @@ import {
   RuntimeMode,
   TerminalOpenInput,
 } from "@threadlines/contracts";
+import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -1233,6 +1234,14 @@ export default function ChatView(props: ChatViewProps) {
   const composerFileSelectionContextsRef = useRef<FileSelectionContextDraft[]>([]);
   const composerPickedElementContextsRef = useRef<PickedElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
+  // "Send as plain text" for a message holding Claude's workflow keyword.
+  // Belongs to the message being written: cleared as it is sent and when the
+  // thread changes.
+  const [workflowKeywordSuppressed, setWorkflowKeywordSuppressed] = useState(false);
+  const toggleWorkflowKeyword = useCallback(
+    () => setWorkflowKeywordSuppressed((current) => !current),
+    [],
+  );
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   // Hysteresis-gated "far from bottom" signal for the composer questions panel —
@@ -1411,6 +1420,9 @@ export default function ChatView(props: ChatViewProps) {
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   // Lets async work started on one thread tell whether the user is still on it.
   const activeThreadKeyRef = useRef(activeThreadKey);
+  useEffect(() => {
+    setWorkflowKeywordSuppressed(false);
+  }, [activeThreadKey]);
   activeThreadKeyRef.current = activeThreadKey;
   const existingOpenTerminalThreadKeys = useMemo(() => {
     const existingThreadKeys = new Set<string>([...serverThreadKeys, ...draftThreadKeys]);
@@ -5073,6 +5085,14 @@ export default function ChatView(props: ChatViewProps) {
     const outgoingMessageText = formatOutgoingPrompt(
       messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     );
+    // Claude acts on "ultracode" in words a person typed. Sent as plain text
+    // when the user said so, or when the word is only in what was attached
+    // (a terminal's output), never in what they wrote.
+    const typedWorkflowKeyword = containsWorkflowKeyword(promptForSend);
+    const suppressWorkflowKeyword =
+      (typedWorkflowKeyword && workflowKeywordSuppressed) ||
+      (!typedWorkflowKeyword && containsWorkflowKeyword(outgoingMessageText));
+    setWorkflowKeywordSuppressed(false);
     // A drawing's picture is not shown in the composer as its own thumbnail --
     // it lives behind the chip -- but it still has to reach the model as an
     // image, because the marks are the half of the message a sentence cannot
@@ -5241,6 +5261,7 @@ export default function ChatView(props: ChatViewProps) {
             ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
           },
           delivery: followUpDelivery,
+          ...(suppressWorkflowKeyword ? { suppressWorkflowKeyword: true } : {}),
           // What a queued message runs with, like a normal send would.
           ...(followUpDelivery === "queue"
             ? {
@@ -5315,6 +5336,7 @@ export default function ChatView(props: ChatViewProps) {
         },
         modelSelection: roomRecipientModelSelection ?? ctxSelectedModelSelection,
         ...(roomRecipientId !== null ? { participantId: roomRecipientId } : {}),
+        ...(suppressWorkflowKeyword ? { suppressWorkflowKeyword: true } : {}),
         titleSeed: title,
         runtimeMode,
         interactionMode,
@@ -7533,6 +7555,8 @@ export default function ChatView(props: ChatViewProps) {
                   shouldAutoScrollRef={isAtEndRef}
                   scheduleStickToBottom={scheduleTimelineStickToBottom}
                   onSend={onSend}
+                  workflowKeywordSuppressed={workflowKeywordSuppressed}
+                  onToggleWorkflowKeyword={toggleWorkflowKeyword}
                   onInterrupt={onInterrupt}
                   onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
                   goalDispatching={

@@ -607,6 +607,137 @@ function ComposerCommandHighlightPlugin(props: { recognizedSlashCommands: Readon
   return null;
 }
 
+type SerializedComposerKeywordTextNode = Spread<
+  {
+    type: "composer-keyword";
+    version: 1;
+  },
+  SerializedTextNode
+>;
+
+/**
+ * Claude's "ultracode" tinted in Ultracode's violet wherever it is typed, so
+ * the writer sees the message will run as a workflow. Like the command token
+ * it serializes as plain text and only styles; a transform demotes it the
+ * moment it stops being exactly the word, or highlighting is turned off.
+ */
+class ComposerKeywordTextNode extends TextNode {
+  static override getType(): string {
+    return "composer-keyword";
+  }
+
+  static override clone(node: ComposerKeywordTextNode): ComposerKeywordTextNode {
+    return new ComposerKeywordTextNode(node.__text, node.__key);
+  }
+
+  static override importJSON(
+    serializedNode: SerializedComposerKeywordTextNode,
+  ): ComposerKeywordTextNode {
+    return $createComposerKeywordTextNode(serializedNode.text).updateFromJSON(serializedNode);
+  }
+
+  override exportJSON(): SerializedComposerKeywordTextNode {
+    return {
+      ...super.exportJSON(),
+      type: "composer-keyword",
+      version: 1,
+    };
+  }
+
+  override createDOM(config: EditorConfig): HTMLElement {
+    const dom = super.createDOM(config);
+    dom.classList.add("composer-keyword-token");
+    return dom;
+  }
+
+  override isTextEntity(): true {
+    return true;
+  }
+
+  override canInsertTextBefore(): boolean {
+    return false;
+  }
+
+  override canInsertTextAfter(): boolean {
+    return false;
+  }
+}
+
+function $createComposerKeywordTextNode(text: string): ComposerKeywordTextNode {
+  return $applyNodeReplacement(new ComposerKeywordTextNode(text));
+}
+
+/** The keyword as a whole word. Linear: one fixed word between boundaries. */
+const WORKFLOW_KEYWORD_TOKEN_REGEX = /\bultracode\b/iu;
+const WORKFLOW_KEYWORD_EXACT_REGEX = /^ultracode$/iu;
+const WORD_CHARACTER_REGEX = /[\p{L}\p{N}_]/u;
+
+function ComposerKeywordHighlightPlugin(props: { enabled: boolean }) {
+  const [editor] = useLexicalComposerContext();
+  const enabledRef = useRef(props.enabled);
+  enabledRef.current = props.enabled;
+
+  useEffect(() => {
+    const unregisterPromote = editor.registerNodeTransform(TextNode, (node) => {
+      if (!enabledRef.current || node instanceof ComposerKeywordTextNode) return;
+      if (node instanceof ComposerCommandTextNode || !node.isSimpleText()) return;
+      const text = node.getTextContent();
+      const match = WORKFLOW_KEYWORD_TOKEN_REGEX.exec(text);
+      if (!match) return;
+      const start = match.index;
+      const end = start + match[0].length;
+      const parts = node.splitText(start, end);
+      const token = parts[start === 0 ? 0 : 1];
+      if (token === undefined) return;
+      token.replace($createComposerKeywordTextNode(token.getTextContent()));
+    });
+
+    const unregisterDemote = editor.registerNodeTransform(ComposerKeywordTextNode, (node) => {
+      const text = node.getTextContent();
+      const previous = node.getPreviousSibling();
+      const next = node.getNextSibling();
+      const touches = (sibling: typeof previous, edge: "end" | "start") => {
+        if (sibling === null || !$isTextNode(sibling)) return false;
+        const siblingText = sibling.getTextContent();
+        const character = edge === "end" ? siblingText.slice(-1) : siblingText.slice(0, 1);
+        return WORD_CHARACTER_REGEX.test(character);
+      };
+      if (
+        enabledRef.current &&
+        WORKFLOW_KEYWORD_EXACT_REGEX.test(text) &&
+        !touches(previous, "end") &&
+        !touches(next, "start")
+      ) {
+        return;
+      }
+      node.replace($createTextNode(text));
+    });
+
+    return () => {
+      unregisterPromote();
+      unregisterDemote();
+    };
+  }, [editor]);
+
+  // Turning highlighting on or off restyles what is already there.
+  useEffect(() => {
+    editor.update(() => {
+      const visit = (node: LexicalNode) => {
+        if ($isTextNode(node)) {
+          node.markDirty();
+          return;
+        }
+        if ($isElementNode(node)) {
+          for (const child of node.getChildren()) visit(child);
+        }
+      };
+      visit($getRoot());
+    });
+  }, [editor, props.enabled]);
+
+  return null;
+}
+
 type ComposerInlineTokenNode =
   | ComposerMentionNode
   | ComposerSkillNode
@@ -1073,6 +1204,9 @@ interface ComposerPromptEditorProps {
    *  provider's commands. The leading token is styled as a pill while it
    *  matches one of these; styling only, Enter handling lives elsewhere. */
   recognizedSlashCommands?: ReadonlyArray<string>;
+  /** Tint Claude's "ultracode" where it is typed: the message will run as a
+   *  workflow. Styling only. */
+  highlightWorkflowKeyword?: boolean;
   /** Skill names the selected provider can resolve. Omitted means "unknown",
    *  which renders every skill chip in its normal state. */
   skillAvailability?: ComposerSkillAvailability;
@@ -1633,6 +1767,7 @@ function ComposerPromptEditorInner({
   terminalContexts,
   skills,
   recognizedSlashCommands,
+  highlightWorkflowKeyword,
   disabled,
   placeholder,
   suggestion,
@@ -1894,6 +2029,7 @@ function ComposerPromptEditorInner({
         ) : null}
         <OnChangePlugin onChange={handleEditorChange} />
         <ComposerCommandHighlightPlugin recognizedSlashCommands={recognizedSlashCommands ?? []} />
+        <ComposerKeywordHighlightPlugin enabled={highlightWorkflowKeyword === true} />
         <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
         <ComposerSurroundSelectionPlugin terminalContexts={terminalContexts} skills={skills} />
         <ComposerInlineTokenArrowPlugin />
@@ -1912,6 +2048,7 @@ export function ComposerPromptEditor({
   terminalContexts,
   skills,
   recognizedSlashCommands,
+  highlightWorkflowKeyword,
   skillAvailability,
   disabled,
   placeholder,
@@ -1935,6 +2072,7 @@ export function ComposerPromptEditor({
         ComposerSkillNode,
         ComposerTerminalContextNode,
         ComposerCommandTextNode,
+        ComposerKeywordTextNode,
       ],
       editorState: () => {
         $setComposerEditorPrompt(
@@ -1968,6 +2106,7 @@ export function ComposerPromptEditor({
           onPaste={onPaste}
           editorRef={editorRef}
           {...(recognizedSlashCommands ? { recognizedSlashCommands } : {})}
+          {...(highlightWorkflowKeyword !== undefined ? { highlightWorkflowKeyword } : {})}
           {...(onCommandKeyDown ? { onCommandKeyDown } : {})}
           {...(className ? { className } : {})}
         />
