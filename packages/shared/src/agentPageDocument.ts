@@ -72,9 +72,42 @@ const scriptLiteral = (value: unknown) =>
 // even before it has finished loading.
 const BOOTSTRAP_SCRIPT = `(function(){var w=window,d=document,p=w.parent,n=0;["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCSessionDescription","RTCIceCandidate"].forEach(function(k){try{Object.defineProperty(w,k,{value:void 0,writable:false,configurable:false});}catch(e){}});var s=d.getElementById("tl-page-theme"),b=${scriptLiteral(BASE_CSS)};function a(t){if(!s||!t||typeof t!=="object"||!t.variables||typeof t.variables!=="object")return;var c=":root{color-scheme:"+(t.appearance==="light"?"light":"dark")+";";for(var k in t.variables){if(/^--[a-z0-9-]+$/.test(k))c+=k+":"+String(t.variables[k]).replace(/[;{}<>\\\\]/g,"")+";";}s.textContent=c+"}"+b;}w.addEventListener("message",function(e){if(e.source!==p)return;var m=e.data,q=m&&m.params;if(m&&m.jsonrpc==="2.0"&&m.method===${scriptLiteral(HOST_CONTEXT_CHANGED_METHOD)}&&q&&q.styles)a({appearance:q.theme,variables:q.styles.variables});});d.addEventListener("click",function(e){if(!e.isTrusted||e.defaultPrevented)return;var l=e.composedPath().find(function(t){return t&&t.matches&&t.matches("a[href]");}),h,u;if(!l)return;h=l.getAttribute("href")||"";if(h.charAt(0)==="#")return;e.preventDefault();try{u=new URL(h,d.baseURI);}catch(x){return;}if(!/^https?:$/.test(u.protocol))return;p.postMessage({jsonrpc:"2.0",id:"tl-link-"+(++n),method:${scriptLiteral(OPEN_LINK_METHOD)},params:{url:u.href}},"*");});var z,o,r=function(){var e=d.documentElement,v=Math.ceil(e.scrollHeight>e.clientHeight?e.scrollHeight:e.getBoundingClientRect().height);if(v===z)return;z=v;p.postMessage({jsonrpc:"2.0",method:${scriptLiteral(SIZE_CHANGED_METHOD)},params:{height:v}},"*");};if(w.ResizeObserver){o=new ResizeObserver(r);o.observe(d.documentElement);}d.addEventListener("DOMContentLoaded",function(){if(o&&d.body)o.observe(d.body);r();});w.addEventListener("load",r);w.addEventListener("pagehide",function(){p.postMessage({jsonrpc:"2.0",method:${scriptLiteral(PAGE_LEFT_METHOD)}},"*");});})();`;
 
-/** The page's own markup for a Markdown document: GitHub-flavored, raw HTML escaped. */
+// micromark's own lists of the protocols a link and an image may use.
+const LINK_PROTOCOL = /^(?:https?|ircs?|mailto|xmpp)$/i;
+const IMAGE_PROTOCOL = /^https?$/i;
+// The one kind of image the content policy loads, and the form PageStore
+// inlines a page's local images into.
+const DATA_IMAGE = /^data:image\//i;
+// With raw HTML escaped, every one of these in the output is a tag micromark wrote.
+const MEDIA_URL = /<(a href|img src)="([^"]*)"/g;
+
+/** micromark's own test: a URL with no scheme before its first `/`, `?` or `#` is relative. */
+const hasAllowedProtocol = (url: string, allowed: RegExp) => {
+  const colon = url.indexOf(":");
+  if (colon === -1) return true;
+  const beforeColon = url.slice(0, colon);
+  return /[/?#]/.test(beforeColon) || allowed.test(beforeColon);
+};
+
+/**
+ * The page's own markup for a Markdown document: GitHub-flavored, raw HTML
+ * escaped. micromark would blank every image that is not http(s), and so
+ * every image a page can load. It renders with all protocols kept instead,
+ * and then each URL it wrote is held to micromark's own list for its tag,
+ * with `data:image/` added for images.
+ */
 export function renderAgentPageMarkdown(markdown: string): string {
-  const body = micromark(markdown, { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
+  const body = micromark(markdown, {
+    allowDangerousProtocol: true,
+    extensions: [gfm()],
+    htmlExtensions: [gfmHtml()],
+  }).replace(MEDIA_URL, (tag, attribute: string, url: string) => {
+    const allowed =
+      attribute === "img src"
+        ? DATA_IMAGE.test(url) || hasAllowedProtocol(url, IMAGE_PROTOCOL)
+        : hasAllowedProtocol(url, LINK_PROTOCOL);
+    return allowed ? tag : `<${attribute}=""`;
+  });
   return `<style>${DOCUMENT_CSS}</style><article class="tl-document">${body}</article>`;
 }
 

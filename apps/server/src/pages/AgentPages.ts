@@ -107,8 +107,10 @@ export interface AdoptPageInput {
   readonly icon?: string | undefined;
 }
 
+/** What the agent asked to preview. Exactly one of `html` and `markdown`. */
 export interface PreviewPageInput {
-  readonly html: string;
+  readonly html?: string | undefined;
+  readonly markdown?: string | undefined;
   readonly width?: number | undefined;
   readonly appearance?: "light" | "dark" | undefined;
 }
@@ -155,9 +157,24 @@ const NOT_YOUR_TURN_DETAIL =
   "Pages show in the turn that published them, and you are not working on a turn of this thread right now. Show it during your next turn.";
 const TURN_ENDED_DETAIL =
   "The turn ended before the page could be shown, so it was not. Show it again in your next turn if it is still needed.";
+const ONE_PAGE_DETAIL = "Give the page as exactly one of html or markdown.";
 const DEFAULT_HEIGHT = 480;
 const MIN_PREVIEW_WIDTH = 240;
 const MAX_PREVIEW_WIDTH = 1600;
+
+/** The page a show or preview call gave, or null unless it gave exactly one of html and markdown. */
+const pageOf = (input: {
+  readonly html?: string | undefined;
+  readonly markdown?: string | undefined;
+}): { readonly content: string; readonly kind: AgentPageKind } | null => {
+  if (input.html !== undefined && input.markdown === undefined) {
+    return { content: input.html, kind: "html" };
+  }
+  if (input.markdown !== undefined && input.html === undefined) {
+    return { content: input.markdown, kind: "markdown" };
+  }
+  return null;
+};
 
 const measureDocument = (content: string, kind: AgentPageKind) =>
   buildAgentPageDocument({
@@ -204,14 +221,9 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (!(yield* enabled)) return { outcome: "off" as const, detail: OFF_DETAIL };
       if (scope.side !== undefined) return { outcome: "not_allowed" as const, detail: SIDE_DETAIL };
-      const content = input.html ?? input.markdown;
-      if (content === undefined || (input.html !== undefined && input.markdown !== undefined)) {
-        return {
-          outcome: "refused" as const,
-          detail: "Give the page as exactly one of html or markdown.",
-        };
-      }
-      const kind: AgentPageKind = input.html !== undefined ? "html" : "markdown";
+      const page = pageOf(input);
+      if (page === null) return { outcome: "refused" as const, detail: ONE_PAGE_DETAIL };
+      const { content, kind } = page;
       const title = input.title.trim();
       if (title.length === 0) {
         return { outcome: "refused" as const, detail: "Give the page a short title." };
@@ -448,15 +460,17 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (!(yield* enabled)) return { outcome: "off" as const, detail: OFF_DETAIL };
       if (scope.side !== undefined) return { outcome: "not_allowed" as const, detail: SIDE_DETAIL };
+      const page = pageOf(input);
+      if (page === null) return { outcome: "refused" as const, detail: ONE_PAGE_DETAIL };
       const width = Math.min(
         MAX_PREVIEW_WIDTH,
         Math.max(MIN_PREVIEW_WIDTH, Math.round(input.width ?? AGENT_PAGE_COLUMN_WIDTH)),
       );
       const assetsRoot = yield* ensurePageAssetsDir(scope.threadId);
-      const prepared = yield* inlinePageImages({ content: input.html, assetsRoot });
+      const prepared = yield* inlinePageImages({ content: page.content, assetsRoot });
       const document = buildAgentPageDocument({
         content: prepared,
-        kind: "html",
+        kind: page.kind,
         theme: agentPageTheme(
           AGENT_PAGE_FALLBACK_THEMES[input.appearance ?? "dark"],
           AGENT_PAGE_MEASURE_FONTS,

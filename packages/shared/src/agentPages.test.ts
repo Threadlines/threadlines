@@ -69,6 +69,24 @@ describe("buildAgentPageDocument", () => {
     expect(document).not.toContain("<script>bad()");
   });
 
+  it("shows a Markdown document's inlined images and still drops script links", () => {
+    const image = "data:image/png;base64,iVBORw0KGgo=";
+    const document = buildAgentPageDocument({
+      content: [
+        `![chart](${image})`,
+        "![page](data:text/html;base64,PHA+)",
+        "[run](javascript:alert(1)) [docs](https://example.com/a?b:c) [notes](./a:b)",
+      ].join("\n\n"),
+      kind: "markdown",
+      theme,
+    });
+    expect(document).toContain(`<img src="${image}" alt="chart" />`);
+    expect(document).toContain('<img src="" alt="page" />');
+    expect(document).toContain('<a href="">run</a>');
+    expect(document).toContain('<a href="https://example.com/a?b:c">docs</a>');
+    expect(document).toContain('<a href="./a:b">notes</a>');
+  });
+
   it("keeps theme values from closing the style rule they sit in", () => {
     const document = buildAgentPageDocument({
       content: "",
