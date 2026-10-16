@@ -163,8 +163,9 @@ export function setUpSignInPopup(
         asking = null;
         if (popup.isDestroyed()) return;
         if (answer === "decline") {
-          // A sign-in that may not reach its provider has nothing left to show.
-          popup.close();
+          // A sign-in that may not reach its provider has nothing left to
+          // show. Destroyed rather than closed: a page can refuse a close.
+          popup.destroy();
           return;
         }
         host.allow(question.host, answer === "allowAllSites");
@@ -174,6 +175,15 @@ export function setUpSignInPopup(
       });
   };
   host.guard(contents, askAbout);
+  // Heading to any other site, allowed or not, takes the question back: an
+  // answer about a site the page has left must not pull it back there.
+  contents.on("did-start-navigation", (details) => {
+    if (asking === null || !details.isMainFrame || details.isSameDocument) return;
+    if (hostnameOf(details.url) !== asking.host) {
+      asking.controller.abort();
+      asking = null;
+    }
+  });
 
   // The site first, so a long page title cannot push it out of sight.
   const showSite = () => {
@@ -215,6 +225,14 @@ export function siteOf(url: string): string {
   try {
     const parsed = new URL(url);
     return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.host : "";
+  } catch {
+    return "";
+  }
+}
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname;
   } catch {
     return "";
   }

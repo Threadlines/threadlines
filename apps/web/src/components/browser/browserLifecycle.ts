@@ -258,7 +258,9 @@ export async function runBrowserLifecycleCheck(now = Date.now()): Promise<void> 
       // Seen since the snapshot -- shown and hidden again while an earlier
       // step awaited the desktop -- is not idle either.
       (lastShownAtByPage.get(page.key) ?? 0) <= page.lastShownAt &&
-      !isPageShown(page.threadRef, page.tabId)
+      !isPageShown(page.threadRef, page.tabId) &&
+      // Nor is one that opened a sign-in pop-up since: it waits on the user.
+      signInPopupsOf(webContentsIdOf(page.threadRef, page.tabId)).length === 0
     );
   };
   for (const key of plan.background) {

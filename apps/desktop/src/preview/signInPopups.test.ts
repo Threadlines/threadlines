@@ -84,7 +84,7 @@ describe("setUpSignInPopup", () => {
         if (event === "closed") closedHandler = handler;
       }),
       isDestroyed: () => destroyed,
-      close: vi.fn(() => {
+      destroy: vi.fn(() => {
         destroyed = true;
         closedHandler();
       }),
@@ -130,6 +130,12 @@ describe("setUpSignInPopup", () => {
       host,
       questions,
       refuse: (url: string, site: string) => refuse(url, site),
+      navigate: (url: string) =>
+        contentsHandlers.get("did-start-navigation")?.({
+          url,
+          isMainFrame: true,
+          isSameDocument: false,
+        }),
     };
   }
 
@@ -162,7 +168,19 @@ describe("setUpSignInPopup", () => {
     // Saying no to the site it is on now ends the sign-in.
     expect(questions[1]!.host).toBe("elsewhere.test");
     await questions[1]!.answer("decline");
-    expect(popup.close).toHaveBeenCalled();
+    expect(popup.destroy).toHaveBeenCalled();
+    expect(contents.loadURL).not.toHaveBeenCalled();
+  });
+
+  it("takes the question back when the page heads to another site, even an allowed one", async () => {
+    const { contents, host, questions, refuse, navigate } = harness();
+
+    refuse("https://accounts.example.com/o/auth", "accounts.example.com");
+    navigate("http://localhost:5173/callback");
+
+    expect(questions[0]!.signal.aborted).toBe(true);
+    await questions[0]!.answer("allowSite");
+    expect(host.allow).not.toHaveBeenCalled();
     expect(contents.loadURL).not.toHaveBeenCalled();
   });
 
@@ -171,7 +189,7 @@ describe("setUpSignInPopup", () => {
     expect(host.report).toHaveBeenCalledWith(31, "https://accounts.example.com/o/auth", true);
 
     refuse("https://accounts.example.com/o/auth", "accounts.example.com");
-    popup.close();
+    popup.destroy();
 
     expect(questions[0]!.signal.aborted).toBe(true);
     expect(host.report).toHaveBeenLastCalledWith(31, "https://accounts.example.com/o/auth", false);

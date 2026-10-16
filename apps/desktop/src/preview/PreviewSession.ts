@@ -171,10 +171,10 @@ export const make = Effect.sync(() => {
       }
       // A sign-in pop-up is mid-way through signing in to what was just
       // cleared. Reloading it would carry on with a flow its opener no longer
-      // matches, so it closes.
+      // matches, so it goes: destroyed, since a page can refuse a close.
       for (const window of Electron.BrowserWindow.getAllWindows()) {
         if (!isAppWindow(window) && runsIn(window.webContents, previewSession)) {
-          window.close();
+          window.destroy();
         }
       }
     });
