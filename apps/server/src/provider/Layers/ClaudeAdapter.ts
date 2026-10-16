@@ -27,6 +27,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { parseCliArgs } from "@threadlines/shared/cliArgs";
 import { compareSemverVersions } from "@threadlines/shared/semver";
+import { humanizeWorkflowName, parseWorkflowScriptMeta } from "@threadlines/shared/workflowScript";
 import {
   ApprovalRequestId,
   type CanonicalItemType,
@@ -141,7 +142,15 @@ import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   ensureClaudeSessionTranscript,
   readClaudeTranscriptWorktreePath,
+  resolveClaudeConfigDir,
 } from "../Drivers/ClaudeSessionTranscripts.ts";
+import {
+  ClaudeWorkflowFileError,
+  claudeWorkflowAgentTranscriptPath,
+  readClaudeWorkflowRunFile,
+  resolveClaudeWorkflowApprovalScript,
+  saveClaudeWorkflowCommand,
+} from "../Drivers/ClaudeWorkflowFiles.ts";
 import {
   locateClaudeSubagentMeta,
   locateClaudeSubagentTranscript,
@@ -549,6 +558,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
     readonly alwaysThinkingEnabled?: boolean | null;
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
+    readonly workflowSizeGuideline?: ClaudeWorkflowSizeGuideline | null;
   }) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
   /** Optional: absent on CLIs that predate in-session plugin and skill reloads. */
@@ -850,6 +860,16 @@ interface ClaudeFlagSettingsSnapshot {
   readonly alwaysThinkingEnabled: boolean | null;
   readonly fastMode: boolean;
   readonly ultracode: boolean;
+  /** Null: Claude's own default (and a size set in its settings files) stands. */
+  readonly workflowSizeGuideline: ClaudeWorkflowSizeGuideline | null;
+}
+
+type ClaudeWorkflowSizeGuideline = "small" | "medium" | "large" | "unrestricted";
+
+function claudeWorkflowSizeGuideline(value: unknown): ClaudeWorkflowSizeGuideline | null {
+  return value === "small" || value === "medium" || value === "large" || value === "unrestricted"
+    ? value
+    : null;
 }
 
 function deriveClaudeFlagSettings(
@@ -872,6 +892,7 @@ function deriveClaudeFlagSettings(
     alwaysThinkingEnabled: typeof thinking === "boolean" ? thinking : null,
     fastMode: currentValue("fastMode") === true,
     ultracode: isClaudeUltracodeEffort(effort) || currentValue("ultracode") === true,
+    workflowSizeGuideline: claudeWorkflowSizeGuideline(currentValue("workflowSize")),
   };
 }
 
@@ -883,7 +904,8 @@ function claudeFlagSettingsEqual(
     left.effortLevel === right.effortLevel &&
     left.alwaysThinkingEnabled === right.alwaysThinkingEnabled &&
     left.fastMode === right.fastMode &&
-    left.ultracode === right.ultracode
+    left.ultracode === right.ultracode &&
+    left.workflowSizeGuideline === right.workflowSizeGuideline
   );
 }
 
@@ -1866,6 +1888,16 @@ function summarizeToolRequest(
       }
       break;
     }
+    case "workflow": {
+      // Named from the script's own header, never by printing the script.
+      const meta = typeof input.script === "string" ? parseWorkflowScriptMeta(input.script) : null;
+      const name = meta?.name ?? text(input.name);
+      if (name) {
+        return `Workflow: ${humanizeWorkflowName(name)}`;
+      }
+      const scriptPath = displayPath(input.scriptPath);
+      return scriptPath ? `Workflow: ${scriptPath}` : "Workflow";
+    }
     case "notebookedit": {
       const path = displayPath(input.notebook_path);
       if (path) {
@@ -2055,6 +2087,8 @@ function titleForToolName(toolName: string, itemType: CanonicalItemType): string
       return "Artifact";
     case "askuserquestion":
       return "Question";
+    case "workflow":
+      return "Workflow";
     case "enterplanmode":
     case "exitplanmode":
       return "Plan";
@@ -7397,6 +7431,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const requestType = classifyRequestType(toolName);
         const detail = summarizeToolRequest(toolName, toolInput, { cwd: input.cwd });
+        // A workflow launched from a file or by name: the approval shows the
+        // plan from that script. One passed inline is already in the input.
+        const workflowScript =
+          toolName === "Workflow" && typeof toolInput.script !== "string"
+            ? yield* Effect.promise(() =>
+                resolveClaudeWorkflowApprovalScript({
+                  configDir: resolveClaudeConfigDir(claudeEnvironment, path),
+                  cwd: input.cwd,
+                  toolInput,
+                }).catch(() => undefined),
+              )
+            : undefined;
         const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
         const pendingApproval: PendingApproval = {
           requestType,
@@ -7421,6 +7467,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               toolName,
               input: toolInput,
               ...(callbackOptions.toolUseID ? { toolUseId: callbackOptions.toolUseID } : {}),
+              ...(workflowScript !== undefined ? { workflowScript } : {}),
             },
           },
           providerRefs: nativeProviderRefs(context, {
@@ -7570,6 +7617,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           : {}),
         ...(flagSettings.fastMode ? { fastMode: true } : {}),
         ...(flagSettings.ultracode ? { ultracode: true } : {}),
+        ...(flagSettings.workflowSizeGuideline !== null
+          ? { workflowSizeGuideline: flagSettings.workflowSizeGuideline }
+          : {}),
       };
       // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
       // it deletes the session's own working directory, so a session running in
@@ -8031,6 +8081,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 alwaysThinkingEnabled: desiredFlagSettings.alwaysThinkingEnabled,
                 fastMode: desiredFlagSettings.fastMode ? true : null,
                 ultracode: desiredFlagSettings.ultracode ? true : null,
+                // Null clears an earlier choice; leaving the key out would keep it.
+                workflowSizeGuideline: desiredFlagSettings.workflowSizeGuideline,
               }),
             catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings", cause),
           }).pipe(
@@ -8412,6 +8464,88 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
     });
 
+  /** Workflow runs' files: see ProviderAdapter.workflowRuns and ClaudeWorkflowFiles.ts. */
+  const workflowRunsFiles: NonNullable<ClaudeAdapterShape["workflowRuns"]> = (() => {
+    const failure = (method: string, cause: unknown) =>
+      new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method,
+        detail:
+          cause instanceof ClaudeWorkflowFileError
+            ? cause.message
+            : toMessage(cause, "The workflow's files could not be read."),
+        cause,
+      });
+    const configDir = () => resolveClaudeConfigDir(claudeEnvironment, path);
+    return {
+      readRunFile: (input) =>
+        Effect.tryPromise({
+          try: () =>
+            readClaudeWorkflowRunFile({ configDir: configDir(), run: input.run, file: input.file }),
+          catch: (cause) => failure("workflow/readRunFile", cause),
+        }),
+      readAgentTranscript: (input) =>
+        Effect.gen(function* () {
+          const transcriptPath = yield* Effect.tryPromise({
+            try: () =>
+              claudeWorkflowAgentTranscriptPath({
+                configDir: configDir(),
+                run: input.run,
+                agentId: input.agentId,
+              }),
+            catch: (cause) => failure("workflow/readAgentTranscript", cause),
+          });
+          if (transcriptPath === undefined) {
+            return yield* failure(
+              "workflow/readAgentTranscript",
+              new ClaudeWorkflowFileError("No transcript found for this agent yet."),
+            );
+          }
+          const transcript = yield* readClaudeSubagentTranscriptEntries({
+            transcriptPath,
+            mapLines: (lines) => mapClaudeSubagentTranscriptRecords(lines, { cwd: input.cwd }),
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.mapError((cause) => failure("workflow/readAgentTranscript", cause)),
+          );
+          const page = pageClaudeSubagentTranscriptEntries(
+            transcript.entries,
+            {
+              ...(input.limit !== undefined ? { limit: input.limit } : {}),
+              ...(input.offset !== undefined ? { offset: input.offset } : {}),
+              ...(input.fromEnd !== undefined ? { fromEnd: input.fromEnd } : {}),
+            },
+            transcript.droppedEntries,
+          );
+          const agent = input.run.agents.find((entry) => entry.agentId === input.agentId);
+          const model = agent?.model ?? transcript.model;
+          return {
+            ...page,
+            agent: {
+              id: input.agentId,
+              agentType: "workflow-subagent",
+              ...(agent ? { description: agent.label } : {}),
+              ...(model ? { model } : {}),
+              directInput: "unsupported" as const,
+            },
+          };
+        }),
+      saveCommand: (input) =>
+        Effect.tryPromise({
+          try: () =>
+            saveClaudeWorkflowCommand({
+              configDir: configDir(),
+              run: input.run,
+              location: input.location,
+              cwd: input.cwd,
+              overwrite: input.overwrite,
+              dryRun: input.dryRun,
+            }),
+          catch: (cause) => failure("workflow/saveCommand", cause),
+        }),
+    };
+  })();
+
   /**
    * Read where an isolated subagent is working from its sidecar record.
    *
@@ -8625,6 +8759,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     interruptTurn,
     releaseBackgroundCommands: releaseBackgroundCommandsForThread,
     stopBackgroundTask,
+    workflowRuns: workflowRunsFiles,
     noteExtensionsChanged,
     compactContext,
     readThread,

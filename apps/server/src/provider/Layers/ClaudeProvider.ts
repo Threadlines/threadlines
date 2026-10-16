@@ -202,6 +202,23 @@ const CLAUDE_ULTRACODE_OPTION = buildBooleanOptionDescriptor({
   description: CLAUDE_ULTRACODE_DESCRIPTION,
 });
 
+// How many agents Claude aims for when it writes a workflow, whether the
+// user asked for one or Ultracode chose it. "auto" sends nothing, so Claude's
+// own default stands (medium, or small on Pro) and so does a size set in
+// Claude's settings files.
+const CLAUDE_WORKFLOW_SIZE_OPTION = buildSelectOptionDescriptor({
+  id: "workflowSize",
+  label: "Workflow size",
+  description: "How many agents Claude aims for when it writes a workflow.",
+  options: [
+    { value: "auto", label: "Default", isDefault: true },
+    { value: "small", label: "Small" },
+    { value: "medium", label: "Medium" },
+    { value: "large", label: "Large" },
+    { value: "unrestricted", label: "Any" },
+  ],
+});
+
 const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-fable-5-1",
@@ -216,6 +233,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.fable51,
         }),
         CLAUDE_ULTRACODE_OPTION,
+        CLAUDE_WORKFLOW_SIZE_OPTION,
       ],
     }),
   },
@@ -232,6 +250,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.fable5,
         }),
         CLAUDE_ULTRACODE_OPTION,
+        CLAUDE_WORKFLOW_SIZE_OPTION,
       ],
     }),
   },
@@ -247,6 +266,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.sonnet55,
         }),
         CLAUDE_ULTRACODE_OPTION,
+        CLAUDE_WORKFLOW_SIZE_OPTION,
       ],
     }),
   },
@@ -262,6 +282,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.sonnet5,
         }),
         CLAUDE_ULTRACODE_OPTION,
+        CLAUDE_WORKFLOW_SIZE_OPTION,
       ],
     }),
   },
@@ -277,6 +298,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.opus55,
         }),
         CLAUDE_ULTRACODE_OPTION,
+        CLAUDE_WORKFLOW_SIZE_OPTION,
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
@@ -297,6 +319,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.opus5,
         }),
         CLAUDE_ULTRACODE_OPTION,
+        CLAUDE_WORKFLOW_SIZE_OPTION,
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
@@ -317,6 +340,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.opus48,
         }),
         CLAUDE_ULTRACODE_OPTION,
+        CLAUDE_WORKFLOW_SIZE_OPTION,
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
@@ -345,6 +369,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.opus47,
         }),
         CLAUDE_ULTRACODE_OPTION,
+        CLAUDE_WORKFLOW_SIZE_OPTION,
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
@@ -436,6 +461,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           options: CLAUDE_EFFORT_OPTIONS.haiku55,
         }),
         CLAUDE_ULTRACODE_OPTION,
+        CLAUDE_WORKFLOW_SIZE_OPTION,
       ],
     }),
   },
@@ -549,7 +575,8 @@ function ultracodeCapabilitiesForVersion(
   return {
     ...capabilities,
     optionDescriptors: descriptors.flatMap((descriptor) => {
-      if (descriptor.id === "ultracode") {
+      // The size sits under the Ultracode switch; without the switch it goes too.
+      if (descriptor.id === "ultracode" || descriptor.id === "workflowSize") {
         return [];
       }
       if (descriptor.type === "select" && descriptor.id === "effort") {
@@ -1083,7 +1110,7 @@ function claudeDiscoveredModelCapabilities(model: ClaudeModelInfo): ModelCapabil
     );
   }
   if (effortLevels.includes("xhigh")) {
-    optionDescriptors.push(CLAUDE_ULTRACODE_OPTION);
+    optionDescriptors.push(CLAUDE_ULTRACODE_OPTION, CLAUDE_WORKFLOW_SIZE_OPTION);
   }
   if (model.supportsFastMode === true) {
     optionDescriptors.push(

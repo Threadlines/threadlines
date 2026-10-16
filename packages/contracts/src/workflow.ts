@@ -228,8 +228,9 @@ export const WorkflowReadAgentTranscriptInput = Schema.Struct({
   threadId: ThreadId,
   taskId: TrimmedNonEmptyString,
   agentId: TrimmedNonEmptyString,
+  /** Paging, as on ProviderSubagentTranscriptInput. */
   limit: Schema.optional(NonNegativeInt),
-  cursor: Schema.optional(TrimmedNonEmptyString),
+  offset: Schema.optional(NonNegativeInt),
   fromEnd: Schema.optional(Schema.Boolean),
 });
 export type WorkflowReadAgentTranscriptInput = typeof WorkflowReadAgentTranscriptInput.Type;

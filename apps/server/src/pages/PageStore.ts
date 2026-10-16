@@ -28,6 +28,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
+import { readConfinedFile } from "../confinedFiles.ts";
 
 const MIB = 1024 * 1024;
 const formatMib = (bytes: number) => `${(bytes / MIB).toFixed(1)} MiB`;
@@ -318,57 +319,17 @@ async function readAssetImage(
   assetsRoot: string,
   reference: string,
 ): Promise<{ readonly bytes: Uint8Array } | { readonly refused: string }> {
-  const requested = NodePath.resolve(filePathFor(reference));
-  let real: string;
-  try {
-    real = await NodeFs.realpath(requested);
-  } catch {
-    return { refused: "missing" };
+  const read = await readConfinedFile({
+    root: assetsRoot,
+    path: filePathFor(reference),
+    maxBytes: AGENT_PAGE_MAX_IMAGE_BYTES,
+  });
+  if ("refused" in read) {
+    return {
+      refused: read.refused === "too-large" ? `too-large:${read.size ?? 0}` : read.refused,
+    };
   }
-  if (!real.startsWith(assetsRoot + NodePath.sep)) {
-    return { refused: "outside" };
-  }
-  const linkInfo = await NodeFs.lstat(requested).catch(() => null);
-  if (linkInfo === null || !linkInfo.isFile() || linkInfo.nlink !== 1) {
-    return { refused: "not-a-file" };
-  }
-  if (linkInfo.size > AGENT_PAGE_MAX_IMAGE_BYTES) {
-    return { refused: `too-large:${linkInfo.size}` };
-  }
-  const handle = await NodeFs.open(
-    requested,
-    NodeFsConstants.O_RDONLY | NodeFsConstants.O_NOFOLLOW,
-  ).catch(() => null);
-  if (handle === null) return { refused: "not-a-file" };
-  try {
-    const opened = await handle.stat();
-    if (
-      !opened.isFile() ||
-      opened.nlink !== 1 ||
-      opened.dev !== linkInfo.dev ||
-      opened.ino !== linkInfo.ino
-    ) {
-      return { refused: "not-a-file" };
-    }
-    const realAfter = await NodeFs.realpath(requested).catch(() => null);
-    const infoAfter = realAfter === null ? null : await NodeFs.lstat(realAfter).catch(() => null);
-    if (
-      realAfter === null ||
-      !realAfter.startsWith(assetsRoot + NodePath.sep) ||
-      infoAfter === null ||
-      infoAfter.dev !== opened.dev ||
-      infoAfter.ino !== opened.ino
-    ) {
-      return { refused: "outside" };
-    }
-    const bytes = new Uint8Array(await handle.readFile());
-    if (bytes.byteLength > AGENT_PAGE_MAX_IMAGE_BYTES) {
-      return { refused: `too-large:${bytes.byteLength}` };
-    }
-    return isImageBytes(bytes) ? { bytes } : { refused: "not-an-image" };
-  } finally {
-    await handle.close();
-  }
+  return isImageBytes(read.bytes) ? read : { refused: "not-an-image" };
 }
 
 /**
