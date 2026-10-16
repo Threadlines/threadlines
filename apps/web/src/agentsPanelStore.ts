@@ -10,7 +10,12 @@
  */
 import { create } from "zustand";
 
-import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationWorkflowRun,
+  ProviderInstanceId,
+  ThreadId,
+} from "@threadlines/contracts";
 
 import type {
   SubagentProgressItem,
@@ -18,6 +23,7 @@ import type {
   WorkLogEntry,
 } from "./session-logic";
 import type { ThreadBackgroundRunItem } from "./components/chat/threadActivity";
+import type { WorkflowRunViewTab } from "./components/chat/WorkflowRunCard";
 
 export interface AgentsPanelSource {
   environmentId: EnvironmentId;
@@ -44,7 +50,20 @@ export interface AgentsPanelSource {
    *  unhydrated publish as observed idleness. */
   hydrated: boolean;
   threadCwd: string | null;
+  /** The thread's workflow runs, newest last (see OrchestrationWorkflowRun). */
+  workflowRuns: ReadonlyArray<OrchestrationWorkflowRun>;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
+  onStopWorkflowRun: (taskId: string) => void;
+}
+
+/** A workflow run the panel shows, and where in it. */
+export interface WorkflowRunSelection {
+  readonly taskId: string;
+  readonly tab: WorkflowRunViewTab;
+  /** The agent whose detail the Agents view shows. */
+  readonly agentId: string | null;
+  /** Opened to save the run's script as a command. */
+  readonly saving: boolean;
 }
 
 export interface AgentsPanelActivitySource {
@@ -67,30 +86,50 @@ interface AgentsPanelStoreState {
    * pointed at that agent.
    */
   selectedAgentId: string | null;
+  /** The workflow run the panel is drilled into; reachable from the chat's
+   *  run card like an agent's receipt. */
+  selectedWorkflow: WorkflowRunSelection | null;
   publishSource: (source: AgentsPanelSource | null) => void;
   publishActivitySource: (source: AgentsPanelActivitySource | null) => void;
   selectAgent: (agentId: string | null) => void;
+  selectWorkflow: (selection: WorkflowRunSelection | null) => void;
 }
 
 export const useAgentsPanelStore = create<AgentsPanelStoreState>((set) => ({
   source: null,
   activitySource: null,
   selectedAgentId: null,
+  selectedWorkflow: null,
   publishSource: (source) => {
-    set((state) => ({
-      source,
+    set((state) => {
       // A drill-in belongs to the thread it was opened from; leaving the
       // thread drops it rather than pointing the panel at a stale agent.
-      selectedAgentId: state.source?.threadId === source?.threadId ? state.selectedAgentId : null,
-    }));
+      const sameThread = state.source?.threadId === source?.threadId;
+      return {
+        source,
+        selectedAgentId: sameThread ? state.selectedAgentId : null,
+        selectedWorkflow: sameThread ? state.selectedWorkflow : null,
+      };
+    });
   },
   publishActivitySource: (activitySource) => {
     set({ activitySource });
   },
   selectAgent: (agentId) => {
-    set({ selectedAgentId: agentId });
+    set({ selectedAgentId: agentId, ...(agentId !== null ? { selectedWorkflow: null } : {}) });
+  },
+  selectWorkflow: (selection) => {
+    set({ selectedWorkflow: selection, ...(selection !== null ? { selectedAgentId: null } : {}) });
   },
 }));
+
+export function useSelectedWorkflow(): WorkflowRunSelection | null {
+  return useAgentsPanelStore((state) => state.selectedWorkflow);
+}
+
+export function selectAgentsPanelWorkflow(selection: WorkflowRunSelection | null): void {
+  useAgentsPanelStore.getState().selectWorkflow(selection);
+}
 
 export function useAgentsPanelSource(): AgentsPanelSource | null {
   return useAgentsPanelStore((state) => state.source);
@@ -131,5 +170,10 @@ export function selectAgentsPanelAgent(agentId: string | null): void {
 }
 
 export function resetAgentsPanelSourceForTests(): void {
-  useAgentsPanelStore.setState({ source: null, activitySource: null, selectedAgentId: null });
+  useAgentsPanelStore.setState({
+    source: null,
+    activitySource: null,
+    selectedAgentId: null,
+    selectedWorkflow: null,
+  });
 }

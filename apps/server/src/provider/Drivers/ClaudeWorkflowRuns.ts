@@ -23,6 +23,7 @@ import type {
   WorkflowRunUpdate,
 } from "@threadlines/contracts";
 import {
+  hiddenWorkflowPhaseNumber,
   sameAwaitedWorkflowProgress,
   workflowAwaitedProgress,
 } from "@threadlines/shared/workflowRuns";
@@ -35,9 +36,6 @@ const MAX_STEP_CHARS = 300;
 const MAX_PREVIEW_CHARS = 400;
 const MAX_ERROR_CHARS = 1_000;
 const MAX_SUMMARY_CHARS = 2_000;
-
-/** Phase titles Claude substitutes when a workflow hides its script. */
-const HIDDEN_PHASE_TITLE = /^phase \d{1,4}$/u;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -442,7 +440,7 @@ export class ClaudeWorkflowRunTracker {
         const phases = [...state.phases.values()];
         const agents = [...state.agents.values()];
         state.hiddenScript =
-          phases.every((phase) => HIDDEN_PHASE_TITLE.test(phase.title)) &&
+          phases.every((phase) => hiddenWorkflowPhaseNumber(phase.title) !== null) &&
           agents.every((agent) => agent.instructionsPreview === undefined);
       }
     }

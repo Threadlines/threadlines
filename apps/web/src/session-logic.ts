@@ -6,6 +6,7 @@ import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   type OrchestrationAgentPage,
+  type OrchestrationWorkflowRun,
   ApprovalRequestId,
   McpElicitation,
   isToolLifecycleItemType,
@@ -550,6 +551,12 @@ export type TimelineEntry = { eventSequence?: number | undefined } & (
       kind: "page";
       createdAt: string;
       page: OrchestrationAgentPage;
+    }
+  | {
+      id: string;
+      kind: "workflow-run";
+      createdAt: string;
+      run: OrchestrationWorkflowRun;
     }
 );
 
@@ -2864,6 +2871,30 @@ function formatSubagentCount(count: number, singular: string, plural: string): s
   return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
 }
 
+/** The thread's workflow tasks: Claude reports a workflow as one background
+ *  task of type `local_workflow`, named on its start. */
+function collectWorkflowTaskIds(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== "task.started" && activity.kind !== "task.completed") continue;
+    const payload = asRecord(activity.payload);
+    const taskId = asTrimmedString(payload?.taskId);
+    if (taskId && asTrimmedString(payload?.taskType) === "local_workflow") ids.add(taskId);
+  }
+  return ids;
+}
+
+function isWorkflowTaskActivity(
+  activity: OrchestrationThreadActivity,
+  workflowTaskIds: ReadonlySet<string>,
+): boolean {
+  if (activity.kind !== "task.progress" && activity.kind !== "task.completed") return false;
+  const taskId = asTrimmedString(asRecord(activity.payload)?.taskId);
+  return taskId !== null && workflowTaskIds.has(taskId);
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   activeTurnId?: TurnId | null,
@@ -2877,6 +2908,7 @@ export function deriveWorkLogEntries(
   );
   const agentTaskIndex = collectAgentTaskIndex(ordered);
   const denials = collectPermissionDenials(ordered);
+  const workflowTaskIds = collectWorkflowTaskIds(ordered);
   const entries = ordered
     // A denial is told on the step it turned down.
     .filter((activity) => permissionDenialToolUseId(activity) === null)
@@ -2890,6 +2922,8 @@ export function deriveWorkLogEntries(
         ),
     )
     .filter((activity) => activity.kind !== "task.started")
+    // A workflow's progress and end are its run card's (WorkflowRunCard).
+    .filter((activity) => !isWorkflowTaskActivity(activity, workflowTaskIds))
     .filter((activity) => activity.kind !== "subagent.result")
     .filter((activity) => activity.kind !== "subagent.metadata")
     .filter((activity) => activity.kind !== "thread.fork.context")
@@ -5700,8 +5734,28 @@ export function deriveTimelineEntries(
   forkContexts: ForkContextEntry[] = [],
   subagentLiveEntries: SubagentLiveEntry[] = [],
   pages: ReadonlyArray<OrchestrationAgentPage> = [],
+  workflowRuns: ReadonlyArray<OrchestrationWorkflowRun> = [],
 ): TimelineEntry[] {
   const suppressedAssistantEchoIds = findSubagentResultEchoMessageIds(messages, subagentResults);
+  // A workflow run shows as its card, where the call that launched it was:
+  // the call's own step would only repeat it.
+  const runsByToolCall = new Map(
+    workflowRuns.flatMap((run) => (run.toolCallId ? [[run.toolCallId, run] as const] : [])),
+  );
+  const workflowRunRows: TimelineEntry[] = workflowRuns.map((run) => {
+    const launch = run.toolCallId
+      ? workEntries.find((entry) => entry.toolCallId === run.toolCallId)
+      : undefined;
+    return {
+      id: `workflow-run:${run.taskId}`,
+      kind: "workflow-run",
+      createdAt: launch?.createdAt ?? run.startedAt,
+      ...(launch?.eventSequence !== undefined ? { eventSequence: launch.eventSequence } : {}),
+      run,
+    };
+  });
+  const isWorkflowEcho = (entry: WorkLogEntry) =>
+    entry.toolCallId !== undefined && runsByToolCall.has(entry.toolCallId);
   const messageRows: TimelineEntry[] = messages
     .filter((message) => !suppressedAssistantEchoIds.has(message.id))
     .map((message) => ({
@@ -5720,7 +5774,9 @@ export function deriveTimelineEntries(
       : {}),
     proposedPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => ({
+  const workRows: TimelineEntry[] = workEntries
+    .filter((entry) => runsByToolCall.size === 0 || !isWorkflowEcho(entry))
+    .map((entry) => ({
     id: entry.id,
     kind: "work",
     createdAt: entry.createdAt,
@@ -5765,6 +5821,7 @@ export function deriveTimelineEntries(
     ...proposedPlanRows,
     ...workRows,
     ...pageRows,
+    ...workflowRunRows,
     ...subagentLiveRows,
     ...subagentResultRows,
   ].toSorted((a, b) => {

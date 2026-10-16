@@ -81,6 +81,11 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
+import {
+  applyWorkflowRunPatch,
+  retainWorkflowRunsAfterRevert,
+  sameAwaitedWorkflowProgress,
+} from "@threadlines/shared/workflowRuns";
 import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import {
   awaitedChildRequestCount,
@@ -457,6 +462,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
+    workflowRuns: thread.workflowRuns ?? [],
   };
 }
 
@@ -711,7 +717,8 @@ function awaitedBackgroundTasksEqual(
     leftTasks.every(
       (task, index) =>
         task.kind === rightTasks[index]?.kind &&
-        task.description === rightTasks[index]?.description,
+        task.description === rightTasks[index]?.description &&
+        sameAwaitedWorkflowProgress(task.workflow, rightTasks[index]?.workflow),
     )
   );
 }
@@ -2580,6 +2587,19 @@ function applyEnvironmentOrchestrationEvent(
         ).slice(-MAX_THREAD_PROPOSED_PLANS);
         const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
         const latestCheckpoint = turnDiffSummaries.at(-1) ?? null;
+        // Only runs of the turns the revert removed go: runs are never capped.
+        const workflowRuns = retainWorkflowRunsAfterRevert(
+          thread.workflowRuns ?? [],
+          new Set(
+            thread.turnDiffSummaries
+              .filter(
+                (entry) =>
+                  entry.checkpointTurnCount !== undefined &&
+                  entry.checkpointTurnCount > event.payload.turnCount,
+              )
+              .map((entry) => entry.turnId),
+          ),
+        );
 
         return {
           ...thread,
@@ -2588,6 +2608,7 @@ function applyEnvironmentOrchestrationEvent(
           proposedPlans,
           pages,
           activities,
+          workflowRuns,
           pendingSourceProposedPlan: undefined,
           latestTurn:
             latestCheckpoint === null
@@ -2617,6 +2638,19 @@ function applyEnvironmentOrchestrationEvent(
           updatedAt: event.occurredAt,
         };
       });
+
+    // Only what changed in one run (see @threadlines/shared/workflowRuns).
+    // The thread's updatedAt is left alone: a run's progress is not news.
+    case "thread.workflow-run-recorded":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        workflowRuns: applyWorkflowRunPatch(
+          thread.workflowRuns ?? [],
+          event.payload.patch,
+          event.occurredAt,
+          event.sequence,
+        ),
+      }));
 
     // A room's side answer in progress; see OrchestrationThread.sideTurn.
     case "thread.side-turn-started":

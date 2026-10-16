@@ -13,6 +13,8 @@ import {
   type ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
+import { WorkflowRunCard, type WorkflowRunActions } from "./WorkflowRunCard";
+import { TickingText } from "../ui/TickingText";
 import {
   createContext,
   Fragment,
@@ -277,6 +279,8 @@ interface TimelineRowSharedState {
   proposedPlanState: TimelineProposedPlanState | null;
   turnAgents: TimelineTurnAgentsState | null;
   onOpenAgentsPanel: ((agentThreadId: string | null) => void) | null;
+  /** See MessagesTimelineProps.workflowRunActions. */
+  workflowRunActions: WorkflowRunActions | null;
   /** See MessagesTimelineProps.onOpenThread. */
   onOpenThread: ((threadId: ThreadId) => void) | null;
   /** Every finished `thread_start` call, by turn: a call's record reads its turn's. */
@@ -805,6 +809,8 @@ interface MessagesTimelineProps {
    * stay clickable after the live progress state for the turn has emptied.
    */
   onOpenAgentsPanel?: ((agentThreadId: string | null) => void) | null | undefined;
+  /** What a workflow run's card can do: open it, stop it, save its script. */
+  workflowRunActions?: WorkflowRunActions | null | undefined;
   /**
    * Opens another thread in this environment: the one that started this
    * thread, or one this thread's agent started (child threads).
@@ -865,6 +871,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   proposedPlanState = null,
   turnAgents = null,
   onOpenAgentsPanel = null,
+  workflowRunActions = null,
   onOpenThread = null,
 }: MessagesTimelineProps) {
   const liveAgentCount = useMemo(
@@ -1884,6 +1891,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
+      workflowRunActions,
       onOpenThread,
       threadStartCallsByTurn,
       anchorOwnsLiveAgents,
@@ -1927,6 +1935,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       proposedPlanState,
       turnAgents,
       onOpenAgentsPanel,
+      workflowRunActions,
       onOpenThread,
       threadStartCallsByTurn,
       anchorOwnsLiveAgents,
@@ -2439,6 +2448,7 @@ function rowBottomPadding(row: TimelineRow): string {
       return row.turnSummary === null ? "pb-1" : "pb-2";
     case "work":
     case "subagent-result":
+    case "workflow-run":
     case "working":
       return "pb-2";
     default:
@@ -2517,6 +2527,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         />
       ) : null}
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
+      {row.kind === "workflow-run" ? <WorkflowRunTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "side-status" ? <SideStatusTimelineRow row={row} /> : null}
     </div>
@@ -3695,6 +3706,22 @@ function SubagentReceiptTimelineRow({
   );
 }
 
+function WorkflowRunTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workflow-run" }> }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <div className="min-w-0 px-1">
+      {row.agentLine?.heads ? (
+        <AgentAuthorLine
+          agent={row.agentLine.agent}
+          turnId={row.agentLine.turnId}
+          asWritten={row.agentLine.asWritten}
+        />
+      ) : null}
+      <WorkflowRunCard run={row.run} actions={ctx.workflowRunActions} />
+    </div>
+  );
+}
+
 /** The turn's fixed anchor at the timeline tail: the surface's one live node,
  *  the turn timer, and the agent tracker live here from the first token to the
  *  last, whatever the rows above are doing — so nothing about "now" teleports
@@ -3966,21 +3993,7 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
 
 /** Live elapsed label for the active turn. */
 function WorkingTimer({ createdAt }: { createdAt: string }) {
-  const textRef = useRef<HTMLSpanElement>(null);
-  const initialText = formatWorkingTimerNow(createdAt);
-
-  useEffect(() => {
-    const updateText = () => {
-      if (textRef.current) {
-        textRef.current.textContent = formatWorkingTimerNow(createdAt);
-      }
-    };
-    updateText();
-    const id = setInterval(updateText, 1000);
-    return () => clearInterval(id);
-  }, [createdAt]);
-
-  return <span ref={textRef}>{initialText}</span>;
+  return <TickingText active compute={() => formatWorkingTimerNow(createdAt)} />;
 }
 
 /**

@@ -1,5 +1,6 @@
 import {
   type OrchestrationAgentPage,
+  type OrchestrationWorkflowRun,
   type ApprovalRequestId,
   type ChatSkillReference,
   DEFAULT_MODEL,
@@ -161,7 +162,13 @@ import {
   publishAgentsPanelActivitySource,
   publishAgentsPanelSource,
   selectAgentsPanelAgent,
+  selectAgentsPanelWorkflow,
 } from "../agentsPanelStore";
+import {
+  getModelSelectionBooleanOptionValue,
+  getModelSelectionStringOptionValue,
+} from "@threadlines/shared/model";
+import type { WorkflowRunActions, WorkflowRunViewTab } from "./chat/WorkflowRunCard";
 import { summarizeLiveAgents } from "./chat/agentsPanel.logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
@@ -396,6 +403,7 @@ const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
 
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
+const EMPTY_WORKFLOW_RUNS: ReadonlyArray<OrchestrationWorkflowRun> = [];
 const EMPTY_AGENT_PAGES: ReadonlyArray<OrchestrationAgentPage> = [];
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_TURN_IDS: ReadonlyArray<TurnId> = [];
@@ -2504,9 +2512,11 @@ export default function ChatView(props: ChatViewProps) {
         forkContextEntries,
         subagentActivityState.liveEntries,
         activeThread?.pages ?? EMPTY_AGENT_PAGES,
+        activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS,
       ),
     [
       activeThread?.pages,
+      activeThread?.workflowRuns,
       activeThread?.proposedPlans,
       forkContextEntries,
       subagentActivityState.liveEntries,
@@ -3496,6 +3506,30 @@ export default function ChatView(props: ChatViewProps) {
       terminalState.terminalOpen,
     ],
   );
+  /** Stops one workflow run in the runtime that owns it (the reactor routes it). */
+  const stopWorkflowRun = useCallback(
+    (taskId: string) => {
+      if (!activeThreadId) return;
+      const api = readEnvironmentApi(environmentId);
+      if (!api) return;
+      void api.orchestration
+        .dispatchCommand({
+          type: "thread.background-task.stop",
+          commandId: newCommandId(),
+          threadId: activeThreadId,
+          taskId,
+          createdAt: new Date().toISOString(),
+        })
+        .catch((error: unknown) => {
+          setThreadError(
+            activeThreadId,
+            error instanceof Error ? error.message : "Could not stop the workflow.",
+          );
+        });
+    },
+    [activeThreadId, environmentId, setThreadError],
+  );
+
   const stopBackgroundRun = useCallback(
     (run: ThreadBackgroundRunItem) => {
       if (!activeThreadRef || !activeThreadId) return;
@@ -3615,9 +3649,13 @@ export default function ChatView(props: ChatViewProps) {
       turnInFlight: activeTurnInProgress,
       hydrated: threadDetailHydrated,
       threadCwd: gitCwd,
+      workflowRuns: activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS,
       onStopBackgroundRun: stopBackgroundRun,
+      onStopWorkflowRun: stopWorkflowRun,
     });
   }, [
+    activeThread?.workflowRuns,
+    stopWorkflowRun,
     activeProviderDriver,
     activeProviderInstanceId,
     activeThreadId,
@@ -7127,6 +7165,31 @@ export default function ChatView(props: ChatViewProps) {
     },
     [agentsPanelOpen, openRightPanelTab],
   );
+  /** A workflow run's card: the Agents tab drilled into the run. */
+  const workflowRunActions = useMemo<WorkflowRunActions>(() => {
+    const open = (
+      taskId: string,
+      target?: { tab?: WorkflowRunViewTab; agentId?: string; saving?: boolean },
+    ) => {
+      selectAgentsPanelWorkflow({
+        taskId,
+        tab: target?.tab ?? "agents",
+        agentId: target?.agentId ?? null,
+        saving: target?.saving === true,
+      });
+      if (!agentsPanelOpen) {
+        openRightPanelTab("agents");
+      }
+    };
+    return {
+      open,
+      stop: stopWorkflowRun,
+      save: (taskId) => open(taskId, { tab: "script", saving: true }),
+      ultracode: getModelSelectionBooleanOptionValue(activeThread?.modelSelection, "ultracode") === true,
+      sizeGuideline:
+        getModelSelectionStringOptionValue(activeThread?.modelSelection, "workflowSize") ?? null,
+    };
+  }, [activeThread?.modelSelection, agentsPanelOpen, openRightPanelTab, stopWorkflowRun]);
   /** The header's agent faces: the Agents tab on its list, not on one agent. */
   const onOpenHeaderAgentsTab = useCallback(() => onOpenAgentsPanel(null), [onOpenAgentsPanel]);
   const onOpenHeaderSourceTab = useCallback(
@@ -7353,6 +7416,7 @@ export default function ChatView(props: ChatViewProps) {
               proposedPlanState={timelineProposedPlanState}
               turnAgents={timelineTurnAgents}
               onOpenAgentsPanel={onOpenAgentsPanel}
+              workflowRunActions={workflowRunActions}
               onOpenThread={onOpenForkSourceThread}
             />
 

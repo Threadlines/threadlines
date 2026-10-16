@@ -4,6 +4,7 @@ import {
   type ProviderExtensionProviderInventory,
   ProviderInstanceId,
 } from "@threadlines/contracts";
+import { formatTokenCount } from "../../lib/formatTokenCount";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -28,7 +29,6 @@ import {
   makeExtensionInventoryCacheKey,
   mergeRefreshedProviders,
   formatSkillDisplayName,
-  formatTokenCount,
   groupExtensionSkills,
   bucketSkillsByPlugin,
   dedupeShadowedSkills,
