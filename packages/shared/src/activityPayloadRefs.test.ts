@@ -71,14 +71,26 @@ describe("activity payload refs", () => {
       { id: "a2", kind: "tool.completed", payload: { text: output, deepLookalike } },
     ];
     expect(shareRepeatedPayloadValues(collidingDeep)).toBe(collidingDeep);
+  });
 
-    // A reference spelling out a key longer than the value would be bigger.
-    const longKey = "k".repeat(output.length);
-    const longPath = [
-      { id: "a1", kind: "tool.updated", payload: { [longKey]: output } },
-      { id: "a2", kind: "tool.completed", payload: { text: output } },
-    ];
-    expect(shareRepeatedPayloadValues(longPath)).toBe(longPath);
+  it("never makes a response bigger, whatever the keys on the way to a value", () => {
+    const value = "x".repeat(1024);
+    const bytes = (text: string) => new TextEncoder().encode(text).length;
+    for (const char of ["k", "界"]) {
+      for (let keyLength = 0; keyLength <= 1100; keyLength += 1) {
+        const activities = [
+          { id: "a1", kind: "tool.updated", payload: { [char.repeat(keyLength)]: value } },
+          { id: "a2", kind: "tool.completed", payload: { text: value } },
+        ];
+        const shared = shareRepeatedPayloadValues(activities);
+        const whole = JSON.stringify({ activities });
+        const sent =
+          shared === activities
+            ? whole
+            : JSON.stringify({ activities: shared, sharedPayloadValues: true });
+        expect(bytes(sent)).toBeLessThanOrEqual(bytes(whole));
+      }
+    }
   });
 
   it("sends values nested past the depth limit as they are", () => {

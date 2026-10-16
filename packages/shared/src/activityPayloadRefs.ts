@@ -61,16 +61,16 @@ const refOf = (value: unknown): PayloadRef | null => {
 
 interface FirstOccurrence {
   readonly ref: PayloadRef;
-  /** Decided on the first repeat: a path longer than the value is not worth it. */
+  /** Whether a reference beats the value on the wire; decided on the first repeat. */
   smaller?: boolean;
 }
 
 /**
  * Replaces each repeated large string in the activities' payloads with a
  * reference to its first occurrence (in activity order, then depth-first),
- * when the reference is the smaller of the two. Returns the input unchanged
- * when nothing is replaced, or when any payload already holds an object with
- * ACTIVITY_PAYLOAD_REF_KEY where the client would look for one.
+ * when the reference is surely smaller on the wire. Returns the input
+ * unchanged when nothing is replaced, or when any payload already holds an
+ * object with ACTIVITY_PAYLOAD_REF_KEY where the client would look for one.
  */
 export function shareRepeatedPayloadValues<A extends ActivityLike>(
   activities: ReadonlyArray<A>,
@@ -89,7 +89,11 @@ export function shareRepeatedPayloadValues<A extends ActivityLike>(
         return value;
       }
       const marker = { [ACTIVITY_PAYLOAD_REF_KEY]: seen.ref };
-      seen.smaller ??= JSON.stringify(marker).length < value.length;
+      // The value takes at least a byte per code unit in UTF-8 JSON, the
+      // reference at most three, so a long or non-ASCII key cannot make the
+      // reference the bigger one. Counting the reference's ASCII frame at
+      // three bytes a unit also covers the response's `sharedPayloadValues`.
+      seen.smaller ??= 3 * JSON.stringify(marker).length < value.length;
       if (!seen.smaller) return value;
       changed = true;
       return marker;
