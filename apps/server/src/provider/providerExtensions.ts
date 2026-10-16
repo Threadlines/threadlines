@@ -100,6 +100,7 @@ import { buildCodexInitializeParams } from "./Layers/CodexProvider.ts";
 import { deriveProviderInstanceConfigMap } from "./Layers/ProviderInstanceRegistryHydration.ts";
 import { mergeProviderInstanceEnvironment } from "./ProviderInstanceEnvironment.ts";
 import { spawnAndCollect } from "./providerSnapshot.ts";
+import { planCliSpawn } from "../cliSpawn.ts";
 import { PtyAdapter } from "../terminal/Services/PTY.ts";
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
@@ -3645,15 +3646,16 @@ const runClaudeCommand = Effect.fn("providerExtensions.runClaudeCommand")(functi
   readonly env: NodeJS.ProcessEnv;
   readonly timeout?: Duration.Duration | undefined;
 }) {
+  const plan = planCliSpawn(input.binaryPath, input.args, input.env);
   const result = yield* spawnAndCollect(
     input.binaryPath,
     ChildProcess.make(
-      input.binaryPath,
-      [...input.args],
+      plan.command,
+      [...plan.args],
       hideWindowsConsole({
+        ...plan.options,
         cwd: input.cwd,
         env: input.env,
-        shell: process.platform === "win32",
       }),
     ),
   ).pipe(Effect.timeoutOption(input.timeout ?? INVENTORY_COMMAND_TIMEOUT));

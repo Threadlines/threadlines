@@ -409,6 +409,16 @@ describe("resolveCommandPath", () => {
       "C:\\Tools\\code.cmd",
     ]);
   });
+
+  it("skips Windows PATH entries that would resolve against the working folder", () => {
+    const resolved = resolveCommandPath("git", {
+      platform: "win32",
+      env: { Path: '.;tools;C:relative;"C:\\Program Files\\Git\\cmd"', Pathext: ".EXE" },
+      fileSystem: { isFile: () => true, canAccess: () => true },
+    });
+
+    expect(resolved).toBe("C:\\Program Files\\Git\\cmd\\git.exe");
+  });
 });
 
 describe("refreshWindowsPath", () => {

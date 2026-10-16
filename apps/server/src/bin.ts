@@ -1,3 +1,5 @@
+// Before every other import (see the module).
+import "./process/commandLookupStartup.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -12,8 +14,12 @@ import { sharedServerCommandFlags } from "./cli/config.ts";
 import { assertSingleEffectRuntime } from "./cli/effectRuntimeCheck.ts";
 import { projectCommand } from "./cli/project.ts";
 import { runServerCommand, serveCommand, startCommand } from "./cli/server.ts";
+import * as ChildEnvironment from "./process/childEnvironment.ts";
 
-const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
+const CliRuntimeLayer = Layer.mergeAll(
+  ChildEnvironment.layer.pipe(Layer.provideMerge(NodeServices.layer)),
+  NetService.layer,
+);
 
 export const cli = Command.make("threadlines", { ...sharedServerCommandFlags }).pipe(
   Command.withDescription("Run the Threadlines server."),

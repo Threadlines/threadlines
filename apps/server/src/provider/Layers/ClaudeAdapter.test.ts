@@ -27,6 +27,11 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
+import {
+  SERVER_ADDED_VARIABLE,
+  WORKING_FOLDER_LOOKUP_VARIABLE,
+  stopWorkingFolderCommandLookup,
+} from "@threadlines/shared/windowsCommandLookup";
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -952,6 +957,42 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.HOME, path.join(os.homedir(), ".claude-work"));
     }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("starts Claude SDK sessions with the user's command lookup, not the server's", () => {
+    const hostValue = process.env[WORKING_FOLDER_LOOKUP_VARIABLE];
+    // What the server does at startup on Windows, before the harness copies the
+    // environment (the host may have set the variable itself).
+    delete process.env[WORKING_FOLDER_LOOKUP_VARIABLE];
+    stopWorkingFolderCommandLookup(process.env, "win32");
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const env = harness.getLastCreateQueryInput()?.options.env;
+      assert.equal(env?.PATH, process.env.PATH);
+      assert.isUndefined(env?.[WORKING_FOLDER_LOOKUP_VARIABLE]);
+      assert.isUndefined(env?.[SERVER_ADDED_VARIABLE]);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          delete process.env[SERVER_ADDED_VARIABLE];
+          if (hostValue === undefined) delete process.env[WORKING_FOLDER_LOOKUP_VARIABLE];
+          else process.env[WORKING_FOLDER_LOOKUP_VARIABLE] = hostValue;
+        }),
+      ),
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );

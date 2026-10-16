@@ -34,7 +34,8 @@ export interface CommandFileSystem {
   readonly listDirectory?: (directoryPath: string) => ReadonlyArray<string>;
 }
 
-const defaultCommandFileSystem: CommandFileSystem = {
+/** The real filesystem, for callers that look up commands the same way. */
+export const defaultCommandFileSystem: CommandFileSystem = {
   isFile: (filePath) => statSync(filePath).isFile(),
   canAccess: (filePath, mode) => {
     accessSync(filePath, mode);
@@ -381,7 +382,9 @@ function resolvePathEnvironmentVariable(env: NodeJS.ProcessEnv): string {
 }
 
 function resolveWindowsPathExtensions(env: NodeJS.ProcessEnv): ReadonlyArray<string> {
-  const rawValue = env.PATHEXT;
+  // A spread of `process.env` keeps the user's casing, which may not be `PATHEXT`.
+  const rawValue =
+    env.PATHEXT ?? Object.entries(env).find(([name]) => name.toUpperCase() === "PATHEXT")?.[1];
   const fallback = [".COM", ".EXE", ".BAT", ".CMD"];
   if (!rawValue) return fallback;
 
@@ -495,10 +498,14 @@ export function makeCommandPathResolver(
   // An injected filesystem models the target platform instead (for example, Windows
   // App Execution Alias probing), so its candidate paths use the target path syntax.
   const joinPath = options.fileSystem ? pathForPlatform(platform).join : joinHostPath;
+  // On Windows a relative entry such as `.` resolves against the working folder of
+  // whatever is started, which is often a project; skip those, as Windows does
+  // not look in the working folder for the server's commands either
+  // (@threadlines/shared/windowsCommandLookup).
   const pathEntries = resolvePathEnvironmentVariable(env)
     .split(pathDelimiterForPlatform(platform))
     .map((entry) => stripWrappingQuotes(entry.trim()))
-    .filter((entry) => entry.length > 0);
+    .filter((entry) => entry.length > 0 && (platform !== "win32" || WindowsPath.isAbsolute(entry)));
   const listDirectory = platform === "win32" ? fileSystem.listDirectory : undefined;
   const directoryNames = new Map<string, ReadonlySet<string> | null>();
   const mayHold = (directoryPath: string, name: string): boolean => {

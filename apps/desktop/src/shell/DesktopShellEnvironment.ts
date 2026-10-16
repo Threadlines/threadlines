@@ -8,6 +8,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import {
   buildWindowsEnvironmentCaptureCommand,
+  resolveCommandPath,
   resolveKnownWindowsCliDirs,
 } from "@threadlines/shared/shell";
 
@@ -46,7 +47,23 @@ const LOGIN_SHELL_ENV_NAMES = [
   "XDG_DATA_HOME",
 ] as const;
 const WINDOWS_PROFILE_ENV_NAMES = ["PATH", "FNM_DIR", "FNM_MULTISHELL_PATH"] as const;
-const WINDOWS_SHELL_CANDIDATES = ["pwsh.exe", "powershell.exe"] as const;
+/**
+ * PowerShell by full path, so a `pwsh.exe` in the folder the app was started
+ * from never stands in for it: PowerShell 7 from PATH when installed, then
+ * Windows PowerShell from System32.
+ */
+const windowsShellCandidates = (env: NodeJS.ProcessEnv = process.env): ReadonlyArray<string> => {
+  const pwsh = resolveCommandPath("pwsh.exe", {
+    platform: "win32",
+    env: { ...env, PATHEXT: ".EXE" },
+  });
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? "C:\\Windows";
+  return [
+    ...(pwsh === null ? [] : [pwsh]),
+    `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+  ];
+};
+
 const LOGIN_SHELL_TIMEOUT = Duration.seconds(5);
 const LAUNCHCTL_TIMEOUT = Duration.seconds(2);
 const PROCESS_TERMINATE_GRACE = Duration.seconds(1);
@@ -215,7 +232,7 @@ const readWindowsEnvironment = Effect.fn("desktop.shellEnvironment.readWindowsEn
       buildWindowsEnvironmentCaptureCommand(names),
     ];
 
-    for (const command of WINDOWS_SHELL_CANDIDATES) {
+    for (const command of windowsShellCandidates()) {
       const output = yield* runCommandOutput({
         command,
         args,

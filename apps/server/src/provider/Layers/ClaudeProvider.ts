@@ -22,6 +22,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import { planCliSpawn } from "../../cliSpawn.ts";
 import {
   createModelCapabilities,
@@ -1348,7 +1349,8 @@ const probeClaudeCapabilities = (
           // Named so the probe never picks up a settings `defaultMode` (the
           // SDK stopped filling in "default" in 0.3.286).
           permissionMode: "default",
-          env: claudeEnvironment,
+          // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
+          env: withUsualCommandLookup(claudeEnvironment),
           stderr: () => {},
         },
       });
@@ -1525,7 +1527,8 @@ export const refreshClaudeOAuthCredential = (
           permissionMode: "default",
           maxTurns: 1,
           model: "haiku",
-          env: claudeEnvironment,
+          // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
+          env: withUsualCommandLookup(claudeEnvironment),
           stderr: () => {},
         },
       });

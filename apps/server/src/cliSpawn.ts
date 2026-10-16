@@ -1,6 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { existsSync } from "node:fs";
-import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { win32 as WindowsPath } from "node:path";
+import {
+  defaultCommandFileSystem,
+  makeCommandPathResolver,
+  type CommandFileSystem,
+} from "@threadlines/shared/shell";
 
 /**
  * Extensions that name a Windows batch shim rather than a real executable.
@@ -8,96 +13,106 @@ import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
  */
 const WINDOWS_BATCH_EXTENSIONS = new Set([".cmd", ".bat"]);
 
-/**
- * Fallback `PATHEXT` (the Windows default) used when the environment does not
- * provide one. Order matters: it mirrors how the OS picks an extension for a
- * bare command name.
- */
-const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC";
+/** Extensions Windows starts without a shell. */
+const WINDOWS_NATIVE_EXTENSIONS = new Set([".exe", ".com"]);
+
+/** npm's launchers are a few hundred bytes; a bigger batch file is something else. */
+const MAX_SHIM_BYTES = 4096;
+
+export interface CliSpawnFileSystem extends CommandFileSystem {
+  /** The file's text, or null when it is too big to be a launcher. Throws when unreadable. */
+  readonly readSmallTextFile: (filePath: string) => string | null;
+}
 
 interface ResolveOptions {
   readonly platform?: NodeJS.Platform;
-  /** Injection point for tests; defaults to `fs.existsSync`. */
-  readonly exists?: (path: string) => boolean;
+  /** Injection point for tests; defaults to the real filesystem. */
+  readonly fileSystem?: CliSpawnFileSystem;
+}
+
+const defaultCliSpawnFileSystem: CliSpawnFileSystem = {
+  ...defaultCommandFileSystem,
+  readSmallTextFile: (filePath) =>
+    statSync(filePath).size <= MAX_SHIM_BYTES ? readFileSync(filePath, "utf8") : null,
+};
+
+/**
+ * The launcher npm writes for a Node CLI (`%AppData%\npm\codex.cmd`, made by
+ * cmd-shim 5 through 9). It runs `node.exe` from its own folder when there is
+ * one, else `node` found the way cmd.exe finds it: in the working folder
+ * first. Only this exact text counts, apart from the script path and plain
+ * node flags, so a launcher that sets variables or does anything else runs as
+ * it is.
+ */
+const NPM_NODE_SHIM = new RegExp(
+  [
+    "^@ECHO off",
+    "GOTO start",
+    ":find_dp0",
+    "SET dp0=%~dp0",
+    "EXIT /b",
+    ":start",
+    "SETLOCAL",
+    "CALL :find_dp0",
+    "",
+    'IF EXIST "%dp0%\\\\node\\.exe" \\(',
+    '  SET "_prog=%dp0%\\\\node\\.exe"',
+    "\\) ELSE \\(",
+    '  SET "_prog=node"',
+    "(?:  SET PATHEXT=%PATHEXT:;\\.JS;=;%\\n)?\\)",
+    "",
+    "endLocal & goto #_undefined_# 2>NUL \\|\\| title %COMSPEC% & " +
+      '(?:set PATHEXT=%PATHEXT:;\\.JS;=;% & )?"%_prog%" (?<flags>[^"%]*?) ?"%dp0%\\\\(?<script>[^"%]+)" %\\*$',
+  ].join("\\n"),
+  "u",
+);
+
+/** Node flags that npm copies from a script's `#!` line, such as `--no-warnings`. */
+const PLAIN_NODE_FLAG = /^-[A-Za-z0-9_\-=.,:]+$/u;
+
+interface NodeScriptLaunch {
+  readonly node: string;
+  readonly args: ReadonlyArray<string>;
 }
 
 /**
- * Windows environment variable names are case-insensitive, and `process.env`
- * emulates that — but a spread of it (`{ ...process.env }`) is a plain object
- * keyed with the inherited casing. GUI-launched processes inherit the
- * registry casing `Path`, so a plain `env.PATH` read misses it.
+ * What an npm launcher would run, so the server can start it directly: the
+ * launcher's own `node` lookup would otherwise search the project folder. Null
+ * for anything that isn't exactly npm's launcher of a script that exists.
  */
-function readEnvCaseInsensitive(env: NodeJS.ProcessEnv, name: string): string | undefined {
-  const direct = env[name];
-  if (direct !== undefined) return direct;
-  const upper = name.toUpperCase();
-  for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === upper) return env[key];
+function readNpmNodeShim(
+  shimPath: string,
+  resolveCommand: (command: string) => string | null,
+  fileSystem: CliSpawnFileSystem,
+): NodeScriptLaunch | null {
+  let text: string | null;
+  try {
+    text = fileSystem.readSmallTextFile(shimPath);
+  } catch {
+    return null;
   }
-  return undefined;
+  const match = text?.replace(/\r\n/gu, "\n").replace(/\n$/u, "").match(NPM_NODE_SHIM);
+  const script = match?.groups?.script;
+  if (!match || !script) return null;
+  const flags = (match.groups?.flags ?? "").split(" ").filter((flag) => flag.length > 0);
+  if (!flags.every((flag) => PLAIN_NODE_FLAG.test(flag))) return null;
+
+  const shimDir = WindowsPath.dirname(shimPath);
+  const scriptPath = WindowsPath.join(shimDir, script);
+  const besideShim = WindowsPath.join(shimDir, "node.exe");
+  const node = isFile(fileSystem, besideShim) ? besideShim : resolveCommand("node");
+  if (!isFile(fileSystem, scriptPath) || node === null) return null;
+  // A `node.cmd` from a version manager needs cmd.exe again; leave those to the launcher.
+  if (!WINDOWS_NATIVE_EXTENSIONS.has(WindowsPath.extname(node).toLowerCase())) return null;
+  return { node, args: [...flags, scriptPath] };
 }
 
-/**
- * Resolve a command name/path to the concrete file Windows would execute,
- * searching `PATH` × `PATHEXT` for bare names. Returns `undefined` when nothing
- * matching exists on disk.
- */
-function resolveWindowsCommandPath(
-  command: string,
-  env: NodeJS.ProcessEnv,
-  exists: (path: string) => boolean,
-): string | undefined {
-  const hasExtension = extname(command).length > 0;
-  const extensions = hasExtension
-    ? [""]
-    : (readEnvCaseInsensitive(env, "PATHEXT") ?? DEFAULT_PATHEXT)
-        .split(";")
-        .map((ext) => ext.trim())
-        .filter((ext) => ext.length > 0);
-  const candidatesFor = (base: string): ReadonlyArray<string> =>
-    extensions.map((ext) => base + ext);
-
-  if (isAbsolute(command) || command.includes("/") || command.includes("\\")) {
-    return candidatesFor(resolve(command)).find((candidate) => exists(candidate));
+function isFile(fileSystem: CommandFileSystem, filePath: string): boolean {
+  try {
+    return fileSystem.isFile(filePath);
+  } catch {
+    return false;
   }
-
-  const pathDirs = (readEnvCaseInsensitive(env, "PATH") ?? "")
-    .split(delimiter)
-    .filter((dir) => dir.length > 0);
-  for (const dir of pathDirs) {
-    const match = candidatesFor(join(dir, command)).find((candidate) => exists(candidate));
-    if (match) return match;
-  }
-  return undefined;
-}
-
-/**
- * Decide whether spawning `command` must go through a shell.
- *
- * Background: on Windows, Node builds a single `cmd.exe` command line by
- * concatenating argv when `shell: true`, and it does **not** escape the
- * arguments (Node deprecation DEP0190). That corrupts any argument containing
- * quotes — e.g. the inline JSON we hand to `claude --json-schema '{…}'`, which
- * arrives at the CLI as invalid JSON. Spawning a native executable directly
- * (`shell: false`) forwards argv verbatim and keeps the JSON intact.
- *
- * Batch shims (`.cmd`/`.bat`) are not real executables and can only run via
- * `cmd.exe`, so those still require a shell. We therefore resolve the command
- * and only request a shell when it points at a batch shim. On non-Windows
- * platforms argv is always passed verbatim, so no shell is ever needed.
- */
-export function cliSpawnNeedsShell(
-  command: string,
-  env: NodeJS.ProcessEnv = process.env,
-  options: ResolveOptions = {},
-): boolean {
-  const platform = options.platform ?? process.platform;
-  if (platform !== "win32") return false;
-
-  const exists = options.exists ?? existsSync;
-  const resolved = resolveWindowsCommandPath(command, env, exists);
-  const extension = extname(resolved ?? command).toLowerCase();
-  return WINDOWS_BATCH_EXTENSIONS.has(extension);
 }
 
 /** Arguments that survive cmd.exe and CommandLineToArgvW without quoting. */
@@ -123,13 +138,21 @@ export interface CliSpawnPlan {
 }
 
 /**
- * Plan how to spawn a CLI so argv arrives intact on every platform.
+ * Plan how to spawn a CLI so argv arrives intact on every platform, and so
+ * Windows starts the program found on PATH rather than one in the working
+ * folder (often a project) with the same name.
  *
- * Native executables (and everything off-Windows) spawn shell-less with argv
- * passed verbatim. Windows batch shims (`.cmd`/`.bat`) can only run through
- * cmd.exe; for those the command line is composed here with explicit quoting
- * and handed over as a single string, because Node's own `shell: true` argv
- * handling concatenates arguments unescaped (deprecated as DEP0190).
+ * Off Windows the command and argv pass through unchanged. On Windows the
+ * command is resolved on PATH × PATHEXT and started by its full path:
+ * - native executables spawn shell-less with argv passed verbatim;
+ * - npm's launcher of a Node CLI starts node and the script directly, since
+ *   the launcher would look `node` up in the working folder first;
+ * - other batch shims (`.cmd`/`.bat`) can only run through cmd.exe, so the
+ *   command line is composed here with explicit quoting and handed over as a
+ *   single string, because Node's own `shell: true` argv handling
+ *   concatenates arguments unescaped (deprecated as DEP0190).
+ * A command that resolves to nothing is spawned as given: through cmd.exe when
+ * it names a batch file, else without a shell.
  */
 export function planCliSpawn(
   command: string,
@@ -137,9 +160,31 @@ export function planCliSpawn(
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveOptions = {},
 ): CliSpawnPlan {
-  if (!cliSpawnNeedsShell(command, env, options)) {
-    return { command, args, options: {} };
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") return { command, args, options: {} };
+
+  const fileSystem = options.fileSystem ?? defaultCliSpawnFileSystem;
+  const resolverFor = (pathEnv: NodeJS.ProcessEnv) =>
+    makeCommandPathResolver({
+      platform,
+      env: pathEnv,
+      ...(options.fileSystem ? { fileSystem: options.fileSystem } : {}),
+    });
+  const resolveCommand = resolverFor(env);
+  // A command named with its extension means exactly that file, whatever PATHEXT lists.
+  const extension = WindowsPath.extname(command);
+  const resolved = extension
+    ? resolverFor({ ...env, PATHEXT: extension })(command)
+    : resolveCommand(command);
+  const target = resolved ?? command;
+  if (!WINDOWS_BATCH_EXTENSIONS.has(WindowsPath.extname(target).toLowerCase())) {
+    return { command: target, args, options: {} };
   }
-  const commandLine = [quoteWindowsShellArg(command), ...args.map(quoteWindowsShellArg)].join(" ");
+  const nodeScript =
+    resolved === null ? null : readNpmNodeShim(resolved, resolveCommand, fileSystem);
+  if (nodeScript !== null) {
+    return { command: nodeScript.node, args: [...nodeScript.args, ...args], options: {} };
+  }
+  const commandLine = [quoteWindowsShellArg(target), ...args.map(quoteWindowsShellArg)].join(" ");
   return { command: commandLine, args: [], options: { shell: true } };
 }

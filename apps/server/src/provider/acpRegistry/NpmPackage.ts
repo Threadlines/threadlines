@@ -15,6 +15,7 @@ import { StringDecoder } from "node:string_decoder";
 
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 
 const NPM_PACKAGE_NAME = /^(?:@[a-z0-9~][a-z0-9._~-]*\/)?[a-z0-9~][a-z0-9._~-]*$/u;
 const NPM_EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
@@ -294,7 +295,8 @@ export function runNode(input: NodeRunInput): Promise<NodeRunResult> {
     }
     const child = spawn(input.node, [...input.args], {
       cwd: input.cwd,
-      env: input.env,
+      // Install scripts look up commands as they would outside Threadlines.
+      env: withUsualCommandLookup(input.env),
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
       windowsHide: true,

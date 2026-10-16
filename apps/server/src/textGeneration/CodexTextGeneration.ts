@@ -41,6 +41,7 @@ import {
 } from "./TextGenerationUtils.ts";
 import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
 import { resolveCodexCliServiceTier } from "../codexServiceTier.ts";
+import { planCliSpawn } from "../cliSpawn.ts";
 
 const CODEX_DEFAULT_TIMEOUT_MS = 180_000;
 // Identical commit prompts have been observed taking 11s-42s wall time
@@ -236,7 +237,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
         DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT;
       const serviceTier = resolveCodexCliServiceTier(modelSelection);
-      const command = ChildProcess.make(
+      const env = {
+        ...environment,
+        ...(codexConfig.homePath ? { CODEX_HOME: expandHomePath(codexConfig.homePath) } : {}),
+      };
+      const plan = planCliSpawn(
         codexConfig.binaryPath || "codex",
         [
           "exec",
@@ -261,13 +266,15 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
           "-",
         ],
+        env,
+      );
+      const command = ChildProcess.make(
+        plan.command,
+        [...plan.args],
         hideWindowsConsole({
-          env: {
-            ...environment,
-            ...(codexConfig.homePath ? { CODEX_HOME: expandHomePath(codexConfig.homePath) } : {}),
-          },
+          ...plan.options,
+          env,
           cwd,
-          shell: process.platform === "win32",
           stdin: {
             stream: Stream.encodeText(Stream.make(prompt)),
           },
