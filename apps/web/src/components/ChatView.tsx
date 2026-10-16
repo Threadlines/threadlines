@@ -117,7 +117,7 @@ import {
 import {
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
-  selectThreadsAcrossEnvironments,
+  selectThreadListedByRef,
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
 } from "../store";
@@ -1318,10 +1318,13 @@ export default function ChatView(props: ChatViewProps) {
   const removeComposerDraftTerminalContextsForTerminal = useComposerDraftStore(
     (store) => store.removeTerminalContextsForTerminal,
   );
-  const serverThreadKeys = useStore(
+  // Of the threads with a terminal open, the ones the store still lists. Only
+  // those few keys are looked up, so a store update (every streamed delta)
+  // never builds the whole thread list.
+  const openTerminalServerThreadKeys = useStore(
     useShallow((state) =>
-      selectThreadsAcrossEnvironments(state).map((thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      openTerminalThreadKeys.filter((nextThreadKey) =>
+        selectThreadListedByRef(state, parseScopedThreadKey(nextThreadKey)),
       ),
     ),
   );
@@ -1411,9 +1414,12 @@ export default function ChatView(props: ChatViewProps) {
   const activeThreadKeyRef = useRef(activeThreadKey);
   activeThreadKeyRef.current = activeThreadKey;
   const existingOpenTerminalThreadKeys = useMemo(() => {
-    const existingThreadKeys = new Set<string>([...serverThreadKeys, ...draftThreadKeys]);
+    const existingThreadKeys = new Set<string>([
+      ...openTerminalServerThreadKeys,
+      ...draftThreadKeys,
+    ]);
     return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
-  }, [draftThreadKeys, openTerminalThreadKeys, serverThreadKeys]);
+  }, [draftThreadKeys, openTerminalServerThreadKeys, openTerminalThreadKeys]);
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const threadPlanCatalog = useThreadPlanCatalog(
     useMemo(() => {

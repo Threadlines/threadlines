@@ -2996,6 +2996,25 @@ export function selectThreadExistsByRef(
     : false;
 }
 
+/**
+ * Whether the store lists this thread as `selectThreadsAcrossEnvironments`
+ * returns it (registered in its environment's `threadIds`, with a shell),
+ * without building every thread to find out.
+ */
+export function selectThreadListedByRef(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+): boolean {
+  if (!ref) {
+    return false;
+  }
+  const environmentState = selectEnvironmentState(state, ref.environmentId);
+  return (
+    environmentState.threadShellById[ref.threadId]?.environmentId === ref.environmentId &&
+    environmentState.threadIds.includes(ref.threadId)
+  );
+}
+
 export function selectSidebarThreadSummaryByRef(
   state: AppState,
   ref: ScopedThreadRef | null | undefined,
