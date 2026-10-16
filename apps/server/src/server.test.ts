@@ -4064,7 +4064,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("resumes recent thread subscriptions and snapshots stale cursors", () =>
+  it.effect("resumes threads that missed few events and snapshots ones that missed many", () =>
     Effect.gen(function* () {
       const replayedEvent = makeThreadMessageEvent(595);
       const readEventCursors: number[] = [];
@@ -4074,10 +4074,18 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
-            readEvents: (fromSequenceExclusive) => {
-              readEventCursors.push(fromSequenceExclusive);
-              return Stream.make(replayedEvent);
-            },
+            // The thread missed one event since 590 or 99, however busy other
+            // threads were; since 50 it missed more than a replay may carry.
+            readThreadEvents: (input) =>
+              Effect.sync(() => {
+                readEventCursors.push(input.fromSequenceExclusive);
+                assert.equal(input.toSequenceInclusive, 600);
+                return input.fromSequenceExclusive === 50
+                  ? Array.from({ length: input.limit }, (_, index) =>
+                      makeThreadMessageEvent(51 + index),
+                    )
+                  : [replayedEvent];
+              }),
             subscribeDomainEvents: Effect.succeed(Stream.empty),
           },
           projectionSnapshotQuery: {
@@ -4103,14 +4111,26 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
       assert.equal(recentItems[0]?.kind, "event");
       assert.equal(recentItems[0]?.kind === "event" ? recentItems[0].event.sequence : null, 595);
-      assert.deepEqual(readEventCursors, [590]);
+      assert.equal(threadDetailReads, 0);
+
+      // 500 events were committed elsewhere since 99, but only one in this thread.
+      const idleItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            fromSequenceExclusive: 99,
+          }).pipe(Stream.take(1), Stream.runCollect),
+        ),
+      );
+      assert.equal(idleItems[0]?.kind, "event");
+      assert.equal(idleItems[0]?.kind === "event" ? idleItems[0].event.sequence : null, 595);
       assert.equal(threadDetailReads, 0);
 
       const staleItems = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-            fromSequenceExclusive: 99,
+            fromSequenceExclusive: 50,
           }).pipe(Stream.take(1), Stream.runCollect),
         ),
       );
@@ -4119,7 +4139,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         staleItems[0]?.kind === "snapshot" ? staleItems[0].snapshot.snapshotSequence : null,
         600,
       );
-      assert.deepEqual(readEventCursors, [590]);
+      assert.deepEqual(readEventCursors, [590, 99, 50]);
       assert.equal(threadDetailReads, 1);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

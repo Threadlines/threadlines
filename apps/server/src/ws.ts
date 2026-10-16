@@ -242,7 +242,12 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
 }
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
-export const ORCHESTRATION_THREAD_RESUME_MAX_SEQUENCE_GAP = 500;
+/**
+ * The most events a thread may have missed and still resume by replay rather
+ * than a fresh snapshot. Counted per thread: storage maintenance keeps a
+ * thread's newest 500 activity events, so a replay this size is complete.
+ */
+export const ORCHESTRATION_THREAD_RESUME_MAX_EVENTS = 500;
 
 function toAuthAccessStreamEvent(
   change: BootstrapCredentialChange | SessionCredentialChange,
@@ -925,32 +930,43 @@ const makeWsRpcLayer = (currentSession: {
                     })),
                   );
 
+                  // Resume from the client's cursor when this thread missed few
+                  // events. The gap is counted in this thread's own events: a
+                  // cached chat that sat idle while other chats worked replays
+                  // a handful of events after a reconnect, instead of
+                  // downloading its whole snapshot again.
                   const resumeSequence = input.fromSequenceExclusive;
-                  const canResume =
-                    resumeSequence !== undefined &&
-                    resumeSequence <= snapshotSequence &&
-                    snapshotSequence - resumeSequence <=
-                      ORCHESTRATION_THREAD_RESUME_MAX_SEQUENCE_GAP;
-                  if (canResume) {
-                    const replayStream = orchestrationEngine.readEvents(resumeSequence).pipe(
-                      // The hot subscription already buffers everything after
-                      // this boundary. Keeping the persisted side bounded also
-                      // prevents duplicates if commits race the replay query.
-                      Stream.takeWhile((event) => event.sequence <= snapshotSequence),
-                      Stream.filter(isThreadEvent),
-                      Stream.map((event) => ({
-                        kind: "event" as const,
-                        event,
-                      })),
-                      Stream.mapError(
-                        (cause) =>
-                          new OrchestrationGetSnapshotError({
-                            message: `Failed to resume thread ${input.threadId}`,
-                            cause,
-                          }),
-                      ),
-                    );
-                    return Stream.concat(replayStream, liveStream);
+                  if (resumeSequence !== undefined && resumeSequence <= snapshotSequence) {
+                    const missedEvents = yield* orchestrationEngine
+                      .readThreadEvents({
+                        threadId: input.threadId,
+                        fromSequenceExclusive: resumeSequence,
+                        // The hot subscription already buffers everything after
+                        // this boundary, so bounding the replay here prevents
+                        // duplicates if commits race the query.
+                        toSequenceInclusive: snapshotSequence,
+                        limit: ORCHESTRATION_THREAD_RESUME_MAX_EVENTS + 1,
+                      })
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new OrchestrationGetSnapshotError({
+                              message: `Failed to resume thread ${input.threadId}`,
+                              cause,
+                            }),
+                        ),
+                      );
+                    if (missedEvents.length <= ORCHESTRATION_THREAD_RESUME_MAX_EVENTS) {
+                      return Stream.concat(
+                        Stream.fromIterable(
+                          missedEvents.filter(isThreadEvent).map((event) => ({
+                            kind: "event" as const,
+                            event,
+                          })),
+                        ),
+                        liveStream,
+                      );
+                    }
                   }
 
                   const threadDetail = yield* projectionSnapshotQuery

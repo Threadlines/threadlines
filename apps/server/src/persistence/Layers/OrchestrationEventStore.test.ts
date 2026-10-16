@@ -1,4 +1,4 @@
-import { CommandId, EventId, ProjectId } from "@threadlines/contracts";
+import { CommandId, EventId, MessageId, ProjectId, ThreadId } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -118,6 +118,58 @@ layer("OrchestrationEventStore", (it) => {
           ),
         );
       }
+    }),
+  );
+
+  it.effect("reads one thread's events within a sequence range, up to a limit", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const now = "2026-01-01T00:00:00.000Z";
+      const appendMessage = (threadId: string, index: number) =>
+        eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make(`evt-range-${threadId}-${index}`),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make(threadId),
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make(threadId),
+            messageId: MessageId.make(`message-range-${threadId}-${index}`),
+            role: "assistant",
+            text: `${threadId} ${index}`,
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+      // Interleaved with another thread's events, as when chats work at once.
+      const ownSequences: number[] = [];
+      for (let index = 0; index < 5; index += 1) {
+        ownSequences.push((yield* appendMessage("thread-range", index)).sequence);
+        yield* appendMessage("thread-range-other", index);
+      }
+
+      const read = (from: number, to: number, limit: number) =>
+        eventStore
+          .readThreadEvents({
+            threadId: ThreadId.make("thread-range"),
+            fromSequenceExclusive: from,
+            toSequenceInclusive: to,
+            limit,
+          })
+          .pipe(Effect.map((events) => events.map((event) => event.sequence)));
+
+      assert.deepEqual(
+        yield* read(ownSequences[0]!, ownSequences[3]!, 10),
+        ownSequences.slice(1, 4),
+      );
+      assert.deepEqual(yield* read(0, Number.MAX_SAFE_INTEGER, 2), ownSequences.slice(0, 2));
     }),
   );
 });

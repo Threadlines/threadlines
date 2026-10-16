@@ -432,6 +432,7 @@ describe("PullRequestAutomationWatcher", () => {
 
     const orchestrationEngine: OrchestrationEngineShape = {
       readEvents: () => Stream.empty,
+      readThreadEvents: () => Effect.succeed([]),
       getCommandReceipt: () => Effect.succeed(Option.none()),
       dispatch: (command) => {
         if (
