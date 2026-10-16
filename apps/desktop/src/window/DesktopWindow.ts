@@ -1,4 +1,4 @@
-import type { DesktopMenuActionPayload } from "@threadlines/contracts";
+import type { DesktopMenuActionPayload, DesktopPreviewOpenTab } from "@threadlines/contracts";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Context from "effect/Context";
@@ -691,6 +691,8 @@ const make = Effect.gen(function* () {
       contents: Electron.WebContents,
       isGone: () => boolean,
       params: Electron.ContextMenuParams,
+      /** Given for a guest page, whose links can also open as a panel tab. */
+      openLinkInTab?: (url: string) => void,
     ) => {
       const requestVersion = ++contextMenuRequestVersion;
 
@@ -732,7 +734,22 @@ const make = Effect.gen(function* () {
             return;
           }
 
-          if (Option.isSome(ElectronShell.parseSafeExternalUrl(params.linkURL))) {
+          const linkUrl = ElectronShell.parseSafeExternalUrl(params.linkURL);
+          if (Option.isSome(linkUrl)) {
+            if (openLinkInTab !== undefined) {
+              menuTemplate.push(
+                {
+                  label: "Open Link in New Tab",
+                  click: () => openLinkInTab(linkUrl.value),
+                },
+                {
+                  label: "Open Link in Default Browser",
+                  click: () => {
+                    void runPromise(electronShell.openExternal(linkUrl.value));
+                  },
+                },
+              );
+            }
             menuTemplate.push(
               {
                 label: "Copy Link",
@@ -830,9 +847,40 @@ const make = Effect.gen(function* () {
         window.webContents.send(IpcChannels.PREVIEW_BROWSER_COMMAND_CHANNEL, command);
       });
 
+      // A page never gets a window of its own. Its new tabs and windows -- a
+      // `target="_blank"` link, `window.open`, a Cmd-click or middle click --
+      // go to the panel as tabs instead, where the site approvals and the
+      // agent can reach them. The renderer creates guests with `allowpopups`
+      // so these requests reach this handler at all: without it Chromium
+      // drops them before asking, and the link silently does nothing.
+      // `about:blank` from a bare `window.open()` has no address to open.
+      const openInTab = (url: string, background: boolean) => {
+        const webUrl = ElectronShell.parseSafeExternalUrl(url);
+        if (Option.isNone(webUrl) || guest.isDestroyed() || window.webContents.isDestroyed()) {
+          return;
+        }
+        const request: DesktopPreviewOpenTab = {
+          webContentsId: guest.id,
+          url: webUrl.value,
+          background,
+        };
+        window.webContents.send(IpcChannels.PREVIEW_OPEN_TAB_CHANNEL, request);
+      };
+      guest.setWindowOpenHandler(({ url, disposition }) => {
+        openInTab(url, disposition === "background-tab");
+        return { action: "deny" };
+      });
+
       guest.on("context-menu", (event, params) => {
         event.preventDefault();
-        showEditContextMenu(guest, () => guest.isDestroyed(), params);
+        // From the menu it opens behind, as it does in Chrome: you were
+        // reading this page when you asked.
+        showEditContextMenu(
+          guest,
+          () => guest.isDestroyed(),
+          params,
+          (url) => openInTab(url, true),
+        );
       });
     });
 

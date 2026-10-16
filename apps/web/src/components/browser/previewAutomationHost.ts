@@ -145,6 +145,8 @@ export interface PreviewAutomationHostTarget {
     active: boolean;
     agent: boolean;
   }>;
+  /** Tabs this tab's page has opened, so an action can say which it opened. */
+  readonly tabsOpenedByPage?: (() => ReadonlyArray<{ id: string; url: string }>) | undefined;
   /** Whether the panel is still visible after a tab lifecycle operation. */
   readonly panelOpen?: (() => boolean) | undefined;
   /** Create and resolve a tab for this agent session. */
@@ -494,6 +496,22 @@ async function dispatch(
   };
   const withKeyboard = <T>(send: () => Promise<T>): Promise<T> =>
     target.withKeyboard === undefined ? send() : target.withKeyboard(send);
+  // A link the action followed into a new tab leaves this page where it was,
+  // so the result names the tab: otherwise the click reads as a miss, and a
+  // retried click opens a second one. Only tabs already open by the time the
+  // page is asked where it stands; a page that opens one later is not caught.
+  const tabsOpenedBefore = new Set((target.tabsOpenedByPage?.() ?? []).map((tab) => tab.id));
+  const actionStatus = async () => {
+    const status = toStatus(
+      target.tabId ?? "",
+      await call(bridge.previewStatus, {}),
+      target.viewport(),
+    );
+    const openedTabs = (target.tabsOpenedByPage?.() ?? []).filter(
+      (tab) => !tabsOpenedBefore.has(tab.id),
+    );
+    return openedTabs.length === 0 ? status : { ...status, openedTabs };
+  };
 
   switch (request.operation) {
     case "status":
@@ -521,7 +539,7 @@ async function dispatch(
       // Shown before the page is asked what changed, so the mark lands while
       // the click is still the most recent thing that happened.
       target.onAgentPoint(point);
-      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
+      return actionStatus();
     }
     case "move": {
       const point = await call(bridge.previewMove, input);
@@ -587,13 +605,13 @@ async function dispatch(
       await withAgentInputTurn(() =>
         withKeyboard(() => call(bridge.previewType, { ...keys, ...sinceEpoch })),
       );
-      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
+      return actionStatus();
     }
     case "press":
       await withAgentInputTurn(() =>
         withKeyboard(() => call(bridge.previewPress, { ...input, ...sinceEpoch })),
       );
-      return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());
+      return actionStatus();
     case "scroll":
       await call(bridge.previewScroll, input);
       return toStatus(target.tabId ?? "", await call(bridge.previewStatus, {}), target.viewport());

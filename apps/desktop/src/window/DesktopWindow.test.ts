@@ -26,6 +26,7 @@ import * as ElectronSpelling from "../electron/ElectronSpelling.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
+import * as IpcChannels from "../ipc/channels.ts";
 import * as PreviewSession from "../preview/PreviewSession.ts";
 import { previewProfilePartition } from "../preview/previewPartitions.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
@@ -57,6 +58,7 @@ function makeFakeBrowserWindow(input?: {
     copyImageAt: vi.fn(),
     focus: vi.fn(),
     getURL: vi.fn(() => input?.currentUrl ?? ""),
+    isDestroyed: vi.fn(() => false),
     isLoadingMainFrame: vi.fn(() => false),
     on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
       webContentsHandlers.set(eventName, [...(webContentsHandlers.get(eventName) ?? []), listener]);
@@ -818,6 +820,7 @@ describe("DesktopWindow", () => {
           }),
           isDestroyed: () => false,
           copy: vi.fn(),
+          setWindowOpenHandler: vi.fn(),
         };
         fakeWindow.emitWebContents("did-attach-webview", {}, guest);
 
@@ -847,6 +850,102 @@ describe("DesktopWindow", () => {
         assert.equal(template.find((item) => item.label === "Copy")?.enabled, true);
         assert.equal(template.find((item) => item.label === "Paste")?.enabled, false);
         assert.equal(guest.copy.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("turns a preview page's new windows into panel tabs and never opens one", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const popupTemplate = vi.fn((input: ElectronMenu.ElectronMenuTemplateInput) =>
+        Effect.sync(() => {
+          const openInTab = input.template.find((item) => item.label === "Open Link in New Tab");
+          openInTab?.click?.({} as Electron.MenuItem, fakeWindow.window, {} as KeyboardEvent);
+        }),
+      );
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        electronMenu: {
+          setApplicationMenu: () => Effect.void,
+          popupTemplate,
+          showContextMenu: () => Effect.succeed(Option.none()),
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        const guestHandlers = new Map<string, (...args: unknown[]) => void>();
+        let windowOpenHandler: Parameters<
+          Electron.WebContents["setWindowOpenHandler"]
+        >[0] = () => ({ action: "allow" });
+        const guest = {
+          id: 7,
+          on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
+            guestHandlers.set(eventName, listener);
+          }),
+          isDestroyed: () => false,
+          setWindowOpenHandler: vi.fn((handler: typeof windowOpenHandler) => {
+            windowOpenHandler = handler;
+          }),
+        };
+        fakeWindow.emitWebContents("did-attach-webview", {}, guest);
+
+        const pageOpens = (url: string, disposition: Electron.HandlerDetails["disposition"]) =>
+          windowOpenHandler({
+            url,
+            disposition,
+            frameName: "",
+            features: "",
+            referrer: { url: "", policy: "default" },
+          });
+        assert.deepEqual(pageOpens("https://example.com/docs", "foreground-tab"), {
+          action: "deny",
+        });
+        assert.deepEqual(pageOpens("https://example.com/later", "background-tab"), {
+          action: "deny",
+        });
+        // A pop-up with features is still a tab, and a bare window.open() has
+        // no address to open at all.
+        assert.deepEqual(pageOpens("https://example.com/sign-in", "new-window"), {
+          action: "deny",
+        });
+        assert.deepEqual(pageOpens("about:blank", "foreground-tab"), { action: "deny" });
+
+        guestHandlers.get("context-menu")?.({ preventDefault: vi.fn() }, {
+          misspelledWord: "",
+          dictionarySuggestions: [],
+          linkURL: "https://example.com/menu",
+          mediaType: "none",
+          editFlags: {
+            canUndo: false,
+            canRedo: false,
+            canCut: false,
+            canCopy: false,
+            canPaste: false,
+            canDelete: false,
+            canSelectAll: true,
+            canEditRichly: false,
+          },
+          frame: {} as Electron.WebFrameMain,
+          menuSourceType: "mouse",
+        } satisfies Partial<Electron.ContextMenuParams>);
+        yield* waitForMockCalls(popupTemplate);
+
+        const opened = fakeWindow.send.mock.calls
+          .filter(([channel]) => channel === IpcChannels.PREVIEW_OPEN_TAB_CHANNEL)
+          .map(([, request]) => request);
+        assert.deepEqual(opened, [
+          { webContentsId: 7, url: "https://example.com/docs", background: false },
+          { webContentsId: 7, url: "https://example.com/later", background: true },
+          { webContentsId: 7, url: "https://example.com/sign-in", background: false },
+          { webContentsId: 7, url: "https://example.com/menu", background: true },
+        ]);
       }).pipe(Effect.provide(layer));
     }),
   );
@@ -1005,6 +1104,7 @@ describe("DesktopWindow", () => {
             isDestroyed: () => false,
             on: vi.fn(),
             setAudioMuted,
+            setWindowOpenHandler: vi.fn(),
           } as unknown as Electron.WebContents,
           setAudioMuted,
         };

@@ -397,6 +397,15 @@ export function resolveThreadBrowserTarget(
     onAgentActivity: (activity) =>
       useBrowserPanelStore.getState().setAgentActivity(threadRef, activity),
     onUserTakeover: () => useBrowserPanelStore.getState().markBrowserUserControlled(threadRef),
+    tabsOpenedByPage: () =>
+      tabId === ""
+        ? []
+        : selectThreadBrowserState(
+            useBrowserPanelStore.getState().browserStateByThreadKey,
+            threadRef,
+          )
+            .tabs.filter((entry) => entry.openerTabId === tabId)
+            .map((entry) => ({ id: entry.id, url: entry.url ?? "" })),
     panelOpen: () =>
       selectThreadBrowserState(useBrowserPanelStore.getState().browserStateByThreadKey, threadRef)
         .open,

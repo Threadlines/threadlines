@@ -45,6 +45,60 @@ const activity = (overrides: Partial<AgentActivity> = {}): AgentActivity => ({
   ...overrides,
 });
 
+describe("BrowserPanel new tabs a page asked for", () => {
+  it("opens every tab waiting on the site once it is allowed, behind the tab in front", async () => {
+    const opener = { ...makeBrowserTab(), url: "http://localhost:5173/" };
+    const reading = { ...makeBrowserTab(), url: "http://localhost:5173/notes" };
+    const request = (id: string, url: string) => ({
+      id,
+      waiting: false,
+      host: "docs.example.org",
+      url,
+      source: "page" as const,
+      fromHost: "localhost",
+      tabId: opener.id,
+      newTab: { background: false },
+    });
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {
+        [THREAD_KEY]: { open: true, tabs: [opener, reading], activeTabId: reading.id },
+      },
+      agentStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
+      pendingApprovalsByThreadKey: {
+        [THREAD_KEY]: [
+          request("a", "https://docs.example.org/a"),
+          request("b", "https://docs.example.org/b"),
+        ],
+      },
+    });
+    const screen = await render(
+      <BrowserPanel threadRef={THREAD_REF} flexGrow={1} onClose={() => {}} />,
+    );
+
+    try {
+      await expect
+        .element(page.getByTestId("browser-approval-bar"))
+        .toHaveTextContent("localhost wants to open docs.example.org in a new tab");
+      await page.getByTestId("browser-approval-allow").click();
+
+      const state = useBrowserPanelStore.getState();
+      const thread = state.browserStateByThreadKey[THREAD_KEY];
+      expect(thread?.tabs.map((tab) => tab.url)).toEqual([
+        "http://localhost:5173/",
+        "https://docs.example.org/a",
+        "https://docs.example.org/b",
+        "http://localhost:5173/notes",
+      ]);
+      expect(thread?.activeTabId).toBe(reading.id);
+      expect(state.pendingApprovalsByThreadKey[THREAD_KEY]).toBeUndefined();
+    } finally {
+      screen.unmount();
+      resetBrowserPanel();
+    }
+  });
+});
+
 describe("BrowserPanel device toolbar", () => {
   it("keeps a responsive page fluid when the toolbar opens", async () => {
     seedBrowserPanel({ width: null, height: null });

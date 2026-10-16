@@ -45,7 +45,7 @@ import {
   PREVIEW_AGENT_KEYS_DEADLINE_MS,
   type BrowserSiteAccess,
 } from "@threadlines/shared/preview";
-import { app, BrowserWindow, webContents, type WebContents } from "electron";
+import { app, BrowserWindow, webContents, type Session, type WebContents } from "electron";
 
 import * as IpcChannels from "../ipc/channels.ts";
 import { toCdpKeyDefinition, toCdpModifierBitmask } from "./keyEvents.ts";
@@ -330,6 +330,20 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   };
 
   /**
+   * The sites each browser profile was last allowed, by its session.
+   *
+   * A project's pages share one profile and one policy, but the renderer hands
+   * the policy to each page only once it has attached, and a new page starts
+   * loading before that. A page could open a tab at an allowed address that
+   * redirects at once, and the redirect would land before anything guarded
+   * the new page. So a page born into a profile that already has a policy is
+   * guarded with it from the start. The first page of a profile has nothing
+   * to inherit and waits for its own, as before: holding it to private sites
+   * meanwhile would ask about sites the project already allows.
+   */
+  const accessBySession = new WeakMap<Session, BrowserSiteAccess>();
+
+  /**
    * Arms the guest's own navigations against the guest's allowlist.
    *
    * Registered at attach as well as when a policy arrives, so a tab whose
@@ -341,7 +355,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     if (existing !== undefined) {
       return existing;
     }
-    const guard: NavigationGuard = { access: { allowAll: false, approvedHosts: [] } };
+    const guard: NavigationGuard = {
+      access: accessBySession.get(contents.session) ?? { allowAll: false, approvedHosts: [] },
+    };
     const refuse = (details: {
       readonly url: string;
       readonly isMainFrame: boolean;
@@ -371,6 +387,12 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     navigationGuards.set(contents.id, guard);
     return guard;
   };
+
+  app.on("web-contents-created", (_event, contents) => {
+    if (contents.getType() === "webview" && accessBySession.has(contents.session)) {
+      ensureNavigationGuard(contents);
+    }
+  });
 
   const resolve = (webContentsId: number) =>
     Effect.suspend(() => {
@@ -1313,6 +1335,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     ) {
       const contents = yield* resolve(webContentsId);
       ensureNavigationGuard(contents).access = access;
+      accessBySession.set(contents.session, access);
     }),
     status: Effect.fn("PreviewAutomation.status")(function* (webContentsId: number) {
       const contents = yield* resolveAttached(webContentsId);

@@ -50,6 +50,8 @@ export interface BrowserTab {
   /** Per-tab, because the viewport belongs to the thing you are looking at. */
   viewport: BrowserViewport;
   zoomFactor: number;
+  /** The tab whose page opened this one, for a tab a page opened. */
+  openerTabId?: string;
 }
 
 export interface ThreadBrowserState {
@@ -393,6 +395,12 @@ export interface PendingBrowserApproval {
    * would be the mix-up this exists to avoid.
    */
   readonly tabId: string | null;
+  /**
+   * Set when the page asked for a new tab rather than to go somewhere itself.
+   * Allowing opens that tab beside `tabId` -- behind it, if the page asked for
+   * that -- instead of loading the site over the page that asked.
+   */
+  readonly newTab?: { readonly background: boolean } | undefined;
 }
 
 interface BrowserPanelStoreState {
@@ -422,6 +430,19 @@ interface BrowserPanelStoreState {
    * need an imperative load that cannot happen until the element attaches.
    */
   openTabWithUrl: (threadRef: ScopedThreadRef, url: string, activate?: boolean) => string;
+  /**
+   * A tab a page opened: a `target="_blank"` link, `window.open`, a Cmd-click.
+   *
+   * It goes right after its opener, behind any tabs the opener already
+   * opened (and the tabs those opened), so links Cmd-clicked in a row line up
+   * in the order they were clicked. A tab opened by an agent's tab belongs to
+   * the same agent, so the agent can close what its clicks opened. With no
+   * opener left it goes last.
+   */
+  openTabFromPage: (
+    threadRef: ScopedThreadRef,
+    input: { openerTabId: string | null; url: string; activate: boolean },
+  ) => string;
   closeTab: (threadRef: ScopedThreadRef, tabId: string) => void;
   openAgentTab: (
     threadRef: ScopedThreadRef,
@@ -574,6 +595,23 @@ function withoutApprovalsForTab(
   return { pendingApprovalsByThreadKey: next.length === 0 ? others : { ...others, [key]: next } };
 }
 
+/** Whether `tab` was opened by `openerTabId`'s page, directly or through tabs it opened. */
+function opensFrom(
+  tab: BrowserTab | undefined,
+  openerTabId: string,
+  tabs: ReadonlyArray<BrowserTab>,
+): boolean {
+  const seen = new Set<string>();
+  let parent = tab?.openerTabId;
+  while (parent !== undefined && !seen.has(parent)) {
+    if (parent === openerTabId) return true;
+    seen.add(parent);
+    const parentId = parent;
+    parent = tabs.find((entry) => entry.id === parentId)?.openerTabId;
+  }
+  return false;
+}
+
 function isOnlyEmptyTab(state: ThreadBrowserState): boolean {
   return (
     state.tabs.length === 1 &&
@@ -669,6 +707,42 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
           }),
           visitedUrls: rememberVisit(state.visitedUrls, url, Date.now()),
         }));
+        return tab.id;
+      },
+      openTabFromPage: (threadRef, { openerTabId, url, activate }) => {
+        const tab: BrowserTab = {
+          ...makeBrowserTab(),
+          url,
+          ...(openerTabId === null ? {} : { openerTabId }),
+        };
+        set((state) => {
+          const key = scopedThreadKey(threadRef);
+          const owner =
+            openerTabId === null
+              ? undefined
+              : state.browserOwnershipByThreadKey[key]?.agentOwnerByTabId[openerTabId];
+          return {
+            ...updateThread(state, threadRef, (current) => {
+              const openerIndex = current.tabs.findIndex((entry) => entry.id === openerTabId);
+              let at = current.tabs.length;
+              if (openerIndex !== -1 && openerTabId !== null) {
+                at = openerIndex + 1;
+                while (opensFrom(current.tabs[at], openerTabId, current.tabs)) at += 1;
+              }
+              return {
+                ...current,
+                tabs: [...current.tabs.slice(0, at), tab, ...current.tabs.slice(at)],
+                activeTabId: activate ? tab.id : current.activeTabId,
+              };
+            }),
+            ...(owner === undefined
+              ? {}
+              : updateOwnership(state, threadRef, (current) =>
+                  assignAgentOwner(current, tab.id, owner),
+                )),
+            visitedUrls: rememberVisit(state.visitedUrls, url, Date.now()),
+          };
+        });
         return tab.id;
       },
       closeTab: (threadRef, tabId) =>
@@ -852,7 +926,10 @@ export const useBrowserPanelStore = create<BrowserPanelStoreState>()(
               !approval.waiting &&
               entry.source === approval.source &&
               entry.tabId === approval.tabId &&
-              entry.host === approval.host,
+              entry.host === approval.host &&
+              (entry.newTab === undefined) === (approval.newTab === undefined) &&
+              // Each address a page asks to open is a tab of its own.
+              (approval.newTab === undefined || entry.url === approval.url),
           );
           const next =
             repeat === -1

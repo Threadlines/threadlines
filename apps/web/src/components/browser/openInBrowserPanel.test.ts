@@ -1,4 +1,4 @@
-import { scopeThreadRef } from "@threadlines/client-runtime";
+import { scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
 import { EnvironmentId, ProjectId, ThreadId, type ProjectKind } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -12,7 +12,7 @@ import {
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useStore, type EnvironmentState } from "../../store";
 import type { Project, ThreadShell } from "../../types";
-import { isPlainPrimaryClick, openUrlInBrowserPanel } from "./openInBrowserPanel";
+import { isPlainPrimaryClick, openTabForPage, openUrlInBrowserPanel } from "./openInBrowserPanel";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-open-in-browser");
 const THREAD_ID = ThreadId.make("thread-open-in-browser");
@@ -203,5 +203,61 @@ describe("openUrlInBrowserPanel", () => {
 
     expect(openUrlInBrowserPanel(THREAD_REF, "mailto:someone@example.com")).toBe(false);
     expect(useBrowserPanelStore.getState().browserStateByThreadKey).toEqual({});
+  });
+});
+
+describe("openTabForPage", () => {
+  beforeEach(() => {
+    useStore.setState({ activeEnvironmentId: null, environmentStateById: {} });
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {},
+      browserOwnershipByThreadKey: {},
+      pendingApprovalsByThreadKey: {},
+      visitedUrls: [],
+    });
+    seedThread({ projectKind: "workspace" });
+    openUrlInBrowserPanel(THREAD_REF, "localhost:5173");
+  });
+
+  const pageAsks = (input: { openerTabId: string; url: string; background: boolean }) =>
+    openTabForPage({ threadRef: THREAD_REF, projectId: PROJECT_ID, ...input });
+
+  it("opens beside the page, in front only when that page is in front", () => {
+    const opener = selectActiveTab(panelState())!.id;
+
+    pageAsks({ openerTabId: opener, url: "http://localhost:5173/docs", background: true });
+    expect(selectActiveTab(panelState())?.id).toBe(opener);
+
+    pageAsks({ openerTabId: opener, url: "http://localhost:5173/help", background: false });
+    const helpTab = selectActiveTab(panelState())!;
+    expect(helpTab.url).toBe("http://localhost:5173/help");
+    expect(panelState().tabs.map((tab) => tab.url)).toEqual([
+      "http://localhost:5173/",
+      "http://localhost:5173/docs",
+      "http://localhost:5173/help",
+    ]);
+
+    // A page that is not in front, as an agent's often is, opens behind.
+    pageAsks({ openerTabId: opener, url: "http://localhost:5173/faq", background: false });
+    expect(selectActiveTab(panelState())?.id).toBe(helpTab.id);
+  });
+
+  it("asks before a page opens a site the project has not allowed", () => {
+    const opener = selectActiveTab(panelState())!.id;
+
+    pageAsks({ openerTabId: opener, url: "https://shop.example.org/pricing", background: false });
+
+    expect(panelState().tabs).toHaveLength(1);
+    const [question] =
+      useBrowserPanelStore.getState().pendingApprovalsByThreadKey[scopedThreadKey(THREAD_REF)] ??
+      [];
+    expect(question).toMatchObject({
+      host: "shop.example.org",
+      url: "https://shop.example.org/pricing",
+      source: "page",
+      fromHost: "localhost",
+      tabId: opener,
+      newTab: { background: false },
+    });
   });
 });

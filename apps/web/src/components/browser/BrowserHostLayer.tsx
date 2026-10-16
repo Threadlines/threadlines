@@ -28,6 +28,7 @@ import { resolveBrowserSiteAccess } from "@threadlines/shared/preview";
 import { pushNavigationPolicy } from "./browserApprovals";
 import { nextBrowserApprovalId } from "./browserApprovalRequests";
 import { installBrowserFocusGuard } from "./browserFocusGuard";
+import { openTabForPage } from "./openInBrowserPanel";
 import {
   forgetThreadPages,
   hasBackgroundPages,
@@ -274,6 +275,24 @@ export function useBrowserPageWatchers(): void {
         // A question nobody can see is a stall, not a prompt.
         panel.setBrowserOpen(page.threadRef, true);
       }
+    });
+  }, []);
+
+  // A page asked for a new tab or window. The desktop opened nothing; the tab
+  // opens here, in the page's own thread, beside the page.
+  useEffect(() => {
+    const subscribe = window.desktopBridge?.onPreviewOpenTab;
+    if (subscribe === undefined) return;
+    return subscribe((request) => {
+      const page = attachedPages().find((entry) => entry.webContentsId === request.webContentsId);
+      if (page === undefined) return;
+      openTabForPage({
+        threadRef: page.threadRef,
+        projectId: page.live.projectId,
+        openerTabId: page.tabId,
+        url: request.url,
+        background: request.background,
+      });
     });
   }, []);
 
