@@ -1678,11 +1678,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         // Workflow runs sit beside the subagent roster: never capped, folded
         // here so this projector's one cursor covers both.
         case "thread.workflow-run-recorded": {
-          const existingRuns = yield* projectionThreadWorkflowRunRepository.listByThreadId({
+          // Only the run the update is for: a thread's history of finished
+          // runs never rides along on a live one's progress.
+          const existingRun = yield* projectionThreadWorkflowRunRepository.getByTaskId({
             threadId: event.payload.threadId,
+            taskId: event.payload.patch.taskId,
           });
           const nextRuns = applyWorkflowRunPatch(
-            existingRuns,
+            Option.toArray(existingRun),
             event.payload.patch,
             event.occurredAt,
             event.sequence,

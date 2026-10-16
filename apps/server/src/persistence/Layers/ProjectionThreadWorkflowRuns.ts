@@ -1,6 +1,7 @@
 import { OrchestrationWorkflowRun, ThreadId } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
@@ -8,6 +9,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
   ProjectionThreadWorkflowRunRepository,
+  ProjectionThreadWorkflowRunTaskInput,
   ProjectionThreadWorkflowRunThreadInput,
   type ProjectionThreadWorkflowRunRepositoryShape,
 } from "../Services/ProjectionThreadWorkflowRuns.ts";
@@ -44,6 +46,16 @@ const makeProjectionThreadWorkflowRunRepository = Effect.gen(function* () {
       FROM projection_thread_workflow_runs
       WHERE thread_id = ${threadId}
       ORDER BY started_at ASC, task_id ASC
+    `,
+  });
+
+  const getRow = SqlSchema.findOneOption({
+    Request: ProjectionThreadWorkflowRunTaskInput,
+    Result: WorkflowRunRow,
+    execute: ({ threadId, taskId }) => sql`
+      SELECT thread_id AS "threadId", run_json AS "runJson"
+      FROM projection_thread_workflow_runs
+      WHERE thread_id = ${threadId} AND task_id = ${taskId}
     `,
   });
 
@@ -84,6 +96,18 @@ const makeProjectionThreadWorkflowRunRepository = Effect.gen(function* () {
       ),
     );
 
+  const getByTaskId: ProjectionThreadWorkflowRunRepositoryShape["getByTaskId"] = (input) =>
+    getRow(input).pipe(
+      Effect.map((row) =>
+        Option.flatMap(row, (found) =>
+          Option.fromNullishOr(decodeWorkflowRunRows([found])[0]?.run),
+        ),
+      ),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadWorkflowRunRepository.getByTaskId:query"),
+      ),
+    );
+
   const listAll: ProjectionThreadWorkflowRunRepositoryShape["listAll"] = () =>
     listAllRows(undefined).pipe(
       Effect.map(decodeWorkflowRunRows),
@@ -114,6 +138,7 @@ const makeProjectionThreadWorkflowRunRepository = Effect.gen(function* () {
 
   return {
     listByThreadId,
+    getByTaskId,
     listAll,
     upsert,
     replaceByThreadId,
