@@ -22,6 +22,7 @@ import type {
 
 import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import { scratchIndexFileName } from "./scratchIndex.ts";
 import type { GitRemoteStatusOptions } from "./GitVcsDriver.ts";
 
 const baseLocalStatus: VcsStatusLocalResult = {
@@ -562,6 +563,124 @@ describe("VcsStatusBroadcaster", () => {
         local: state.currentLocalStatus,
       } satisfies VcsStatusStreamEvent);
       assert.isAtLeast(state.localStatusCalls, 2);
+    }).pipe(Effect.provide(makeTestLayer(state)));
+  });
+
+  // A repository's worktrees share one git dir. Each checkout reacts only to
+  // its own changes, and staging refreshes the local half alone.
+  it.live("refreshes a linked worktree only for changes that concern it", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-vcs-status-linked-",
+      });
+      const commonDir = path.join(parent, "main", ".git");
+      const worktreeGitDir = path.join(commonDir, "worktrees", "linked");
+      const worktreeDir = path.join(parent, "linked");
+      yield* fileSystem.makeDirectory(path.join(commonDir, "refs", "heads"), { recursive: true });
+      yield* fileSystem.makeDirectory(path.join(commonDir, "logs"));
+      yield* fileSystem.makeDirectory(path.join(worktreeGitDir, "logs"), { recursive: true });
+      yield* fileSystem.makeDirectory(worktreeDir);
+      yield* fileSystem.writeFileString(path.join(commonDir, "HEAD"), "ref: refs/heads/main\n");
+      yield* fileSystem.writeFileString(path.join(worktreeGitDir, "HEAD"), "ref: refs/heads/wt\n");
+      yield* fileSystem.writeFileString(path.join(worktreeGitDir, "commondir"), "../..\n");
+      yield* fileSystem.writeFileString(
+        path.join(worktreeDir, ".git"),
+        `gitdir: ${worktreeGitDir}\n`,
+      );
+      // macOS can report writes made just before a watch starts; let the
+      // setup writes above age out first.
+      yield* Effect.sleep(Duration.millis(500));
+
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      const snapshotDeferred = yield* Deferred.make<void>();
+      yield* Stream.runForEach(
+        broadcaster.streamStatus(
+          { cwd: worktreeDir },
+          { automaticRemoteRefreshInterval: Effect.succeed(Duration.zero) },
+        ),
+        (event) =>
+          event._tag === "snapshot"
+            ? Deferred.succeed(snapshotDeferred, undefined).pipe(Effect.ignore)
+            : Effect.void,
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(snapshotDeferred);
+
+      // The watcher registers asynchronously, so keep writing the worktree's
+      // index until a refresh lands, then let stray events settle (macOS can
+      // report the setup writes above late).
+      const localCallsAtSubscribe = state.localStatusCalls;
+      let attempt = 0;
+      while (state.localStatusCalls === localCallsAtSubscribe) {
+        attempt += 1;
+        yield* fileSystem.writeFileString(path.join(worktreeGitDir, "index"), `index ${attempt}`);
+        yield* Effect.sleep(Duration.millis(500));
+      }
+      yield* Effect.sleep(Duration.millis(600));
+      const remoteCallsBeforeNoise = state.remoteStatusCalls;
+      const localCallsBeforeNoise = state.localStatusCalls;
+
+      // The main checkout's own index and HEAD, and our scratch index files,
+      // say nothing about this worktree. Staging in the worktree itself, last,
+      // refreshes only its local half, and shows the events were delivered.
+      yield* fileSystem.writeFileString(path.join(commonDir, "index"), "main index");
+      yield* fileSystem.writeFileString(path.join(commonDir, "HEAD"), "ref: refs/heads/other\n");
+      yield* fileSystem.writeFileString(
+        path.join(commonDir, scratchIndexFileName("checkpoint")),
+        "",
+      );
+      yield* fileSystem.writeFileString(
+        path.join(worktreeGitDir, scratchIndexFileName("preview")),
+        "",
+      );
+      yield* fileSystem.writeFileString(path.join(worktreeGitDir, "index"), "staged");
+      const noiseStartedAtMs = Date.now();
+      while (
+        state.localStatusCalls === localCallsBeforeNoise &&
+        Date.now() - noiseStartedAtMs < 10_000
+      ) {
+        yield* Effect.sleep(Duration.millis(100));
+      }
+      yield* Effect.sleep(Duration.millis(600));
+      assert.isAbove(state.localStatusCalls, localCallsBeforeNoise);
+      assert.equal(state.remoteStatusCalls, remoteCallsBeforeNoise);
+
+      // A branch switch followed at once by an index write is one burst; the
+      // index write must not shrink it to a local-only refresh.
+      yield* fileSystem.writeFileString(path.join(worktreeGitDir, "HEAD"), "ref: refs/heads/wt2\n");
+      yield* fileSystem.writeFileString(path.join(worktreeGitDir, "index"), "switched");
+      const waitForRemoteRefreshAfter = (remoteCalls: number) =>
+        Effect.gen(function* () {
+          const startedAtMs = Date.now();
+          while (state.remoteStatusCalls === remoteCalls && Date.now() - startedAtMs < 10_000) {
+            yield* Effect.sleep(Duration.millis(100));
+          }
+        });
+      yield* waitForRemoteRefreshAfter(remoteCallsBeforeNoise);
+      assert.isAbove(state.remoteStatusCalls, remoteCallsBeforeNoise);
+
+      // A commit in the main checkout can move a branch this worktree tracks.
+      // It shows in the HEAD reflog, and in COMMIT_EDITMSG where reflogs are off.
+      for (const mainCommitTrace of [
+        path.join(commonDir, "logs", "HEAD"),
+        path.join(commonDir, "COMMIT_EDITMSG"),
+      ]) {
+        yield* Effect.sleep(Duration.millis(600));
+        const remoteCallsBeforeMainCommit = state.remoteStatusCalls;
+        yield* fileSystem.writeFileString(mainCommitTrace, "main commit\n");
+        yield* waitForRemoteRefreshAfter(remoteCallsBeforeMainCommit);
+        assert.isAbove(state.remoteStatusCalls, remoteCallsBeforeMainCommit, mainCommitTrace);
+      }
     }).pipe(Effect.provide(makeTestLayer(state)));
   });
 
