@@ -18,6 +18,7 @@ import type {
   OrchestrationSideTurn,
   OrchestrationThread,
   OrchestrationThreadShell,
+  OrchestrationWorkflowRun,
   OrchestrationThreadActivity,
   OrchestrationThreadGoal,
   ProjectId,
@@ -136,6 +137,8 @@ export interface EnvironmentState {
   agentRequestsByThreadId: Record<ThreadId, OrchestrationAgentRequestState>;
   /** Agent pages per thread (OrchestrationAgentPage); absent until a thread's detail loads. */
   pagesByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationAgentPage>>;
+  /** Workflow runs per thread (OrchestrationWorkflowRun); absent until a thread's detail loads. */
+  workflowRunsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationWorkflowRun>>;
   /** Child threads: what each thread's agent asked of the threads it started. */
   childRequestsByThreadId: Record<ThreadId, OrchestrationChildRequestState>;
 
@@ -173,6 +176,7 @@ const initialEnvironmentState: EnvironmentState = {
   turnDiffSummaryByThreadId: {},
   agentRequestsByThreadId: {},
   pagesByThreadId: {},
+  workflowRunsByThreadId: {},
   childRequestsByThreadId: {},
   sidebarThreadSummaryById: {},
   bootstrapComplete: false,
@@ -1213,6 +1217,19 @@ function writeThreadState(
   }
 
   if (
+    nextThread.workflowRuns !== undefined &&
+    previousThread?.workflowRuns !== nextThread.workflowRuns
+  ) {
+    nextState = {
+      ...nextState,
+      workflowRunsByThreadId: {
+        ...nextState.workflowRunsByThreadId,
+        [nextThread.id]: nextThread.workflowRuns,
+      },
+    };
+  }
+
+  if (
     nextThread.agentRequests !== undefined &&
     previousThread?.agentRequests !== nextThread.agentRequests
   ) {
@@ -1384,6 +1401,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedAgentRequests, ...agentRequestsByThreadId } =
     state.agentRequestsByThreadId;
   const { [threadId]: _removedPages, ...pagesByThreadId } = state.pagesByThreadId ?? {};
+  const { [threadId]: _removedWorkflowRuns, ...workflowRunsByThreadId } =
+    state.workflowRunsByThreadId ?? {};
   const { [threadId]: _removedChildRequests, ...childRequestsByThreadId } =
     state.childRequestsByThreadId;
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
@@ -1406,6 +1425,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     turnDiffSummaryByThreadId,
     agentRequestsByThreadId,
     pagesByThreadId,
+    workflowRunsByThreadId,
     childRequestsByThreadId,
     sidebarThreadSummaryById,
   };
@@ -1764,6 +1784,10 @@ function syncEnvironmentShellSnapshot(
     ),
     agentRequestsByThreadId: retainThreadScopedRecord(state.agentRequestsByThreadId, nextThreadIds),
     pagesByThreadId: retainThreadScopedRecord(state.pagesByThreadId ?? {}, nextThreadIds),
+    workflowRunsByThreadId: retainThreadScopedRecord(
+      state.workflowRunsByThreadId ?? {},
+      nextThreadIds,
+    ),
     childRequestsByThreadId: retainThreadScopedRecord(state.childRequestsByThreadId, nextThreadIds),
     bootstrapComplete: true,
   };

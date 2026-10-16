@@ -387,11 +387,18 @@ const TICK_STEPS_MS = [
   10_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000,
 ] as const;
 
+/** "0", "30s", "1m 30s", "15m", "1h": ticks fall on round steps, so a label
+ *  needs at most two units. */
 function tickLabel(ms: number): string {
   if (ms === 0) return "0";
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  const minutes = Math.round(ms / 60_000);
-  return minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (seconds > 0) return `${minutes}m ${seconds}s`;
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
 }
 
 /**
