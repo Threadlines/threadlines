@@ -360,3 +360,85 @@ export function estimateWorkflowRunCardHeight(run: OrchestrationWorkflowRun): nu
     : 0;
   return 60 + groups.length * 26 + agentLines * 24;
 }
+
+export interface WorkflowTimelineBar {
+  readonly agent: WorkflowAgent;
+  /** Where its run starts and how long it is, in percent of the axis. */
+  readonly left: number;
+  readonly width: number;
+  /** The wait before it started (queued), when it waited. */
+  readonly waitLeft: number | null;
+  readonly waitWidth: number | null;
+  readonly durationMs: number | null;
+}
+
+export interface WorkflowTimelineLayout {
+  readonly startMs: number;
+  readonly spanMs: number;
+  readonly groups: ReadonlyArray<{
+    readonly key: string;
+    readonly title: string;
+    readonly bars: ReadonlyArray<WorkflowTimelineBar>;
+  }>;
+  readonly ticks: ReadonlyArray<{ readonly at: number; readonly label: string }>;
+}
+
+const TICK_STEPS_MS = [
+  10_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000,
+] as const;
+
+function tickLabel(ms: number): string {
+  if (ms === 0) return "0";
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  const minutes = Math.round(ms / 60_000);
+  return minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
+}
+
+/**
+ * Who ran when: one bar per agent from its start to its end (or now), on an
+ * axis from the run's first moment to its last, grouped by phase. Agents that
+ * never started have no bar. Four to six ticks, on round steps.
+ */
+export function workflowTimelineLayout(
+  run: OrchestrationWorkflowRun,
+  nowMs: number,
+): WorkflowTimelineLayout {
+  const runStart = Date.parse(run.startedAt);
+  let startMs = Number.isFinite(runStart) ? runStart : nowMs;
+  let endMs = run.endedAt ? Date.parse(run.endedAt) : nowMs;
+  for (const agent of run.agents) {
+    const first = agent.queuedAt ?? agent.startedAt;
+    if (first !== undefined) startMs = Math.min(startMs, first);
+    const end = agentEndMs(agent, nowMs);
+    if (end !== null) endMs = Math.max(endMs, end);
+  }
+  const spanMs = Math.max(1_000, endMs - startMs);
+  const pct = (ms: number) => Math.min(100, Math.max(0, ((ms - startMs) / spanMs) * 100));
+  const groups = workflowPhaseGroups(run, nowMs).map((group) => ({
+    key: group.phase ? String(group.phase.index) : "loose",
+    title: group.title,
+    bars: group.agents.flatMap((agent): ReadonlyArray<WorkflowTimelineBar> => {
+      if (agent.startedAt === undefined) return [];
+      const end = agentEndMs(agent, nowMs) ?? agent.startedAt;
+      const left = pct(agent.startedAt);
+      const waited = agent.queuedAt !== undefined && agent.queuedAt < agent.startedAt - 1_000;
+      return [
+        {
+          agent,
+          left,
+          width: Math.max(0.6, pct(end) - left),
+          waitLeft: waited ? pct(agent.queuedAt!) : null,
+          waitWidth: waited ? pct(agent.startedAt) - pct(agent.queuedAt!) : null,
+          durationMs: Math.max(0, end - agent.startedAt),
+        },
+      ];
+    }),
+  }));
+  const step =
+    TICK_STEPS_MS.find((candidate) => spanMs / candidate <= 5) ?? TICK_STEPS_MS.at(-1)!;
+  const ticks: Array<{ at: number; label: string }> = [];
+  for (let at = 0; at <= spanMs; at += step) {
+    ticks.push({ at: (at / spanMs) * 100, label: tickLabel(at) });
+  }
+  return { startMs, spanMs, groups, ticks };
+}
