@@ -134,7 +134,7 @@ describe("decider workflow runs", () => {
         parentThreadId: null,
         queuedFollowUps: [],
         workflowRuns: [run("task-a", status)],
-      } as Partial<OrchestrationThread>);
+      } as unknown as Partial<OrchestrationThread>);
     await expect(decide(revert, thread("running"))).rejects.toThrow(
       "A workflow is still running. Stop it first.",
     );
