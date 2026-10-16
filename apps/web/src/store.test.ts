@@ -17,9 +17,11 @@ import {
   ThreadId,
   ThreadParticipantId,
   TurnId,
+  OrchestrationThread,
   type OrchestrationEvent,
   type OrchestrationSession,
 } from "@threadlines/contracts";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { deriveTimelineEntries } from "./session-logic";
@@ -40,6 +42,9 @@ import {
   setThreadBranch,
   selectThreadsAcrossEnvironments,
   selectRunningSidebarThreadsAcrossEnvironments,
+  selectThreadDetailLoaded,
+  markThreadDetailUnloaded,
+  syncServerThreadDetail,
   type AppState,
   type EnvironmentState,
   useStore,
@@ -333,6 +338,62 @@ describe("environment state removal", () => {
     const next = removeEnvironmentState(state, remoteEnvironmentId);
 
     expect(next).toBe(state);
+  });
+});
+
+const decodeOrchestrationThread = Schema.decodeUnknownSync(OrchestrationThread);
+
+describe("thread detail loaded", () => {
+  const threadId = ThreadId.make("thread-1");
+  const threadRef = scopeThreadRef(localEnvironmentId, threadId);
+  const detail = decodeOrchestrationThread({
+    id: threadId,
+    projectId: "project-1",
+    title: "Thread",
+    modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+    runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+    branch: null,
+    worktreePath: null,
+    latestTurn: null,
+    createdAt: "2026-02-13T00:00:00.000Z",
+    updatedAt: "2026-02-13T00:00:00.000Z",
+    deletedAt: null,
+    messages: [],
+    activities: [],
+    checkpoints: [],
+    session: null,
+  });
+
+  it("counts a thread's history as loaded only from its detail snapshot", () => {
+    // A streamed event fills the thread's messages too, but only partly.
+    const fromEvents = applyOrchestrationEvent(
+      makeState(makeThread()),
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId: MessageId.make("message-1"),
+        role: "assistant",
+        text: "Done.",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-02-27T00:00:02.000Z",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(selectThreadDetailLoaded(fromEvents, threadRef)).toBe(false);
+
+    const loaded = syncServerThreadDetail(fromEvents, detail, localEnvironmentId);
+    expect(selectThreadDetailLoaded(loaded, threadRef)).toBe(true);
+    // Its detail feed ended, or the thread is gone: no longer known whole.
+    expect(selectThreadDetailLoaded(markThreadDetailUnloaded(loaded, threadRef), threadRef)).toBe(
+      false,
+    );
+    const deleted = applyOrchestrationEvent(
+      loaded,
+      makeEvent("thread.deleted", { threadId, deletedAt: "2026-02-27T00:00:03.000Z" }),
+      localEnvironmentId,
+    );
+    expect(selectThreadDetailLoaded(deleted, threadRef)).toBe(false);
   });
 });
 

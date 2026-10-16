@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeOS from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFile as execFileAsync, execFileSync } from "node:child_process";
 import { accessSync, constants, readdirSync, statSync } from "node:fs";
 import { join as joinHostPath, posix as PosixPath, win32 as WindowsPath } from "node:path";
 
@@ -263,35 +263,68 @@ export function readEnvironmentFromWindowsShell(
     typeof optionsOrExecFile === "function"
       ? optionsOrExecFile
       : (maybeExecFile ?? (execFileSync as ExecFileSyncLike));
-  const command = buildWindowsEnvironmentCaptureCommand(names);
-  const args = [
-    "-NoLogo",
-    ...(options.loadProfile ? ([] as const) : (["-NoProfile"] as const)),
-    "-NonInteractive",
-    "-Command",
-    command,
-  ];
+  const args = windowsEnvironmentProbeArgs(names, options);
   for (const shell of WINDOWS_SHELL_CANDIDATES) {
     try {
-      const output = execFile(shell, args, {
-        encoding: "utf8",
-        timeout: 5000,
-        windowsHide: true,
-      });
-
-      const environment: Partial<Record<string, string>> = {};
-      for (const name of names) {
-        const value = extractEnvironmentValue(output, name);
-        if (value !== undefined) {
-          environment[name] = value;
-        }
-      }
-      return environment;
+      return extractWindowsEnvironment(execFile(shell, args, WINDOWS_PROBE_EXEC_OPTIONS), names);
     } catch {
       continue;
     }
   }
 
+  return {};
+}
+
+const WINDOWS_PROBE_EXEC_OPTIONS = { encoding: "utf8", timeout: 5000, windowsHide: true } as const;
+
+function windowsEnvironmentProbeArgs(
+  names: ReadonlyArray<string>,
+  options: WindowsEnvironmentProbeOptions,
+): ReadonlyArray<string> {
+  return [
+    "-NoLogo",
+    ...(options.loadProfile ? ([] as const) : (["-NoProfile"] as const)),
+    "-NonInteractive",
+    "-Command",
+    buildWindowsEnvironmentCaptureCommand(names),
+  ];
+}
+
+function extractWindowsEnvironment(
+  output: string,
+  names: ReadonlyArray<string>,
+): Partial<Record<string, string>> {
+  const environment: Partial<Record<string, string>> = {};
+  for (const name of names) {
+    const value = extractEnvironmentValue(output, name);
+    if (value !== undefined) {
+      environment[name] = value;
+    }
+  }
+  return environment;
+}
+
+/** As `readEnvironmentFromWindowsShell`, without blocking the event loop while PowerShell runs. */
+export async function readEnvironmentFromWindowsShellAsync(
+  names: ReadonlyArray<string>,
+  options: WindowsEnvironmentProbeOptions = {},
+): Promise<Partial<Record<string, string>>> {
+  if (names.length === 0) {
+    return {};
+  }
+  const args = windowsEnvironmentProbeArgs(names, options);
+  for (const shell of WINDOWS_SHELL_CANDIDATES) {
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        execFileAsync(shell, args, WINDOWS_PROBE_EXEC_OPTIONS, (error, stdout) =>
+          error ? reject(error) : resolve(stdout),
+        );
+      });
+      return extractWindowsEnvironment(output, names);
+    } catch {
+      continue;
+    }
+  }
   return {};
 }
 
@@ -560,28 +593,57 @@ export interface WindowsEnvironmentResolverOptions {
   readonly commandAvailable?: typeof isCommandAvailable;
 }
 
-/** Refresh at an explicit rescan or after installation, never on the process spawn path. */
+// Refreshes of one environment that overlap share a single PowerShell run.
+const windowsPathRefreshesInFlight = new WeakMap<NodeJS.ProcessEnv, Promise<void>>();
+
+/**
+ * Adds PATH entries installed since the server started (read from the
+ * persisted Windows environment) and the known CLI folders to `env.PATH`,
+ * keeping the existing order first. Runs at an explicit rescan or after an
+ * installation, never on the process spawn path. PowerShell runs without
+ * blocking the event loop.
+ */
 export function refreshWindowsPath(
   options: {
     readonly env?: NodeJS.ProcessEnv;
     readonly platform?: NodeJS.Platform;
-    readonly readEnvironment?: WindowsShellEnvironmentReader;
+    readonly readEnvironment?: (
+      names: ReadonlyArray<string>,
+      options?: WindowsEnvironmentProbeOptions,
+    ) => Partial<Record<string, string>> | Promise<Partial<Record<string, string>>>;
+    /**
+     * Read anew even if a refresh is running: after an installer finishes, a
+     * read that began before it may miss the PATH entry it added.
+     */
+    readonly afterInstall?: boolean;
   } = {},
-): void {
-  if ((options.platform ?? process.platform) !== "win32") return;
+): Promise<void> {
+  if ((options.platform ?? process.platform) !== "win32") return Promise.resolve();
   const env = options.env ?? process.env;
-  const persistedPath = readWindowsEnvironmentSafely(
-    options.readEnvironment ?? readEnvironmentFromWindowsShell,
-    ["PATH"],
-    { loadProfile: false },
-  ).PATH;
-  const refreshedPath = mergePathValues(readEnvPath(env), persistedPath, "win32");
-  const mergedPath = mergePathValues(
-    refreshedPath,
-    resolveKnownWindowsCliDirs(env).join(WINDOWS_PATH_DELIMITER),
-    "win32",
-  );
-  if (mergedPath) env.PATH = mergedPath;
+  const inFlight = windowsPathRefreshesInFlight.get(env);
+  if (inFlight !== undefined && options.afterInstall !== true) return inFlight;
+  const readEnvironment = options.readEnvironment ?? readEnvironmentFromWindowsShellAsync;
+  const refresh = (async () => {
+    let persistedPath: string | undefined;
+    try {
+      persistedPath = (await readEnvironment(["PATH"], { loadProfile: false })).PATH;
+    } catch {
+      persistedPath = undefined;
+    }
+    const refreshedPath = mergePathValues(readEnvPath(env), persistedPath, "win32");
+    const mergedPath = mergePathValues(
+      refreshedPath,
+      resolveKnownWindowsCliDirs(env).join(WINDOWS_PATH_DELIMITER),
+      "win32",
+    );
+    if (mergedPath) env.PATH = mergedPath;
+  })().finally(() => {
+    if (windowsPathRefreshesInFlight.get(env) === refresh) {
+      windowsPathRefreshesInFlight.delete(env);
+    }
+  });
+  windowsPathRefreshesInFlight.set(env, refresh);
+  return refresh;
 }
 
 function readWindowsEnvironmentSafely(

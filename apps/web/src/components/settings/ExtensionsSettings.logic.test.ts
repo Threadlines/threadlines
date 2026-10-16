@@ -33,8 +33,6 @@ import {
   bucketSkillsByPlugin,
   dedupeShadowedSkills,
   groupPluginComponents,
-  parseExtensionsSettingsTab,
-  resolveExtensionsSettingsTab,
   makeExtensionJsonSchemaFormDefaults,
   resolvePluginComponentTarget,
   selectCuratedPlugins,
@@ -42,6 +40,7 @@ import {
   shouldRenderExtensionBrowserGroups,
   summarizePluginDetail,
 } from "./ExtensionsSettings.logic";
+import { parseExtensionsSettingsTab, resolveExtensionsSettingsTab } from "./extensionsSettingsTabs";
 
 describe("ExtensionsSettings logic", () => {
   it("takes the tab from the URL and falls back to the remembered one", () => {

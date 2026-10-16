@@ -36,8 +36,18 @@ const GIT_MAX_OUTPUT_BYTES = 512 * 1024;
 const REVISION_MAX_LENGTH = 256;
 const PATH_MAX_LENGTH = 1_024;
 
-/** Every command runs with these: no fsmonitor hook, no untracked cache writes. */
-const GIT_PROFILE = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"] as const;
+/**
+ * Every command runs with these: no fsmonitor hook, no untracked cache writes,
+ * and no index refresh from `git diff` (GIT_OPTIONAL_LOCKS does not cover it).
+ */
+const GIT_PROFILE = [
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.untrackedCache=false",
+  "-c",
+  "diff.autoRefreshIndex=false",
+] as const;
 /** No optional index writes; paths are literal, never pathspec magic. */
 const GIT_ENV: NodeJS.ProcessEnv = { GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" };
 const NO_CONVERSION = ["--no-color", "--no-ext-diff", "--no-textconv"] as const;

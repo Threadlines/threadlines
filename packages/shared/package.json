@@ -39,6 +39,10 @@
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
     },
+    "./agentPageDocument": {
+      "types": "./src/agentPageDocument.ts",
+      "import": "./src/agentPageDocument.ts"
+    },
     "./agentPages": {
       "types": "./src/agentPages.ts",
       "import": "./src/agentPages.ts"

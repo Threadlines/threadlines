@@ -4,6 +4,7 @@ import { ProviderDriverKind } from "@threadlines/contracts";
 import {
   createThreadJumpHintVisibilityController,
   canMarkThreadDone,
+  getSidebarIdlePrewarmThreadIds,
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
@@ -152,6 +153,25 @@ describe("getSidebarThreadIdsToPrewarm", () => {
 
   it("returns no thread ids when the limit is zero", () => {
     expect(getSidebarThreadIdsToPrewarm(["t1", "t2"], 0)).toEqual([]);
+  });
+});
+
+describe("getSidebarIdlePrewarmThreadIds", () => {
+  it("puts the open thread's neighbours first, then the top rows, without repeats", () => {
+    expect(
+      getSidebarIdlePrewarmThreadIds({
+        traversalThreadIds: ["t1", "t2", "t3", "t4", "t5", "t6"],
+        activeThreadId: "t5",
+        limit: 3,
+      }),
+    ).toEqual(["t4", "t6", "t1", "t2", "t3"]);
+    expect(
+      getSidebarIdlePrewarmThreadIds({
+        traversalThreadIds: ["t1", "t2", "t3", "t4"],
+        activeThreadId: "t1",
+        limit: 3,
+      }),
+    ).toEqual(["t2", "t3"]);
   });
 });
 

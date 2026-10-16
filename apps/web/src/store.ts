@@ -131,6 +131,14 @@ export interface EnvironmentState {
   agentRequestsByThreadId: Record<ThreadId, OrchestrationAgentRequestState>;
   /** Agent pages per thread (OrchestrationAgentPage); absent until a thread's detail loads. */
   pagesByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationAgentPage>>;
+  /**
+   * Threads whose detail snapshot has landed (syncServerThreadDetail). Events
+   * and optimistic writes fill the detail slices too, so only this says a
+   * thread's messages are its history rather than a partial view: until then
+   * the chat says it is loading, not that the thread is empty. Dropped with
+   * the thread, or by `markThreadDetailUnloaded` when its detail feed ends.
+   */
+  threadDetailLoadedById?: Record<ThreadId, true>;
   /** Child threads: what each thread's agent asked of the threads it started. */
   childRequestsByThreadId: Record<ThreadId, OrchestrationChildRequestState>;
 
@@ -168,6 +176,7 @@ const initialEnvironmentState: EnvironmentState = {
   turnDiffSummaryByThreadId: {},
   agentRequestsByThreadId: {},
   pagesByThreadId: {},
+  threadDetailLoadedById: {},
   childRequestsByThreadId: {},
   sidebarThreadSummaryById: {},
   bootstrapComplete: false,
@@ -1377,6 +1386,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedAgentRequests, ...agentRequestsByThreadId } =
     state.agentRequestsByThreadId;
   const { [threadId]: _removedPages, ...pagesByThreadId } = state.pagesByThreadId ?? {};
+  const { [threadId]: _removedDetailLoaded, ...threadDetailLoadedById } =
+    state.threadDetailLoadedById ?? {};
   const { [threadId]: _removedChildRequests, ...childRequestsByThreadId } =
     state.childRequestsByThreadId;
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
@@ -1399,6 +1410,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     turnDiffSummaryByThreadId,
     agentRequestsByThreadId,
     pagesByThreadId,
+    threadDetailLoadedById,
     childRequestsByThreadId,
     sidebarThreadSummaryById,
   };
@@ -1757,6 +1769,10 @@ function syncEnvironmentShellSnapshot(
     ),
     agentRequestsByThreadId: retainThreadScopedRecord(state.agentRequestsByThreadId, nextThreadIds),
     pagesByThreadId: retainThreadScopedRecord(state.pagesByThreadId ?? {}, nextThreadIds),
+    threadDetailLoadedById: retainThreadScopedRecord(
+      state.threadDetailLoadedById ?? {},
+      nextThreadIds,
+    ),
     childRequestsByThreadId: retainThreadScopedRecord(state.childRequestsByThreadId, nextThreadIds),
     bootstrapComplete: true,
   };
@@ -1791,11 +1807,42 @@ export function syncServerThreadDetail(
 ): AppState {
   const environmentState = getStoredEnvironmentState(state, environmentId);
   const previousThread = getThreadFromEnvironmentState(environmentState, thread.id);
+  const nextEnvironmentState = writeThreadState(
+    environmentState,
+    mapThread(thread, environmentId),
+    previousThread,
+  );
   return commitEnvironmentState(
     state,
     environmentId,
-    writeThreadState(environmentState, mapThread(thread, environmentId), previousThread),
+    nextEnvironmentState.threadDetailLoadedById?.[thread.id]
+      ? nextEnvironmentState
+      : {
+          ...nextEnvironmentState,
+          threadDetailLoadedById: {
+            ...nextEnvironmentState.threadDetailLoadedById,
+            [thread.id]: true,
+          },
+        },
   );
+}
+
+/**
+ * The thread's detail feed ended (its subscription was released and
+ * disposed): what the store holds may fall behind, so the chat waits for the
+ * next snapshot before it calls an empty thread empty.
+ */
+export function markThreadDetailUnloaded(state: AppState, threadRef: ScopedThreadRef): AppState {
+  const environmentState = state.environmentStateById[threadRef.environmentId];
+  if (!environmentState?.threadDetailLoadedById?.[threadRef.threadId]) {
+    return state;
+  }
+  const { [threadRef.threadId]: _unloaded, ...threadDetailLoadedById } =
+    environmentState.threadDetailLoadedById;
+  return commitEnvironmentState(state, threadRef.environmentId, {
+    ...environmentState,
+    threadDetailLoadedById,
+  });
 }
 
 function applyEnvironmentOrchestrationEvent(
@@ -2996,6 +3043,36 @@ export function selectThreadExistsByRef(
     : false;
 }
 
+/**
+ * Whether the store lists this thread as `selectThreadsAcrossEnvironments`
+ * returns it (registered in its environment's `threadIds`, with a shell),
+ * without building every thread to find out.
+ */
+export function selectThreadListedByRef(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+): boolean {
+  if (!ref) {
+    return false;
+  }
+  const environmentState = selectEnvironmentState(state, ref.environmentId);
+  return (
+    environmentState.threadShellById[ref.threadId]?.environmentId === ref.environmentId &&
+    environmentState.threadIds.includes(ref.threadId)
+  );
+}
+
+/** Whether the thread's detail snapshot has landed (see `threadDetailLoadedById`). */
+export function selectThreadDetailLoaded(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+): boolean {
+  return ref
+    ? selectEnvironmentState(state, ref.environmentId).threadDetailLoadedById?.[ref.threadId] ===
+        true
+    : false;
+}
+
 export function selectSidebarThreadSummaryByRef(
   state: AppState,
   ref: ScopedThreadRef | null | undefined,
@@ -3190,6 +3267,7 @@ interface AppStore extends AppState {
     environmentId: EnvironmentId,
   ) => void;
   syncServerThreadDetail: (thread: OrchestrationThread, environmentId: EnvironmentId) => void;
+  markThreadDetailUnloaded: (threadRef: ScopedThreadRef) => void;
   applyOrchestrationEvent: (event: OrchestrationEvent, environmentId: EnvironmentId) => void;
   applyOrchestrationEvents: (
     events: ReadonlyArray<OrchestrationEvent>,
@@ -3228,6 +3306,8 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncServerShellSnapshot(state, snapshot, environmentId)),
   syncServerThreadDetail: (thread, environmentId) =>
     set((state) => syncServerThreadDetail(state, thread, environmentId)),
+  markThreadDetailUnloaded: (threadRef) =>
+    set((state) => markThreadDetailUnloaded(state, threadRef)),
   applyOrchestrationEvent: (event, environmentId) =>
     set((state) => applyOrchestrationEvent(state, event, environmentId)),
   applyOrchestrationEvents: (events, environmentId) =>

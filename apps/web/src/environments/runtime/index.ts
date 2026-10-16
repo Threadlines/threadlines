@@ -19,6 +19,7 @@ export {
 
 export {
   addSavedEnvironment,
+  bindThreadRowIntentPrewarm,
   connectDesktopSshEnvironment,
   disconnectSavedEnvironment,
   disconnectSavedEnvironmentByUser,

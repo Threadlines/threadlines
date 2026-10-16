@@ -4,6 +4,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
@@ -17,6 +18,7 @@ import {
   layer as ProcessRunnerLive,
   type ProcessRunInput,
 } from "./processRunner.ts";
+import { GitInstallProbe, type GitInstallProbeShape } from "./vcs/gitLaunch.ts";
 
 type ChildProcessCommand = {
   readonly command: string;
@@ -164,6 +166,68 @@ describe("runProcess", () => {
       }),
     ),
   );
+
+  // Git for Windows' real git.exe, as the probe would find it behind the
+  // launcher. Reads start on it without a console; anything that can run a
+  // hook keeps one.
+  it.effect("starts Windows git reads on the real git.exe without a console", () => {
+    const realGit = "C:\\Program Files\\Git\\mingw64\\bin\\git.exe";
+    const windowsProbe: GitInstallProbeShape = {
+      platform: "win32",
+      findOnPath: () => "C:\\Program Files\\Git\\cmd\\git.exe",
+      isFile: () => true,
+      readExecPath: async () => "C:/Program Files/Git/mingw64/libexec/git-core",
+    };
+    const spawned: ChildProcessCommand[] = [];
+    const spawner = makeSpawner((command) =>
+      Effect.sync(() => {
+        spawned.push(command);
+        return makeHandle({ stdout: "ok" });
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* runWith(spawner)({ command: "git", args: ["rev-parse", "HEAD"] });
+      yield* runWith(spawner)({ command: "git", args: ["status", "--porcelain=2"] });
+
+      const [read, status] = spawned;
+      expect(read?.command).toBe(realGit);
+      expect(read?.options.detached).toBe(true);
+      expect(read?.options.windowsHide).toBe(true);
+      expect(read?.options.env).toMatchObject({ LC_ALL: "C" });
+      expect(status?.command).toBe("git");
+      expect(status?.options.detached).toBeUndefined();
+      expect(status?.options.env?.LC_ALL).toBeUndefined();
+    }).pipe(Effect.provideService(GitInstallProbe, windowsProbe));
+  });
+
+  // Git upgraded since the probe: the remembered git.exe is gone.
+  it.effect("falls back to plain git when the real git.exe cannot start", () => {
+    const windowsProbe: GitInstallProbeShape = {
+      platform: "win32",
+      findOnPath: () => "C:\\Git\\cmd\\git.exe",
+      isFile: () => true,
+      readExecPath: async () => "C:/Git/mingw64/libexec/git-core",
+    };
+    const spawned: string[] = [];
+    const spawner = ChildProcessSpawner.make((command) => {
+      const { command: executable } = asChildProcessCommand(command);
+      spawned.push(executable);
+      return executable === "git"
+        ? Effect.succeed(makeHandle({ stdout: "abc" }))
+        : Effect.fail(
+            PlatformError.systemError({
+              _tag: "NotFound",
+              module: "ChildProcess",
+              method: "spawn",
+            }),
+          );
+    });
+    return Effect.gen(function* () {
+      const result = yield* runWith(spawner)({ command: "git", args: ["rev-parse", "HEAD"] });
+      expect(result.stdout).toBe("abc");
+      expect(spawned).toEqual(["C:\\Git\\mingw64\\bin\\git.exe", "git"]);
+    }).pipe(Effect.provideService(GitInstallProbe, windowsProbe));
+  });
 
   it.effect("fails when output exceeds max buffer in default mode", () =>
     Effect.gen(function* () {

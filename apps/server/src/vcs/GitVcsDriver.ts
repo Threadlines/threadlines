@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
 
 import * as Context from "effect/Context";
@@ -57,8 +56,10 @@ import {
   type VcsStatusResult,
 } from "@threadlines/contracts";
 import { CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX } from "./checkpointRefs.ts";
+import type { GitConfigSnapshot } from "./gitConfigSnapshot.ts";
 import * as GitVcsDriverCore from "./GitVcsDriverCore.ts";
 import { mergeRegionEditsIntoCurrent, parseUnifiedDiffRegions } from "./LineRegionMerge.ts";
+import { scratchIndexFileName } from "./scratchIndex.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 
@@ -83,7 +84,8 @@ export interface ExecuteGitResult {
   readonly stderrTruncated: boolean;
 }
 
-export interface GitStatusDetails {
+/** The working tree and branch identity, without divergence from the upstream or default branch. */
+export interface GitLocalStatusDetails {
   isRepo: boolean;
   sourceControlProvider?: VcsStatusResult["sourceControlProvider"];
   hasOriginRemote: boolean;
@@ -93,6 +95,9 @@ export interface GitStatusDetails {
   upstreamRef: string | null;
   hasWorkingTreeChanges: boolean;
   workingTree: VcsStatusResult["workingTree"];
+}
+
+export interface GitStatusDetails extends GitLocalStatusDetails {
   hasUpstream: boolean;
   aheadCount: number;
   behindCount: number;
@@ -226,7 +231,9 @@ export interface GitVcsDriverShape {
   readonly execute: (input: ExecuteGitInput) => Effect.Effect<ExecuteGitResult, GitCommandError>;
   readonly status: (input: VcsStatusInput) => Effect.Effect<VcsStatusResult, GitCommandError>;
   readonly statusDetails: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
-  readonly statusDetailsLocal: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
+  readonly statusDetailsLocal: (
+    cwd: string,
+  ) => Effect.Effect<GitLocalStatusDetails, GitCommandError>;
   readonly statusDetailsRemote: (
     cwd: string,
     options?: GitRemoteStatusOptions,
@@ -258,6 +265,8 @@ export interface GitVcsDriverShape {
     cwd: string,
     key: string,
   ) => Effect.Effect<string | null, GitCommandError>;
+  /** The checkout's whole effective config in one read, for callers that need several keys. */
+  readonly readConfigSnapshot: (cwd: string) => Effect.Effect<GitConfigSnapshot, GitCommandError>;
   readonly listRefs: (input: VcsListRefsInput) => Effect.Effect<VcsListRefsResult, GitCommandError>;
   /**
    * Enumerate the repository's checkouts. Returns an empty list when `cwd` is
@@ -677,25 +686,29 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
   const detectRepository: VcsDriver.VcsDriverShape["detectRepository"] = Effect.fn(
     "detectRepository",
   )(function* (cwd) {
-    if (!(yield* isInsideWorkTree(cwd))) {
+    // One process answers all three. Git exits non-zero inside `.git`, in a
+    // bare repository and outside any repository: none is a work tree.
+    const result = yield* gitCommand(
+      vcsProcess,
+      "GitVcsDriver.detectRepository",
+      cwd,
+      ["rev-parse", "--is-inside-work-tree", "--show-toplevel", "--git-common-dir"],
+      {
+        allowNonZeroExit: true,
+        timeoutMs: 5_000,
+        maxOutputBytes: 16_384,
+      },
+    );
+    const [insideWorkTree, root, gitCommonDir] = result.stdout.split(/\r?\n/);
+    const rootPath = root?.trim() ?? "";
+    if (result.exitCode !== 0 || insideWorkTree?.trim() !== "true" || rootPath.length === 0) {
       return null;
     }
 
-    const root = yield* gitCommand(vcsProcess, "GitVcsDriver.detectRepository.root", cwd, [
-      "rev-parse",
-      "--show-toplevel",
-    ]);
-    const gitCommonDir = yield* gitCommand(
-      vcsProcess,
-      "GitVcsDriver.detectRepository.commonDir",
-      cwd,
-      ["rev-parse", "--git-common-dir"],
-    ).pipe(Effect.catch(() => Effect.succeed(null)));
-
     return {
       kind: "git" as const,
-      rootPath: root.stdout.trim(),
-      metadataPath: gitCommonDir?.stdout.trim() || null,
+      rootPath,
+      metadataPath: gitCommonDir?.trim() || null,
       freshness: yield* nowFreshness(),
     };
   });
@@ -1163,7 +1176,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       const operation = "GitVcsDriver.checkpoints.captureCheckpoint";
       yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
       const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
-      const tempIndexPath = path.join(gitCommonDir, `t3-checkpoint-index-${randomUUID()}`);
+      const tempIndexPath = path.join(gitCommonDir, scratchIndexFileName("checkpoint"));
       const commitEnv: NodeJS.ProcessEnv = {
         ...process.env,
         GIT_INDEX_FILE: tempIndexPath,

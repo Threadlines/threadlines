@@ -34,6 +34,8 @@ export interface MakeDesktopEnvironmentInput {
   readonly isPackaged: boolean;
   readonly resourcesPath: string;
   readonly runningUnderArm64Translation: boolean;
+  /** The account's own login shell (`os.userInfo().shell`), when known. */
+  readonly accountLoginShell?: string | undefined;
   /** Dev-only version source (defaults to the checkout's release tag); injectable for tests. */
   readonly resolveDevAppVersion?: (rootDir: string) => string | undefined;
 }
@@ -49,6 +51,8 @@ export interface DesktopEnvironmentShape {
   readonly appPath: string;
   readonly resourcesPath: string;
   readonly homeDirectory: string;
+  /** Tried after SHELL when reading the login shell environment. */
+  readonly accountLoginShell: string | undefined;
   readonly appDataDirectory: string;
   readonly baseDir: string;
   readonly stateDir: string;
@@ -200,6 +204,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     appPath: input.appPath,
     resourcesPath,
     homeDirectory,
+    accountLoginShell: input.accountLoginShell?.trim() || undefined,
     appDataDirectory: userDataLocation.appDataDirectory,
     baseDir,
     stateDir,

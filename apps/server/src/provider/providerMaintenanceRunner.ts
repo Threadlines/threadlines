@@ -781,7 +781,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               );
             }
 
-            yield* Effect.sync(() => refreshWindowsPath());
+            yield* Effect.promise(() => refreshWindowsPath({ afterInstall: true }));
             const { verifiedProviders } = yield* verifyRefreshedProvider(
               provider,
               capabilities,

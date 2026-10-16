@@ -7,6 +7,7 @@
  * own imports small and free of newer Node APIs.
  */
 import packageJson from "../package.json" with { type: "json" };
+import { enableServerCompileCache } from "./compileCache.ts";
 import { unsupportedNodeMessage } from "./nodeVersionCheck.ts";
 
 // The desktop app runs this entry on the Node inside Electron, which ships
@@ -19,6 +20,8 @@ if (problem) {
   process.stderr.write(`${problem}\n`);
   process.exitCode = 1;
 } else {
+  // Before the import below: Node only caches code compiled after this.
+  enableServerCompileCache({ version: packageJson.version, entryUrl: import.meta.url });
   // A promise chain, not top-level await: the server chunk can import shared
   // code from this entry chunk, and awaiting it here would deadlock that cycle.
   void import("./bin.ts").then(({ runCli }) => runCli());
