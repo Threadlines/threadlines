@@ -1791,6 +1791,12 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
    * fresh detail snapshot.
    */
   fromSequenceExclusive: Schema.optionalKey(NonNegativeInt),
+  /**
+   * The client restores shared payload values (@threadlines/shared/
+   * activityPayloadRefs), so the snapshot may send each repeated large value
+   * once. Servers that predate it ignore the field and send activities whole.
+   */
+  acceptsPayloadRefs: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
@@ -4208,6 +4214,8 @@ export type OrchestrationThreadSearchResult = typeof OrchestrationThreadSearchRe
 export const OrchestrationGetTurnActivitiesInput = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
+  /** See OrchestrationSubscribeThreadInput.acceptsPayloadRefs. */
+  acceptsPayloadRefs: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationGetTurnActivitiesInput = typeof OrchestrationGetTurnActivitiesInput.Type;
 

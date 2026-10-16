@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import {
   EnvironmentId,
+  EventId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -365,7 +366,60 @@ describe("retainThreadDetailSubscription", () => {
       },
     });
 
-    expect(resumeInput).toEqual({ threadId, fromSequenceExclusive: 42 });
+    expect(resumeInput).toEqual({ threadId, fromSequenceExclusive: 42, acceptsPayloadRefs: true });
+
+    release();
+    stop();
+  });
+
+  it("restores values a snapshot shares before the thread reaches the store", async () => {
+    const { retainThreadDetailSubscription, startEnvironmentConnectionService } =
+      await import("./service");
+    const { useStore, selectThreadByRef } = await import("../../store");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-shared-values");
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    const [, listener] = mockSubscribeThread.mock.calls[0] ?? [];
+    const threadShell = makeThreadShellSnapshot({ threadId }).threads[0]!;
+    const screenshot = "iVBORw0KGgo".padEnd(2048, "A");
+    const activity = (id: string, kind: string, data: unknown) => ({
+      id: EventId.make(id),
+      tone: "tool" as const,
+      kind,
+      summary: kind,
+      payload: { toolCallId: "call-1", data: { result: { content: [{ type: "image", data }] } } },
+      turnId: null,
+      createdAt: "2026-10-16T10:00:00.000Z",
+    });
+
+    listener({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 7,
+        thread: {
+          ...threadShell,
+          messages: [],
+          activities: [
+            activity("a1", "tool.updated", screenshot),
+            // As a server sends the completion's copy to a client that asked.
+            activity("a2", "tool.completed", {
+              $threadlinesPayloadRef: ["a1", "data", "result", "content", 0, "data"],
+            }),
+          ],
+          proposedPlans: [],
+          checkpoints: [],
+          deletedAt: null,
+        },
+      },
+    });
+
+    const stored = selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId));
+    expect(stored?.activities.map((entry) => entry.payload)).toEqual([
+      activity("a1", "tool.updated", screenshot).payload,
+      activity("a2", "tool.completed", screenshot).payload,
+    ]);
 
     release();
     stop();
@@ -406,7 +460,7 @@ describe("retainThreadDetailSubscription", () => {
     expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
     expect(mockSubscribeThread).toHaveBeenCalledTimes(2);
     expect(mockSubscribeThread).toHaveBeenLastCalledWith(
-      { threadId },
+      { threadId, acceptsPayloadRefs: true },
       expect.any(Function),
       expect.objectContaining({ onRetry: expect.any(Function) }),
     );
@@ -483,7 +537,7 @@ describe("retainThreadDetailSubscription", () => {
 
     expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
     expect(mockSubscribeThread).toHaveBeenCalledWith(
-      { threadId },
+      { threadId, acceptsPayloadRefs: true },
       expect.any(Function),
       expect.objectContaining({ onRetry: expect.any(Function) }),
     );
@@ -543,7 +597,7 @@ describe("retainThreadDetailSubscription", () => {
 
     expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
     expect(mockSubscribeThread).toHaveBeenCalledWith(
-      { threadId },
+      { threadId, acceptsPayloadRefs: true },
       expect.any(Function),
       expect.objectContaining({ onRetry: expect.any(Function) }),
     );
@@ -1025,6 +1079,7 @@ describe("retainThreadDetailSubscription", () => {
     expect(mockSubscribeThread.mock.calls[0]?.[0]).toEqual({
       threadId: openThreadId,
       fromSequenceExclusive: 1,
+      acceptsPayloadRefs: true,
     });
 
     // The resume has nothing new to send; prewarming must not wait on it.

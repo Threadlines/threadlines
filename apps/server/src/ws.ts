@@ -161,6 +161,7 @@ import {
   type SessionCredentialChange,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
+import { shareRepeatedPayloadValues } from "@threadlines/shared/activityPayloadRefs";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { isInternalClientSession } from "./auth/utils.ts";
 
@@ -813,7 +814,11 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTurnActivities,
             projectionSnapshotQuery.getTurnActivities(input).pipe(
-              Effect.map((activities) => ({ activities })),
+              Effect.map((activities) => ({
+                activities: input.acceptsPayloadRefs
+                  ? shareRepeatedPayloadValues(activities)
+                  : activities,
+              })),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetTurnActivitiesError({
@@ -1023,7 +1028,15 @@ const makeWsRpcLayer = (currentSession: {
                       kind: "snapshot" as const,
                       snapshot: {
                         snapshotSequence,
-                        thread: threadDetail.value,
+                        // Screenshots and outputs ride on a tool call's
+                        // progress and completion rows alike; a client that
+                        // restores shared values gets each one once.
+                        thread: input.acceptsPayloadRefs
+                          ? {
+                              ...threadDetail.value,
+                              activities: shareRepeatedPayloadValues(threadDetail.value.activities),
+                            }
+                          : threadDetail.value,
                       },
                     }),
                     liveStream,
