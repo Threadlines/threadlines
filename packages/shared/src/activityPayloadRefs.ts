@@ -9,9 +9,10 @@
  * value back before anything reads the activities, so what it works with is
  * exactly what was stored; no rule about which copy a client shows is needed.
  *
- * Only for clients that ask (`acceptsPayloadRefs` on the request): an older
- * client gets the activities whole. Both directions live here so they cannot
- * drift apart.
+ * Only for clients that ask (`acceptsPayloadRefs` on the request), and the
+ * response says when it holds references (`sharedPayloadValues`), so stored
+ * data that merely looks like one is never rewritten. An older client gets
+ * the activities whole. Both directions live here so they cannot drift apart.
  *
  * @module activityPayloadRefs
  */
@@ -21,6 +22,12 @@ export const ACTIVITY_PAYLOAD_REF_KEY = "$threadlinesPayloadRef";
 
 /** Strings shorter than this are sent as they are; a reference costs ~80 bytes. */
 export const MIN_SHARED_VALUE_LENGTH = 1024;
+
+/**
+ * How deep into a payload either side looks. Anything nested deeper is sent
+ * as it is, so a pathologically deep payload cannot overflow the stack.
+ */
+export const MAX_SHARED_VALUE_DEPTH = 200;
 
 type PathSegment = string | number;
 /** The activity id, then the keys and indexes leading to the value. */
@@ -66,7 +73,7 @@ export function shareRepeatedPayloadValues<A extends ActivityLike>(
   let changed = false;
   let collided = false;
 
-  const share = (value: unknown): unknown => {
+  const share = (value: unknown, depth: number): unknown => {
     if (typeof value === "string") {
       if (value.length < MIN_SHARED_VALUE_LENGTH) return value;
       const ref = firstSeen.get(value);
@@ -77,11 +84,12 @@ export function shareRepeatedPayloadValues<A extends ActivityLike>(
       firstSeen.set(value, path.slice() as unknown as PayloadRef);
       return value;
     }
+    if (depth >= MAX_SHARED_VALUE_DEPTH) return value;
     if (Array.isArray(value)) {
       let copy: unknown[] | null = null;
       for (let index = 0; index < value.length; index += 1) {
         path.push(index);
-        const next = share(value[index]);
+        const next = share(value[index], depth + 1);
         path.pop();
         if (next !== value[index]) {
           copy ??= value.slice();
@@ -98,7 +106,7 @@ export function shareRepeatedPayloadValues<A extends ActivityLike>(
       let copy: Record<string, unknown> | null = null;
       for (const key of Object.keys(value)) {
         path.push(key);
-        const next = share(value[key]);
+        const next = share(value[key], depth + 1);
         path.pop();
         if (next !== value[key]) {
           copy ??= { ...value };
@@ -113,7 +121,7 @@ export function shareRepeatedPayloadValues<A extends ActivityLike>(
   const shared = activities.map((activity) => {
     path.length = 0;
     path.push(activity.id);
-    const payload = share(activity.payload);
+    const payload = share(activity.payload, 0);
     return payload === activity.payload ? activity : { ...activity, payload };
   });
   return changed && !collided ? shared : activities;
@@ -121,7 +129,8 @@ export function shareRepeatedPayloadValues<A extends ActivityLike>(
 
 /**
  * Puts back every value shareRepeatedPayloadValues replaced, so each payload
- * equals the stored one. A reference points into an activity in the same
+ * equals the stored one. Call it only on a response marked
+ * `sharedPayloadValues`. A reference points into an activity in the same
  * list; one that resolves to nothing is left as it is.
  */
 export function restoreSharedPayloadValues<A extends ActivityLike>(
@@ -143,11 +152,14 @@ export function restoreSharedPayloadValues<A extends ActivityLike>(
     return typeof value === "string" ? value : undefined;
   };
 
-  const restore = (value: unknown): unknown => {
+  const restore = (value: unknown, depth: number): unknown => {
+    const ref = refOf(value);
+    if (ref !== null) return resolve(ref) ?? value;
+    if (depth >= MAX_SHARED_VALUE_DEPTH) return value;
     if (Array.isArray(value)) {
       let copy: unknown[] | null = null;
       for (let index = 0; index < value.length; index += 1) {
-        const next = restore(value[index]);
+        const next = restore(value[index], depth + 1);
         if (next !== value[index]) {
           copy ??= value.slice();
           copy[index] = next;
@@ -156,11 +168,9 @@ export function restoreSharedPayloadValues<A extends ActivityLike>(
       return copy ?? value;
     }
     if (isPlainObject(value)) {
-      const ref = refOf(value);
-      if (ref !== null) return resolve(ref) ?? value;
       let copy: Record<string, unknown> | null = null;
       for (const key of Object.keys(value)) {
-        const next = restore(value[key]);
+        const next = restore(value[key], depth + 1);
         if (next !== value[key]) {
           copy ??= { ...value };
           setOwn(copy, key, next);
@@ -173,7 +183,7 @@ export function restoreSharedPayloadValues<A extends ActivityLike>(
 
   let changed = false;
   const restored = activities.map((activity) => {
-    const payload = restore(activity.payload);
+    const payload = restore(activity.payload, 0);
     if (payload === activity.payload) return activity;
     changed = true;
     return { ...activity, payload };

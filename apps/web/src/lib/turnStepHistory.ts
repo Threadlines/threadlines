@@ -85,7 +85,7 @@ export function turnStepsQueryOptions(input: {
     // Only the worked-out steps are kept: a turn's raw rows can run to tens of
     // megabytes of tool output the steps never show.
     queryFn: async (): Promise<TurnSteps> => {
-      const { activities } = await ensureEnvironmentApi(
+      const { activities, sharedPayloadValues } = await ensureEnvironmentApi(
         input.environmentId,
       ).orchestration.getTurnActivities({
         threadId: input.threadId,
@@ -94,7 +94,10 @@ export function turnStepsQueryOptions(input: {
       });
       return {
         turnId: input.turnId,
-        entries: deriveWorkLogEntries(restoreSharedPayloadValues(activities), null),
+        entries: deriveWorkLogEntries(
+          sharedPayloadValues ? restoreSharedPayloadValues(activities) : activities,
+          null,
+        ),
       };
     },
     staleTime: Infinity,

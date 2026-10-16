@@ -1803,6 +1803,12 @@ export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThr
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   thread: OrchestrationThread,
+  /**
+   * Set only when the activities carry shared payload values the client must
+   * restore (@threadlines/shared/activityPayloadRefs); see
+   * OrchestrationSubscribeThreadInput.acceptsPayloadRefs.
+   */
+  sharedPayloadValues: Schema.optionalKey(Schema.Literal(true)),
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
 
@@ -4221,6 +4227,8 @@ export type OrchestrationGetTurnActivitiesInput = typeof OrchestrationGetTurnAct
 
 export const OrchestrationGetTurnActivitiesResult = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
+  /** See OrchestrationThreadDetailSnapshot.sharedPayloadValues. */
+  sharedPayloadValues: Schema.optionalKey(Schema.Literal(true)),
 });
 export type OrchestrationGetTurnActivitiesResult = typeof OrchestrationGetTurnActivitiesResult.Type;
 

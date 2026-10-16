@@ -384,6 +384,9 @@ describe("retainThreadDetailSubscription", () => {
     const [, listener] = mockSubscribeThread.mock.calls[0] ?? [];
     const threadShell = makeThreadShellSnapshot({ threadId }).threads[0]!;
     const screenshot = "iVBORw0KGgo".padEnd(2048, "A");
+    const completionCopy = {
+      $threadlinesPayloadRef: ["a1", "data", "result", "content", 0, "data"],
+    };
     const activity = (id: string, kind: string, data: unknown) => ({
       id: EventId.make(id),
       tone: "tool" as const,
@@ -394,7 +397,7 @@ describe("retainThreadDetailSubscription", () => {
       createdAt: "2026-10-16T10:00:00.000Z",
     });
 
-    listener({
+    const snapshot = (sharedPayloadValues: boolean) => ({
       kind: "snapshot",
       snapshot: {
         snapshotSequence: 7,
@@ -403,22 +406,33 @@ describe("retainThreadDetailSubscription", () => {
           messages: [],
           activities: [
             activity("a1", "tool.updated", screenshot),
-            // As a server sends the completion's copy to a client that asked.
-            activity("a2", "tool.completed", {
-              $threadlinesPayloadRef: ["a1", "data", "result", "content", 0, "data"],
-            }),
+            activity("a2", "tool.completed", completionCopy),
           ],
           proposedPlans: [],
           checkpoints: [],
           deletedAt: null,
         },
+        ...(sharedPayloadValues ? { sharedPayloadValues: true } : {}),
       },
     });
+    const storedPayloads = () =>
+      selectThreadByRef(
+        useStore.getState(),
+        scopeThreadRef(environmentId, threadId),
+      )?.activities.map((entry) => entry.payload);
 
-    const stored = selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId));
-    expect(stored?.activities.map((entry) => entry.payload)).toEqual([
+    // As a server sends the completion's copy to a client that asked.
+    listener(snapshot(true));
+    expect(storedPayloads()).toEqual([
       activity("a1", "tool.updated", screenshot).payload,
       activity("a2", "tool.completed", screenshot).payload,
+    ]);
+
+    // Without the mark, data that only looks like a reference is kept as stored.
+    listener(snapshot(false));
+    expect(storedPayloads()).toEqual([
+      activity("a1", "tool.updated", screenshot).payload,
+      activity("a2", "tool.completed", completionCopy).payload,
     ]);
 
     release();

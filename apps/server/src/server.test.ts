@@ -4137,11 +4137,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ).pipe(
           Effect.map((items) => {
             const first = Array.from(items)[0];
-            return first?.kind === "snapshot" ? first.snapshot.thread.activities : [];
+            assert.equal(first?.kind, "snapshot");
+            return first?.kind === "snapshot" ? first.snapshot : undefined;
           }),
         );
 
-      const shared = yield* snapshotFor(true);
+      const sharedSnapshot = yield* snapshotFor(true);
+      assert.equal(sharedSnapshot?.sharedPayloadValues, true);
+      const shared = sharedSnapshot?.thread.activities ?? [];
       assert.deepEqual(shared[1]?.payload, {
         toolCallId: "call-1",
         data: {
@@ -4158,9 +4161,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       // A client that predates refs gets every value as stored.
-      const whole = yield* snapshotFor(undefined);
+      const wholeSnapshot = yield* snapshotFor(undefined);
+      assert.equal(wholeSnapshot?.sharedPayloadValues, undefined);
       assert.deepEqual(
-        whole.map((activity) => activity.payload),
+        (wholeSnapshot?.thread.activities ?? []).map((activity) => activity.payload),
         threadDetail.activities.map((activity) => activity.payload),
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),

@@ -61,6 +61,25 @@ describe("activity payload refs", () => {
     expect(shareRepeatedPayloadValues(colliding)).toBe(colliding);
   });
 
+  it("sends values nested past the depth limit as they are", () => {
+    // Deep enough to overflow a walk that follows every level.
+    let deep: unknown = { text: output };
+    for (let level = 0; level < 20_000; level += 1) deep = { next: deep };
+    const activities = [
+      { id: "a1", kind: "tool.updated", payload: { text: output } },
+      { id: "a2", kind: "tool.completed", payload: { text: output, deep } },
+    ];
+
+    const shared = shareRepeatedPayloadValues(activities);
+    const sentPayload = shared[1]!.payload as { text: unknown; deep: unknown };
+    expect(sentPayload.text).toEqual({ [ACTIVITY_PAYLOAD_REF_KEY]: ["a1", "text"] });
+    expect(sentPayload.deep).toBe(deep);
+
+    const restored = restoreSharedPayloadValues(shared)[1]!.payload as typeof sentPayload;
+    expect(restored.text).toBe(output);
+    expect(restored.deep).toBe(deep);
+  });
+
   it("keeps a reference it cannot resolve as it came", () => {
     const received = [
       {

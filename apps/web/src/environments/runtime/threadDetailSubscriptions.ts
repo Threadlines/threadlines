@@ -317,7 +317,9 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
         if (item.kind === "snapshot") {
           // Put shared values back before anything reads the activities.
           const thread = item.snapshot.thread;
-          const activities = restoreSharedPayloadValues(thread.activities);
+          const activities = item.snapshot.sharedPayloadValues
+            ? restoreSharedPayloadValues(thread.activities)
+            : thread.activities;
           useStore
             .getState()
             .syncServerThreadDetail(
