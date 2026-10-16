@@ -153,6 +153,7 @@ function makeManagerLayer(input: {
           activate: Effect.void,
           createMainIfBackendReady: Effect.void,
           handleBackendReady: Effect.void,
+          allowMainWindowOpen: Effect.void,
           allowMainWindowClose: Effect.void,
           requestQuitConfirmation: () => Effect.succeed(false),
           resolveQuitConfirmation: () => Effect.void,

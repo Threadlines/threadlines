@@ -212,6 +212,8 @@ function makeTestLayer(input: {
   readonly appQuitCalls?: Ref.Ref<number>;
   readonly initialRunningThreadCount?: number;
   readonly previewSession?: PreviewSession.PreviewSessionShape;
+  /** Leave the window gate shut, as if startup were still building menus and IPC. */
+  readonly startupInProgress?: boolean;
 }) {
   const desktopStateLayer =
     input.initialRunningThreadCount === undefined
@@ -245,7 +247,7 @@ function makeTestLayer(input: {
     syncAllAppearance: (sync) => sync(input.window),
   } satisfies ElectronWindow.ElectronWindowShape);
 
-  return DesktopWindow.layer.pipe(
+  const windowLayer = DesktopWindow.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         desktopAssetsLayer,
@@ -305,6 +307,14 @@ function makeTestLayer(input: {
       ),
     ),
   );
+  if (input.startupInProgress) return windowLayer;
+  const finishStartup = Layer.effectDiscard(
+    Effect.gen(function* () {
+      const desktopWindow = yield* DesktopWindow.DesktopWindow;
+      yield* desktopWindow.allowMainWindowOpen;
+    }),
+  );
+  return finishStartup.pipe(Layer.provideMerge(windowLayer));
 }
 
 const waitForMockCalls = (mock: { readonly mock: { readonly calls: ReadonlyArray<unknown> } }) =>
@@ -402,6 +412,33 @@ describe("DesktopWindow", () => {
         assert.equal(yield* Ref.get(createCount), 1);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["http://127.0.0.1:5733/"]);
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("holds a ready backend's window until startup allows it", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        startupInProgress: true,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        // The backend answers while menus and IPC handlers are still being set up.
+        const ready = yield* Effect.forkChild(desktopWindow.handleBackendReady);
+        yield* Effect.yieldNow;
+        yield* desktopWindow.activate;
+        assert.equal(yield* Ref.get(createCount), 0);
+
+        yield* desktopWindow.allowMainWindowOpen;
+        yield* Fiber.join(ready);
+        assert.equal(yield* Ref.get(createCount), 1);
       }).pipe(Effect.provide(layer));
     }),
   );

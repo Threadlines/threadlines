@@ -22,6 +22,7 @@ import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopStatusIndicator from "../window/DesktopStatusIndicator.ts";
+import * as DesktopWindow from "../window/DesktopWindow.ts";
 import {
   DEFAULT_DESKTOP_BACKEND_PORT,
   desktopBackendPortProbeHosts,
@@ -97,7 +98,13 @@ const handleFatalStartupError = Effect.fn("desktop.startup.handleFatalStartupErr
 const fatalStartupCause = <E>(stage: string, cause: Cause.Cause<E>) =>
   handleFatalStartupError(stage, Cause.pretty(cause)).pipe(Effect.andThen(Effect.failCause(cause)));
 
-const bootstrap = Effect.gen(function* () {
+/**
+ * Picks the backend's port and address and spawns it. Startup runs this as
+ * soon as Electron is ready: the backend takes over a second to answer, and
+ * the menus, tray, file protocol, updater and IPC handlers can be built while
+ * it boots. The window waits for those (see allowMainWindowOpen), not for this.
+ */
+const startBackend = Effect.gen(function* () {
   const backendManager = yield* DesktopBackendManager.DesktopBackendManager;
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -154,9 +161,6 @@ const bootstrap = Effect.gen(function* () {
     );
   }
 
-  yield* installDesktopIpcHandlers;
-  yield* logBootstrapInfo("bootstrap ipc handlers registered");
-
   if (!(yield* Ref.get(state.quitting))) {
     yield* backendManager.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
@@ -174,6 +178,7 @@ const startup = Effect.gen(function* () {
   const updates = yield* DesktopUpdates.DesktopUpdates;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const statusIndicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+  const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
   yield* shellEnvironment.installIntoProcess;
   yield* logStartupInfo("runtime logging configured", { logDir: environment.logDir });
@@ -192,11 +197,18 @@ const startup = Effect.gen(function* () {
   );
   yield* logStartupInfo("app ready");
   yield* appIdentity.configure;
+  yield* startBackend.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
   yield* applicationMenu.configure;
   yield* statusIndicator.configure;
   yield* electronProtocol.registerDesktopFileProtocol;
   yield* updates.configure;
-  yield* bootstrap.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
+  yield* installDesktopIpcHandlers.pipe(
+    Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)),
+  );
+  yield* logBootstrapInfo("bootstrap ipc handlers registered");
+  // Everything the window needs now exists; a backend that is already ready
+  // opens it here, a later one when it answers.
+  yield* desktopWindow.allowMainWindowOpen;
 }).pipe(Effect.withSpan("desktop.startup"));
 
 const scopedProgram = Effect.scoped(
