@@ -24,6 +24,7 @@ import {
   ResolvedKeybindingRule,
   ThreadId,
   ThreadParticipantId,
+  TurnId,
   WS_METHODS,
   WsRpcGroup,
   EditorId,
@@ -4873,7 +4874,96 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assertTrue(finalCommand?.type === "thread.turn.start");
         if (finalCommand?.type === "thread.turn.start") {
           assert.equal(finalCommand.bootstrap, undefined);
+          // The first message of a new thread is the user's own too.
+          assert.equal(finalCommand.composer, "typed");
         }
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "marks what the user sent from the composer as typed, or plain when they chose so",
+    () =>
+      Effect.gen(function* () {
+        const dispatchedCommands: Array<OrchestrationCommand> = [];
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatchedCommands.push(command);
+                  return { sequence: dispatchedCommands.length };
+                }),
+              readEvents: () => Stream.empty,
+            },
+          },
+        });
+
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-composer");
+        const message = (id: string) => ({
+          messageId: MessageId.make(id),
+          role: "user" as const,
+          text: "ultracode the refactor",
+          attachments: [],
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            Effect.gen(function* () {
+              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                type: "thread.turn.start",
+                commandId: CommandId.make("cmd-composer-typed"),
+                threadId,
+                message: message("message-composer-typed"),
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt,
+              });
+              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                type: "thread.turn.start",
+                commandId: CommandId.make("cmd-composer-plain"),
+                threadId,
+                message: message("message-composer-plain"),
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                suppressWorkflowKeyword: true,
+                createdAt,
+              });
+              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                type: "thread.follow-up.submit",
+                commandId: CommandId.make("cmd-composer-follow-up-plain"),
+                threadId,
+                turnId: TurnId.make("turn-composer"),
+                message: message("message-composer-follow-up-plain"),
+                suppressWorkflowKeyword: true,
+                createdAt,
+              });
+              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                type: "thread.follow-up.submit",
+                commandId: CommandId.make("cmd-composer-follow-up-typed"),
+                threadId,
+                turnId: TurnId.make("turn-composer"),
+                message: message("message-composer-follow-up-typed"),
+                createdAt,
+              });
+            }),
+          ),
+        );
+
+        // The client's flag becomes the server's stamp and goes no further.
+        assert.deepEqual(
+          dispatchedCommands.map((command) => [
+            command.type,
+            "composer" in command ? command.composer : undefined,
+            "suppressWorkflowKeyword" in command,
+          ]),
+          [
+            ["thread.turn.start", "typed", false],
+            ["thread.turn.start", "plain", false],
+            ["thread.follow-up.submit", "plain", false],
+            ["thread.follow-up.submit", "typed", false],
+          ],
+        );
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

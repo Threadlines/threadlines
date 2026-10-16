@@ -2749,8 +2749,12 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const participantId = event.participantId ?? null;
+      // The thread's session names the run's conversation only while it is
+      // the runtime that sent the update: after the slot or the provider
+      // moved on, its conversation belongs to someone else.
       const providerThreadId =
-        participantId === sessionSlotParticipantId(thread.session)
+        participantId === sessionSlotParticipantId(thread.session) &&
+        runtimeEventMatchesThreadSession(event, thread.session)
           ? (thread.session?.providerThreadId ?? undefined)
           : undefined;
       yield* orchestrationEngine.dispatch({

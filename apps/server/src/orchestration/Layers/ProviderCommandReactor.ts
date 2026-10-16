@@ -2433,6 +2433,8 @@ const make = Effect.gen(function* () {
         delivery: "queue",
         // Still for the agent it was sent to, even if another holds the slot now.
         participantId: event.payload.participantId ?? null,
+        // Still the words the user wrote: the next turn sends them as typed.
+        ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
         createdAt: event.payload.createdAt,
       })
       .pipe(Effect.asVoid);

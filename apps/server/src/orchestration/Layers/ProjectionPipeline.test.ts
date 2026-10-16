@@ -15,12 +15,15 @@ import {
   ThreadParticipantId,
   TurnId,
   ProviderInstanceId,
+  type OrchestrationThread,
+  type OrchestrationWorkflowRunPatch,
 } from "@threadlines/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -38,7 +41,10 @@ import {
   OrchestrationProjectionPipelineLive,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../Services/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ServerConfig } from "../../config.ts";
 
@@ -2396,7 +2402,7 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
 
 const engineLayer = it.layer(
   OrchestrationEngineLive.pipe(
-    Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provide(OrchestrationProjectionPipelineLive),
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
@@ -3353,6 +3359,255 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           AND turn_id = ${turnId}
       `;
       assert.deepEqual(turnRows, [{ state: "interrupted", completedAt: stoppedAt }]);
+    }),
+  );
+
+  // A project and an empty Claude thread for the workflow and composer tests.
+  const createClaudeThread = (engine: OrchestrationEngineShape, key: string) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make(`project-${key}`);
+      const threadId = ThreadId.make(`thread-${key}`);
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make(`cmd-${key}-project`),
+        projectId,
+        title: key,
+        workspaceRoot: `/tmp/project-${key}`,
+        defaultModelSelection: null,
+        createdAt: "2026-05-01T00:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`cmd-${key}-thread`),
+        threadId,
+        projectId,
+        title: key,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-4-6",
+        },
+        interactionMode: "default",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-05-01T00:00:00.000Z",
+      });
+      return threadId;
+    });
+
+  const recordWorkflowRun = (
+    engine: OrchestrationEngineShape,
+    threadId: ThreadId,
+    commandKey: string,
+    patch: OrchestrationWorkflowRunPatch,
+    createdAt: string,
+  ) =>
+    engine.dispatch({
+      type: "thread.workflow-run.record",
+      commandId: CommandId.make(`cmd-${commandKey}`),
+      threadId,
+      patch,
+      createdAt,
+    });
+
+  it.effect("keeps a thread's workflow runs and reads them back in every snapshot", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = yield* createClaudeThread(engine, "workflow-roster");
+      const owner = {
+        participantId: null,
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      };
+
+      yield* recordWorkflowRun(
+        engine,
+        threadId,
+        "workflow-roster-a-1",
+        {
+          taskId: "task-a",
+          name: "audit",
+          status: "running",
+          turnId: TurnId.make("turn-1"),
+          owner,
+          agents: [
+            { index: 0, label: "scan:a", state: "running" },
+            { index: 1, label: "scan:b", state: "queued" },
+          ],
+        },
+        "2026-05-01T00:00:01.000Z",
+      );
+      // Only what changed: the stored run is folded, not replaced.
+      yield* recordWorkflowRun(
+        engine,
+        threadId,
+        "workflow-roster-a-2",
+        { taskId: "task-a", agents: [{ index: 0, label: "scan:a", state: "done" }] },
+        "2026-05-01T00:00:02.000Z",
+      );
+      yield* recordWorkflowRun(
+        engine,
+        threadId,
+        "workflow-roster-b",
+        {
+          taskId: "task-b",
+          status: "completed",
+          turnId: TurnId.make("turn-1"),
+          owner,
+          endedAt: "2026-05-01T00:00:04.000Z",
+        },
+        "2026-05-01T00:00:03.000Z",
+      );
+      // A run written by a newer build no longer decodes: it is skipped, not
+      // fatal to the snapshot.
+      yield* sql`
+        INSERT INTO projection_thread_workflow_runs (
+          thread_id, task_id, turn_id, status, started_at, run_json, event_sequence, updated_at
+        )
+        VALUES (
+          ${threadId}, 'task-future', NULL, 'running', '2026-05-01T00:00:05.000Z',
+          '{"taskId":"task-future","status":"paused-by-a-newer-build"}', NULL,
+          '2026-05-01T00:00:05.000Z'
+        )
+      `;
+
+      const runsOf = (threads: ReadonlyArray<OrchestrationThread>) =>
+        threads
+          .find((thread) => thread.id === threadId)
+          ?.workflowRuns?.map((run) => ({
+            taskId: run.taskId,
+            status: run.status,
+            owner: run.owner,
+            agents: run.agents.map((agent) => [agent.index, agent.state]),
+          }));
+      const expected: ReturnType<typeof runsOf> = [
+        {
+          taskId: "task-a",
+          status: "running",
+          owner,
+          agents: [
+            [0, "done"],
+            [1, "queued"],
+          ],
+        },
+        { taskId: "task-b", status: "completed", owner, agents: [] },
+      ];
+      const detail = yield* query.getThreadDetailById(threadId);
+      assert.deepEqual(runsOf(Option.toArray(detail)), expected);
+      assert.deepEqual(runsOf((yield* query.getSnapshot()).threads), expected);
+      // The decider reads the command read model to check a run before Stop.
+      assert.deepEqual(runsOf((yield* query.getCommandReadModel()).threads), expected);
+
+      const running = (yield* query.listRunningWorkflowRuns()).filter(
+        (entry) => entry.threadId === threadId,
+      );
+      assert.deepEqual(
+        running.map((entry) => entry.run.taskId),
+        ["task-a"],
+      );
+    }),
+  );
+
+  it.effect("drops the workflow runs of the turns a revert took back", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const query = yield* ProjectionSnapshotQuery;
+      const threadId = yield* createClaudeThread(engine, "workflow-revert");
+
+      for (const turnCount of [1, 2]) {
+        const turnId = TurnId.make(`turn-${turnCount}`);
+        const createdAt = `2026-05-01T00:00:0${turnCount}.000Z`;
+        yield* recordWorkflowRun(
+          engine,
+          threadId,
+          `workflow-revert-run-${turnCount}`,
+          {
+            taskId: `task-turn-${turnCount}`,
+            status: "running",
+            turnId,
+            owner: { participantId: null },
+          },
+          createdAt,
+        );
+        yield* engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-workflow-revert-checkpoint-${turnCount}`),
+          threadId,
+          turnId,
+          completedAt: createdAt,
+          checkpointRef: CheckpointRef.make(
+            `refs/threadlines/checkpoints/${threadId}/turn/${turnCount}`,
+          ),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          completesTurn: true,
+          createdAt,
+        });
+      }
+      yield* engine.dispatch({
+        type: "thread.revert.complete",
+        commandId: CommandId.make("cmd-workflow-revert"),
+        threadId,
+        turnCount: 1,
+        createdAt: "2026-05-01T00:00:09.000Z",
+      });
+
+      const detail = yield* query.getThreadDetailById(threadId);
+      assert.deepEqual(
+        Option.getOrUndefined(detail)?.workflowRuns?.map((run) => run.taskId),
+        ["task-turn-1"],
+      );
+    }),
+  );
+
+  it.effect("remembers which user messages the user typed, and how they sent them", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const query = yield* ProjectionSnapshotQuery;
+      const threadId = yield* createClaudeThread(engine, "composer");
+
+      for (const [key, composer] of [
+        ["typed", "typed"],
+        ["plain", "plain"],
+        ["automation", undefined],
+      ] as const) {
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-composer-${key}`),
+          threadId,
+          message: {
+            messageId: MessageId.make(`message-composer-${key}`),
+            role: "user",
+            text: `sent ${key}`,
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          ...(composer !== undefined ? { composer } : {}),
+          createdAt: "2026-05-01T00:00:01.000Z",
+        });
+      }
+
+      const composersOf = (threads: ReadonlyArray<OrchestrationThread>) =>
+        Object.fromEntries(
+          (threads.find((thread) => thread.id === threadId)?.messages ?? []).map((message) => [
+            message.id,
+            message.composer ?? null,
+          ]),
+        );
+      const expected: ReturnType<typeof composersOf> = {
+        "message-composer-typed": "typed",
+        "message-composer-plain": "plain",
+        "message-composer-automation": null,
+      };
+      assert.deepEqual(
+        composersOf(Option.toArray(yield* query.getThreadDetailById(threadId))),
+        expected,
+      );
+      assert.deepEqual(composersOf((yield* query.getSnapshot()).threads), expected);
+      assert.deepEqual(composersOf((yield* query.getCommandReadModel()).threads), expected);
     }),
   );
 });
