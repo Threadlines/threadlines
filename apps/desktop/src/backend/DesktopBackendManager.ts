@@ -48,7 +48,12 @@ const OUTPUT_TAIL_MAX_CHARS = 8_192;
 // How long a finished process's output drains may lag its exit.
 const DRAIN_FLUSH_TIMEOUT = Duration.seconds(1);
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
-const DEFAULT_BACKEND_READINESS_INTERVAL = Duration.millis(100);
+// A normal backend answers within a couple of seconds, and every poll gap is
+// time the window could already be loading, so probe often at first. Past
+// that the backend is migrating or wedged, and a slower pace is plenty.
+const BACKEND_READINESS_FAST_INTERVAL = Duration.millis(25);
+const BACKEND_READINESS_FAST_PHASE = Duration.seconds(5);
+const BACKEND_READINESS_SLOW_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
 // Give the server's shutdown finalizers time to pause and persist active
 // provider goals before falling back to a force kill.
@@ -288,7 +293,12 @@ const waitForHttpReady = Effect.fn("desktop.backendManager.waitForHttpReady")(fu
         ),
       ),
     ),
-    HttpClient.retry(Schedule.spaced(DEFAULT_BACKEND_READINESS_INTERVAL)),
+    HttpClient.retry(
+      Schedule.spaced(BACKEND_READINESS_FAST_INTERVAL).pipe(
+        Schedule.upTo({ duration: BACKEND_READINESS_FAST_PHASE }),
+        Schedule.concat(Schedule.spaced(BACKEND_READINESS_SLOW_INTERVAL)),
+      ),
+    ),
   );
 
   yield* client.get(readinessUrl).pipe(
