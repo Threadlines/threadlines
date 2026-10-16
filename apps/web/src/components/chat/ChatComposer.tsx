@@ -1642,6 +1642,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
   });
+  const ownWorkflowRunning = (activeThread?.workflowRuns ?? []).some(
+    (run) => run.status === "running" && run.owner.participantId === null,
+  );
   const providerTraitsPicker = renderProviderTraitsPicker({
     provider: selectedProvider,
     instanceId: selectedInstanceId,
@@ -1651,8 +1654,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
     iconOnly: composerFooterTier !== "full",
-    // In a room, only while the thread's own agent is the one working.
-    working: hasActiveTurn && roomWorkingId == null,
+    // In a room, only while the thread's own agent is the one working; and
+    // while a workflow the thread's own agent started is still going, since
+    // that is Ultracode's work too after the turn has ended.
+    working: (hasActiveTurn && roomWorkingId == null) || ownWorkflowRunning,
   });
   // An added agent keeps its own reasoning and the like. Picking them here
   // holds them until the next turn for that agent, which carries them.

@@ -25,6 +25,12 @@ export function hiddenWorkflowPhaseNumber(title: string): string | null {
   return HIDDEN_PHASE_TITLE.exec(title)?.[1] ?? null;
 }
 
+/** A phase's title as people read it: a withheld one reads "Step N". */
+export function workflowPhaseDisplayTitle(title: string): string {
+  const hidden = hiddenWorkflowPhaseNumber(title);
+  return hidden !== null ? `Step ${hidden}` : title;
+}
+
 /** Claude caps a run at 1,000 agents; anything past this is a bad report. */
 const MAX_AGENTS_PER_RUN = 2_000;
 const MAX_PHASES_PER_RUN = 200;

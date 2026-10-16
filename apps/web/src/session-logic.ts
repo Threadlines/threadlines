@@ -1,4 +1,5 @@
 import * as Option from "effect/Option";
+import { workflowPhaseDisplayTitle } from "@threadlines/shared/workflowRuns";
 import * as Schema from "effect/Schema";
 import * as Arr from "effect/Array";
 import { compareTranscriptPosition } from "@threadlines/shared/transcriptOrder";
@@ -672,18 +673,40 @@ export function formatAwaitedTasks(
 /**
  * The one word a waiting thread's row spends on its wait. Agents name
  * themselves ("2 agents"), because a thread whose agents are still at work is
- * not idle; a workflow is a script of agents, so it is next. A command, or a
- * wait nobody described, stays "waiting".
+ * not idle; a workflow is a script of agents, so it is next, and a lone one
+ * says how far it got ("Workflow 6/8"). A command, or a wait nobody
+ * described, stays "waiting".
  */
 export function formatBackgroundWaitWord(
   tasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | null,
 ): string {
   if (tasks === null) return "waiting";
-  for (const kind of ["agent", "workflow"] as const) {
-    const count = countAwaitedTasks(tasks, kind);
-    if (count > 0) return formatTaskCount(kind, count);
+  const agents = countAwaitedTasks(tasks, "agent");
+  if (agents > 0) return formatTaskCount("agent", agents);
+  const workflows = tasks.filter((task) => task.kind === "workflow");
+  const progress = workflows.length === 1 ? workflows[0]?.workflow : undefined;
+  if (progress && progress.totalAgents > 0) {
+    return `Workflow ${progress.doneAgents}/${progress.totalAgents}`;
   }
+  if (workflows.length > 0) return formatTaskCount("workflow", workflows.length);
   return "waiting";
+}
+
+/**
+ * The working row's words while a thread waits on one workflow and nothing
+ * else: "Workflow · Verify · 2 of 4 agents". Null when it waits on anything
+ * more, or the workflow has not reported agents yet.
+ */
+export function formatSoleAwaitedWorkflow(
+  tasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask>,
+): string | null {
+  if (tasks.length !== 1) return null;
+  const progress = tasks[0]?.kind === "workflow" ? tasks[0].workflow : undefined;
+  if (!progress || progress.totalAgents === 0) return null;
+  const agents = `${progress.doneAgents} of ${progress.totalAgents} agents`;
+  return progress.phaseTitle
+    ? `Workflow · ${workflowPhaseDisplayTitle(progress.phaseTitle)} · ${agents}`
+    : `Workflow · ${agents}`;
 }
 
 export function deriveActiveModelFallbackState(

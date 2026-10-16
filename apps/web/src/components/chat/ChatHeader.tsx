@@ -8,6 +8,7 @@ import {
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
 } from "@threadlines/contracts";
+import type { OrchestrationWorkflowRun } from "@threadlines/contracts";
 import { memo } from "react";
 import {
   CornerDownRightIcon,
@@ -102,6 +103,10 @@ interface ChatHeaderProps {
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
+  /** Workflow runs still going, for the activity list. */
+  workflowRuns?: ReadonlyArray<OrchestrationWorkflowRun> | undefined;
+  onOpenWorkflowRun?: ((taskId: string) => void) | undefined;
+  onStopWorkflowRun?: ((taskId: string) => void) | undefined;
   onViewProposedPlan?: (() => void) | undefined;
   onImplementProposedPlan?: (() => void) | undefined;
   onDismissProposedPlan?: (() => void) | undefined;
@@ -218,6 +223,9 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
+  workflowRuns,
+  onOpenWorkflowRun,
+  onStopWorkflowRun,
   onViewProposedPlan,
   onImplementProposedPlan,
   onDismissProposedPlan,
@@ -340,6 +348,9 @@ export const ChatHeader = memo(function ChatHeader({
           threadRef={activeThreadRef}
           onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
           onStopBackgroundRun={onStopBackgroundRun}
+          workflowRuns={workflowRuns}
+          onOpenWorkflowRun={onOpenWorkflowRun}
+          onStopWorkflowRun={onStopWorkflowRun}
           onViewProposedPlan={onViewProposedPlan}
           onImplementProposedPlan={onImplementProposedPlan}
           onDismissProposedPlan={onDismissProposedPlan}

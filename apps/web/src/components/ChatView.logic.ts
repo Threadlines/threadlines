@@ -1182,6 +1182,12 @@ export function deriveProviderBackgroundRuns(input: {
     if (suppressedSubagentTaskIds.has(taskId)) {
       continue;
     }
+    // A workflow is listed from its run (thread.workflowRuns), with its
+    // progress and its own Stop; as a task it has neither.
+    if (asBackgroundRunString(payload?.taskType) === "local_workflow") {
+      suppressedSubagentTaskIds.add(taskId);
+      continue;
+    }
 
     const taskScope = activeTaskScopesByTaskId.get(taskId) ?? {
       turnIds: new Set<string>(),

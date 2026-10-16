@@ -16,7 +16,7 @@ import type {
 import {
   countWorkflowAgents,
   currentWorkflowPhase,
-  hiddenWorkflowPhaseNumber,
+  workflowPhaseDisplayTitle,
 } from "@threadlines/shared/workflowRuns";
 import { humanizeWorkflowName } from "@threadlines/shared/workflowScript";
 
@@ -39,8 +39,7 @@ const SIZE_GUIDELINE_AGENTS: Readonly<Record<string, number>> = {
 };
 
 export function workflowPhaseTitle(phase: Pick<WorkflowPhase, "title">): string {
-  const hidden = hiddenWorkflowPhaseNumber(phase.title);
-  return hidden !== null ? `Step ${hidden}` : phase.title;
+  return workflowPhaseDisplayTitle(phase.title);
 }
 
 /** The run's name as a person reads it. */

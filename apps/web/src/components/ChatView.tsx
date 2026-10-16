@@ -7190,6 +7190,14 @@ export default function ChatView(props: ChatViewProps) {
         getModelSelectionStringOptionValue(activeThread?.modelSelection, "workflowSize") ?? null,
     };
   }, [activeThread?.modelSelection, agentsPanelOpen, openRightPanelTab, stopWorkflowRun]);
+  const openWorkflowRun = useCallback(
+    (taskId: string) => workflowRunActions.open(taskId),
+    [workflowRunActions],
+  );
+  const runningWorkflowRuns = useMemo(
+    () => (activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS).filter((run) => run.status === "running"),
+    [activeThread?.workflowRuns],
+  );
   /** The header's agent faces: the Agents tab on its list, not on one agent. */
   const onOpenHeaderAgentsTab = useCallback(() => onOpenAgentsPanel(null), [onOpenAgentsPanel]);
   const onOpenHeaderSourceTab = useCallback(
@@ -7291,6 +7299,9 @@ export default function ChatView(props: ChatViewProps) {
           onDeleteProjectScript={deleteProjectScript}
           onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
           onStopBackgroundRun={stopBackgroundRun}
+          workflowRuns={runningWorkflowRuns}
+          onOpenWorkflowRun={openWorkflowRun}
+          onStopWorkflowRun={stopWorkflowRun}
           onViewProposedPlan={
             taskProgressProposedPlan !== null && !isGeneralChatThread
               ? onViewProposedPlan

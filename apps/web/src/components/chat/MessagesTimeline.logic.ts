@@ -2,6 +2,7 @@ import * as Equal from "effect/Equal";
 import { estimateWorkflowRunCardHeight } from "./workflowRunView";
 import {
   formatAwaitedTasks,
+  formatSoleAwaitedWorkflow,
   type ModelFallbackState,
   type ForkContextEntry,
   type SubagentResultEntry,
@@ -695,12 +696,14 @@ export function deriveMessagesTimelineRows(input: {
     // it: the anchor stays up as a wait, without a turn timer, and says what
     // it waits on when the server described it.
     const waitingOn = input.awaitedTasks ? formatAwaitedTasks(input.awaitedTasks) : null;
+    // A lone workflow says where it is instead (its card has the rest).
+    const soleWorkflow = input.awaitedTasks ? formatSoleAwaitedWorkflow(input.awaitedTasks) : null;
     rows.push({
       ...UNPLACED,
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
-      label: waitingOn ? `Waiting on ${waitingOn}` : "Waiting",
+      label: soleWorkflow ?? (waitingOn ? `Waiting on ${waitingOn}` : "Waiting"),
       thought: null,
       ...tracker,
     });
