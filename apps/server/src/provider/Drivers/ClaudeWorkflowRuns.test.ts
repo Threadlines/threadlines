@@ -195,6 +195,7 @@ describe("ClaudeWorkflowRunTracker", () => {
     const snapshot = frame(phase(0, "Research"), agent(0, "start"), agent(1, "start"));
     expect(progress(tracker, T0, snapshot, { totalTokens: 100, totalToolCalls: 2 })).toEqual({
       startedAt: STARTED_AT,
+      status: "running",
       taskId: TASK_ID,
       phases: snapshot.phases,
       agents: snapshot.agents,
@@ -222,8 +223,11 @@ describe("ClaudeWorkflowRunTracker", () => {
     expect(progress(progressFirst, T0, frame(agent(0, "start")))).toMatchObject({
       startedAt: firstSeen,
     });
+    // It also says the run is running, so a run the server marked lost
+    // comes back alike in every projection.
     expect(progress(progressFirst, T0 + 1, frame(agent(0, "done")))).toMatchObject({
       startedAt: firstSeen,
+      status: "running",
     });
     progressFirst.ended({ taskId: TASK_ID, status: "completed", endedAt: ENDED_AT, nowMs: T0 + 2 });
     // After the end, a report must not recreate a run a revert removed.
@@ -254,6 +258,7 @@ describe("ClaudeWorkflowRunTracker", () => {
     // The next frame past the interval carries it, even without a snapshot of its own.
     expect(progress(tracker, T0 + 2_000 + WORKFLOW_PROGRESS_INTERVAL_MS, undefined)).toEqual({
       startedAt: new Date(T0).toISOString(),
+      status: "running",
       taskId: TASK_ID,
       agents: frame(agent(0, "progress", { tokens: 80 })).agents,
     });

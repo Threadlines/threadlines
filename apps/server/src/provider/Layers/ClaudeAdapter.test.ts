@@ -5366,7 +5366,8 @@ describe("ClaudeAdapterLive", () => {
       assert.isTrue(updates.every((update) => update.taskId === "task-wf"));
       assert.deepEqual(
         updates.map((update) => update.status),
-        ["running", undefined, undefined, "completed", undefined],
+        // Live updates say the run is running; the summary after the end does not.
+        ["running", "running", "running", "completed", undefined],
       );
       assert.include(updates[0], { name: "provider-research", toolCallId: "toolu_wf" });
       assert.include(updates[1], {

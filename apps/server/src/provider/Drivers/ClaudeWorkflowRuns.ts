@@ -424,12 +424,15 @@ export class ClaudeWorkflowRunTracker {
    * (applyWorkflowRunPatch). Every update carries one while the run lives,
    * so a run whose first update was lost still appears; none does after it
    * ended, so a report arriving after a revert removed the run (revert is
-   * refused while a run lives) can not bring it back.
+   * refused while a run lives) can not bring it back. A live update also
+   * says the run is running: one the server marked lost (its runtime looked
+   * gone) is back in every projection alike, never only in the one that had
+   * let it go.
    */
   private withStart(state: RunState, nowMs: number, update: WorkflowRunUpdate): WorkflowRunUpdate {
     if (state.ended) return update;
     state.startedAt ??= new Date(nowMs).toISOString();
-    return { startedAt: state.startedAt, ...update };
+    return { startedAt: state.startedAt, status: "running", ...update };
   }
 
   /** What the thread list shows about the run, from everything seen so far. */
