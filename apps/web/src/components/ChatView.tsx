@@ -117,6 +117,7 @@ import {
 import {
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
+  selectThreadDetailLoaded,
   selectThreadListedByRef,
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
@@ -3610,6 +3611,9 @@ export default function ChatView(props: ChatViewProps) {
         ] !== undefined
       : false,
   );
+  // Whether the thread's messages are its history yet, or only what events and
+  // this client wrote before its detail snapshot landed (threadDetailLoadedById).
+  const threadDetailLoaded = useStore((state) => selectThreadDetailLoaded(state, activeThreadRef));
   // The agents panel mounts in the route's right-panel slot, beside the chat
   // column, so the live turn state it renders has to be published out of here.
   useEffect(() => {
@@ -7317,6 +7321,10 @@ export default function ChatView(props: ChatViewProps) {
             <MessagesTimeline
               key={activeThread.id}
               emptyState={draftTimelineEmptyState}
+              detailPending={isServerThread && !threadDetailLoaded}
+              savedEnvironmentConnected={
+                activeSavedEnvironmentRecord === null ? undefined : !activeEnvironmentUnavailable
+              }
               isWorking={isWorking}
               isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
               awaitedTasks={awaitedTasks}

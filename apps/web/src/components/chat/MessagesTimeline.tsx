@@ -73,6 +73,7 @@ import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQu
 import { environmentRequiresRpcAssetTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import { isProviderAuthErrorChatMessage } from "../../lib/providerAuthMessages";
+import { useWsConnectionStatus } from "../../rpc/wsConnectionState";
 import ChatMarkdown from "../ChatMarkdown";
 import {
   ArrowDownIcon,
@@ -725,6 +726,12 @@ const VISIBLE_TURN_SETTLE_MS = 150;
 
 interface MessagesTimelineProps {
   emptyState?: ReactNode;
+  /** The thread's detail has not landed yet: an empty list means "not
+   *  loaded", not "nothing said" (PendingThreadDetailState). */
+  detailPending?: boolean | undefined;
+  /** For a thread on a saved (remote) environment, whether that connection is
+   *  up; undefined for this app's own server, whose connection the app tracks. */
+  savedEnvironmentConnected?: boolean | undefined;
   isWorking: boolean;
   /** The turn settled but provider background work (a command, an agent)
    *  will wake it again; the anchor stays up as "Waiting" until then. */
@@ -819,6 +826,8 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   emptyState,
+  detailPending = false,
+  savedEnvironmentConnected,
   isWorking,
   isWaitingOnBackgroundTasks = false,
   awaitedTasks = null,
@@ -1959,6 +1968,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   if (rows.length === 0 && !isWorking) {
+    if (detailPending) {
+      return <PendingThreadDetailState savedEnvironmentConnected={savedEnvironmentConnected} />;
+    }
     if (emptyState) {
       return (
         // In the new-thread hero the chat column scrolls as one, so this stops
@@ -2355,6 +2367,27 @@ function findTranscriptMessageBody(node: Node): HTMLElement | null {
     return null;
   }
   return element?.closest<HTMLElement>("[data-transcript-message-body='true']") ?? null;
+}
+
+/**
+ * What a chat whose detail has not landed says in place of its messages:
+ * loading while its connection is up, and while it is down (the connection
+ * notices say why) that it loads once the connection is back, so it never
+ * claims to be loading forever. Held back a beat so a fast load never
+ * flashes it.
+ */
+function PendingThreadDetailState(props: { savedEnvironmentConnected: boolean | undefined }) {
+  const appConnection = useWsConnectionStatus();
+  const connected = props.savedEnvironmentConnected ?? appConnection.phase === "connected";
+  return (
+    <div className="flex h-full items-center justify-center px-4">
+      <p className="loading-reveal text-center text-sm text-muted-foreground" role="status">
+        {connected
+          ? "Loading conversation…"
+          : "This conversation loads when the connection is back."}
+      </p>
+    </div>
+  );
 }
 
 function keyExtractor(item: MessagesTimelineRow) {
