@@ -13,6 +13,7 @@ import type {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { restoreSharedPayloadValues } from "@threadlines/shared/activityPayloadRefs";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { queryOptions, useQueries } from "@tanstack/react-query";
 
@@ -84,10 +85,20 @@ export function turnStepsQueryOptions(input: {
     // Only the worked-out steps are kept: a turn's raw rows can run to tens of
     // megabytes of tool output the steps never show.
     queryFn: async (): Promise<TurnSteps> => {
-      const { activities } = await ensureEnvironmentApi(
+      const { activities, sharedPayloadValues } = await ensureEnvironmentApi(
         input.environmentId,
-      ).orchestration.getTurnActivities({ threadId: input.threadId, turnId: input.turnId });
-      return { turnId: input.turnId, entries: deriveWorkLogEntries(activities, null) };
+      ).orchestration.getTurnActivities({
+        threadId: input.threadId,
+        turnId: input.turnId,
+        acceptsPayloadRefs: true,
+      });
+      return {
+        turnId: input.turnId,
+        entries: deriveWorkLogEntries(
+          sharedPayloadValues ? restoreSharedPayloadValues(activities) : activities,
+          null,
+        ),
+      };
     },
     staleTime: Infinity,
     retry: 1,

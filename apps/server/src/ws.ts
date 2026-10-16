@@ -163,6 +163,7 @@ import {
   type SessionCredentialChange,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
+import { shareRepeatedPayloadValues } from "@threadlines/shared/activityPayloadRefs";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { isInternalClientSession } from "./auth/utils.ts";
 
@@ -832,7 +833,14 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTurnActivities,
             projectionSnapshotQuery.getTurnActivities(input).pipe(
-              Effect.map((activities) => ({ activities })),
+              Effect.map((activities) => {
+                const sent = input.acceptsPayloadRefs
+                  ? shareRepeatedPayloadValues(activities)
+                  : activities;
+                return sent === activities
+                  ? { activities }
+                  : { activities: sent, sharedPayloadValues: true as const };
+              }),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetTurnActivitiesError({
@@ -1037,13 +1045,24 @@ const makeWsRpcLayer = (currentSession: {
                     });
                   }
 
+                  // Screenshots and outputs ride on a tool call's progress
+                  // and completion rows alike; a client that restores shared
+                  // values gets each one once.
+                  const activities = threadDetail.value.activities;
+                  const sentActivities = input.acceptsPayloadRefs
+                    ? shareRepeatedPayloadValues(activities)
+                    : activities;
                   return Stream.concat(
                     Stream.make({
                       kind: "snapshot" as const,
-                      snapshot: {
-                        snapshotSequence,
-                        thread: threadDetail.value,
-                      },
+                      snapshot:
+                        sentActivities === activities
+                          ? { snapshotSequence, thread: threadDetail.value }
+                          : {
+                              snapshotSequence,
+                              thread: { ...threadDetail.value, activities: sentActivities },
+                              sharedPayloadValues: true as const,
+                            },
                     }),
                     liveStream,
                   );

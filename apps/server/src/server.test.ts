@@ -1,3 +1,4 @@
+import { restoreSharedPayloadValues } from "@threadlines/shared/activityPayloadRefs";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
@@ -4104,6 +4105,79 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(result.failure._tag === "OrchestrationGetSnapshotError");
       assertTrue(result.failure.cause instanceof Error);
       assert.include(result.failure.cause.message, projectionError.message);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("sends repeated payload values once, only to clients that restore them", () =>
+    Effect.gen(function* () {
+      const screenshot = "iVBORw0KGgo".padEnd(4096, "A");
+      const baseThread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const toolActivity = (id: string, kind: string) => ({
+        id: EventId.make(id),
+        tone: "tool" as const,
+        kind,
+        summary: kind,
+        payload: { toolCallId: "call-1", data: { result: { content: [{ data: screenshot }] } } },
+        turnId: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const threadDetail = {
+        ...baseThread,
+        activities: [toolActivity("a1", "tool.updated"), toolActivity("a2", "tool.completed")],
+      };
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: { subscribeDomainEvents: Effect.succeed(Stream.empty) },
+          projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 10 }),
+            getThreadDetailById: () => Effect.succeed(Option.some(threadDetail)),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const snapshotFor = (acceptsPayloadRefs: boolean | undefined) =>
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              ...(acceptsPayloadRefs === undefined ? {} : { acceptsPayloadRefs }),
+            }).pipe(Stream.take(1), Stream.runCollect),
+          ),
+        ).pipe(
+          Effect.map((items) => {
+            const first = Array.from(items)[0];
+            assert.equal(first?.kind, "snapshot");
+            return first?.kind === "snapshot" ? first.snapshot : undefined;
+          }),
+        );
+
+      const sharedSnapshot = yield* snapshotFor(true);
+      assert.equal(sharedSnapshot?.sharedPayloadValues, true);
+      const shared = sharedSnapshot?.thread.activities ?? [];
+      assert.deepEqual(shared[1]?.payload, {
+        toolCallId: "call-1",
+        data: {
+          result: {
+            content: [
+              { data: { $threadlinesPayloadRef: ["a1", "data", "result", "content", 0, "data"] } },
+            ],
+          },
+        },
+      });
+      assert.deepEqual(
+        restoreSharedPayloadValues(shared).map((activity) => activity.payload),
+        threadDetail.activities.map((activity) => activity.payload),
+      );
+
+      // A client that predates refs gets every value as stored.
+      const wholeSnapshot = yield* snapshotFor(undefined);
+      assert.equal(wholeSnapshot?.sharedPayloadValues, undefined);
+      assert.deepEqual(
+        (wholeSnapshot?.thread.activities ?? []).map((activity) => activity.payload),
+        threadDetail.activities.map((activity) => activity.payload),
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
