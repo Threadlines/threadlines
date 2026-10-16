@@ -20,6 +20,7 @@
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 /**
@@ -261,6 +262,33 @@ const repositoryOf = (checkout: {
   });
 
 /**
+ * `value`'s real path, resolving the deepest part of it that exists, so a
+ * path reached through a link (macOS `/tmp` is `/private/tmp`, a symlinked
+ * folder) compares as the place it really is.
+ */
+const resolveExistingRealPath = (
+  value: string,
+): Effect.Effect<string, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const missing: Array<string> = [];
+    let existing = path.resolve(value);
+    while (true) {
+      const real = yield* fs.realPath(existing).pipe(Effect.option);
+      if (Option.isSome(real)) {
+        return path.join(real.value, ...missing);
+      }
+      const parent = path.dirname(existing);
+      if (parent === existing) {
+        return path.resolve(value);
+      }
+      missing.unshift(path.basename(existing));
+      existing = parent;
+    }
+  });
+
+/**
  * Where an edit to `filePath` shows a session working, judged against the
  * checkout the session was started in.
  *
@@ -278,8 +306,12 @@ export const resolveEditedCheckout = (input: {
 }): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
-    const home = yield* nearestCheckout(input.configuredCwd);
-    const edited = yield* nearestCheckout(path.dirname(input.filePath));
+    // Both sides by real path: an edit made through a link belongs to the
+    // checkout the file really is in.
+    const home = yield* nearestCheckout(yield* resolveExistingRealPath(input.configuredCwd));
+    const edited = yield* nearestCheckout(
+      path.dirname(yield* resolveExistingRealPath(input.filePath)),
+    );
     if (home === undefined || edited === undefined) {
       return undefined;
     }

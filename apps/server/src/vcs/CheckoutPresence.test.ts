@@ -264,12 +264,31 @@ describe("resolveEditedCheckout", () => {
         const edited = (filePath: string) =>
           resolveEditedCheckout({ filePath, configuredCwd: home });
 
+        // Another checkout is named by its real path (macOS temp folders
+        // are links into /private).
+        const real = (value: string) => Effect.promise(() => NodeFS.realpath(value));
         assert.strictEqual(yield* edited(NodePath.join(home, "src", "a.ts")), home);
-        assert.strictEqual(yield* edited(NodePath.join(helper, "src", "a.ts")), helper);
-        assert.strictEqual(yield* edited(NodePath.join(repo, "README.md")), repo);
+        assert.strictEqual(
+          yield* edited(NodePath.join(helper, "src", "a.ts")),
+          yield* real(helper),
+        );
+        assert.strictEqual(yield* edited(NodePath.join(repo, "README.md")), yield* real(repo));
         // Another repository, or no repository at all, says nothing.
         assert.isUndefined(yield* edited(NodePath.join(other, "a.ts")));
         assert.isUndefined(yield* edited(NodePath.join(notes, "memory.md")));
+        // An edit through a link lands where the file really is: home reached
+        // by another name is still home, and a link inside the helper that
+        // points into the primary clone edits the primary clone.
+        yield* Effect.promise(async () => {
+          await NodeFS.symlink(home, NodePath.join(notes, "home-link"));
+          await NodeFS.mkdir(NodePath.join(repo, "src"));
+          await NodeFS.symlink(NodePath.join(repo, "src"), NodePath.join(helper, "shared"));
+        });
+        assert.strictEqual(yield* edited(NodePath.join(notes, "home-link", "a.ts")), home);
+        assert.strictEqual(
+          yield* edited(NodePath.join(helper, "shared", "a.ts")),
+          yield* real(repo),
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

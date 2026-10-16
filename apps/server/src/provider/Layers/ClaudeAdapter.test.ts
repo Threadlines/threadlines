@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -3726,7 +3726,7 @@ describe("ClaudeAdapterLive", () => {
       // helper's edit and the file outside every checkout say nothing, then
       // back home.
       assert.deepStrictEqual(moves, [
-        { cwd: other, reason: "file-edited" },
+        { cwd: realpathSync(other), reason: "file-edited" },
         { cwd: home, reason: "file-edited" },
       ]);
     }).pipe(

@@ -33,14 +33,15 @@ export function resolveThreadWorkingCwd(input: {
 }
 
 /**
- * What a `thread.effective-cwd-set` event leaves on the thread, for every
- * projection of it. A legacy `subagent` value (a checkout once guessed from an
- * isolated subagent, which never moved the thread's own agent) reads as no
- * move.
+ * What an effective cwd and its source mean for the thread, for every reader
+ * of one: the server's projections of `thread.effective-cwd-set` and the
+ * client's copy of a server's threads. A legacy `subagent` value (a checkout
+ * older servers guessed from an isolated subagent, which never moved the
+ * thread's own agent) reads as no move.
  */
-export function effectiveCwdAfterSet(payload: {
+export function effectiveCwdOf(payload: {
   readonly effectiveCwd: string | null;
-  readonly effectiveCwdSource?: ThreadEffectiveCwdSource | undefined;
+  readonly effectiveCwdSource?: ThreadEffectiveCwdSource | null | undefined;
 }): {
   readonly effectiveCwd: string | null;
   readonly effectiveCwdSource: ThreadEffectiveCwdSource | null;
