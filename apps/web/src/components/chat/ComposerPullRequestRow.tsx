@@ -164,11 +164,14 @@ export function ComposerPullRequestRow({
     autoMergeEnabled: row.autoMergeEnabled,
   };
 
+  // The number, the checks chip and the close button always stay. As the
+  // composer narrows, the project title (the thread's own) goes first, then
+  // the branch truncates, and then the diffstat and the branch step out.
   return (
     <div
       data-composer-pull-request-row="true"
       className={cn(
-        "flex h-8 min-w-0 items-center gap-2.5 px-3 text-xs",
+        "@container/pr-row flex h-8 min-w-0 items-center gap-2.5 px-3 text-xs",
         divided && "border-b border-border/60",
       )}
     >
@@ -184,24 +187,32 @@ export function ComposerPullRequestRow({
         </button>
       </PullRequestHoverCard>
       {row.projectTitle ? (
-        <span className="shrink-0 truncate text-muted-foreground">{row.projectTitle}</span>
-      ) : null}
-      {row.headBranch ? (
-        <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">
-          {row.headBranch}
-        </span>
-      ) : (
-        <span className="min-w-0 flex-1" />
-      )}
-      {row.diffStat ? (
-        <span className="shrink-0 font-mono">
-          <DiffStatLabel
-            additions={row.diffStat.additions}
-            deletions={row.diffStat.deletions}
-            separator="space"
-          />
+        <span className="min-w-0 truncate text-muted-foreground @max-sm/pr-row:hidden">
+          {row.projectTitle}
         </span>
       ) : null}
+      {/* The branch and the diffstat share what is left, each only at a size
+          worth reading: the branch truncates down to 3rem, and the diffstat
+          shows whole, since a cut-off count reads as a different number. What
+          does not fit wraps onto a second line this one-line slot clips. The
+          empty first item is what lets the branch wrap away too. */}
+      <div className="flex h-4 min-w-0 flex-1 flex-wrap content-start items-center justify-end overflow-hidden">
+        <span aria-hidden />
+        {row.headBranch ? (
+          <span className="min-w-0 flex-[1_1_3rem] truncate font-mono text-muted-foreground">
+            {row.headBranch}
+          </span>
+        ) : null}
+        {row.diffStat ? (
+          <span className="ml-2.5 shrink-0 font-mono">
+            <DiffStatLabel
+              additions={row.diffStat.additions}
+              deletions={row.diffStat.deletions}
+              separator="space"
+            />
+          </span>
+        ) : null}
+      </div>
       {pullRequest.autoFix?.checked ? (
         <Tooltip>
           <TooltipTrigger
