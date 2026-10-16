@@ -75,13 +75,19 @@ export interface PreviewWebview extends HTMLElement {
  * - visible: on screen.
  * - drawn: invisible but still painted, for a page an agent is using. Chromium
  *   produces no picture of a hidden page, so a screenshot of one never returns.
+ *   Made invisible with a filter, not `opacity: 0`: Chromium leaves an element
+ *   at zero opacity out of the frame altogether, the page stops producing
+ *   frames, and a screenshot waits for one that never comes. Through a filter
+ *   it is still drawn, and shows nothing.
  * - hidden: not painted; Chromium also slows its timers.
  */
 export type PreviewFrameMode = "visible" | "drawn" | "hidden";
 
 const FRAME_MODE_STYLES: Record<PreviewFrameMode, CSSProperties> = {
   visible: { visibility: "visible" },
-  drawn: { visibility: "visible", opacity: 0, pointerEvents: "none" },
+  // Above the tab on screen, whatever their order: Chromium does not draw what
+  // an opaque layer covers either, and each tab's frame paints a background.
+  drawn: { visibility: "visible", filter: "opacity(0)", pointerEvents: "none", zIndex: 1 },
   hidden: { visibility: "hidden" },
 };
 
