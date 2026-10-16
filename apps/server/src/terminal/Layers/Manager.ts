@@ -5,6 +5,7 @@ import {
   type TerminalSessionStatus,
 } from "@threadlines/contracts";
 import { makeKeyedCoalescingWorker } from "@threadlines/shared/KeyedCoalescingWorker";
+import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import {
   isProcessAlive,
   listDescendantProcessIds,
@@ -1060,7 +1061,9 @@ function createTerminalSpawnEnv(
   },
 ): NodeJS.ProcessEnv {
   const spawnEnv: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(baseEnv)) {
+  // First, while the server's marker is still there to say what it added:
+  // the filter below drops every THREADLINES_ variable.
+  for (const [key, value] of Object.entries(withUsualCommandLookup(baseEnv))) {
     if (value === undefined) continue;
     if (shouldExcludeTerminalEnvKey(key)) continue;
     spawnEnv[key] = value;

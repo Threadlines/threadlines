@@ -761,19 +761,22 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
 
       assertSuccess(result, undefined);
       assert.ok(spawnedCommand);
-      assert.equal(spawnedCommand.command, process.execPath);
+      const isWin32 = process.platform === "win32";
+      // Windows: the full path, quoted for cmd.exe, and the user's environment.
+      assert.equal(spawnedCommand.command, isWin32 ? `"${process.execPath}"` : process.execPath);
       assert.deepEqual(
         spawnedCommand.args,
-        process.platform === "win32" ? expectedArgs.map((arg) => `"${arg}"`) : expectedArgs,
+        isWin32 ? expectedArgs.map((arg) => `"${arg}"`) : expectedArgs,
       );
       assert.deepEqual(
         spawnedCommand.options,
         expectedHiddenWindowsOptions({
           detached: true,
-          shell: process.platform === "win32",
+          shell: isWin32,
           stdin: "ignore",
           stdout: "ignore",
           stderr: "ignore",
+          ...(isWin32 ? { env: process.env, extendEnv: false } : {}),
         }),
       );
       assert.equal(didUnref, true);
@@ -814,6 +817,7 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
+        ...(process.platform === "win32" ? { env: process.env, extendEnv: false } : {}),
       });
     }),
   );

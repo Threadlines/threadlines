@@ -95,6 +95,10 @@
       "types": "./src/shell.ts",
       "import": "./src/shell.ts"
     },
+    "./windowsCommandLookup": {
+      "types": "./src/windowsCommandLookup.ts",
+      "import": "./src/windowsCommandLookup.ts"
+    },
     "./childProcess": {
       "types": "./src/childProcess.ts",
       "import": "./src/childProcess.ts"

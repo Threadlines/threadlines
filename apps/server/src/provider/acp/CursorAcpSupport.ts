@@ -31,6 +31,7 @@ import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import { planCliSpawn } from "../../cliSpawn.ts";
 import { makeProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import {
   buildBooleanOptionDescriptor,
@@ -653,15 +654,17 @@ const runCursorCommand = (
   cursorSettings: CursorSettings,
   args: ReadonlyArray<string>,
   environment: NodeJS.ProcessEnv,
-) =>
-  spawnAndCollect(
+) => {
+  const plan = planCliSpawn(cursorSettings.binaryPath, args, environment);
+  return spawnAndCollect(
     cursorSettings.binaryPath,
     ChildProcess.make(
-      cursorSettings.binaryPath,
-      [...args],
-      hideWindowsConsole({ env: environment, shell: process.platform === "win32" }),
+      plan.command,
+      [...plan.args],
+      hideWindowsConsole({ ...plan.options, env: environment }),
     ),
   );
+};
 
 const runCursorAboutCommand = (cursorSettings: CursorSettings, environment: NodeJS.ProcessEnv) =>
   Effect.gen(function* () {

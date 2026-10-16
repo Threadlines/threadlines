@@ -22,6 +22,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import { planCliSpawn } from "../../cliSpawn.ts";
 import {
   createModelCapabilities,
@@ -52,6 +53,7 @@ import {
 } from "../providerSnapshot.ts";
 import { detectProviderBinary } from "../providerDetection.ts";
 import {
+  claudeSdkExecutable,
   makeClaudeEnvironment,
   resolveClaudeConfigDir,
   resolveClaudeHomePath,
@@ -1330,6 +1332,7 @@ const probeClaudeCapabilities = (
     const renewalDue = yield* isRenewalDue;
     const stopAfterRenewal = stopClaudeCliAfterSignInRenewal({ renewalDue, isRenewalDue, stop });
     return yield* Effect.tryPromise(async () => {
+      const executable = claudeSdkExecutable(claudeSettings.binaryPath, claudeEnvironment);
       const q = claudeQuery({
         // Never yield — we only need initialization data, not a conversation.
         // This prevents any prompt from reaching the Anthropic API.
@@ -1339,7 +1342,7 @@ const probeClaudeCapabilities = (
         })(),
         options: {
           persistSession: false,
-          pathToClaudeCodeExecutable: claudeSettings.binaryPath,
+          pathToClaudeCodeExecutable: executable,
           abortController: abort,
           settingSources: ["user", "project", "local"],
           mcpServers: {},
@@ -1348,7 +1351,8 @@ const probeClaudeCapabilities = (
           // Named so the probe never picks up a settings `defaultMode` (the
           // SDK stopped filling in "default" in 0.3.286).
           permissionMode: "default",
-          env: claudeEnvironment,
+          // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
+          env: withUsualCommandLookup(claudeEnvironment),
           stderr: () => {},
         },
       });
@@ -1506,11 +1510,12 @@ export const refreshClaudeOAuthCredential = (
       : Effect.succeed(false);
     const renewalDue = yield* isRenewalDue;
     return yield* Effect.tryPromise(async () => {
+      const executable = claudeSdkExecutable(claudeSettings.binaryPath, claudeEnvironment);
       const q = claudeQuery({
         prompt: CREDENTIAL_REFRESH_PROMPT,
         options: {
           persistSession: false,
-          pathToClaudeCodeExecutable: claudeSettings.binaryPath,
+          pathToClaudeCodeExecutable: executable,
           abortController: abort,
           // No filesystem settings, hooks, or MCP servers (claude.ai
           // connectors load even without settings): this run exists only to
@@ -1525,7 +1530,8 @@ export const refreshClaudeOAuthCredential = (
           permissionMode: "default",
           maxTurns: 1,
           model: "haiku",
-          env: claudeEnvironment,
+          // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
+          env: withUsualCommandLookup(claudeEnvironment),
           stderr: () => {},
         },
       });

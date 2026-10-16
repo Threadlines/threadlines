@@ -118,6 +118,7 @@ import * as Stream from "effect/Stream";
 import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/shared/diffStats";
 
 import { parseSessionKey } from "@threadlines/shared/threadParticipants";
+import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -141,7 +142,7 @@ import {
   roomSideKindOf,
   roomToolsFor,
 } from "../../mcp/roomToolAccess.ts";
-import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { claudeSdkExecutable, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   ensureClaudeSessionTranscript,
   readClaudeTranscriptWorktreePath,
@@ -753,7 +754,10 @@ export function lockDownClaudeQueryOptions(
       ? { pathToClaudeCodeExecutable: base.pathToClaudeCodeExecutable }
       : {}),
     // The setting and the switch both: the switch wins over any setting.
-    env: { ...(base.env ?? process.env), CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+    env: {
+      ...withUsualCommandLookup(base.env ?? process.env),
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    },
     settings,
     extraArgs: { "thinking-display": "summarized" },
     includePartialMessages: true,
@@ -7259,7 +7263,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ),
         );
 
-      const claudeBinaryPath = claudeSettings.binaryPath;
+      const claudeBinaryPath = yield* Effect.try({
+        try: () => claudeSdkExecutable(claudeSettings.binaryPath, claudeEnvironment),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: toMessage(cause, "Claude was not found on PATH."),
+            cause,
+          }),
+      });
       const extraArgs = {
         // Claude hides its thinking unless asked, which leaves the working row
         // with nothing to say for minutes. Display only: whether Claude thinks
@@ -7497,8 +7510,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
         // The setting decides, whatever the environment Threadlines was
         // started in says: on asks for the tool, off refuses it.
+        // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
         env: {
-          ...claudeEnvironment,
+          ...withUsualCommandLookup(claudeEnvironment),
           ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
         },
         ...(input.cwd || pageAssets !== undefined

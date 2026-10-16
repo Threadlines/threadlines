@@ -16,8 +16,10 @@ import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import {
   isCommandAvailable,
   makeCommandPathResolver,
+  resolveCommandPath,
   type CommandPathResolver,
 } from "@threadlines/shared/shell";
+import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -432,9 +434,13 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
 
   const isWin32 = process.platform === "win32";
   const shell = isWin32 ? (launch.shell ?? true) : (launch.shell ?? false);
+  // On Windows the editor starts from its place on PATH, never a same-named
+  // file in the working folder, and with the user's own environment, so the
+  // terminals inside it find programs as they would outside Threadlines.
+  const command = isWin32 ? (resolveCommandPath(launch.command) ?? launch.command) : launch.command;
   yield* launchAndUnref(
     {
-      command: launch.command,
+      command: isWin32 && shell ? `"${command}"` : command,
       args: isWin32 && shell ? launch.args.map((arg) => `"${arg}"`) : [...launch.args],
       options: {
         detached: true,
@@ -442,6 +448,7 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
+        ...(isWin32 ? { env: withUsualCommandLookup(process.env), extendEnv: false } : {}),
       },
       ...(launch.windowsHide !== undefined ? { windowsHide: launch.windowsHide } : {}),
     },
