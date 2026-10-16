@@ -58,7 +58,12 @@ import {
 } from "electron";
 
 import * as IpcChannels from "../ipc/channels.ts";
-import { fitScreenshot } from "./screenshotFit.ts";
+import {
+  AGENT_SCREENSHOT_BUDGET_BYTES,
+  AGENT_SCREENSHOT_ENCODINGS,
+  AGENT_SCREENSHOT_PNG_ENCODINGS,
+  fitScreenshot,
+} from "./screenshotFit.ts";
 import { toCdpKeyDefinition, toCdpModifierBitmask } from "./keyEvents.ts";
 import {
   buildAriaSnapshotScript,
@@ -285,6 +290,8 @@ const encodeForAgent = (
   data: string,
   width: number,
   height: number,
+  /** Whether the server can carry a JPEG; see `DesktopPreviewScreenshotInputSchema`. */
+  jpeg: boolean,
 ): { readonly dataUrl: string; readonly scale?: number } => {
   const captured = nativeImage.createFromBuffer(Buffer.from(data, "base64"));
   if (captured.isEmpty() || width <= 0 || height <= 0) {
@@ -307,10 +314,13 @@ const encodeForAgent = (
     sized.set(scale, image);
     return image;
   };
-  const fitted = fitScreenshot((encoding) =>
-    encoding.mimeType === "image/png"
-      ? atScale(encoding.scale).toPNG()
-      : atScale(encoding.scale).toJPEG(encoding.quality),
+  const fitted = fitScreenshot(
+    (encoding) =>
+      encoding.mimeType === "image/png"
+        ? atScale(encoding.scale).toPNG()
+        : atScale(encoding.scale).toJPEG(encoding.quality),
+    AGENT_SCREENSHOT_BUDGET_BYTES,
+    jpeg ? AGENT_SCREENSHOT_ENCODINGS : AGENT_SCREENSHOT_PNG_ENCODINGS,
   );
   return {
     dataUrl: `data:${fitted.mimeType};base64,${Buffer.from(fitted.bytes).toString("base64")}`,
@@ -1814,7 +1824,11 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       if (!forAgent) {
         return { dataUrl: `data:image/png;base64,${shot.data ?? ""}`, width, height };
       }
-      return { ...encodeForAgent(shot.data ?? "", width, height), width, height };
+      return {
+        ...encodeForAgent(shot.data ?? "", width, height, input.jpeg === true),
+        width,
+        height,
+      };
     }),
     click: Effect.fn("PreviewAutomation.click")(function* (input: DesktopPreviewClickInput) {
       const contents = yield* resolveAttached(input.webContentsId);

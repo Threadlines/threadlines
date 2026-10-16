@@ -397,6 +397,9 @@ export function resolveThreadBrowserTarget(
     onAgentActivity: (activity) =>
       useBrowserPanelStore.getState().setAgentActivity(threadRef, activity),
     onUserTakeover: () => useBrowserPanelStore.getState().markBrowserUserControlled(threadRef),
+    screenshotsMayBeJpeg:
+      readEnvironmentDescriptor(threadRef.environmentId)?.capabilities.browserScreenshotTypes ===
+      true,
     tabsOpenedByPage: () =>
       tabId === ""
         ? []

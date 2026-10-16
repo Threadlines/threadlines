@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { fitScreenshot, type ScreenshotEncoding } from "./screenshotFit.ts";
+import {
+  AGENT_SCREENSHOT_PNG_ENCODINGS,
+  fitScreenshot,
+  type ScreenshotEncoding,
+} from "./screenshotFit.ts";
 
 /**
  * A stand-in for the real encoders, sized the way a page behaves: a PNG of
@@ -67,5 +71,14 @@ describe("fitScreenshot", () => {
     // Every encoding is tried at most once: no loop that keeps shrinking.
     expect(new Set(impossible.asked).size).toBe(impossible.asked.length);
     expect(impossible.asked.length).toBeLessThanOrEqual(8);
+  });
+
+  it("never makes a JPEG for a server that would call it a PNG", () => {
+    const photos = page(1_200_000, 2_250);
+
+    const fitted = fitScreenshot(photos.encode, 700_000, AGENT_SCREENSHOT_PNG_ENCODINGS);
+
+    expect(photos.asked.every((encoding) => encoding.mimeType === "image/png")).toBe(true);
+    expect(fitted).toMatchObject({ mimeType: "image/png", scale: 0.75 });
   });
 });

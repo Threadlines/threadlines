@@ -37,6 +37,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    */
   browserClientHosts: Schema.optionalKey(Schema.Boolean),
   /**
+   * The server labels a browser screenshot with the image type the client
+   * says it is (`PreviewAutomationScreenshotSchema.mimeType`). Older servers
+   * call every screenshot a PNG, so clients send them nothing else.
+   */
+  browserScreenshotTypes: Schema.optionalKey(Schema.Boolean),
+  /**
    * The server runs suggested shell commands from the chat
    * (`commandRuns.start`). Older servers omit it; clients then show no run
    * buttons.

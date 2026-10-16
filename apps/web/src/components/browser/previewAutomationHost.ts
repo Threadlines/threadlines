@@ -147,6 +147,11 @@ export interface PreviewAutomationHostTarget {
   }>;
   /** Tabs this tab's page has opened, so an action can say which it opened. */
   readonly tabsOpenedByPage?: (() => ReadonlyArray<{ id: string; url: string }>) | undefined;
+  /**
+   * The server can carry a JPEG screenshot (it advertises
+   * `browserScreenshotTypes`). Without it pictures stay PNG.
+   */
+  readonly screenshotsMayBeJpeg?: boolean | undefined;
   /** Whether the panel is still visible after a tab lifecycle operation. */
   readonly panelOpen?: (() => boolean) | undefined;
   /** Create and resolve a tab for this agent session. */
@@ -624,7 +629,10 @@ async function dispatch(
       return { result: await call(bridge.previewEvaluate, input) };
     case "screenshot": {
       // Sized for the model: the page's own CSS pixels, small enough to carry.
-      const shot = await call(bridge.previewScreenshot, { forAgent: true });
+      const shot = await call(bridge.previewScreenshot, {
+        forAgent: true,
+        ...(target.screenshotsMayBeJpeg === true ? { jpeg: true } : {}),
+      });
       // Base64 without the data-url header: the tool hands this to the model as
       // an image block, which wants the bytes rather than a URL. The header
       // still says what the bytes are, and the image block has to say it too.

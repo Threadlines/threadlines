@@ -494,6 +494,39 @@ describe("createPreviewAutomationHandler", () => {
     });
   });
 
+  it("lets the picture be a JPEG only when the server can say it is one", async () => {
+    // An older server labels every screenshot PNG, and a model refuses a JPEG
+    // called a PNG; above, with no word from the server, no JPEG was asked for.
+    const asked: unknown[] = [];
+    const handle = createPreviewAutomationHandler(
+      {
+        previewScreenshot: (input: unknown) => {
+          asked.push(input);
+          return Promise.resolve({
+            dataUrl: "data:image/png;base64,iVBO",
+            width: 800,
+            height: 600,
+          });
+        },
+      } as unknown as DesktopBridge,
+      () => ({
+        webContentsId: 42,
+        navigate: () => Promise.resolve(),
+        viewport: () => ({ width: 800, height: 600 }),
+        setViewport: () => {},
+        onAgentPoint: () => {},
+        tabs: () => [],
+        selectTab: () => {},
+        onAgentActivity: () => {},
+        screenshotsMayBeJpeg: true,
+      }),
+    );
+
+    await handle(request("screenshot"));
+
+    expect(asked).toEqual([{ webContentsId: 42, forAgent: true, jpeg: true }]);
+  });
+
   it("says what it is doing in words, before and after", async () => {
     // The line under the toolbar is the only thing that distinguishes an agent
     // working from a page misbehaving on its own.

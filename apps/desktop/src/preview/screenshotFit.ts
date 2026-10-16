@@ -36,6 +36,20 @@ export const AGENT_SCREENSHOT_ENCODINGS: readonly [ScreenshotEncoding, ...Screen
   { mimeType: "image/jpeg", quality: 55, scale: 0.5 },
 ];
 
+/**
+ * The tries for a server that cannot be told a picture is a JPEG: an older
+ * one labels every screenshot PNG, and a model refuses a JPEG called a PNG.
+ * Fewer pixels is the only way left to make a large page fit.
+ */
+export const AGENT_SCREENSHOT_PNG_ENCODINGS: readonly [
+  ScreenshotEncoding,
+  ...ScreenshotEncoding[],
+] = [
+  { mimeType: "image/png", scale: 1 },
+  { mimeType: "image/png", scale: 0.75 },
+  { mimeType: "image/png", scale: 0.5 },
+];
+
 export interface FittedScreenshot {
   readonly mimeType: ScreenshotMimeType;
   readonly bytes: Uint8Array;
@@ -44,20 +58,21 @@ export interface FittedScreenshot {
 }
 
 /**
- * The first encoding in {@link AGENT_SCREENSHOT_ENCODINGS} that fits the
- * budget, or the smallest of them when none does: a bounded number of tries,
- * never a loop, and the broker's own limit refuses anything still absurd.
+ * The first of `encodings` that fits the budget, or the smallest of them when
+ * none does: a bounded number of tries, never a loop, and the broker's own
+ * limit refuses anything still absurd.
  */
 export function fitScreenshot(
   encode: (encoding: ScreenshotEncoding) => Uint8Array,
   budgetBytes: number = AGENT_SCREENSHOT_BUDGET_BYTES,
+  encodings: readonly [ScreenshotEncoding, ...ScreenshotEncoding[]] = AGENT_SCREENSHOT_ENCODINGS,
 ): FittedScreenshot {
   const attempt = (encoding: ScreenshotEncoding): FittedScreenshot => ({
     mimeType: encoding.mimeType,
     bytes: encode(encoding),
     scale: encoding.scale,
   });
-  const [first, ...rest] = AGENT_SCREENSHOT_ENCODINGS;
+  const [first, ...rest] = encodings;
   let smallest = attempt(first);
   if (smallest.bytes.byteLength <= budgetBytes) {
     return smallest;

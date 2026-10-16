@@ -812,6 +812,13 @@ export const DesktopPreviewScreenshotInputSchema = Schema.Struct({
    * as the user's own screenshots and annotations want.
    */
   forAgent: Schema.optionalKey(Schema.Boolean),
+  /**
+   * An agent's picture may be a JPEG. Only when the server advertises
+   * `browserScreenshotTypes`: an older one labels every screenshot PNG, and a
+   * model refuses a JPEG called a PNG. Without it the picture stays PNG and
+   * loses pixels instead when it is too big.
+   */
+  jpeg: Schema.optionalKey(Schema.Boolean),
 });
 export type DesktopPreviewScreenshotInput = typeof DesktopPreviewScreenshotInputSchema.Type;
 
