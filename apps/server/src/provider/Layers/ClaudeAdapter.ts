@@ -20,11 +20,14 @@ import {
   type SDKRateLimitInfo,
   type RewindFilesResult,
   type SDKResultMessage,
+  type SDKTaskNotificationMessage,
   type SettingSource,
   type SDKUserMessage,
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { parseCliArgs } from "@threadlines/shared/cliArgs";
+import { compareSemverVersions } from "@threadlines/shared/semver";
+import { humanizeWorkflowName, parseWorkflowScriptMeta } from "@threadlines/shared/workflowScript";
 import {
   ApprovalRequestId,
   type CanonicalItemType,
@@ -41,6 +44,7 @@ import {
   type ProviderInteractionMode,
   ProviderItemId,
   type ProviderRuntimeEvent,
+  type WorkflowRunUpdate,
   type ProviderRuntimeTurnStatus,
   type ProviderSendTurnInput,
   type ProviderSession,
@@ -146,7 +150,15 @@ import { claudeSdkExecutable, makeClaudeEnvironment } from "../Drivers/ClaudeHom
 import {
   ensureClaudeSessionTranscript,
   readClaudeTranscriptWorktreePath,
+  resolveClaudeConfigDir,
 } from "../Drivers/ClaudeSessionTranscripts.ts";
+import {
+  ClaudeWorkflowFileError,
+  claudeWorkflowAgentTranscriptPath,
+  readClaudeWorkflowRunFile,
+  resolveClaudeWorkflowApprovalScript,
+  saveClaudeWorkflowCommand,
+} from "../Drivers/ClaudeWorkflowFiles.ts";
 import {
   locateClaudeSubagentTranscript,
   readClaudeSubagentTranscriptEntries,
@@ -164,6 +176,12 @@ import {
   readCodexExecTurnContext,
   type CodexExecInvocation,
 } from "../Drivers/CodexExecRollouts.ts";
+import {
+  ClaudeWorkflowRunTracker,
+  claudeWorkflowFinalOutput,
+  claudeWorkflowLaunch,
+  claudeWorkflowSnapshot,
+} from "../Drivers/ClaudeWorkflowRuns.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import {
   claudeModelSupportsAutoRuntimeMode,
@@ -510,6 +528,12 @@ interface ClaudeSessionContext {
    *  by task id once the create result reveals it. Session-scoped because the
    *  tracker list persists across turns. */
   readonly planTracker: Map<string, PlanTrackerTask>;
+  /** The session's workflow runs: what was last reported of each, so only
+   *  changes go out. See ClaudeWorkflowRuns.ts. */
+  readonly workflowRuns: ClaudeWorkflowRunTracker;
+  /** Append-only messages sent whose own empty result has not come back yet.
+   *  The CLI answers each with a zero-turn result that ends nothing. */
+  pendingAppendOnlyResults: number;
   lastEmittedPlanTrackerFingerprint: string | undefined;
   /** Where this session last said it works (`session.cwd.changed`), so an
    *  edit only reports a move when it lands somewhere else. Undefined until
@@ -522,6 +546,8 @@ interface ClaudeSessionContext {
   lastAssistantUuid: string | undefined;
   lastCompletedTurnId: TurnId | undefined;
   lastThreadStartedId: string | undefined;
+  /** The CLI's version, from its init message; unknown until the first turn. */
+  cliVersion: string | undefined;
   // Rendered cross-driver handoff preamble, injected ahead of the first user
   // turn and cleared once consumed. Set only when a session starts from a
   // context seed (no native resume).
@@ -547,6 +573,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
     readonly alwaysThinkingEnabled?: boolean | null;
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
+    readonly workflowSizeGuideline?: ClaudeWorkflowSizeGuideline | null;
   }) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
   /** Optional: absent on CLIs that predate in-session plugin and skill reloads. */
@@ -556,8 +583,9 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
     userMessageId: string,
     options?: { readonly dryRun?: boolean },
   ) => Promise<RewindFilesResult>;
-  /** Stops one task; the CLI answers with a `stopped` task notification.
-   *  Optional: absent on CLIs that predate the stop_task control request. */
+  /** Stops one task (an agent, a command, a workflow); the CLI answers with a
+   *  `stopped` task notification. Optional: absent on CLIs that predate the
+   *  stop_task control request. */
   readonly stopTask?: (taskId: string) => Promise<void>;
   readonly close: () => void;
 }
@@ -851,6 +879,16 @@ interface ClaudeFlagSettingsSnapshot {
   readonly alwaysThinkingEnabled: boolean | null;
   readonly fastMode: boolean;
   readonly ultracode: boolean;
+  /** Null: Claude's own default (and a size set in its settings files) stands. */
+  readonly workflowSizeGuideline: ClaudeWorkflowSizeGuideline | null;
+}
+
+type ClaudeWorkflowSizeGuideline = "small" | "medium" | "large" | "unrestricted";
+
+function claudeWorkflowSizeGuideline(value: unknown): ClaudeWorkflowSizeGuideline | null {
+  return value === "small" || value === "medium" || value === "large" || value === "unrestricted"
+    ? value
+    : null;
 }
 
 function deriveClaudeFlagSettings(
@@ -873,6 +911,7 @@ function deriveClaudeFlagSettings(
     alwaysThinkingEnabled: typeof thinking === "boolean" ? thinking : null,
     fastMode: currentValue("fastMode") === true,
     ultracode: isClaudeUltracodeEffort(effort) || currentValue("ultracode") === true,
+    workflowSizeGuideline: claudeWorkflowSizeGuideline(currentValue("workflowSize")),
   };
 }
 
@@ -884,7 +923,8 @@ function claudeFlagSettingsEqual(
     left.effortLevel === right.effortLevel &&
     left.alwaysThinkingEnabled === right.alwaysThinkingEnabled &&
     left.fastMode === right.fastMode &&
-    left.ultracode === right.ultracode
+    left.ultracode === right.ultracode &&
+    left.workflowSizeGuideline === right.workflowSizeGuideline
   );
 }
 
@@ -1883,6 +1923,16 @@ function summarizeToolRequest(
       }
       break;
     }
+    case "workflow": {
+      // Named from the script's own header, never by printing the script.
+      const meta = typeof input.script === "string" ? parseWorkflowScriptMeta(input.script) : null;
+      const name = meta?.name ?? text(input.name);
+      if (name) {
+        return `Workflow: ${humanizeWorkflowName(name)}`;
+      }
+      const scriptPath = displayPath(input.scriptPath);
+      return scriptPath ? `Workflow: ${scriptPath}` : "Workflow";
+    }
     case "notebookedit": {
       const path = displayPath(input.notebook_path);
       if (path) {
@@ -2072,6 +2122,8 @@ function titleForToolName(toolName: string, itemType: CanonicalItemType): string
       return "Artifact";
     case "askuserquestion":
       return "Question";
+    case "workflow":
+      return "Workflow";
     case "enterplanmode":
     case "exitplanmode":
       return "Plan";
@@ -2173,6 +2225,13 @@ function fileChangeStatFromHookInput(hookInput: unknown): FileChangeStat | null 
   return null;
 }
 
+/** `shouldQuery: false` (append without a turn) is known from 2.1.226 on. */
+const MINIMUM_CLAUDE_APPEND_ONLY_VERSION = "2.1.226";
+
+/** A finished workflow's output file holds every agent's final entry and the
+ *  run's result; past this size the agents' last progress frames stand. */
+const WORKFLOW_OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
+
 const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/gif",
   "image/jpeg",
@@ -2194,6 +2253,10 @@ function buildPromptText(
 function buildUserMessage(input: {
   readonly sdkContent: Array<Record<string, unknown>>;
   readonly userMessageId?: MessageId;
+  /** The person typed it: see ProviderTypedInput. */
+  readonly typedByUser?: boolean;
+  /** Recorded without starting a turn; the CLI joins it to the next message. */
+  readonly appendOnly?: boolean;
 }): SDKUserMessage {
   const uuid = input.userMessageId && isUuid(input.userMessageId) ? input.userMessageId : undefined;
   return {
@@ -2201,6 +2264,8 @@ function buildUserMessage(input: {
     session_id: "",
     parent_tool_use_id: null,
     ...(uuid ? { uuid } : {}),
+    ...(input.typedByUser ? { origin: { kind: "human" } } : {}),
+    ...(input.appendOnly ? { shouldQuery: false } : {}),
     message: {
       role: "user",
       content: input.sdkContent as unknown as SDKUserMessage["message"]["content"],
@@ -2248,6 +2313,64 @@ function buildClaudeDocumentContentBlock(input: {
   };
 }
 
+function isAppendOnlyUserMessage(message: SDKUserMessage): boolean {
+  return (message as { readonly shouldQuery?: boolean }).shouldQuery === false;
+}
+
+/**
+ * The SDK messages one turn or steer is sent as. Usually one. When the user
+ * typed the message (`input.typed`), Claude is told so with a human origin,
+ * which is what lets its "ultracode" keyword and other user-only behavior see
+ * it; context the server put in front of the user's words (a room catch-up,
+ * a handoff seed) then goes first, on its own unmarked message that only
+ * appends to the transcript, so nobody else's words ever carry the user's
+ * authority.
+ */
+const buildUserMessagesEffect = Effect.fn("buildUserMessagesEffect")(function* (
+  input: Pick<
+    ProviderSendTurnInput | ProviderSteerTurnInput,
+    "messageId" | "input" | "attachments" | "typed"
+  >,
+  dependencies: {
+    readonly fileSystem: FileSystem.FileSystem;
+    readonly attachmentsDir: string;
+    readonly method?: "turn/start" | "turn/steer";
+    readonly seedPreamble?: string | undefined;
+    /** The CLI, when known. One older than append-only messages gets the
+     *  single message it always got whenever context leads the user's words. */
+    readonly cliVersion?: string | undefined;
+  },
+) {
+  const typed = input.typed;
+  const leadingContext =
+    (dependencies.seedPreamble?.trim().length ?? 0) > 0 || (typed?.context?.trim().length ?? 0) > 0;
+  const appendOnlySupported =
+    dependencies.cliVersion === undefined ||
+    compareSemverVersions(dependencies.cliVersion, MINIMUM_CLAUDE_APPEND_ONLY_VERSION) >= 0;
+  // A steer keeps its context and words together: how the CLI treats an
+  // append-only message in the middle of a running turn is unverified.
+  if (
+    typed === undefined ||
+    (leadingContext && (!appendOnlySupported || dependencies.method === "turn/steer"))
+  ) {
+    return [yield* buildUserMessageEffect(input, dependencies)];
+  }
+  const context = [dependencies.seedPreamble, typed.context]
+    .filter((part): part is string => part !== undefined && part.trim().length > 0)
+    .join("\n\n");
+  const typedMessage = yield* buildUserMessageEffect(
+    { ...input, input: typed.text },
+    { ...dependencies, seedPreamble: undefined, typedByUser: true },
+  );
+  if (context.length === 0) {
+    return [typedMessage];
+  }
+  return [
+    buildUserMessage({ sdkContent: [{ type: "text", text: context }], appendOnly: true }),
+    typedMessage,
+  ];
+});
+
 const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   input: Pick<
     ProviderSendTurnInput | ProviderSteerTurnInput,
@@ -2258,6 +2381,7 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     readonly attachmentsDir: string;
     readonly method?: "turn/start" | "turn/steer";
     readonly seedPreamble?: string | undefined;
+    readonly typedByUser?: boolean;
   },
 ) {
   const method = dependencies.method ?? "turn/start";
@@ -2325,6 +2449,7 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   return buildUserMessage({
     sdkContent,
     ...(input.messageId !== undefined ? { userMessageId: input.messageId } : {}),
+    ...(dependencies.typedByUser ? { typedByUser: true } : {}),
   });
 });
 
@@ -3981,6 +4106,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     result?: SDKResultMessage,
   ) {
     const turnState = context.turnState;
+    // A context message's own result always comes before its turn's; one
+    // still owed now never came, and must not swallow a later turn's end.
+    context.pendingAppendOnlyResults = 0;
     const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
     const providerErrorMessage =
       status === "failed" && errorMessage
@@ -4725,6 +4853,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         taskId: RuntimeTaskId.make(task.taskId),
         status: task.status,
         ...(task.summary ? { summary: task.summary } : {}),
+        ...(previous?.taskType ? { taskType: previous.taskType } : {}),
         ...(task.usage !== undefined ? { usage: task.usage } : {}),
         ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
         ...(ownerAgentToolUseId ? { ownerAgentToolUseId } : {}),
@@ -5360,6 +5489,25 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       });
 
+      // A launched workflow's result is the only place its run id and the
+      // folders of its script and transcripts are named.
+      if (tool.toolName === "Workflow" && toolResults.length === 1) {
+        const launch = claudeWorkflowLaunch((message as SDKUserMessage).tool_use_result);
+        if (launch) {
+          const known = context.tasks.get(launch.taskId);
+          context.tasks.set(launch.taskId, {
+            ...known,
+            taskType: known?.taskType ?? "local_workflow",
+            toolUseId: known?.toolUseId ?? tool.itemId,
+          });
+          yield* emitWorkflowRunUpdate(
+            context,
+            context.workflowRuns.launched(launch, tool.itemId),
+            message,
+          );
+        }
+      }
+
       // TaskCreate results reveal the assigned task id; TaskList results are
       // an authoritative snapshot. Both keep the plan mirror in sync.
       const trackerKind = taskTrackerToolKind(tool.toolName);
@@ -5517,6 +5665,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (message.type !== "result") {
       return;
     }
+    // A context message sent ahead of the user's words (shouldQuery: false)
+    // gets a result of its own, with no turn in it; the turn is still to come.
+    if (context.pendingAppendOnlyResults > 0 && message.num_turns === 0 && !message.is_error) {
+      context.pendingAppendOnlyResults -= 1;
+      return;
+    }
 
     const status = turnStatusFromResult(message);
     const errorMessage = resultDisplayError(message, context.turnState?.apiErrorText);
@@ -5594,15 +5748,147 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       providerRefs: nativeProviderRefs(context),
       ...(raw ? { raw } : {}),
       payload: {
-        tasks: context.backgroundTasks.map((task) => ({
-          ...task,
-          kind: claudeBackgroundTaskKind(task.taskType, context.codexExecRuns.has(task.taskId)),
-          ...(context.unawaitedBackgroundTaskIds.has(task.taskId) ? { awaited: false } : {}),
-          ...stoppableTaskFlag(context, task.ambient),
-          ...launchingToolUse(context.tasks.get(task.taskId)?.toolUseId),
-        })),
+        tasks: context.backgroundTasks.map((task) => {
+          const workflow = context.workflowRuns.awaitedProgress(task.taskId);
+          return {
+            ...task,
+            kind: claudeBackgroundTaskKind(task.taskType, context.codexExecRuns.has(task.taskId)),
+            ...(context.unawaitedBackgroundTaskIds.has(task.taskId) ? { awaited: false } : {}),
+            ...stoppableTaskFlag(context, task.ambient),
+            ...launchingToolUse(context.tasks.get(task.taskId)?.toolUseId),
+            ...(workflow ? { workflow } : {}),
+          };
+        }),
       },
     });
+  });
+
+  /**
+   * A workflow task's notification. The end it reports may already have been
+   * settled by a terminal `task_updated`; the notification still carries what
+   * that patch lacks (the closing summary and the output file with every
+   * agent's final entry), so it is applied either way. Only the task's
+   * completion edge stays single.
+   */
+  const settleWorkflowFromNotification = Effect.fn("settleWorkflowFromNotification")(function* (
+    context: ClaudeSessionContext,
+    message: SDKTaskNotificationMessage,
+  ) {
+    const taskId = message.task_id;
+    const previous = context.tasks.get(taskId);
+    const toolUseId = previous?.toolUseId ?? nonEmptyString(message.tool_use_id);
+    yield* emitTaskCompletedOnce(
+      context,
+      {
+        taskId,
+        status: message.status,
+        ...(message.summary ? { summary: message.summary } : {}),
+        ...(message.usage ? { usage: message.usage } : {}),
+        ...(toolUseId ? { toolUseId } : {}),
+      },
+      message,
+    );
+    const nowMs = Date.now();
+    const summary = nonEmptyString(message.summary);
+    const statusReason = nonEmptyString(message.reason);
+    if (context.workflowRuns.isEnded(taskId)) {
+      yield* emitWorkflowRunUpdate(
+        context,
+        summary || statusReason
+          ? {
+              taskId,
+              ...(summary ? { summary } : {}),
+              ...(statusReason ? { statusReason } : {}),
+            }
+          : undefined,
+        message,
+      );
+    } else {
+      yield* emitWorkflowRunUpdate(
+        context,
+        context.workflowRuns.ended({
+          taskId,
+          status: message.status,
+          endedAt: yield* nowIso,
+          nowMs,
+          ...(summary ? { summary } : {}),
+          ...(statusReason ? { statusReason } : {}),
+          ...(message.usage?.total_tokens !== undefined
+            ? { totalTokens: message.usage.total_tokens }
+            : {}),
+          ...(message.usage?.tool_uses !== undefined
+            ? { totalToolCalls: message.usage.tool_uses }
+            : {}),
+        }),
+        message,
+      );
+    }
+    const outputFile = nonEmptyString(message.output_file);
+    if (!outputFile) {
+      return;
+    }
+    const output = yield* readWorkflowOutputFile(outputFile);
+    if (output) {
+      yield* emitWorkflowRunUpdate(
+        context,
+        context.workflowRuns.finalOutput(taskId, output, nowMs),
+        message,
+      );
+    }
+  });
+
+  /** A finished workflow's output file (written by the CLI itself, at the
+   *  path its own notification names). Bounded; unreadable means skipped. */
+  const readWorkflowOutputFile = (outputFile: string) =>
+    Effect.gen(function* () {
+      const info = yield* fileSystem.stat(outputFile);
+      if (info.type !== "File" || Number(info.size) > WORKFLOW_OUTPUT_MAX_BYTES) {
+        return undefined;
+      }
+      const text = yield* fileSystem.readFileString(outputFile);
+      return claudeWorkflowFinalOutput(text);
+    }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+
+  /**
+   * Reports what changed in a workflow run, then re-sends the background-task
+   * snapshot when the thread list's view of the run moved (an agent ended, a
+   * phase began), so the sidebar follows without a snapshot from the SDK.
+   */
+  const emitWorkflowRunUpdate = Effect.fn("emitWorkflowRunUpdate")(function* (
+    context: ClaudeSessionContext,
+    update: WorkflowRunUpdate | undefined,
+    message: SDKMessage | undefined,
+  ) {
+    if (update === undefined) {
+      return;
+    }
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "task.workflow.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      providerRefs: nativeProviderRefs(context),
+      ...(message
+        ? {
+            raw: {
+              source: "claude.sdk.message" as const,
+              method: sdkNativeMethod(message),
+              messageType: message.type,
+              payload: message,
+            },
+          }
+        : {}),
+      payload: update,
+    });
+    if (
+      context.workflowRuns.takeAwaitedChange(update.taskId) &&
+      context.backgroundTasks.some((task) => task.taskId === update.taskId)
+    ) {
+      yield* publishBackgroundTasks(context);
+    }
   });
 
   /**
@@ -5708,6 +5994,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     switch (message.subtype) {
       case "init": {
+        const cliVersion = nonEmptyString(
+          (message as { readonly claude_code_version?: unknown }).claude_code_version,
+        );
+        if (cliVersion) {
+          context.cliVersion = cliVersion;
+        }
         yield* offerRuntimeEvent({
           ...base,
           type: "session.configured",
@@ -5882,12 +6174,52 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(isBackgrounded !== undefined ? { isBackgrounded } : {}),
           });
         }
+        if (taskType === "local_workflow") {
+          const workflowName = nonEmptyString(
+            (message as typeof message & { readonly workflow_name?: unknown }).workflow_name,
+          );
+          yield* emitWorkflowRunUpdate(
+            context,
+            context.workflowRuns.started({
+              taskId: message.task_id,
+              startedAt: yield* nowIso,
+              ...(toolUseId ? { toolCallId: toolUseId } : {}),
+              ...(workflowName ? { name: workflowName } : {}),
+              ...(description ? { description } : {}),
+            }),
+            message,
+          );
+        }
         return;
       }
       case "task_progress": {
         const description = nonEmptyString(message.description);
         const previous = context.tasks.get(message.task_id);
         if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
+          return;
+        }
+        // A workflow's progress is its run, not a task row: its frames name
+        // whichever agent moved last, which says nothing about the run.
+        const workflowProgress = (
+          message as typeof message & { readonly workflow_progress?: unknown }
+        ).workflow_progress;
+        if (previous?.taskType === "local_workflow" || workflowProgress !== undefined) {
+          context.tasks.set(message.task_id, {
+            ...previous,
+            taskType: previous?.taskType ?? "local_workflow",
+            status: "running",
+          });
+          yield* emitWorkflowRunUpdate(
+            context,
+            context.workflowRuns.progress({
+              taskId: message.task_id,
+              snapshot: claudeWorkflowSnapshot(workflowProgress),
+              totalTokens: message.usage?.total_tokens,
+              totalToolCalls: message.usage?.tool_uses,
+              nowMs: Date.now(),
+            }),
+            message,
+          );
           return;
         }
         const toolUseId = previous?.toolUseId ?? nonEmptyString(message.tool_use_id);
@@ -5938,9 +6270,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const description = nonEmptyString(patch.description) ?? previous?.description;
         const error = nonEmptyString(patch.error);
         const completedStatus = completedTaskStatusFromClaudeStatus(status);
+        const isWorkflow = previous?.taskType === "local_workflow";
         if (completedStatus) {
           const summary = error ?? description;
-          yield* emitTaskCompletedOnce(
+          const settled = yield* emitTaskCompletedOnce(
             context,
             {
               taskId: message.task_id,
@@ -5950,6 +6283,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             },
             message,
           );
+          if (settled && isWorkflow) {
+            yield* emitWorkflowRunUpdate(
+              context,
+              context.workflowRuns.ended({
+                taskId: message.task_id,
+                status: completedStatus,
+                endedAt: yield* nowIso,
+                ...(error ? { summary: error } : {}),
+                nowMs: Date.now(),
+              }),
+              message,
+            );
+          }
+          return;
+        }
+        if (isWorkflow) {
           return;
         }
 
@@ -5992,6 +6341,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
       case "task_notification": {
         const previous = context.tasks.get(message.task_id);
+        if (previous?.taskType === "local_workflow" || context.workflowRuns.has(message.task_id)) {
+          yield* settleWorkflowFromNotification(context, message);
+          return;
+        }
         // Dropped when a terminal task_updated patch already settled the task —
         // see the task_updated handler for the single-completion invariant.
         if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
@@ -6592,6 +6945,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       yield* completeTurn(context, "interrupted", "Session stopped.");
     }
 
+    // Workflows live inside the CLI process this closes: none outlives it.
+    const workflowEndedAt = yield* nowIso;
+    for (const taskId of context.workflowRuns.liveTaskIds()) {
+      yield* emitWorkflowRunUpdate(
+        context,
+        context.workflowRuns.ended({
+          taskId,
+          status: "stopped",
+          endedAt: workflowEndedAt,
+          statusReason: "session-ended",
+          nowMs: Date.now(),
+        }),
+        undefined,
+      );
+    }
+
     yield* Queue.shutdown(context.promptQueue);
 
     const streamFiber = context.streamFiber;
@@ -7166,6 +7535,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const requestType = classifyRequestType(toolName);
         const detail = summarizeToolRequest(toolName, toolInput, { cwd: input.cwd });
+        // A workflow launched from a file or by name: the approval shows the
+        // plan from that script. One passed inline is already in the input.
+        const workflowScript =
+          toolName === "Workflow" && typeof toolInput.script !== "string"
+            ? yield* Effect.promise(() =>
+                resolveClaudeWorkflowApprovalScript({
+                  configDir: resolveClaudeConfigDir(claudeEnvironment, path),
+                  cwd: input.cwd,
+                  toolInput,
+                }).catch(() => undefined),
+              )
+            : undefined;
         const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
         const pendingApproval: PendingApproval = {
           requestType,
@@ -7190,6 +7571,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               toolName,
               input: toolInput,
               ...(callbackOptions.toolUseID ? { toolUseId: callbackOptions.toolUseID } : {}),
+              ...(workflowScript !== undefined ? { workflowScript } : {}),
             },
           },
           providerRefs: nativeProviderRefs(context, {
@@ -7348,6 +7730,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           : {}),
         ...(flagSettings.fastMode ? { fastMode: true } : {}),
         ...(flagSettings.ultracode ? { ultracode: true } : {}),
+        ...(flagSettings.workflowSizeGuideline !== null
+          ? { workflowSizeGuideline: flagSettings.workflowSizeGuideline }
+          : {}),
       };
       // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
       // it deletes the session's own working directory, so a session running in
@@ -7666,6 +8051,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         backgroundTasks: [],
         unawaitedBackgroundTaskIds: new Set(),
         planTracker: new Map(),
+        workflowRuns: new ClaudeWorkflowRunTracker(),
+        pendingAppendOnlyResults: 0,
         lastEmittedPlanTrackerFingerprint: undefined,
         reportedCwd: undefined,
         turnState: undefined,
@@ -7675,6 +8062,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastCompletedTurnId: undefined,
         lastThreadStartedId: undefined,
+        cliVersion: undefined,
         // Render the cross-driver handoff seed once at start; consumed on the
         // first turn. Only honored when there is no native resume to defer to
         // (including when a requested resume fell back to a fresh start).
@@ -7830,6 +8218,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 alwaysThinkingEnabled: desiredFlagSettings.alwaysThinkingEnabled,
                 fastMode: desiredFlagSettings.fastMode ? true : null,
                 ultracode: desiredFlagSettings.ultracode ? true : null,
+                // Null clears an earlier choice; leaving the key out would keep it.
+                workflowSizeGuideline: desiredFlagSettings.workflowSizeGuideline,
               }),
             catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings", cause),
           }).pipe(
@@ -7942,18 +8332,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     yield* releaseBackgroundCommands(context);
 
     const seedPreamble = context.pendingContextSeedText;
-    const message = yield* buildUserMessageEffect(input, {
+    const messages = yield* buildUserMessagesEffect(input, {
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,
+      cliVersion: context.cliVersion,
       ...(seedPreamble !== undefined ? { seedPreamble } : {}),
     });
     // Consume the handoff seed once; subsequent turns continue natively.
     context.pendingContextSeedText = undefined;
+    context.pendingAppendOnlyResults += messages.filter(isAppendOnlyUserMessage).length;
 
-    yield* Queue.offer(context.promptQueue, {
-      type: "message",
-      message,
-    }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
+    yield* Queue.offerAll(
+      context.promptQueue,
+      messages.map((message) => ({ type: "message" as const, message })),
+    ).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
 
     return {
       threadId: context.session.threadId,
@@ -7980,16 +8372,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    const message = yield* buildUserMessageEffect(input, {
+    const messages = yield* buildUserMessagesEffect(input, {
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,
       method: "turn/steer",
+      cliVersion: context.cliVersion,
     });
 
-    yield* Queue.offer(context.promptQueue, {
-      type: "message",
-      message,
-    }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/steer", cause)));
+    yield* Queue.offerAll(
+      context.promptQueue,
+      messages.map((message) => ({ type: "message" as const, message })),
+    ).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/steer", cause)));
 
     context.session = {
       ...context.session,
@@ -8198,6 +8591,88 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
     });
 
+  /** Workflow runs' files: see ProviderAdapter.workflowRuns and ClaudeWorkflowFiles.ts. */
+  const workflowRunsFiles: NonNullable<ClaudeAdapterShape["workflowRuns"]> = (() => {
+    const failure = (method: string, cause: unknown) =>
+      new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method,
+        detail:
+          cause instanceof ClaudeWorkflowFileError
+            ? cause.message
+            : toMessage(cause, "The workflow's files could not be read."),
+        cause,
+      });
+    const configDir = () => resolveClaudeConfigDir(claudeEnvironment, path);
+    return {
+      readRunFile: (input) =>
+        Effect.tryPromise({
+          try: () =>
+            readClaudeWorkflowRunFile({ configDir: configDir(), run: input.run, file: input.file }),
+          catch: (cause) => failure("workflow/readRunFile", cause),
+        }),
+      readAgentTranscript: (input) =>
+        Effect.gen(function* () {
+          const transcriptPath = yield* Effect.tryPromise({
+            try: () =>
+              claudeWorkflowAgentTranscriptPath({
+                configDir: configDir(),
+                run: input.run,
+                agentId: input.agentId,
+              }),
+            catch: (cause) => failure("workflow/readAgentTranscript", cause),
+          });
+          if (transcriptPath === undefined) {
+            return yield* failure(
+              "workflow/readAgentTranscript",
+              new ClaudeWorkflowFileError("No transcript found for this agent yet."),
+            );
+          }
+          const transcript = yield* readClaudeSubagentTranscriptEntries({
+            transcriptPath,
+            mapLines: (lines) => mapClaudeSubagentTranscriptRecords(lines, { cwd: input.cwd }),
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.mapError((cause) => failure("workflow/readAgentTranscript", cause)),
+          );
+          const page = pageClaudeSubagentTranscriptEntries(
+            transcript.entries,
+            {
+              ...(input.limit !== undefined ? { limit: input.limit } : {}),
+              ...(input.offset !== undefined ? { offset: input.offset } : {}),
+              ...(input.fromEnd !== undefined ? { fromEnd: input.fromEnd } : {}),
+            },
+            transcript.droppedEntries,
+          );
+          const agent = input.run.agents.find((entry) => entry.agentId === input.agentId);
+          const model = agent?.model ?? transcript.model;
+          return {
+            ...page,
+            agent: {
+              id: input.agentId,
+              agentType: "workflow-subagent",
+              ...(agent ? { description: agent.label } : {}),
+              ...(model ? { model } : {}),
+              directInput: "unsupported" as const,
+            },
+          };
+        }),
+      saveCommand: (input) =>
+        Effect.tryPromise({
+          try: () =>
+            saveClaudeWorkflowCommand({
+              configDir: configDir(),
+              run: input.run,
+              location: input.location,
+              cwd: input.cwd,
+              overwrite: input.overwrite,
+              dryRun: input.dryRun,
+            }),
+          catch: (cause) => failure("workflow/saveCommand", cause),
+        }),
+    };
+  })();
+
   const rewindFilesForRollback = Effect.fn("rewindFilesForRollback")(function* (
     context: ClaudeSessionContext,
     targetUserMessageId: MessageId | undefined,
@@ -8365,6 +8840,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     interruptTurn,
     releaseBackgroundCommands: releaseBackgroundCommandsForThread,
     stopBackgroundTask,
+    workflowRuns: workflowRunsFiles,
     noteExtensionsChanged,
     compactContext,
     readThread,

@@ -23,6 +23,7 @@ import {
   Trash2Icon,
   WrenchIcon,
 } from "lucide-react";
+import { formatTokenCount } from "../../lib/formatTokenCount";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type {
@@ -81,7 +82,6 @@ import {
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   formatSkillDisplayName,
-  formatTokenCount,
   groupExtensionSkills,
   bucketSkillsByPlugin,
   extensionBrowserStatusLine,

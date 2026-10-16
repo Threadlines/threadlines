@@ -1465,6 +1465,64 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* routed.adapter.stopBackgroundTask(routed.threadId, input.taskId);
   });
 
+  // A run's files are read through the instance that ran it, whether or not
+  // any of its sessions is running: the files outlive the runtime.
+  const workflowRunsOf = Effect.fn("workflowRunsOf")(function* (
+    operation: string,
+    providerInstanceId: ProviderInstanceId,
+  ) {
+    const adapter = yield* registry.getByInstance(providerInstanceId);
+    if (adapter.workflowRuns === undefined) {
+      return yield* toValidationError(
+        operation,
+        `Provider '${adapter.provider}' does not run workflows.`,
+      );
+    }
+    return adapter.workflowRuns;
+  });
+
+  const readWorkflowRunFile: ProviderServiceShape["readWorkflowRunFile"] = Effect.fn(
+    "readWorkflowRunFile",
+  )(function* (input) {
+    const files = yield* workflowRunsOf(
+      "ProviderService.readWorkflowRunFile",
+      input.providerInstanceId,
+    );
+    return yield* files.readRunFile({ run: input.run, file: input.file });
+  });
+
+  const readWorkflowAgentTranscript: ProviderServiceShape["readWorkflowAgentTranscript"] =
+    Effect.fn("readWorkflowAgentTranscript")(function* (input) {
+      const files = yield* workflowRunsOf(
+        "ProviderService.readWorkflowAgentTranscript",
+        input.providerInstanceId,
+      );
+      return yield* files.readAgentTranscript({
+        run: input.run,
+        agentId: input.agentId,
+        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.offset !== undefined ? { offset: input.offset } : {}),
+        ...(input.fromEnd !== undefined ? { fromEnd: input.fromEnd } : {}),
+      });
+    });
+
+  const saveWorkflowCommand: ProviderServiceShape["saveWorkflowCommand"] = Effect.fn(
+    "saveWorkflowCommand",
+  )(function* (input) {
+    const files = yield* workflowRunsOf(
+      "ProviderService.saveWorkflowCommand",
+      input.providerInstanceId,
+    );
+    return yield* files.saveCommand({
+      run: input.run,
+      location: input.location,
+      cwd: input.cwd,
+      overwrite: input.overwrite,
+      dryRun: input.dryRun,
+    });
+  });
+
   const noteExtensionsChanged: ProviderServiceShape["noteExtensionsChanged"] = Effect.fn(
     "noteExtensionsChanged",
   )(function* (input) {
@@ -2246,6 +2304,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     realtimeListVoices,
     releaseBackgroundCommands,
     stopBackgroundTask,
+    readWorkflowRunFile,
+    readWorkflowAgentTranscript,
+    saveWorkflowCommand,
     noteExtensionsChanged,
     readConversation,
     compactContext,

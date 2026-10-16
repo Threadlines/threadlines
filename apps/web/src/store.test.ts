@@ -3,6 +3,7 @@ import {
   AgentPageId,
   AgentPageVersionId,
   CheckpointRef,
+  type OrchestrationWorkflowRunPatch,
   ChildRequestBatchId,
   ChildRequestId,
   DEFAULT_MODEL,
@@ -692,6 +693,66 @@ describe("incremental orchestration updates", () => {
     expect(timeline.map((entry) => entry.eventSequence)).toEqual([10, 11, 12]);
     expect(result.messages.map((message) => message.id)).toEqual(["first", "reply", "follow-up"]);
     expect(result.messages[1]).toMatchObject({ text: "Done", streaming: false, createdAt: before });
+  });
+
+  it("merges a workflow run's updates, and drops runs of turns a revert took back", () => {
+    const threadId = ThreadId.make("thread-1");
+    const record = (
+      sequence: number,
+      turnId: string,
+      patch: Omit<OrchestrationWorkflowRunPatch, "turnId">,
+    ) =>
+      makeEvent(
+        "thread.workflow-run-recorded",
+        {
+          threadId,
+          patch: { ...patch, turnId: TurnId.make(turnId) },
+          createdAt: "2026-02-27T00:00:00.000Z",
+        },
+        { sequence },
+      );
+    const summary = (turnId: string, checkpointTurnCount: number) => ({
+      turnId: TurnId.make(turnId),
+      completedAt: "2026-02-27T00:00:01.000Z",
+      status: "ready" as const,
+      checkpointTurnCount,
+      checkpointRef: CheckpointRef.make(`ref-${checkpointTurnCount}`),
+      files: [],
+    });
+    let state = makeState(
+      makeThread({ turnDiffSummaries: [summary("turn-1", 1), summary("turn-2", 2)] }),
+    );
+    for (const event of [
+      record(1, "turn-1", {
+        taskId: "task-a",
+        name: "review-changes",
+        startedAt: "2026-02-27T00:00:00.000Z",
+        agents: [
+          { index: 0, label: "review:a", state: "running" },
+          { index: 1, label: "review:b", state: "running" },
+        ],
+      }),
+      record(2, "turn-1", {
+        taskId: "task-a",
+        status: "completed",
+        agents: [{ index: 1, label: "review:b", state: "done" }],
+      }),
+      record(3, "turn-2", { taskId: "task-b", startedAt: "2026-02-27T00:00:02.000Z" }),
+    ]) {
+      state = applyOrchestrationEvent(state, event, localEnvironmentId);
+    }
+
+    const [first] = threadsOf(state)[0]?.workflowRuns ?? [];
+    expect(first).toMatchObject({ taskId: "task-a", status: "completed" });
+    // The run's end cut off the agent still going.
+    expect(first?.agents.map((agent) => agent.state)).toEqual(["skipped", "done"]);
+
+    const reverted = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.reverted", { threadId, turnCount: 1 }, { sequence: 4 }),
+      localEnvironmentId,
+    );
+    expect(threadsOf(reverted)[0]?.workflowRuns?.map((run) => run.taskId)).toEqual(["task-a"]);
   });
 
   it("projects realtime voice state into thread detail and shell state", () => {

@@ -17,6 +17,8 @@ import type {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
+import { ComposerWorkflowKeywordHint } from "./ComposerWorkflowKeywordHint";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -242,6 +244,7 @@ const ALL_ATTACHMENT_ACCEPT = `image/*,${FILE_ATTACHMENT_ACCEPT}`;
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const CODEX_AGENT_PROVIDER = ProviderDriverKind.make("codex");
+const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 /** A thread with no agents besides its own, while there is no thread yet. */
@@ -663,6 +666,9 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
+  /** The user chose to send a message holding "ultracode" as plain text. */
+  workflowKeywordSuppressed?: boolean | undefined;
+  onToggleWorkflowKeyword?: (() => void) | undefined;
   /** Ends the background work a settled turn left the thread waiting on. */
   onStopBackgroundWork: () => void;
   // Goal (Codex goal mode)
@@ -756,6 +762,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     shouldAutoScrollRef,
     scheduleStickToBottom,
     onSend,
+    workflowKeywordSuppressed,
+    onToggleWorkflowKeyword,
     onInterrupt,
     onStopBackgroundWork,
     goalDispatching,
@@ -946,6 +954,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? providerSelection.driverKind;
+  // Claude runs a message holding "ultracode" as a workflow; the composer says
+  // so as it is typed (and offers to send it as plain text instead).
+  const workflowKeywordActive =
+    selectedProvider === CLAUDE_AGENT_PROVIDER && containsWorkflowKeyword(prompt);
   const threadGoal = optimisticGoal ?? activeThread?.goal ?? null;
   const goalSupported =
     selectedProvider === CODEX_AGENT_PROVIDER &&
@@ -1618,6 +1630,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
   });
+  const ownWorkflowRunning = (activeThread?.workflowRuns ?? []).some(
+    (run) => run.status === "running" && run.owner.participantId === null,
+  );
   const providerTraitsPicker = renderProviderTraitsPicker({
     provider: selectedProvider,
     instanceId: selectedInstanceId,
@@ -1627,8 +1642,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
     iconOnly: composerFooterTier !== "full",
-    // In a room, only while the thread's own agent is the one working.
-    working: hasActiveTurn && roomWorkingId == null,
+    // In a room, only while the thread's own agent is the one working; and
+    // while a workflow the thread's own agent started is still going, since
+    // that is Ultracode's work too after the turn has ended.
+    working: (hasActiveTurn && roomWorkingId == null) || ownWorkflowRunning,
   });
   // An added agent keeps its own reasoning and the like. Picking them here
   // holds them until the next turn for that agent, which carries them.
@@ -3912,6 +3929,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     terminalContexts={[]}
                     skills={composerSkills}
                     recognizedSlashCommands={recognizedSlashCommands}
+                    highlightWorkflowKeyword={workflowKeywordActive && !workflowKeywordSuppressed}
                     skillAvailability={composerSkillAvailability}
                     onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                     onChange={onPromptChange}
@@ -3941,6 +3959,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     }
                   />
                 </div>
+                {workflowKeywordActive && !isComposerApprovalState ? (
+                  <ComposerWorkflowKeywordHint
+                    suppressed={workflowKeywordSuppressed === true}
+                    onToggle={onToggleWorkflowKeyword}
+                  />
+                ) : null}
               </div>
 
               {/* Bottom toolbar */}

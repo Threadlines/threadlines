@@ -1294,6 +1294,45 @@ describe("deriveProviderBackgroundRuns", () => {
     expect(stoppableSubagentTasks.get("task-quiet-agent")).toBe("tool-quiet-agent");
   });
 
+  it("leaves a workflow with a run card to the card, recent or quiet", () => {
+    // The session counts its own two workflows and one task it never described.
+    const { runs, stoppableSubagentTasks } = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-carded",
+            taskType: "local_workflow",
+            detail: "Audit the API",
+            stoppable: true,
+          },
+          1,
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 3,
+      awaitedTasks: [
+        {
+          kind: "workflow",
+          description: "Release checklist",
+          taskId: RuntimeTaskId.make("task-quiet-carded"),
+          stoppable: true,
+        },
+      ],
+      workflowRuns: [
+        { taskId: "task-carded", status: "running" },
+        { taskId: "task-quiet-carded", status: "running" },
+        // Another room agent's run is not in this session's count.
+        { taskId: "task-other-agent", status: "running" },
+      ],
+    });
+
+    // No row for a carded workflow, and none mistaken for an agent; the
+    // undescribed task keeps its placeholder.
+    expect(runs.map((run) => run.id)).toEqual(["provider:unknown:1"]);
+    expect(stoppableSubagentTasks.size).toBe(0);
+  });
+
   it("hides local and remote agent tasks without active subagent records", () => {
     for (const taskType of ["local_agent", "remote_agent"]) {
       const { runs } = deriveProviderBackgroundRuns({
@@ -3275,6 +3314,7 @@ describe("a chat's derivations remembered per thread", () => {
         messages,
         [],
         workEntries,
+        [],
         [],
         [],
         [],

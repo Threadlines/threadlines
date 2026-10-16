@@ -1,6 +1,8 @@
 import * as Equal from "effect/Equal";
+import { estimateWorkflowRunCardHeight } from "./workflowRunView";
 import {
   formatAwaitedTasks,
+  formatSoleAwaitedWorkflow,
   type ModelFallbackState,
   type ForkContextEntry,
   type SubagentResultEntry,
@@ -21,6 +23,7 @@ import {
   type SideTurnId,
   type ThreadParticipantId,
   type TurnId,
+  type OrchestrationWorkflowRun,
 } from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
 import { threadMemoOfInput } from "../../lib/derivationMemo";
@@ -193,6 +196,13 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         id: string;
         createdAt: string;
         result: SubagentResultEntry;
+      }
+    | {
+        /** A workflow run, where the call that launched it was (WorkflowRunCard). */
+        kind: "workflow-run";
+        id: string;
+        createdAt: string;
+        run: OrchestrationWorkflowRun;
       }
     | {
         kind: "fork-context";
@@ -565,6 +575,17 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (timelineEntry.kind === "workflow-run") {
+      nextRows.push({
+        ...UNPLACED,
+        kind: "workflow-run",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        run: timelineEntry.run,
+      });
+      continue;
+    }
+
     // A running agent's streamed commentary never reaches the conversation:
     // the turn's activity row summarizes what is running, and the rail carries
     // the detail. Filtered with the agent-attributed entries above; this arm
@@ -708,12 +729,14 @@ export function deriveMessagesTimelineRows(input: {
     // it: the anchor stays up as a wait, without a turn timer, and says what
     // it waits on when the server described it.
     const waitingOn = input.awaitedTasks ? formatAwaitedTasks(input.awaitedTasks) : null;
+    // A lone workflow says where it is instead (its card has the rest).
+    const soleWorkflow = input.awaitedTasks ? formatSoleAwaitedWorkflow(input.awaitedTasks) : null;
     rows.push({
       ...UNPLACED,
       kind: "working",
       id: "working-indicator-row",
       createdAt: null,
-      label: waitingOn ? `Waiting on ${waitingOn}` : "Waiting",
+      label: soleWorkflow ?? (waitingOn ? `Waiting on ${waitingOn}` : "Waiting"),
       thought: null,
       ...tracker,
     });
@@ -848,6 +871,7 @@ function isAgentRow(row: MessagesTimelineRow): boolean {
   return (
     row.kind === "work" ||
     row.kind === "subagent-result" ||
+    row.kind === "workflow-run" ||
     row.kind === "working" ||
     (row.kind === "message" && row.message.role === "assistant")
   );
@@ -960,7 +984,9 @@ function placeAgentLines(
         ? (row.groupedEntries.find((entry) => entry.turnId != null)?.turnId ?? null)
         : row.kind === "subagent-result"
           ? (row.result.turnId ?? null)
-          : null;
+          : row.kind === "workflow-run"
+            ? row.run.turnId
+            : null;
   // The agent whose own row this is; undefined for rows that are not one
   // agent's own work (your messages, side exchanges, plans). A turn no
   // message names yet is the working agent's; null names the thread's own.
@@ -1874,6 +1900,8 @@ function timelineRowTurnId(row: MessagesTimelineRow): TurnId | null | undefined 
       return row.proposedPlan.turnId;
     case "subagent-result":
       return row.result.turnId;
+    case "workflow-run":
+      return row.run.turnId;
     default:
       return null;
   }
@@ -1888,6 +1916,9 @@ function concreteTimelineEntryTurnId(entry: TimelineEntry): TurnId | null | unde
   }
   if (entry.kind === "subagent-result") {
     return entry.result.turnId ?? null;
+  }
+  if (entry.kind === "workflow-run") {
+    return entry.run.turnId;
   }
   return undefined;
 }
@@ -1983,6 +2014,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "subagent-result":
       return a.result === (b as typeof a).result;
+
+    case "workflow-run":
+      return a.run === (b as typeof a).run;
 
     case "fork-context":
       return a.forkContext === (b as typeof a).forkContext;
@@ -2207,6 +2241,8 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return row.thought ? 46 : 30;
     case "subagent-result":
       return 40;
+    case "workflow-run":
+      return estimateWorkflowRunCardHeight(row.run);
     case "fork-context":
       return 90;
     case "proposed-plan":

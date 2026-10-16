@@ -1,5 +1,6 @@
 import {
   type OrchestrationAgentPage,
+  type OrchestrationWorkflowRun,
   type OrchestrationCommandRequest,
   type ApprovalRequestId,
   type ChatSkillReference,
@@ -7,6 +8,7 @@ import {
   defaultInstanceIdForDriver,
   type EnvironmentId,
   type MessageId,
+  type MessageComposer,
   type ModelSelection,
   type ProjectScript,
   type ProjectId,
@@ -29,6 +31,7 @@ import {
   RuntimeTaskId,
   TerminalOpenInput,
 } from "@threadlines/contracts";
+import { composerForTypedMessage } from "@threadlines/shared/workflowRuns";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -55,6 +58,7 @@ import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
 import { getPickerModelName } from "./chat/providerIconUtils";
+import { workflowRunsAsShown } from "./chat/workflowRunView";
 import {
   buildOwnAgentLabels,
   buildRoomAgentLabels,
@@ -159,7 +163,13 @@ import {
   publishAgentsPanelActivitySource,
   publishAgentsPanelSource,
   selectAgentsPanelAgent,
+  selectAgentsPanelWorkflow,
 } from "../agentsPanelStore";
+import {
+  getModelSelectionBooleanOptionValue,
+  getModelSelectionStringOptionValue,
+} from "@threadlines/shared/model";
+import type { WorkflowRunActions, WorkflowRunViewTab } from "./chat/WorkflowRunCard";
 import { summarizeLiveAgents } from "./chat/agentsPanel.logic";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
@@ -406,6 +416,7 @@ const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
 
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
+const EMPTY_WORKFLOW_RUNS: ReadonlyArray<OrchestrationWorkflowRun> = [];
 const EMPTY_AGENT_PAGES: ReadonlyArray<OrchestrationAgentPage> = [];
 const EMPTY_COMMAND_REQUESTS: ReadonlyArray<OrchestrationCommandRequest> = [];
 const EMPTY_PROPOSED_PLANS: ProposedPlan[] = [];
@@ -1241,6 +1252,14 @@ export default function ChatView(props: ChatViewProps) {
   const composerFileSelectionContextsRef = useRef<FileSelectionContextDraft[]>([]);
   const composerPickedElementContextsRef = useRef<PickedElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
+  // "Send as plain text" for a message holding Claude's workflow keyword.
+  // Belongs to the message being written: cleared as it is sent and when the
+  // thread changes.
+  const [workflowKeywordSuppressed, setWorkflowKeywordSuppressed] = useState(false);
+  const toggleWorkflowKeyword = useCallback(
+    () => setWorkflowKeywordSuppressed((current) => !current),
+    [],
+  );
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   // Hysteresis-gated "far from bottom" signal for the composer questions panel —
@@ -1423,6 +1442,9 @@ export default function ChatView(props: ChatViewProps) {
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   // Lets async work started on one thread tell whether the user is still on it.
   const activeThreadKeyRef = useRef(activeThreadKey);
+  useEffect(() => {
+    setWorkflowKeywordSuppressed(false);
+  }, [activeThreadKey]);
   activeThreadKeyRef.current = activeThreadKey;
   const existingOpenTerminalThreadKeys = useMemo(() => {
     const existingThreadKeys = new Set<string>([
@@ -2553,10 +2575,12 @@ export default function ChatView(props: ChatViewProps) {
         subagentActivityState.liveEntries,
         activeThread?.pages ?? EMPTY_AGENT_PAGES,
         activeThread?.commandRequests ?? EMPTY_COMMAND_REQUESTS,
+        workflowRunsAsShown(activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS),
       ),
     [
       activeThread?.commandRequests,
       activeThread?.pages,
+      activeThread?.workflowRuns,
       activeThread?.proposedPlans,
       forkContextEntries,
       subagentActivityState.liveEntries,
@@ -3321,10 +3345,12 @@ export default function ChatView(props: ChatViewProps) {
           : null,
         subagentSpawnCallIds,
         activeThread?.session?.awaitedBackgroundTasks,
+        activeThread?.workflowRuns,
       ),
     [
       activeLatestTurn?.turnId,
       activeThread?.session?.awaitedBackgroundTasks,
+      activeThread?.workflowRuns,
       activeThread?.session?.pendingBackgroundTaskCount,
       activeThread?.session?.activeTurnId,
       activeTurnInProgress,
@@ -3609,6 +3635,30 @@ export default function ChatView(props: ChatViewProps) {
       terminalState.terminalOpen,
     ],
   );
+  /** Stops one workflow run; the reactor finds the runtime that holds it. */
+  const stopWorkflowRun = useCallback(
+    (taskId: string) => {
+      if (!activeThreadId) return;
+      const api = readEnvironmentApi(environmentId);
+      if (!api) return;
+      void api.orchestration
+        .dispatchCommand({
+          type: "thread.background-task.stop",
+          commandId: newCommandId(),
+          threadId: activeThreadId,
+          taskId: RuntimeTaskId.make(taskId),
+          createdAt: new Date().toISOString(),
+        })
+        .catch((error: unknown) => {
+          setThreadError(
+            activeThreadId,
+            error instanceof Error ? error.message : "Could not stop the workflow.",
+          );
+        });
+    },
+    [activeThreadId, environmentId, setThreadError],
+  );
+
   const stopBackgroundRun = useCallback(
     (run: ThreadBackgroundRunItem) => {
       if (!activeThreadRef || !activeThreadId) return;
@@ -3752,9 +3802,13 @@ export default function ChatView(props: ChatViewProps) {
       turnInFlight: activeTurnInProgress,
       hydrated: threadDetailHydrated,
       threadCwd: gitCwd,
+      workflowRuns: workflowRunsAsShown(activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS),
       onStopBackgroundRun: stopBackgroundRun,
+      onStopWorkflowRun: stopWorkflowRun,
     });
   }, [
+    activeThread?.workflowRuns,
+    stopWorkflowRun,
     activeProviderDriver,
     activeProviderInstanceId,
     activeThreadId,
@@ -4952,9 +5006,21 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
+      // Feedback on the plan is the user's own words; the implement prompt
+      // (an empty draft) is the agent's plan, never theirs.
+      const planComposer =
+        followUp.interactionMode === "plan"
+          ? composerForTypedMessage({
+              typedText: trimmed,
+              sentText: followUp.text,
+              plain: workflowKeywordSuppressed,
+            })
+          : undefined;
+      setWorkflowKeywordSuppressed(false);
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
+        ...(planComposer ? { composer: planComposer } : {}),
       });
       return;
     }
@@ -5172,6 +5238,13 @@ export default function ChatView(props: ChatViewProps) {
     const outgoingMessageText = formatOutgoingPrompt(
       messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     );
+    // The user wrote these words; Claude may act on "ultracode" in them.
+    const composer = composerForTypedMessage({
+      typedText: promptForSend,
+      sentText: outgoingMessageText,
+      plain: workflowKeywordSuppressed,
+    });
+    setWorkflowKeywordSuppressed(false);
     // A drawing's picture is not shown in the composer as its own thumbnail --
     // it lives behind the chip -- but it still has to reach the model as an
     // image, because the marks are the half of the message a sentence cannot
@@ -5340,6 +5413,7 @@ export default function ChatView(props: ChatViewProps) {
             ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
           },
           delivery: followUpDelivery,
+          composer,
           // What a queued message runs with, like a normal send would.
           ...(followUpDelivery === "queue"
             ? {
@@ -5414,6 +5488,7 @@ export default function ChatView(props: ChatViewProps) {
         },
         modelSelection: roomRecipientModelSelection ?? ctxSelectedModelSelection,
         ...(roomRecipientId !== null ? { participantId: roomRecipientId } : {}),
+        composer,
         titleSeed: title,
         runtimeMode,
         interactionMode,
@@ -6394,9 +6469,12 @@ export default function ChatView(props: ChatViewProps) {
     async ({
       text,
       interactionMode: nextInteractionMode,
+      composer,
     }: {
       text: string;
       interactionMode: "default" | "plan";
+      /** Set only when the user wrote the text. See MessageComposer. */
+      composer?: MessageComposer;
     }) => {
       const api = readEnvironmentApi(environmentId);
       if (
@@ -6483,6 +6561,7 @@ export default function ChatView(props: ChatViewProps) {
           titleSeed: activeThread.title,
           runtimeMode,
           interactionMode: nextInteractionMode,
+          ...(composer ? { composer } : {}),
           ...(nextInteractionMode === "default" && activeProposedPlan
             ? {
                 sourceProposedPlan: {
@@ -6800,6 +6879,11 @@ export default function ChatView(props: ChatViewProps) {
             : {}),
           ...(state.replacementSkills.length > 0 ? { skills: [...state.replacementSkills] } : {}),
         },
+        composer: composerForTypedMessage({
+          typedText: visibleInstruction,
+          sentText: instruction,
+          plain: false,
+        }),
         modelSelection: state.modelSelection,
         runtimeMode,
         interactionMode,
@@ -7292,6 +7376,41 @@ export default function ChatView(props: ChatViewProps) {
     },
     [agentsPanelOpen, openRightPanelTab],
   );
+  /** A workflow run's card: the Agents tab drilled into the run. */
+  const workflowRunActions = useMemo<WorkflowRunActions>(() => {
+    const open = (
+      taskId: string,
+      target?: { tab?: WorkflowRunViewTab; agentId?: string; saving?: boolean },
+    ) => {
+      selectAgentsPanelWorkflow({
+        taskId,
+        tab: target?.tab ?? "agents",
+        agentId: target?.agentId ?? null,
+        saving: target?.saving === true,
+      });
+      if (!agentsPanelOpen) {
+        openRightPanelTab("agents");
+      }
+    };
+    return {
+      open,
+      stop: stopWorkflowRun,
+      save: (taskId) => open(taskId, { tab: "script", saving: true }),
+      ultracode:
+        getModelSelectionBooleanOptionValue(activeThread?.modelSelection, "ultracode") === true,
+      sizeGuideline:
+        getModelSelectionStringOptionValue(activeThread?.modelSelection, "workflowSize") ?? null,
+    };
+  }, [activeThread?.modelSelection, agentsPanelOpen, openRightPanelTab, stopWorkflowRun]);
+  const openWorkflowRun = useCallback(
+    (taskId: string) => workflowRunActions.open(taskId),
+    [workflowRunActions],
+  );
+  const runningWorkflowRuns = useMemo(
+    () =>
+      (activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS).filter((run) => run.status === "running"),
+    [activeThread?.workflowRuns],
+  );
   /** The header's agent faces: the Agents tab on its list, not on one agent. */
   const onOpenHeaderAgentsTab = useCallback(() => onOpenAgentsPanel(null), [onOpenAgentsPanel]);
   const onOpenHeaderSourceTab = useCallback(
@@ -7393,6 +7512,9 @@ export default function ChatView(props: ChatViewProps) {
           onDeleteProjectScript={deleteProjectScript}
           onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
           onStopBackgroundRun={stopBackgroundRun}
+          workflowRuns={runningWorkflowRuns}
+          onOpenWorkflowRun={openWorkflowRun}
+          onStopWorkflowRun={stopWorkflowRun}
           onViewProposedPlan={
             taskProgressProposedPlan !== null && !isGeneralChatThread
               ? onViewProposedPlan
@@ -7523,6 +7645,7 @@ export default function ChatView(props: ChatViewProps) {
                 proposedPlanState={timelineProposedPlanState}
                 turnAgents={timelineTurnAgents}
                 onOpenAgentsPanel={onOpenAgentsPanel}
+                workflowRunActions={workflowRunActions}
                 onOpenThread={onOpenForkSourceThread}
               />
             </CommandRunActionsContext>
@@ -7629,6 +7752,8 @@ export default function ChatView(props: ChatViewProps) {
                   shouldAutoScrollRef={isAtEndRef}
                   scheduleStickToBottom={scheduleTimelineStickToBottom}
                   onSend={onSend}
+                  workflowKeywordSuppressed={workflowKeywordSuppressed}
+                  onToggleWorkflowKeyword={toggleWorkflowKeyword}
                   onInterrupt={onInterrupt}
                   onStopBackgroundWork={stopBackgroundWork}
                   onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}

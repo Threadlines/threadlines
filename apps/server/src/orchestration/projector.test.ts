@@ -119,6 +119,7 @@ describe("orchestration projector", () => {
         commandRuns: [],
         activities: [],
         subagents: [],
+        workflowRuns: [],
         checkpoints: [],
         session: null,
         voiceActive: false,
@@ -1964,6 +1965,131 @@ describe("orchestration projector", () => {
 
       expect(next.threads).toHaveLength(1);
       expect(next.threads[0]?.diffStatBaselineTurnCount).toBe(0);
+    });
+  });
+
+  describe("workflow runs", () => {
+    const now = "2026-05-01T00:00:00.000Z";
+    const at = (second: number) => `2026-05-01T00:00:${String(second).padStart(2, "0")}.000Z`;
+
+    const createThread = () =>
+      Effect.runPromise(
+        projectEvent(
+          createEmptyReadModel(now),
+          makeEvent({
+            sequence: 1,
+            type: "thread.created",
+            aggregateKind: "thread",
+            aggregateId: "thread-workflow",
+            occurredAt: now,
+            commandId: "cmd-thread-create",
+            payload: {
+              threadId: "thread-workflow",
+              projectId: "project-1",
+              title: "workflow",
+              modelSelection: { instanceId: "claudeAgent", model: "claude-opus-4-6" },
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          }),
+        ),
+      );
+
+    const recorded = (sequence: number, patch: Record<string, unknown>) =>
+      makeEvent({
+        sequence,
+        type: "thread.workflow-run-recorded",
+        aggregateKind: "thread",
+        aggregateId: "thread-workflow",
+        occurredAt: at(sequence),
+        commandId: `cmd-workflow-${sequence}`,
+        payload: { threadId: "thread-workflow", patch, createdAt: at(sequence) },
+      });
+
+    const projectAll = (
+      start: ReturnType<typeof createEmptyReadModel>,
+      events: ReadonlyArray<OrchestrationEvent>,
+    ) =>
+      events.reduce<Promise<ReturnType<typeof createEmptyReadModel>>>(
+        (statePromise, event) =>
+          statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+        Promise.resolve(start),
+      );
+
+    it("folds each update into a live run by what changed, and lets it go once it ends", async () => {
+      const thread = await createThread();
+      const live = await projectAll(thread, [
+        recorded(2, {
+          taskId: "task-a",
+          name: "audit",
+          status: "running",
+          startedAt: at(2),
+          turnId: "turn-1",
+          owner: { participantId: null, providerInstanceId: "claudeAgent" },
+          phases: [{ index: 0, title: "Scan" }],
+          agents: [
+            { index: 0, label: "scan:a", state: "running" },
+            { index: 1, label: "scan:b", state: "queued" },
+          ],
+        }),
+        // Only what changed. Who runs it and which turn started it were
+        // settled by the first update.
+        recorded(3, {
+          taskId: "task-a",
+          turnId: "turn-2",
+          owner: { participantId: "agent-later", providerInstanceId: "codex" },
+          phases: [{ index: 1, title: "Verify" }],
+          agents: [
+            { index: 1, label: "scan:b", state: "running" },
+            { index: 2, label: "verify", phaseIndex: 1, state: "queued" },
+          ],
+        }),
+      ]);
+
+      expect(live.threads[0]?.workflowRuns).toEqual([
+        {
+          taskId: "task-a",
+          runId: null,
+          turnId: "turn-1",
+          toolCallId: null,
+          owner: { participantId: null, providerInstanceId: "claudeAgent" },
+          name: "audit",
+          description: null,
+          status: "running",
+          statusReason: null,
+          hiddenScript: false,
+          startedAt: at(2),
+          endedAt: null,
+          totalTokens: 0,
+          totalToolCalls: 0,
+          transcriptDir: null,
+          scriptPath: null,
+          summary: null,
+          phases: [
+            { index: 0, title: "Scan" },
+            { index: 1, title: "Verify" },
+          ],
+          agents: [
+            { index: 0, label: "scan:a", state: "running" },
+            { index: 1, label: "scan:b", state: "running" },
+            { index: 2, label: "verify", phaseIndex: 1, state: "queued" },
+          ],
+          updatedAt: at(3),
+          // Its first report places it in the transcript.
+          eventSequence: 2,
+        },
+      ]);
+
+      // This model serves the decider (Stop, the revert guard): an ended run
+      // leaves it, and a report after the end does not bring it back.
+      const ended = await projectAll(live, [
+        recorded(4, { taskId: "task-a", status: "completed", endedAt: at(4) }),
+        recorded(5, { taskId: "task-a", agents: [{ index: 0, label: "scan:a", state: "done" }] }),
+      ]);
+      expect(ended.threads[0]?.workflowRuns).toEqual([]);
     });
   });
 });

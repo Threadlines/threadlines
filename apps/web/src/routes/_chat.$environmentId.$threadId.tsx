@@ -845,6 +845,8 @@ function ChatThreadRouteView() {
             turnInFlight={agentsSource?.turnInFlight ?? false}
             threadCwd={agentsSource?.threadCwd}
             embedded
+            workflowRuns={agentsSource?.workflowRuns}
+            onStopWorkflowRun={agentsSource?.onStopWorkflowRun}
             onStopBackgroundRun={agentsSource?.onStopBackgroundRun ?? noopStopRun}
             onMessageThroughParent={messageSubagentThroughParent}
           />

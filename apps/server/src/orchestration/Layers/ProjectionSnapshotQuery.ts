@@ -24,12 +24,14 @@ import {
   type OrchestrationProject,
   type OrchestrationSession,
   type OrchestrationSubagent,
+  type OrchestrationWorkflowRun,
   type OrchestrationThreadActivity,
   OrchestrationThreadDiffStat,
   type OrchestrationThreadDoneOverride,
   type OrchestrationThreadShell,
   type ThreadEffectiveCwdSource,
   MessageAgentModel,
+  MessageComposer,
   ModelSelection,
   OrchestrationThreadGoal,
   OrchestrationQueuedFollowUp,
@@ -100,6 +102,7 @@ import {
   ProjectionThreadSubagentDbRowSchema,
   toProjectionThreadSubagent,
 } from "../../persistence/Layers/ProjectionThreadSubagents.ts";
+import { decodeWorkflowRunRows } from "../../persistence/Layers/ProjectionThreadWorkflowRuns.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
@@ -195,6 +198,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     agentModels: Schema.NullOr(
       Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
     ),
+    composer: Schema.NullOr(MessageComposer),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -478,6 +482,7 @@ function mapThreadMessageRow(
     ...(row.invite !== null ? { invite: row.invite } : {}),
     ...(row.fromThread !== null ? { fromThread: row.fromThread } : {}),
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
+    ...(row.composer !== null ? { composer: row.composer } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -501,6 +506,22 @@ function mapThreadActivityRow(
     ...(row.sequence !== null ? { sequence: row.sequence } : {}),
     createdAt: row.createdAt,
   };
+}
+
+const WorkflowRunDbRow = Schema.Struct({ threadId: ThreadId, runJson: Schema.String });
+
+/** Runs by thread. A run that no longer decodes (written by a newer build) is
+ *  skipped, never failing the snapshot. */
+function workflowRunsByThreadOf(
+  rows: ReadonlyArray<typeof WorkflowRunDbRow.Type>,
+): ReadonlyMap<string, ReadonlyArray<OrchestrationWorkflowRun>> {
+  const byThread = new Map<string, Array<OrchestrationWorkflowRun>>();
+  for (const { threadId, run } of decodeWorkflowRunRows(rows)) {
+    const runs = byThread.get(threadId) ?? [];
+    runs.push(run);
+    byThread.set(threadId, runs);
+  }
+  return byThread;
 }
 
 function mapThreadSubagentRow(
@@ -911,6 +932,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           review_input AS "reviewInput",
           invite,
           agent_models AS "agentModels",
+          composer,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -966,6 +988,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           review_input AS "reviewInput",
           invite,
           agent_models AS "agentModels",
+          composer,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1667,6 +1690,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           review_input AS "reviewInput",
           invite,
           agent_models AS "agentModels",
+          composer,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1675,6 +1699,52 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ORDER BY event_sequence ASC, created_at ASC, message_id ASC
       `,
   });
+
+  // Workflow runs: the run is stored as JSON (see ProjectionThreadWorkflowRuns).
+  const listThreadWorkflowRunRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: WorkflowRunDbRow,
+    execute: () =>
+      sql`
+        SELECT runs.thread_id AS "threadId", runs.run_json AS "runJson"
+        FROM projection_thread_workflow_runs AS runs
+        ORDER BY runs.thread_id ASC, runs.started_at ASC, runs.task_id ASC
+      `,
+  });
+
+  const listThreadWorkflowRunRowsByThread = SqlSchema.findAll({
+    Request: Schema.Struct({ threadId: ThreadId }),
+    Result: WorkflowRunDbRow,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT thread_id AS "threadId", run_json AS "runJson"
+        FROM projection_thread_workflow_runs
+        WHERE thread_id = ${threadId}
+        ORDER BY started_at ASC, task_id ASC
+      `,
+  });
+
+  const listRunningWorkflowRunRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: WorkflowRunDbRow,
+    execute: () =>
+      sql`
+        SELECT thread_id AS "threadId", run_json AS "runJson"
+        FROM projection_thread_workflow_runs
+        WHERE status = 'running'
+      `,
+  });
+
+  const listRunningWorkflowRuns: ProjectionSnapshotQueryShape["listRunningWorkflowRuns"] = () =>
+    listRunningWorkflowRunRows(undefined).pipe(
+      Effect.map(decodeWorkflowRunRows),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listRunningWorkflowRuns:query",
+          "ProjectionSnapshotQuery.listRunningWorkflowRuns:decodeRows",
+        ),
+      ),
+    );
 
   const listThreadPageRows = SqlSchema.findAll({
     Request: Schema.Void,
@@ -2221,6 +2291,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listThreadWorkflowRunRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getSnapshot:listThreadWorkflowRuns:query",
+                "ProjectionSnapshotQuery.getSnapshot:listThreadWorkflowRuns:decodeRows",
+              ),
+            ),
+          ),
           listCommandRequestRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -2253,11 +2331,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             latestTurnRows,
             stateRows,
             pageRows,
+            workflowRunRows,
             commandRequestRows,
             commandRunRows,
           ]) =>
             Effect.gen(function* () {
               const pagesByThread = pagesByThreadOf(pageRows);
+              const workflowRunsByThread = workflowRunsByThreadOf(workflowRunRows);
               const commandRequestsByThread = commandItemsByThreadOf(
                 commandRequestRows,
                 MAX_THREAD_COMMAND_REQUESTS,
@@ -2438,6 +2518,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   ),
                 ),
                 subagents: subagentsByThread.get(row.threadId) ?? [],
+                workflowRuns: workflowRunsByThread.get(row.threadId) ?? [],
                 checkpoints: checkpointsByThread.get(row.threadId) ?? [],
                 session: sessionsByThread.get(row.threadId) ?? null,
                 diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
@@ -2533,6 +2614,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listRunningWorkflowRunRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listThreadWorkflowRuns:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listThreadWorkflowRuns:decodeRows",
+              ),
+            ),
+          ),
           listCommandRequestRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -2562,11 +2651,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             latestTurnRows,
             stateRows,
             pageRows,
+            workflowRunRows,
             commandRequestRows,
             commandRunRows,
           ]) =>
             Effect.sync(() => {
               const pagesByThread = pagesByThreadOf(pageRows);
+              // Only live runs: the decider acts on those (Stop, the revert
+              // guard); finished ones are history, read from the projection.
+              // This model loads no checkpoints, so it could not tell which
+              // finished run a later revert takes back anyway.
+              const workflowRunsByThread = workflowRunsByThreadOf(workflowRunRows);
               const commandRequestsByThread = commandItemsByThreadOf(
                 commandRequestRows,
                 MAX_THREAD_COMMAND_REQUESTS,
@@ -2732,6 +2827,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   commandRequests: commandRequestsByThread.get(row.threadId) ?? [],
                   commandRuns: commandRunsByThread.get(row.threadId) ?? [],
                   activities: [],
+                  workflowRuns: workflowRunsByThread.get(row.threadId) ?? [],
                   checkpoints: [],
                   session: sessionByThread.get(row.threadId) ?? null,
                   diffStatBaselineTurnCount: row.diffStatBaselineTurnCount ?? 0,
@@ -3392,6 +3488,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         latestTurnRow,
         sessionRow,
         pageRows,
+        workflowRunRows,
         commandRequestRows,
         commandRunRows,
       ] = yield* Effect.all([
@@ -3456,6 +3553,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:listPages:query",
               "ProjectionSnapshotQuery.getThreadDetailById:listPages:decodeRows",
+            ),
+          ),
+        ),
+        listThreadWorkflowRunRowsByThread({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailById:listWorkflowRuns:query",
+              "ProjectionSnapshotQuery.getThreadDetailById:listWorkflowRuns:decodeRows",
             ),
           ),
         ),
@@ -3524,6 +3629,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           retainThreadActivities(activityRows.map(mapThreadActivityRow), MAX_THREAD_ACTIVITIES),
         ),
         subagents: subagentRows.map(mapThreadSubagentRow),
+        workflowRuns: workflowRunsByThreadOf(workflowRunRows).get(threadId) ?? [],
         checkpoints: checkpointRows.map(mapCheckpointRow),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
         diffStatBaselineTurnCount: threadRow.value.diffStatBaselineTurnCount ?? 0,
@@ -3543,6 +3649,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getCommandReadModel,
     getSnapshot,
     getShellSnapshot,
+    listRunningWorkflowRuns,
     getArchivedShellSnapshot,
     getSnapshotSequence,
     getCounts,

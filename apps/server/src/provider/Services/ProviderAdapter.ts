@@ -37,6 +37,13 @@ import type {
   TurnId,
   RuntimeTaskId,
 } from "@threadlines/contracts";
+import type {
+  OrchestrationWorkflowRun,
+  WorkflowCommandLocation,
+  WorkflowReadRunFileResult,
+  WorkflowRunFileKind,
+  WorkflowSaveCommandResult,
+} from "@threadlines/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
@@ -309,6 +316,36 @@ export interface ProviderAdapterShape<TError> {
    * session while still clearing Threadlines' persisted runtime binding.
    */
   readonly deleteThread?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /**
+   * A workflow run's files, from the folders the run itself named: its
+   * script, its result, one agent's transcript, and saving the script as a
+   * command. Needs no live session, so a run stays readable after a restart
+   * or a switch to another provider. Drivers without workflow runs omit it.
+   */
+  readonly workflowRuns?: {
+    readonly readRunFile: (input: {
+      readonly run: OrchestrationWorkflowRun;
+      readonly file: WorkflowRunFileKind;
+    }) => Effect.Effect<WorkflowReadRunFileResult, TError>;
+    readonly readAgentTranscript: (input: {
+      readonly run: OrchestrationWorkflowRun;
+      readonly agentId: string;
+      /** The thread's checkout, for showing paths relative to it. */
+      readonly cwd?: string;
+      readonly limit?: number;
+      readonly offset?: number;
+      readonly fromEnd?: boolean;
+    }) => Effect.Effect<ProviderSubagentTranscriptResult, TError>;
+    readonly saveCommand: (input: {
+      readonly run: OrchestrationWorkflowRun;
+      readonly location: WorkflowCommandLocation;
+      /** The thread's checkout: a project command goes in its repository. */
+      readonly cwd: string;
+      readonly overwrite: boolean;
+      readonly dryRun: boolean;
+    }) => Effect.Effect<WorkflowSaveCommandResult, TError>;
+  };
 
   /**
    * Read a spawned subagent's nested transcript for on-demand display.

@@ -61,10 +61,23 @@ type SubagentTranscriptFetchState =
   | { readonly status: "error"; readonly message: string }
   | { readonly status: "loaded"; readonly sections: ReadonlyArray<SubagentTranscriptSection> };
 
+/** Reads one page of an agent's transcript. `cursor` only reaches readers of
+ *  providers that page by cursor. */
+export type SubagentTranscriptPageReader = (input: {
+  readonly agentId: string;
+  readonly limit?: number;
+  readonly offset?: number;
+  readonly cursor?: string;
+  readonly fromEnd?: boolean;
+}) => Promise<ProviderSubagentTranscriptResult>;
+
 interface SubagentTranscriptProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
   agentIds: ReadonlyArray<string>;
+  /** Where pages come from. Absent: the thread's subagent transcripts. A
+   *  workflow's agents are read from their run's own folder instead. */
+  readPage?: SubagentTranscriptPageReader | undefined;
   follow?: boolean;
   scrollable?: boolean;
   /** Working directory used to resolve file references in agent prose. */
@@ -219,6 +232,7 @@ export function SubagentTranscript({
   environmentId,
   threadId,
   agentIds,
+  readPage,
   follow = false,
   scrollable = false,
   cwd,
@@ -242,6 +256,17 @@ export function SubagentTranscript({
   const previousRevisionRef = useRef<string | null>(null);
   const prependScrollHeightRef = useRef<number | null>(null);
   const agentIdsKey = agentIds.join("\u0000");
+  // The reader is read through a ref so a caller's inline function never
+  // restarts the loading effects below.
+  const readPageRef = useRef(readPage);
+  readPageRef.current = readPage;
+  const readTranscriptPage = useCallback<SubagentTranscriptPageReader>(
+    (page) =>
+      readPageRef.current
+        ? readPageRef.current(page)
+        : readSubagentTranscriptPage({ environmentId, threadId, ...page }),
+    [environmentId, threadId],
+  );
 
   useEffect(() => {
     const requestedAgentIds = agentIdsKey.split("\u0000").filter((agentId) => agentId.length > 0);
@@ -266,9 +291,7 @@ export function SubagentTranscript({
         return undefined;
       }
       try {
-        const firstPage = await readSubagentTranscriptPage({
-          environmentId,
-          threadId,
+        const firstPage = await readTranscriptPage({
           agentId,
           offset: 0,
           limit: 1,
@@ -286,9 +309,7 @@ export function SubagentTranscript({
     const readLatestSections = async (): Promise<ReadonlyArray<SubagentTranscriptSection>> => {
       return await Promise.all(
         requestedAgentIds.map(async (agentId): Promise<SubagentTranscriptSection> => {
-          const result = await readSubagentTranscriptPage({
-            environmentId,
-            threadId,
+          const result = await readTranscriptPage({
             agentId,
             limit: TRANSCRIPT_PAGE_SIZE,
             fromEnd: true,
@@ -367,7 +388,7 @@ export function SubagentTranscript({
         clearTimeout(refreshTimeoutId);
       }
     };
-  }, [agentIdsKey, environmentId, follow, threadId]);
+  }, [agentIdsKey, follow, readTranscriptPage]);
 
   const revision = useMemo(() => {
     const transcript =
@@ -510,9 +531,7 @@ export function SubagentTranscript({
       setLoadingEarlierAgentId(agentId);
       setEarlierLoadError(null);
       try {
-        const earlierResult = await readSubagentTranscriptPage({
-          environmentId,
-          threadId,
+        const earlierResult = await readTranscriptPage({
           agentId,
           ...(cursor !== undefined ? { cursor, limit: TRANSCRIPT_PAGE_SIZE } : {}),
           ...(cursor === undefined && offset !== undefined && currentOffset !== null
@@ -545,7 +564,7 @@ export function SubagentTranscript({
         setLoadingEarlierAgentId(null);
       }
     },
-    [environmentId, loadingEarlierAgentId, threadId],
+    [loadingEarlierAgentId, readTranscriptPage],
   );
 
   const timestampFormat = useSettings().timestampFormat;

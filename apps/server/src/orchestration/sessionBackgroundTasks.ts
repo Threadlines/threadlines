@@ -1,4 +1,5 @@
 import type {
+  AwaitedWorkflowProgress,
   OrchestrationAwaitedBackgroundTask,
   OrchestrationBackgroundTaskKind,
   OrchestrationSession,
@@ -49,13 +50,15 @@ export function carriedBackgroundTasks(
 const AWAITED_TASK_DESCRIPTION_MAX_LENGTH = 120;
 
 /** One awaited task as the session carries it: its kind, a clipped
- *  description, and how to stop it on its own when its driver can. */
+ *  description, how to stop it on its own when its driver can, and a
+ *  workflow's progress. */
 export function toAwaitedBackgroundTask(task: {
   readonly kind?: OrchestrationBackgroundTaskKind | undefined;
   readonly description?: string | undefined;
   readonly taskId?: RuntimeTaskId | undefined;
   readonly toolUseId?: string | undefined;
   readonly stoppable?: boolean | undefined;
+  readonly workflow?: AwaitedWorkflowProgress | undefined;
 }): OrchestrationAwaitedBackgroundTask {
   const description = task.description?.trim();
   const toolUseId = task.toolUseId?.trim();
@@ -64,6 +67,7 @@ export function toAwaitedBackgroundTask(task: {
     ...(task.taskId !== undefined ? { taskId: task.taskId } : {}),
     ...(toolUseId ? { toolUseId } : {}),
     ...(task.stoppable === true ? { stoppable: true } : {}),
+    ...(task.workflow !== undefined ? { workflow: task.workflow } : {}),
     ...(description
       ? {
           description:

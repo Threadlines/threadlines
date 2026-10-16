@@ -7,6 +7,7 @@ import {
   type ProviderRuntimeEvent,
   type ThreadTokenUsageSnapshot,
 } from "@threadlines/contracts";
+import { parseWorkflowScriptMeta } from "@threadlines/shared/workflowScript";
 import {
   MAX_THREAD_ACTIVITY_PAYLOAD_AGENT_RESULT_TEXT_LENGTH,
   MAX_THREAD_ACTIVITY_PAYLOAD_ARRAY_ITEMS,
@@ -47,6 +48,40 @@ function approvalToolName(args: unknown): string | undefined {
   }
   const toolName = (args as Record<string, unknown>).toolName;
   return typeof toolName === "string" && toolName.trim().length > 0 ? toolName.trim() : undefined;
+}
+
+/** Longest script an approval keeps for "View script". */
+const WORKFLOW_APPROVAL_SCRIPT_LIMIT = 64 * 1024;
+
+/**
+ * What a workflow approval shows: the plan from the script's own header (its
+ * name, description and phases), and the script itself. Read from the call's
+ * input, or from the script the driver resolved for a file or a saved name.
+ */
+function workflowApprovalPreview(args: unknown): Record<string, unknown> | undefined {
+  if (approvalToolName(args) !== "Workflow" || !args || typeof args !== "object") {
+    return undefined;
+  }
+  const record = args as Record<string, unknown>;
+  const input =
+    record.input && typeof record.input === "object"
+      ? (record.input as Record<string, unknown>)
+      : {};
+  const script =
+    typeof input.script === "string"
+      ? input.script
+      : typeof record.workflowScript === "string"
+        ? record.workflowScript
+        : undefined;
+  const meta = script !== undefined ? parseWorkflowScriptMeta(script) : null;
+  const savedName = typeof input.name === "string" ? input.name.trim() : "";
+  const name = meta?.name ?? (savedName.length > 0 ? savedName : undefined);
+  return {
+    ...(name ? { name } : {}),
+    ...(meta?.description ? { description: meta.description } : {}),
+    phases: meta?.phases ?? [],
+    ...(script !== undefined ? { script: script.slice(0, WORKFLOW_APPROVAL_SCRIPT_LIMIT) } : {}),
+  };
 }
 
 function truncateDetail(value: string, limit = 180): string {
@@ -662,6 +697,7 @@ export function projectRuntimeEventToActivities(
       }
       const requestKind = approvalRequestKindFromRequestType(event.payload.requestType);
       const toolName = approvalToolName(event.payload.args);
+      const workflowPreview = workflowApprovalPreview(event.payload.args);
       return [
         baseActivity(event, {
           id: event.eventId,
@@ -691,6 +727,7 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.decisionWarnings
               ? { decisionWarnings: event.payload.decisionWarnings }
               : {}),
+            ...(workflowPreview ? { workflowPreview } : {}),
             // The approval panel shows this as the thing being approved, so
             // keep more of it than a one-line activity detail.
             ...(event.payload.detail

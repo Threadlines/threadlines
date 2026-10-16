@@ -21,6 +21,7 @@ import {
   OrchestrationSubagentStatus,
   ProviderApprovalDecision,
 } from "./orchestration.ts";
+import { AwaitedWorkflowProgress, WorkflowRunUpdate } from "./workflow.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -203,6 +204,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "task.snapshot.updated",
   "task.progress",
   "task.completed",
+  "task.workflow.updated",
   "hook.started",
   "hook.progress",
   "hook.completed",
@@ -264,6 +266,7 @@ const TaskStartedType = Schema.Literal("task.started");
 const TaskSnapshotUpdatedType = Schema.Literal("task.snapshot.updated");
 const TaskProgressType = Schema.Literal("task.progress");
 const TaskCompletedType = Schema.Literal("task.completed");
+const TaskWorkflowUpdatedType = Schema.Literal("task.workflow.updated");
 const HookStartedType = Schema.Literal("hook.started");
 const HookProgressType = Schema.Literal("hook.progress");
 const HookCompletedType = Schema.Literal("hook.completed");
@@ -751,6 +754,9 @@ const TaskSnapshotUpdatedPayload = Schema.Struct({
       /** What the task is, for saying what the thread waits on. Absent reads
        *  as "other". */
       kind: Schema.optional(OrchestrationBackgroundTaskKind),
+      /** A workflow run's progress. The driver re-sends the snapshot when it
+       *  changes (an agent finished, a phase began), not on every step. */
+      workflow: Schema.optional(AwaitedWorkflowProgress),
       /** See TaskStartedPayload.stoppable. */
       stoppable: Schema.optional(Schema.Boolean),
       /** See TaskStartedPayload.toolUseId. */
@@ -810,6 +816,10 @@ const TaskCompletedPayload = Schema.Struct({
   ownerAgentToolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
+
+/** A background task that is a workflow run: what changed in it. See WorkflowRunUpdate. */
+const TaskWorkflowUpdatedPayload = WorkflowRunUpdate;
+export type TaskWorkflowUpdatedPayload = typeof TaskWorkflowUpdatedPayload.Type;
 
 const HookStartedPayload = Schema.Struct({
   hookId: TrimmedNonEmptyStringSchema,
@@ -1251,6 +1261,14 @@ const ProviderRuntimeTaskCompletedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTaskCompletedEvent = typeof ProviderRuntimeTaskCompletedEvent.Type;
 
+const ProviderRuntimeTaskWorkflowUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TaskWorkflowUpdatedType,
+  payload: TaskWorkflowUpdatedPayload,
+});
+export type ProviderRuntimeTaskWorkflowUpdatedEvent =
+  typeof ProviderRuntimeTaskWorkflowUpdatedEvent.Type;
+
 const ProviderRuntimeHookStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: HookStartedType,
@@ -1417,6 +1435,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTaskSnapshotUpdatedEvent,
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskCompletedEvent,
+  ProviderRuntimeTaskWorkflowUpdatedEvent,
   ProviderRuntimeHookStartedEvent,
   ProviderRuntimeHookProgressEvent,
   ProviderRuntimeHookCompletedEvent,

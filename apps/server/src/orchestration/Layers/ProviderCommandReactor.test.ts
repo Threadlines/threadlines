@@ -9,6 +9,7 @@ import {
   ModelSelection,
   type OrchestrationCommand,
   type OrchestrationSession,
+  type OrchestrationWorkflowRunPatch,
   ProviderRuntimeEvent,
   ProviderSession,
   type ProviderSessionStartInput,
@@ -465,6 +466,9 @@ describe("ProviderCommandReactor", () => {
       realtimeListVoices: () => unsupported(),
       releaseBackgroundCommands,
       stopBackgroundTask,
+      readWorkflowRunFile: () => Effect.die("unused"),
+      readWorkflowAgentTranscript: () => Effect.die("unused"),
+      saveWorkflowCommand: () => Effect.die("unused"),
       noteExtensionsChanged: () => Effect.void,
       readConversation,
       compactContext,
@@ -946,6 +950,255 @@ describe("ProviderCommandReactor", () => {
       (entry) => entry.kind === "provider.runtime-mode.failed",
     );
     expect(refused).toMatchObject({ tone: "error", payload: { detail: issue } });
+  });
+
+  /** Sends a user message as a turn, written the way `composer` says. */
+  const startTurnAs = (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    id: string,
+    text: string,
+    composer: "typed" | "plain" | undefined,
+  ) =>
+    Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-turn-start-${id}`),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId(`user-message-${id}`),
+          role: "user",
+          text,
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        ...(composer !== undefined ? { composer } : {}),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+  type SentTurn = {
+    readonly input?: string;
+    readonly typed?: { readonly text: string; readonly context?: string };
+  };
+
+  it("tells the provider which words the user typed, apart from the context put in front", async () => {
+    const harness = await createHarness();
+
+    await startTurnAs(harness, "typed-1", "first question", "typed");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect((harness.sendTurn.mock.calls[0]?.[0] as SentTurn).typed).toEqual({
+      text: "first question",
+    });
+
+    // The session can not reopen its conversation, so the next message goes
+    // with the thread's history in front of it.
+    const startFresh = harness.startSession.getMockImplementation();
+    if (!startFresh) throw new Error("expected the harness start implementation");
+    harness.startSession.mockImplementationOnce((key, input) =>
+      startFresh(key, input).pipe(Effect.map((session) => ({ ...session, resumeFailed: true }))),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-runtime-mode-set-typed"),
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+
+    await startTurnAs(harness, "typed-2", "ultracode the second question", "typed");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    const sent = harness.sendTurn.mock.calls[1]?.[0] as SentTurn;
+    expect(sent.input).toContain("prior context");
+    expect(sent.typed?.text).toBe("ultracode the second question");
+    expect(sent.typed?.context).toContain("prior context");
+    expect(sent.typed?.context).not.toContain("ultracode the second question");
+  });
+
+  it("marks no words as typed in a message sent as plain text or written by no one", async () => {
+    const harness = await createHarness();
+
+    await startTurnAs(harness, "plain", "ultracode is just a word here", "plain");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await startTurnAs(harness, "automation", "ultracode from automation", undefined);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    for (const [request] of harness.sendTurn.mock.calls) {
+      expect(request).toHaveProperty("input");
+      expect(request).not.toHaveProperty("typed");
+    }
+  });
+
+  /** Records a workflow run on a thread, as ingestion would from its runtime. */
+  const recordWorkflowRun = (
+    engine: OrchestrationEngineShape,
+    threadId: ThreadId,
+    patch: OrchestrationWorkflowRunPatch,
+  ) =>
+    engine.dispatch({
+      type: "thread.workflow-run.record",
+      commandId: CommandId.make(`cmd-record-${threadId}-${patch.taskId}`),
+      threadId,
+      // A run's first report carries its start (applyWorkflowRunPatch).
+      patch: { startedAt: "2026-01-01T00:00:01.000Z", ...patch },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+
+  const workflowRunOf = async (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId: ThreadId,
+    taskId: string,
+  ) =>
+    (await harness.readModel()).threads
+      .find((entry) => entry.id === threadId)
+      ?.workflowRuns?.find((run) => run.taskId === taskId);
+
+  const stopWorkflowRun = (harness: Awaited<ReturnType<typeof createHarness>>, taskId: string) =>
+    Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.background-task.stop",
+        commandId: CommandId.make(`cmd-stop-${taskId}`),
+        threadId: ThreadId.make("thread-1"),
+        taskId: RuntimeTaskId.make(taskId),
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+  it("stops a workflow run in the runtime of the agent that started it", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.participant.add",
+        commandId: CommandId.make("cmd-room-add-workflow-owner"),
+        threadId,
+        participant: {
+          id: astraId,
+          handle: "astra",
+          modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus" },
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    // Astra started it; the thread's own agent may hold the thread by now.
+    await Effect.runPromise(
+      recordWorkflowRun(harness.engine, threadId, {
+        taskId: "task-astra",
+        status: "running",
+        owner: {
+          participantId: astraId,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+      }),
+    );
+
+    // Only astra's runtime holds the run.
+    const astraKey = participantSessionKey(threadId, astraId);
+    harness.runtimeSessions.push({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      status: "ready",
+      runtimeMode: "full-access",
+      threadId: astraKey,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    harness.stopBackgroundTask.mockImplementation((input) =>
+      Effect.succeed(input.threadId === astraKey),
+    );
+
+    await stopWorkflowRun(harness, "task-astra");
+    await waitFor(() => harness.stopBackgroundTask.mock.calls.length > 0);
+
+    expect(harness.stopBackgroundTask.mock.calls.map(([input]) => input)).toContainEqual({
+      threadId: astraKey,
+      taskId: RuntimeTaskId.make("task-astra"),
+    });
+    // The runtime reports the end itself; nothing is assumed meanwhile.
+    await harness.drain();
+    expect((await workflowRunOf(harness, threadId, "task-astra"))?.status).toBe("running");
+  });
+
+  it("marks a workflow run lost when the runtime that ran it is gone", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    await Effect.runPromise(
+      recordWorkflowRun(harness.engine, threadId, {
+        taskId: "task-orphaned",
+        status: "running",
+        owner: { participantId: null, providerInstanceId: ProviderInstanceId.make("claudeAgent") },
+      }),
+    );
+
+    await stopWorkflowRun(harness, "task-orphaned");
+    await waitFor(
+      async () => (await workflowRunOf(harness, threadId, "task-orphaned"))?.status === "lost",
+    );
+
+    const run = await workflowRunOf(harness, threadId, "task-orphaned");
+    expect(run?.statusReason).toBe("runtime-gone");
+    expect(run?.endedAt).not.toBeNull();
+  });
+
+  it("marks workflow runs the previous server process left running as lost", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-workflow-restart");
+    const owner = {
+      participantId: null,
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+    };
+    const harness = await createHarness({
+      beforeStart: (engine) =>
+        Effect.gen(function* () {
+          yield* engine.dispatch({
+            type: "project.create",
+            commandId: CommandId.make("cmd-project-create-workflow-restart"),
+            projectId: asProjectId("project-workflow-restart"),
+            title: "Workflow Restart",
+            workspaceRoot: PROJECT_ROOT,
+            defaultModelSelection: null,
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("cmd-thread-create-workflow-restart"),
+            threadId,
+            projectId: asProjectId("project-workflow-restart"),
+            title: "Workflow Restart",
+            modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus" },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+          });
+          yield* recordWorkflowRun(engine, threadId, {
+            taskId: "task-left-running",
+            status: "running",
+            owner,
+          });
+          yield* recordWorkflowRun(engine, threadId, {
+            taskId: "task-finished",
+            status: "completed",
+            owner,
+          });
+        }),
+    });
+
+    await waitFor(
+      async () => (await workflowRunOf(harness, threadId, "task-left-running"))?.status === "lost",
+    );
+    expect((await workflowRunOf(harness, threadId, "task-left-running"))?.statusReason).toBe(
+      "server-restarted",
+    );
+    expect(await workflowRunOf(harness, threadId, "task-finished")).toMatchObject({
+      status: "completed",
+      statusReason: null,
+    });
   });
 
   it("runs a room agent in its own session and tells it what it missed", async () => {
@@ -3076,7 +3329,12 @@ describe("ProviderCommandReactor", () => {
 
     const submit = (
       harness: Awaited<ReturnType<typeof createHarness>>,
-      input: { messageId: MessageId; text: string; delivery?: "steer" | "queue" },
+      input: {
+        messageId: MessageId;
+        text: string;
+        delivery?: "steer" | "queue";
+        composer?: "typed" | "plain";
+      },
     ) =>
       Effect.runPromise(
         harness.engine.dispatch({
@@ -3086,6 +3344,7 @@ describe("ProviderCommandReactor", () => {
           turnId,
           message: { messageId: input.messageId, role: "user", text: input.text, attachments: [] },
           ...(input.delivery ? { delivery: input.delivery } : {}),
+          ...(input.composer ? { composer: input.composer } : {}),
           interactionMode: "plan",
           createdAt: "2026-01-01T00:00:02.000Z",
         }),
@@ -3254,6 +3513,45 @@ describe("ProviderCommandReactor", () => {
       await setSession(harness, "ready", "2026-01-01T00:00:03.000Z");
       await waitFor(() => harness.sendTurn.mock.calls.length === 1);
       expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ messageId });
+    });
+
+    it("steers the running turn with the user's typed words marked as theirs", async () => {
+      const harness = await createHarness();
+      await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+      await submit(harness, {
+        messageId: asMessageId("typed-steer"),
+        text: "ultracode it",
+        composer: "typed",
+      });
+      await submit(harness, {
+        messageId: asMessageId("plain-steer"),
+        text: "ultracode is a word",
+        composer: "plain",
+      });
+      await waitFor(() => harness.steerTurn.mock.calls.length === 2);
+
+      expect(harness.steerTurn.mock.calls.map(([request]) => request.typed)).toEqual([
+        { text: "ultracode it" },
+        undefined,
+      ]);
+    });
+
+    it("still sends a typed steer as the user's words when it waits for the next turn", async () => {
+      const harness = await createHarness({ activeTurnSteering: "unsupported" });
+      const messageId = asMessageId("typed-steer-requeued");
+      await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+      await submit(harness, { messageId, text: "ultracode the cleanup", composer: "typed" });
+      await waitFor(async () => (await readThread(harness))?.queuedFollowUps?.length === 1);
+
+      await setSession(harness, "ready", "2026-01-01T00:00:03.000Z");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        messageId,
+        typed: { text: "ultracode the cleanup" },
+      });
+      expect(
+        (await readThread(harness))?.messages.find((entry) => entry.id === messageId)?.composer,
+      ).toBe("typed");
     });
   });
 

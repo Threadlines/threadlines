@@ -1,4 +1,6 @@
 import type { ScopedThreadRef } from "@threadlines/contracts";
+import type { OrchestrationWorkflowRun } from "@threadlines/contracts";
+import { workflowLiveLineText, workflowRunTitle } from "./workflowRunView";
 import { memo, useMemo, useState, type ReactElement } from "react";
 import {
   BotIcon,
@@ -13,6 +15,7 @@ import {
   SquareIcon,
   TerminalIcon,
   TerminalSquareIcon,
+  WorkflowIcon,
 } from "lucide-react";
 
 import type { PlanTaskBadgeState } from "../../planPanelState";
@@ -64,6 +67,10 @@ export interface ThreadTaskProgressState {
 interface ThreadActivityPopoverProps {
   taskProgress: ThreadTaskProgressState | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** Workflow runs still going: listed with their progress and their Stop. */
+  workflowRuns?: ReadonlyArray<OrchestrationWorkflowRun> | undefined;
+  onOpenWorkflowRun?: ((taskId: string) => void) | undefined;
+  onStopWorkflowRun?: ((taskId: string) => void) | undefined;
   /** The thread the runs belong to; where their output is read from. */
   threadRef: ScopedThreadRef | null;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
@@ -129,6 +136,8 @@ function toneTextClassName(tone: ActivityTone): string {
 function formatCount(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
+
+const EMPTY_WORKFLOW_RUNS: ReadonlyArray<OrchestrationWorkflowRun> = [];
 
 // ---------------------------------------------------------------------------
 // Progress blocks
@@ -223,9 +232,11 @@ function taskSummary(activePlan: ActivePlanState | null, activeProposedPlan: boo
 export function deriveThreadActivityTriggerState(input: {
   taskProgress: ThreadTaskProgressState | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
+  /** Running workflows count as runs on the button. */
+  workflowRunCount?: number;
 }): ActivityTriggerState | null {
   const { taskProgress, backgroundRuns } = input;
-  const runCount = backgroundRuns.length;
+  const runCount = backgroundRuns.length + (input.workflowRunCount ?? 0);
   const taskSummaryText = taskProgress
     ? taskSummary(taskProgress.activePlan, taskProgress.activeProposedPlan !== null)
     : null;
@@ -789,6 +800,88 @@ function BackgroundRunRow({
   );
 }
 
+function WorkflowRunRow({
+  run,
+  onOpen,
+  onStop,
+}: {
+  run: OrchestrationWorkflowRun;
+  onOpen: ((taskId: string) => void) | undefined;
+  onStop: ((taskId: string) => void) | undefined;
+}) {
+  const title = workflowRunTitle(run);
+  const progress = workflowLiveLineText(run);
+  return (
+    <div
+      className="group/run grid grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-x-2 px-1 py-1.5 transition-colors hover:bg-accent/40"
+      data-workflow-run-row={run.taskId}
+    >
+      <span className="flex h-4 items-center justify-center text-muted-foreground">
+        <WorkflowIcon className="size-3" aria-hidden="true" />
+      </span>
+      <button
+        type="button"
+        className="min-w-0 cursor-pointer text-left outline-none focus-ring"
+        onClick={() => onOpen?.(run.taskId)}
+        aria-label={`Open ${title}`}
+      >
+        <div className="truncate text-[12px] leading-4 font-medium text-foreground">{title}</div>
+        <div className="mt-0.5 truncate font-mono text-[10.5px] leading-[15px] text-muted-foreground">
+          {progress}
+        </div>
+      </button>
+      <div className="-my-0.5 flex h-5 items-center gap-0.5">
+        <span className="mr-0.5 font-mono text-[10.5px] text-muted-foreground/55">
+          <LiveDuration since={run.startedAt} format="span" />
+        </span>
+        {onStop ? (
+          <TooltipWrapper tooltip={`Stop ${title}`}>
+            <button
+              type="button"
+              className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 focus-ring"
+              aria-label={`Stop ${title}`}
+              onClick={() => onStop(run.taskId)}
+            >
+              <SquareIcon className="size-2 fill-current" aria-hidden="true" />
+            </button>
+          </TooltipWrapper>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowRunsSection({
+  runs,
+  onOpen,
+  onStop,
+}: {
+  runs: ReadonlyArray<OrchestrationWorkflowRun>;
+  onOpen: ((taskId: string) => void) | undefined;
+  onStop: ((taskId: string) => void) | undefined;
+}) {
+  if (runs.length === 0) {
+    return null;
+  }
+  return (
+    <section className="min-w-0" aria-label="Workflows">
+      <SectionHeader
+        title="Workflows"
+        meta={
+          <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">
+            {runs.length}
+          </span>
+        }
+      />
+      <div className="divide-y divide-border/60">
+        {runs.map((run) => (
+          <WorkflowRunRow key={run.taskId} run={run} onOpen={onOpen} onStop={onStop} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function BackgroundRunsSection({
   backgroundRuns,
   threadRef,
@@ -840,6 +933,9 @@ function keyboardOpensIntoPopup(openType: string): boolean {
 export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   taskProgress,
   backgroundRuns,
+  workflowRuns = EMPTY_WORKFLOW_RUNS,
+  onOpenWorkflowRun,
+  onStopWorkflowRun,
   threadRef,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
@@ -851,6 +947,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   const triggerState = deriveThreadActivityTriggerState({
     taskProgress,
     backgroundRuns,
+    workflowRunCount: workflowRuns.length,
   });
 
   if (!triggerState) {
@@ -862,6 +959,13 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
       ? () => {
           setPopoverOpen(false);
           action();
+        }
+      : undefined;
+  const closeThen1 = (action: ((taskId: string) => void) | undefined) =>
+    action
+      ? (taskId: string) => {
+          setPopoverOpen(false);
+          action(taskId);
         }
       : undefined;
   const showsTasks =
@@ -918,7 +1022,15 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
                 onDismissProposedPlan={closeThen(onDismissProposedPlan)}
               />
             ) : null}
-            {showsTasks && backgroundRuns.length > 0 ? (
+            {showsTasks && (workflowRuns.length > 0 || backgroundRuns.length > 0) ? (
+              <div aria-hidden="true" className="mx-1 my-2.5 h-px bg-border/60" />
+            ) : null}
+            <WorkflowRunsSection
+              runs={workflowRuns}
+              onOpen={closeThen1(onOpenWorkflowRun)}
+              onStop={onStopWorkflowRun}
+            />
+            {workflowRuns.length > 0 && backgroundRuns.length > 0 ? (
               <div aria-hidden="true" className="mx-1 my-2.5 h-px bg-border/60" />
             ) : null}
             <BackgroundRunsSection

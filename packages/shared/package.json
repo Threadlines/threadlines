@@ -295,6 +295,14 @@
       "types": "./src/envFlag.ts",
       "import": "./src/envFlag.ts"
     },
+    "./workflowScript": {
+      "types": "./src/workflowScript.ts",
+      "import": "./src/workflowScript.ts"
+    },
+    "./workflowRuns": {
+      "types": "./src/workflowRuns.ts",
+      "import": "./src/workflowRuns.ts"
+    },
     "./shellCommandSafety": {
       "types": "./src/shellCommandSafety.ts",
       "import": "./src/shellCommandSafety.ts"

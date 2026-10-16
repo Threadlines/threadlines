@@ -37,6 +37,7 @@ import {
 } from "@threadlines/shared/commandRuns";
 import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
+import { applyWorkflowRunPatch } from "@threadlines/shared/workflowRuns";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -100,6 +101,7 @@ import {
   ThreadTurnCompletedPayload,
   ThreadTurnDiffSummaryUpdatedPayload,
   ThreadDiffStatRebasedPayload,
+  ThreadWorkflowRunRecordedPayload,
 } from "./Schemas.ts";
 import { projectSubagentActivity } from "./subagentProjection.ts";
 
@@ -393,6 +395,7 @@ export function projectEvent(
             messages: [],
             activities: [],
             subagents: [],
+            workflowRuns: [],
             checkpoints: [],
             session: null,
             queuedFollowUps: [],
@@ -1072,6 +1075,7 @@ export function projectEvent(
             ...(payload.invite !== undefined ? { invite: payload.invite } : {}),
             ...(payload.fromThread !== undefined ? { fromThread: payload.fromThread } : {}),
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
+            ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -1100,6 +1104,10 @@ export function projectEvent(
                       : {}),
                     ...(message.skills !== undefined ? { skills: message.skills } : {}),
                     ...keptAgentModels(entry, message),
+                    // Who wrote it is settled by the write that names it first.
+                    ...(entry.composer === undefined && message.composer !== undefined
+                      ? { composer: message.composer }
+                      : {}),
                   }
                 : entry,
             )
@@ -1156,6 +1164,7 @@ export function projectEvent(
               ? { participantId: payload.participantId }
               : {}),
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
+            ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             turnId: payload.turnId,
             streaming: false,
             createdAt: payload.createdAt,
@@ -1732,6 +1741,35 @@ export function projectEvent(
               subagents,
               latestTurn,
               updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.workflow-run-recorded":
+      return decodeForEvent(
+        ThreadWorkflowRunRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              // This model keeps live runs only, for the decider (Stop, and
+              // revert waits for them): a run leaves it when it ends. Finished
+              // runs are history, read from the SQL projection.
+              workflowRuns: applyWorkflowRunPatch(
+                thread.workflowRuns ?? [],
+                payload.patch,
+                event.occurredAt,
+                event.sequence,
+              ).filter((run) => run.status === "running"),
             }),
           };
         }),

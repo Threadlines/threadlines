@@ -115,6 +115,7 @@ function makeSnapshotQuery(
     getProjectCatalog: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
+    listRunningWorkflowRuns: () => Effect.succeed([]),
     getShellSnapshot: () => Effect.succeed(shellSnapshot),
     getArchivedShellSnapshot: () => Effect.die("unused"),
     getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),

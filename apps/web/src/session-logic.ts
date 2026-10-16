@@ -1,4 +1,5 @@
 import * as Option from "effect/Option";
+import { workflowPhaseDisplayTitle } from "@threadlines/shared/workflowRuns";
 import * as Schema from "effect/Schema";
 import * as Arr from "effect/Array";
 import { compareTranscriptPosition } from "@threadlines/shared/transcriptOrder";
@@ -6,6 +7,7 @@ import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   type OrchestrationAgentPage,
+  type OrchestrationWorkflowRun,
   type OrchestrationCommandRequest,
   ApprovalRequestId,
   McpElicitation,
@@ -270,6 +272,39 @@ export interface PendingApproval {
   toolName?: string;
   /** What is being approved: the command, path, or tool summary. */
   detail?: string;
+  /** A workflow asking to run: its plan, from the script's own header. */
+  workflow?: PendingWorkflowApproval;
+}
+
+export interface PendingWorkflowApproval {
+  readonly name?: string;
+  readonly description?: string;
+  readonly phases: ReadonlyArray<{ readonly title: string; readonly detail?: string }>;
+  /** The script, for "View script". Absent: Claude keeps it to itself. */
+  readonly script?: string;
+}
+
+function readWorkflowApprovalPreview(value: unknown): PendingWorkflowApproval | undefined {
+  const preview = asRecord(value);
+  if (!preview) return undefined;
+  const phases = Array.isArray(preview.phases)
+    ? preview.phases.flatMap((phase) => {
+        const entry = asRecord(phase);
+        const title = asTrimmedString(entry?.title);
+        if (!title) return [];
+        const detail = asTrimmedString(entry?.detail);
+        return [{ title, ...(detail ? { detail } : {}) }];
+      })
+    : [];
+  const name = asTrimmedString(preview.name);
+  const description = asTrimmedString(preview.description);
+  const script = typeof preview.script === "string" ? preview.script : undefined;
+  return {
+    phases,
+    ...(name ? { name } : {}),
+    ...(description ? { description } : {}),
+    ...(script ? { script } : {}),
+  };
 }
 
 export interface PendingUserInput {
@@ -563,6 +598,12 @@ export type TimelineEntry = { eventSequence?: number | undefined } & (
     }
   | {
       id: string;
+      kind: "workflow-run";
+      createdAt: string;
+      run: OrchestrationWorkflowRun;
+    }
+  | {
+      id: string;
       kind: "command-request";
       createdAt: string;
       request: OrchestrationCommandRequest;
@@ -681,18 +722,40 @@ export function formatAwaitedTasks(
 /**
  * The one word a waiting thread's row spends on its wait. Agents name
  * themselves ("2 agents"), because a thread whose agents are still at work is
- * not idle; a workflow is a script of agents, so it is next. A command, or a
- * wait nobody described, stays "waiting".
+ * not idle; a workflow is a script of agents, so it is next, and a lone one
+ * says how far it got ("Workflow 6/8"). A command, or a wait nobody
+ * described, stays "waiting".
  */
 export function formatBackgroundWaitWord(
   tasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | null,
 ): string {
   if (tasks === null) return "waiting";
-  for (const kind of ["agent", "workflow"] as const) {
-    const count = countAwaitedTasks(tasks, kind);
-    if (count > 0) return formatTaskCount(kind, count);
+  const agents = countAwaitedTasks(tasks, "agent");
+  if (agents > 0) return formatTaskCount("agent", agents);
+  const workflows = tasks.filter((task) => task.kind === "workflow");
+  const progress = workflows.length === 1 ? workflows[0]?.workflow : undefined;
+  if (progress && progress.totalAgents > 0) {
+    return `Workflow ${progress.doneAgents}/${progress.totalAgents}`;
   }
+  if (workflows.length > 0) return formatTaskCount("workflow", workflows.length);
   return "waiting";
+}
+
+/**
+ * The working row's words while a thread waits on one workflow and nothing
+ * else: "Workflow · Verify · 2 of 4 agents". Null when it waits on anything
+ * more, or the workflow has not reported agents yet.
+ */
+export function formatSoleAwaitedWorkflow(
+  tasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask>,
+): string | null {
+  if (tasks.length !== 1) return null;
+  const progress = tasks[0]?.kind === "workflow" ? tasks[0].workflow : undefined;
+  if (!progress || progress.totalAgents === 0) return null;
+  const agents = `${progress.doneAgents} of ${progress.totalAgents} agents`;
+  return progress.phaseTitle
+    ? `Workflow · ${workflowPhaseDisplayTitle(progress.phaseTitle)} · ${agents}`
+    : `Workflow · ${agents}`;
 }
 
 export function deriveActiveModelFallbackState(
@@ -850,6 +913,7 @@ export function derivePendingApprovals(
         payload && typeof payload.toolName === "string" ? payload.toolName : undefined;
       const environmentId =
         payload && typeof payload.environmentId === "string" ? payload.environmentId : undefined;
+      const workflow = readWorkflowApprovalPreview(payload?.workflowPreview);
       return [
         {
           requestId: ApprovalRequestId.make(requestId),
@@ -858,6 +922,7 @@ export function derivePendingApprovals(
           ...(environmentId ? { environmentId } : {}),
           ...(toolName ? { toolName } : {}),
           ...(detail ? { detail } : {}),
+          ...(workflow ? { workflow } : {}),
           ...(availableDecisions && availableDecisions.length > 0 ? { availableDecisions } : {}),
           ...(decisionWarnings ? { decisionWarnings } : {}),
         },
@@ -2880,6 +2945,30 @@ function formatSubagentCount(count: number, singular: string, plural: string): s
   return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
 }
 
+/** The thread's workflow tasks: Claude reports a workflow as one background
+ *  task of type `local_workflow`, named on its start. */
+function collectWorkflowTaskIds(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== "task.started" && activity.kind !== "task.completed") continue;
+    const payload = asRecord(activity.payload);
+    const taskId = asTrimmedString(payload?.taskId);
+    if (taskId && asTrimmedString(payload?.taskType) === "local_workflow") ids.add(taskId);
+  }
+  return ids;
+}
+
+function isWorkflowTaskActivity(
+  activity: OrchestrationThreadActivity,
+  workflowTaskIds: ReadonlySet<string>,
+): boolean {
+  if (activity.kind !== "task.progress" && activity.kind !== "task.completed") return false;
+  const taskId = asTrimmedString(asRecord(activity.payload)?.taskId);
+  return taskId !== null && workflowTaskIds.has(taskId);
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   activeTurnId?: TurnId | null,
@@ -2893,6 +2982,7 @@ export function deriveWorkLogEntries(
   );
   const agentTaskIndex = collectAgentTaskIndex(ordered);
   const denials = collectPermissionDenials(ordered);
+  const workflowTaskIds = collectWorkflowTaskIds(ordered);
   const entries = ordered
     // A denial is told on the step it turned down.
     .filter((activity) => permissionDenialToolUseId(activity) === null)
@@ -2911,6 +3001,8 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "approval.requested")
     .filter((activity) => activity.kind !== "approval.resolved")
     .filter((activity) => activity.kind !== "task.started")
+    // A workflow's progress and end are its run card's (WorkflowRunCard).
+    .filter((activity) => !isWorkflowTaskActivity(activity, workflowTaskIds))
     .filter((activity) => activity.kind !== "subagent.result")
     .filter((activity) => activity.kind !== "subagent.metadata")
     .filter((activity) => activity.kind !== "thread.fork.context")
@@ -5814,8 +5906,29 @@ export function deriveTimelineEntries(
   subagentLiveEntries: SubagentLiveEntry[] = [],
   pages: ReadonlyArray<OrchestrationAgentPage> = [],
   commandRequests: ReadonlyArray<OrchestrationCommandRequest> = [],
+  workflowRuns: ReadonlyArray<OrchestrationWorkflowRun> = [],
 ): TimelineEntry[] {
   const suppressedAssistantEchoIds = findSubagentResultEchoMessageIds(messages, subagentResults);
+  // A workflow run shows as its card, where the call that launched it was:
+  // the call's own step would only repeat it.
+  const runsByToolCall = new Map(
+    workflowRuns.flatMap((run) => (run.toolCallId ? [[run.toolCallId, run] as const] : [])),
+  );
+  const workflowRunRows: TimelineEntry[] = workflowRuns.map((run) => {
+    const launch = run.toolCallId
+      ? workEntries.find((entry) => entry.toolCallId === run.toolCallId)
+      : undefined;
+    const eventSequence = launch?.eventSequence ?? run.eventSequence;
+    return {
+      id: `workflow-run:${run.taskId}`,
+      kind: "workflow-run",
+      createdAt: launch?.createdAt ?? run.startedAt,
+      ...(eventSequence !== undefined ? { eventSequence } : {}),
+      run,
+    };
+  });
+  const isWorkflowEcho = (entry: WorkLogEntry) =>
+    entry.toolCallId !== undefined && runsByToolCall.has(entry.toolCallId);
   const messageRows: TimelineEntry[] = messages
     .filter((message) => !suppressedAssistantEchoIds.has(message.id))
     .map((message) => ({
@@ -5834,13 +5947,15 @@ export function deriveTimelineEntries(
       : {}),
     proposedPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => ({
-    id: entry.id,
-    kind: "work",
-    createdAt: entry.createdAt,
-    ...(entry.eventSequence !== undefined ? { eventSequence: entry.eventSequence } : {}),
-    entry,
-  }));
+  const workRows: TimelineEntry[] = workEntries
+    .filter((entry) => runsByToolCall.size === 0 || !isWorkflowEcho(entry))
+    .map((entry) => ({
+      id: entry.id,
+      kind: "work",
+      createdAt: entry.createdAt,
+      ...(entry.eventSequence !== undefined ? { eventSequence: entry.eventSequence } : {}),
+      entry,
+    }));
   const subagentResultRows: TimelineEntry[] = subagentResults.map((result) => ({
     id: result.id,
     kind: "subagent-result",
@@ -5887,6 +6002,7 @@ export function deriveTimelineEntries(
     ...proposedPlanRows,
     ...workRows,
     ...pageRows,
+    ...workflowRunRows,
     ...commandRequestRows,
     ...subagentLiveRows,
     ...subagentResultRows,

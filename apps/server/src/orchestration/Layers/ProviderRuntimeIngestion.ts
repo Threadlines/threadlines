@@ -2736,6 +2736,47 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /**
+   * A workflow run's update, recorded as the driver reported it with who runs
+   * it: the agent and the provider session it lives in, so Stop and transcript
+   * reads reach that owner even after another agent or provider takes the
+   * thread. Only the first update's owner and turn count (applyWorkflowRunPatch).
+   */
+  const recordWorkflowRunUpdate = (
+    event: Extract<ProviderRuntimeEvent, { readonly type: "task.workflow.updated" }>,
+    /** Undefined for an archived thread, whose runs still settle. */
+    thread: Effect.Success<ReturnType<typeof resolveThreadShell>>,
+  ) =>
+    Effect.gen(function* () {
+      const participantId = event.participantId ?? null;
+      // The thread's session names the run's conversation only while it is
+      // the runtime that sent the update: after the slot or the provider
+      // moved on, its conversation belongs to someone else.
+      const providerThreadId =
+        thread !== undefined &&
+        participantId === sessionSlotParticipantId(thread.session) &&
+        runtimeEventMatchesThreadSession(event, thread.session)
+          ? (thread.session?.providerThreadId ?? undefined)
+          : undefined;
+      yield* orchestrationEngine.dispatch({
+        type: "thread.workflow-run.record",
+        commandId: providerCommandId(event, "workflow-run-record"),
+        threadId: thread?.id ?? event.threadId,
+        patch: {
+          ...event.payload,
+          turnId: toTurnId(event.turnId) ?? null,
+          owner: {
+            participantId,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            ...(providerThreadId ? { providerThreadId } : {}),
+          },
+        },
+        createdAt: event.createdAt,
+      });
+    });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       // Realtime audio/item traffic is intentionally in-memory only. Keep this
@@ -2748,6 +2789,23 @@ const make = Effect.gen(function* () {
         return;
       }
       const thread = yield* resolveThreadShell(event.threadId);
+      // A workflow run keeps running in the runtime that started it after its
+      // agent hands the thread on, or the thread moves to another provider,
+      // so its updates are recorded before the slot and session checks below,
+      // which would drop them as an idle agent's or a stale session's. An
+      // archived thread (no active shell) still gets them: archiving stops
+      // its runtimes, and the runs must say so when it comes back.
+      if (event.type === "task.workflow.updated") {
+        yield* recordWorkflowRunUpdate(event, thread).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider runtime ingestion could not record a workflow run", {
+              threadId: event.threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+        return;
+      }
       if (!thread) return;
       if (event.sideTurnId !== undefined) {
         yield* processSideTurnEvent({ ...event, sideTurnId: event.sideTurnId }, thread);

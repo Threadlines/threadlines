@@ -7,6 +7,7 @@ import {
   type ModelSelection,
   type OrchestrationAgentPage,
   type OrchestrationCommandRequest,
+  type OrchestrationWorkflowRun,
   type OrchestrationThreadActivity,
   type ProviderDriverKind,
   type ProviderInstanceId,
@@ -1149,6 +1150,8 @@ export function deriveProviderBackgroundRuns(input: {
    *  activity window, so a quiet task whose start fell out keeps its row and
    *  its Stop. */
   awaitedTasks?: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | undefined;
+  /** The thread's workflow runs; a running one's task is shown by its card. */
+  workflowRuns?: ReadonlyArray<Pick<OrchestrationWorkflowRun, "taskId" | "status">> | undefined;
 }): ProviderBackgroundRunsResult {
   const activeRunsByTaskId = new Map<string, ProviderBackgroundRunState>();
   const activeCommandDetectionRunsByKey = new Map<string, ProviderBackgroundRunState>();
@@ -1167,6 +1170,15 @@ export function deriveProviderBackgroundRuns(input: {
   const outputFileByToolCallId = new Map<string, string>();
   const toolUseIdByTaskId = new Map<string, string>();
   const stoppableTaskIds = new Set<string>();
+  // A workflow with a run card shows its progress and its own Stop there, so
+  // its task gets no row. One without a card (its driver never reported the
+  // run) keeps the row and the row's Stop.
+  const cardedWorkflowTaskIds = new Set(
+    (input.workflowRuns ?? []).flatMap((run) => (run.status === "running" ? [run.taskId] : [])),
+  );
+  // The carded tasks this session counts as pending. A room keeps every
+  // agent's runs, but the count is only the session holder's.
+  const countedCardedTaskIds = new Set<string>();
   // Commands and workflows, by the type their start named or the kind the
   // session lists: progress events omit both, and must not turn one into an
   // agent by its wording.
@@ -1222,10 +1234,15 @@ export function deriveProviderBackgroundRuns(input: {
       promotedToolUseIdByTaskId.delete(taskId);
       activeTaskScopesByTaskId.delete(taskId);
       stoppableTaskIds.delete(taskId);
+      countedCardedTaskIds.delete(taskId);
       continue;
     }
 
     if (activity.kind !== "task.started" && activity.kind !== "task.progress") {
+      continue;
+    }
+    if (cardedWorkflowTaskIds.has(taskId)) {
+      countedCardedTaskIds.add(taskId);
       continue;
     }
     if (payload.stoppable === true) {
@@ -1241,7 +1258,6 @@ export function deriveProviderBackgroundRuns(input: {
     if (suppressedSubagentTaskIds.has(taskId)) {
       continue;
     }
-
     const taskScope = activeTaskScopesByTaskId.get(taskId) ?? {
       turnIds: new Set<string>(),
       minSequence: null,
@@ -1440,6 +1456,10 @@ export function deriveProviderBackgroundRuns(input: {
   const promotedTaskIds = new Set(promotedToolUseIdByTaskId.keys());
   for (const task of input.awaitedTasks ?? []) {
     const taskId = task.taskId;
+    if (taskId !== undefined && cardedWorkflowTaskIds.has(taskId)) {
+      countedCardedTaskIds.add(taskId);
+      continue;
+    }
     if (
       taskId === undefined ||
       activeRunsByTaskId.has(taskId) ||
@@ -1475,7 +1495,10 @@ export function deriveProviderBackgroundRuns(input: {
   );
   const missingProviderCount = Math.max(
     0,
-    input.pendingBackgroundTaskCount - runs.length - hiddenSubagentTaskCount,
+    input.pendingBackgroundTaskCount -
+      runs.length -
+      hiddenSubagentTaskCount -
+      countedCardedTaskIds.size,
   );
   for (let index = 0; index < missingProviderCount; index += 1) {
     runs.push({
@@ -2575,6 +2598,7 @@ export const deriveThreadTimelineEntries = threadMemo(
     subagentLiveEntries: SubagentLiveEntry[],
     pages: ReadonlyArray<OrchestrationAgentPage>,
     commandRequests: ReadonlyArray<OrchestrationCommandRequest>,
+    workflowRuns: ReadonlyArray<OrchestrationWorkflowRun>,
   ) =>
     deriveTimelineEntries(
       messages.filter((message) => !isSideMessage(message)),
@@ -2585,6 +2609,7 @@ export const deriveThreadTimelineEntries = threadMemo(
       subagentLiveEntries,
       pages,
       commandRequests,
+      workflowRuns,
     ),
 );
 
@@ -2661,6 +2686,7 @@ export const deriveThreadProviderBackgroundRuns = threadMemo(
     activeCommandTurnId: TurnId | null,
     subagentSpawnCallIds: ReadonlySet<string>,
     awaitedTasks: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | undefined,
+    workflowRuns: ReadonlyArray<OrchestrationWorkflowRun> | undefined,
   ) =>
     deriveProviderBackgroundRuns({
       activities,
@@ -2670,5 +2696,6 @@ export const deriveThreadProviderBackgroundRuns = threadMemo(
       activeCommandTurnId,
       subagentSpawnCallIds,
       awaitedTasks,
+      workflowRuns,
     }),
 );

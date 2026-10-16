@@ -2263,6 +2263,25 @@ label:has(> select#reasoning-effort) select {
   animation: composer-command-token-in 180ms ease-out;
 }
 
+/* Claude's workflow keyword in the composer (ComposerKeywordTextNode), in
+   Ultracode's violet: the message will run as a workflow. Same pill metrics
+   as the command token, so promoting it moves nothing. */
+.composer-keyword-token {
+  border: 1px solid rgba(124, 58, 237, 0.3);
+  border-radius: var(--radius-md);
+  background-color: rgba(168, 85, 247, 0.12);
+  padding-block: 1px;
+  padding-inline: 0.25rem;
+  color: #6d28d9;
+  animation: composer-command-token-in 180ms ease-out;
+}
+
+.dark .composer-keyword-token {
+  border-color: rgba(205, 174, 255, 0.28);
+  background-color: rgba(168, 85, 247, 0.16);
+  color: #d8c6ff;
+}
+
 @keyframes composer-command-token-in {
   from {
     opacity: 0.45;

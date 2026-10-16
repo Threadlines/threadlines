@@ -21,6 +21,7 @@ import type {
   OrchestrationSideTurn,
   OrchestrationThread,
   OrchestrationThreadShell,
+  OrchestrationWorkflowRun,
   OrchestrationThreadActivity,
   OrchestrationThreadGoal,
   ProjectId,
@@ -86,6 +87,10 @@ import {
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
 import {
+  applyWorkflowRunPatch,
+  retainWorkflowRunsAfterRevert,
+} from "@threadlines/shared/workflowRuns";
+import {
   applyCommandRequestDismissed,
   applyCommandRequested,
   applyCommandRunProgress,
@@ -141,6 +146,8 @@ export interface EnvironmentState {
   agentRequestsByThreadId: Record<ThreadId, OrchestrationAgentRequestState>;
   /** Agent pages per thread (OrchestrationAgentPage); absent until a thread's detail loads. */
   pagesByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationAgentPage>>;
+  /** Workflow runs per thread (OrchestrationWorkflowRun); absent until a thread's detail loads. */
+  workflowRunsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationWorkflowRun>>;
   /** Suggested commands per thread (docs/terminal-command-runs.md); absent until a thread's detail loads. */
   commandRequestsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRequest>>;
   commandRunsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRun>>;
@@ -189,6 +196,7 @@ const initialEnvironmentState: EnvironmentState = {
   turnDiffSummaryByThreadId: {},
   agentRequestsByThreadId: {},
   pagesByThreadId: {},
+  workflowRunsByThreadId: {},
   commandRequestsByThreadId: {},
   commandRunsByThreadId: {},
   threadDetailLoadedById: {},
@@ -483,6 +491,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
+    workflowRuns: thread.workflowRuns ?? [],
   };
 }
 
@@ -1215,6 +1224,19 @@ function writeThreadState(
   }
 
   if (
+    nextThread.workflowRuns !== undefined &&
+    previousThread?.workflowRuns !== nextThread.workflowRuns
+  ) {
+    nextState = {
+      ...nextState,
+      workflowRunsByThreadId: {
+        ...nextState.workflowRunsByThreadId,
+        [nextThread.id]: nextThread.workflowRuns,
+      },
+    };
+  }
+
+  if (
     nextThread.commandRequests !== undefined &&
     previousThread?.commandRequests !== nextThread.commandRequests
   ) {
@@ -1412,6 +1434,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedAgentRequests, ...agentRequestsByThreadId } =
     state.agentRequestsByThreadId;
   const { [threadId]: _removedPages, ...pagesByThreadId } = state.pagesByThreadId ?? {};
+  const { [threadId]: _removedWorkflowRuns, ...workflowRunsByThreadId } =
+    state.workflowRunsByThreadId ?? {};
   const { [threadId]: _removedCommandRequests, ...commandRequestsByThreadId } =
     state.commandRequestsByThreadId ?? {};
   const { [threadId]: _removedCommandRuns, ...commandRunsByThreadId } =
@@ -1440,6 +1464,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     turnDiffSummaryByThreadId,
     agentRequestsByThreadId,
     pagesByThreadId,
+    workflowRunsByThreadId,
     commandRequestsByThreadId,
     commandRunsByThreadId,
     threadDetailLoadedById,
@@ -1801,6 +1826,10 @@ function syncEnvironmentShellSnapshot(
     ),
     agentRequestsByThreadId: retainThreadScopedRecord(state.agentRequestsByThreadId, nextThreadIds),
     pagesByThreadId: retainThreadScopedRecord(state.pagesByThreadId ?? {}, nextThreadIds),
+    workflowRunsByThreadId: retainThreadScopedRecord(
+      state.workflowRunsByThreadId ?? {},
+      nextThreadIds,
+    ),
     commandRequestsByThreadId: retainThreadScopedRecord(
       state.commandRequestsByThreadId ?? {},
       nextThreadIds,
@@ -2712,6 +2741,19 @@ function applyEnvironmentOrchestrationEvent(
         ).slice(-MAX_THREAD_PROPOSED_PLANS);
         const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
         const latestCheckpoint = turnDiffSummaries.at(-1) ?? null;
+        // Only runs of the turns the revert removed go: runs are never capped.
+        const workflowRuns = retainWorkflowRunsAfterRevert(
+          thread.workflowRuns ?? [],
+          new Set(
+            thread.turnDiffSummaries
+              .filter(
+                (entry) =>
+                  entry.checkpointTurnCount !== undefined &&
+                  entry.checkpointTurnCount > event.payload.turnCount,
+              )
+              .map((entry) => entry.turnId),
+          ),
+        );
 
         return {
           ...thread,
@@ -2722,6 +2764,7 @@ function applyEnvironmentOrchestrationEvent(
           commandRequests,
           commandRuns,
           activities,
+          workflowRuns,
           pendingSourceProposedPlan: undefined,
           latestTurn:
             latestCheckpoint === null
@@ -2751,6 +2794,19 @@ function applyEnvironmentOrchestrationEvent(
           updatedAt: event.occurredAt,
         };
       });
+
+    // Only what changed in one run (see @threadlines/shared/workflowRuns).
+    // The thread's updatedAt is left alone: a run's progress is not news.
+    case "thread.workflow-run-recorded":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        workflowRuns: applyWorkflowRunPatch(
+          thread.workflowRuns ?? [],
+          event.payload.patch,
+          event.occurredAt,
+          event.sequence,
+        ),
+      }));
 
     // A room's side answer in progress; see OrchestrationThread.sideTurn.
     case "thread.side-turn-started":

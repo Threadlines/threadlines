@@ -386,6 +386,7 @@ function decideFollowUpSubmit(
                 ? { modelSelection: command.modelSelection }
                 : {}),
               ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
+              ...(command.composer !== undefined ? { composer: command.composer } : {}),
               runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
               interactionMode: command.interactionMode ?? targetThread.interactionMode,
               createdAt: command.createdAt,
@@ -419,6 +420,7 @@ function decideFollowUpSubmit(
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           // Steering goes to the agent at work.
           ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
+          ...(command.composer !== undefined ? { composer: command.composer } : {}),
           createdAt: command.createdAt,
         },
       },
@@ -788,6 +790,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.message.text,
           attachments: command.message.attachments ?? [],
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
+          ...(command.composer !== undefined ? { composer: command.composer } : {}),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -2126,6 +2129,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           ...(participantId !== null ? { participantId } : {}),
           ...(command.fromThread !== undefined ? { fromThread: command.fromThread } : {}),
+          ...(command.composer !== undefined ? { composer: command.composer } : {}),
           // Named as the turn is sent (recordTurnModel). A queued message an
           // agent wrote is already recorded, with its own stamps; sending it
           // must not restamp it.
@@ -2692,6 +2696,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             runtimeMode,
             interactionMode,
             ...(fromThread !== undefined ? { fromThread } : {}),
+            // Only the user's own queued message carries it.
+            ...(!agentQueued && queued.composer !== undefined ? { composer: queued.composer } : {}),
             createdAt: command.createdAt,
           },
         ],
@@ -2998,6 +3004,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: familyRefusal,
+        });
+      }
+      // A workflow's agents keep editing files after their turn ends; they
+      // would write into the checkout the revert is restoring.
+      if ((thread.workflowRuns ?? []).some((run) => run.status === "running")) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A workflow is still running. Stop it first.",
         });
       }
       return {
@@ -3363,6 +3377,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: command.message.attachments,
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           ...(steeredAgentId !== null ? { participantId: steeredAgentId } : {}),
+          ...(command.composer !== undefined ? { composer: command.composer } : {}),
           ...(isNewMessage(acceptingThread, command.message.messageId)
             ? {
                 agentModels: messageAgentModels(acceptingThread, [
@@ -3883,6 +3898,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           turnCount: command.turnCount,
+        },
+      };
+    }
+
+    case "thread.workflow-run.record": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.workflow-run-recorded",
+        payload: {
+          threadId: command.threadId,
+          patch: command.patch,
+          createdAt: command.createdAt,
         },
       };
     }

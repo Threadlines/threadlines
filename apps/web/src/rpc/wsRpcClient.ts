@@ -233,6 +233,11 @@ export interface WsRpcClient {
     readonly readSubagentTranscript: (
       input: ProviderSubagentTranscriptInput,
     ) => Promise<ProviderSubagentTranscriptResult>;
+    readonly readWorkflowRunFile: RpcUnaryMethod<typeof WS_METHODS.serverReadWorkflowRunFile>;
+    readonly readWorkflowAgentTranscript: RpcUnaryMethod<
+      typeof WS_METHODS.serverReadWorkflowAgentTranscript
+    >;
+    readonly saveWorkflowCommand: RpcUnaryMethod<typeof WS_METHODS.serverSaveWorkflowCommand>;
     readonly sendSubagentInput: (
       input: ProviderSubagentInputRequest,
     ) => Promise<ProviderSubagentInputResult>;
@@ -720,6 +725,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverStartProviderReview](input)),
       readSubagentTranscript: (input) =>
         transport.request((client) => client[WS_METHODS.serverReadSubagentTranscript](input)),
+      readWorkflowRunFile: (input) =>
+        transport.request((client) => client[WS_METHODS.serverReadWorkflowRunFile](input)),
+      readWorkflowAgentTranscript: (input) =>
+        transport.request((client) => client[WS_METHODS.serverReadWorkflowAgentTranscript](input)),
+      saveWorkflowCommand: (input) =>
+        transport.request((client) => client[WS_METHODS.serverSaveWorkflowCommand](input)),
       sendSubagentInput: (input) =>
         transport.request((client) => client[WS_METHODS.serverSendSubagentInput](input)),
       listExternalProviderThreads: (input) =>

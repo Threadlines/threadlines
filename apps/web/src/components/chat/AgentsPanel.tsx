@@ -1,5 +1,10 @@
-import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
-import { ChevronRightIcon, XIcon } from "lucide-react";
+import type {
+  EnvironmentId,
+  OrchestrationWorkflowRun,
+  ProviderInstanceId,
+  ThreadId,
+} from "@threadlines/contracts";
+import { ChevronRightIcon, WorkflowIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useMemo, type CSSProperties, type ReactNode } from "react";
 
 import type {
@@ -10,9 +15,19 @@ import type {
 import { cn } from "~/lib/utils";
 import {
   selectAgentsPanelAgent,
+  selectAgentsPanelWorkflow,
   useAgentsPanelWorkEntries,
   useSelectedAgentId,
+  useSelectedWorkflow,
 } from "../../agentsPanelStore";
+import { WorkflowRunPanel } from "./WorkflowRunPanel";
+import {
+  formatWorkflowSpan,
+  workflowLiveLineText,
+  workflowRunElapsedMs,
+  workflowRunEndWord,
+  workflowRunTitle,
+} from "./workflowRunView";
 import { Button } from "../ui/button";
 import { LiveNode, SectionLabel } from "../ui/threadline";
 import { ProviderGlyph } from "./ProviderInstanceIcon";
@@ -58,6 +73,9 @@ export interface AgentsPanelProps {
   /** Set when the panel renders inside the sidebar's tab strip, which already
    *  carries the window chrome, the panel's name and its dismissal. */
   embedded?: boolean;
+  /** The thread's workflow runs: listed here, and opened into WorkflowRunPanel. */
+  workflowRuns?: ReadonlyArray<OrchestrationWorkflowRun> | undefined;
+  onStopWorkflowRun?: ((taskId: string) => void) | undefined;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
   onMessageThroughParent?: ((agentName: string) => void) | undefined;
   onClose?: (() => void) | undefined;
@@ -360,6 +378,74 @@ function BranchRow({
   );
 }
 
+const EMPTY_WORKFLOW_RUNS: ReadonlyArray<OrchestrationWorkflowRun> = [];
+const noopStopWorkflow = () => {};
+
+/**
+ * The thread's workflow runs, newest first: the ones still going, then the
+ * ones that ended (its past runs). A row opens the run's own view.
+ */
+function WorkflowRunsList({ runs }: { runs: ReadonlyArray<OrchestrationWorkflowRun> }) {
+  if (runs.length === 0) return null;
+  const ordered = runs
+    .toReversed()
+    .toSorted(
+      (left, right) => Number(right.status === "running") - Number(left.status === "running"),
+    );
+  return (
+    <section aria-label="Workflows" data-agents-panel-workflows="true">
+      <SectionLabel className="px-3 py-1.5" tick={false}>
+        Workflows
+      </SectionLabel>
+      <ul className="divide-y divide-border/40 border-y border-border/40">
+        {ordered.map((run) => {
+          const running = run.status === "running";
+          const endWord = workflowRunEndWord(run);
+          return (
+            <li key={run.taskId}>
+              <button
+                type="button"
+                className="group/agent-row grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 py-1.5 pr-3 pl-3 text-left outline-none focus-ring hover:bg-foreground/[0.03]"
+                onClick={() =>
+                  selectAgentsPanelWorkflow({
+                    taskId: run.taskId,
+                    tab: "agents",
+                    agentId: null,
+                    saving: false,
+                  })
+                }
+                data-agents-panel-workflow-run={run.taskId}
+              >
+                <WorkflowIcon
+                  aria-hidden="true"
+                  className={cn(
+                    "mt-0.5 size-3.5",
+                    running ? "text-primary-readable" : "text-muted-foreground",
+                  )}
+                />
+                <span className="min-w-0">
+                  <span className="block truncate text-[13px] leading-5 font-medium text-foreground/90">
+                    {workflowRunTitle(run)}
+                  </span>
+                  <span className="block truncate font-mono text-[11px] leading-4 text-muted-foreground tabular-nums">
+                    {running
+                      ? workflowLiveLineText(run)
+                      : `${endWord} · ${formatWorkflowSpan(workflowRunElapsedMs(run, Date.now()))} · ${run.agents.length} agents`}
+                  </span>
+                </span>
+                <ChevronRightIcon
+                  aria-hidden="true"
+                  className="mt-1 size-3 text-muted-foreground/40 group-hover/agent-row:text-muted-foreground"
+                />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 export const AgentsPanel = memo(function AgentsPanel({
   environmentId,
   threadId,
@@ -372,11 +458,17 @@ export const AgentsPanel = memo(function AgentsPanel({
   turnInFlight = false,
   threadCwd,
   embedded = false,
+  workflowRuns = EMPTY_WORKFLOW_RUNS,
+  onStopWorkflowRun,
   onStopBackgroundRun,
   onMessageThroughParent,
   onClose,
 }: AgentsPanelProps) {
   const selectedAgentId = useSelectedAgentId();
+  const selectedWorkflow = useSelectedWorkflow();
+  const selectedRun = selectedWorkflow
+    ? workflowRuns.find((run) => run.taskId === selectedWorkflow.taskId)
+    : undefined;
 
   const view = useMemo(
     () => buildAgentsPanelView({ subagents, subagentRuns, history }),
@@ -433,6 +525,28 @@ export const AgentsPanel = memo(function AgentsPanel({
       onClose={handleBack}
     />
   ) : null;
+
+  // A workflow run takes the whole panel too: its header carries its name,
+  // Stop, and the way back to the list.
+  if (selectedWorkflow && selectedRun) {
+    return (
+      <div
+        className={cn("flex h-full min-h-0 flex-col bg-rail", !embedded && "drag-region")}
+        data-agents-panel="workflow-drill-in"
+      >
+        <WorkflowRunPanel
+          key={selectedRun.taskId}
+          environmentId={environmentId}
+          threadId={threadId}
+          run={selectedRun}
+          selection={selectedWorkflow}
+          cwd={threadCwd ?? undefined}
+          onBack={() => selectAgentsPanelWorkflow(null)}
+          onStop={onStopWorkflowRun ?? noopStopWorkflow}
+        />
+      </div>
+    );
+  }
 
   // A drill-in takes the whole panel: the inspector's own header carries the
   // agent's name and the way back, and there is nothing in the panel header
@@ -507,7 +621,8 @@ export const AgentsPanel = memo(function AgentsPanel({
         className="min-h-0 flex-1 overflow-y-auto"
         style={{ ["--agents-trunk"]: trunkColor(providerLabel) } as CSSProperties}
       >
-        {!view.hasAny ? (
+        <WorkflowRunsList runs={workflowRuns} />
+        {!view.hasAny && workflowRuns.length > 0 ? null : !view.hasAny ? (
           <p
             className="px-3 py-6 text-[12px] text-muted-foreground/55"
             data-agents-panel-empty="true"

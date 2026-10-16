@@ -1,5 +1,7 @@
 import type { OrchestrationAwaitedBackgroundTask } from "@threadlines/contracts";
 
+import { sameAwaitedWorkflowProgress } from "./workflowRuns.ts";
+
 /**
  * Whether two lists of the tasks a session waits on say the same thing, in
  * order, field by field. The server decides from this whether a provider
@@ -24,7 +26,8 @@ export function sameAwaitedBackgroundTasks(
         task.description === other.description &&
         task.taskId === other.taskId &&
         task.toolUseId === other.toolUseId &&
-        task.stoppable === other.stoppable
+        task.stoppable === other.stoppable &&
+        sameAwaitedWorkflowProgress(task.workflow, other.workflow)
       );
     })
   );

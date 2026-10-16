@@ -1,4 +1,7 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
+import type { AwaitedWorkflowProgress } from "@threadlines/contracts";
+import { workflowPhaseDisplayTitle } from "@threadlines/shared/workflowRuns";
+import { humanizeWorkflowName } from "@threadlines/shared/workflowScript";
 import type {
   OrchestrationAwaitedBackgroundTask,
   OrchestrationBackgroundTaskKind,
@@ -133,6 +136,20 @@ const AWAITED_TASK_FALLBACK_NAMES: Readonly<Record<OrchestrationBackgroundTaskKi
   other: "Background task",
 };
 
+function describeAwaitedWorkflow(
+  progress: AwaitedWorkflowProgress,
+  description: string | undefined,
+): string {
+  const name = progress.name
+    ? humanizeWorkflowName(progress.name)
+    : (description ?? AWAITED_TASK_FALLBACK_NAMES.workflow);
+  if (progress.totalAgents === 0) return name;
+  const agents = `${progress.doneAgents} of ${progress.totalAgents} agents`;
+  return progress.phaseTitle
+    ? `${name}: ${workflowPhaseDisplayTitle(progress.phaseTitle)}, ${agents}`
+    : `${name}: ${agents}`;
+}
+
 /** The card has room for a few tasks; past that, a count says the rest. */
 const AWAITED_TASK_LINE_LIMIT = 4;
 
@@ -144,7 +161,11 @@ function AwaitedTaskLines({ tasks }: { tasks: ReadonlyArray<OrchestrationAwaited
   // the lines like it before it.
   const seen = new Map<string, number>();
   const lines = shown.map((task) => {
-    const name = task.description ?? AWAITED_TASK_FALLBACK_NAMES[task.kind];
+    // A workflow says how far it got: "Grok research: Verify, 6 of 8 agents".
+    const name =
+      task.kind === "workflow" && task.workflow !== undefined
+        ? describeAwaitedWorkflow(task.workflow, task.description)
+        : (task.description ?? AWAITED_TASK_FALLBACK_NAMES[task.kind]);
     const identity = `${task.kind}:${name}`;
     const occurrence = seen.get(identity) ?? 0;
     seen.set(identity, occurrence + 1);

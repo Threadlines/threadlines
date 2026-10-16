@@ -200,6 +200,7 @@ describe("OrchestrationEngine", () => {
               fullSnapshotReadCount += 1;
               return projectionSnapshot;
             }),
+          listRunningWorkflowRuns: () => Effect.succeed([]),
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: projectionSnapshot.snapshotSequence,

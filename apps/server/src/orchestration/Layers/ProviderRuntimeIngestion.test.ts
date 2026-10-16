@@ -120,6 +120,9 @@ function createProviderServiceHarness() {
     realtimeListVoices: () => unsupported(),
     releaseBackgroundCommands: () => Effect.void,
     stopBackgroundTask: () => Effect.succeed(false),
+    readWorkflowRunFile: () => Effect.die("unused"),
+    readWorkflowAgentTranscript: () => Effect.die("unused"),
+    saveWorkflowCommand: () => Effect.die("unused"),
     noteExtensionsChanged: () => Effect.void,
     readConversation: () => Effect.succeed(null),
     compactContext: () => unsupported(),
@@ -1612,6 +1615,142 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.session?.providerInstanceId).toBe("codex");
     expect(thread?.session?.status).toBe("ready");
     expect(thread?.session?.updatedAt).toBe(reboundAt);
+  });
+
+  /** Sets the thread's session: the provider instance holding it now and its conversation. */
+  const holdThreadWith = (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    instance: "claudeAgent" | "codex",
+    providerThreadId: string,
+  ) =>
+    Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-session-held-by-${instance}`),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "running",
+          providerName: ProviderDriverKind.make(instance),
+          providerInstanceId: ProviderInstanceId.make(instance),
+          providerThreadId,
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-workflow"),
+          updatedAt: "2026-01-01T00:00:01.000Z",
+          lastError: null,
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+  const workflowUpdate = (eventId: string, payload: Record<string, unknown>) => ({
+    type: "task.workflow.updated",
+    eventId: asEventId(eventId),
+    provider: ProviderDriverKind.make("claudeAgent"),
+    providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+    threadId: asThreadId("thread-1"),
+    turnId: asTurnId("turn-workflow"),
+    createdAt: "2026-01-01T00:00:02.000Z",
+    payload,
+  });
+
+  it("records a workflow run with the agent and the session that run it", async () => {
+    const harness = await createHarness();
+    await holdThreadWith(harness, "claudeAgent", "claude-conversation");
+
+    harness.emit(
+      workflowUpdate("evt-workflow-started", {
+        taskId: "task-workflow",
+        name: "audit",
+        status: "running",
+        startedAt: "2026-01-01T00:00:02.000Z",
+        agents: [{ index: 0, label: "scan", state: "running" }],
+      }),
+    );
+    harness.emit(
+      workflowUpdate("evt-workflow-agent-done", {
+        taskId: "task-workflow",
+        agents: [{ index: 0, label: "scan", state: "done" }],
+      }),
+    );
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.workflowRuns).toMatchObject([
+      {
+        taskId: "task-workflow",
+        name: "audit",
+        status: "running",
+        turnId: "turn-workflow",
+        owner: {
+          participantId: null,
+          providerInstanceId: "claudeAgent",
+          providerThreadId: "claude-conversation",
+        },
+        agents: [{ index: 0, state: "done" }],
+      },
+    ]);
+  });
+
+  it("keeps recording a workflow run after the thread moved to another provider", async () => {
+    const harness = await createHarness();
+    // The thread is Codex's now; the run Claude started keeps going in Claude.
+    // Its other events are dropped as a stale session's; the run's are not.
+    await holdThreadWith(harness, "codex", "codex-conversation");
+
+    harness.emit(
+      workflowUpdate("evt-workflow-after-switch", {
+        taskId: "task-workflow",
+        status: "running",
+        startedAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.workflowRuns?.map((run) => [run.taskId, run.status])).toEqual([
+      ["task-workflow", "running"],
+    ]);
+    // Owned by the Claude runtime that runs it, never by Codex's conversation.
+    expect(thread?.workflowRuns?.[0]?.owner).toEqual({
+      participantId: null,
+      providerInstanceId: "claudeAgent",
+    });
+  });
+
+  it("records how a workflow run ended after its thread was archived", async () => {
+    const harness = await createHarness();
+    await holdThreadWith(harness, "claudeAgent", "claude-conversation");
+    harness.emit(
+      workflowUpdate("evt-workflow-before-archive", {
+        taskId: "task-workflow",
+        status: "running",
+        startedAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.drain();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("cmd-archive-workflow-thread"),
+        threadId: ThreadId.make("thread-1"),
+      }),
+    );
+    // Archiving stops the runtime; the run's end arrives after.
+    harness.emit(
+      workflowUpdate("evt-workflow-stopped", {
+        taskId: "task-workflow",
+        status: "stopped",
+        statusReason: "session-ended",
+        endedAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.workflowRuns?.map((run) => [run.taskId, run.status])).toEqual([
+      ["task-workflow", "stopped"],
+    ]);
   });
 
   it("settles an idle session restart instead of inventing a pending turn", async () => {

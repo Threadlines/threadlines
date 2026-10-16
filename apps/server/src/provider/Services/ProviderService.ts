@@ -41,6 +41,11 @@ import type {
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
   ProviderTurnStartResult,
+  OrchestrationWorkflowRun,
+  WorkflowCommandLocation,
+  WorkflowReadRunFileResult,
+  WorkflowRunFileKind,
+  WorkflowSaveCommandResult,
   RuntimeTaskId,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
@@ -132,6 +137,33 @@ export interface ProviderServiceShape {
     readonly threadId: ThreadId;
     readonly taskId: RuntimeTaskId;
   }) => Effect.Effect<boolean, ProviderServiceError>;
+
+  /**
+   * A workflow run's files (see ProviderAdapter.workflowRuns), read through
+   * the provider instance that ran it. Works with no session running.
+   */
+  readonly readWorkflowRunFile: (input: {
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly run: OrchestrationWorkflowRun;
+    readonly file: WorkflowRunFileKind;
+  }) => Effect.Effect<WorkflowReadRunFileResult, ProviderServiceError>;
+  readonly readWorkflowAgentTranscript: (input: {
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly run: OrchestrationWorkflowRun;
+    readonly agentId: string;
+    readonly cwd?: string;
+    readonly limit?: number;
+    readonly offset?: number;
+    readonly fromEnd?: boolean;
+  }) => Effect.Effect<ProviderSubagentTranscriptResult, ProviderServiceError>;
+  readonly saveWorkflowCommand: (input: {
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly run: OrchestrationWorkflowRun;
+    readonly location: WorkflowCommandLocation;
+    readonly cwd: string;
+    readonly overwrite: boolean;
+    readonly dryRun: boolean;
+  }) => Effect.Effect<WorkflowSaveCommandResult, ProviderServiceError>;
 
   /**
    * One provider instance's plugins or skills changed from Settings; tells its live sessions (see

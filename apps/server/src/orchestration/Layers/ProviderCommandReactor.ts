@@ -1711,6 +1711,14 @@ const make = Effect.gen(function* () {
         ? withContextSeedPreamble(providerContext, input.messageText)
         : input.messageText;
     const normalizedInput = toNonEmptyProviderInput(messageText);
+    // The user's own words, apart from the context put in front of them, so
+    // a driver can tell its provider which words a person typed. Only for a
+    // message the user wrote in their composer and did not send as plain
+    // text; never for an agent's, another thread's or automation's.
+    const typedText =
+      thread.messages.find((message) => message.id === input.messageId)?.composer === "typed"
+        ? toNonEmptyProviderInput(input.messageText)
+        : undefined;
     const normalizedAttachments = [
       ...(nativeForkApplied ? [] : (input.providerAttachments ?? [])),
       ...(input.attachments ?? []),
@@ -1788,6 +1796,14 @@ const make = Effect.gen(function* () {
         ...(normalizedInput ? { input: normalizedInput } : {}),
         ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
         ...(input.skills !== undefined && input.skills.length > 0 ? { skills: input.skills } : {}),
+        ...(typedText !== undefined
+          ? {
+              typed: {
+                text: typedText,
+                ...(providerContext.length > 0 ? { context: providerContext } : {}),
+              },
+            }
+          : {}),
         ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(telemetryContext !== undefined ? { telemetryContext } : {}),
@@ -2441,6 +2457,8 @@ const make = Effect.gen(function* () {
         delivery: "queue",
         // Still for the agent it was sent to, even if another holds the slot now.
         participantId: event.payload.participantId ?? null,
+        // Still the words the user wrote: the next turn sends them as typed.
+        ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
         createdAt: event.payload.createdAt,
       })
       .pipe(Effect.asVoid);
@@ -2561,6 +2579,10 @@ const make = Effect.gen(function* () {
         ...(normalizedInput ? { input: normalizedInput } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
+        // The user's steer, typed in their composer: nothing is put in front.
+        ...(event.payload.composer === "typed" && normalizedInput
+          ? { typed: { text: normalizedInput } }
+          : {}),
       })
       .pipe(
         Effect.as(true),
@@ -2595,6 +2617,7 @@ const make = Effect.gen(function* () {
         attachments,
         ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
       },
+      ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
       createdAt: event.payload.createdAt,
     });
   });
@@ -2751,11 +2774,12 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Stop one background task. The event names the thread, not a session: in a
-   * room each agent's runtime holds its own tasks, so every live runtime for
-   * the thread is asked until the one holding the task stops it. When none
-   * can, the thread says so, so a Stop that did nothing does not look like one
-   * that worked.
+   * Stop one background task, a workflow run included. The event names the
+   * thread, not a session: in a room each agent's runtime holds its own tasks
+   * (a workflow run stays in the runtime that started it), so every live
+   * runtime for the thread is asked until the one holding the task stops it.
+   * When none can, the thread says so, so a Stop that did nothing does not
+   * look like one that worked.
    */
   const processBackgroundTaskStopRequested = Effect.fn("processBackgroundTaskStopRequested")(
     function* (
@@ -2811,6 +2835,23 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.ignore);
         }
+        return;
+      }
+      // A workflow run no live runtime holds can never report its end: its
+      // runtime is gone, so it is marked lost and stops reading as running.
+      // A runtime that failed to answer may still hold it, so it waits.
+      const run = thread.workflowRuns?.find(
+        (entry) => entry.taskId === taskId && entry.status === "running",
+      );
+      if (run !== undefined && failure === null) {
+        const endedAt = yield* nowIso;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.workflow-run.record",
+          commandId: serverCommandId("workflow-run-lost"),
+          threadId,
+          patch: { taskId, status: "lost", statusReason: "runtime-gone", endedAt },
+          createdAt: endedAt,
+        });
         return;
       }
       yield* Effect.logWarning("provider command reactor could not stop a background task", {
@@ -4739,7 +4780,38 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // Workflow runs lived in the previous process's provider runtimes too: none
+  // is still running, and none can report its end now.
+  const settleWorkflowRunsFromPreviousProcess = Effect.fn("settleWorkflowRunsFromPreviousProcess")(
+    function* () {
+      const running = yield* projectionSnapshotQuery.listRunningWorkflowRuns();
+      for (const { threadId, run } of running) {
+        const createdAt = yield* nowIso;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.workflow-run.record",
+          commandId: serverCommandId("workflow-run-restart-lost"),
+          threadId,
+          patch: {
+            taskId: run.taskId,
+            status: "lost",
+            statusReason: "server-restarted",
+            endedAt: createdAt,
+          },
+          createdAt,
+        });
+      }
+    },
+  );
+
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
+    yield* settleWorkflowRunsFromPreviousProcess().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          "provider command reactor failed to settle workflow runs left by the previous process",
+          { cause: Cause.pretty(cause) },
+        ),
+      ),
+    );
     yield* settleSessionsFromPreviousProcess().pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning(

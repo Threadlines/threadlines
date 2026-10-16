@@ -35,6 +35,7 @@ import {
 } from "@threadlines/shared/windowsCommandLookup";
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -124,6 +125,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly alwaysThinkingEnabled?: boolean | null;
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
+    readonly workflowSizeGuideline?: string | null;
   }> = [];
   public readonly getContextUsageCalls: Array<void> = [];
   public readonly rewindFilesCalls: Array<{
@@ -217,6 +219,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly alwaysThinkingEnabled?: boolean | null;
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
+    readonly workflowSizeGuideline?: string | null;
   }): Promise<void> => {
     this.applyFlagSettingsCalls.push(settings);
   };
@@ -434,6 +437,54 @@ async function readFirstPromptMessage(
     return undefined;
   }
   return next.value;
+}
+
+/** The first `count` messages sent to Claude, read from one iterator. */
+async function readPromptMessages(
+  input: { readonly prompt: AsyncIterable<SDKUserMessage> } | undefined,
+  count: number,
+): Promise<ReadonlyArray<SDKUserMessage>> {
+  const iterator = input?.prompt[Symbol.asyncIterator]();
+  const messages: Array<SDKUserMessage> = [];
+  if (!iterator) return messages;
+  while (messages.length < count) {
+    const next = await iterator.next();
+    if (next.done) break;
+    messages.push(next.value);
+  }
+  return messages;
+}
+
+/** What decides how Claude treats a message: who it says wrote it, whether it
+ *  starts a turn, and its text. */
+function promptMessageShape(message: SDKUserMessage | undefined) {
+  const content = message?.message.content;
+  const first = Array.isArray(content) ? content[0] : undefined;
+  return {
+    origin: message?.origin,
+    shouldQuery: message?.shouldQuery,
+    text: typeof content === "string" ? content : first?.type === "text" ? first.text : undefined,
+  };
+}
+
+/** Claude's init message, which names the CLI version. */
+function claudeInitMessage(version: string): SDKMessage {
+  return {
+    type: "system",
+    subtype: "init",
+    apiKeySource: "none",
+    claude_code_version: version,
+    tools: [],
+    mcp_servers: [],
+    model: "claude-opus-5-5",
+    permissionMode: "bypassPermissions",
+    slash_commands: [],
+    output_style: "default",
+    skills: [],
+    plugins: [],
+    session_id: "sdk-session-init",
+    uuid: `init-${version}`,
+  } as unknown as SDKMessage;
 }
 
 const THREAD_ID = ThreadId.make("thread-claude-1");
@@ -1421,8 +1472,45 @@ describe("ClaudeAdapterLive", () => {
           alwaysThinkingEnabled: null,
           fastMode: null,
           ultracode: null,
+          workflowSizeGuideline: null,
         },
       ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("sends the chosen workflow size at start, and clears it when set back", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const selection = (workflowSize: string) =>
+        createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5-5", [
+          { id: "workflowSize", value: workflowSize },
+        ]);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: selection("large"),
+        runtimeMode: "full-access",
+      });
+
+      assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
+        workflowSizeGuideline: "large",
+      });
+
+      // "Default" sends null, so Claude's own size (or its settings files') applies again.
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        modelSelection: selection("auto"),
+        attachments: [],
+      });
+      assert.deepEqual(
+        harness.query.applyFlagSettingsCalls.map((call) => call.workflowSizeGuideline),
+        [null],
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1565,6 +1653,159 @@ describe("ClaudeAdapterLive", () => {
         readFirstPromptMessage(harness.getLastCreateQueryInput()),
       );
       assert.equal(promptMessage?.uuid, String(messageId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("marks only the words a person typed as theirs, after the context on its own", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit(claudeInitMessage("2.1.226"));
+      yield* Fiber.join(configuredFiber);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "<room-catch-up>Sol: done</room-catch-up>\n\nultracode do X",
+        typed: { text: "ultracode do X", context: "<room-catch-up>Sol: done</room-catch-up>" },
+        attachments: [],
+      });
+      // Nobody typed this one (an agent or automation wrote it): never the user's.
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Report from a child thread: ultracode",
+        attachments: [],
+      });
+
+      const messages = yield* Effect.promise(() =>
+        readPromptMessages(harness.getLastCreateQueryInput(), 3),
+      );
+      assert.deepEqual(messages.map(promptMessageShape), [
+        {
+          origin: undefined,
+          shouldQuery: false,
+          text: "<room-catch-up>Sol: done</room-catch-up>",
+        },
+        { origin: { kind: "human" }, shouldQuery: undefined, text: "ultracode do X" },
+        {
+          origin: undefined,
+          shouldQuery: undefined,
+          text: "Report from a child thread: ultracode",
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("ends the turn on its own result, not on the context message's empty one", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const completedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit(claudeInitMessage("2.1.226"));
+      yield* Fiber.join(configuredFiber);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "<room-catch-up>Sol: done</room-catch-up>\n\nultracode do X",
+        typed: { text: "ultracode do X", context: "<room-catch-up>Sol: done</room-catch-up>" },
+        attachments: [],
+      });
+      // As CLI 2.1.296 does: the context message gets a result with no turn in
+      // it before the turn the user's words start.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 0,
+        result: "",
+        errors: [],
+        session_id: "sdk-session-append",
+        uuid: "result-append",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        result: "Done.",
+        stop_reason: "end_turn",
+        errors: [],
+        session_id: "sdk-session-append",
+        uuid: "result-turn",
+      } as unknown as SDKMessage);
+
+      const [completed] = Array.from(yield* Fiber.join(completedFiber));
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type === "turn.completed") {
+        assert.equal(completed.payload.stopReason, "end_turn");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("sends a CLI too old to append context the single unmarked message", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit(claudeInitMessage("2.1.225"));
+      yield* Fiber.join(configuredFiber);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "<room-catch-up>Sol: done</room-catch-up>\n\nultracode do X",
+        typed: { text: "ultracode do X", context: "<room-catch-up>Sol: done</room-catch-up>" },
+        attachments: [],
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "next", attachments: [] });
+
+      const messages = yield* Effect.promise(() =>
+        readPromptMessages(harness.getLastCreateQueryInput(), 2),
+      );
+      assert.deepEqual(messages.map(promptMessageShape), [
+        {
+          origin: undefined,
+          shouldQuery: undefined,
+          text: "<room-catch-up>Sol: done</room-catch-up>\n\nultracode do X",
+        },
+        { origin: undefined, shouldQuery: undefined, text: "next" },
+      ]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -5158,6 +5399,214 @@ describe("ClaudeAdapterLive", () => {
           event.type === "task.started" && event.payload.taskId === "task-notified-first-marker",
       );
       assert.isDefined(markerStarted);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("reports a workflow as a run instead of task progress, and ends it once", () => {
+    const harness = makeHarness();
+    const sdkSession = "sdk-session-workflow";
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(
+          (event) => event.type === "task.started" && event.payload.taskId === "task-wf-marker",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "ultracode research providers",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: sdkSession,
+        uuid: "workflow-tool-use",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "toolu_wf",
+            name: "Workflow",
+            input: { script: 'export const meta = { name: "provider-research" };' },
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-wf",
+        tool_use_id: "toolu_wf",
+        description: "Research providers",
+        task_type: "local_workflow",
+        workflow_name: "provider-research",
+        session_id: sdkSession,
+        uuid: "workflow-task-started",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: sdkSession,
+        uuid: "workflow-launched",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_wf", content: "Launched." }],
+        },
+        tool_use_result: {
+          status: "async_launched",
+          taskId: "task-wf",
+          taskType: "local_workflow",
+          workflowName: "provider-research",
+          runId: "wf_abc",
+          transcriptDir: "/claude/projects/p/s/subagents/workflows/wf_abc",
+          scriptPath: "/claude/projects/p/s/workflows/scripts/provider-research-wf_abc.js",
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-wf",
+        description: "scan:docs",
+        last_tool_name: "Read",
+        usage: { total_tokens: 120, tool_uses: 3, duration_ms: 900 },
+        workflow_progress: [
+          { type: "workflow_phase", index: 0, title: "Research" },
+          {
+            type: "workflow_agent",
+            index: 0,
+            label: "scan:docs",
+            phaseIndex: 0,
+            agentId: "agent-docs",
+            state: "progress",
+            startedAt: 1,
+            promptPreview: "Read the docs",
+          },
+        ],
+        session_id: sdkSession,
+        uuid: "workflow-progress",
+      } as unknown as SDKMessage);
+      // Claude reports the end twice: a terminal patch, then the notification.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-wf",
+        patch: { status: "completed" },
+        session_id: sdkSession,
+        uuid: "workflow-updated",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-wf",
+        status: "completed",
+        summary: "Found three gaps",
+        session_id: sdkSession,
+        uuid: "workflow-notification",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-wf-marker",
+        description: "Marker task",
+        session_id: sdkSession,
+        uuid: "workflow-marker",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.isUndefined(runtimeEvents.find((event) => event.type === "task.progress"));
+      assert.equal(
+        runtimeEvents.filter(
+          (event) => event.type === "task.completed" && event.payload.taskId === "task-wf",
+        ).length,
+        1,
+      );
+      const updates = runtimeEvents.flatMap((event) =>
+        event.type === "task.workflow.updated" ? [event.payload] : [],
+      );
+      assert.isTrue(updates.every((update) => update.taskId === "task-wf"));
+      assert.deepEqual(
+        updates.map((update) => update.status),
+        // Live updates say the run is running; the summary after the end does not.
+        ["running", "running", "running", "completed", undefined],
+      );
+      assert.include(updates[0], { name: "provider-research", toolCallId: "toolu_wf" });
+      assert.include(updates[1], {
+        runId: "wf_abc",
+        transcriptDir: "/claude/projects/p/s/subagents/workflows/wf_abc",
+        scriptPath: "/claude/projects/p/s/workflows/scripts/provider-research-wf_abc.js",
+      });
+      assert.deepEqual(updates[2]?.phases, [{ index: 0, title: "Research" }]);
+      assert.deepEqual(
+        updates[2]?.agents?.map((agent) => [agent.label, agent.state, agent.agentId]),
+        [["scan:docs", "running", "agent-docs"]],
+      );
+      assert.equal(updates[2]?.totalTokens, 120);
+      // The notification still brings the closing summary the patch lacked.
+      assert.deepEqual(updates[4], { taskId: "task-wf", summary: "Found three gaps" });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("ends a session's live workflow runs as stopped when the session stops", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runStarted = yield* Deferred.make<void>();
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.tap((event) =>
+          event.type === "task.workflow.updated" && event.payload.status === "running"
+            ? Deferred.succeed(runStarted, undefined)
+            : Effect.void,
+        ),
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-wf",
+        description: "Research providers",
+        task_type: "local_workflow",
+        session_id: "sdk-session-stop-workflow",
+        uuid: "stop-workflow-started",
+      } as unknown as SDKMessage);
+      yield* Deferred.await(runStarted);
+
+      yield* adapter.stopSession(THREAD_ID);
+
+      const ends = Array.from(yield* Fiber.join(runtimeEventsFiber)).flatMap((event) =>
+        event.type === "task.workflow.updated" &&
+        event.payload.status !== undefined &&
+        event.payload.status !== "running"
+          ? [event.payload]
+          : [],
+      );
+      assert.equal(ends.length, 1);
+      assert.include(ends[0], {
+        taskId: "task-wf",
+        status: "stopped",
+        statusReason: "session-ended",
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -9057,6 +9506,7 @@ describe("ClaudeAdapterLive", () => {
           alwaysThinkingEnabled: null,
           fastMode: null,
           ultracode: true,
+          workflowSizeGuideline: null,
         },
       ]);
     }).pipe(

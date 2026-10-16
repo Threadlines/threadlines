@@ -667,6 +667,30 @@ it("keeps pending approvals and questions in request order after a clock rollbac
 });
 
 describe("derivePendingApprovals", () => {
+  it("carries a workflow's plan so the approval can show what will run", () => {
+    const [approval] = derivePendingApprovals([
+      makeActivity({
+        kind: "approval.requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-workflow",
+          requestKind: "command",
+          toolName: "Workflow",
+          workflowPreview: {
+            name: "review-changes",
+            phases: [{ title: "Review", detail: "One agent per file" }, { title: "" }, "Verify"],
+            script: "export const meta = {}",
+          },
+        },
+      }),
+    ]);
+    expect(approval?.workflow).toEqual({
+      name: "review-changes",
+      phases: [{ title: "Review", detail: "One agent per file" }],
+      script: "export const meta = {}",
+    });
+  });
+
   it("tracks open approvals and removes resolved ones", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -4666,6 +4690,90 @@ describe("deriveWorkLogEntries", () => {
 });
 
 describe("deriveTimelineEntries", () => {
+  it("shows a workflow as its run, where the call that launched it was", () => {
+    const work = deriveWorkLogEntries([
+      makeActivity({
+        id: "workflow-call",
+        eventSequence: 2,
+        kind: "tool.completed",
+        payload: {
+          itemType: "dynamic_tool_call",
+          data: { toolCallId: "call-wf", toolName: "Workflow" },
+        },
+      }),
+      makeActivity({
+        id: "workflow-started",
+        eventSequence: 3,
+        kind: "task.started",
+        payload: { taskId: "task-wf", taskType: "local_workflow" },
+      }),
+      makeActivity({
+        id: "workflow-progress",
+        eventSequence: 4,
+        kind: "task.progress",
+        payload: { taskId: "task-wf", summary: "Running" },
+      }),
+      makeActivity({
+        id: "workflow-done",
+        eventSequence: 6,
+        kind: "task.completed",
+        payload: { taskId: "task-wf", taskType: "local_workflow", status: "completed" },
+      }),
+    ]);
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("ask"),
+          role: "user",
+          text: "Review this",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          streaming: false,
+          eventSequence: 1,
+        },
+        {
+          id: MessageId.make("reply"),
+          role: "assistant",
+          text: "Started it",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          streaming: false,
+          eventSequence: 5,
+        },
+      ],
+      [],
+      work,
+      [],
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          taskId: "task-wf",
+          runId: null,
+          turnId: null,
+          toolCallId: "call-wf",
+          owner: { participantId: null },
+          name: "review-changes",
+          description: null,
+          status: "completed",
+          statusReason: null,
+          hiddenScript: false,
+          startedAt: "2026-02-23T00:00:00.000Z",
+          endedAt: "2026-02-23T00:01:00.000Z",
+          totalTokens: 0,
+          totalToolCalls: 0,
+          transcriptDir: null,
+          scriptPath: null,
+          summary: null,
+          phases: [],
+          agents: [],
+          updatedAt: "2026-02-23T00:01:00.000Z",
+        },
+      ],
+    );
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "workflow-run", "message"]);
+  });
+
   it("keeps messages, plans, and collapsed tools in event order when the clock moves backward", () => {
     const before = "2026-02-23T00:10:00.000Z";
     const after = "2026-02-23T00:05:00.000Z";

@@ -33,6 +33,11 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import {
+  AwaitedWorkflowProgress,
+  OrchestrationWorkflowRun,
+  OrchestrationWorkflowRunPatch,
+} from "./workflow.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -574,6 +579,19 @@ export type ThreadMessageOrigin = typeof ThreadMessageOrigin.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+/**
+ * A user message whose words the user wrote in their own composer, as opposed
+ * to one an agent, another thread or the server's automation wrote. Set only
+ * by a client, for what its user typed; server routes (rooms, child threads,
+ * automation) never set it, and a client leaves it off words it did not get
+ * from its user (a plan the user chose to implement).
+ * `plain`: the user chose to send it as plain text, or the word that switches
+ * on a provider feature (Claude's "ultracode") is only in what came along with
+ * their words, so it is not acted on.
+ */
+export const MessageComposer = Schema.Literals(["typed", "plain"]);
+export type MessageComposer = typeof MessageComposer.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   eventSequence: Schema.optional(NonNegativeInt),
@@ -608,6 +626,8 @@ export const OrchestrationMessage = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** Child threads: a message another thread's agent wrote. See ThreadMessageOrigin. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageComposer. Absent on every message an agent or automation wrote. */
+  composer: Schema.optional(MessageComposer),
   /**
    * The agents the message names, as they were when it was written, keyed by
    * agent (`primary` or a participant id): an assistant message's author, the
@@ -1004,6 +1024,8 @@ export const OrchestrationAwaitedBackgroundTask = Schema.Struct({
   kind: OrchestrationBackgroundTaskKind,
   /** The agent's own short description of the task, clipped. */
   description: Schema.optional(TrimmedNonEmptyString),
+  /** A workflow's progress, for surfaces that only see the thread list. */
+  workflow: Schema.optional(AwaitedWorkflowProgress),
   /** The provider's id for the task, when it reports one. This list outlives
    *  the recent activity window, so a quiet task's row still knows it. */
   taskId: Schema.optional(RuntimeTaskId),
@@ -1305,6 +1327,8 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
    * exists and it is never the user's.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageComposer: kept so the message is written with it when sent. */
+  composer: Schema.optional(MessageComposer),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
@@ -1748,6 +1772,11 @@ export const OrchestrationThread = Schema.Struct({
     Schema.optional,
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** Workflow runs the thread's agents started. See OrchestrationWorkflowRun. */
+  workflowRuns: Schema.Array(OrchestrationWorkflowRun).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
   /** See OrchestrationThreadShell.diffStatBaselineTurnCount. */
@@ -2101,6 +2130,8 @@ const ClientThreadForkCommand = Schema.Struct({
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
     skills: Schema.optional(ChatSkillReferenceList),
   }),
+  /** Whether the user wrote the fork's instruction. See MessageComposer. */
+  composer: Schema.optional(MessageComposer),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode.pipe(
@@ -2131,6 +2162,7 @@ const ThreadForkCommand = Schema.Struct({
   ),
   workspaceMode: ThreadForkWorkspaceMode,
   includeAttachments: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -2366,6 +2398,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
    * client turn-start schema has no such field). See ThreadMessageOrigin.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageComposer (server only: set from the client route). */
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
 });
 
@@ -2397,6 +2431,8 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  /** See MessageComposer (server only: set from the client route). */
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
 });
 
@@ -2428,6 +2464,8 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Whether the user wrote these words. See MessageComposer. */
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
 });
 
@@ -2452,6 +2490,8 @@ const ClientThreadFollowUpSubmitCommand = Schema.Struct({
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  /** Whether the user wrote these words. See MessageComposer. */
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
 });
 
@@ -2980,6 +3020,15 @@ const ThreadDiffStatRebaseCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Provider-internal: record what changed in one of the thread's workflow runs. */
+const ThreadWorkflowRunRecordCommand = Schema.Struct({
+  type: Schema.Literal("thread.workflow-run.record"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  patch: OrchestrationWorkflowRunPatch,
+  createdAt: IsoDateTime,
+});
+
 const ThreadActivityAppendCommand = Schema.Struct({
   type: Schema.Literal("thread.activity.append"),
   commandId: CommandId,
@@ -3002,6 +3051,8 @@ const ThreadFollowUpAcceptCommand = Schema.Struct({
     attachments: Schema.Array(ChatAttachment),
     skills: Schema.optional(ChatSkillReferenceList),
   }),
+  /** See MessageComposer. */
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
 });
 
@@ -3299,6 +3350,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffSummaryUpdateCommand,
   ThreadDiffStatRebaseCommand,
   ThreadActivityAppendCommand,
+  ThreadWorkflowRunRecordCommand,
   ThreadFollowUpAcceptCommand,
   ThreadFollowUpSendQueuedCommand,
   ThreadSideTurnMarkRunningCommand,
@@ -3393,6 +3445,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-completed",
   "thread.diffstat-rebased",
   "thread.activity-appended",
+  "thread.workflow-run-recorded",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -3728,6 +3781,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** See OrchestrationMessage.fromThread. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See OrchestrationMessage.composer. */
+  composer: Schema.optional(MessageComposer),
   /** See OrchestrationMessage.agentModels. Only the write that creates the message counts. */
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   turnId: Schema.NullOr(TurnId),
@@ -3788,6 +3843,8 @@ export const ThreadFollowUpSubmittedPayload = Schema.Struct({
   participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   /** See OrchestrationMessage.agentModels. */
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
+  /** See OrchestrationMessage.composer. */
+  composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
 });
 
@@ -3867,6 +3924,13 @@ export const ThreadRevertedPayload = Schema.Struct({
 
 export const ThreadSessionStopRequestedPayload = Schema.Struct({
   threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
+/** See OrchestrationWorkflowRunPatch: only what changed. */
+export const ThreadWorkflowRunRecordedPayload = Schema.Struct({
+  threadId: ThreadId,
+  patch: OrchestrationWorkflowRunPatch,
   createdAt: IsoDateTime,
 });
 
@@ -4368,6 +4432,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.workflow-run-recorded"),
+    payload: ThreadWorkflowRunRecordedPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

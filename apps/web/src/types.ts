@@ -15,6 +15,7 @@ import type {
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
   OrchestrationSubagent,
+  OrchestrationWorkflowRun,
   OrchestrationThreadDiffStat,
   OrchestrationThreadDoneOverride,
   OrchestrationQueuedFollowUp,
@@ -255,6 +256,8 @@ export interface Thread {
   activities: OrchestrationThreadActivity[];
   /** Durable identity/settings roster, independent of the rolling activity window. */
   subagents?: OrchestrationSubagent[];
+  /** Workflow runs the thread's agents started. Never capped. */
+  workflowRuns?: ReadonlyArray<OrchestrationWorkflowRun>;
 }
 
 export interface ThreadShell {

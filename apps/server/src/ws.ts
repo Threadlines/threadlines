@@ -135,6 +135,7 @@ import { RelayHost } from "./relay/RelayHost.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput.ts";
+import { makeWorkflowRunRequests } from "./orchestration/workflowRunRequests.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
@@ -188,6 +189,7 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.command-run-started"
       | "thread.command-run-updated"
       | "thread.activity-appended"
+      | "thread.workflow-run-recorded"
       | "thread.turn-diff-completed"
       | "thread.turn-completed"
       | "thread.turn-diff-summary-updated"
@@ -243,6 +245,7 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.command-run-started" ||
     event.type === "thread.command-run-updated" ||
     event.type === "thread.activity-appended" ||
+    event.type === "thread.workflow-run-recorded" ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.turn-completed" ||
     event.type === "thread.turn-diff-summary-updated" ||
@@ -395,6 +398,10 @@ const makeWsRpcLayer = (currentSession: {
       const sessions = yield* SessionCredentialService;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const readBackgroundRunOutput = makeBackgroundRunOutputReader(projectionSnapshotQuery);
+      const workflowRunRequests = makeWorkflowRunRequests({
+        projectionSnapshotQuery,
+        providerService,
+      });
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
 
       const loadAuthAccessSnapshot = () =>
@@ -1424,6 +1431,24 @@ const makeWsRpcLayer = (currentSession: {
             {
               "rpc.aggregate": "server",
             },
+          ),
+        [WS_METHODS.serverReadWorkflowRunFile]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReadWorkflowRunFile,
+            workflowRunRequests.readRunFile(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverReadWorkflowAgentTranscript]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReadWorkflowAgentTranscript,
+            workflowRunRequests.readAgentTranscript(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverSaveWorkflowCommand]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSaveWorkflowCommand,
+            workflowRunRequests.saveCommand(input),
+            { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverGetProviderExtensions]: (input) =>
           observeRpcEffect(
