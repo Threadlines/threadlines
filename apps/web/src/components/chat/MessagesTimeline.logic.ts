@@ -67,8 +67,10 @@ export interface TurnSummary {
  * running on below; `through` carries the line past, including side exchanges
  * the agent worked through; `end` bends the line into the answer or working
  * line; `single` is a stretch of one row: the logo and name, and no line.
+ * A finished answer that opens with a page bends into the page (`end`), and
+ * the rest of the answer, more pages and the reply, sits `past` the bend.
  */
-export type AgentLinePlacement = "start" | "through" | "end" | "single";
+export type AgentLinePlacement = "start" | "through" | "end" | "past" | "single";
 
 export interface AgentLine {
   readonly placement: AgentLinePlacement;
@@ -899,11 +901,12 @@ function drawsNothing(row: MessagesTimelineRow, isWorking: boolean): boolean {
 /**
  * Places each row: on its agent's line (placeAgentLines), and with or without
  * room above it. Messages always keep that room, so whichever message turns
- * out to be the answer has space above it. Other rows keep it where the
- * agent's work meets your side of the chat: the first step after your
- * message, or your next message after the agent's work. Rows that draw nothing
- * are skipped, so right after you send, the working row keeps its room even
- * with the turn request's empty group above it.
+ * out to be the answer has space above it, and so do pages, whose panels keep
+ * half a gap on each side. Other rows keep it where the agent's work meets
+ * your side of the chat: the first step after your message, or your next
+ * message after the agent's work or a page. Rows that draw nothing are
+ * skipped, so right after you send, the working row keeps its room even with
+ * the turn request's empty group above it.
  */
 function placeRows(
   rows: ReadonlyArray<MessagesTimelineRow>,
@@ -925,13 +928,13 @@ function placeRows(
       return withAgentLine(row, agentLine);
     }
     const padTop =
-      row.kind === "message" && row.message.role === "assistant"
+      (row.kind === "message" && row.message.role === "assistant") || row.kind === "page"
         ? true
         : agentsOwn(row)
           ? above === undefined ||
             !agentsOwn(above) ||
             (above.kind === "message" && above.turnSummary !== null)
-          : above !== undefined && agentsOwn(above);
+          : above !== undefined && (agentsOwn(above) || above.kind === "page");
     if (visible[index]) {
       above = row;
     }
@@ -986,11 +989,17 @@ function placeAgentLines(
           ? (row.result.turnId ?? null)
           : row.kind === "workflow-run"
             ? row.run.turnId
-            : null;
+            : row.kind === "page"
+              ? row.page.turnId
+              : null;
   // The agent whose own row this is; undefined for rows that are not one
-  // agent's own work (your messages, side exchanges, plans). A turn no
-  // message names yet is the working agent's; null names the thread's own.
+  // agent's own work (your messages, side exchanges, plans). A page is the
+  // agent's that showed it. A turn no message names yet is the working
+  // agent's; null names the thread's own.
   const agentOf = (row: MessagesTimelineRow): ThreadParticipantId | null | undefined => {
+    if (row.kind === "page") {
+      return row.page.participantId;
+    }
     if (isSideRow(row) || !isAgentRow(row)) {
       return undefined;
     }
@@ -1121,8 +1130,27 @@ function placeAgentLines(
 
   // One agent's stretch from `first` to `last`. The line bends into the last
   // row when it is the agent's own, and stops under a side exchange it ends on.
+  // An answer opens at the first of its turn's pages right above it (settled
+  // there by settleTurnsAboveResponse), as does a turn that ended on pages
+  // with no reply: the line bends into that page, or, when the stretch starts
+  // there (its steps are gone), the page carries the name.
   const placeStretch = (first: number, last: number, agent: ThreadParticipantId | null) => {
     const nested = placeNested(first, last, agent);
+    const closing = rows[last]!;
+    const answerTurn = isAnswer(closing)
+      ? turnOf(closing)
+      : closing.kind === "page"
+        ? closing.page.turnId
+        : null;
+    let bend = last;
+    for (let index = last - 1; answerTurn !== null && index >= first; index -= 1) {
+      const row = rows[index]!;
+      if (row.kind === "page" && row.page.turnId === answerTurn) {
+        bend = index;
+      } else if (row.kind !== "command-request" || row.request.turnId !== answerTurn) {
+        break;
+      }
+    }
     let turnId: TurnId | null = null;
     for (let index = first; index <= last && turnId === null; index += 1) {
       turnId = isSideRow(rows[index]!) ? null : turnOf(rows[index]!);
@@ -1148,11 +1176,15 @@ function placeAgentLines(
         placement:
           first === last
             ? "single"
-            : index === first
-              ? "start"
-              : index === last && !isSideRow(row)
-                ? "end"
-                : "through",
+            : index > bend
+              ? "past"
+              : index === first
+                ? bend === first
+                  ? "single"
+                  : "start"
+                : index === bend && !isSideRow(row)
+                  ? "end"
+                  : "through",
         agent:
           sideTurnId === undefined
             ? agent
@@ -2156,10 +2188,11 @@ const rowHeightEstimates = new WeakMap<
   { readonly width: number; readonly height: number }
 >();
 
-/** The guessed height of `row` in a timeline `width` pixels wide. */
-/** An agent page's title line above its frame (AgentPageRow), margin included. */
-export const AGENT_PAGE_TITLE_LINE_PX = 24;
+/** An agent page's panel around its frame (AgentPageRow): padding, and the
+ *  title line above the frame with its margin. */
+const AGENT_PAGE_PANEL_PX = { sides: 28, chrome: 50 } as const;
 
+/** The guessed height of `row` in a timeline `width` pixels wide. */
 export function estimateTimelineRowHeight(row: MessagesTimelineRow, width: number): number {
   const cached = rowHeightEstimates.get(row);
   if (cached?.width === width) {
@@ -2248,8 +2281,12 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
     case "proposed-plan":
       return 240;
     case "page":
-      // Its title line, then the page at the height measured for this width.
-      return AGENT_PAGE_TITLE_LINE_PX + agentPageFrameHeight(row.page, column);
+      // Its panel and title line, then the page at the height measured for
+      // the frame's width: the column less the agent's lane and the panel.
+      return (
+        AGENT_PAGE_PANEL_PX.chrome +
+        agentPageFrameHeight(row.page, column - 20 - AGENT_PAGE_PANEL_PX.sides)
+      );
     case "command-request":
       // Header, reason, the command's lines, the folder line and the buttons.
       return 150 + 20 * Math.min(row.request.command.split("\n").length, 12);

@@ -34,13 +34,25 @@ export type AgentPageKind = "html" | "markdown";
  * Frame widths the server measures a page at, from phones to a wide window.
  * Ascending.
  */
-export const AGENT_PAGE_MEASURE_WIDTHS = [320, 375, 430, 520, 640, 760, 880, 1000, 1144] as const;
+export const AGENT_PAGE_MEASURE_WIDTHS = [
+  288, 320, 375, 430, 520, 640, 760, 832, 1000, 1144,
+] as const;
 
 /**
- * The reply column's width at a normal window size. Agents preview at it, and
- * it picks the measured height when a client cannot know its width yet.
+ * A page's width in the reply column at a normal window size, inside its
+ * panel. Agents preview at it, and it picks the measured height when a client
+ * cannot know its width yet.
  */
-export const AGENT_PAGE_COLUMN_WIDTH = 880;
+export const AGENT_PAGE_COLUMN_WIDTH = 832;
+
+/**
+ * The width a page's automatic height is read at: publishing sets a page's
+ * height from its measurements here when the agent gives none, and a frame
+ * tells that height from one the agent asked for by reading the same width.
+ * It stays put when the column changes, so pages already stored read as they
+ * were published.
+ */
+export const AGENT_PAGE_AUTO_HEIGHT_WIDTH = 880;
 
 /** `[width, contentHeight]` pairs measured at publish, ascending by width. */
 export type AgentPageHeights = ReadonlyArray<readonly [width: number, height: number]>;
@@ -87,8 +99,8 @@ function measuredHeightAt(heights: AgentPageHeights, width: number): number {
  *
  * A page even a few pixels taller than its frame scrolls inside it and takes
  * the reader's wheel, so the frame fits the page. The agent's `height` caps
- * the frame only when it is below the page's height at the column width (the
- * agent asked for a scrolling frame) or when the page was never measured.
+ * the frame only when it is below the page's automatic height (the agent
+ * asked for a scrolling frame) or when the page was never measured.
  */
 export function agentPageFrameHeight(
   page: { readonly height: number; readonly heights?: AgentPageHeights | undefined },
@@ -100,7 +112,7 @@ export function agentPageFrameHeight(
     return clampAgentPageHeight(contentHeight ?? page.height);
   }
   const cap =
-    measuredHeightAt(heights, AGENT_PAGE_COLUMN_WIDTH) > page.height
+    measuredHeightAt(heights, AGENT_PAGE_AUTO_HEIGHT_WIDTH) > page.height
       ? page.height
       : AGENT_PAGE_MAX_HEIGHT;
   return clampAgentPageHeight(Math.min(cap, contentHeight ?? measuredHeightAt(heights, width)));
@@ -230,13 +242,15 @@ export interface AgentPageTheme {
 /**
  * Page variable → the app token it takes its value from. The web reads each
  * token's live value and hands the page a hex color, since some chart
- * libraries reject newer color syntax such as oklch().
+ * libraries reject newer color syntax such as oklch(). A page sits on a quiet
+ * group's panel in the chat, so its secondary text is the group's, and its
+ * background the group's fill over the thread (agentPageClient).
  */
 export const AGENT_PAGE_THEME_TOKENS = {
   "--background": "--background",
   "--foreground": "--foreground",
   "--muted": "--muted",
-  "--muted-foreground": "--muted-foreground",
+  "--muted-foreground": "--group-muted-foreground",
   "--card": "--card",
   "--card-foreground": "--card-foreground",
   "--popover": "--popover",
@@ -289,15 +303,18 @@ export const AGENT_PAGE_MEASURE_FONTS: AgentPageFonts = {
 
 const SHARED_VARIABLES = { "--radius": "8px" } as const;
 
-/** Hex approximations of the app's palettes, for hosts with no live tokens to read. */
+/**
+ * Hex approximations of the app's palettes, for hosts with no live tokens to
+ * read. The background and secondary text are the page's panel's.
+ */
 export const AGENT_PAGE_FALLBACK_THEMES: Record<AgentPageAppearance, AgentPageTheme> = {
   dark: {
     appearance: "dark",
     variables: {
-      "--background": "#1c1c1c",
+      "--background": "#262626",
       "--foreground": "#e8e8e8",
       "--muted": "#ffffff17",
-      "--muted-foreground": "#989898",
+      "--muted-foreground": "#ababab",
       "--card": "#2c2c2c",
       "--card-foreground": "#e8e8e8",
       "--popover": "#313131",
@@ -331,7 +348,7 @@ export const AGENT_PAGE_FALLBACK_THEMES: Record<AgentPageAppearance, AgentPageTh
   light: {
     appearance: "light",
     variables: {
-      "--background": "#f8f8f8",
+      "--background": "#f0f0f0",
       "--foreground": "#2a2a2a",
       "--muted": "#0000000a",
       "--muted-foreground": "#636363",
@@ -403,7 +420,7 @@ export function agentPageThemeRule(theme: AgentPageTheme): string {
 /** Which variables a page can style with, for the agent. */
 export const AGENT_PAGE_THEME_GUIDE = [
   "Threadlines puts its theme on :root as CSS custom properties, and they follow the reader's light and dark mode live:",
-  "--background (identical to the thread around the page), --foreground, --muted, --muted-foreground, --card, --card-foreground,",
+  "--background (identical to the panel around the page), --foreground, --muted, --muted-foreground, --card, --card-foreground,",
   "--popover, --popover-foreground, --primary, --primary-foreground, --secondary, --secondary-foreground, --accent, --accent-foreground,",
   "--border, --input, --ring, --destructive, --destructive-foreground, --info, --info-foreground, --success, --success-foreground,",
   "--warning, --warning-foreground, --chart-1 … --chart-6 (categorical series for charts), --radius, --font-sans, --font-mono.",
@@ -412,8 +429,8 @@ export const AGENT_PAGE_THEME_GUIDE = [
 
 /** How a page should sit in a reply, for the agent. */
 export const AGENT_PAGE_LAYOUT_GUIDE = [
-  `The page sits borderless in the reply column, on the thread's own background: about ${AGENT_PAGE_COLUMN_WIDTH}px wide on desktop, about 360px on phones.`,
-  "Leave html, body and the outermost element without a background color, border, card or banner title: the page is part of your reply. This overrides any general style preference such as a black page background.",
+  `The page sits in the reply column on a quiet grey panel that Threadlines draws around it, under its title: about ${AGENT_PAGE_COLUMN_WIDTH}px wide on desktop, about 300px on phones.`,
+  "Leave html, body and the outermost element without a background color, border, card or banner title: the panel is the page's frame, and the page paints its fill. This overrides any general style preference such as a black page background.",
   "The title you give the page shows right above it, so do not repeat it as the page's first heading.",
   "Use a fluid width with no horizontal padding on the outermost element.",
   "The look is dense and flat: structure from type and spacing, quiet fills to group things, thin borders only where needed, no shadows except on things that float. Body text 13-14px, small headings, no hero sizes.",

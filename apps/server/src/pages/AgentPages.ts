@@ -31,6 +31,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import {
+  AGENT_PAGE_AUTO_HEIGHT_WIDTH,
   AGENT_PAGE_COLUMN_WIDTH,
   AGENT_PAGE_FALLBACK_THEMES,
   AGENT_PAGE_MAX_TITLE_LENGTH,
@@ -325,7 +326,7 @@ const make = Effect.gen(function* () {
           (heights !== undefined
             ? agentPageFrameHeight(
                 { height: Number.MAX_SAFE_INTEGER, heights },
-                AGENT_PAGE_COLUMN_WIDTH,
+                AGENT_PAGE_AUTO_HEIGHT_WIDTH,
               )
             : DEFAULT_HEIGHT),
       );

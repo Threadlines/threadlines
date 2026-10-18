@@ -100,7 +100,7 @@ describe("buildAgentPageDocument", () => {
 describe("agentPageFrameHeight", () => {
   const heights = readAgentPageHeights([
     [375, 900],
-    [880, 600],
+    [AGENT_PAGE_COLUMN_WIDTH, 600],
     [1144, 560],
   ]);
 
@@ -117,6 +117,17 @@ describe("agentPageFrameHeight", () => {
     expect(agentPageFrameHeight({ height: 300, heights }, 880, 640)).toBe(300);
     expect(agentPageFrameHeight({ height: 800, heights }, 880, 1200)).toBe(1200);
     expect(agentPageFrameHeight({ height: 5000 }, 880, 9000)).toBe(AGENT_PAGE_MAX_HEIGHT);
+  });
+
+  it("reads a page published with an automatic height as uncapped at any column width", () => {
+    // Published when the column was 880 wide: its height is the one measured there.
+    const published = readAgentPageHeights([
+      [760, 700],
+      [880, 600],
+    ]);
+    expect(
+      agentPageFrameHeight({ height: 600, heights: published }, AGENT_PAGE_COLUMN_WIDTH, 650),
+    ).toBe(650);
   });
 
   it("refuses malformed measurements", () => {

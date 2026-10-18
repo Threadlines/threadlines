@@ -64,7 +64,7 @@ import {
   DEFAULT_SCROLL_END_TOLERANCE_PX,
   isScrollMetricsAtEnd,
 } from "../ChatView.logic";
-import { AgentPageRow } from "./AgentPageRow";
+import { AGENT_PAGE_TITLE_MIDDLE_PX, AgentPageRow } from "./AgentPageRow";
 import {
   CodeBlockRunScopeContext,
   CommandOutputMessage,
@@ -2474,8 +2474,8 @@ type TimelineImagePreviewItem = {
 
 /**
  * Room below a row. A note sits right on top of its steps. The agent's work
- * leaves half a gap and the row after it adds the other half. Your messages
- * and plans keep a full gap.
+ * and a page's panel leave half a gap and the row after it adds the other
+ * half. Your messages and plans keep a full gap.
  */
 function rowBottomPadding(row: TimelineRow): string {
   switch (row.kind) {
@@ -2492,6 +2492,7 @@ function rowBottomPadding(row: TimelineRow): string {
     case "subagent-result":
     case "workflow-run":
     case "working":
+    case "page":
       return "pb-2";
     default:
       return "pb-4";
@@ -2519,7 +2520,10 @@ function agentLineOffsets(row: TimelineRow): CSSProperties {
           : row.kind === "subagent-result"
             ? // The tile's border and padding, then its 20px line.
               [0, 15]
-            : [2, 10];
+            : row.kind === "page"
+              ? // The panel's padding, then its title line.
+                [0, AGENT_PAGE_TITLE_MIDDLE_PX]
+              : [2, 10];
   return {
     // Below the logo: the author line's 16px, less the logo's 1px inset.
     ["--agent-line-top" as string]: `${padTop + sectionTop + 18}px`,
@@ -2560,14 +2564,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "message" ? <MessageTimelineRow row={row} /> : null}
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
-      {row.kind === "page" && ctx.activeThreadId !== null ? (
-        <AgentPageRow
-          environmentId={ctx.activeThreadEnvironmentId}
-          threadId={ctx.activeThreadId}
-          page={row.page}
-          updated={row.updated}
-        />
-      ) : null}
+      {row.kind === "page" ? <PageTimelineRow row={row} /> : null}
       {row.kind === "command-request" ? (
         <div className="mx-auto max-w-4xl px-1">
           <CommandRequestRow request={row.request} />
@@ -3813,6 +3810,33 @@ function SubagentReceiptTimelineRow({
         <div className={rowClassName}>{body}</div>
       )}
     </div>
+  );
+}
+
+/** An agent page; it carries its agent's name when its stretch starts there. */
+function PageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "page" }> }) {
+  const ctx = use(TimelineRowCtx);
+  if (ctx.activeThreadId === null) {
+    return null;
+  }
+  return (
+    <>
+      {row.agentLine?.heads ? (
+        <div className="px-1">
+          <AgentAuthorLine
+            agent={row.agentLine.agent}
+            turnId={row.agentLine.turnId}
+            asWritten={row.agentLine.asWritten}
+          />
+        </div>
+      ) : null}
+      <AgentPageRow
+        environmentId={ctx.activeThreadEnvironmentId}
+        threadId={ctx.activeThreadId}
+        page={row.page}
+        updated={row.updated}
+      />
+    </>
   );
 }
 

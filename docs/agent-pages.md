@@ -2,8 +2,8 @@
 
 An agent can answer with a page as well as text: a chart, a table, a diagram,
 a collage of screenshots, a UI mockup, or a written document. The page shows in
-the chat above the agent's reply, on the chat's own background, and follows
-your light or dark theme as you switch.
+the chat above the agent's reply, on a quiet grey panel of its own, and
+follows your light or dark theme as you switch.
 
 Ask for one ("show this as a chart", "mock up the settings screen") or let the
 agent decide a picture says it better. Pages work with Codex, Claude and
@@ -14,7 +14,8 @@ ones answer in text; pages already in a thread stay.
 
 While the agent is still working, a page stays where it was shown, among the
 steps. When the turn finishes it settles right above the reply, after the
-steps. A page never folds away with the steps around it.
+steps, and the agent's line ends at it: the page opens the answer. A page
+never folds away with the steps around it.
 
 ## What you can do with a page
 

@@ -1264,12 +1264,13 @@ label:has(> select#reasoning-effort) select {
    bottom-left corner. The lane at the left is the stretch's agent's
    (::before); a row set in under a side question also draws its answering
    agent's line 20px further in (::after). The offsets come from the row
-   (agentLineOffsets). Pseudo-elements, so a row that draws nothing stays
-   empty. */
+   (agentLineOffsets). A row past the bend (the rest of an answer that opened
+   with a page) and a single row draw none. Pseudo-elements, so a row that
+   draws nothing stays empty. */
 [data-agent-line] {
   position: relative;
 }
-[data-agent-line]:not([data-agent-line="single"])::before,
+[data-agent-line]:not([data-agent-line="single"], [data-agent-line="past"])::before,
 [data-agent-nested-line]:not([data-agent-nested-line="single"])::after {
   content: "";
   position: absolute;
