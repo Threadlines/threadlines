@@ -514,4 +514,4 @@ Sol's code review of the build (Oct 18), three rounds, all taken:
 4. Turn ends: a turn ends only once every event Pi sent before going idle is handled, no prompt's ack is outstanding, and the previous turn's end marker is written.
 5. Models: Pi default is the model a thread's session started on, kept in its cursor; the thinking level is sent again after a model switch.
 
-Known, not fixed: an extension that reloads Pi's extensions in-process leaves the Threadlines extension without its secrets, which fails closed (every tool needs an approval that can't be asked, so none run) until the chat restarts. The secrets file relies on the data folder's own permissions on Windows.
+Known, not fixed: an extension that reloads Pi's extensions in-process leaves the Threadlines extension without its secrets, which fails closed (anything but reading needs an approval that can't be asked, so it doesn't run) until the chat restarts. The secrets file relies on the data folder's own permissions on Windows.
