@@ -37,6 +37,8 @@ export interface ProviderInstanceRoutingInfo {
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
   readonly continuationIdentity: ProviderContinuationIdentity;
+  /** See `ProviderInstance.communityAgentId`. */
+  readonly communityAgentId?: string | undefined;
 }
 
 /**

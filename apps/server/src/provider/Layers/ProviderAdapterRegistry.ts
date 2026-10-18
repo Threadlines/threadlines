@@ -62,6 +62,7 @@ const makeProviderAdapterRegistry = Effect.fn("makeProviderAdapterRegistry")(fun
               accentColor: instance.accentColor,
               enabled: instance.enabled,
               continuationIdentity: instance.continuationIdentity,
+              communityAgentId: instance.communityAgentId,
             }),
       ),
     );
