@@ -428,6 +428,12 @@ export interface DesktopTaskbarStatusInput {
   status: DesktopTaskbarStatus;
   description?: string;
   runningThreadCount?: number;
+  /**
+   * How many of the running threads run on this computer's own server. Only
+   * these stop when the app quits, so they alone decide whether quitting asks
+   * first; threads on other computers keep running there.
+   */
+  localRunningThreadCount?: number;
   /** Threads that finished while the app was unfocused (drives dock/taskbar badges). */
   completedThreadCount?: number;
   /** Unseen-completed and running threads, in display order for the status item menu. */
@@ -437,6 +443,7 @@ export interface DesktopTaskbarStatusInput {
 export interface DesktopQuitConfirmationRequest {
   /** Names one asking; the page reports it back once it has the question. */
   requestId: string;
+  /** Threads running on this computer, the work quitting would stop. */
   runningThreadCount: number;
 }
 
@@ -449,6 +456,7 @@ export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   status: DesktopTaskbarStatusSchema,
   description: Schema.optionalKey(Schema.String),
   runningThreadCount: Schema.optionalKey(Schema.Number),
+  localRunningThreadCount: Schema.optionalKey(Schema.Number),
   completedThreadCount: Schema.optionalKey(Schema.Number),
   threads: Schema.optionalKey(Schema.Array(DesktopTaskbarThreadSummarySchema)),
 });

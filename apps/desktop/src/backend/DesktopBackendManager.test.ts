@@ -434,7 +434,7 @@ describe("DesktopBackendManager", () => {
         desktopState: {
           backendReady,
           quitting,
-          runningThreadCount,
+          localRunningThreadCount: runningThreadCount,
         },
         desktopWindow: {
           handleBackendReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),

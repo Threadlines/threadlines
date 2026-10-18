@@ -60,6 +60,18 @@ function normalizeRunningThreadCount(input: DesktopTaskbarStatusInput): number {
   return Math.floor(count);
 }
 
+/**
+ * The work quitting would stop. A page that does not split its count by
+ * computer is taken to run everything here, so quitting still asks.
+ */
+function normalizeLocalRunningThreadCount(input: DesktopTaskbarStatusInput): number {
+  if (input.status !== "working") return 0;
+  const count = input.localRunningThreadCount;
+  if (count === undefined) return Math.max(1, normalizeRunningThreadCount(input));
+  if (!Number.isFinite(count) || count <= 0) return 0;
+  return Math.floor(count);
+}
+
 function normalizeCompletedThreadCount(input: DesktopTaskbarStatusInput): number {
   const count = input.completedThreadCount;
   if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) {
@@ -561,10 +573,7 @@ const make = Effect.gen(function* () {
     configure,
     setStatus: Effect.fn("desktop.status.setStatus")(function* (input) {
       currentStatus = input;
-      yield* Ref.set(
-        state.runningThreadCount,
-        input.status === "working" ? Math.max(1, normalizeRunningThreadCount(input)) : 0,
-      );
+      yield* Ref.set(state.localRunningThreadCount, normalizeLocalRunningThreadCount(input));
       yield* applyWindowsStatus(input);
       yield* applyMacStatus(input);
       yield* updateTray();

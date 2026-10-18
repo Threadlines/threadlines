@@ -108,10 +108,15 @@ const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdo
   },
 );
 
+/** Threads on other computers run on their own servers and keep going. */
+const QUIT_STOPS_LOCAL_WORK_DETAIL =
+  "Quitting now will stop the local Threadlines server and the agent work running on it.";
+
 /**
- * The count comes from the open window. With every window closed (the app
- * keeps running on macOS) it is what the last window saw, which can be long
- * out of date, so the dialog says what it knows rather than what it guesses.
+ * The count comes from the open window and covers only threads on this
+ * computer. With every window closed (the app keeps running on macOS) it is
+ * what the last window saw, which can be long out of date, so the dialog says
+ * what it knows rather than what it guesses.
  */
 function describeRunningSessionsForNativeQuit(count: number, windowOpen: boolean): string {
   if (!windowOpen) {
@@ -139,7 +144,9 @@ export const confirmQuitWithRunningAgentSessions = Effect.fn(
     return true;
   }
 
-  const runningThreadCount = yield* Ref.get(state.runningThreadCount);
+  // Only this computer's work: quitting leaves threads on other computers
+  // running, so they are no reason to ask.
+  const runningThreadCount = yield* Ref.get(state.localRunningThreadCount);
   if (!Number.isFinite(runningThreadCount) || runningThreadCount <= 0) return true;
 
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
@@ -159,7 +166,7 @@ export const confirmQuitWithRunningAgentSessions = Effect.fn(
           type: "warning",
           title: "Quit Threadlines?",
           message,
-          detail: "Quitting now will stop the local Threadlines server and any running agent work.",
+          detail: QUIT_STOPS_LOCAL_WORK_DETAIL,
           buttons: ["Keep Running", "Quit Anyway"],
           defaultId: 0,
           cancelId: 0,

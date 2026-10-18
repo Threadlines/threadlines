@@ -237,7 +237,7 @@ function makeTestLayer(input: {
           Effect.all({
             backendReady: Ref.make(false),
             quitting: Ref.make(false),
-            runningThreadCount: Ref.make(input.initialRunningThreadCount),
+            localRunningThreadCount: Ref.make(input.initialRunningThreadCount),
           }),
         );
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {

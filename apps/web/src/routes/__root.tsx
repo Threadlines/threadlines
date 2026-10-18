@@ -69,6 +69,7 @@ import {
 } from "../session-logic";
 import {
   type AppState,
+  isThreadOnPrimaryEnvironment,
   selectBootstrapCompleteForActiveEnvironment,
   selectRunningSidebarThreadsAcrossEnvironments,
   useStore,
@@ -92,6 +93,7 @@ import {
   getPrimaryKnownEnvironment,
   resolveInitialServerAuthGateState,
   updatePrimaryEnvironmentDescriptor,
+  usePrimaryEnvironmentId,
 } from "../environments/primary";
 import { hasHostedPairingRouteIntent, isHostedStaticApp } from "../hostedPairing";
 import { readLastVisitedThreadRoute } from "../lastVisitedThreadRoute";
@@ -268,6 +270,9 @@ function DesktopTaskbarStatusSync() {
       )
       .join("|"),
   );
+  // Quitting stops only this computer's threads, so the desktop app is told
+  // how many of the running ones are local.
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const hadRunningThreadRef = useRef(false);
   const completionShownRef = useRef(false);
   const completionSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -289,7 +294,7 @@ function DesktopTaskbarStatusSync() {
           `${taskbarThreadKey(thread)}:${thread.state}:${thread.waitingOn ?? ""}:${thread.title}`,
       )
       .join("|");
-    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.completedThreadCount ?? ""}:${threadsKey}`;
+    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.localRunningThreadCount ?? ""}:${input.completedThreadCount ?? ""}:${threadsKey}`;
     if (lastStatusKeyRef.current === statusKey) {
       return;
     }
@@ -339,6 +344,9 @@ function DesktopTaskbarStatusSync() {
       setTaskbarStatus({
         status: "working",
         runningThreadCount: runningThreads.length,
+        localRunningThreadCount: runningThreads.filter((thread) =>
+          isThreadOnPrimaryEnvironment(thread, primaryEnvironmentId),
+        ).length,
         description: describeWorking(runningThreads.length),
         threads: menuThreads,
       });
@@ -393,7 +401,7 @@ function DesktopTaskbarStatusSync() {
 
   useEffect(() => {
     syncTaskbarStatus();
-  }, [runningThreadsSignature]);
+  }, [primaryEnvironmentId, runningThreadsSignature]);
 
   useEffect(() => {
     const handleFocus = () => {

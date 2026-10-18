@@ -12,7 +12,25 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import { describeRunningAgentSessions } from "./agentSessionCopy";
+import { describeAgentWorkElsewhere, describeRunningAgentSessions } from "./agentSessionCopy";
+import { useRunningAgentWork } from "./useRunningAgentWork";
+
+/**
+ * The count is the one the app asked with: threads on this computer, the only
+ * work quitting stops. Work on other computers is named so nobody keeps the
+ * app open for threads that run fine without it.
+ */
+function QuitConfirmationDescription({ runningThreadCount }: { runningThreadCount: number }) {
+  const { remoteMachineLabels } = useRunningAgentWork();
+  const elsewhere = describeAgentWorkElsewhere(remoteMachineLabels);
+  return (
+    <AlertDialogDescription>
+      {describeRunningAgentSessions(runningThreadCount, elsewhere !== null)} Quitting now will stop{" "}
+      {runningThreadCount === 1 ? "it" : "them"} and the local Threadlines server.
+      {elsewhere ? ` ${elsewhere}` : null}
+    </AlertDialogDescription>
+  );
+}
 
 export function QuitConfirmationDialog() {
   const [request, setRequest] = useState<DesktopQuitConfirmationRequest | null>(null);
@@ -23,13 +41,19 @@ export function QuitConfirmationDialog() {
     return bridge.onQuitConfirmationRequested(setRequest);
   }, []);
 
+  // Keep the last question rendered while the popup animates closed, so the
+  // text doesn't vanish mid-fade.
+  const [renderedRequest, setRenderedRequest] = useState(request);
+  if (request !== null && request !== renderedRequest) {
+    setRenderedRequest(request);
+  }
+  const shownRequest = request ?? renderedRequest;
+
   const respond = (confirmed: boolean) => {
     if (!request) return;
     setRequest(null);
     void window.desktopBridge?.resolveQuitConfirmation?.(confirmed).catch(() => undefined);
   };
-
-  const sessionLabel = describeRunningAgentSessions(request?.runningThreadCount ?? 0);
 
   return (
     <AlertDialog
@@ -44,10 +68,9 @@ export function QuitConfirmationDialog() {
             <TriangleAlert aria-hidden className="text-destructive" />
             Quit Threadlines?
           </AlertDialogTitle>
-          <AlertDialogDescription>
-            {sessionLabel} Quitting now will stop the local Threadlines server and any running agent
-            work.
-          </AlertDialogDescription>
+          {shownRequest ? (
+            <QuitConfirmationDescription runningThreadCount={shownRequest.runningThreadCount} />
+          ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogClose

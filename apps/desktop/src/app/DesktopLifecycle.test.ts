@@ -89,7 +89,7 @@ const runConfirmHarness = (input: {
   const dialogCalls: Electron.MessageBoxOptions[] = [];
   return Effect.gen(function* () {
     const state = yield* DesktopState.DesktopState;
-    yield* Ref.set(state.runningThreadCount, input.runningThreadCount);
+    yield* Ref.set(state.localRunningThreadCount, input.runningThreadCount);
     yield* Ref.set(state.quitting, input.quitting ?? false);
     const shouldQuit = yield* confirmQuitWithRunningAgentSessions();
     yield* input.body(shouldQuit, styledCalls, dialogCalls);

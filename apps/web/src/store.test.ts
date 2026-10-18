@@ -43,6 +43,7 @@ import {
   setThreadBranch,
   selectThreadsAcrossEnvironments,
   selectRunningSidebarThreadsAcrossEnvironments,
+  selectRunningSidebarThreadsByLocation,
   selectThreadDetailLoaded,
   markThreadDetailUnloaded,
   syncServerThreadDetail,
@@ -2626,5 +2627,52 @@ describe("selectRunningSidebarThreadsAcrossEnvironments", () => {
     expect(selectRunningSidebarThreadsAcrossEnvironments(state).map((thread) => thread.id)).toEqual(
       [answering.id],
     );
+  });
+
+  it("splits running threads into this computer's and other computers'", () => {
+    const runningSession: ThreadSession = {
+      provider: ProviderDriverKind.make("claude"),
+      status: "running",
+      orchestrationStatus: "running",
+      checkoutCwd: "/tmp/project",
+      createdAt: "2026-02-13T00:00:00.000Z",
+      updatedAt: "2026-02-13T00:05:00.000Z",
+    };
+    const local = makeSidebarSummary({
+      id: ThreadId.make("thread-local"),
+      session: runningSession,
+    });
+    const remote = makeSidebarSummary({
+      id: ThreadId.make("thread-remote"),
+      environmentId: remoteEnvironmentId,
+      session: runningSession,
+    });
+    const localState = makeEmptyState({
+      threadIds: [local.id],
+      sidebarThreadSummaryById: { [local.id]: local },
+    });
+    const remoteState = makeEmptyState({
+      threadIds: [remote.id],
+      sidebarThreadSummaryById: { [remote.id]: remote },
+    });
+    const state: AppState = {
+      activeEnvironmentId: localEnvironmentId,
+      environmentStateById: {
+        [localEnvironmentId]: localEnvironmentStateOf(localState),
+        [remoteEnvironmentId]: localEnvironmentStateOf(remoteState),
+      },
+    };
+    const ids = (threads: ReadonlyArray<SidebarThreadSummary>) =>
+      threads.map((thread) => thread.id);
+
+    const split = selectRunningSidebarThreadsByLocation(state, localEnvironmentId);
+    expect(ids(split.local)).toEqual([local.id]);
+    expect(ids(split.remote)).toEqual([remote.id]);
+
+    // Before this computer's server is known, all work counts as local, so
+    // quitting still asks.
+    const unknown = selectRunningSidebarThreadsByLocation(state, null);
+    expect(ids(unknown.local)).toEqual([local.id, remote.id]);
+    expect(unknown.remote).toEqual([]);
   });
 });
