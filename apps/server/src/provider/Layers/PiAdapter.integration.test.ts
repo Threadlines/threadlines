@@ -131,6 +131,8 @@ describe.skipIf(!piCli)("PiAdapter with a real Pi", () => {
           expect(opened.type === "request.opened" && opened.payload.requestType).toBe(
             "command_execution_approval",
           );
+          // Events and logs are files the agent can read: the nonce stays out.
+          expect(JSON.stringify(opened.raw)).toContain("[nonce]");
           if (opened.type !== "request.opened") return;
           yield* adapter.respondToRequest(threadId, opened.requestId as never, "accept");
           const command = yield* nextEvent(
@@ -245,6 +247,15 @@ describe.skipIf(!piCli)("PiAdapter with a real Pi", () => {
           const seenByFork = lastUserMessages();
           expect(seenByFork.some((text) => text.includes("first message"))).toBe(true);
           expect(seenByFork.some((text) => text.includes("after revert"))).toBe(false);
+
+          // Back on the moved thread, which restarted twice: revert counts back
+          // through the turns from before the restarts too.
+          const reverted = yield* adapter.rollbackThread(threadId, 2);
+          expect(reverted.conversationRolledBack).toBe(true);
+          yield* send(threadId, "final message");
+          yield* turnEnd(threadId);
+          expect(lastUserMessages().some((text) => text.includes("after revert"))).toBe(true);
+          expect(lastUserMessages().some((text) => text.includes("after restart"))).toBe(false);
         }),
       ),
     120_000,

@@ -127,9 +127,11 @@ import {
   type PiSessionTarget,
   type PiToolServer,
 } from "../pi/PiLaunch.ts";
+import { removePiSecretsFile, writePiSecretsFile } from "../pi/PiSecrets.ts";
 import {
   decodePi,
   parsePiModelSlug,
+  piModelSlug,
   PI_DIALOG_METHODS,
   PiAgentSettled,
   PiAutoRetryEnd,
@@ -145,7 +147,6 @@ import {
   PiMessageEvent,
   PiMessageUpdate,
   PiModel,
-  PiPromptAck,
   PiSessionStats,
   PiState,
   PiToolExecution,
@@ -177,6 +178,11 @@ const AUTH_HINT = "Sign in to Pi (Settings → Pi → Sign in, or run `pi` and t
 /** Pi's own terminal commands make no sense in Threadlines; ours are internal. */
 const HIDDEN_COMMAND_SOURCES = new Set(["builtin"]);
 
+interface PiModelRef {
+  readonly provider: string;
+  readonly modelId: string;
+}
+
 export interface PiAdapterOptions {
   readonly instanceId: ProviderInstanceId;
   readonly settings: PiSettings;
@@ -189,6 +195,11 @@ export interface PiAdapterOptions {
   readonly extensionDir: string;
   /** The provider's current model list, for effort validation. */
   readonly models: () => ReadonlyArray<ServerProviderModel>;
+  /**
+   * The model Pi's own settings name, which "Pi default" means. From the
+   * last status check; until there is one, a process's model at launch.
+   */
+  readonly defaultModel?: (() => PiModelRef | undefined) | undefined;
   readonly nativeEventLogger?: EventNdjsonLogger | undefined;
   /** Starts a Pi process; tests pass a scripted one. */
   readonly startRpc?: typeof startPiRpc | undefined;
@@ -207,10 +218,15 @@ interface ProcessState {
   /** What the extension currently enforces. */
   access: PiAccessLevel;
   plan: boolean;
-  /** Pi's own model at launch, which "Pi default" returns to. */
-  readonly baselineModel: { readonly provider: string; readonly modelId: string } | undefined;
+  /** Pi's model at launch: what "Pi default" means when no check has said. */
+  readonly baselineModel: PiModelRef | undefined;
   /** Closed on purpose: its exit is not a failure. */
   closing: boolean;
+  /**
+   * Prompts whose ack hasn't come back: an extension command holds its ack
+   * until its handler is done, and a turn isn't over while one runs.
+   */
+  pendingPrompts: number;
 }
 
 interface ActiveTurn {
@@ -294,6 +310,17 @@ interface SessionContext {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/**
+ * A record as logs and events keep it. Approval titles carry the process's
+ * nonce, which must stay between Threadlines and Pi: logs are files the agent
+ * can read.
+ */
+function withoutNonce<T extends Readonly<Record<string, unknown>>>(record: T, nonce: string): T {
+  return typeof record.title === "string" && record.title.includes(nonce)
+    ? { ...record, title: record.title.replaceAll(nonce, "[nonce]") }
+    : record;
+}
+
 const errorText = (error: unknown) =>
   error instanceof Error && error.message ? error.message : String(error);
 
@@ -350,11 +377,18 @@ export function makePiAdapter(options: PiAdapterOptions) {
         ...(turnId ? { turnId } : {}),
       }));
 
-    const logNative = (ctx: SessionContext, record: PiRecord) =>
+    const logNative = (ctx: SessionContext, proc: ProcessState, record: PiRecord) =>
       options.nativeEventLogger
         ? Effect.flatMap(nowIso, (observedAt) =>
             options.nativeEventLogger!.write(
-              { observedAt, event: { provider: PROVIDER, method: record.type, payload: record } },
+              {
+                observedAt,
+                event: {
+                  provider: PROVIDER,
+                  method: record.type,
+                  payload: withoutNonce(record, proc.nonce),
+                },
+              },
               ctx.threadId,
             ),
           ).pipe(Effect.ignore)
@@ -404,7 +438,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
       Effect.gen(function* () {
         if (yield* fileSystem.exists(path).pipe(Effect.orElseSucceed(() => false))) return;
         yield* fileSystem.makeDirectory(NodePath.dirname(path), { recursive: true });
-        const staging = `${path}.${process.pid}.tmp`;
+        // Unique per write: two sessions starting at once may both write the file.
+        const staging = `${path}.${yield* randomUUIDv4}.tmp`;
         yield* fileSystem.writeFileString(staging, content, { mode: 0o600 });
         yield* fileSystem.rename(staging, path);
       });
@@ -578,6 +613,10 @@ export function makePiAdapter(options: PiAdapterOptions) {
         yield* dropPendingDialogs(ctx, turn.turnId);
         ctx.activeTurn = undefined;
         ctx.turns.push({ id: turn.turnId });
+        // Where the turn ended, before anything else can start: a fork
+        // "through this turn" copies exactly up to here.
+        const proc = ctx.proc;
+        if (proc && !proc.closing) yield* markTurn(ctx, proc, turn.turnId, "end");
         const { activeTurnId: _active, ...session } = ctx.session;
         ctx.session = { ...session, status: "ready", updatedAt: yield* nowIso };
         if (turn.plan && terminal.kind === "completed" && turn.finalText?.trim()) {
@@ -618,7 +657,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
         if (ctx.activeTurn !== turn || turn.promptPending) return;
         if ([...ctx.dialogs.values()].some((pending) => pending.turnId === turn.turnId)) return;
         const proc = ctx.proc;
-        if (!proc || proc.closing) return;
+        if (!proc || proc.closing || proc.pendingPrompts > 0) return;
         const state = decodePi(PiState)(
           yield* proc.rpc
             .request({ type: "get_state" })
@@ -975,7 +1014,11 @@ export function makePiAdapter(options: PiAdapterOptions) {
                   : {}),
               },
             },
-            raw: { source: "pi.rpc.extension_ui", method: dialog.method, payload: dialog },
+            raw: {
+              source: "pi.rpc.extension_ui",
+              method: dialog.method,
+              payload: withoutNonce(dialog, proc.nonce),
+            },
           });
         } else {
           const header = dialog.title?.trim() || "Pi";
@@ -1003,7 +1046,11 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 },
               ],
             },
-            raw: { source: "pi.rpc.extension_ui", method: dialog.method, payload: dialog },
+            raw: {
+              source: "pi.rpc.extension_ui",
+              method: dialog.method,
+              payload: withoutNonce(dialog, proc.nonce),
+            },
           });
         }
         // Pi answers a dialog with a timeout itself; the request expires with it.
@@ -1021,18 +1068,21 @@ export function makePiAdapter(options: PiAdapterOptions) {
       Effect.gen(function* () {
         if (ctx.stopped || ctx.proc !== proc) return;
         if (record.type !== "message_update" && record.type !== "tool_execution_update") {
-          yield* logNative(ctx, record);
+          yield* logNative(ctx, proc, record);
         }
         switch (record.type) {
           case "agent_start": {
             if (ctx.activeTurn) return;
             // Pi started a run on its own: an extension woke it.
+            const turnId = TurnId.make(yield* randomUUIDv4);
             yield* beginTurn(ctx, {
-              turnId: TurnId.make(yield* randomUUIDv4),
+              turnId,
               origin: "provider",
               plan: proc.plan,
               promptPending: false,
             });
+            // Marked once running, so it counts in Pi's tree; never a place to cut.
+            yield* markTurn(ctx, proc, turnId, "late").pipe(Effect.forkIn(proc.scope));
             return;
           }
           case "message_start": {
@@ -1210,6 +1260,27 @@ export function makePiAdapter(options: PiAdapterOptions) {
         return yield* Effect.gen(function* () {
           const nonce = (yield* randomUUIDv4).replaceAll("-", "");
           const access = piAccessLevel(ctx.runtimeMode);
+          // The extension reads and deletes it at load; whatever is left goes with the process.
+          const secretsFile = yield* Effect.tryPromise(() =>
+            writePiSecretsFile(NodePath.join(options.extensionDir, "run"), {
+              token: ctx.mcpToken,
+              nonce,
+            }),
+          ).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: ctx.threadId,
+                  detail: `Could not hand Pi its Threadlines settings: ${errorText(cause)}`,
+                  cause,
+                }),
+            ),
+          );
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.promise(() => removePiSecretsFile(secretsFile)),
+          );
           const launcher = yield* options.launch.pipe(
             Effect.provideService(Scope.Scope, scope),
             Effect.mapError(
@@ -1239,8 +1310,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 access,
                 plan: false,
                 toolServers: toolServers(ctx),
-                token: ctx.mcpToken,
-                nonce,
+                secretsFile,
               },
             }),
           }).pipe(
@@ -1265,6 +1335,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
           const names = new Set(
             Option.isSome(commands) ? commands.value.commands.map((command) => command.name) : [],
           );
+          yield* Effect.promise(() => removePiSecretsFile(secretsFile));
           if (!names.has(PI_TURN_COMMAND) || !names.has(PI_MODE_COMMAND)) {
             return yield* new ProviderAdapterProcessError({
               provider: PROVIDER,
@@ -1284,12 +1355,15 @@ export function makePiAdapter(options: PiAdapterOptions) {
             plan: false,
             baselineModel: model ? { provider: model.provider, modelId: model.id } : undefined,
             closing: false,
+            pendingPrompts: 0,
           };
           if (Option.isSome(state)) {
             if (state.value.sessionFile) ctx.sessionFile = state.value.sessionFile;
             if (state.value.thinkingLevel) ctx.thinkingLevel = state.value.thinkingLevel;
             if (model?.contextWindow) ctx.contextWindow = model.contextWindow;
           }
+          // What the session runs on now: a resumed one keeps its last model.
+          ctx.model = model ? piModelSlug(model) : undefined;
           ctx.proc = proc;
           yield* rpc.records.pipe(
             Stream.runForEach((record) => handleRecord(ctx, proc, record)),
@@ -1304,6 +1378,48 @@ export function makePiAdapter(options: PiAdapterOptions) {
           return proc;
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });
+
+    /** The turns the session's history already holds, in order, from their markers. */
+    const seedTurns = (ctx: SessionContext) =>
+      Effect.gen(function* () {
+        const entries = decodePi(PiEntries)(
+          yield* piRequest(ctx, { type: "get_entries" }).pipe(
+            Effect.orElseSucceed(() => undefined),
+          ),
+        );
+        if (Option.isNone(entries)) return;
+        const boundaries = piTurnBoundaries(entries.value.entries, entries.value.leafId);
+        ctx.turns.splice(
+          0,
+          ctx.turns.length,
+          ...boundaries.map((boundary) => ({ id: TurnId.make(boundary.turnId) })),
+        );
+      });
+
+    /**
+     * Has the extension append one of a turn's markers. A turn without one
+     * only loses precision: revert and fork say Pi's memory wasn't matched.
+     */
+    const markTurn = (
+      ctx: SessionContext,
+      proc: ProcessState,
+      turnId: TurnId,
+      mark: "end" | "late" | undefined,
+    ) =>
+      proc.rpc
+        .request(
+          {
+            type: "prompt",
+            message: piTurnCommandText({ nonce: proc.nonce, turnId, mark }),
+            streamingBehavior: "steer",
+          },
+          { timeout: STOP_STEP_TIMEOUT },
+        )
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Pi turn marker failed", { threadId: ctx.threadId, mark, error }),
+          ),
+        );
 
     /** Restarts the thread's process on its current session file. */
     const relaunch = (ctx: SessionContext) =>
@@ -1390,7 +1506,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
           }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
           const entries = decodePi(PiEntries)(yield* rpc.request({ type: "get_entries" }));
           if (Option.isNone(entries)) return undefined;
-          const plan = planPiFork(piTurnBoundaries(entries.value.entries, entries.value.leafId), {
+          const plan = planPiFork(entries.value.entries, entries.value.leafId, {
             beforeTurnId: forkFrom.beforeTurnId,
             lastTurnId: forkFrom.lastTurnId,
           });
@@ -1606,6 +1722,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
               ctx.pendingSeed = renderThreadContextSeed(input.contextSeed);
             }
           }
+          // A session with history: revert counts back through the turns its markers name.
+          if (opened) yield* seedTurns(ctx);
           if (boundSelection) yield* applyModel(ctx, boundSelection);
           updateCursor(ctx);
           sessions.set(input.threadId, ctx);
@@ -1651,9 +1769,11 @@ export function makePiAdapter(options: PiAdapterOptions) {
     ) =>
       Effect.gen(function* () {
         const proc = yield* requireProcess(ctx, "set_model");
-        const parsed = parsePiModelSlug(selection.model);
-        const target = parsed ?? proc.baselineModel;
-        const targetSlug = parsed ? selection.model : undefined;
+        const target =
+          parsePiModelSlug(selection.model) ?? options.defaultModel?.() ?? proc.baselineModel;
+        const targetSlug = target
+          ? piModelSlug({ provider: target.provider, id: target.modelId })
+          : undefined;
         if (target && targetSlug !== ctx.model) {
           const model = decodePi(PiModel)(
             yield* piRequest(ctx, {
@@ -1663,6 +1783,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
             }),
           );
           ctx.model = targetSlug;
+          // Pi gives the new model its own default level: send the chosen one again.
+          ctx.thinkingLevel = undefined;
           if (Option.isSome(model) && model.value.contextWindow) {
             ctx.contextWindow = model.value.contextWindow;
           }
@@ -1738,39 +1860,41 @@ export function makePiAdapter(options: PiAdapterOptions) {
       turn: ActiveTurn,
       content: { readonly text: string; readonly images: ReadonlyArray<unknown> },
     ) =>
-      proc.rpc
-        .request(
-          {
-            type: "prompt",
-            message: content.text,
-            ...(content.images.length > 0 ? { images: content.images } : {}),
-            streamingBehavior: "steer",
-          },
-          { timeout: null },
-        )
-        .pipe(
-          Effect.exit,
-          Effect.flatMap((sent) =>
-            Effect.gen(function* () {
-              turn.promptPending = false;
-              if (Exit.isFailure(sent)) {
-                const error = Option.getOrUndefined(Exit.findErrorOption(sent));
-                if (ctx.activeTurn === turn) {
-                  turn.failure = piTurnErrorMessage(
-                    `Pi did not accept the message: ${error?.detail ?? "it stopped first."}`,
-                  );
-                }
-              } else {
-                const ack = decodePi(PiPromptAck)(sent.value);
-                if (Option.isSome(ack) && ack.value.disposition === "started") return;
-              }
-              // "handled", "queued" or a refusal: whether the turn is over is Pi's state's call.
-              yield* finishIfIdle(ctx, turn);
-            }),
+      Effect.sync(() => {
+        proc.pendingPrompts += 1;
+      }).pipe(
+        Effect.andThen(
+          proc.rpc.request(
+            {
+              type: "prompt",
+              message: content.text,
+              ...(content.images.length > 0 ? { images: content.images } : {}),
+              streamingBehavior: "steer",
+            },
+            { timeout: null },
           ),
-          Effect.forkIn(proc.scope),
-          Effect.asVoid,
-        );
+        ),
+        Effect.exit,
+        Effect.flatMap((sent) =>
+          Effect.gen(function* () {
+            proc.pendingPrompts -= 1;
+            turn.promptPending = false;
+            if (Exit.isFailure(sent)) {
+              const error = Option.getOrUndefined(Exit.findErrorOption(sent));
+              if (ctx.activeTurn === turn) {
+                turn.failure = piTurnErrorMessage(
+                  `Pi did not accept the message: ${error?.detail ?? "it stopped first."}`,
+                );
+              }
+            }
+            // Whatever the ack says, whether the turn is over is Pi's state's call:
+            // an ack held by an extension command can come after the run settled.
+            yield* finishIfIdle(ctx, turn);
+          }),
+        ),
+        Effect.forkIn(proc.scope),
+        Effect.asVoid,
+      );
 
     const sendTurn: PiAdapterShape["sendTurn"] = (input) =>
       Effect.flatMap(requireSession(input.threadId), (ctx) =>
@@ -1811,16 +1935,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 : undefined;
             if (selection) yield* applyModel(ctx, selection);
             const turnId = TurnId.make(yield* randomUUIDv4);
-            // The marker revert and fork cut at; a turn without one only loses precision.
-            yield* piRequest(ctx, {
-              type: "prompt",
-              message: piTurnCommandText({ nonce: proc.nonce, turnId }),
-              streamingBehavior: "steer",
-            }).pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("Pi turn marker failed", { threadId: ctx.threadId, error }),
-              ),
-            );
+            // Where revert and fork cut.
+            yield* markTurn(ctx, proc, turnId, undefined);
             const text = ctx.pendingSeed
               ? withContextSeedPreamble(ctx.pendingSeed, content.text)
               : content.text;
@@ -1851,18 +1967,33 @@ export function makePiAdapter(options: PiAdapterOptions) {
         yield* steerable;
         const content = yield* promptContent("prompt", input);
         const live = yield* steerable;
+        const proc = yield* requireProcess(ctx, "prompt");
         // `steer` alone stays queued forever if Pi just went idle; a prompt
-        // with this flag joins the running run or starts one.
-        yield* piRequest(
-          ctx,
-          {
-            type: "prompt",
-            message: content.text,
-            ...(content.images.length > 0 ? { images: content.images } : {}),
-            streamingBehavior: "steer",
-          },
-          { timeout: null },
-        );
+        // with this flag joins the running run or starts one. Its ack is
+        // waited for like the turn's own: an extension command holds it.
+        proc.pendingPrompts += 1;
+        yield* proc.rpc
+          .request(
+            {
+              type: "prompt",
+              message: content.text,
+              ...(content.images.length > 0 ? { images: content.images } : {}),
+              streamingBehavior: "steer",
+            },
+            { timeout: null },
+          )
+          .pipe(
+            Effect.mapError(requestError("prompt")),
+            Effect.ensuring(
+              Effect.suspend(() => {
+                proc.pendingPrompts -= 1;
+                const turn = ctx.activeTurn;
+                return turn && ctx.proc === proc
+                  ? finishIfIdle(ctx, turn).pipe(Effect.forkIn(ctx.scope), Effect.asVoid)
+                  : Effect.void;
+              }),
+            ),
+          );
         return {
           threadId: input.threadId,
           turnId: live.turnId,
@@ -1998,7 +2129,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
         return yield* ctx.lifecycle.withPermit(
           Effect.gen(function* () {
             const keep = Math.max(0, ctx.turns.length - numTurns);
-            const target = ctx.turns[keep];
+            // Turns from before the session's first marker (a recap's) can't be cut at.
+            const target = numTurns <= ctx.turns.length ? ctx.turns[keep] : undefined;
             let rolledBack = false;
             if (target) {
               const entries = decodePi(PiEntries)(yield* piRequest(ctx, { type: "get_entries" }));

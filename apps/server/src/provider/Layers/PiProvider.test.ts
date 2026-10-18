@@ -55,6 +55,22 @@ describe("PiProvider", () => {
     expect(piCatalogModels({ models: [], current: undefined, thinkingLevel: "off" })).toEqual([]);
   });
 
+  it("always keeps a Pi provider's credentials secret, by name", () => {
+    for (const name of [
+      "ANTHROPIC_API_KEY",
+      "HF_TOKEN",
+      "AWS_BEARER_TOKEN_BEDROCK",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_ACCESS_KEY_ID",
+      "COPILOT_GITHUB_TOKEN",
+    ]) {
+      expect(isPiKeyEnvName(name), name).toBe(true);
+    }
+    for (const name of ["PI_CODING_AGENT_DIR", "AWS_REGION", "OPENAI_BASE_URL", "HTTPS_PROXY"]) {
+      expect(isPiKeyEnvName(name), name).toBe(false);
+    }
+  });
+
   it("splits Pi's commands into skills and slash commands, leaving out internal ones", () => {
     const { slashCommands, skills } = piComposerCommands([
       {

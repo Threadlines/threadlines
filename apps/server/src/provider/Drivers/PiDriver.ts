@@ -35,7 +35,11 @@ import { ServerConfig } from "../../config.ts";
 import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
-import { checkPiProviderStatus, makePendingPiProvider } from "../Layers/PiProvider.ts";
+import {
+  checkPiProviderStatus,
+  makePendingPiProvider,
+  type PiProbeFacts,
+} from "../Layers/PiProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { isDefaultPiCommand, PI_PACKAGE_NAME, piUserMaintenance } from "../pi/PiBinary.ts";
@@ -205,8 +209,9 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
           maintenance = maintenanceFor(current, realCommandPath);
         });
 
-      // What the last check found, for the adapter's thinking-level checks.
+      // What the last check found: the models (for thinking-level checks) and Pi's default.
       let liveModels: ReadonlyArray<ServerProviderModel> = [];
+      let defaultModel: PiProbeFacts["defaultModel"];
 
       const adapter = yield* makePiAdapter({
         instanceId,
@@ -215,6 +220,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         instanceEnvironment: environment,
         extensionDir: NodePath.join(serverConfig.stateDir, "pi"),
         models: () => liveModels,
+        defaultModel: () => defaultModel,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const textGeneration = yield* makePiTextGeneration({
@@ -251,6 +257,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
             onFacts: (facts) =>
               Effect.sync(() => {
                 liveModels = facts.models;
+                defaultModel = facts.defaultModel;
               }),
           });
           return stampIdentity(draft);

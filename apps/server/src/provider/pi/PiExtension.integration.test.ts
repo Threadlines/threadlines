@@ -3,7 +3,7 @@
  * servers. Runs when a Pi `cli.js` is available (THREADLINES_PI_CLI, or the
  * server's pinned dev dependency).
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,7 @@ import {
 import { type PiAccessLevel, piProcessArgs, piProcessEnvironment } from "./PiLaunch.ts";
 import { decodePi, PiCommands, PiEntries } from "./PiProtocol.ts";
 import { type PiRpc, startPiRpc } from "./PiRpc.ts";
+import { writePiSecretsFile } from "./PiSecrets.ts";
 import { collectPiRecords, type PiRecordLog } from "./testing/PiRecordLog.ts";
 import {
   makeTestPiHome,
@@ -46,6 +47,7 @@ const withPi = <A, E>(
     log: PiRecordLog;
     tools: Awaited<ReturnType<typeof startTestMcpServer>>;
     model: Awaited<ReturnType<typeof startTestModelServer>>;
+    secretsFile: string;
   }) => Effect.Effect<A, E>,
 ) =>
   Effect.scoped(
@@ -70,6 +72,9 @@ const withPi = <A, E>(
       const extensionDir = mkdtempSync(join(tmpdir(), "threadlines-pi-ext-"));
       const extensionPath = join(extensionDir, piExtensionFileName());
       writeFileSync(extensionPath, PI_EXTENSION_SOURCE, { mode: 0o600 });
+      const secretsFile = yield* Effect.promise(() =>
+        writePiSecretsFile(join(extensionDir, "run"), { token: TOKEN, nonce: NONCE }),
+      );
       const rpc = yield* startPiRpc({
         command: process.execPath,
         args: piProcessArgs(
@@ -90,13 +95,12 @@ const withPi = <A, E>(
             access,
             plan: false,
             toolServers: [{ name: "threadlines_test", url: tools.url }],
-            token: TOKEN,
-            nonce: NONCE,
+            secretsFile,
           },
         }),
       });
       const log = yield* collectPiRecords(rpc);
-      return yield* body({ rpc, log, tools, model });
+      return yield* body({ rpc, log, tools, model, secretsFile });
     }),
   ).pipe(Effect.provide(NodeServices.layer));
 
@@ -140,6 +144,36 @@ describe.skipIf(!piCli)("Threadlines extension in a real Pi", () => {
             false,
           );
 
+          // Allowing a long command covers that whole command, not every command
+          // that starts the same way.
+          const long = `echo ${"x".repeat(4_100)}`;
+          from = log.mark();
+          yield* prompt(rpc, `TOOL bash ${JSON.stringify({ command: `${long} one` })}`);
+          const longDialog = yield* log.waitFor(
+            (record) => record.type === "extension_ui_request",
+            { from },
+          );
+          yield* rpc.send({
+            type: "extension_ui_response",
+            id: longDialog.id,
+            value: PI_APPROVAL_OPTIONS.allowForSession,
+          });
+          yield* toolEnd(log, from);
+          yield* settled(log, from);
+          from = log.mark();
+          yield* prompt(rpc, `TOOL bash ${JSON.stringify({ command: `${long} two` })}`);
+          const otherDialog = yield* log.waitFor(
+            (record) => record.type === "extension_ui_request",
+            { from },
+          );
+          yield* rpc.send({
+            type: "extension_ui_response",
+            id: otherDialog.id,
+            value: PI_APPROVAL_OPTIONS.deny,
+          });
+          yield* toolEnd(log, from);
+          yield* settled(log, from);
+
           // A read-only Threadlines tool runs without asking; a writing one asks.
           from = log.mark();
           yield* prompt(rpc, 'TOOL mcp__threadlines_test__peek {"text":"x"}');
@@ -168,11 +202,16 @@ describe.skipIf(!piCli)("Threadlines extension in a real Pi", () => {
   it.live(
     "keeps the tool token out of commands, and plan mode blocks writing at full access",
     () =>
-      withPi("full-access", ({ rpc, log, model }) =>
+      withPi("full-access", ({ rpc, log, model, secretsFile }) =>
         Effect.gen(function* () {
+          // The secrets came in a file, read once and gone; the environment only named it.
+          expect(existsSync(secretsFile)).toBe(false);
           let from = log.mark();
-          yield* prompt(rpc, 'TOOL bash {"command":"echo token=[$THREADLINES_PI_TOOL_TOKEN]"}');
-          expect(resultText(yield* toolEnd(log, from))).toContain("token=[]");
+          yield* prompt(
+            rpc,
+            'TOOL bash {"command":"echo file=[$THREADLINES_PI_SECRETS_FILE] token=[$THREADLINES_PI_TOOL_TOKEN]"}',
+          );
+          expect(resultText(yield* toolEnd(log, from))).toContain("file=[] token=[]");
           yield* settled(log, from);
 
           // A mode command with the wrong nonce changes nothing.

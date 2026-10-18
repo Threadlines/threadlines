@@ -38,13 +38,13 @@ describe("piProcessArgs", () => {
         { purpose: "fork", sessionFile: "/s/a.jsonl" },
       ),
     ).toEqual(["--mode", "rpc", "--no-extensions", "--no-tools", "--fork", "/s/a.jsonl"]);
-    expect(piProcessArgs(managed, { purpose: "utility", launchArgs: [] })).toEqual([
-      "/pi/cli.js",
-      "--mode",
-      "rpc",
-      "--no-session",
-      "--no-tools",
-    ]);
+    // A tools list would win over `--no-tools`, so titles never take one.
+    expect(
+      piProcessArgs(managed, {
+        purpose: "utility",
+        launchArgs: ["--tools", "bash,read", "--model", "x/y", "-xt=ask", "-nbt"],
+      }),
+    ).toEqual(["/pi/cli.js", "--mode", "rpc", "--model", "x/y", "--no-session", "--no-tools"]);
   });
 });
 
@@ -75,9 +75,14 @@ describe("piProcessEnvironment", () => {
   it("drops inherited extension settings and sets them only for chat", () => {
     const env = piProcessEnvironment({
       instanceEnvironment: [{ name: "GEMINI_API_KEY", value: "k", sensitive: true }],
-      baseEnv: { PATH: "/bin", [PI_EXTENSION_ENV.token]: "leaked" },
+      baseEnv: {
+        PATH: "/bin",
+        [PI_EXTENSION_ENV.secretsFile]: "/leaked",
+        THREADLINES_PI_TOOL_TOKEN: "leaked by an older Threadlines",
+      },
     });
-    expect(env[PI_EXTENSION_ENV.token]).toBeUndefined();
+    expect(env[PI_EXTENSION_ENV.secretsFile]).toBeUndefined();
+    expect(env.THREADLINES_PI_TOOL_TOKEN).toBeUndefined();
     expect(env.GEMINI_API_KEY).toBe("k");
     expect(env.PI_SKIP_VERSION_CHECK).toBe("1");
 
@@ -88,8 +93,7 @@ describe("piProcessEnvironment", () => {
         access: piAccessLevel("auto"),
         plan: true,
         toolServers: [],
-        token: "t",
-        nonce: "n",
+        secretsFile: "/tmp/secrets.json",
       },
     });
     expect(chat[PI_EXTENSION_ENV.access]).toBe("approval-required");

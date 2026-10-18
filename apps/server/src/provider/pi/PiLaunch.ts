@@ -100,11 +100,38 @@ export function piProcessArgs(launcher: PiLauncher, spec: PiProcessSpec): Array<
     case "fork":
       return [...base, "--no-extensions", "--no-tools", "--fork", spec.sessionFile];
     case "utility":
-      return [...base, ...spec.launchArgs, "--no-session", "--no-tools"];
+      // A tools list would override `--no-tools`: these processes run no tools at all.
+      return [...base, ...withoutToolSelection(spec.launchArgs), "--no-session", "--no-tools"];
   }
 }
 
 // ── The user's extra flags ───────────────────────────────────────────
+
+/** Pi's flags that choose tools, and whether each takes a value. */
+const TOOL_SELECTION_FLAGS: ReadonlyMap<string, boolean> = new Map([
+  ["--tools", true],
+  ["-t", true],
+  ["--exclude-tools", true],
+  ["-xt", true],
+  ["--no-builtin-tools", false],
+  ["-nbt", false],
+]);
+
+/** The user's flags without the ones that choose tools. */
+function withoutToolSelection(args: ReadonlyArray<string>): Array<string> {
+  const kept: Array<string> = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    const [flag] = word.split("=", 1) as [string];
+    const takesValue = TOOL_SELECTION_FLAGS.get(flag);
+    if (takesValue === undefined) {
+      kept.push(word);
+      continue;
+    }
+    if (takesValue && !word.includes("=")) index += 1;
+  }
+  return kept;
+}
 
 /** Pi flags that take a value (the next word), so it is not read as a prompt. */
 const FLAGS_WITH_VALUE = new Set([
@@ -114,6 +141,8 @@ const FLAGS_WITH_VALUE = new Set([
   "--thinking",
   "--tools",
   "-t",
+  "--exclude-tools",
+  "-xt",
   "--extension",
   "-e",
   "--skill",
@@ -214,14 +243,19 @@ export function parsePiLaunchArgs(
 
 // ── Environment ──────────────────────────────────────────────────────
 
+/** Every extension setting's prefix: inherited ones are always dropped. */
+const PI_EXTENSION_ENV_PREFIX = "THREADLINES_PI_";
+
 /** Read by the Threadlines extension at load (see `PiExtensionSource`). */
 export const PI_EXTENSION_ENV = {
   access: "THREADLINES_PI_ACCESS",
   plan: "THREADLINES_PI_PLAN",
   toolServers: "THREADLINES_PI_TOOL_SERVERS",
-  token: "THREADLINES_PI_TOOL_TOKEN",
-  /** Per process: approval dialogs and the mode command must carry it. */
-  nonce: "THREADLINES_PI_NONCE",
+  /**
+   * The path of the file holding the tool token and the per-process nonce
+   * (see `PiSecrets`), never the secrets themselves.
+   */
+  secretsFile: "THREADLINES_PI_SECRETS_FILE",
 } as const;
 
 /** The access levels the extension knows. `auto` is never offered for Pi. */
@@ -251,14 +285,12 @@ export function piProcessEnvironment(input: {
     readonly access: PiAccessLevel;
     readonly plan: boolean;
     readonly toolServers: ReadonlyArray<PiToolServer>;
-    readonly token: string;
-    readonly nonce: string;
+    readonly secretsFile: string;
   };
 }): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {};
-  const owned = new Set<string>(Object.values(PI_EXTENSION_ENV));
   for (const [name, value] of Object.entries(input.baseEnv ?? process.env)) {
-    if (!owned.has(name)) base[name] = value;
+    if (!name.startsWith(PI_EXTENSION_ENV_PREFIX)) base[name] = value;
   }
   const env: NodeJS.ProcessEnv = {
     ...mergeProviderInstanceEnvironment(input.instanceEnvironment, base),
@@ -269,8 +301,7 @@ export function piProcessEnvironment(input: {
     env[PI_EXTENSION_ENV.access] = input.extension.access;
     env[PI_EXTENSION_ENV.plan] = input.extension.plan ? "1" : "0";
     env[PI_EXTENSION_ENV.toolServers] = JSON.stringify(input.extension.toolServers);
-    env[PI_EXTENSION_ENV.token] = input.extension.token;
-    env[PI_EXTENSION_ENV.nonce] = input.extension.nonce;
+    env[PI_EXTENSION_ENV.secretsFile] = input.extension.secretsFile;
   }
   return env;
 }

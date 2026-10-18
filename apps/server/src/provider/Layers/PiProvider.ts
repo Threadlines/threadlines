@@ -310,9 +310,12 @@ export const makePendingPiProvider = (
     }),
   );
 
-/** What a check learned that the adapter needs: the models, for thinking-level checks. */
+/** What a check learned that the adapter needs. */
 export interface PiProbeFacts {
+  /** For thinking-level checks. */
   readonly models: ReadonlyArray<ServerProviderModel>;
+  /** The model Pi's own settings name, which "Pi default" means. */
+  readonly defaultModel: { readonly provider: string; readonly modelId: string } | undefined;
 }
 
 const SIGN_IN_MESSAGE =
@@ -393,7 +396,15 @@ export const checkPiProviderStatus = (input: {
       current: facts.success.state?.model,
       thinkingLevel: facts.success.state?.thinkingLevel,
     });
-    if (input.onFacts) yield* input.onFacts({ models: catalog });
+    const configured = facts.success.state?.model;
+    if (input.onFacts) {
+      yield* input.onFacts({
+        models: catalog,
+        defaultModel: configured
+          ? { provider: configured.provider, modelId: configured.id }
+          : undefined,
+      });
+    }
     const providers = [...new Set(facts.success.models.map((model) => model.provider))].map(
       piProviderName,
     );

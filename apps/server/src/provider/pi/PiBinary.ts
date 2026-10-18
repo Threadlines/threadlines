@@ -150,10 +150,19 @@ export function piUserMaintenance(input: {
 }
 
 /**
- * Names that hold a model provider's key for Pi (`ANTHROPIC_API_KEY`,
- * `HF_TOKEN`, `AWS_SECRET_ACCESS_KEY` …): always stored and returned as
- * secrets on a Pi instance.
+ * Names that hold a model provider's credential for Pi (`ANTHROPIC_API_KEY`,
+ * `HF_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_SECRET_ACCESS_KEY` …): always
+ * stored and returned as secrets on a Pi instance. Matched by word, wherever
+ * it sits in the name.
  */
 export function isPiKeyEnvName(name: string): boolean {
-  return /_(?:API_KEY|TOKEN|SECRET|SECRET_ACCESS_KEY)$/u.test(name.trim().toUpperCase());
+  const words = name.trim().toUpperCase().split("_");
+  return words.some(
+    (word, index) =>
+      word === "TOKEN" ||
+      word === "SECRET" ||
+      word === "PASSWORD" ||
+      word === "APIKEY" ||
+      (word === "KEY" && (words[index - 1] === "API" || words[index - 1] === "ACCESS")),
+  );
 }

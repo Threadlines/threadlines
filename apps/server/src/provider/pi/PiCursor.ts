@@ -3,17 +3,23 @@
  * Pi's session tree (docs/providers/pi-plan.md, "Revert and fork").
  *
  * Before each user turn the adapter has the Threadlines extension append a
- * marker entry (`threadlines-turn`, with the turn id) to Pi's session. Pi
- * never sends custom entries to the model, keeps them in the session file,
- * and copies them on `fork` and `clone` (checked on Pi 1.3.0). So a turn's
- * boundary is read from Pi's own tree, by any process, at any time:
+ * marker entry (`threadlines-turn`, with the turn id) to Pi's session, and
+ * another when the turn ends. Pi never sends custom entries to the model,
+ * keeps them in the session file, and copies them on `fork` and `clone`
+ * (checked on Pi 1.3.0). So a turn's boundary is read from Pi's own tree, by
+ * any process, at any time:
  *
  * - A turn starts at its marker. Its first user message after the marker is
  *   the point a fork cuts before (Pi's RPC `fork` always cuts before a user
  *   entry). Later user messages in the same turn are steers.
- * - A turn that crashed half way still has its marker, so the next turn's
- *   boundary stays exact. A turn Pi started itself has no marker; its entries
- *   read as part of the turn before it.
+ * - Its end marker says the turn finished there. Anything said after it that
+ *   no later turn's marker claims (a message added outside Threadlines) makes
+ *   "everything through this turn" inexact.
+ * - A turn Pi starts by itself is marked once it is running ("late"): its
+ *   start can't be cut at, but it still counts, and it shows where the turn
+ *   before it stopped.
+ * - A turn that crashed half way still has its start marker, so later turns
+ *   stay exact.
  *
  * @module provider/pi/PiCursor
  */
@@ -57,24 +63,35 @@ export interface PiTurnBoundary {
   readonly markerId: string;
   /** Null when no user message followed the marker (a reverted or empty turn). */
   readonly firstUserEntryId: string | null;
+  /** Where the turn ended, when it ended normally. */
+  readonly endMarkerId: string | null;
+  /** Pi started the turn; its marker was written once it ran. */
+  readonly late: boolean;
 }
 
-const markerTurnId = (entry: PiSessionEntry): string | undefined =>
+interface PiTurnMarker {
+  readonly turnId: string;
+  readonly end: boolean;
+  readonly late: boolean;
+}
+
+const markerOf = (entry: PiSessionEntry): PiTurnMarker | undefined =>
   entry.type === "custom" &&
   entry.customType === PI_TURN_MARKER_TYPE &&
   isRecord(entry.data) &&
   typeof entry.data.turnId === "string"
-    ? entry.data.turnId
+    ? { turnId: entry.data.turnId, end: entry.data.end === true, late: entry.data.late === true }
     : undefined;
 
-/**
- * The turns on the active branch (root to `leafId`), in order. Abandoned
- * branches are not on the path, so a turn reverted earlier never shows up.
- */
-export function piTurnBoundaries(
+/** Entries the model reads as conversation (markers, settings and labels are not). */
+const isConversation = (entry: PiSessionEntry) =>
+  entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary";
+
+/** The active branch, root to `leafId`. Abandoned branches are not on it. */
+function activePath(
   entries: ReadonlyArray<PiSessionEntry>,
   leafId: string | null,
-): ReadonlyArray<PiTurnBoundary> {
+): ReadonlyArray<PiSessionEntry> {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const path: Array<PiSessionEntry> = [];
   for (let cursor = leafId; cursor !== null;) {
@@ -83,19 +100,41 @@ export function piTurnBoundaries(
     path.push(entry);
     cursor = entry.parentId;
   }
-  path.reverse();
+  return path.toReversed();
+}
+
+function boundariesOf(path: ReadonlyArray<PiSessionEntry>): Array<PiTurnBoundary> {
   const boundaries: Array<PiTurnBoundary> = [];
-  let open: { turnId: string; markerId: string; firstUserEntryId: string | null } | undefined;
+  let open:
+    | {
+        turnId: string;
+        markerId: string;
+        firstUserEntryId: string | null;
+        endMarkerId: string | null;
+        late: boolean;
+      }
+    | undefined;
   for (const entry of path) {
-    const turnId = markerTurnId(entry);
-    if (turnId !== undefined) {
+    const marker = markerOf(entry);
+    if (marker?.end) {
+      if (open?.turnId === marker.turnId) open.endMarkerId = entry.id;
+      continue;
+    }
+    if (marker) {
       if (open) boundaries.push(open);
-      open = { turnId, markerId: entry.id, firstUserEntryId: null };
+      open = {
+        turnId: marker.turnId,
+        markerId: entry.id,
+        firstUserEntryId: null,
+        endMarkerId: null,
+        late: marker.late,
+      };
       continue;
     }
     if (
       open &&
       open.firstUserEntryId === null &&
+      open.endMarkerId === null &&
       entry.type === "message" &&
       entry.message?.role === "user"
     ) {
@@ -106,6 +145,14 @@ export function piTurnBoundaries(
   return boundaries;
 }
 
+/** The turns on the active branch (root to `leafId`), in order. */
+export function piTurnBoundaries(
+  entries: ReadonlyArray<PiSessionEntry>,
+  leafId: string | null,
+): ReadonlyArray<PiTurnBoundary> {
+  return boundariesOf(activePath(entries, leafId));
+}
+
 /** What Pi does to drop the turns from `turnId` on, or why it can't. */
 export type PiRevertPlan =
   | { readonly kind: "fork"; readonly entryId: string }
@@ -113,14 +160,15 @@ export type PiRevertPlan =
 
 /**
  * Revert to before `turnId`: fork before its first user message. Unknown when
- * the turn has no marker on the active branch (Pi started it) or no message.
+ * the turn has no marker on the active branch, no message, or was started by
+ * Pi (its start isn't a place Pi can cut).
  */
 export function planPiRevert(
   boundaries: ReadonlyArray<PiTurnBoundary>,
   turnId: string,
 ): PiRevertPlan {
   const boundary = boundaries.find((entry) => entry.turnId === turnId);
-  return boundary?.firstUserEntryId
+  return boundary?.firstUserEntryId && !boundary.late
     ? { kind: "fork", entryId: boundary.firstUserEntryId }
     : { kind: "unknown" };
 }
@@ -134,26 +182,38 @@ export type PiForkPlan =
 
 /**
  * `beforeTurnId`: everything before that turn. `lastTurnId`: everything
- * through that turn, which is a cut before the next turn's first message, or
- * the whole branch when it is the last turn. Neither: the whole branch.
+ * through that turn, which needs its end marker: after it, a cut before the
+ * next turn's first message, or the whole branch when nothing was said
+ * since. Neither: the whole branch.
  */
 export function planPiFork(
-  boundaries: ReadonlyArray<PiTurnBoundary>,
+  entries: ReadonlyArray<PiSessionEntry>,
+  leafId: string | null,
   boundary: {
     readonly beforeTurnId?: string | undefined;
     readonly lastTurnId?: string | undefined;
   },
 ): PiForkPlan {
+  const path = activePath(entries, leafId);
+  const boundaries = boundariesOf(path);
   if (boundary.beforeTurnId !== undefined) {
     const plan = planPiRevert(boundaries, boundary.beforeTurnId);
     return plan.kind === "fork" ? plan : { kind: "contextSeed" };
   }
   if (boundary.lastTurnId === undefined) return { kind: "clone" };
   const index = boundaries.findIndex((entry) => entry.turnId === boundary.lastTurnId);
-  if (index < 0) return { kind: "contextSeed" };
-  for (const next of boundaries.slice(index + 1)) {
-    // A later turn with no message (reverted, empty) cuts nothing; the one after decides.
-    if (next.firstUserEntryId) return { kind: "fork", entryId: next.firstUserEntryId };
+  const turn = boundaries[index];
+  if (!turn?.endMarkerId) return { kind: "contextSeed" };
+  // Where a later turn of Threadlines' own starts; a turn Pi started can't be cut at.
+  const starts = new Set(
+    boundaries
+      .slice(index + 1)
+      .flatMap((entry) => (entry.firstUserEntryId && !entry.late ? [entry.firstUserEntryId] : [])),
+  );
+  const after = path.slice(path.findIndex((entry) => entry.id === turn.endMarkerId) + 1);
+  for (const entry of after) {
+    if (starts.has(entry.id)) return { kind: "fork", entryId: entry.id };
+    if (isConversation(entry)) return { kind: "contextSeed" };
   }
   return { kind: "clone" };
 }
