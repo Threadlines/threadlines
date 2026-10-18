@@ -395,10 +395,12 @@ function mapCodexStoredItem(
     case "sleep":
       return codexToolEntry({ name: "sleep", summary: `${item.durationMs} ms` });
     case "imageGeneration":
+      // Codex 0.164+ can store the picture as an attachment (`fileId`) and send
+      // no inline `result`; the saved file path is then the useful preview.
       return codexToolEntry({
         name: "image_generation",
         summary: item.revisedPrompt ?? item.status,
-        outputPreview: item.result,
+        outputPreview: item.result || item.savedPath || undefined,
       });
     case "enteredReviewMode":
       return { role: "system", text: item.review, toolUses: [] };
@@ -788,6 +790,11 @@ function canonicalSubAgentActivityItem(item: CodexSubAgentActivityItem): Record<
   const running = item.kind === "started";
   return {
     ...item,
+    // Codex 0.163+ reports the model and effort it resolved when it created
+    // the agent. On a collab item `model` otherwise means the one the launcher
+    // asked for, so name where these came from.
+    ...(trimText(item.model) ? { modelSource: "provider" } : {}),
+    ...(item.reasoningEffort ? { reasoningEffortSource: "provider" } : {}),
     // Keep the native fields above while exposing the stable collab-agent
     // fields consumed by projections shared across providers.
     tool: item.kind === "started" ? "spawnAgent" : "closeAgent",
@@ -1508,6 +1515,9 @@ function mapNativeSubagentMetadata(
   const parentAgentThreadId = firstStringField(itemRecord, ["parentAgentThreadId"]);
   const agentNickname = firstStringField(itemRecord, ["agentNickname"]);
   const agentRole = firstStringField(itemRecord, ["agentRole"]);
+  // Resolved by Codex when it created the agent (0.163+), not requested.
+  const model = trimText(item.model);
+  const reasoningEffort = trimText(item.reasoningEffort);
   const metadata: SubagentMetadataUpdatedPayload = {
     ...(item.kind === "started" ? { callId: item.id } : {}),
     agentThreadId: item.agentThreadId,
@@ -1515,6 +1525,8 @@ function mapNativeSubagentMetadata(
     ...(parentAgentThreadId ? { parentAgentThreadId } : {}),
     ...(agentNickname ? { agentNickname } : {}),
     ...(agentRole ? { agentRole } : {}),
+    ...(model ? { model, modelSource: "provider" } : {}),
+    ...(reasoningEffort ? { reasoningEffort, reasoningEffortSource: "provider" } : {}),
   };
   return {
     ...runtimeEventBase(event, canonicalThreadId),

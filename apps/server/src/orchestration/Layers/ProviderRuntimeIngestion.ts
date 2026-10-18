@@ -941,9 +941,14 @@ function recordFromUnknown(value: unknown): Record<string, unknown> | undefined 
     : undefined;
 }
 
+/** Codex's phase for a completed assistant message: `commentary` is progress
+ *  narration, `partial_answer` (0.163+) is answer text that more output or
+ *  tools may follow, and `final_answer` is the turn's last word. */
+type AssistantMessagePhase = "commentary" | "partial_answer" | "final_answer";
+
 function assistantMessagePhaseFromEvent(
   event: ProviderRuntimeEvent,
-): "commentary" | "final_answer" | undefined {
+): AssistantMessagePhase | undefined {
   if (event.type !== "item.completed" || event.payload.itemType !== "assistant_message") {
     return undefined;
   }
@@ -951,7 +956,9 @@ function assistantMessagePhaseFromEvent(
   const data = recordFromUnknown(event.payload.data);
   const item = recordFromUnknown(data?.item);
   const phase = item?.phase ?? data?.phase;
-  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+  return phase === "commentary" || phase === "partial_answer" || phase === "final_answer"
+    ? phase
+    : undefined;
 }
 
 function withSourceAgentThreadId(
@@ -988,6 +995,24 @@ function subagentResultTextKey(input: {
     input.childProviderThreadId,
     input.event.itemId ?? "no-item",
   ].join(":");
+}
+
+/** One child's answer across its messages in a turn, unlike the per-item key
+ *  above. */
+function subagentAnswerTextKey(input: {
+  readonly event: ProviderRuntimeEvent;
+  readonly childProviderThreadId: string;
+}): string {
+  return [input.event.threadId, input.event.turnId ?? "no-turn", input.childProviderThreadId].join(
+    ":",
+  );
+}
+
+/** A child's earlier partial answers followed by its next message's text. */
+function joinSubagentAnswerText(earlier: string, next: string): string {
+  if (!hasRenderableAssistantText(earlier)) return next;
+  if (!hasRenderableAssistantText(next)) return earlier;
+  return appendSubagentResultText(`${earlier.trimEnd()}\n\n`, next.trimStart());
 }
 
 function subagentResultActivityId(input: {
@@ -1231,6 +1256,14 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(""),
   });
   const bufferedSubagentResultTextByKey = yield* Cache.make<string, string>({
+    capacity: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_CACHE_CAPACITY,
+    timeToLive: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_TTL,
+    lookup: () => Effect.succeed(""),
+  });
+  /** A child's `partial_answer` text so far this turn, by subagentAnswerTextKey.
+   *  It is answer text rather than commentary, so the child's terminal result
+   *  carries it ahead of the final message's own text. */
+  const subagentAnswerTextByKey = yield* Cache.make<string, string>({
     capacity: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_CACHE_CAPACITY,
     timeToLive: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_TTL,
     lookup: () => Effect.succeed(""),
@@ -1645,6 +1678,31 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /** The body a child's completed message publishes. A partial answer joins
+   *  the child's answer so far and stays non-terminal; the terminal message
+   *  takes every earlier partial answer; commentary stands alone. */
+  const subagentAnswerBody = (input: {
+    readonly key: string;
+    readonly phase: AssistantMessagePhase | undefined;
+    readonly body: string;
+  }) =>
+    Effect.gen(function* () {
+      if (input.phase === "commentary") {
+        return input.body;
+      }
+      const earlier = yield* Cache.getOption(subagentAnswerTextByKey, input.key);
+      const answer = joinSubagentAnswerText(
+        Option.getOrElse(earlier, () => ""),
+        input.body,
+      );
+      if (input.phase === "partial_answer") {
+        yield* Cache.set(subagentAnswerTextByKey, input.key, answer);
+      } else {
+        yield* Cache.invalidate(subagentAnswerTextByKey, input.key);
+      }
+      return answer;
+    });
+
   const dispatchAssistantDelta = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
@@ -1850,6 +1908,7 @@ const make = Effect.gen(function* () {
       });
 
       const bufferedKeys = Array.from(yield* Cache.keys(bufferedSubagentResultTextByKey));
+      const answerKeys = Array.from(yield* Cache.keys(subagentAnswerTextByKey));
       const emittedKeys = Array.from(yield* Cache.keys(emittedSubagentResultActivityKeys));
       yield* Effect.forEach(
         bufferedKeys,
@@ -1857,6 +1916,12 @@ const make = Effect.gen(function* () {
           key.startsWith(prefix)
             ? Cache.invalidate(bufferedSubagentResultTextByKey, key)
             : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      yield* Effect.forEach(
+        answerKeys,
+        (key) =>
+          key.startsWith(prefix) ? Cache.invalidate(subagentAnswerTextByKey, key) : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
       yield* Effect.forEach(
@@ -3568,24 +3633,30 @@ const make = Effect.gen(function* () {
           yield* clearPendingSubagentResultActivity(bufferKey);
           yield* Cache.invalidate(emittedSubagentResultActivityKeys, bufferKey);
           const bufferedText = yield* takeBufferedSubagentResultText(bufferKey);
-          const body =
+          const messageText =
             bufferedText.length > 0
               ? bufferedText
               : (assistantCompletion.fallbackText?.trim().length ?? 0) > 0
                 ? assistantCompletion.fallbackText!
                 : "";
+          // Codex completes each assistant-message item, including interim
+          // commentary and partial answers. Only an explicit final answer is
+          // terminal. Missing phase keeps the legacy completion behavior for
+          // older models that do not emit message phases.
+          const phase = assistantMessagePhaseFromEvent(event);
+          const body = yield* subagentAnswerBody({
+            key: subagentAnswerTextKey({ event, childProviderThreadId }),
+            phase,
+            body: messageText,
+          });
           yield* dispatchSubagentResultActivity({
             event,
             threadId: thread.id,
             parentProviderThreadId: thread.session?.providerThreadId ?? undefined,
             childProviderThreadId,
             body,
-            // Codex completes each assistant-message item, including interim
-            // commentary. Only an explicit final answer is terminal. Missing
-            // phase keeps the legacy completion behavior for older models that
-            // do not emit message phases.
             status:
-              assistantMessagePhaseFromEvent(event) === "commentary" ? "inProgress" : "completed",
+              phase === "commentary" || phase === "partial_answer" ? "inProgress" : "completed",
             createdAt: now,
           });
           yield* Cache.set(settledSubagentResultActivityKeys, bufferKey, true);
