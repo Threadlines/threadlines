@@ -13048,7 +13048,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // emptying the box again shows them at rest instead of replaying it.
       await page.getByTestId("composer-editor").fill("no");
       await vi.waitFor(() => expect(overlay.dataset.sweeping).toBeUndefined(), { timeout: 600 });
-      await page.getByTestId("composer-editor").fill("");
+      // Emptied through the draft, not `fill("")`: that selects all and then
+      // presses Delete, and Lexical can take the key before it hears of the
+      // selection, deleting nothing after the cursor.
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "");
       await waitForElement(
         () => overlay.querySelector<HTMLElement>('[data-prompt-suggestion-text="true"]'),
         "Emptying the composer did not bring the suggestion back.",
