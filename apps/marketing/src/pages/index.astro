@@ -198,6 +198,14 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
         <span class="pv-provider">
           <svg viewBox="166.241 0 155.861 156" preserveAspectRatio="xMidYMid" role="img" aria-label="fx"><path fill="currentColor" d="M237.89 0C243.18 0 249.38 1.42 253.03 3.07L255.09 4.01L250.08 18.63L247.68 17.75C244.9 16.72 241.94 15.8 238.49 15.8C234.98 15.8 232.79 16.56 231.08 18.32C229.23 20.23 227.63 23.64 226.23 29.76L226.23 29.76L226.23 29.76L225.14 34.85H241.67L260.43 34.95L260.69 34.95L260.84 35.17L278.85 61.63L296.74 34.95H320.87L291.68 76.74L322.1 119.75H299.33L299.18 119.55L241.14 40.48L239.35 49.4H222.07L205.69 127.21C203.93 135.71 201.19 142.84 196.78 147.87C192.27 153.01 186.2 155.75 178.34 155.75C174.18 155.75 170.75 155.11 167.91 154.11L166.24 153.52V137.18L166.9 137.4L169.53 138.28C172.18 139.16 174.41 139.8 177.14 139.8C178.53 139.8 179.7 139.53 180.73 138.98C181.76 138.43 182.68 137.6 183.52 136.44C185.3 133.99 186.72 130.13 187.9 124.67L203.76 49.4H189.87L191.76 39.44L192.04 39.35L206.82 34.47L208.15 28.64C210.52 18.21 213.77 10.94 218.71 6.32C223.74 1.61 230.13 0 237.89 0ZM273.99 99.08L260.07 120.25H234.54L261 82.02L273.99 99.08Z"/></svg>
         </span>
+        <span class="pv-provider">
+          <svg viewBox="31 31 258 258" fill="none" aria-hidden="true"><defs><linearGradient id="pv-muse-gradient" x1="60" y1="90" x2="270" y2="230" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#0056E6"/><stop offset="1" stop-color="#007BFB"/></linearGradient></defs><path d="M46 147C47.3 144.5 50.7 137.3 54 132C57.3 126.7 61.7 120.7 66 115C70.3 109.3 75.2 102.7 80 98C84.8 93.3 92.3 84.7 95 87C97.7 89.3 96.7 103.2 96 112C95.3 120.8 92.5 129.5 91 140C89.5 150.5 88.2 163 87 175C85.8 187 84.3 202.7 84 212C83.7 221.3 82.2 232.5 85 231C87.8 229.5 94.2 215.5 101 203C107.8 190.5 117.8 171.2 126 156C134.2 140.8 144.2 121.5 150 112C155.8 102.5 159 97 161 99C163 101 162.3 112.5 162 124C161.7 135.5 160 153.7 159 168C158 182.3 156.5 199.5 156 210C155.5 220.5 153.2 232 156 231C158.8 230 167 213.5 173 204C179 194.5 185.5 184.3 192 174C198.5 163.7 206.5 149.8 212 142C217.5 134.2 222.7 125.5 225 127C227.3 128.5 226.2 140.5 226 151C225.8 161.5 224.5 178.8 224 190C223.5 201.2 222.5 210.8 223 218C223.5 225.2 223.2 233 227 233C230.8 233 241 223.2 246 218C251 212.8 253.5 207 257 202C260.5 197 264.3 192.5 267 188C269.7 183.5 272 177.2 273 175" stroke="url(#pv-muse-gradient)" stroke-width="27" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Muse Code
+        </span>
+        <span class="pv-provider">
+          <svg viewBox="0 0 560 560" aria-hidden="true"><path fill="currentColor" d="M420 280H280V140H0V0H420V280ZM560 560H420V280H560V560ZM140 560H0V140H140V280H280V420H140V560Z"/></svg>
+          Pi
+        </span>
       </div>
     </div>
     <figure class="pv-app-frame pv-rise" style="--pv-d: 0.95s">
@@ -763,7 +771,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     flex-wrap: wrap;
   }
 
-  .pv-providers-label { font-size: 0.8rem; color: var(--fg-muted); }
+  .pv-providers-label { flex-basis: 100%; font-size: 0.8rem; color: var(--fg-muted); }
   .pv-provider {
     display: inline-flex;
     align-items: center;
@@ -942,9 +950,6 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   .pv-lightbox-prev { left: 12px; }
   .pv-lightbox-next { right: 12px; }
 
-  @media (max-width: 1080px) {
-    .pv-providers-label { flex-basis: 100%; }
-  }
   @media (max-width: 820px) {
     .pv-showcase,
     .pv-app-frame { width: calc(100vw - 32px); }
