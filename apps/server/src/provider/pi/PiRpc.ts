@@ -121,9 +121,12 @@ export interface PiRpcOptions {
 export class PiLineSplitter {
   private buffer = "";
   private discarding = false;
+  private readonly maxChars: number;
   dropped = 0;
 
-  constructor(private readonly maxChars: number = PI_MAX_RECORD_CHARS) {}
+  constructor(maxChars: number = PI_MAX_RECORD_CHARS) {
+    this.maxChars = maxChars;
+  }
 
   push(chunk: string): Array<string> {
     const lines: Array<string> = [];
@@ -242,7 +245,7 @@ export const startPiRpc = (
       Effect.forkIn(scope),
     );
 
-    const records = yield* Queue.unbounded<PiRecord>();
+    const records = yield* Queue.unbounded<PiRecord, Cause.Done>();
     const pending = new Map<string, Deferred.Deferred<Record<string, unknown>, PiRpcError>>();
     let nextId = 0;
     // Set when an extension asks a question before startup's `get_state`
