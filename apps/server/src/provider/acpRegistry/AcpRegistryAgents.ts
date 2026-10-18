@@ -31,7 +31,10 @@ import {
   ServerProviderUpdateError,
   type ServerProviderUpdateInput,
 } from "@threadlines/contracts";
-import { acpRegistryInstanceId } from "@threadlines/shared/acpRegistry";
+import {
+  ACP_REGISTRY_REPLACED_AGENTS,
+  acpRegistryInstanceId,
+} from "@threadlines/shared/acpRegistry";
 import { compareSemverVersions } from "@threadlines/shared/semver";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -234,6 +237,10 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
       const snapshot = yield* readCatalog(false);
       const entry = snapshot.entries.find((candidate) => candidate.agent.agentId === input.agentId);
       if (!entry) return yield* fail("unknownAgent", "That agent is no longer listed.");
+      // Kept in the catalog only for the updates of copies already added.
+      if (ACP_REGISTRY_REPLACED_AGENTS.has(input.agentId)) {
+        return yield* fail("unknownAgent", `${entry.agent.name} is built into Threadlines now.`);
+      }
       if (!snapshot.quarantineKnown) {
         return yield* fail(
           "quarantineUnknown",

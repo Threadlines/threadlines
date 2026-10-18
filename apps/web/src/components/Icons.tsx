@@ -282,6 +282,13 @@ export const OpenCodeIcon: Icon = (props) => (
   </svg>
 );
 
+/** Pi's one-color mark, from Pi's press kit. */
+export const PiIcon: Icon = (props) => (
+  <svg {...props} viewBox="0 0 560 560" fill="currentColor">
+    <path d="M420 280H280V140H0V0H420V280ZM560 560H420V280H560V560ZM140 560H0V140H140V280H280V420H140V560Z" />
+  </svg>
+);
+
 /** Meta's symbol, as Muse Code's own pages show it, in Meta blue. */
 /** Muse's "M", redrawn as one stroke from Meta's Muse logo. */
 export const MuseIcon: Icon = (props) => {

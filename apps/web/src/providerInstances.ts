@@ -40,6 +40,7 @@ export const MAINTAINED_PROVIDER_DRIVER_KINDS = [
   ProviderDriverKind.make("antigravity"),
   ProviderDriverKind.make("muse"),
   ProviderDriverKind.make("grok"),
+  ProviderDriverKind.make("pi"),
   ACP_REGISTRY_DRIVER_KIND,
 ] as const;
 

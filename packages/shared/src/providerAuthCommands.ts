@@ -24,6 +24,7 @@ export const OPENCODE_DRIVER_KIND = "opencode";
 export const ANTIGRAVITY_DRIVER_KIND = "antigravity";
 export const MUSE_DRIVER_KIND = "muse";
 export const GROK_DRIVER_KIND = "grok";
+export const PI_DRIVER_KIND = "pi";
 
 /**
  * Drivers whose sign-in runs in the browser, inside the agent itself, with no
@@ -202,6 +203,15 @@ export function buildFxLoginCommand(input: { readonly binaryPath: string }): str
  */
 export function buildMuseLoginCommand(input: { readonly binaryPath: string }): string {
   return `${shellWord(input.binaryPath.trim() || "muse")} login`;
+}
+
+/**
+ * `pi --no-session` — Pi itself, where the user types `/login` to connect a
+ * model provider. Pi signs in only inside its own terminal app; nothing is
+ * saved as a conversation.
+ */
+export function buildPiLoginCommand(input: { readonly binaryPath: string }): string {
+  return `${shellWord(input.binaryPath.trim() || "pi")} --no-session`;
 }
 
 const OPENCODE_LOGIN_ARGS = ["auth", "login", "--standalone"] as const;

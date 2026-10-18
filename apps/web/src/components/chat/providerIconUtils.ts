@@ -13,6 +13,7 @@ import {
   MuseIcon,
   OpenAI,
   OpenCodeIcon,
+  PiIcon,
 } from "../Icons";
 import { PROVIDER_OPTIONS } from "../../session-logic";
 
@@ -31,6 +32,7 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>
   [ProviderDriverKind.make("antigravity")]: AntigravityIcon,
   [ProviderDriverKind.make("muse")]: MuseIcon,
   [ProviderDriverKind.make("grok")]: GrokIcon,
+  [ProviderDriverKind.make("pi")]: PiIcon,
 };
 
 /** The longest registry icon the contract allows (`ServerProviderCommunity.iconSvg`). */

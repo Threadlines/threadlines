@@ -42,6 +42,7 @@ export const USAGE_PROVIDER_LABELS: Record<UsageProviderKind, string> = {
   claude: "Claude Code",
   codex: "Codex",
   grok: "Grok",
+  pi: "Pi",
 };
 
 /** For the narrow columns where the product name would not fit. */
@@ -49,6 +50,7 @@ export const USAGE_PROVIDER_SHORT_LABELS: Record<UsageProviderKind, string> = {
   claude: "Claude",
   codex: "Codex",
   grok: "Grok",
+  pi: "Pi",
 };
 
 /**
@@ -63,6 +65,7 @@ export const USAGE_PROVIDER_COLORS: Record<UsageProviderKind, string> = {
   claude: "var(--provider-claude)",
   codex: "var(--provider-codex)",
   grok: "var(--provider-grok)",
+  pi: "var(--provider-pi)",
 };
 
 /** Reading order for legends and rows: the same order every time. */
@@ -70,6 +73,7 @@ export const USAGE_PROVIDER_READING_ORDER: readonly UsageProviderKind[] = [
   "claude",
   "codex",
   "grok",
+  "pi",
 ];
 
 /**
@@ -987,6 +991,7 @@ const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKin
   [ProviderDriverKind.make("claudeAgent"), "claude"],
   [ProviderDriverKind.make("codex"), "codex"],
   [ProviderDriverKind.make("grok"), "grok"],
+  [ProviderDriverKind.make("pi"), "pi"],
 ]);
 
 /**

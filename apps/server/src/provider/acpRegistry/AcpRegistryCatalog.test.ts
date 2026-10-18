@@ -383,6 +383,26 @@ describe("reduceAcpRegistryIndex", () => {
     });
   });
 
+  it("keeps an agent Threadlines now has built in for updates, but never offers it", () => {
+    const reduced = reduce([entry({ id: "pi-acp", name: "pi" }), entry()]);
+    // Still read, so a copy already added sees its updates.
+    assert.deepStrictEqual(
+      reduced.entries.map(({ agent }) => agent.agentId),
+      ["pi-acp", "sample"],
+    );
+    const offered = toAcpRegistryCatalog({
+      entries: reduced.entries,
+      fetchedAt: null,
+      stale: false,
+      quarantineKnown: true,
+      unsupportedCount: reduced.unsupportedCount,
+    });
+    assert.deepStrictEqual(
+      offered.agents.map((agent) => agent.agentId),
+      ["sample"],
+    );
+  });
+
   it("drops an agent that breaks a bound, and only that agent", () => {
     const neighbour = entry({ id: "neighbour", name: "Neighbour" });
     const broken: ReadonlyArray<readonly [what: string, agent: unknown]> = [

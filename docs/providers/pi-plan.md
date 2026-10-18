@@ -141,6 +141,7 @@ We check on `agent_settled` and after every ack. If Pi is still busy, keep liste
 Our approval dialog passes `ctx.signal`, so an abort also ends it inside Pi.
 
 **Revert positions: turn markers in Pi's own tree.** Before each user turn, the adapter sends `/threadlines-turn <nonce> <turnId>`, and the Threadlines extension appends a custom entry (`threadlines-turn`) to Pi's session. Pi never sends custom entries to the model, keeps them in the session file, and copies them on `fork` and `clone` (all checked on 1.3.0). So a turn's boundary is read from Pi's own tree, by any process, at any time (`PiCursor.piTurnBoundaries`):
+
 - A turn starts at its marker. Its first user message after the marker is where a fork cuts; later user messages in the same turn are steers.
 - A turn that crashed half way still has its marker, so later turns stay exact. This replaced v2's per-turn leaf reads, which needed a fresh read before every prompt and lost precision after a crash.
 - A turn Pi started itself has no marker; reverting to before it says Pi's memory wasn't rewound (`conversationRolledBack: false`). Nothing is guessed.
@@ -460,6 +461,17 @@ Still to check during the build: whether `pi "/login"` opens the login screen di
 2. **Live testing account (Will, Oct 18): his ChatGPT account.** Signed in through Pi's `openai-chatgpt` sign-in (OpenAI's official flow, which names itself Pi; not `openai-codex`, which borrows Codex's client id), inside a throwaway Pi folder (`PI_CODING_AGENT_DIR` in the temp folder), so it never touches his real Pi or Codex setup. That login is its own token, separate from Codex's (unverified that a second login leaves the Codex one alone; checked on the first run).
 3. **Marketing site (Will, Oct 18): Pi and Muse Code are listed.** Done in PR #501 (the row's label moved to its own line so all nine fit).
 4. **Name and icon (Will, Oct 18): "Pi" with the one-color mark from Pi's press kit (pi.dev/press-kit, MIT), option C.** Used on the site (PR #501) and in the app, so Pi's icon matches the one-color marks of Codex, Cursor and Grok.
+
+## As built (Oct 18)
+
+Where the build differs from the plan above, and why:
+
+1. **Install reuses the community agents' installer.** `PiRuntime` is `AcpRegistryInstaller` with a new `npmIgnoreScripts` option (Pi says it needs no install scripts), so versions, leases, staging and pruning are the same tested code. The Node.js it runs on lives with the community agents' Node.js; `AcpRegistryNodes.keepAlso` keeps the community cleanup from deleting it. Managed Node is never put on Pi's PATH, so commands in a project use the project's own Node.
+2. **No `pi auth check`.** It needs a `--provider` and can't speak for providers that extensions add. Readiness is "discovery found a model", which covers both.
+3. **Sign in runs `pi --no-session`** in the sign-in terminal through the instance's `authFlows.terminalCommand`, so it runs whichever Pi chats use (Threadlines' copy included) and holds its lease while open. The hint says to type `/login`, then `/quit`.
+4. **Titles and commit messages share one builder** (`TextGenerationFromText`) with OpenCode and Muse Code, which carried identical copies.
+5. **A `write` that overwrote a file reports its path only.** Pi's result doesn't say what was replaced; the adapter checks whether the file existed when the call started and counts lines only for a new file.
+6. **The Usage page color for Pi is a placeholder** (`--provider-pi`, a neutral between Codex and Grok). New colors need Will's OK.
 
 ## Review log
 

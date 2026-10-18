@@ -30,7 +30,10 @@ import {
   type AcpRegistryCatalogAgent,
   AcpRegistryError,
 } from "@threadlines/contracts";
-import { ACP_REGISTRY_BUILT_IN_AGENT_IDS } from "@threadlines/shared/acpRegistry";
+import {
+  ACP_REGISTRY_BUILT_IN_AGENT_IDS,
+  ACP_REGISTRY_REPLACED_AGENTS,
+} from "@threadlines/shared/acpRegistry";
 import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
@@ -558,10 +561,16 @@ export function reduceAcpRegistryIndex(input: {
   };
 }
 
-/** Client-facing form of a snapshot. */
+/**
+ * Client-facing form of a snapshot: what can be added. Agents Threadlines
+ * now has built in stay in the snapshot, so a copy already added still sees
+ * its updates, but are not offered.
+ */
 export function toAcpRegistryCatalog(snapshot: AcpRegistryCatalogSnapshot): AcpRegistryCatalog {
   return {
-    agents: snapshot.entries.map((entry) => entry.agent),
+    agents: snapshot.entries
+      .filter((entry) => !ACP_REGISTRY_REPLACED_AGENTS.has(entry.agent.agentId))
+      .map((entry) => entry.agent),
     fetchedAt: snapshot.fetchedAt,
     stale: snapshot.stale,
     quarantineKnown: snapshot.quarantineKnown,

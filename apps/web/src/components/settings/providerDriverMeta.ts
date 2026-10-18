@@ -7,6 +7,7 @@ import {
   FxSettings,
   MuseSettings,
   OpenCodeSettings,
+  PiSettings,
   AntigravitySettings,
   GrokSettings,
   ProviderDriverKind,
@@ -23,6 +24,7 @@ import {
   MuseIcon,
   OpenAI,
   OpenCodeIcon,
+  PiIcon,
 } from "../Icons";
 
 type ProviderSettingsSchema = {
@@ -105,6 +107,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     icon: GrokIcon,
     settingsSchema: GrokSettings,
     needs: "SuperGrok or X Premium, or xAI API key",
+  },
+  {
+    value: ProviderDriverKind.make("pi"),
+    label: "Pi",
+    icon: PiIcon,
+    settingsSchema: PiSettings,
+    needs: "A model provider sign-in or API key",
   },
 ];
 

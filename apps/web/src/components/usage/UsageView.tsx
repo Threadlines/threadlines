@@ -27,7 +27,7 @@ import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useServerProviders } from "../../rpc/serverState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { PageTitlebar } from "../PageTitlebar";
-import { ClaudeAI, GrokIcon, OpenAI, type Icon } from "../Icons";
+import { ClaudeAI, GrokIcon, OpenAI, PiIcon, type Icon } from "../Icons";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { ProviderUsageSignIn } from "../chat/providerSignIn";
 import { Button } from "../ui/button";
@@ -116,6 +116,7 @@ const USAGE_PROVIDER_ICONS: Record<UsageProviderKind, Icon> = {
   claude: ClaudeAI,
   codex: OpenAI,
   grok: GrokIcon,
+  pi: PiIcon,
 };
 
 function shareDigits(share: number): number {
