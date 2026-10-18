@@ -149,6 +149,7 @@ const FX_DRIVER_KIND = ProviderDriverKind.make("fx");
 const ANTIGRAVITY_DRIVER_KIND = ProviderDriverKind.make("antigravity");
 const MUSE_DRIVER_KIND = ProviderDriverKind.make("muse");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
+const PI_DRIVER_KIND = ProviderDriverKind.make("pi");
 const ACP_REGISTRY_DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 
 /**
@@ -168,6 +169,13 @@ export const DEFAULT_MUSE_MODEL = "muse-spark-1.3";
  * the session) replaces it as soon as the provider probe succeeds.
  */
 export const DEFAULT_GROK_MODEL = "grok-4.7";
+
+/**
+ * Pi's own default: whatever model the user chose in Pi. Pi's catalog is the
+ * user's (`provider/id` slugs across every provider they signed in to), so
+ * there is no single model to fall back to.
+ */
+export const DEFAULT_PI_MODEL = "default";
 
 /**
  * Offline fx fallback. fx routes through Vercel AI Gateway by default; the
@@ -210,6 +218,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [ANTIGRAVITY_DRIVER_KIND]: DEFAULT_ANTIGRAVITY_MODEL,
   [MUSE_DRIVER_KIND]: DEFAULT_MUSE_MODEL,
   [GROK_DRIVER_KIND]: DEFAULT_GROK_MODEL,
+  [PI_DRIVER_KIND]: DEFAULT_PI_MODEL,
 };
 
 /** Per-provider text generation model defaults. */
@@ -224,6 +233,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [ANTIGRAVITY_DRIVER_KIND]: DEFAULT_ANTIGRAVITY_MODEL,
   [MUSE_DRIVER_KIND]: DEFAULT_MUSE_MODEL,
   [GROK_DRIVER_KIND]: DEFAULT_GROK_MODEL,
+  [PI_DRIVER_KIND]: DEFAULT_PI_MODEL,
 };
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
@@ -304,6 +314,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
   [ANTIGRAVITY_DRIVER_KIND]: {},
   [MUSE_DRIVER_KIND]: {},
   [GROK_DRIVER_KIND]: {},
+  [PI_DRIVER_KIND]: {},
 };
 
 // ── Provider display names ────────────────────────────────────────────
@@ -317,6 +328,7 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [ANTIGRAVITY_DRIVER_KIND]: "Antigravity",
   [MUSE_DRIVER_KIND]: "Muse Code",
   [GROK_DRIVER_KIND]: "Grok",
+  [PI_DRIVER_KIND]: "Pi",
   // Each community agent shows under its own name; this names the kind.
   [ACP_REGISTRY_DRIVER_KIND]: "Community agent",
 };
