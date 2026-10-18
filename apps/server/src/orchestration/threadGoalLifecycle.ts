@@ -29,6 +29,8 @@ export function toOrchestrationThreadGoal(
     timeUsedSeconds: goal.timeUsedSeconds,
     createdAt: goal.createdAt,
     updatedAt: goal.updatedAt,
+    ...(goal.checks !== undefined ? { checks: goal.checks } : {}),
+    ...(goal.lastCheck !== undefined ? { lastCheck: goal.lastCheck } : {}),
   };
 }
 

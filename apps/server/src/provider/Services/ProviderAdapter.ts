@@ -30,6 +30,7 @@ import type {
   ProviderSubagentTranscriptResult,
   ProviderSteerTurnInput,
   MessageId,
+  ModelSelection,
   RuntimeThreadGoalSnapshot,
   ThreadGoalStatus,
   ThreadId,
@@ -61,6 +62,13 @@ export interface ProviderSetThreadGoalInput {
   readonly objective?: string;
   readonly status?: ThreadGoalStatus;
   readonly tokenBudget?: number | null;
+  /** Who asked: the user, or Threadlines itself (pausing a goal before it
+   *  stops a session). Codex records only the user's edits in the model's
+   *  history. */
+  readonly origin: "user" | "automatic";
+  /** The model the goal's work should run on, for providers that start that
+   *  work as a turn of their own (Claude). */
+  readonly modelSelection?: ModelSelection;
 }
 
 export interface ProviderAdapterCapabilities {
@@ -86,9 +94,15 @@ export interface ProviderAdapterCapabilities {
 
   /**
    * Declares whether this adapter supports long-horizon thread goals
-   * (Codex goal mode).
+   * (Codex and Claude goal mode).
    */
   readonly threadGoals?: ProviderThreadGoalsMode;
+
+  /**
+   * Declares whether a supported goal can be paused and resumed. Absent means
+   * it can. Claude's goals cannot: they survive a stopped session as they are.
+   */
+  readonly threadGoalPause?: ProviderThreadGoalsMode;
 
   /**
    * Declares whether this adapter can open a session as a provider-side fork

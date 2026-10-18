@@ -458,8 +458,10 @@ const ThreadTokenUsageUpdatedPayload = Schema.Struct({
 });
 export type ThreadTokenUsageUpdatedPayload = typeof ThreadTokenUsageUpdatedPayload.Type;
 
-/** Provider-normalized long-horizon goal snapshot (Codex goal mode). Status
- *  literals mirror the app-server ThreadGoal values verbatim. */
+/** Provider-normalized long-horizon goal snapshot (Codex and Claude goal
+ *  mode). Status literals mirror the Codex app-server ThreadGoal values
+ *  verbatim; Claude goals use active, complete (met) and blocked (judged
+ *  impossible). */
 export const RuntimeThreadGoalSnapshot = Schema.Struct({
   objective: TrimmedNonEmptyStringSchema,
   status: Schema.Literals([
@@ -475,6 +477,10 @@ export const RuntimeThreadGoalSnapshot = Schema.Struct({
   timeUsedSeconds: NonNegativeInt,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  /** Claude: times its evaluator has checked the goal. */
+  checks: Schema.optional(NonNegativeInt),
+  /** Claude: the evaluator's latest reason (not met yet, or why it is done). */
+  lastCheck: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type RuntimeThreadGoalSnapshot = typeof RuntimeThreadGoalSnapshot.Type;
 

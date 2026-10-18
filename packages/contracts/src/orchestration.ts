@@ -1080,7 +1080,8 @@ export const OrchestrationSession = Schema.Struct({
 export type OrchestrationSession = typeof OrchestrationSession.Type;
 
 /** Mirrors the Codex app-server ThreadGoal status values verbatim so no
- *  lossy mapping sits between the provider and the read model. */
+ *  lossy mapping sits between the provider and the read model. Claude goals
+ *  use active, complete and blocked. */
 export const ThreadGoalStatus = Schema.Literals([
   "active",
   "paused",
@@ -1092,9 +1093,9 @@ export const ThreadGoalStatus = Schema.Literals([
 export type ThreadGoalStatus = typeof ThreadGoalStatus.Type;
 
 /**
- * A long-horizon goal attached to a thread (Codex goal mode). Authoritative
- * state comes from provider `goal.updated` notifications; commands only
- * express intent.
+ * A long-horizon goal attached to a thread (Codex and Claude goal mode).
+ * Authoritative state comes from provider `goal.updated` notifications;
+ * commands only express intent.
  */
 export const OrchestrationThreadGoal = Schema.Struct({
   threadId: ThreadId,
@@ -1105,6 +1106,10 @@ export const OrchestrationThreadGoal = Schema.Struct({
   timeUsedSeconds: NonNegativeInt,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  /** Claude: times its evaluator has checked the goal. */
+  checks: Schema.optional(NonNegativeInt),
+  /** Claude: the evaluator's latest reason (not met yet, or why it is done). */
+  lastCheck: Schema.optional(TrimmedNonEmptyString),
 });
 export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
 

@@ -3555,6 +3555,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     requireSession(input.threadId).pipe(
       Effect.flatMap((session) =>
         session.runtime.setGoal({
+          origin: input.origin,
           ...(input.objective !== undefined ? { objective: input.objective } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
           ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),

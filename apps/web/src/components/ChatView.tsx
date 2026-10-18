@@ -248,7 +248,7 @@ import {
 } from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./chat/ComposerPullRequestRow";
-import { type ComposerGoalSetInput } from "./chat/ComposerGoalBar";
+import { type ComposerGoalSetInput, threadGoalControls } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -1954,6 +1954,21 @@ export default function ChatView(props: ChatViewProps) {
       selectedProviderByThreadId,
       threadProvider,
     ],
+  );
+  // A goal goes to whoever holds the thread's session: in a room, the agent
+  // that worked last; otherwise the thread's own agent, as the next message
+  // would. Its provider decides what the goal bar offers.
+  const goalHolderId = activeThread?.session?.participantId ?? null;
+  const goalHolderModelSelection =
+    goalHolderId === null
+      ? undefined
+      : activeThread?.participants?.find((entry) => entry.id === goalHolderId)?.modelSelection;
+  const goalControls = threadGoalControls(
+    goalHolderId === null
+      ? selectedProvider
+      : providerInstanceEntries.find(
+          (entry) => entry.instanceId === goalHolderModelSelection?.instanceId,
+        )?.driverKind,
   );
   const phase = derivePhase(activeThread?.session ?? null);
   useEffect(() => {
@@ -5043,15 +5058,17 @@ export default function ChatView(props: ChatViewProps) {
       sendableComposerTerminalContexts.length === 0 &&
       sendableTranscriptHighlightContexts.length === 0 &&
       composerFileSelectionContexts.length === 0 &&
-      selectedProvider === ProviderDriverKind.make("codex")
+      goalControls !== null
         ? parseComposerGoalCommand(trimmed)
         : null;
     if (goalCommand) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      if (goalCommand.objective !== null) {
+      if (goalCommand.action === "set") {
         void onSetThreadGoal({ objective: goalCommand.objective });
+      } else if (goalCommand.action === "clear") {
+        void onClearThreadGoal();
       } else {
         composerRef.current?.openGoalEditor();
       }
@@ -7759,6 +7776,7 @@ export default function ChatView(props: ChatViewProps) {
                   onInterrupt={onInterrupt}
                   onStopBackgroundWork={stopBackgroundWork}
                   onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
+                  goalControls={goalControls}
                   goalDispatching={
                     activeThread !== undefined && goalDispatchingThreadId === activeThread.id
                   }

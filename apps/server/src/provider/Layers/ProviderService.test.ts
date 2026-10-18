@@ -1458,7 +1458,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(paused?.objective, "Finish the lifecycle fix");
       assert.equal(paused?.tokenBudget, 250_000);
       assert.deepEqual(routing.codex.getThreadGoal.mock.calls, [[threadId]]);
-      assert.deepEqual(routing.codex.setThreadGoal.mock.calls, [[{ threadId, status: "paused" }]]);
+      assert.deepEqual(routing.codex.setThreadGoal.mock.calls, [
+        [{ threadId, status: "paused", origin: "automatic" }],
+      ]);
     }),
   );
 

@@ -959,7 +959,9 @@ function threadGoalsEqual(
     left.tokenBudget === right.tokenBudget &&
     left.tokensUsed === right.tokensUsed &&
     left.timeUsedSeconds === right.timeUsedSeconds &&
-    left.updatedAt === right.updatedAt
+    left.updatedAt === right.updatedAt &&
+    left.checks === right.checks &&
+    left.lastCheck === right.lastCheck
   );
 }
 

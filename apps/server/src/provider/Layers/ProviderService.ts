@@ -105,6 +105,7 @@ const ProviderSetThreadGoalServiceInput = Schema.Struct({
   objective: Schema.optional(TrimmedNonEmptyString),
   status: Schema.optional(ThreadGoalStatus),
   tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  modelSelection: Schema.optional(ModelSelection),
 });
 const ProviderClearThreadGoalServiceInput = Schema.Struct({
   threadId: ThreadId,
@@ -1707,9 +1708,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }
       const goal = yield* routed.adapter.setThreadGoal({
         threadId: routed.threadId,
+        origin: "user",
         ...(input.objective !== undefined ? { objective: input.objective } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+        ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       });
       // Project the authoritative response directly: goal notifications keep
       // later autonomous updates flowing, but the requester's own change must
@@ -1815,13 +1818,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     }
 
     const currentGoal = yield* routed.adapter.getThreadGoal(routed.threadId);
-    if (currentGoal === null || currentGoal.status !== "active") {
+    if (
+      currentGoal === null ||
+      currentGoal.status !== "active" ||
+      routed.adapter.capabilities.threadGoalPause === "unsupported"
+    ) {
       return currentGoal;
     }
 
     const pausedGoal = yield* routed.adapter.setThreadGoal({
       threadId: routed.threadId,
       status: "paused",
+      origin: "automatic",
     });
     yield* analytics.record("provider.goal.paused_for_stop", {
       provider: routed.adapter.provider,

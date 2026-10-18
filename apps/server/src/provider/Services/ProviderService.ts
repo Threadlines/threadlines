@@ -20,6 +20,7 @@ import type {
   ProviderRealtimeStopInput,
   ProviderInstanceId,
   MessageId,
+  ModelSelection,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
@@ -200,12 +201,16 @@ export interface ProviderServiceShape {
     readonly objective?: string;
     readonly status?: ThreadGoalStatus;
     readonly tokenBudget?: number | null;
+    /** The model the goal's work runs on, where the provider starts that
+     *  work itself (Claude). */
+    readonly modelSelection?: ModelSelection;
   }) => Effect.Effect<RuntimeThreadGoalSnapshot, ProviderServiceError>;
 
   /**
    * Pause an active goal before stopping its live provider session.
-   * Never recovers a cold session. Returns the authoritative provider state,
-   * or null when there is no live goal-capable session.
+   * Never recovers a cold session. Returns the authoritative provider state
+   * (still active where goals cannot pause), or null when there is no live
+   * goal-capable session.
    */
   readonly pauseThreadGoalForStop: (input: {
     readonly threadId: ThreadId;
