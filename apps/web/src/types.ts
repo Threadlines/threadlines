@@ -255,7 +255,7 @@ export interface Thread {
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
   /** Durable identity/settings roster, independent of the rolling activity window. */
-  subagents?: OrchestrationSubagent[];
+  subagents?: ReadonlyArray<OrchestrationSubagent>;
   /** Workflow runs the thread's agents started. Never capped. */
   workflowRuns?: ReadonlyArray<OrchestrationWorkflowRun>;
 }

@@ -18,7 +18,7 @@ import {
   readCodexSubagentParentThreadId,
 } from "./CodexAdapter.ts";
 import { projectRuntimeEventToActivities } from "../../orchestration/Layers/ProviderActivityProjection.ts";
-import { projectSubagentActivity } from "../../orchestration/subagentProjection.ts";
+import { projectSubagentActivity } from "@threadlines/shared/subagentProjection";
 import { readCollabChildTurnStatus, type CodexServerNotification } from "./CodexSessionRuntime.ts";
 
 describe("CodexAdapter item mapping", () => {

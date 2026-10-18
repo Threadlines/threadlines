@@ -2567,12 +2567,14 @@ export const deriveThreadSubagentActivityState = threadMemo(
     subagents: Thread["subagents"],
     latestTurnId: TurnId | null,
     latestTurnSettled: boolean,
+    sessionStopped: boolean,
   ) =>
     deriveSubagentActivityState({
       activities,
       subagents: subagents ?? [],
       latestTurnId,
       latestTurnSettled,
+      sessionStopped,
     }),
 );
 

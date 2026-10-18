@@ -1587,16 +1587,26 @@ export function deriveSubagentActivityState(input: {
   subagents?: ReadonlyArray<OrchestrationSubagent>;
   latestTurnId?: TurnId | null | undefined;
   latestTurnSettled?: boolean | undefined;
+  /** The thread's provider session has stopped. Its agents stopped with it, so
+   *  an agent whose end was never reported reads as stopped, not running. */
+  sessionStopped?: boolean | undefined;
 }): SubagentActivityState {
-  const records = collectSubagentActivityRecords(input.activities, {
+  const collected = collectSubagentActivityRecords(input.activities, {
     subagents: input.subagents,
   });
+  const records = input.sessionStopped ? collected.map(stopLiveSubagentRecord) : collected;
   return {
     progress: deriveSubagentProgressStateFromRecords(records, input),
     history: deriveThreadSubagentHistoryFromRecords(records),
     resultEntries: deriveSubagentResultEntriesFromRecords(records),
     liveEntries: deriveSubagentLiveEntriesFromRecords(records),
   };
+}
+
+function stopLiveSubagentRecord(record: InternalSubagentRecord): InternalSubagentRecord {
+  return isActiveSubagentStatus(record.status)
+    ? { ...record, status: "interrupted", statusLabel: subagentProgressStatusLabel("interrupted") }
+    : record;
 }
 
 function asForkContextPayload(payload: unknown): ThreadForkContextPayload | null {

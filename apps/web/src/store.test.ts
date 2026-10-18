@@ -25,7 +25,7 @@ import {
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
-import { deriveTimelineEntries } from "./session-logic";
+import { deriveSubagentActivityState, deriveTimelineEntries } from "./session-logic";
 
 import {
   applyOrchestrationEvent,
@@ -910,6 +910,104 @@ describe("incremental orchestration updates", () => {
       hasBlockingUserInput: false,
     });
     expect(threadsOf(resolved)[0]?.activities).toHaveLength(MAX_THREAD_ACTIVITIES);
+  });
+
+  it("keeps naming an agent after its spawn leaves the recent activity log", () => {
+    const threadId = ThreadId.make("thread-1");
+    const toolUseId = "toolu_competitor_research";
+    const taskId = "a183626e8dc569a78";
+    const activityEvent = (id: string, kind: string, payload: unknown, sequence: number) =>
+      makeEvent(
+        "thread.activity-appended",
+        {
+          threadId,
+          activity: {
+            id: EventId.make(id),
+            tone: "tool",
+            kind,
+            summary: "Subagent task",
+            payload,
+            turnId: null,
+            createdAt: "2026-10-18T08:09:00.000Z",
+          },
+        },
+        { sequence },
+      );
+    // Claude's Agent tool call, then the task stream that links its task id.
+    const spawned = applyOrchestrationEvents(
+      makeState(makeThread()),
+      [
+        activityEvent(
+          "spawn",
+          "tool.started",
+          {
+            itemType: "collab_agent_tool_call",
+            toolCallId: toolUseId,
+            status: "inProgress",
+            title: "Subagent task",
+            data: {
+              toolName: "Agent",
+              input: { description: "Competitor research", subagent_type: "general-purpose" },
+            },
+          },
+          1,
+        ),
+        activityEvent("task-start", "task.started", { taskId, toolUseId }, 2),
+      ],
+      localEnvironmentId,
+    );
+    // A long-running agent's own progress pushes its spawn out of the window.
+    const working = applyOrchestrationEvents(
+      spawned,
+      Array.from({ length: MAX_THREAD_ACTIVITIES + 5 }, (_, index) =>
+        activityEvent(`progress-${index}`, "task.progress", { taskId, toolUseId }, index + 3),
+      ),
+      localEnvironmentId,
+    );
+    const thread = threadsOf(working)[0]!;
+    expect(thread.activities.map((activity) => activity.id)).not.toContain("spawn");
+    expect(
+      deriveSubagentActivityState({
+        activities: thread.activities,
+        subagents: thread.subagents ?? [],
+      }).history,
+    ).toMatchObject([{ item: { agentThreadId: toolUseId, status: "running" } }]);
+
+    const finished = applyOrchestrationEvent(
+      working,
+      activityEvent("task-done", "task.completed", { taskId, status: "completed" }, 600),
+      localEnvironmentId,
+    );
+    expect(threadsOf(finished)[0]?.subagents).toMatchObject([
+      { id: toolUseId, objective: "Competitor research", status: "completed" },
+    ]);
+
+    // A reload starts from the server's roster, not from activities.
+    const reloaded = syncServerThreadDetail(
+      finished,
+      decodeOrchestrationThread({
+        id: threadId,
+        projectId: "project-1",
+        title: "Thread",
+        modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+        runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+        branch: null,
+        worktreePath: null,
+        latestTurn: null,
+        createdAt: "2026-10-18T08:00:00.000Z",
+        updatedAt: "2026-10-18T08:40:00.000Z",
+        deletedAt: null,
+        messages: [],
+        activities: [],
+        subagents: threadsOf(finished)[0]?.subagents,
+        checkpoints: [],
+        session: null,
+      }),
+      localEnvironmentId,
+    );
+    expect(threadsOf(reloaded)[0]?.subagents).toMatchObject([
+      { id: toolUseId, status: "completed" },
+    ]);
   });
 
   it("carries the server's per-thread diff stat from a shell upsert into the sidebar summary", () => {

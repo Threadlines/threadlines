@@ -1,7 +1,7 @@
 import { ThreadActivityAppendedPayload, type OrchestrationSubagent } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
-import { projectSubagentActivity } from "../../orchestration/subagentProjection.ts";
+import { projectSubagentActivity } from "@threadlines/shared/subagentProjection";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 

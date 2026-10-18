@@ -2,7 +2,7 @@ import type { OrchestrationSubagent, OrchestrationThreadActivity } from "@thread
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { projectSubagentActivity } from "../../orchestration/subagentProjection.ts";
+import { projectSubagentActivity } from "@threadlines/shared/subagentProjection";
 
 interface ActivityRow {
   readonly activity_id: string;

@@ -304,6 +304,20 @@ describe("projectSubagentActivity", () => {
     );
     expect(settled[0]?.status).toBe("completed");
 
+    // Progress from the run that just ended, delivered late or a second time,
+    // is not a new run.
+    const replayed = projectSubagentActivity(
+      settled,
+      activity({
+        id: "a2-progress",
+        kind: "task.progress",
+        turnId: RESUME_TURN_ID,
+        createdAt: "2026-08-15T00:04:00.000Z",
+        payload: { taskId: "a34bb18edee269135", toolUseId: SPAWN_TOOL_USE_ID },
+      }),
+    );
+    expect(replayed).toBe(settled);
+
     // The model sent the agent another message: same task, but reported under
     // the call that resumed it and inside the turn that sent it.
     const resumed = projectSubagentActivity(
