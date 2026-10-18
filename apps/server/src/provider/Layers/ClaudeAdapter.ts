@@ -22,6 +22,8 @@ import {
   type SDKResultMessage,
   type SDKTaskNotificationMessage,
   type SettingSource,
+  type ElicitationRequest,
+  type ElicitationResult,
   type SDKUserMessage,
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -53,7 +55,9 @@ import {
   type ProviderSubagentTranscriptEntry,
   type ProviderSubagentTranscriptResult,
   type ThreadTokenUsageSnapshot,
+  type McpElicitation,
   type ProviderUserInputAnswers,
+  type UserInputRequestedPayload,
   type RuntimeSessionExitKind,
   type ServerProviderModel,
   type SubagentMetadataUpdatedPayload,
@@ -164,6 +168,7 @@ import {
   sameClaudeGoalState,
 } from "../Drivers/ClaudeGoals.ts";
 import { claudeSdkExecutable, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { mcpElicitationPrompt, mcpElicitationResponse } from "../mcpElicitation.ts";
 import {
   ensureClaudeSessionTranscript,
   locateClaudeSessionTranscript,
@@ -373,6 +378,8 @@ interface PendingApproval {
 interface PendingUserInput {
   readonly questions: ReadonlyArray<UserInputQuestion>;
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  /** Set when a tool server asked: its answer is checked before it is taken. */
+  readonly elicitation?: McpElicitation;
 }
 
 interface ToolInFlight {
@@ -7446,6 +7453,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
     context.pendingApprovals.clear();
 
+    // Questions still open get no answer: their askers see the session gone.
+    for (const pending of context.pendingUserInputs.values()) {
+      yield* Deferred.succeed(pending.answers, {} as ProviderUserInputAnswers);
+    }
+    context.pendingUserInputs.clear();
+
     const goalCommand = context.goalCommand;
     context.goalCommand = undefined;
     context.lateGoalCommands = [];
@@ -7862,6 +7875,159 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
 
       /**
+       * Put a question to the user and wait for the answer. The question is
+       * registered before `user-input.requested` goes out, and settles exactly
+       * once: on the answer, on the SDK giving up on it (also before it got
+       * this far), or on the session stopping, each followed by one
+       * `user-input.resolved`. Both events name the turn it was asked in.
+       */
+      const askUser = Effect.fn("askUser")(function* (
+        context: ClaudeSessionContext,
+        request: {
+          readonly payload: UserInputRequestedPayload;
+          readonly signal: AbortSignal;
+          readonly providerItemId?: string | undefined;
+          readonly rawMethod: string;
+          readonly rawPayload: unknown;
+        },
+      ) {
+        const noAnswer = {} as ProviderUserInputAnswers;
+        if (request.signal.aborted) {
+          return { answers: noAnswer, aborted: true };
+        }
+        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+        const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+        const turnRef = context.turnState
+          ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+          : {};
+        const providerRefs = nativeProviderRefs(context, {
+          providerItemId: request.providerItemId,
+        });
+        let aborted = false;
+        const onAbort = () => {
+          if (!pendingUserInputs.has(requestId)) {
+            return;
+          }
+          aborted = true;
+          pendingUserInputs.delete(requestId);
+          runFork(Deferred.succeed(answers, noAnswer));
+        };
+        pendingUserInputs.set(requestId, {
+          questions: request.payload.questions,
+          answers,
+          ...(request.payload.elicitation ? { elicitation: request.payload.elicitation } : {}),
+        });
+        request.signal.addEventListener("abort", onAbort, { once: true });
+        if (request.signal.aborted) {
+          // Given up on while this was being set up.
+          onAbort();
+          return { answers: noAnswer, aborted: true };
+        }
+
+        const requestedStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "user-input.requested",
+          eventId: requestedStamp.eventId,
+          provider: PROVIDER,
+          createdAt: requestedStamp.createdAt,
+          threadId: context.session.threadId,
+          ...turnRef,
+          requestId: asRuntimeRequestId(requestId),
+          payload: request.payload,
+          providerRefs,
+          // Both arrive as the CLI's control requests, as permission asks do.
+          raw: {
+            source: "claude.sdk.permission",
+            method: request.rawMethod,
+            payload: request.rawPayload,
+          },
+        });
+
+        const answered = yield* Deferred.await(answers).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              pendingUserInputs.delete(requestId);
+              request.signal.removeEventListener("abort", onAbort);
+            }),
+          ),
+        );
+
+        const resolvedStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "user-input.resolved",
+          eventId: resolvedStamp.eventId,
+          provider: PROVIDER,
+          createdAt: resolvedStamp.createdAt,
+          threadId: context.session.threadId,
+          ...turnRef,
+          requestId: asRuntimeRequestId(requestId),
+          payload: { answers: answered },
+          providerRefs,
+          raw: {
+            source: "claude.sdk.permission",
+            method: `${request.rawMethod}/resolved`,
+            payload: { answers: answered },
+          },
+        });
+        // A session that stopped answered nothing.
+        return { answers: answered, aborted: aborted || context.stopped };
+      });
+
+      /**
+       * A tool server asking the user to fill in a form or open a sign-in link
+       * (MCP elicitation). Without this the SDK declines every one of them on
+       * the user's behalf.
+       */
+      const handleElicitation = Effect.fn("handleElicitation")(function* (
+        request: ElicitationRequest,
+        signal: AbortSignal,
+      ) {
+        const context = yield* Ref.get(contextRef);
+        // A side answer only reads; nobody is there to answer for it.
+        if (!context || lockdown) {
+          return { action: "decline" } satisfies ElicitationResult;
+        }
+        const title = request.title?.trim();
+        const elicitation = mcpElicitationPrompt({
+          serverName: request.displayName?.trim() || request.serverName,
+          message:
+            title && title !== request.message.trim()
+              ? `${title}\n\n${request.message}`
+              : request.message,
+          mode: request.mode ?? null,
+          url: request.url ?? null,
+          requestedSchema: request.requestedSchema,
+        });
+        if (!elicitation) {
+          yield* emitRuntimeWarning(
+            context,
+            `${request.serverName} asked for input Threadlines can't show, so it was cancelled.`,
+            request,
+            { warningKind: "mcp-elicitation-unsupported" },
+          );
+          return { action: "cancel" } satisfies ElicitationResult;
+        }
+        const { answers, aborted } = yield* askUser(context, {
+          payload: { questions: [], isBlocking: true, elicitation },
+          signal,
+          rawMethod: "onElicitation",
+          rawPayload: request,
+        });
+        if (aborted) {
+          return { action: "cancel" } satisfies ElicitationResult;
+        }
+        // Checked when it was given (respondToUserInput); a bad one cancels.
+        const response = yield* Effect.try(() => mcpElicitationResponse(elicitation, answers)).pipe(
+          Effect.orElseSucceed(() => ({ action: "cancel" as const, content: null })),
+        );
+        return (
+          response.content === null
+            ? { action: response.action }
+            : { action: response.action, content: response.content }
+        ) as ElicitationResult;
+      });
+
+      /**
        * Handle AskUserQuestion tool calls by emitting a `user-input.requested`
        * runtime event and waiting for the user to respond via `respondToUserInput`.
        */
@@ -7873,8 +8039,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           readonly toolUseID?: string;
         },
       ) {
-        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
-
         // Parse questions from the SDK's AskUserQuestion input.
         // `id` MUST equal the full question text — Claude SDK >= 2.1.121 looks
         // up answers by question text in `mapToolResultToToolResultBlockParam`,
@@ -7896,83 +8060,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           }),
         );
 
-        const answersDeferred = yield* Deferred.make<ProviderUserInputAnswers>();
-        let aborted = false;
-        const pendingInput: PendingUserInput = {
-          questions,
-          answers: answersDeferred,
-        };
-
-        // Emit user-input.requested so the UI can present the questions.
-        const requestedStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent({
-          type: "user-input.requested",
-          eventId: requestedStamp.eventId,
-          provider: PROVIDER,
-          createdAt: requestedStamp.createdAt,
-          threadId: context.session.threadId,
-          ...(context.turnState
-            ? {
-                turnId: asCanonicalTurnId(context.turnState.turnId),
-              }
-            : {}),
-          requestId: asRuntimeRequestId(requestId),
+        const { answers, aborted } = yield* askUser(context, {
           payload: { questions },
-          providerRefs: nativeProviderRefs(context, {
-            providerItemId: callbackOptions.toolUseID,
-          }),
-          raw: {
-            source: "claude.sdk.permission",
-            method: "canUseTool/AskUserQuestion",
-            payload: {
-              toolName: "AskUserQuestion",
-              input: toolInput,
-            },
-          },
-        });
-
-        pendingUserInputs.set(requestId, pendingInput);
-
-        // Handle abort (e.g. turn interrupted while waiting for user input).
-        const onAbort = () => {
-          if (!pendingUserInputs.has(requestId)) {
-            return;
-          }
-          aborted = true;
-          pendingUserInputs.delete(requestId);
-          runFork(Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers));
-        };
-        callbackOptions.signal.addEventListener("abort", onAbort, {
-          once: true,
-        });
-
-        // Block until the user provides answers.
-        const answers = yield* Deferred.await(answersDeferred);
-        pendingUserInputs.delete(requestId);
-
-        // Emit user-input.resolved so the UI knows the interaction completed.
-        const resolvedStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent({
-          type: "user-input.resolved",
-          eventId: resolvedStamp.eventId,
-          provider: PROVIDER,
-          createdAt: resolvedStamp.createdAt,
-          threadId: context.session.threadId,
-          ...(context.turnState
-            ? {
-                turnId: asCanonicalTurnId(context.turnState.turnId),
-              }
-            : {}),
-          requestId: asRuntimeRequestId(requestId),
-          payload: { answers },
-          providerRefs: nativeProviderRefs(context, {
-            providerItemId: callbackOptions.toolUseID,
-          }),
-          raw: {
-            source: "claude.sdk.permission",
-            method: "canUseTool/AskUserQuestion/resolved",
-            payload: { answers },
-          },
+          signal: callbackOptions.signal,
+          providerItemId: callbackOptions.toolUseID,
+          rawMethod: "canUseTool/AskUserQuestion",
+          rawPayload: { toolName: "AskUserQuestion", input: toolInput },
         });
 
         if (aborted) {
@@ -8422,6 +8515,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // Without this the CLI fails closed and an interrupt kills them all.
         perTaskStopAffordance: true,
         canUseTool,
+        onElicitation: (request, { signal }) => runPromise(handleElicitation(request, signal)),
         hooks: {
           PostToolUse: [
             {
@@ -9357,6 +9451,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         provider: PROVIDER,
         method: "item/tool/respondToUserInput",
         detail: `Unknown pending user-input request: ${requestId}`,
+      });
+    }
+
+    if (pending.elicitation !== undefined) {
+      const elicitation = pending.elicitation;
+      // A form the server would reject stays open for the user to fix.
+      yield* Effect.try({
+        try: () => mcpElicitationResponse(elicitation, answers),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "mcp/elicitation/respond",
+            detail: cause instanceof Error ? cause.message : "Invalid form response.",
+          }),
       });
     }
 

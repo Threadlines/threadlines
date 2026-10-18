@@ -78,7 +78,7 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
-import { codexMcpElicitation, codexMcpElicitationResponse } from "../CodexMcpElicitation.ts";
+import { mcpElicitationPrompt, mcpElicitationResponse } from "../mcpElicitation.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
@@ -2542,7 +2542,8 @@ export const makeCodexSessionRuntime = (
         if (lockdown !== undefined) {
           return { action: "decline" as const, content: null };
         }
-        const elicitation = codexMcpElicitation(payload);
+        // Codex's own user-verification mode has no MCP counterpart to show.
+        const elicitation = "message" in payload ? mcpElicitationPrompt(payload) : null;
         if (!elicitation) {
           yield* emitEvent({
             kind: "error",
@@ -2582,7 +2583,7 @@ export const makeCodexSessionRuntime = (
             }),
           ),
         );
-        return codexMcpElicitationResponse(elicitation, resolved);
+        return mcpElicitationResponse(elicitation, resolved);
       }),
     );
 
@@ -3220,7 +3221,7 @@ export const makeCodexSessionRuntime = (
           const elicitation = waiting?.elicitation;
           if (elicitation) {
             yield* Effect.try({
-              try: () => codexMcpElicitationResponse(elicitation, answers),
+              try: () => mcpElicitationResponse(elicitation, answers),
               catch: (cause) =>
                 CodexErrors.CodexAppServerRequestError.invalidParams(
                   cause instanceof Error ? cause.message : "Invalid form response",
