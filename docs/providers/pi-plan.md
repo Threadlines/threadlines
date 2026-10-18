@@ -140,19 +140,12 @@ We check on `agent_settled` and after every ack. If Pi is still busy, keep liste
 
 Our approval dialog passes `ctx.signal`, so an abort also ends it inside Pi.
 
-**Revert positions (durable).**
-
-1. Before each prompt, read Pi's current leaf as the turn's starting point. Don't reuse the last turn's saved leaf: a turn that crashed before its capture would otherwise have its entries counted into the next turn.
-2. After the turn, call `get_entries {since: startLeaf}`.
-3. Walk the `parentId` chain from the new leaf back to the starting point. Never trust list order.
-4. Store a versioned map in the resume cursor: Threadlines turn id → { start leaf, first Pi user entry of the turn, the turn's leaf entry, the session file }.
-
-If the starting point can't be read, that turn and every later one stay unknown until a fresh read succeeds.
-
-Threadlines already does this for ACP agents (`AcpAdapter.ts` resume cursor).
-
-- One Threadlines turn can hold several Pi user entries (steers), and a wake-up turn may hold none. That's why we map turns explicitly instead of counting.
-- If a turn's boundary was never captured (crash, kill), it's marked unknown. A revert across an unknown boundary still restores files, and says Pi's memory was not rewound (`conversationRolledBack: false`). We never guess (T3 Code's guessing broke every later revert, their #20530).
+**Revert positions: turn markers in Pi's own tree.** Before each user turn, the adapter sends `/threadlines-turn <nonce> <turnId>`, and the Threadlines extension appends a custom entry (`threadlines-turn`) to Pi's session. Pi never sends custom entries to the model, keeps them in the session file, and copies them on `fork` and `clone` (all checked on 1.3.0). So a turn's boundary is read from Pi's own tree, by any process, at any time (`PiCursor.piTurnBoundaries`):
+- A turn starts at its marker. Its first user message after the marker is where a fork cuts; later user messages in the same turn are steers.
+- A turn that crashed half way still has its marker, so later turns stay exact. This replaced v2's per-turn leaf reads, which needed a fresh read before every prompt and lost precision after a crash.
+- A turn Pi started itself has no marker; reverting to before it says Pi's memory wasn't rewound (`conversationRolledBack: false`). Nothing is guessed.
+- The resume cursor holds only the session file and its folder.
+- Startup checks that the extension's commands are registered (`get_commands`); without them a marker would reach the model as text, so the session refuses to start instead.
 
 ### Showing the work
 
@@ -487,6 +480,8 @@ Sol's review of v1 (all taken):
 13. Usage double-counted forks. Now an entry-level reader with de-duplication.
 14. Compaction can take more than 15 s. Now model-length lifetimes.
 15. The test gates didn't prove the extension. Now required CI integration tests on real Pi, and the floor raised to 1.3.0.
+
+Built differently than reviewed (Oct 18): turn boundaries are markers Pi stores itself (see "Revert positions"), which also covers v2 #2 and forks from other threads.
 
 Sol's review of v2 (all taken):
 

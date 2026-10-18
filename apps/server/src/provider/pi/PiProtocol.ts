@@ -217,6 +217,9 @@ export const PiSessionEntry = Schema.Struct({
   parentId: Schema.NullOr(Schema.String),
   type: Schema.String,
   message: Schema.optional(PiMessage),
+  /** Custom entries (Threadlines' turn markers among them). */
+  customType: Schema.optional(Schema.String),
+  data: Schema.optional(Schema.Unknown),
   /** Present on `usage` entries and summaries that record spending. */
   usage: Schema.optional(PiUsage),
   timestamp: Schema.optional(Schema.String),

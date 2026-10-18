@@ -12,6 +12,7 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { describe, expect } from "vite-plus/test";
 
+import { piTurnBoundaries, planPiRevert } from "./PiCursor.ts";
 import {
   parsePiApprovalTitle,
   PI_APPROVAL_OPTIONS,
@@ -19,8 +20,11 @@ import {
   PI_PLAN_MODE_REASON,
   piExtensionFileName,
   piModeCommandText,
+  piTurnCommandText,
+  PI_TURN_COMMAND,
 } from "./PiExtensionSource.ts";
 import { type PiAccessLevel, piProcessArgs, piProcessEnvironment } from "./PiLaunch.ts";
+import { decodePi, PiCommands, PiEntries } from "./PiProtocol.ts";
 import { type PiRpc, startPiRpc } from "./PiRpc.ts";
 import { collectPiRecords, type PiRecordLog } from "./testing/PiRecordLog.ts";
 import {
@@ -190,6 +194,40 @@ describe.skipIf(!piCli)("Threadlines extension in a real Pi", () => {
           yield* settled(log, from);
           const lastRequest = JSON.stringify(model.requests.at(-1));
           expect(lastRequest).toContain("threadlines_plan_mode");
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
+    "marks each turn in Pi's own tree, so revert finds the turn's first message",
+    () =>
+      withPi("full-access", ({ rpc, log }) =>
+        Effect.gen(function* () {
+          const commands = decodePi(PiCommands)(yield* rpc.request({ type: "get_commands" }));
+          expect(
+            commands._tag === "Some" &&
+              commands.value.commands.some((c) => c.name === PI_TURN_COMMAND),
+          ).toBe(true);
+          for (const turnId of ["turn-a", "turn-b"]) {
+            const from = log.mark();
+            expect(yield* prompt(rpc, piTurnCommandText({ nonce: NONCE, turnId }))).toEqual({
+              disposition: "handled",
+            });
+            yield* prompt(rpc, `hello from ${turnId}`);
+            yield* settled(log, from);
+          }
+          const entries = decodePi(PiEntries)(yield* rpc.request({ type: "get_entries" }));
+          expect(entries._tag).toBe("Some");
+          if (entries._tag !== "Some") return;
+          const boundaries = piTurnBoundaries(entries.value.entries, entries.value.leafId);
+          expect(boundaries.map((boundary) => boundary.turnId)).toEqual(["turn-a", "turn-b"]);
+          const plan = planPiRevert(boundaries, "turn-b");
+          expect(plan.kind).toBe("fork");
+          const target = entries.value.entries.find(
+            (entry) => plan.kind === "fork" && entry.id === plan.entryId,
+          );
+          expect(JSON.stringify(target?.message?.content)).toContain("hello from turn-b");
         }),
       ),
     60_000,

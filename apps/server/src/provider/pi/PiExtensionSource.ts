@@ -30,6 +30,7 @@
  */
 import { createHash } from "node:crypto";
 
+import { PI_TURN_MARKER_TYPE } from "./PiCursor.ts";
 import { PI_EXTENSION_ENV } from "./PiLaunch.ts";
 
 /** The approval dialog's title: `<prefix><nonce>:<JSON PiApprovalRequest>`. */
@@ -54,6 +55,9 @@ export const PI_APPROVAL_OPTIONS = {
 /** The mode command: `/threadlines-mode <nonce> <access> <plan 0|1>`. */
 export const PI_MODE_COMMAND = "threadlines-mode";
 
+/** The turn marker command: `/threadlines-turn <nonce> <turnId>` (see `PiCursor`). */
+export const PI_TURN_COMMAND = "threadlines-turn";
+
 export const PI_PLAN_MODE_REASON =
   "Plan mode: Threadlines lets Pi read and search only. Describe the change instead of making it.";
 
@@ -69,6 +73,8 @@ const ENV = ${JSON.stringify(PI_EXTENSION_ENV)};
 const APPROVAL_PREFIX = ${JSON.stringify(PI_APPROVAL_TITLE_PREFIX)};
 const OPTIONS = ${JSON.stringify(PI_APPROVAL_OPTIONS)};
 const MODE_COMMAND = ${JSON.stringify(PI_MODE_COMMAND)};
+const TURN_COMMAND = ${JSON.stringify(PI_TURN_COMMAND)};
+const TURN_MARKER = ${JSON.stringify(PI_TURN_MARKER_TYPE)};
 const PLAN_REASON = ${JSON.stringify(PI_PLAN_MODE_REASON)};
 const PLAN_INSTRUCTION = ${JSON.stringify(PI_PLAN_MODE_INSTRUCTION)};
 const PROTOCOL = "2025-06-18";
@@ -211,6 +217,16 @@ export default async function threadlines(pi: ExtensionAPI) {
     },
   });
 
+  // Marks where a Threadlines turn starts in Pi's own session tree.
+  pi.registerCommand(TURN_COMMAND, {
+    description: "Set by Threadlines",
+    handler: async (args) => {
+      const [given, turnId] = args.trim().split(/\\s+/);
+      if (!nonce || given !== nonce || !turnId) return;
+      pi.appendEntry(TURN_MARKER, { turnId });
+    },
+  });
+
   pi.on("before_agent_start", (event) => {
     if (plan) event.systemPromptOptions.sections.threadlines_plan_mode = PLAN_INSTRUCTION;
     else delete event.systemPromptOptions.sections.threadlines_plan_mode;
@@ -322,6 +338,10 @@ export function parsePiApprovalTitle(title: string, nonce: string): PiApprovalRe
     return undefined;
   }
 }
+
+/** The turn marker command's prompt text. */
+export const piTurnCommandText = (input: { readonly nonce: string; readonly turnId: string }) =>
+  `/${PI_TURN_COMMAND} ${input.nonce} ${input.turnId}`;
 
 /** The mode command's prompt text, as the adapter sends it. */
 export function piModeCommandText(input: {
