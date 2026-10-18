@@ -60,6 +60,20 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
       }),
     );
 
+    it.effect("lifts the background-command ceiling unless explicitly configured", () =>
+      Effect.gen(function* () {
+        const defaulted = yield* makeClaudeEnvironment({ homePath: "", accountFolder: "" }, {});
+        expect(defaulted.BASH_MAX_TIMEOUT_MS).toBe("2147483647");
+        expect(defaulted.BASH_DEFAULT_TIMEOUT_MS).toBeUndefined();
+
+        const overridden = yield* makeClaudeEnvironment(
+          { homePath: "", accountFolder: "" },
+          { BASH_MAX_TIMEOUT_MS: "600000" },
+        );
+        expect(overridden.BASH_MAX_TIMEOUT_MS).toBe("600000");
+      }),
+    );
+
     it.effect("forwards configured subagent limits and drops blank or invalid values", () =>
       Effect.gen(function* () {
         const configured = yield* makeClaudeEnvironment(
