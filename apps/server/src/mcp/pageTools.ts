@@ -72,7 +72,7 @@ export const PreviewPageParameters = Schema.Struct({
   markdown: Schema.optional(Markdown),
   width: Schema.optional(
     Schema.Int.annotate({
-      description: `Viewport width in CSS pixels, 240-1600. Defaults to ${AGENT_PAGE_COLUMN_WIDTH}, the reply column; use about 390 to check phones.`,
+      description: `Viewport width in CSS pixels, 240-1600. Defaults to ${AGENT_PAGE_COLUMN_WIDTH}, the reply column; use about 300 to check phones.`,
     }),
   ),
   appearance: Schema.optional(

@@ -23,9 +23,10 @@ import {
 // A scrollbar inside the reply reads as a box within the thread, so a page
 // taller than its frame scrolls without one. Focus rings paint inward so the
 // frame's edge never clips them.
-// The page paints `--tl-surface`, the host's exact background color, when the
-// host gives one: a hex copy can round a shade off the thread around it, and
-// the page then reads as a box.
+// The page paints `--tl-surface`, the host's exact paint around it (a color,
+// or a translucent fill laid over one), when the host gives one: a hex copy
+// can round a shade off the surface around it, and the page then reads as a
+// box.
 const BASE_CSS =
   "html{background:var(--tl-surface,var(--background));color:var(--foreground);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;scrollbar-width:none}" +
   "html::-webkit-scrollbar{display:none}body{margin:0}code,kbd,pre,samp{font-family:var(--font-mono)}" +

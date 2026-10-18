@@ -33,6 +33,7 @@ import {
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { openExternalUrl } from "../../lib/externalLinks";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -57,21 +58,23 @@ const setMinimized = (key: string, minimized: boolean) => {
 export const agentPageRowId = (page: Pick<OrchestrationAgentPage, "pageId" | "turnId">) =>
   `page:${page.pageId}:${page.turnId}`;
 
-/** The chrome above a page: its one title line. */
-export const AGENT_PAGE_ROW_CHROME_PX = 28;
+/** From the panel's top to the middle of its title line, where an agent's line
+ *  bends into a page that opens an answer (MessagesTimeline agentLineOffsets). */
+export const AGENT_PAGE_TITLE_MIDDLE_PX = 20;
 
 // The row's actions are plain until the row is hovered, as row actions are.
 const ROW_ACTION_CLASS =
   "opacity-0 transition-opacity duration-150 focus-visible:opacity-100 group-hover/page:opacity-100 pointer-coarse:opacity-100";
 
 /**
- * An agent page in the chat (docs/agent-pages.md): a title line and the page
- * itself on the thread's own background, fitted to its height. The page is
- * part of the answer, so its title reads as content (a row title with the
- * page's glyph), not as one of the agent's steps; clicking it folds the page
- * to that line. The frame keeps the server's measured height until the page
- * reports its own, so nothing below it moves while it loads. A page its
- * provider also put online (a Claude artifact) says where, and opens there.
+ * An agent page in the chat (docs/agent-pages.md): a quiet panel holding a
+ * title line and the page itself, fitted to its height. The page is part of
+ * the answer, so it stands apart from the agent's steps: its title reads as
+ * content (a row title with the page's glyph), and once the turn ends the
+ * agent's line bends into it. Clicking the title folds the panel to that line.
+ * The frame keeps the server's measured height until the page reports its
+ * own, so nothing below it moves while it loads. A page its provider also put
+ * online (a Claude artifact) says where, and opens there.
  */
 export function AgentPageRow(props: {
   readonly environmentId: EnvironmentId;
@@ -101,7 +104,10 @@ export function AgentPageRow(props: {
   ].join(" · ");
 
   return (
-    <div className="group/page min-w-0" data-agent-page-row={page.pageId}>
+    <div
+      className={cn("group/page min-w-0 surface-group px-3.5 pt-2", minimized ? "pb-2" : "pb-3.5")}
+      data-agent-page-row={page.pageId}
+    >
       <div className="flex min-w-0 items-center gap-1">
         <button
           type="button"
@@ -287,13 +293,13 @@ function FullSizePage(props: {
             {loaded.content}
           </pre>
         ) : (
-          // The page has no side padding of its own, so full size gives it the
-          // column's gutter, painted in the page's own background.
+          // The page has no side padding of its own, so full size gives it a
+          // gutter, painted in the page's own background: its panel's fill.
           <AgentPageFrame
             key={props.version.versionId}
             version={props.version}
             title={props.page.title}
-            className="min-h-0 flex-1 bg-background px-4 pb-4"
+            className="min-h-0 flex-1 surface-group-solid px-4 pt-3 pb-4"
             onLoaded={onLoaded}
           />
         )}

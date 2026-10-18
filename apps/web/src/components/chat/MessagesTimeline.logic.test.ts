@@ -573,13 +573,22 @@ describe("deriveMessagesTimelineRows", () => {
             : row.kind,
       );
 
-    // Still working: each page stands between the steps before and after it.
-    expect(stepsOf(derive(turn, true)).slice(0, 5)).toEqual([
+    // Still working: each page stands between the steps before and after it,
+    // on the agent's line.
+    const working = derive(turn, true);
+    expect(stepsOf(working).slice(0, 5)).toEqual([
       "work:2:true",
       "page:first",
       "work:8:true",
       "page:second",
       "work:1:false",
+    ]);
+    expect(working.slice(0, 5).map((row) => row.agentLine?.placement)).toEqual([
+      "start",
+      "through",
+      "through",
+      "through",
+      "through",
     ]);
 
     // Working, but the chat has not been told the turn's id: the page still
@@ -635,6 +644,99 @@ describe("deriveMessagesTimelineRows", () => {
       false,
     );
     expect(stepsOf(answered)).toEqual(["work:12:true", "page:first", "page:second", "message"]);
+    // The pages open the answer: the line bends into the first, and the rest
+    // of the answer sits past the bend.
+    expect(answered.map((row) => row.agentLine?.placement)).toEqual([
+      "start",
+      "end",
+      "past",
+      "past",
+    ]);
+    expect(answered.map((row) => row.agentLine?.heads)).toEqual([true, false, false, false]);
+  });
+
+  it("bends the line into a page that ends a turn, and names the agent on a page that starts one", () => {
+    const at = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
+    const step = {
+      id: "step",
+      kind: "work" as const,
+      createdAt: at(1),
+      entry: {
+        id: "step",
+        createdAt: at(1),
+        label: "step",
+        tone: "tool" as const,
+        turnId: "turn-1" as never,
+      },
+    };
+    const shown = {
+      id: "page:page-1:turn-1",
+      kind: "page" as const,
+      createdAt: at(2),
+      page: {
+        pageId: "page-1" as never,
+        versionId: "v1" as never,
+        version: 1,
+        turnId: "turn-1" as never,
+        participantId: null,
+        title: "Funnel",
+        kind: "html" as const,
+        height: 400,
+        createdAt: at(2),
+        updatedAt: at(2),
+      },
+    };
+    const reply = {
+      id: "reply-entry",
+      kind: "message" as const,
+      createdAt: at(3),
+      message: {
+        id: "reply" as never,
+        role: "assistant" as const,
+        text: "Here it is.",
+        turnId: "turn-1" as never,
+        createdAt: at(3),
+        completedAt: at(3),
+        streaming: false,
+      },
+    };
+    const lines = (
+      timelineEntries: Parameters<typeof deriveMessagesTimelineRows>[0]["timelineEntries"],
+    ) =>
+      deriveMessagesTimelineRows({
+        timelineEntries,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      }).map((row) => [row.kind, row.agentLine?.placement, row.agentLine?.heads]);
+
+    // The turn ended on its pages, with no reply: the first opens the answer.
+    const second = {
+      ...shown,
+      id: "page:page-2:turn-1",
+      page: { ...shown.page, pageId: "page-2" as never, versionId: "v2" as never },
+    };
+    expect(lines([step, shown, second])).toEqual([
+      ["work", "start", true],
+      ["page", "end", false],
+      ["page", "past", false],
+    ]);
+    // A page an earlier turn ended on stays on the line above a later turn's reply.
+    const later = {
+      ...reply,
+      message: { ...reply.message, turnId: "turn-2" as never },
+    };
+    expect(lines([step, shown, later])).toEqual([
+      ["work", "start", true],
+      ["page", "through", false],
+      ["message", "end", false],
+    ]);
+    // The turn's steps are gone: the page opens the answer and names its agent.
+    expect(lines([shown, reply])).toEqual([
+      ["page", "single", true],
+      ["message", "past", false],
+    ]);
   });
 
   it("keeps the active turn's trailing work below its streamed commentary", () => {
