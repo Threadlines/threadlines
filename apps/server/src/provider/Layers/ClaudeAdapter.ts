@@ -107,6 +107,8 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
+import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
 import { areFilesystemPathsEqual, isFilesystemPathWithin } from "@threadlines/shared/path";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
@@ -147,10 +149,26 @@ import {
   roomSideKindOf,
   roomToolsFor,
 } from "../../mcp/roomToolAccess.ts";
+import {
+  applyClaudeGoalRecord,
+  CLAUDE_GOAL_CLEAR_ARGS,
+  CLAUDE_GOAL_MAX_CONDITION_CHARS,
+  type ClaudeGoalRecord,
+  type ClaudeGoalState,
+  claudeGoalCommandReply,
+  claudeGoalCommandText,
+  claudeGoalSetReplyText,
+  claudeGoalSnapshot,
+  isClaudeGoalClearWord,
+  isClaudeGoalCommandResult,
+  sameClaudeGoalState,
+} from "../Drivers/ClaudeGoals.ts";
 import { claudeSdkExecutable, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   ensureClaudeSessionTranscript,
-  readClaudeTranscriptWorktreePath,
+  locateClaudeSessionTranscript,
+  readClaudeTranscriptGoalRecords,
+  readClaudeTranscriptResumeFacts,
   resolveClaudeConfigDir,
 } from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
@@ -441,6 +459,31 @@ type ClaudeStructuredAgentToolResult =
       readonly raw: Record<string, unknown>;
     };
 
+/** A `/goal` command waiting for the CLI's answer. */
+interface ClaudeGoalCommand extends ClaudeGoalCommandRequest {
+  readonly reply: Deferred.Deferred<ClaudeGoalCommandOutcome>;
+}
+
+interface ClaudeGoalCommandRequest {
+  readonly kind: "set" | "clear";
+  /** What follows `/goal`; the CLI's answer names it again. */
+  readonly args: string;
+  /** When it went in; a goal record newer than this already reflects it. */
+  readonly sentAtMs: number;
+}
+
+interface ClaudeGoalCommandOutcome {
+  readonly accepted: boolean;
+  /** The CLI's answer, or why there was none. */
+  readonly text: string;
+}
+
+interface ClaudeGoalTranscriptCursor {
+  readonly sessionId: string;
+  readonly transcriptPath: string;
+  offset: bigint;
+}
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
@@ -535,6 +578,30 @@ interface ClaudeSessionContext {
   /** Append-only messages sent whose own empty result has not come back yet.
    *  The CLI answers each with a zero-turn result that ends nothing. */
   pendingAppendOnlyResults: number;
+  /** The session's goal as Claude recorded it (see ClaudeGoals.ts); null
+   *  when it has none. */
+  goal: ClaudeGoalState | null;
+  /** Whether this session's goal is the thread's. A side answer's fork
+   *  carries the thread's goal history but must never report on it. */
+  readonly goalsTracked: boolean;
+  /** The `/goal` command sent and not answered yet. */
+  goalCommand: ClaudeGoalCommand | undefined;
+  /** Commands whose wait ran out before Claude answered: their answers may
+   *  still come, and must not be mistaken for a turn's output. */
+  lateGoalCommands: Array<ClaudeGoalCommandRequest>;
+  /** One transcript read at a time, so the watch and a turn end never fold
+   *  the same records twice or move the cursor back. */
+  readonly goalReadLock: Semaphore.Semaphore;
+  /** Zero-turn results still to come for `/goal` replies kept out of the
+   *  thread. */
+  goalCommandResultsToSkip: number;
+  /** The transcript goal records are read from, and how far it has been read. */
+  goalTranscript: ClaudeGoalTranscriptCursor | undefined;
+  /** Until when goal records may land with no goal or command in play: after
+   *  the model proposes a goal, or after a resume found Claude mid-line. */
+  goalWatchUntilMs: number;
+  /** Whether the transcript watch is running; see `ensureGoalWatch`. */
+  goalWatching: boolean;
   lastEmittedPlanTrackerFingerprint: string | undefined;
   /** Where this session last said it works (`session.cwd.changed`), so an
    *  edit only reports a move when it lands somewhere else. Undefined until
@@ -2251,6 +2318,41 @@ function fileChangeStatFromHookInput(hookInput: unknown): FileChangeStat | null 
 /** `shouldQuery: false` (append without a turn) is known from 2.1.226 on. */
 const MINIMUM_CLAUDE_APPEND_ONLY_VERSION = "2.1.226";
 
+/** How long a `/goal` command waits for the CLI's answer. Sent with
+ *  priority "now", it is answered within moments even mid-turn. */
+const CLAUDE_GOAL_REPLY_TIMEOUT = Duration.seconds(30);
+/** How often the transcript is read for goal records while a goal is live. */
+const CLAUDE_GOAL_WATCH_INTERVAL = Duration.millis(1_500);
+/** How long after the model proposes a goal its record may still land. */
+const CLAUDE_GOAL_PROPOSAL_WATCH_MS = 60_000;
+/** The tool the model sets a goal of its own with. */
+const CLAUDE_PROPOSE_GOAL_TOOL_NAME = "ProposeGoal";
+/** Unanswered goal commands remembered past their wait. */
+const MAX_LATE_GOAL_COMMANDS = 8;
+/**
+ * The oldest Claude Code known to tag its answer to `/goal`
+ * (`local_command_run`) and that answer's result (`local_command`, 2.1.268).
+ * An untagged answer would read as a turn's output and its result would end
+ * that turn, so older CLIs get no goal commands.
+ */
+const MINIMUM_CLAUDE_GOALS_VERSION = "2.1.296";
+const CLAUDE_GOALS_UPDATE_DETAIL = `Claude goals need Claude Code ${MINIMUM_CLAUDE_GOALS_VERSION} or later. Update Claude Code to use them.`;
+
+/** An unknown version (no turn has run yet) is taken to be current, as the
+ *  other version checks here do. */
+function supportsClaudeGoals(cliVersion: string | undefined): boolean {
+  return (
+    cliVersion === undefined || compareSemverVersions(cliVersion, MINIMUM_CLAUDE_GOALS_VERSION) >= 0
+  );
+}
+
+function supportsClaudeAppendOnly(cliVersion: string | undefined): boolean {
+  return (
+    cliVersion === undefined ||
+    compareSemverVersions(cliVersion, MINIMUM_CLAUDE_APPEND_ONLY_VERSION) >= 0
+  );
+}
+
 /** A finished workflow's output file holds every agent's final entry and the
  *  run's result; past this size the agents' last progress frames stand. */
 const WORKFLOW_OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
@@ -2367,9 +2469,7 @@ const buildUserMessagesEffect = Effect.fn("buildUserMessagesEffect")(function* (
   const typed = input.typed;
   const leadingContext =
     (dependencies.seedPreamble?.trim().length ?? 0) > 0 || (typed?.context?.trim().length ?? 0) > 0;
-  const appendOnlySupported =
-    dependencies.cliVersion === undefined ||
-    compareSemverVersions(dependencies.cliVersion, MINIMUM_CLAUDE_APPEND_ONLY_VERSION) >= 0;
+  const appendOnlySupported = supportsClaudeAppendOnly(dependencies.cliVersion);
   // A steer keeps its context and words together: how the CLI treats an
   // append-only message in the middle of a running turn is unverified.
   if (
@@ -5596,6 +5696,365 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
   });
 
+  // Goals: `/goal` commands in, transcript records out (see ClaudeGoals.ts).
+
+  const emitGoalState = Effect.fn("emitGoalState")(function* (
+    context: ClaudeSessionContext,
+    goal: ClaudeGoalState | null,
+  ) {
+    if (!context.goalsTracked) {
+      return;
+    }
+    const stamp = yield* makeEventStamp();
+    const base = {
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      providerRefs: nativeProviderRefs(context),
+    };
+    yield* offerRuntimeEvent(
+      goal === null
+        ? { ...base, type: "goal.cleared", payload: {} }
+        : {
+            ...base,
+            type: "goal.updated",
+            payload: { goal: claudeGoalSnapshot(goal, Date.now()) },
+          },
+    );
+  });
+
+  const applyGoalRecords = Effect.fn("applyGoalRecords")(function* (
+    context: ClaudeSessionContext,
+    records: ReadonlyArray<ClaudeGoalRecord>,
+  ) {
+    if (records.length === 0) {
+      return;
+    }
+    const now = yield* nowIso;
+    const next = records.reduce<ClaudeGoalState | null>(
+      (goal, goalRecord) => applyClaudeGoalRecord(goal, goalRecord, now),
+      context.goal,
+    );
+    if (sameClaudeGoalState(context.goal, next)) {
+      return;
+    }
+    context.goal = next;
+    yield* emitGoalState(context, next);
+  });
+
+  /** Whether the transcript may hold goal news Threadlines has not read. */
+  const goalInPlay = (context: ClaudeSessionContext): boolean =>
+    context.goalsTracked &&
+    !context.stopped &&
+    (context.goal?.status === "active" ||
+      context.goalCommand !== undefined ||
+      context.lateGoalCommands.length > 0 ||
+      Date.now() < context.goalWatchUntilMs);
+
+  /** Fold the goal records Claude appended since the last read. */
+  const readGoalTranscript = (context: ClaudeSessionContext) =>
+    context.goalsTracked
+      ? context.goalReadLock.withPermit(readGoalTranscriptUnlocked(context))
+      : Effect.void;
+
+  const readGoalTranscriptUnlocked = Effect.fn("readGoalTranscript")(function* (
+    context: ClaudeSessionContext,
+  ) {
+    const sessionId = context.resumeSessionId;
+    const cwd = context.session.cwd;
+    if (sessionId === undefined || !cwd) {
+      return;
+    }
+    if (context.goalTranscript?.sessionId !== sessionId) {
+      // A new or forked session: its transcript, once Claude has written it.
+      const transcriptPath = yield* locateClaudeSessionTranscript({
+        environment: claudeEnvironment,
+        cwd,
+        sessionId,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (transcriptPath === undefined) {
+        return;
+      }
+      context.goalTranscript = { sessionId, transcriptPath, offset: 0n };
+    }
+    const cursor = context.goalTranscript;
+    const read = yield* readClaudeTranscriptGoalRecords({
+      transcriptPath: cursor.transcriptPath,
+      offset: cursor.offset,
+    }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+    if (read === undefined) {
+      // Moved or gone: look for it again next time.
+      context.goalTranscript = undefined;
+      return;
+    }
+    cursor.offset = read.nextOffset;
+    yield* applyGoalRecords(context, read.records);
+  });
+
+  /**
+   * Read the transcript every moment while a goal is live, so its checks show
+   * as they happen and its end shows when it comes. Claude writes the
+   * transcript on its own schedule, so reading only at turn ends could miss a
+   * record by a beat. The watch ends itself once nothing is in play.
+   */
+  const ensureGoalWatch = Effect.fn("ensureGoalWatch")(function* (context: ClaudeSessionContext) {
+    if (context.goalWatching || !goalInPlay(context)) {
+      return;
+    }
+    context.goalWatching = true;
+    const watch = Effect.gen(function* () {
+      while (true) {
+        yield* Effect.sleep(CLAUDE_GOAL_WATCH_INTERVAL);
+        if (!goalInPlay(context)) {
+          return;
+        }
+        yield* readGoalTranscript(context);
+      }
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          context.goalWatching = false;
+        }),
+      ),
+      Effect.ignoreCause({ log: true }),
+    );
+    yield* Effect.forkDetach(watch);
+  });
+
+  /**
+   * Send a `/goal` command and wait for the CLI's answer. A command sent while
+   * a turn runs would wait for that turn to end, and a turn working toward a
+   * goal ends only when the goal is met, so it goes with priority "now": the
+   * running turn ends where it is and the command runs at once.
+   */
+  const queueGoalCommand = Effect.fn("queueGoalCommand")(function* (
+    context: ClaudeSessionContext,
+    command: { readonly kind: "set" | "clear"; readonly args: string },
+  ) {
+    const reply = yield* Deferred.make<ClaudeGoalCommandOutcome>();
+    const request: ClaudeGoalCommandRequest = { ...command, sentAtMs: Date.now() };
+    context.goalCommand = { ...request, reply };
+    const messages: Array<SDKUserMessage> = [];
+    // A goal can be the first thing a thread handed over from another agent
+    // asks for; the handoff's context goes in ahead of it, as it would ahead
+    // of a message.
+    const seed = context.pendingContextSeedText;
+    if (
+      command.kind === "set" &&
+      seed !== undefined &&
+      supportsClaudeAppendOnly(context.cliVersion)
+    ) {
+      messages.push(
+        buildUserMessage({ sdkContent: [{ type: "text", text: seed }], appendOnly: true }),
+      );
+      context.pendingContextSeedText = undefined;
+      context.pendingAppendOnlyResults += 1;
+    }
+    const goalMessage = buildUserMessage({
+      sdkContent: [{ type: "text", text: claudeGoalCommandText(command.args) }],
+      typedByUser: true,
+    });
+    messages.push(
+      context.turnState
+        ? ({ ...goalMessage, priority: "now" } satisfies SDKUserMessage)
+        : goalMessage,
+    );
+    yield* Queue.offerAll(
+      context.promptQueue,
+      messages.map((message) => ({ type: "message" as const, message })),
+    ).pipe(
+      Effect.mapError((cause) => toRequestError(context.session.threadId, "thread/goal", cause)),
+    );
+    return { reply, request };
+  });
+
+  const sendGoalCommand = Effect.fn("sendGoalCommand")(function* (
+    context: ClaudeSessionContext,
+    command: { readonly kind: "set" | "clear"; readonly args: string },
+  ) {
+    const { reply, request } = yield* queueGoalCommand(context, command);
+    yield* ensureGoalWatch(context);
+    const outcome = yield* Deferred.await(reply).pipe(
+      Effect.timeoutOption(CLAUDE_GOAL_REPLY_TIMEOUT),
+    );
+    if (Option.isNone(outcome)) {
+      if (context.goalCommand?.reply === reply) {
+        context.goalCommand = undefined;
+        context.lateGoalCommands = [...context.lateGoalCommands, request].slice(
+          -MAX_LATE_GOAL_COMMANDS,
+        );
+      }
+      return { accepted: false, text: "Claude did not answer the goal command.", request };
+    }
+    return { ...outcome.value, request };
+  });
+
+  /**
+   * Take a goal Claude confirmed as the session's goal, unless the transcript
+   * already reported it since the command went in (its checks or verdict are
+   * newer news than the confirmation).
+   */
+  const adoptConfirmedGoal = Effect.fn("adoptConfirmedGoal")(function* (
+    context: ClaudeSessionContext,
+    request: ClaudeGoalCommandRequest,
+  ) {
+    const current = context.goal;
+    if (
+      current !== null &&
+      current.objective === request.args &&
+      Date.parse(current.setAt) >= request.sentAtMs
+    ) {
+      return current;
+    }
+    const setAt = yield* nowIso;
+    const goal: ClaudeGoalState = {
+      objective: request.args,
+      status: "active",
+      setAt,
+      updatedAt: setAt,
+      checks: 0,
+    };
+    context.goal = goal;
+    return goal;
+  });
+
+  /**
+   * The CLI's answer to a `/goal` command. Returns true when the answer stays
+   * out of the thread: a clear, or a goal Claude would not set (the failure
+   * says why). "Goal set: …" opens the turn that works toward the goal and
+   * shows as its first line. Answers to commands Threadlines did not send
+   * show as they are.
+   */
+  const handleGoalCommandReply = Effect.fn("handleGoalCommandReply")(function* (
+    context: ClaudeSessionContext,
+    reply: { readonly args: string; readonly text: string },
+  ) {
+    const pending = context.goalCommand;
+    let kind: "set" | "clear";
+    if (pending !== undefined && reply.args === pending.args) {
+      context.goalCommand = undefined;
+      kind = pending.kind;
+      const accepted = kind === "clear" || reply.text === claudeGoalSetReplyText(pending.args);
+      yield* Deferred.succeed(pending.reply, { accepted, text: reply.text });
+    } else {
+      // An answer that came after its wait ran out. Whoever asked was told it
+      // failed, but the change happened: report it here.
+      const late = context.lateGoalCommands.find((entry) => entry.args === reply.args);
+      if (late === undefined) {
+        return false;
+      }
+      kind = late.kind;
+      context.lateGoalCommands = context.lateGoalCommands.filter((entry) => entry !== late);
+      if (kind === "clear" && context.goal !== null) {
+        context.goal = null;
+        yield* emitGoalState(context, null);
+      } else if (kind === "set" && reply.text === claudeGoalSetReplyText(reply.args)) {
+        const before = context.goal;
+        const goal = yield* adoptConfirmedGoal(context, late);
+        if (goal !== before) {
+          yield* emitGoalState(context, goal);
+        }
+        yield* ensureGoalWatch(context);
+      }
+    }
+    if (kind === "set" && reply.text === claudeGoalSetReplyText(reply.args)) {
+      return false;
+    }
+    context.goalCommandResultsToSkip += 1;
+    return true;
+  });
+
+  const setThreadGoal: NonNullable<ClaudeAdapterShape["setThreadGoal"]> = Effect.fn(
+    "setThreadGoal",
+  )(function* (input) {
+    const context = yield* requireSession(input.threadId);
+    const refuse = (detail: string) =>
+      new ProviderAdapterRequestError({ provider: PROVIDER, method: "thread/goal/set", detail });
+    if (!context.goalsTracked) {
+      return yield* refuse("A side answer has no goal of its own.");
+    }
+    const objective = input.objective?.trim() ?? "";
+    if ((input.status !== undefined && input.status !== "active") || objective.length === 0) {
+      return yield* refuse("Claude goals can't be paused or resumed.");
+    }
+    if (input.tokenBudget !== undefined && input.tokenBudget !== null) {
+      return yield* refuse("Claude goals don't take a token budget.");
+    }
+    if (objective.length > CLAUDE_GOAL_MAX_CONDITION_CHARS) {
+      return yield* refuse(
+        `A Claude goal can be at most ${CLAUDE_GOAL_MAX_CONDITION_CHARS.toLocaleString("en-US")} characters.`,
+      );
+    }
+    if (isClaudeGoalClearWord(objective)) {
+      return yield* refuse(`Claude reads "${objective}" as clearing the goal, not as a goal.`);
+    }
+    if (context.sessionPersistenceDisabledWarningEmitted) {
+      return yield* refuse(
+        "Claude goals need saved session history, which is turned off for this session.",
+      );
+    }
+    if (!supportsClaudeGoals(context.cliVersion)) {
+      return yield* refuse(CLAUDE_GOALS_UPDATE_DETAIL);
+    }
+    if (context.goalCommand !== undefined) {
+      return yield* refuse("Claude is still answering the last goal change.");
+    }
+    yield* applyTurnSettings(context, {
+      threadId: input.threadId,
+      modelSelection: input.modelSelection,
+    });
+    const outcome = yield* sendGoalCommand(context, { kind: "set", args: objective });
+    if (!outcome.accepted) {
+      return yield* refuse(outcome.text.length > 0 ? outcome.text : "Claude did not set the goal.");
+    }
+    // Known from the answer; the transcript's own record follows.
+    const goal = yield* adoptConfirmedGoal(context, outcome.request);
+    yield* ensureGoalWatch(context);
+    return claudeGoalSnapshot(goal, Date.now());
+  });
+
+  const getThreadGoal: NonNullable<ClaudeAdapterShape["getThreadGoal"]> = (threadId) =>
+    requireSession(threadId).pipe(
+      Effect.map((context) =>
+        context.goal === null ? null : claudeGoalSnapshot(context.goal, Date.now()),
+      ),
+    );
+
+  const clearThreadGoal: NonNullable<ClaudeAdapterShape["clearThreadGoal"]> = Effect.fn(
+    "clearThreadGoal",
+  )(function* (threadId) {
+    const context = yield* requireSession(threadId);
+    const busy = !supportsClaudeGoals(context.cliVersion)
+      ? CLAUDE_GOALS_UPDATE_DETAIL
+      : context.goalCommand !== undefined
+        ? "Claude is still answering the last goal change."
+        : undefined;
+    if (busy !== undefined) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "thread/goal/clear",
+        detail: busy,
+      });
+    }
+    const outcome = yield* sendGoalCommand(context, {
+      kind: "clear",
+      args: CLAUDE_GOAL_CLEAR_ARGS,
+    });
+    if (!outcome.accepted) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "thread/goal/clear",
+        detail: outcome.text,
+      });
+    }
+    context.goal = null;
+  });
+
   const handleAssistantMessage = Effect.fn("handleAssistantMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -5625,6 +6084,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           input?: unknown;
         };
         if (toolUse.type !== "tool_use") {
+          continue;
+        }
+        // The model can set a goal itself; its record lands in the transcript.
+        if (toolUse.name === CLAUDE_PROPOSE_GOAL_TOOL_NAME && context.goalsTracked) {
+          context.goalWatchUntilMs = Date.now() + CLAUDE_GOAL_PROPOSAL_WATCH_MS;
+          yield* ensureGoalWatch(context);
           continue;
         }
         // Resuming a background agent is a plain tool call, not a spawn: the
@@ -5690,6 +6155,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (message.type !== "result") {
       return;
     }
+    // A `/goal` answer kept out of the thread ends with a result of its own.
+    if (context.goalCommandResultsToSkip > 0 && isClaudeGoalCommandResult(message)) {
+      context.goalCommandResultsToSkip -= 1;
+      return;
+    }
     // A context message sent ahead of the user's words (shouldQuery: false)
     // gets a result of its own, with no turn in it; the turn is still to come.
     if (context.pendingAppendOnlyResults > 0 && message.num_turns === 0 && !message.is_error) {
@@ -5705,6 +6175,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     yield* completeTurn(context, status, errorMessage, message);
+    // A goal's verdict lands as the turn ends; read it now rather than at the
+    // watch's next beat.
+    if (goalInPlay(context)) {
+      yield* readGoalTranscript(context);
+    }
 
     if (status === "failed" && isProviderAuthErrorMessage(errorMessage)) {
       yield* stopSessionInternal(context, {
@@ -6786,6 +7261,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     yield* logNativeSdkMessage(context, message);
     yield* ensureThreadId(context, message);
 
+    const goalReply = claudeGoalCommandReply(message);
+    if (goalReply !== undefined && (yield* handleGoalCommandReply(context, goalReply))) {
+      return;
+    }
+
     // Forwarded subagent conversation (`forwardSubagentText`) must never
     // reach the main-transcript handlers below. Scoped to the conversation
     // message types: tool_progress also carries parent_tool_use_id but keeps
@@ -6965,6 +7445,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
     context.pendingApprovals.clear();
+
+    const goalCommand = context.goalCommand;
+    context.goalCommand = undefined;
+    context.lateGoalCommands = [];
+    if (goalCommand !== undefined) {
+      yield* Deferred.succeed(goalCommand.reply, {
+        accepted: false,
+        text: "The Claude session stopped before it answered.",
+      });
+    }
 
     if (context.turnState) {
       yield* completeTurn(context, "interrupted", "Session stopped.");
@@ -7216,12 +7706,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // conversation but not the worktree: fork whenever the recorded
       // worktree is not the checkout this session is being started in. The
       // fork's new session id is adopted like any other reported id.
-      const resumeWorktreePath =
-        resumeTranscriptPath !== undefined && input.cwd !== undefined
-          ? yield* readClaudeTranscriptWorktreePath(resumeTranscriptPath).pipe(
+      const resumeFacts =
+        resumeTranscriptPath !== undefined
+          ? yield* readClaudeTranscriptResumeFacts(resumeTranscriptPath).pipe(
               Effect.provideService(FileSystem.FileSystem, fileSystem),
             )
           : undefined;
+      const resumeWorktreePath = input.cwd !== undefined ? resumeFacts?.worktreePath : undefined;
       const forkResumeOutOfWorktree =
         typeof resumeWorktreePath === "string" &&
         input.cwd !== undefined &&
@@ -8082,6 +8573,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         planTracker: new Map(),
         workflowRuns: new ClaudeWorkflowRunTracker(),
         pendingAppendOnlyResults: 0,
+        goal: null,
+        goalsTracked: !lockdown,
+        goalCommand: undefined,
+        lateGoalCommands: [],
+        goalReadLock: yield* Semaphore.make(1),
+        goalCommandResultsToSkip: 0,
+        goalTranscript: undefined,
+        goalWatchUntilMs: 0,
+        goalWatching: false,
         lastEmittedPlanTrackerFingerprint: undefined,
         reportedCwd: undefined,
         turnState: undefined,
@@ -8105,6 +8605,41 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
       yield* Ref.set(contextRef, context);
       sessions.set(threadId, context);
+
+      // The goal the conversation carries: Claude re-arms it on resume.
+      if (lockdown) {
+        // A side answer forks the conversation, armed goal and all, and a goal
+        // would keep the answer going until it is met. Disarm it in the fork,
+        // ahead of the question, whatever the transcript said a moment ago:
+        // the thread may have set one since. The thread keeps its goal.
+        if (resumeState !== undefined && supportsClaudeGoals(resumeFacts?.cliVersion)) {
+          yield* queueGoalCommand(context, { kind: "clear", args: CLAUDE_GOAL_CLEAR_ARGS });
+        }
+      } else if (
+        resumeFacts !== undefined &&
+        resumeTranscriptPath !== undefined &&
+        existingResumeSessionId !== undefined
+      ) {
+        context.goalTranscript = {
+          sessionId: existingResumeSessionId,
+          transcriptPath: resumeTranscriptPath,
+          offset: resumeFacts.size,
+        };
+        const restoredAt = yield* nowIso;
+        const restoredGoal = resumeFacts.goalRecords.reduce<ClaudeGoalState | null>(
+          (goal, goalRecord) => applyClaudeGoalRecord(goal, goalRecord, restoredAt),
+          null,
+        );
+        if (restoredGoal !== null) {
+          context.goal = restoredGoal;
+          yield* emitGoalState(context, restoredGoal);
+        }
+        if (resumeFacts.endsMidLine) {
+          // Whatever Claude was writing may be goal news; read it once it lands.
+          context.goalWatchUntilMs = Date.now() + CLAUDE_GOAL_PROPOSAL_WATCH_MS;
+        }
+        yield* ensureGoalWatch(context);
+      }
 
       const sessionPersistenceWarning =
         claudeSessionPersistenceEnvironmentWarning(claudeEnvironment);
@@ -8193,8 +8728,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
-  const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
-    const context = yield* requireSession(input.threadId);
+  /**
+   * Bring the running CLI in line with the model and options the next turn
+   * should use, before its message goes in: the model, option changes, and
+   * plugins or skills changed from Settings. A goal's work is such a turn too.
+   */
+  const applyTurnSettings = Effect.fn("applyTurnSettings")(function* (
+    context: ClaudeSessionContext,
+    input: {
+      readonly threadId: ThreadId;
+      readonly modelSelection: ModelSelection | undefined;
+    },
+  ) {
     const modelSelection =
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
         ? input.modelSelection
@@ -8204,12 +8749,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       : undefined;
     const modelCapabilities =
       modelMetadata?.capabilities ?? getClaudeModelCapabilities(modelSelection?.model);
-
-    if (context.turnState) {
-      // Auto-close a stale synthetic turn (from background agent responses
-      // between user prompts) to prevent blocking the user's next turn.
-      yield* completeTurn(context, "completed");
-    }
 
     if (modelSelection?.model) {
       const apiModelId = resolveClaudeApiModelId(modelSelection, modelCapabilities);
@@ -8305,6 +8844,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         );
       }
     }
+
+    return modelSelection;
+  });
+
+  const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+    const context = yield* requireSession(input.threadId);
+
+    if (context.turnState) {
+      // Auto-close a stale synthetic turn (from background agent responses
+      // between user prompts) to prevent blocking the user's next turn.
+      yield* completeTurn(context, "completed");
+    }
+
+    const modelSelection = yield* applyTurnSettings(context, {
+      threadId: input.threadId,
+      modelSelection: input.modelSelection,
+    });
 
     // Apply interaction mode by switching the SDK's permission mode.
     // "plan" maps directly to the SDK's "plan" permission mode;
@@ -8866,10 +9422,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       sessionModelSwitch: "in-session",
       manualContextCompaction: "supported",
       activeTurnSteering: "supported",
+      threadGoals: "supported",
+      threadGoalPause: "unsupported",
     },
     startSession,
     sendTurn,
     steerTurn,
+    setThreadGoal,
+    getThreadGoal,
+    clearThreadGoal,
     interruptTurn,
     releaseBackgroundCommands: releaseBackgroundCommandsForThread,
     stopBackgroundTask,

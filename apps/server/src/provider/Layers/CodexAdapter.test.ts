@@ -1551,11 +1551,13 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         threadId: asThreadId("thread-1"),
         objective: "Ship goal support",
         tokenBudget: 1_000,
+        origin: "user",
       });
       assert.equal(goal.objective, "Ship goal support");
       assert.equal(goal.status, "active");
       assert.equal(goal.tokenBudget, 1_000);
       assert.equal(runtime.setGoalImpl.mock.calls.length, 1);
+      assert.equal(runtime.setGoalImpl.mock.calls[0]?.[0].origin, "user");
 
       const readGoal = yield* adapter.getThreadGoal(asThreadId("thread-1"));
       assert.deepEqual(readGoal, goal);
@@ -1563,7 +1565,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       const pausedGoal = yield* adapter.setThreadGoal({
         threadId: asThreadId("thread-1"),
         status: "paused",
+        origin: "automatic",
       });
+      assert.equal(runtime.setGoalImpl.mock.calls[1]?.[0].origin, "automatic");
       assert.equal(pausedGoal.status, "paused");
       assert.equal(pausedGoal.objective, "Ship goal support");
       assert.equal(pausedGoal.tokenBudget, 1_000);

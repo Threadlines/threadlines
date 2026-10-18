@@ -2892,6 +2892,14 @@ const make = Effect.gen(function* () {
     // may not keep goals at all. (Room agents never change agent in place.)
     const goalHolderId = sessionSlotParticipantId(thread.session);
     const ownModelSelection = goalHolderId === null ? thread.modelSelection : undefined;
+    // Providers that start the goal's work as a turn of their own (Claude)
+    // run it on the model a turn to this agent would use.
+    const goalHolderSessionKey = participantSessionKey(event.payload.threadId, goalHolderId);
+    const goalModelSelection =
+      ownModelSelection ??
+      threadModelSelections.get(goalHolderSessionKey) ??
+      thread.participants.find((entry) => entry.id === goalHolderId)?.modelSelection ??
+      thread.modelSelection;
     yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
       participantId: goalHolderId,
       ...(ownModelSelection !== undefined ? { modelSelection: ownModelSelection } : {}),
@@ -2911,7 +2919,8 @@ const make = Effect.gen(function* () {
         ),
         Effect.flatMap(() =>
           providerService.setThreadGoal({
-            threadId: participantSessionKey(event.payload.threadId, goalHolderId),
+            threadId: goalHolderSessionKey,
+            modelSelection: goalModelSelection,
             ...(event.payload.objective !== undefined
               ? { objective: event.payload.objective }
               : {}),

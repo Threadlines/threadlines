@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,7 +11,8 @@ import * as Path from "effect/Path";
 import {
   claudeProjectDirectoryName,
   ensureClaudeSessionTranscript,
-  readClaudeTranscriptWorktreePath,
+  readClaudeTranscriptGoalRecords,
+  readClaudeTranscriptResumeFacts,
   resolveClaudeConfigDir,
 } from "./ClaudeSessionTranscripts.ts";
 
@@ -154,7 +155,7 @@ it.layer(NodeServices.layer)("ClaudeSessionTranscripts", (it) => {
     );
   });
 
-  describe("readClaudeTranscriptWorktreePath", () => {
+  describe("readClaudeTranscriptResumeFacts", () => {
     const worktreeState = (worktreePath: string | null) =>
       JSON.stringify({
         type: "worktree-state",
@@ -179,7 +180,7 @@ it.layer(NodeServices.layer)("ClaudeSessionTranscripts", (it) => {
       ]);
       return Effect.gen(function* () {
         assert.strictEqual(
-          yield* readClaudeTranscriptWorktreePath(transcriptPath),
+          (yield* readClaudeTranscriptResumeFacts(transcriptPath))?.worktreePath,
           "/repo/.claude/worktrees/current",
         );
       }).pipe(Effect.ensuring(Effect.sync(cleanup)));
@@ -192,8 +193,14 @@ it.layer(NodeServices.layer)("ClaudeSessionTranscripts", (it) => {
       ]);
       const never = writeTranscript([message]);
       return Effect.gen(function* () {
-        assert.strictEqual(yield* readClaudeTranscriptWorktreePath(left.transcriptPath), null);
-        assert.strictEqual(yield* readClaudeTranscriptWorktreePath(never.transcriptPath), null);
+        assert.strictEqual(
+          (yield* readClaudeTranscriptResumeFacts(left.transcriptPath))?.worktreePath,
+          null,
+        );
+        assert.strictEqual(
+          (yield* readClaudeTranscriptResumeFacts(never.transcriptPath))?.worktreePath,
+          null,
+        );
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
@@ -202,6 +209,74 @@ it.layer(NodeServices.layer)("ClaudeSessionTranscripts", (it) => {
           }),
         ),
       );
+    });
+
+    it.effect("reads goal records once on resume, then only complete lines appended after", () => {
+      const goal = (attachment: Record<string, unknown>) =>
+        JSON.stringify({
+          type: "attachment",
+          timestamp: "2026-10-18T07:17:18.371Z",
+          attachment: { type: "goal_status", ...attachment },
+        });
+      const { transcriptPath, cleanup } = writeTranscript([
+        message,
+        goal({ met: false, sentinel: true, condition: "tests pass" }),
+        message,
+      ]);
+      return Effect.gen(function* () {
+        const facts = yield* readClaudeTranscriptResumeFacts(transcriptPath);
+        assert.deepEqual(facts?.goalRecords, [
+          { kind: "set", condition: "tests pass", at: "2026-10-18T07:17:18.371Z" },
+        ]);
+        const offset = facts?.size ?? 0n;
+
+        // A resume that lands while Claude is mid-line picks the line up later.
+        const midLine = writeTranscript([message]);
+        appendFileSync(midLine.transcriptPath, '{"type":"attachment","attach');
+        const midFacts = yield* readClaudeTranscriptResumeFacts(midLine.transcriptPath);
+        appendFileSync(
+          midLine.transcriptPath,
+          `ment":{"type":"goal_status","met":false,"sentinel":true,"condition":"later"}}\n`,
+        );
+        const finished = yield* readClaudeTranscriptGoalRecords({
+          transcriptPath: midLine.transcriptPath,
+          offset: midFacts?.size ?? 0n,
+        });
+        midLine.cleanup();
+        assert.deepEqual(finished?.records, [{ kind: "set", condition: "later" }]);
+
+        // A check line and the start of the next one, still being written.
+        const checkLine = goal({ met: false, condition: "tests pass", reason: "2 failing" });
+        appendFileSync(transcriptPath, `${checkLine}\n{"type":"attach`);
+        const first = yield* readClaudeTranscriptGoalRecords({ transcriptPath, offset });
+        assert.deepEqual(first?.records, [
+          {
+            kind: "check-failed",
+            condition: "tests pass",
+            reason: "2 failing",
+            at: "2026-10-18T07:17:18.371Z",
+          },
+        ]);
+
+        appendFileSync(
+          transcriptPath,
+          `${goal({ met: true, condition: "tests pass", reason: "all green", iterations: 2, durationMs: 9000, tokens: 1200 }).slice('{"type":"attach'.length)}\n`,
+        );
+        const second = yield* readClaudeTranscriptGoalRecords({
+          transcriptPath,
+          offset: first?.nextOffset ?? offset,
+        });
+        assert.deepEqual(
+          second?.records.map((record) => record.kind),
+          ["met"],
+        );
+        assert.isUndefined(
+          yield* readClaudeTranscriptGoalRecords({
+            transcriptPath: `${transcriptPath}.missing`,
+            offset: 0n,
+          }),
+        );
+      }).pipe(Effect.ensuring(Effect.sync(cleanup)));
     });
   });
 });

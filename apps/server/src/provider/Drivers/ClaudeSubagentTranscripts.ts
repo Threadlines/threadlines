@@ -17,7 +17,11 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 
-import { claudeProjectDirectoryName, resolveClaudeConfigDir } from "./ClaudeSessionTranscripts.ts";
+import {
+  claudeProjectDirectoryName,
+  readClaudeTranscriptRange,
+  resolveClaudeConfigDir,
+} from "./ClaudeSessionTranscripts.ts";
 
 /** Record-to-entry mapping lives with the Claude adapter, which owns the
  *  provider's message shapes. It is injected so this driver does not import
@@ -46,7 +50,6 @@ export interface ClaudeSubagentTranscriptLocation {
 const RESOLUTION_CACHE_MAX_ENTRIES = 64;
 const READ_CACHE_MAX_PATHS = 16;
 const RETAINED_ENTRY_LIMIT = 5_000;
-const READ_CHUNK_BYTES = 64 * 1_024;
 
 const resolutionCache = new Map<string, ClaudeSubagentTranscriptLocation>();
 
@@ -245,42 +248,6 @@ export const locateClaudeSubagentTranscript = Effect.fn("locateClaudeSubagentTra
   },
 );
 
-function readFileRange(
-  fileSystem: FileSystem.FileSystem,
-  transcriptPath: string,
-  offset: bigint,
-  length: bigint,
-) {
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const file = yield* fileSystem.open(transcriptPath);
-      yield* file.seek(offset, "start");
-      const chunks: Uint8Array[] = [];
-      let remaining = length;
-      let bytesRead = 0;
-      while (remaining > 0n) {
-        const requestedBytes = Number(
-          remaining > BigInt(READ_CHUNK_BYTES) ? BigInt(READ_CHUNK_BYTES) : remaining,
-        );
-        const chunk = yield* file.readAlloc(requestedBytes);
-        if (Option.isNone(chunk) || chunk.value.length === 0) {
-          break;
-        }
-        chunks.push(chunk.value);
-        bytesRead += chunk.value.length;
-        remaining -= BigInt(chunk.value.length);
-      }
-      const result = new Uint8Array(bytesRead);
-      let writeOffset = 0;
-      for (const chunk of chunks) {
-        result.set(chunk, writeOffset);
-        writeOffset += chunk.length;
-      }
-      return result;
-    }),
-  );
-}
-
 function appendCompleteLines(
   bytes: Uint8Array,
   previous: {
@@ -346,7 +313,7 @@ export const readClaudeSubagentTranscriptEntries = Effect.fn("readClaudeSubagent
     }
 
     if (cached && size > cached.size && mtimeMs >= cached.mtimeMs) {
-      const delta = yield* readFileRange(
+      const delta = yield* readClaudeTranscriptRange(
         fileSystem,
         input.transcriptPath,
         cached.parsedBytes,

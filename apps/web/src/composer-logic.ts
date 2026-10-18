@@ -268,19 +268,33 @@ export function parseStandaloneComposerSlashCommand(
   return "default";
 }
 
+/** Words that clear a goal rather than name one, as Claude reads them. */
+const GOAL_CLEAR_WORDS = new Set(["clear", "stop", "off", "reset", "none", "cancel"]);
+
+export type ComposerGoalCommand =
+  | { readonly action: "edit" }
+  | { readonly action: "set"; readonly objective: string }
+  | { readonly action: "clear" };
+
 /**
  * Parse a submitted `/goal` command. Bare `/goal` opens the goal editor;
+ * `/goal clear` (or stop, off, reset, none, cancel) clears the goal;
  * `/goal <objective…>` sets the goal directly with the remaining text, so the
  * command works however the composer menu was dismissed (space, escape, or
  * never shown).
  */
-export function parseComposerGoalCommand(text: string): { objective: string | null } | null {
+export function parseComposerGoalCommand(text: string): ComposerGoalCommand | null {
   const match = /^\/goal(?:\s+([\s\S]+))?$/i.exec(text.trim());
   if (!match) {
     return null;
   }
   const objective = match[1]?.trim();
-  return { objective: objective && objective.length > 0 ? objective : null };
+  if (!objective) {
+    return { action: "edit" };
+  }
+  return GOAL_CLEAR_WORDS.has(objective.toLowerCase())
+    ? { action: "clear" }
+    : { action: "set", objective };
 }
 
 export function replaceTextRange(

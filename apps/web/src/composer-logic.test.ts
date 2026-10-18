@@ -332,17 +332,28 @@ describe("parseStandaloneComposerSlashCommand", () => {
 
 describe("parseComposerGoalCommand", () => {
   it("parses bare /goal as an editor-open request", () => {
-    expect(parseComposerGoalCommand("/goal")).toEqual({ objective: null });
-    expect(parseComposerGoalCommand(" /goal  ")).toEqual({ objective: null });
-    expect(parseComposerGoalCommand("/GOAL")).toEqual({ objective: null });
+    expect(parseComposerGoalCommand("/goal")).toEqual({ action: "edit" });
+    expect(parseComposerGoalCommand(" /goal  ")).toEqual({ action: "edit" });
+    expect(parseComposerGoalCommand("/GOAL")).toEqual({ action: "edit" });
   });
 
   it("parses trailing text as the objective, preserving inner newlines", () => {
     expect(parseComposerGoalCommand("/goal get the tests green")).toEqual({
+      action: "set",
       objective: "get the tests green",
     });
     expect(parseComposerGoalCommand("/goal ship it\nthen open a PR")).toEqual({
+      action: "set",
       objective: "ship it\nthen open a PR",
+    });
+  });
+
+  it("reads the words Claude treats as clearing as a clear, not as an objective", () => {
+    expect(parseComposerGoalCommand("/goal clear")).toEqual({ action: "clear" });
+    expect(parseComposerGoalCommand("/goal Stop")).toEqual({ action: "clear" });
+    expect(parseComposerGoalCommand("/goal stop the flaky test")).toEqual({
+      action: "set",
+      objective: "stop the flaky test",
     });
   });
 

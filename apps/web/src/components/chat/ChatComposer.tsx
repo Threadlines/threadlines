@@ -134,7 +134,11 @@ import { ComposerChildThreadsPanel } from "./ComposerChildThreadsPanel";
 import { pendingChildThreads } from "../../childThreads";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
-import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
+import {
+  ComposerGoalBar,
+  type ComposerGoalSetInput,
+  type ThreadGoalControls,
+} from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { type ComposerNotice, selectComposerNotices } from "./composerNotices";
 import { useModelRetirementNotice } from "./modelRetirementNotice";
@@ -671,7 +675,9 @@ export interface ChatComposerProps {
   onToggleWorkflowKeyword?: (() => void) | undefined;
   /** Ends the background work a settled turn left the thread waiting on. */
   onStopBackgroundWork: () => void;
-  // Goal (Codex goal mode)
+  // Goal (Codex and Claude goal mode)
+  /** What goals offer on the agent a goal would go to; null when it has none. */
+  goalControls?: ThreadGoalControls | null | undefined;
   goalDispatching?: boolean | undefined;
   /** Freshly dispatched goal state not yet confirmed by the projection —
    *  preferred over the (possibly stale) server goal while present. */
@@ -766,6 +772,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onToggleWorkflowKeyword,
     onInterrupt,
     onStopBackgroundWork,
+    goalControls,
     goalDispatching,
     optimisticGoal,
     onSetThreadGoal,
@@ -960,7 +967,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProvider === CLAUDE_AGENT_PROVIDER && containsWorkflowKeyword(prompt);
   const threadGoal = optimisticGoal ?? activeThread?.goal ?? null;
   const goalSupported =
-    selectedProvider === CODEX_AGENT_PROVIDER &&
+    goalControls != null &&
     activeThreadId !== null &&
     onSetThreadGoal !== undefined &&
     onClearThreadGoal !== undefined;
@@ -1424,16 +1431,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           description: "Switch this thread back to normal build mode",
         },
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-      const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
-        (command) => ({
+      const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? [])
+        // Claude lists its own /goal; the goal bar's stands in for it.
+        .filter((command) => !(goalSupported && command.name === "goal"))
+        .map((command) => ({
           id: `provider-slash-command:${selectedProvider}:${command.name}`,
           type: "provider-slash-command" as const,
           provider: selectedProvider,
           command,
           label: `/${command.name}`,
           description: command.description ?? command.input?.hint ?? "Run provider command",
-        }),
-      );
+        }));
       const query = composerTrigger.query.trim().toLowerCase();
       const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
       const rankedCommandItems = query
@@ -3544,10 +3552,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       {/* Clipped sideways so a long line never widens the form, whose scroll
           width the right panel's resize check reads. */}
       <div className="min-w-0 overflow-x-clip">{stackedAbove}</div>
-      {!isComposerCollapsedMobile && goalBarVisible ? (
+      {!isComposerCollapsedMobile && goalBarVisible && goalControls ? (
         <div className="mx-auto w-[calc(100%-5rem)] overflow-hidden rounded-t-3xl border border-b-0 border-border/55 bg-card/60">
           <ComposerGoalBar
             goal={threadGoal}
+            controls={goalControls}
             editorOpen={isGoalEditorOpen}
             isDispatching={goalDispatching === true}
             onOpenEditor={() => setIsGoalEditorOpen(true)}

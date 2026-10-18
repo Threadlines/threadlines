@@ -1,6 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -10616,5 +10623,427 @@ describe("ClaudeAdapterLive codex exec promotion", () => {
       assert.equal(metadata.length, 2);
       assert.deepEqual(metadata[1], { callId: "tool-codex-exec", status: "failed" });
     }).pipe(Effect.provide(fixture.harness.layer), Effect.ensuring(Effect.sync(fixture.cleanup)));
+  });
+});
+
+describe("ClaudeAdapterLive goals", () => {
+  /** The CLI's answer to `/goal <args>`, as Claude Code 2.1.301 sends it. */
+  const goalReply = (args: string, text: string) =>
+    ({
+      type: "assistant",
+      message: {
+        id: `goal-reply-${args}`,
+        model: "<synthetic>",
+        role: "assistant",
+        content: [{ type: "text", text }],
+      },
+      parent_tool_use_id: null,
+      local_command_run: { command: "goal", args },
+      session_id: "sdk-session-goal",
+      uuid: `goal-reply-${args}-${text.length}`,
+    }) as unknown as SDKMessage;
+  /** The zero-turn result a `/goal` answer that started no work ends with. */
+  const goalResult = (uuid: string) =>
+    ({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 0,
+      result: "",
+      local_command: "goal",
+      errors: [],
+      session_id: "sdk-session-goal",
+      uuid,
+    }) as unknown as SDKMessage;
+  const turnResult = (uuid: string, sessionId = "sdk-session-goal") =>
+    ({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 2,
+      result: "",
+      stop_reason: null,
+      errors: [],
+      session_id: sessionId,
+      uuid,
+    }) as unknown as SDKMessage;
+  const goalRecord = (attachment: Record<string, unknown>, timestamp: string) =>
+    JSON.stringify({
+      type: "attachment",
+      timestamp,
+      attachment: { type: "goal_status", ...attachment },
+    });
+
+  /** Start a session, collecting every runtime event it emits. */
+  const startGoalSession = (harness: ReturnType<typeof makeHarness>) =>
+    Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: Array<ProviderRuntimeEvent> = [];
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      /** Wait until the stream has handled everything emitted so far. */
+      const settle = (marker: string) =>
+        Effect.gen(function* () {
+          harness.query.emit({
+            ...claudeInitMessage("2.1.301"),
+            uuid: marker,
+          } as unknown as SDKMessage);
+          while (
+            !events.some(
+              (event) =>
+                event.type === "session.configured" &&
+                (event.raw?.payload as { readonly uuid?: string } | undefined)?.uuid === marker,
+            )
+          ) {
+            yield* Effect.yieldNow;
+          }
+        });
+      yield* settle("init-start");
+      return { adapter, events, settle };
+    });
+
+  it.effect(
+    "sets a goal once Claude confirms it, and lets that answer open the goal's turn",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const { adapter, events, settle } = yield* startGoalSession(harness);
+        const setting = yield* adapter.setThreadGoal!({
+          threadId: THREAD_ID,
+          objective: "Tests pass",
+          origin: "user",
+        }).pipe(Effect.forkChild);
+        const [sent] = yield* Effect.promise(() =>
+          readPromptMessages(harness.getLastCreateQueryInput(), 1),
+        );
+        assert.deepEqual(promptMessageShape(sent), {
+          origin: { kind: "human" },
+          shouldQuery: undefined,
+          text: "/goal Tests pass",
+        });
+        // Nothing was running, so nothing needs to be cut short.
+        assert.equal((sent as { readonly priority?: string } | undefined)?.priority, undefined);
+
+        harness.query.emit(goalReply("Tests pass", "Goal set: Tests pass"));
+        const goal = yield* Fiber.join(setting);
+        assert.equal(goal.objective, "Tests pass");
+        assert.equal(goal.status, "active");
+        assert.equal(goal.checks, 0);
+        yield* settle("init-after-set");
+        assert.equal(events.filter((event) => event.type === "turn.started").length, 1);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  // As Claude Code 2.1.301 answers it: the running turn's result comes first,
+  // then the clear's own answer and its zero-turn result.
+  it.effect(
+    "clears mid-turn with send-now, keeps the cut turn's result, and hides the answer",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const { adapter, events, settle } = yield* startGoalSession(harness);
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Keep going", attachments: [] });
+        const clearing = yield* adapter.clearThreadGoal!(THREAD_ID).pipe(Effect.forkChild);
+        const sent = yield* Effect.promise(() =>
+          readPromptMessages(harness.getLastCreateQueryInput(), 2),
+        );
+        assert.equal(promptMessageShape(sent[1]).text, "/goal clear");
+        assert.equal((sent[1] as { readonly priority?: string } | undefined)?.priority, "now");
+
+        harness.query.emit(turnResult("result-cut-turn"));
+        harness.query.emit({
+          ...claudeInitMessage("2.1.301"),
+          uuid: "init-clear",
+        } as unknown as SDKMessage);
+        harness.query.emit(goalReply("clear", "Goal cleared: Tests pass"));
+        harness.query.emit(goalResult("result-clear"));
+        yield* Fiber.join(clearing);
+        yield* settle("init-after-clear");
+
+        assert.equal(events.filter((event) => event.type === "turn.started").length, 1);
+        assert.equal(events.filter((event) => event.type === "turn.completed").length, 1);
+        assert.isFalse(
+          events.some((event) => JSON.stringify(event.payload ?? {}).includes("Goal cleared")),
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("fails with Claude's reason when it will not set the goal, and starts no turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const { adapter, events, settle } = yield* startGoalSession(harness);
+      const setting = yield* adapter.setThreadGoal!({
+        threadId: THREAD_ID,
+        objective: "Tests pass",
+        origin: "user",
+      }).pipe(Effect.flip, Effect.forkChild);
+      yield* Effect.promise(() => readPromptMessages(harness.getLastCreateQueryInput(), 1));
+      harness.query.emit(goalReply("Tests pass", "Goals need hooks, which policy turned off."));
+      harness.query.emit(goalResult("result-refused"));
+      const refusal = yield* Fiber.join(setting);
+      assert.include(refusal.message, "policy turned off");
+      yield* settle("init-after-refusal");
+      assert.equal(events.filter((event) => event.type === "turn.started").length, 0);
+      assert.equal(events.filter((event) => event.type === "turn.completed").length, 0);
+
+      // Claude reads these words as "clear the goal".
+      const refusedLocally = yield* adapter.setThreadGoal!({
+        threadId: THREAD_ID,
+        objective: "stop",
+        origin: "user",
+      }).pipe(Effect.flip);
+      assert.include(refusedLocally.message, "clearing the goal");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps an answer that comes after the wait ran out from ending the next turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const { adapter, events, settle } = yield* startGoalSession(harness);
+      const setting = yield* adapter.setThreadGoal!({
+        threadId: THREAD_ID,
+        objective: "Tests pass",
+        origin: "user",
+      }).pipe(Effect.flip, Effect.forkChild);
+      yield* Effect.promise(() => readPromptMessages(harness.getLastCreateQueryInput(), 1));
+      yield* TestClock.adjust("31 seconds");
+      assert.include((yield* Fiber.join(setting)).message, "did not answer");
+
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Next", attachments: [] });
+      harness.query.emit(goalReply("Tests pass", "Goals need hooks, which policy turned off."));
+      harness.query.emit(goalResult("result-late-refusal"));
+      yield* settle("init-after-late-answer");
+      assert.equal(events.filter((event) => event.type === "turn.completed").length, 0);
+      assert.isFalse(
+        events.some((event) => JSON.stringify(event.payload ?? {}).includes("policy turned off")),
+      );
+
+      harness.query.emit(turnResult("result-next-turn"));
+      yield* settle("init-after-next-turn");
+      assert.equal(events.filter((event) => event.type === "turn.completed").length, 1);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "disarms a side answer's inherited goal ahead of its question, and keeps quiet about it",
+    () => {
+      const sessionId = "0f0e0d0c-0b0a-4908-8706-050403020100";
+      const seeded = seedClaudeTranscript(
+        sessionId,
+        `${goalRecord({ met: false, sentinel: true, condition: "Tests pass" }, "2026-10-18T07:00:00.000Z")}\n`,
+      );
+      const harness = makeHarness({ environment: seeded.environment });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: Array<ProviderRuntimeEvent> = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd: process.cwd(),
+          lockdown: "side-answer",
+          forkFrom: { providerThreadId: sessionId },
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: RESUME_THREAD_ID,
+          input: "What changed?",
+          attachments: [],
+        });
+        const sent = yield* Effect.promise(() =>
+          readPromptMessages(harness.getLastCreateQueryInput(), 2),
+        );
+        assert.deepEqual(
+          sent.map((message) => promptMessageShape(message).text),
+          ["/goal clear", "What changed?"],
+        );
+
+        harness.query.emit(goalReply("clear", "Goal cleared: Tests pass"));
+        harness.query.emit(goalResult("result-side-clear"));
+        harness.query.emit(turnResult("result-side-question"));
+        harness.query.emit({
+          ...claudeInitMessage("2.1.301"),
+          uuid: "init-side-end",
+        } as unknown as SDKMessage);
+        while (
+          !events.some(
+            (event) =>
+              event.type === "session.configured" &&
+              (event.raw?.payload as { readonly uuid?: string } | undefined)?.uuid ===
+                "init-side-end",
+          )
+        ) {
+          yield* Effect.yieldNow;
+        }
+        assert.equal(events.filter((event) => event.type === "turn.completed").length, 1);
+        assert.isFalse(events.some((event) => event.type.startsWith("goal.")));
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(seeded.cleanup)),
+      );
+    },
+  );
+
+  it.effect("reports a clear Claude answered after the wait ran out", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const { adapter, events, settle } = yield* startGoalSession(harness);
+      const setting = yield* adapter.setThreadGoal!({
+        threadId: THREAD_ID,
+        objective: "Tests pass",
+        origin: "user",
+      }).pipe(Effect.forkChild);
+      yield* Effect.promise(() => readPromptMessages(harness.getLastCreateQueryInput(), 1));
+      harness.query.emit(goalReply("Tests pass", "Goal set: Tests pass"));
+      yield* Fiber.join(setting);
+      harness.query.emit(turnResult("result-goal-turn"));
+
+      const clearing = yield* adapter.clearThreadGoal!(THREAD_ID).pipe(
+        Effect.flip,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("31 seconds");
+      assert.include((yield* Fiber.join(clearing)).message, "did not answer");
+      harness.query.emit(goalReply("clear", "Goal cleared: Tests pass"));
+      harness.query.emit(goalResult("result-late-clear"));
+      yield* settle("init-after-late-clear");
+      assert.equal(events.filter((event) => event.type === "goal.cleared").length, 1);
+      assert.isNull(yield* adapter.getThreadGoal!(THREAD_ID));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "asks for a newer Claude Code instead of sending /goal to one that can't tag its answer",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const configured = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) => event.type === "session.configured",
+        ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        harness.query.emit(claudeInitMessage("2.1.290"));
+        yield* Fiber.join(configured);
+        const refusal = yield* adapter.setThreadGoal!({
+          threadId: THREAD_ID,
+          objective: "Tests pass",
+          origin: "user",
+        }).pipe(Effect.flip);
+        assert.include(refusal.message, "2.1.296 or later");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("restores a goal on resume and reads its verdict when the turn ends", () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const seeded = seedClaudeTranscript(
+      sessionId,
+      `${goalRecord({ met: false, sentinel: true, condition: "Tests pass" }, "2026-10-18T07:00:00.000Z")}\n`,
+    );
+    const transcriptPath = path.join(
+      seeded.environment.CLAUDE_CONFIG_DIR ?? "",
+      "projects",
+      claudeProjectDirectoryName(process.cwd()),
+      `${sessionId}.jsonl`,
+    );
+    const harness = makeHarness({ environment: seeded.environment });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const goalsFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "goal.updated",
+      ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        cwd: process.cwd(),
+        resumeCursor: { threadId: "resume-thread-1", resume: sessionId },
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: RESUME_THREAD_ID, input: "Go on", attachments: [] });
+      appendFileSync(
+        transcriptPath,
+        `${goalRecord(
+          {
+            met: true,
+            condition: "Tests pass",
+            reason: "The suite exits 0.",
+            iterations: 2,
+            durationMs: 90_000,
+            tokens: 4_000,
+          },
+          "2026-10-18T07:01:30.000Z",
+        )}\n`,
+      );
+      harness.query.emit(turnResult("result-goal-turn", sessionId));
+
+      const [restored, finished] = Array.from(yield* Fiber.join(goalsFiber));
+      assert.equal(restored?.type, "goal.updated");
+      assert.equal(finished?.type, "goal.updated");
+      if (restored?.type === "goal.updated" && finished?.type === "goal.updated") {
+        assert.equal(restored.payload.goal.status, "active");
+        assert.equal(restored.payload.goal.createdAt, "2026-10-18T07:00:00.000Z");
+        assert.deepEqual(
+          {
+            status: finished.payload.goal.status,
+            checks: finished.payload.goal.checks,
+            lastCheck: finished.payload.goal.lastCheck,
+            tokensUsed: finished.payload.goal.tokensUsed,
+            timeUsedSeconds: finished.payload.goal.timeUsedSeconds,
+          },
+          {
+            status: "complete",
+            checks: 2,
+            lastCheck: "The suite exits 0.",
+            tokensUsed: 4_000,
+            timeUsedSeconds: 90,
+          },
+        );
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      Effect.ensuring(Effect.sync(seeded.cleanup)),
+    );
   });
 });

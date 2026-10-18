@@ -401,6 +401,9 @@ export interface CodexSessionRuntimeSetGoalInput {
   readonly objective?: string;
   readonly status?: EffectCodexSchema.V2ThreadGoalSetParams__ThreadGoalStatus;
   readonly tokenBudget?: number | null;
+  /** Codex 0.163+ records only "user" edits in the model's history; older
+   *  app-servers ignore the field. */
+  readonly origin: "user" | "automatic";
 }
 
 export type CodexSessionRuntimeError =
@@ -3069,6 +3072,7 @@ export const makeCodexSessionRuntime = (
             "set a Codex thread goal",
             client.raw.request("thread/goal/set", {
               threadId: providerThreadId,
+              origin: input.origin,
               ...(input.objective !== undefined ? { objective: input.objective } : {}),
               ...(input.status !== undefined ? { status: input.status } : {}),
               ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
@@ -3100,8 +3104,10 @@ export const makeCodexSessionRuntime = (
         const providerThreadId = yield* readProviderThreadId;
         yield* withCodexRequestTimeout(
           "clear a Codex thread goal",
+          // Clears only ever come from the user.
           client.raw.request("thread/goal/clear", {
             threadId: providerThreadId,
+            origin: "user",
           }),
         );
       }),

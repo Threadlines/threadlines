@@ -1,4 +1,8 @@
-import type { OrchestrationThreadGoal, ThreadGoalStatus } from "@threadlines/contracts";
+import {
+  type OrchestrationThreadGoal,
+  ProviderDriverKind,
+  type ThreadGoalStatus,
+} from "@threadlines/contracts";
 import { CheckIcon, PauseIcon, PlayIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -13,8 +17,48 @@ export interface ComposerGoalSetInput {
   readonly tokenBudget?: number | null;
 }
 
+/** What a provider's goals offer, which decides the bar's controls. */
+export interface ThreadGoalControls {
+  /** Pause and resume. */
+  readonly pause: boolean;
+  /** A token budget the goal stops at. */
+  readonly tokenBudget: boolean;
+  /** What the bar counts: tokens spent (Codex) or checks run (Claude). */
+  readonly progress: "tokens" | "checks";
+}
+
+const CODEX_GOAL_CONTROLS: ThreadGoalControls = {
+  pause: true,
+  tokenBudget: true,
+  progress: "tokens",
+};
+const CLAUDE_GOAL_CONTROLS: ThreadGoalControls = {
+  pause: false,
+  tokenBudget: false,
+  progress: "checks",
+};
+
+/** The goal controls of the agent a goal goes to; null when it has no goals. */
+export function threadGoalControls(
+  driverKind: ProviderDriverKind | null | undefined,
+): ThreadGoalControls | null {
+  switch (driverKind) {
+    case ProviderDriverKind.make("codex"):
+      return CODEX_GOAL_CONTROLS;
+    case ProviderDriverKind.make("claudeAgent"):
+      return CLAUDE_GOAL_CONTROLS;
+    default:
+      return null;
+  }
+}
+
+export function formatGoalChecks(checks: number): string {
+  return `${checks} ${checks === 1 ? "check" : "checks"}`;
+}
+
 interface ComposerGoalBarProps {
   readonly goal: OrchestrationThreadGoal | null;
+  readonly controls: ThreadGoalControls;
   readonly editorOpen: boolean;
   readonly isDispatching: boolean;
   readonly onOpenEditor: () => void;
@@ -72,13 +116,15 @@ function parseTokenBudgetDraft(draft: string): number | null | undefined {
 }
 
 /**
- * Compact goal strip above the composer input (Codex goal mode). One line
- * while collapsed: status dot, objective, tokens used against budget, and
- * elapsed time, with status-appropriate pause/resume and clear controls.
- * Expands into a small prefilled editor; `/goal` opens the same editor.
+ * Compact goal strip above the composer input (Codex and Claude goal mode).
+ * One line while collapsed: status dot, objective, progress (tokens used
+ * against budget for Codex, checks run for Claude), and elapsed time, with
+ * the clear control and, where the provider has it, pause/resume. Expands
+ * into a small prefilled editor; `/goal` opens the same editor.
  */
 export function ComposerGoalBar({
   goal,
+  controls,
   editorOpen,
   isDispatching,
   onOpenEditor,
@@ -90,6 +136,7 @@ export function ComposerGoalBar({
     return (
       <ComposerGoalEditor
         goal={goal}
+        controls={controls}
         isDispatching={isDispatching}
         onClose={onCloseEditor}
         onSetGoal={onSetGoal}
@@ -101,12 +148,17 @@ export function ComposerGoalBar({
   }
 
   const presentation = STATUS_PRESENTATION[goal.status];
-  const pauseResumeAction =
-    goal.status === "active"
+  const pauseResumeAction = !controls.pause
+    ? null
+    : goal.status === "active"
       ? ({ label: "Pause goal", nextStatus: "paused", icon: PauseIcon } as const)
       : goal.status === "paused" || goal.status === "blocked" || goal.status === "usageLimited"
         ? ({ label: "Resume goal", nextStatus: "active", icon: PlayIcon } as const)
         : null;
+  // Claude's evaluator says why the goal is not met yet, or why it is done.
+  const title = [`${presentation.label} goal: ${goal.objective}`, goal.lastCheck]
+    .filter((line) => line !== undefined)
+    .join("\n\n");
 
   return (
     <div
@@ -129,15 +181,21 @@ export function ComposerGoalBar({
       <button
         type="button"
         className="min-w-0 flex-1 truncate text-left text-foreground/90 hover:text-foreground"
-        title={`${presentation.label} goal: ${goal.objective}`}
+        title={title}
         aria-label="Edit goal"
         onClick={onOpenEditor}
       >
         {goal.objective}
       </button>
       <span className="shrink-0 tabular-nums text-muted-foreground">
-        {formatGoalTokensCompact(goal.tokensUsed)}
-        {goal.tokenBudget !== null ? ` / ${formatGoalTokensCompact(goal.tokenBudget)}` : null}
+        {controls.progress === "checks" ? (
+          formatGoalChecks(goal.checks ?? 0)
+        ) : (
+          <>
+            {formatGoalTokensCompact(goal.tokensUsed)}
+            {goal.tokenBudget !== null ? ` / ${formatGoalTokensCompact(goal.tokenBudget)}` : null}
+          </>
+        )}
       </span>
       <span className="shrink-0 tabular-nums text-muted-foreground">
         {formatGoalElapsed(goal.timeUsedSeconds)}
@@ -165,7 +223,7 @@ export function ComposerGoalBar({
 }
 
 /**
- * Clearing detaches a goal Codex is actively driving toward, so the ✕ arms a
+ * Clearing detaches a goal the agent is actively driving toward, so the ✕ arms a
  * destructive confirm instead of firing immediately; the armed state reverts
  * on its own after a beat if the user looks away.
  */
@@ -228,11 +286,13 @@ function GoalClearButton({
 
 function ComposerGoalEditor({
   goal,
+  controls,
   isDispatching,
   onClose,
   onSetGoal,
 }: {
   readonly goal: OrchestrationThreadGoal | null;
+  readonly controls: ThreadGoalControls;
   readonly isDispatching: boolean;
   readonly onClose: () => void;
   readonly onSetGoal: (input: ComposerGoalSetInput) => void;
@@ -252,7 +312,7 @@ function ComposerGoalEditor({
   }, []);
 
   const trimmedObjective = objectiveDraft.trim();
-  const tokenBudget = parseTokenBudgetDraft(tokenBudgetDraft);
+  const tokenBudget = controls.tokenBudget ? parseTokenBudgetDraft(tokenBudgetDraft) : null;
   const tokenBudgetInvalid = tokenBudget === undefined;
   const canSubmit = trimmedObjective.length > 0 && !tokenBudgetInvalid && !isDispatching;
 
@@ -266,7 +326,7 @@ function ComposerGoalEditor({
     const reactivate = goal !== null && goal.status !== "active" && goal.status !== "paused";
     onSetGoal({
       objective: trimmedObjective,
-      tokenBudget: tokenBudget ?? null,
+      ...(controls.tokenBudget ? { tokenBudget: tokenBudget ?? null } : {}),
       ...(reactivate ? { status: "active" as const } : {}),
     });
   };
@@ -306,25 +366,29 @@ function ComposerGoalEditor({
         }}
       />
       <div className="flex items-center gap-2">
-        <Input
-          size="sm"
-          inputMode="numeric"
-          value={tokenBudgetDraft}
-          placeholder="Token budget (optional)"
-          aria-invalid={tokenBudgetInvalid}
-          className="w-44"
-          onChange={(event) => setTokenBudgetDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              submit();
-            }
-            if (event.key === "Escape") {
-              event.preventDefault();
-              onClose();
-            }
-          }}
-        />
+        {controls.tokenBudget ? (
+          <Input
+            size="sm"
+            inputMode="numeric"
+            value={tokenBudgetDraft}
+            placeholder="Token budget (optional)"
+            aria-invalid={tokenBudgetInvalid}
+            className="w-44"
+            onChange={(event) => setTokenBudgetDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submit();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onClose();
+              }
+            }}
+          />
+        ) : (
+          <span className="text-xs text-muted-foreground">Checked each time the agent stops</span>
+        )}
         <span className="min-w-0 flex-1" />
         <Button size="xs" variant="ghost" onClick={onClose}>
           Cancel
