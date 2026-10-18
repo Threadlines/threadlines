@@ -210,6 +210,13 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.stopTaskCalls.push(taskId);
   };
 
+  public readonly backgroundTasksCalls: Array<string | undefined> = [];
+
+  readonly backgroundTasks = async (toolUseId?: string): Promise<boolean> => {
+    this.backgroundTasksCalls.push(toolUseId);
+    return true;
+  };
+
   readonly setModel = async (model?: string): Promise<void> => {
     this.setModelCalls.push(model);
   };
@@ -1731,6 +1738,135 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "moves running work to the background when the user steers, not when an agent does",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        const turn = yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "Run the test suite",
+          attachments: [],
+        });
+        const steer = (input: string, typed?: { readonly text: string }) =>
+          adapter.steerTurn!({
+            threadId: session.threadId,
+            expectedTurnId: turn.turnId,
+            input,
+            ...(typed ? { typed } : {}),
+            attachments: [],
+          });
+
+        // An agent's reply steered in waits for the running command.
+        yield* steer("Report from a child thread: done.");
+        yield* steer("Stop waiting and look at the failure", {
+          text: "Stop waiting and look at the failure",
+        });
+
+        // The SDK pulls the turn's message and both steers...
+        const sdk = harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]();
+        for (let index = 0; index < 3; index++) {
+          yield* Effect.promise(() => sdk.next());
+        }
+        // ...but has not sent the user's steer on yet: nothing moves before it is there.
+        yield* Effect.yieldNow;
+        assert.deepEqual(harness.query.backgroundTasksCalls, []);
+
+        // Asking for the next message means the steer went out.
+        void sdk.next();
+        for (let spin = 0; spin < 100 && harness.query.backgroundTasksCalls.length === 0; spin++) {
+          yield* Effect.yieldNow;
+        }
+        assert.deepEqual(harness.query.backgroundTasksCalls, [undefined]);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("sends words the user did not type as written when Claude would run them", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit(claudeInitMessage("2.1.301"));
+      yield* Fiber.join(configuredFiber);
+
+      const send = (input: string, typed?: { readonly text: string }) =>
+        adapter.sendTurn({
+          threadId: session.threadId,
+          input,
+          ...(typed ? { typed } : {}),
+          attachments: [],
+        });
+      // An agent's report that happens to start with a command.
+      yield* send("/compact is what I ran earlier; the tests pass now.");
+      // The user typing a command means it.
+      yield* send("/compact", { text: "/compact" });
+      yield* send("Report: the tests pass now.");
+
+      const messages = yield* Effect.promise(() =>
+        readPromptMessages(harness.getLastCreateQueryInput(), 3),
+      );
+      assert.deepEqual(
+        messages.map((message) => (message as { client_composed?: true }).client_composed),
+        [true, undefined, undefined],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "guards a command-like message with a character for a CLI too old to send as written",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const configuredFiber = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) => event.type === "session.configured",
+        ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        harness.query.emit(claudeInitMessage("2.1.240"));
+        yield* Fiber.join(configuredFiber);
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "/goal was met by the other agent.",
+          attachments: [],
+        });
+        const [message] = yield* Effect.promise(() =>
+          readPromptMessages(harness.getLastCreateQueryInput(), 1),
+        );
+        assert.equal(promptMessageShape(message).text, "\u2060/goal was met by the other agent.");
+        assert.isUndefined((message as { client_composed?: true } | undefined)?.client_composed);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("ends the turn on its own result, not on the context message's empty one", () => {
     const harness = makeHarness();

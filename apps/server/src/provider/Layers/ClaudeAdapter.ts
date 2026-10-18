@@ -318,6 +318,8 @@ type PromptQueueItem =
   | {
       readonly type: "message";
       readonly message: SDKUserMessage;
+      /** Completed when the SDK takes the message off the queue. */
+      readonly taken?: Deferred.Deferred<void>;
     }
   | {
       readonly type: "terminate";
@@ -655,6 +657,10 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
    *  `stopped` task notification. Optional: absent on CLIs that predate the
    *  stop_task control request. */
   readonly stopTask?: (taskId: string) => Promise<void>;
+  /** Moves the foreground Bash commands and subagents a turn is waiting on
+   *  to the background, as Ctrl+B does: their tool calls return at once and
+   *  the turn goes on. Optional: absent on CLIs that predate it. */
+  readonly backgroundTasks?: (toolUseId?: string) => Promise<boolean>;
   readonly close: () => void;
 }
 
@@ -2325,6 +2331,9 @@ const CLAUDE_GOAL_REPLY_TIMEOUT = Duration.seconds(30);
 const CLAUDE_GOAL_WATCH_INTERVAL = Duration.millis(1_500);
 /** How long after the model proposes a goal its record may still land. */
 const CLAUDE_GOAL_PROPOSAL_WATCH_MS = 60_000;
+/** How long "steer now" waits for the SDK to take the steer before it moves
+ *  running work to the background anyway. */
+const CLAUDE_STEER_TAKEN_TIMEOUT = Duration.seconds(2);
 /** The tool the model sets a goal of its own with. */
 const CLAUDE_PROPOSE_GOAL_TOOL_NAME = "ProposeGoal";
 /** Unanswered goal commands remembered past their wait. */
@@ -2438,8 +2447,67 @@ function buildClaudeDocumentContentBlock(input: {
   };
 }
 
+/** The first CLI that honors `client_composed` on a message. */
+const MINIMUM_CLAUDE_CLIENT_COMPOSED_VERSION = "2.1.248";
+/** Invisible, and not whitespace, so the CLI's trim leaves it in front. */
+const CLAUDE_COMMAND_GUARD = "\u2060";
+
+/**
+ * Words the user did not type (an agent's message, a report, context the
+ * server leads with) reach Claude as written. Claude runs a message that
+ * starts with "/<name>" as that command: "/compact …" compacted the whole
+ * conversation and never reached the model (verified on 2.1.301). Setting
+ * `client_composed` stops that, but also drops the context the CLI attaches
+ * at the start of that turn, so it is set only where a command could be read.
+ * A CLI too old for the field gets an invisible character in front instead.
+ * An unknown version is taken to be current, as the other checks here do.
+ */
+function deliverAsWritten(message: SDKUserMessage, cliVersion: string | undefined): SDKUserMessage {
+  if (message.origin?.kind === "human") {
+    return message;
+  }
+  const content = message.message.content;
+  const firstBlock = Array.isArray(content) ? content[0] : undefined;
+  const text =
+    typeof content === "string" ? content : firstBlock?.type === "text" ? firstBlock.text : "";
+  if (!/^\s*\/\S/.test(text)) {
+    return message;
+  }
+  if (
+    cliVersion === undefined ||
+    compareSemverVersions(cliVersion, MINIMUM_CLAUDE_CLIENT_COMPOSED_VERSION) >= 0
+  ) {
+    return { ...message, client_composed: true };
+  }
+  const guarded = `${CLAUDE_COMMAND_GUARD}${text}`;
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: Array.isArray(content)
+        ? [{ ...firstBlock, text: guarded }, ...content.slice(1)]
+        : guarded,
+    },
+  } as SDKUserMessage;
+}
+
 function isAppendOnlyUserMessage(message: SDKUserMessage): boolean {
   return (message as { readonly shouldQuery?: boolean }).shouldQuery === false;
+}
+
+type ClaudeUserMessagesInput = Pick<
+  ProviderSendTurnInput | ProviderSteerTurnInput,
+  "messageId" | "input" | "attachments" | "typed"
+>;
+
+interface ClaudeUserMessagesDependencies {
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly attachmentsDir: string;
+  readonly method?: "turn/start" | "turn/steer";
+  readonly seedPreamble?: string | undefined;
+  /** The CLI, when known. One older than append-only messages gets the
+   *  single message it always got whenever context leads the user's words. */
+  readonly cliVersion?: string | undefined;
 }
 
 /**
@@ -2449,22 +2517,21 @@ function isAppendOnlyUserMessage(message: SDKUserMessage): boolean {
  * it; context the server put in front of the user's words (a room catch-up,
  * a handoff seed) then goes first, on its own unmarked message that only
  * appends to the transcript, so nobody else's words ever carry the user's
- * authority.
+ * authority. Words the user did not type go as written (`deliverAsWritten`).
  */
-const buildUserMessagesEffect = Effect.fn("buildUserMessagesEffect")(function* (
-  input: Pick<
-    ProviderSendTurnInput | ProviderSteerTurnInput,
-    "messageId" | "input" | "attachments" | "typed"
-  >,
-  dependencies: {
-    readonly fileSystem: FileSystem.FileSystem;
-    readonly attachmentsDir: string;
-    readonly method?: "turn/start" | "turn/steer";
-    readonly seedPreamble?: string | undefined;
-    /** The CLI, when known. One older than append-only messages gets the
-     *  single message it always got whenever context leads the user's words. */
-    readonly cliVersion?: string | undefined;
-  },
+const buildUserMessagesEffect = (
+  input: ClaudeUserMessagesInput,
+  dependencies: ClaudeUserMessagesDependencies,
+) =>
+  composeUserMessagesEffect(input, dependencies).pipe(
+    Effect.map((messages) =>
+      messages.map((message) => deliverAsWritten(message, dependencies.cliVersion)),
+    ),
+  );
+
+const composeUserMessagesEffect = Effect.fn("composeUserMessagesEffect")(function* (
+  input: ClaudeUserMessagesInput,
+  dependencies: ClaudeUserMessagesDependencies,
 ) {
   const typed = input.typed;
   const leadingContext =
@@ -5850,7 +5917,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       supportsClaudeAppendOnly(context.cliVersion)
     ) {
       messages.push(
-        buildUserMessage({ sdkContent: [{ type: "text", text: seed }], appendOnly: true }),
+        deliverAsWritten(
+          buildUserMessage({ sdkContent: [{ type: "text", text: seed }], appendOnly: true }),
+          context.cliVersion,
+        ),
       );
       context.pendingContextSeedText = undefined;
       context.pendingAppendOnlyResults += 1;
@@ -7731,14 +7801,39 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const runPromise = Effect.runPromiseWith(runtimeContext);
 
       const promptQueue = yield* Queue.unbounded<PromptQueueItem>();
-      const prompt = Stream.fromQueue(promptQueue).pipe(
+      const promptItems = Stream.fromQueue(promptQueue).pipe(
         Stream.filter((item) => item.type === "message"),
-        Stream.map((item) => item.message),
         Stream.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause) ? Stream.empty : Stream.failCause(cause),
         ),
         Stream.toAsyncIterable,
       );
+      // The SDK asks for its next message only once it has sent the last one
+      // on to the CLI, so that ask is when a message counts as taken.
+      const prompt: AsyncIterable<SDKUserMessage> = {
+        [Symbol.asyncIterator]() {
+          const items = promptItems[Symbol.asyncIterator]();
+          let handedOver: Deferred.Deferred<void> | undefined;
+          return {
+            next: async () => {
+              if (handedOver !== undefined) {
+                runFork(Deferred.succeed(handedOver, undefined));
+                handedOver = undefined;
+              }
+              const next = await items.next();
+              if (next.done) {
+                return next;
+              }
+              handedOver = next.value.taken;
+              return { done: false, value: next.value.message };
+            },
+            return: async (value?: unknown) => {
+              await items.return?.(value);
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      };
 
       const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
       const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
@@ -8945,6 +9040,32 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  /**
+   * Move what the running turn is waiting on to the background, once the SDK
+   * has sent the steer just queued on to the CLI: asked first, the command
+   * returns and Claude may answer before the steer is there to read. Best
+   * effort; a CLI without the control, or with background tasks turned off,
+   * just waits.
+   */
+  const moveForegroundWorkToBackground = Effect.fn("moveForegroundWorkToBackground")(function* (
+    context: ClaudeSessionContext,
+    steerTaken: Deferred.Deferred<void>,
+  ) {
+    const backgroundTasks = context.query.backgroundTasks?.bind(context.query);
+    if (backgroundTasks === undefined) {
+      return;
+    }
+    yield* Deferred.await(steerTaken).pipe(Effect.timeoutOption(CLAUDE_STEER_TAKEN_TIMEOUT));
+    yield* Effect.tryPromise(() => backgroundTasks()).pipe(
+      Effect.catch((cause) =>
+        Effect.logDebug("claude.steer.background-tasks-failed", {
+          threadId: context.session.threadId,
+          cause,
+        }),
+      ),
+    );
+  });
+
   const steerTurn: NonNullable<ClaudeAdapterShape["steerTurn"]> = Effect.fn("steerTurn")(function* (
     input: ProviderSteerTurnInput,
   ) {
@@ -8968,9 +9089,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       cliVersion: context.cliVersion,
     });
 
+    const taken = yield* Deferred.make<void>();
     yield* Queue.offerAll(
       context.promptQueue,
-      messages.map((message) => ({ type: "message" as const, message })),
+      messages.map((message, index) => ({
+        type: "message" as const,
+        message,
+        ...(index === messages.length - 1 ? { taken } : {}),
+      })),
     ).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/steer", cause)));
 
     context.session = {
@@ -8979,6 +9105,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       activeTurnId: activeTurn.turnId,
       updatedAt: yield* nowIso,
     };
+
+    // The user's "steer now": a plain steer waits for whatever command or
+    // subagent is running, which can be minutes. Moving those to the
+    // background ends the wait; they keep running and report when done.
+    // Only the user's own words do this; an agent's reply steered in waits.
+    // It runs on its own: the steer is delivered either way.
+    if (input.typed !== undefined) {
+      yield* Effect.forkDetach(moveForegroundWorkToBackground(context, taken));
+    }
 
     return {
       threadId: context.session.threadId,
