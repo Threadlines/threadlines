@@ -15,8 +15,8 @@ import {
   isClaudeAgentTaskPayload,
   isClaudeSubagentToolName,
   isSpawnAgentTool,
-} from "@threadlines/shared/claudeSubagentActivity";
-import { isRootAgentPath } from "@threadlines/shared/subagentPath";
+} from "./claudeSubagentActivity.ts";
+import { isRootAgentPath } from "./subagentPath.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -421,7 +421,9 @@ function isSettledStatus(status: OrchestrationSubagentStatus): boolean {
  *
  *  Update-only, and only for a row that already settled: a task matching no
  *  known agent must not invent a roster row, and a live agent must not have its
- *  spawn turn rewritten by its own progress. */
+ *  spawn turn rewritten by its own progress. A task edge older than the row's
+ *  settlement is from the run that ended, delivered late or again (a client
+ *  re-reading events its snapshot already folded), so it reopens nothing. */
 function reopenResumedAgentRun(
   current: ReadonlyArray<OrchestrationSubagent>,
   activity: OrchestrationThreadActivity,
@@ -439,7 +441,9 @@ function reopenResumedAgentRun(
           entry.id === toolUseId)),
   );
   const existing = index >= 0 ? current[index] : undefined;
-  if (!existing || !isSettledStatus(existing.status)) return current;
+  if (!existing || !isSettledStatus(existing.status) || activity.createdAt < existing.updatedAt) {
+    return current;
+  }
   const next = [...current];
   next[index] = {
     ...existing,
@@ -565,6 +569,17 @@ export function projectSubagentActivity(
     }
   }
   return next.toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+/** The roster a revert leaves: agents spawned in the turns it removed go with
+ *  them, and agents no turn owns stay. */
+export function retainSubagentsAfterRevert(
+  subagents: ReadonlyArray<OrchestrationSubagent>,
+  retainedTurnIds: ReadonlySet<string>,
+): ReadonlyArray<OrchestrationSubagent> {
+  return subagents.filter(
+    (subagent) => subagent.turnId === null || retainedTurnIds.has(subagent.turnId),
+  );
 }
 
 /**

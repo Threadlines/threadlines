@@ -2128,6 +2128,7 @@ export default function ChatView(props: ChatViewProps) {
     () => derivePlanTaskBadge({ activePlan, activeProposedPlan: taskProgressProposedPlan }),
     [activePlan, taskProgressProposedPlan],
   );
+  const sessionStopped = activeThread?.session?.orchestrationStatus === "stopped";
   const subagentActivityState = useMemo(
     () =>
       deriveThreadSubagentActivityState(
@@ -2136,12 +2137,14 @@ export default function ChatView(props: ChatViewProps) {
         activeThread?.subagents,
         activeLatestTurn?.turnId ?? null,
         latestTurnSettled,
+        sessionStopped,
       ),
     [
       activeLatestTurn?.turnId,
       activeThread?.subagents,
       derivationThreadKey,
       latestTurnSettled,
+      sessionStopped,
       threadActivities,
     ],
   );

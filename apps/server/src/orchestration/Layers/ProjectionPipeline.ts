@@ -88,7 +88,10 @@ import {
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
-import { keepKnownSubagentProviders, projectSubagentActivity } from "../subagentProjection.ts";
+import {
+  keepKnownSubagentProviders,
+  projectSubagentActivity,
+} from "@threadlines/shared/subagentProjection";
 import {
   applyWorkflowRunPatch,
   retainWorkflowRunsAfterRevert,

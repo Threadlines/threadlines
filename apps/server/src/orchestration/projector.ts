@@ -103,7 +103,10 @@ import {
   ThreadDiffStatRebasedPayload,
   ThreadWorkflowRunRecordedPayload,
 } from "./Schemas.ts";
-import { projectSubagentActivity } from "./subagentProjection.ts";
+import {
+  projectSubagentActivity,
+  retainSubagentsAfterRevert,
+} from "@threadlines/shared/subagentProjection";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 
@@ -230,15 +233,6 @@ function retainThreadActivitiesAfterRevert(
 ): ReadonlyArray<OrchestrationThread["activities"][number]> {
   return activities.filter(
     (activity) => activity.turnId === null || retainedTurnIds.has(activity.turnId),
-  );
-}
-
-function retainThreadSubagentsAfterRevert(
-  subagents: ReadonlyArray<NonNullable<OrchestrationThread["subagents"]>[number]>,
-  retainedTurnIds: ReadonlySet<string>,
-): ReadonlyArray<NonNullable<OrchestrationThread["subagents"]>[number]> {
-  return subagents.filter(
-    (subagent) => subagent.turnId === null || retainedTurnIds.has(subagent.turnId),
   );
 }
 
@@ -1710,10 +1704,7 @@ export function projectEvent(
             retainedTurnIds,
           ).slice(-MAX_THREAD_PROPOSED_PLANS);
           const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
-          const subagents = retainThreadSubagentsAfterRevert(
-            thread.subagents ?? [],
-            retainedTurnIds,
-          );
+          const subagents = retainSubagentsAfterRevert(thread.subagents ?? [], retainedTurnIds);
 
           const latestCheckpoint = checkpoints.at(-1) ?? null;
           const latestTurn =

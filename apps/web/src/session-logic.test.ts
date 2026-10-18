@@ -6571,6 +6571,46 @@ describe("deriveSubagentProgressState", () => {
     expect(resumed.history).toHaveLength(1);
   });
 
+  it("shows an agent whose end was never reported as stopped once its session stopped", () => {
+    const orphan: OrchestrationSubagent = {
+      id: "toolu_orphan",
+      agentThreadId: "toolu_orphan",
+      parentAgentThreadId: null,
+      spawnCallId: "toolu_orphan",
+      transcriptAgentId: "a-orphan",
+      turnId: TurnId.make("turn-1"),
+      agentPath: null,
+      parentAgentPath: null,
+      treeDepth: 0,
+      nickname: null,
+      role: "general-purpose",
+      objective: "Inventory features",
+      status: "running",
+      requestedModel: null,
+      resolvedModel: null,
+      reasoningEffort: null,
+      modelProvenance: null,
+      reasoningEffortProvenance: null,
+      resultBody: null,
+      resultCreatedAt: null,
+      createdAt: "2026-07-01T22:40:00.000Z",
+      updatedAt: "2026-07-01T22:43:58.653Z",
+    };
+    const input = {
+      activities: [],
+      subagents: [orphan],
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: true,
+    };
+
+    expect(deriveSubagentActivityState(input).progress).toMatchObject({ activeCount: 1 });
+    const stopped = deriveSubagentActivityState({ ...input, sessionStopped: true });
+    expect(stopped.progress).toMatchObject({ activeCount: 0, stoppedCount: 1 });
+    expect(stopped.history).toMatchObject([
+      { item: { status: "interrupted", statusLabel: "Stopped" } },
+    ]);
+  });
+
   it("does not expose root conversation interactions as running subagents", () => {
     const childStarted = makeActivity({
       id: "native-child-started",

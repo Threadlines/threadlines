@@ -83,6 +83,10 @@
       "types": "./src/claudeSubagentActivity.ts",
       "import": "./src/claudeSubagentActivity.ts"
     },
+    "./subagentProjection": {
+      "types": "./src/subagentProjection.ts",
+      "import": "./src/subagentProjection.ts"
+    },
     "./logging": {
       "types": "./src/logging.ts",
       "import": "./src/logging.ts"

@@ -19,6 +19,7 @@ import type {
   OrchestrationSession,
   OrchestrationSessionStatus,
   OrchestrationSideTurn,
+  OrchestrationSubagent,
   OrchestrationThread,
   OrchestrationThreadShell,
   OrchestrationWorkflowRun,
@@ -98,6 +99,10 @@ import {
 } from "@threadlines/shared/commandRuns";
 import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
 import {
+  projectSubagentActivity,
+  retainSubagentsAfterRevert,
+} from "@threadlines/shared/subagentProjection";
+import {
   awaitedChildRequestCount,
   childRequestStateOn,
   hasPendingChildApproval,
@@ -148,6 +153,13 @@ export interface EnvironmentState {
   pagesByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationAgentPage>>;
   /** Workflow runs per thread (OrchestrationWorkflowRun); absent until a thread's detail loads. */
   workflowRunsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationWorkflowRun>>;
+  /**
+   * Every agent each thread has spawned (OrchestrationSubagent), uncapped like
+   * the server's roster: the activity window drops a long-running agent's
+   * spawn, and this is what still names it. Absent until a thread's detail
+   * loads; activity events fold into it the way the server projects them.
+   */
+  subagentsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationSubagent>>;
   /** Suggested commands per thread (docs/terminal-command-runs.md); absent until a thread's detail loads. */
   commandRequestsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRequest>>;
   commandRunsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRun>>;
@@ -197,6 +209,7 @@ const initialEnvironmentState: EnvironmentState = {
   agentRequestsByThreadId: {},
   pagesByThreadId: {},
   workflowRunsByThreadId: {},
+  subagentsByThreadId: {},
   commandRequestsByThreadId: {},
   commandRunsByThreadId: {},
   threadDetailLoadedById: {},
@@ -211,6 +224,7 @@ const initialState: AppState = {
 };
 
 const EMPTY_THREAD_IDS: ThreadId[] = [];
+const EMPTY_SUBAGENTS: ReadonlyArray<OrchestrationSubagent> = [];
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -491,6 +505,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
+    subagents: thread.subagents ?? [],
     workflowRuns: thread.workflowRuns ?? [],
   };
 }
@@ -1238,6 +1253,16 @@ function writeThreadState(
     };
   }
 
+  if (nextThread.subagents !== undefined && previousThread?.subagents !== nextThread.subagents) {
+    nextState = {
+      ...nextState,
+      subagentsByThreadId: {
+        ...nextState.subagentsByThreadId,
+        [nextThread.id]: nextThread.subagents,
+      },
+    };
+  }
+
   if (
     nextThread.commandRequests !== undefined &&
     previousThread?.commandRequests !== nextThread.commandRequests
@@ -1438,6 +1463,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedPages, ...pagesByThreadId } = state.pagesByThreadId ?? {};
   const { [threadId]: _removedWorkflowRuns, ...workflowRunsByThreadId } =
     state.workflowRunsByThreadId ?? {};
+  const { [threadId]: _removedSubagents, ...subagentsByThreadId } = state.subagentsByThreadId ?? {};
   const { [threadId]: _removedCommandRequests, ...commandRequestsByThreadId } =
     state.commandRequestsByThreadId ?? {};
   const { [threadId]: _removedCommandRuns, ...commandRunsByThreadId } =
@@ -1467,6 +1493,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     agentRequestsByThreadId,
     pagesByThreadId,
     workflowRunsByThreadId,
+    subagentsByThreadId,
     commandRequestsByThreadId,
     commandRunsByThreadId,
     threadDetailLoadedById,
@@ -1832,6 +1859,7 @@ function syncEnvironmentShellSnapshot(
       state.workflowRunsByThreadId ?? {},
       nextThreadIds,
     ),
+    subagentsByThreadId: retainThreadScopedRecord(state.subagentsByThreadId ?? {}, nextThreadIds),
     commandRequestsByThreadId: retainThreadScopedRecord(
       state.commandRequestsByThreadId ?? {},
       nextThreadIds,
@@ -2742,6 +2770,7 @@ function applyEnvironmentOrchestrationEvent(
           retainedTurnIds,
         ).slice(-MAX_THREAD_PROPOSED_PLANS);
         const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
+        const subagents = retainSubagentsAfterRevert(thread.subagents ?? [], retainedTurnIds);
         const latestCheckpoint = turnDiffSummaries.at(-1) ?? null;
         // Only runs of the turns the revert removed go: runs are never capped.
         const workflowRuns = retainWorkflowRunsAfterRevert(
@@ -2766,6 +2795,7 @@ function applyEnvironmentOrchestrationEvent(
           commandRequests,
           commandRuns,
           activities,
+          subagents,
           workflowRuns,
           pendingSourceProposedPlan: undefined,
           latestTurn:
@@ -2787,12 +2817,15 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.activity-appended":
       return updateThreadState(state, event.payload.threadId, (thread) => {
+        const activity = { ...event.payload.activity, eventSequence: event.sequence };
+        // The same fold the server's projector runs, so the roster stays what
+        // a fresh snapshot would say once this activity leaves the window.
+        const currentSubagents = thread.subagents ?? EMPTY_SUBAGENTS;
+        const subagents = projectSubagentActivity(currentSubagents, activity);
         return {
           ...thread,
-          activities: upsertThreadActivity(thread.activities, {
-            ...event.payload.activity,
-            eventSequence: event.sequence,
-          }),
+          activities: upsertThreadActivity(thread.activities, activity),
+          ...(subagents !== currentSubagents ? { subagents } : {}),
           updatedAt: event.occurredAt,
         };
       });
