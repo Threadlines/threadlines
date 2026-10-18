@@ -7,6 +7,11 @@
  * instead of waiting. Without the call, the adapter still stops counting a
  * command as awaited once the user's next message starts a new turn.
  *
+ * The description also carries the one timeout rule: Claude stops background
+ * commands at their timeout in SDK sessions, so a server needs the ceiling
+ * that `makeClaudeEnvironment` raises. Always loaded, it is read before the
+ * command starts.
+ *
  * In-process rather than on the HTTP endpoint the browser tools use: the
  * handler has to change the calling session's own task state, and only Claude
  * reports background tasks at all.
@@ -24,6 +29,8 @@ const MARK_LONG_RUNNING_DESCRIPTION = [
   "like a dev server, a preview server, or a file watcher, and that you are not waiting for it to finish.",
   "Otherwise Threadlines shows the user that you are still waiting on the command after your turn ends.",
   "Call this once, right after starting such a command, with the task ID from its Bash result.",
+  "Start such a command with timeout set to the largest value the Bash tool allows:",
+  "a background command is stopped when its timeout runs out, 30 minutes if you pass none.",
   "Do not call it for commands whose result you will wait for, such as test runs, builds, or polling loops.",
 ].join(" ");
 

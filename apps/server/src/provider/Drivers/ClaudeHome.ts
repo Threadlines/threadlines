@@ -105,6 +105,17 @@ const CLAUDE_SUBAGENT_LIMIT_ENVS = [
 
 const CLAUDE_RESUME_INTERRUPTED_TURN_ENV = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN";
 
+/**
+ * Claude stops a background command at its `timeout` in sessions it counts as
+ * unattended, and every Agent SDK session counts (the terminal, its desktop
+ * app and VS Code are exempt). The default stays at 30 minutes; this raises
+ * only the ceiling, to the largest timer Node allows (about 24 days), so a dev
+ * server Claude starts can ask to outlive it. It also raises the foreground
+ * ceiling, which Claude reaches only by asking for a longer timeout.
+ */
+const CLAUDE_BASH_MAX_TIMEOUT_ENV = "BASH_MAX_TIMEOUT_MS";
+const CLAUDE_BASH_MAX_TIMEOUT_MS = String(2 ** 31 - 1);
+
 export type ClaudeEnvironmentConfig = ClaudeFolderConfig &
   Partial<Pick<ClaudeSettings, (typeof CLAUDE_SUBAGENT_LIMIT_ENVS)[number][0]>>;
 
@@ -142,6 +153,9 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   // their own. An explicit value in the base environment wins.
   if (environment[CLAUDE_RESUME_INTERRUPTED_TURN_ENV] === undefined) {
     environment[CLAUDE_RESUME_INTERRUPTED_TURN_ENV] = "0";
+  }
+  if (environment[CLAUDE_BASH_MAX_TIMEOUT_ENV] === undefined) {
+    environment[CLAUDE_BASH_MAX_TIMEOUT_ENV] = CLAUDE_BASH_MAX_TIMEOUT_MS;
   }
   for (const [settingKey, envName] of CLAUDE_SUBAGENT_LIMIT_ENVS) {
     const limit = normalizeClaudeSubagentLimit(config[settingKey]);
