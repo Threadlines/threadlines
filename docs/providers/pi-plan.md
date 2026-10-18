@@ -505,3 +505,13 @@ Sol's review of v2 (all taken):
 6. Pi 1.3.0 can't answer questions extensions ask during startup. Now a fix sent upstream, a startup timeout with a clear message, and a test.
 
 Later (Oct 18): Will chose to follow T3 Code on Claude subscriptions, so the enforcement from v1 #8 and v2 #1 was dropped. Nothing Anthropic-specific is built.
+
+Sol's code review of the build (Oct 18), three rounds, all taken:
+
+1. Secrets: the tool token and nonce moved from the environment to a private file the extension reads and deletes; the nonce is kept out of logs and events.
+2. Approvals: session grants match the whole command; title processes drop tool flags that would beat `--no-tools`.
+3. Revert and fork: a reopened chat rebuilds its turns from markers; turns get end, late and reverted markers; forks copy everything only when nothing was said after the turn's end.
+4. Turn ends: a turn ends only once every event Pi sent before going idle is handled, no prompt's ack is outstanding, and the previous turn's end marker is written.
+5. Models: Pi default is the model a thread's session started on, kept in its cursor; the thinking level is sent again after a model switch.
+
+Known, not fixed: an extension that reloads Pi's extensions in-process leaves the Threadlines extension without its secrets, which fails closed (every tool needs an approval that can't be asked, so none run) until the chat restarts. The secrets file relies on the data folder's own permissions on Windows.

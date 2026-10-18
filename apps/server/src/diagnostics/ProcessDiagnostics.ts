@@ -1248,12 +1248,13 @@ function selectHintedProcessOnlyRows(input: {
 
 /** Command shapes of the provider CLIs the server spawns for sessions. Path
  *  segments count (`/opt/x/codex app-server`), dotted dirs (`.claude/…` in a
- *  wrapper's args) do not. Muse's launcher execs `muse-bin-<version>`. */
+ *  wrapper's args) do not. Muse's launcher execs `muse-bin-<version>`; Pi
+ *  renames its own process `pi` on macOS and Linux. */
 const PROVIDER_SESSION_COMMAND_PATTERN =
-  /(?:^|[\s/])(?:claude|codex|cursor-agent|opencode|muse(?:-bin-[\w.-]+)?)(?=$|[\s.])/i;
+  /(?:^|[\s/])(?:claude|codex|cursor-agent|opencode|muse(?:-bin-[\w.-]+)?|pi)(?=$|[\s.])/i;
 
-/** Pi runs as Node (it sets no process title): its `pi` script or Threadlines'
- *  copy's `cli.js`, in RPC mode. */
+/** Pi where its process keeps Node's command line (Windows): its `pi` script
+ *  or Threadlines' copy's `cli.js`, in RPC mode. */
 const PI_SESSION_COMMAND_PATTERN =
   /(?:(?:^|[\s\\/])pi(?:\.cmd)?|pi-coding-agent[\\/]dist[\\/](?:bundle[\\/])?cli\.js)\s(?:.*\s)?--mode\s+rpc(?:\s|$)/i;
 

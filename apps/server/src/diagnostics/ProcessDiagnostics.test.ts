@@ -498,15 +498,23 @@ describe("ProcessDiagnostics", () => {
         "/Users/will/.threadlines/userdata/tools/node/24.21.0-darwin-arm64/bin/node /Users/will/.threadlines/userdata/tools/pi/9a/versions/1f/payload/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js --mode rpc --extension /x/threadlines-pi.ts",
       ),
       processRow(700, 600, "/bin/bash -c npm test"),
+      // Pi renames its own process on macOS and Linux.
+      processRow(800, SERVER_PID, "pi"),
+      processRow(900, 800, "/bin/bash -c make build"),
     ];
 
     // Chat prose mentioned the wrapper and helper pids; hints matched them too.
     const seeded = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
       urls: [],
-      pids: [300, 400, 700],
+      pids: [300, 400, 700, 900],
       portRows: [],
       processRows,
-      commandHints: ["zsh -c source snapshot", "ugrep -G --ignore-files", "/bin/bash -c npm test"],
+      commandHints: [
+        "zsh -c source snapshot",
+        "ugrep -G --ignore-files",
+        "/bin/bash -c npm test",
+        "/bin/bash -c make build",
+      ],
       serverPid: SERVER_PID,
     });
     expect(seeded.runs).toEqual([]);
