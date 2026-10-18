@@ -10,6 +10,7 @@ import { micromark } from "micromark";
 import { gfm, gfmHtml } from "micromark-extension-gfm";
 
 import {
+  AGENT_PAGE_COLUMN_WIDTH,
   AGENT_PAGE_CONTENT_SECURITY_POLICY,
   type AgentPageKind,
   type AgentPageTheme,
@@ -32,9 +33,11 @@ const BASE_CSS =
   "html::-webkit-scrollbar{display:none}body{margin:0}code,kbd,pre,samp{font-family:var(--font-mono)}" +
   ":focus-visible{outline:2px solid var(--ring);outline-offset:-2px}";
 
-// Markdown documents: the chat's own reading styles, dense and flat.
+// Markdown documents: the chat's own reading styles, dense and flat. A
+// document fills its panel in the chat, as the reply around it does; a wider
+// frame (full size) keeps it at the chat's width, centered.
 const DOCUMENT_CSS =
-  ".tl-document{max-width:72ch;font-size:14px;line-height:1.6;overflow-wrap:anywhere}" +
+  `.tl-document{max-width:${AGENT_PAGE_COLUMN_WIDTH}px;margin-inline:auto;font-size:14px;line-height:1.6;overflow-wrap:anywhere}` +
   ".tl-document>:first-child{margin-top:0}.tl-document>:last-child{margin-bottom:0}" +
   ".tl-document h1{font-size:18px;line-height:1.3;font-weight:600;margin:0 0 10px}" +
   ".tl-document h2{font-size:15.5px;line-height:1.35;font-weight:600;margin:20px 0 6px}" +
