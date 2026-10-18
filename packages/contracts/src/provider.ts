@@ -228,6 +228,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   typed: Schema.optional(ProviderTypedInput),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  /** When the message that starts this turn reached the server; turn latency counts from here. */
+  requestedAt: Schema.optional(IsoDateTime),
   telemetryContext: Schema.optional(
     Schema.Struct({
       kind: Schema.Literal("thread_fork"),

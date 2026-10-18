@@ -39,7 +39,7 @@ import { compactTraceAttributes } from "@threadlines/shared/observability";
 import { decodeJsonResult } from "@threadlines/shared/schemaJson";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
-import { scratchIndexFileName } from "./scratchIndex.ts";
+import { makeScratchIndexes } from "./scratchIndex.ts";
 import { resolveGitLaunch, spawnGitWithFallback } from "./gitLaunch.ts";
 import { parseGitConfigList, type GitConfigSnapshot } from "./gitConfigSnapshot.ts";
 import {
@@ -1173,6 +1173,7 @@ const collectOutput = Effect.fnUntraced(function* <E>(
 export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const scratchIndexes = yield* makeScratchIndexes;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const { worktreesDir } = yield* ServerConfig;
   const backgroundScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
@@ -2659,79 +2660,69 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         return existingStagedContext;
       }
     }
-    const gitCommonDir = yield* resolveGitCommonDir(cwd);
-    const tempIndexPath = path.join(gitCommonDir, scratchIndexFileName("preview"));
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      GIT_INDEX_FILE: tempIndexPath,
-    };
-    const cleanupTempIndex = fileSystem.remove(tempIndexPath, { force: true }).pipe(Effect.ignore);
+    const hasHead = yield* executeGit(operation, cwd, ["rev-parse", "--verify", "HEAD"], {
+      allowNonZeroExit: true,
+    }).pipe(Effect.map((result) => result.exitCode === 0));
 
-    return yield* Effect.gen(function* () {
-      const headResult = yield* executeGit(operation, cwd, ["rev-parse", "--verify", "HEAD"], {
-        allowNonZeroExit: true,
-        env,
-      });
-      if (headResult.exitCode === 0) {
-        yield* executeGit(operation, cwd, ["read-tree", "HEAD"], { env }).pipe(Effect.asVoid);
-      }
-      yield* stageCommitContext(operation, cwd, filePaths, env);
-      return yield* readStagedCommitContext(operation, cwd, env);
-    }).pipe(Effect.ensuring(cleanupTempIndex));
+    return yield* scratchIndexes.withScratchIndex({
+      cwd,
+      purpose: "preview",
+      tree: hasHead ? "HEAD" : null,
+      git: (args, env, options) => executeGit(operation, cwd, args, { env, ...options }),
+      use: (env) =>
+        Effect.gen(function* () {
+          yield* stageCommitContext(operation, cwd, filePaths, env);
+          return yield* readStagedCommitContext(operation, cwd, env);
+        }),
+    });
   });
 
   const workingTreeDiff: GitVcsDriver.GitVcsDriverShape["workingTreeDiff"] = Effect.fn(
     "workingTreeDiff",
   )(function* (input) {
     const operation = "GitVcsDriver.workingTreeDiff";
-    const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
-    const tempIndexPath = path.join(gitCommonDir, scratchIndexFileName("working-tree-diff"));
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      GIT_INDEX_FILE: tempIndexPath,
-      // An agent's diff: paths are literal, and no fsmonitor program runs.
-      ...(input.readOnlyProfile
-        ? {
-            GIT_LITERAL_PATHSPECS: "1",
-            GIT_CONFIG_COUNT: "1",
-            GIT_CONFIG_KEY_0: "core.fsmonitor",
-            GIT_CONFIG_VALUE_0: "false",
-          }
-        : {}),
-    };
-    const cleanupTempIndex = fileSystem.remove(tempIndexPath, { force: true }).pipe(Effect.ignore);
+    // An agent's diff: paths are literal, and no fsmonitor program runs.
+    const env: NodeJS.ProcessEnv = input.readOnlyProfile
+      ? {
+          GIT_LITERAL_PATHSPECS: "1",
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "core.fsmonitor",
+          GIT_CONFIG_VALUE_0: "false",
+        }
+      : {};
+    const hasHead = yield* executeGit(operation, input.cwd, ["rev-parse", "--verify", "HEAD"], {
+      allowNonZeroExit: true,
+      env,
+    }).pipe(Effect.map((result) => result.exitCode === 0));
 
-    return yield* Effect.gen(function* () {
-      const headResult = yield* executeGit(
-        operation,
-        input.cwd,
-        ["rev-parse", "--verify", "HEAD"],
-        {
-          allowNonZeroExit: true,
-          env,
-        },
-      );
-      if (headResult.exitCode === 0) {
-        yield* executeGit(operation, input.cwd, ["read-tree", "HEAD"], { env }).pipe(Effect.asVoid);
-      }
-      yield* stageCommitContext(operation, input.cwd, input.filePaths, env);
-      const diffArgs = [
-        "diff",
-        "--no-color",
-        "--no-ext-diff",
-        ...(input.readOnlyProfile ? ["--no-textconv"] : []),
-        "--cached",
-        "--patch",
-        "--minimal",
-        ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
-      ];
-      const diff = yield* runGitStdoutWithOptions(operation, input.cwd, diffArgs, {
-        env,
-        maxOutputBytes: RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES,
-        appendTruncationMarker: true,
-      });
-      return { diff };
-    }).pipe(Effect.ensuring(cleanupTempIndex));
+    return yield* scratchIndexes.withScratchIndex({
+      cwd: input.cwd,
+      purpose: "working-tree-diff",
+      tree: hasHead ? "HEAD" : null,
+      env,
+      git: (args, gitEnv, options) =>
+        executeGit(operation, input.cwd, args, { env: gitEnv, ...options }),
+      use: (scratchEnv) =>
+        Effect.gen(function* () {
+          yield* stageCommitContext(operation, input.cwd, input.filePaths, scratchEnv);
+          const diffArgs = [
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            ...(input.readOnlyProfile ? ["--no-textconv"] : []),
+            "--cached",
+            "--patch",
+            "--minimal",
+            ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
+          ];
+          const diff = yield* runGitStdoutWithOptions(operation, input.cwd, diffArgs, {
+            env: scratchEnv,
+            maxOutputBytes: RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES,
+            appendTruncationMarker: true,
+          });
+          return { diff };
+        }),
+    });
   });
 
   const discardChanges: GitVcsDriver.GitVcsDriverShape["discardChanges"] = Effect.fn(

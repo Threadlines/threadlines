@@ -19,6 +19,9 @@ Threadlines sends product and reliability events such as:
   removed, with its public registry id and version;
 - provider session start, stop, and recovery;
 - turn sent, steered, interrupted, and compact-requested events;
+- how long a sent message waited, in milliseconds, before Threadlines handed it
+  to the agent and before the agent's first output, and whether the agent had
+  to start up for it;
 - selected model family and sanitized model slug for provider turns;
 - provider session start kind, such as fresh starts, resumes, same-provider
   restarts, and provider switches;

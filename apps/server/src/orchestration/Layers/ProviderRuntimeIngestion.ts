@@ -41,6 +41,7 @@ import {
 import { turnAdmission } from "../turnAdmission.ts";
 
 import { metricAttributes, providerFirstOutputDuration } from "../../observability/Metrics.ts";
+import { isAgentOutputEvent } from "../../provider/turnLatency.ts";
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { resolveThreadProviderCwd } from "../generalChats.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -3943,12 +3944,6 @@ const make = Effect.gen(function* () {
   // Time from a turn starting until its first streamed output event, using
   // the provider-stamped event timestamps so queueing delays don't skew it.
   const turnStartTimestamps = new Map<string, number>();
-  const firstOutputEventTypes: ReadonlySet<string> = new Set([
-    "content.delta",
-    "item.started",
-    "item.updated",
-    "item.completed",
-  ]);
   const trackFirstOutputLatency = (event: ProviderRuntimeEvent): Effect.Effect<void> => {
     if (event.type === "turn.started") {
       if (event.turnId !== undefined) {
@@ -3973,7 +3968,7 @@ const make = Effect.gen(function* () {
       }
       return Effect.void;
     }
-    if (event.turnId === undefined || !firstOutputEventTypes.has(event.type)) {
+    if (event.turnId === undefined || !isAgentOutputEvent(event)) {
       return Effect.void;
     }
     const key = `${event.threadId}:${event.turnId}`;

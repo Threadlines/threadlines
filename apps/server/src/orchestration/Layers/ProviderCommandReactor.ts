@@ -2074,6 +2074,8 @@ const make = Effect.gen(function* () {
     if (yield* hasHandledTurnStartRecently(key)) {
       return;
     }
+    // On the server's clock: the event's own time comes from the sender's.
+    const requestedAt = yield* nowIso;
     // A new turn is the user moving on after Stop, and supersedes a message
     // that was waiting on its own release or on a side answer: how this turn
     // ends decides whether the queue moves again.
@@ -2377,7 +2379,7 @@ const make = Effect.gen(function* () {
         );
       }
       yield* historyDebtClaimed;
-      yield* providerService.sendTurn(turnRequest).pipe(
+      yield* providerService.sendTurn({ ...turnRequest, requestedAt }).pipe(
         // The provider has the history now, whatever the bookkeeping below does.
         Effect.tap(() => historyDebtPaid),
         Effect.onError(() => historyDebtReturned),
