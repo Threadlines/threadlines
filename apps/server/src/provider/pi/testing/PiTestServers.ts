@@ -15,7 +15,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- test servers on node:http.
 import * as NodeFs from "node:fs";
 import * as NodeHttp from "node:http";
-import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 import * as NodeOs from "node:os";
 import * as NodePath from "node:path";
@@ -265,18 +265,27 @@ export const testPiEnvironment = (agentDir: string): NodeJS.ProcessEnv => ({
 
 /**
  * Pi's `cli.js` for integration tests: THREADLINES_PI_CLI, else the copy the
- * server's dev dependencies install. Undefined when neither exists.
+ * server's dev dependencies install (found by folder: Pi's package exports
+ * only ES module entry points, which `require` can't resolve). Undefined
+ * when neither exists.
  */
 export function resolveTestPiCli(): string | undefined {
   const fromEnv = process.env.THREADLINES_PI_CLI;
   if (fromEnv && NodeFs.existsSync(fromEnv)) return fromEnv;
-  try {
-    const packageJson = createRequire(import.meta.url).resolve(
-      "@earendil-works/pi-coding-agent/package.json",
+  let dir = NodePath.dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    const cli = NodePath.join(
+      dir,
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+      "dist",
+      "bundle",
+      "cli.js",
     );
-    const cli = NodePath.join(NodePath.dirname(packageJson), "dist/bundle/cli.js");
-    return NodeFs.existsSync(cli) ? cli : undefined;
-  } catch {
-    return undefined;
+    if (NodeFs.existsSync(cli)) return cli;
+    const parent = NodePath.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
   }
 }
