@@ -255,8 +255,16 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
         ? [`pending:${spawnCallId}`]
         : [];
   const agentPath = text(item.agentPath);
-  const requestedModel = text(item.model);
+  // A collab item's model and effort are the ones its launcher asked for,
+  // unless the item names another source: Codex's native agent activity
+  // reports what it resolved when it created the agent.
+  const model = text(item.model);
+  const modelSource = model ? (settingProvenance(item.modelSource) ?? "explicit") : null;
+  const requestedModel = modelSource === "provider" ? null : model;
   const reasoningEffort = text(item.reasoningEffort);
+  const reasoningEffortSource = reasoningEffort
+    ? (settingProvenance(item.reasoningEffortSource) ?? "explicit")
+    : null;
   const notificationTaskId = claudeSubagentNotificationTaskId(data);
   return ids.map((id) => {
     const state = record(states?.[id]);
@@ -281,10 +289,11 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
         agentState: text(state?.status),
       }),
       requestedModel,
-      resolvedModel: text(item.resolvedModel),
+      resolvedModel: text(item.resolvedModel) ?? (modelSource === "provider" ? model : null),
       reasoningEffort,
-      modelProvenance: requestedModel ? "explicit" : null,
-      reasoningEffortProvenance: reasoningEffort ? "explicit" : null,
+      // Like metadataPatch: model provenance describes the requested model.
+      modelProvenance: modelSource === "provider" ? null : modelSource,
+      reasoningEffortProvenance: reasoningEffortSource,
       resultBody: text(state?.message),
       resultCreatedAt: text(state?.message) ? activity.createdAt : null,
       ...(text(data?.subagentLiveText) && activity.eventSequence !== undefined

@@ -257,6 +257,81 @@ describe("CodexAdapter item mapping", () => {
     }
   });
 
+  it("records the model Codex resolved for a native agent as resolved, not requested", () => {
+    const events = mapToRuntimeEvents(
+      {
+        id: EventId.make("evt-subagent-resolved-settings"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-10-18T00:00:00.000Z",
+        method: "item/started",
+        threadId: ThreadId.make("thread-1"),
+        turnId: TurnId.make("turn-1"),
+        itemId: ProviderItemId.make("subagent-activity-resolved"),
+        payload: {
+          startedAtMs: 1_792_281_600_000,
+          threadId: "provider-parent-thread",
+          turnId: "provider-parent-turn",
+          item: {
+            id: "subagent-activity-resolved",
+            type: "subAgentActivity",
+            kind: "started",
+            agentPath: "/root/inspect_runtime",
+            agentThreadId: "provider-child-resolved",
+            model: "gpt-6.1-sol",
+            reasoningEffort: "high",
+          },
+        },
+      },
+      ThreadId.make("thread-1"),
+    );
+    assert.deepStrictEqual(
+      events.map((event) => event.type),
+      ["item.started", "subagent.metadata.updated"],
+    );
+    const metadataEvent = events[1];
+    assert.equal(metadataEvent?.type, "subagent.metadata.updated");
+    if (metadataEvent?.type === "subagent.metadata.updated") {
+      assert.deepStrictEqual(
+        {
+          model: metadataEvent.payload.model,
+          modelSource: metadataEvent.payload.modelSource,
+          reasoningEffort: metadataEvent.payload.reasoningEffort,
+          reasoningEffortSource: metadataEvent.payload.reasoningEffortSource,
+        },
+        {
+          model: "gpt-6.1-sol",
+          modelSource: "provider",
+          reasoningEffort: "high",
+          reasoningEffortSource: "provider",
+        },
+      );
+    }
+
+    let roster: ReadonlyArray<OrchestrationSubagent> = [];
+    for (const activity of events.flatMap((event) => projectRuntimeEventToActivities(event))) {
+      roster = projectSubagentActivity(roster, activity);
+    }
+
+    assert.equal(roster.length, 1);
+    assert.deepStrictEqual(
+      {
+        requestedModel: roster[0]?.requestedModel,
+        resolvedModel: roster[0]?.resolvedModel,
+        modelProvenance: roster[0]?.modelProvenance,
+        reasoningEffort: roster[0]?.reasoningEffort,
+        reasoningEffortProvenance: roster[0]?.reasoningEffortProvenance,
+      },
+      {
+        requestedModel: null,
+        resolvedModel: "gpt-6.1-sol",
+        modelProvenance: null,
+        reasoningEffort: "high",
+        reasoningEffortProvenance: "provider",
+      },
+    );
+  });
+
   it("tracks actual child turns without restarting a finished agent on message delivery", () => {
     const parentThreadId = ThreadId.make("thread-parent");
     const parentTurnId = TurnId.make("turn-parent");

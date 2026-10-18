@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const CODEX_PROTOCOL_VERSION = "0.159.1";
+const CODEX_PROTOCOL_VERSION = "0.163.0";
 const UPSTREAM_REF = `rust-v${CODEX_PROTOCOL_VERSION}`;
 const CODEX_SCHEMA_BINARY_ENV = "THREADLINES_CODEX_SCHEMA_BINARY";
 
@@ -321,6 +321,48 @@ function stripNullDefaults(value: Schema.Json): Schema.Json {
       .filter(([key, child]) => !(key === "default" && child === null))
       .map(([key, child]) => [key, stripNullDefaults(child)]),
   ) as Schema.Json;
+}
+
+/** A JSON value that is an object, not an array or null. */
+function isJsonObject(value: Schema.Json | undefined): value is Schema.JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Forward-compat for Codex 0.164+, which stores generated images in the
+ * attachment store: an `imageGeneration` thread item then carries either inline
+ * `result` data or a durable `fileId` (upstream schema: anyOf `{fileId}` |
+ * `{result}`). Schemas up to 0.163 require `result`, so a file-backed item
+ * from a newer Codex would fail to decode and be dropped. This makes `result`
+ * optional and adds an optional `fileId`. It only fires while the pinned schema
+ * still requires `result`, so it becomes a no-op once the pin reaches 0.164.
+ */
+function relaxImageGenerationResult(value: Schema.Json): Schema.Json {
+  if (Array.isArray(value)) {
+    return value.map(relaxImageGenerationResult);
+  }
+  if (!isJsonObject(value)) {
+    return value;
+  }
+
+  const next = Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, relaxImageGenerationResult(child)]),
+  ) as Record<string, Schema.Json>;
+  const { properties, required } = next;
+  if (!isJsonObject(properties) || !Array.isArray(required) || !required.includes("result")) {
+    return next;
+  }
+  const typeProperty = properties.type;
+  const typeEnum = isJsonObject(typeProperty) ? typeProperty.enum : undefined;
+  if (!Array.isArray(typeEnum) || typeEnum.length !== 1 || typeEnum[0] !== "imageGeneration") {
+    return next;
+  }
+
+  return {
+    ...next,
+    properties: { ...properties, fileId: properties.fileId ?? { type: "string" } },
+    required: required.filter((field) => field !== "result"),
+  };
 }
 
 function toPascalCaseMethod(method: string) {
@@ -650,6 +692,10 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
         required: schema.required.filter((field) => field !== "isBlocking"),
       };
     }
+  }
+
+  for (const [name, schema] of Object.entries(aggregateSchemas)) {
+    aggregateSchemas[name] = relaxImageGenerationResult(schema);
   }
 
   const generator = makeJsonSchemaGenerator();

@@ -2859,6 +2859,122 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("keeps a child running through a partial answer and completes it with the whole answer", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-partial-answer"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-parent"),
+          providerThreadId: "parent-provider-thread",
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+
+    const childEvent = (eventId: string, itemId: string) => ({
+      eventId: asEventId(eventId),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId(itemId),
+      providerRefs: {
+        providerThreadId: "child-provider-thread",
+        providerTurnId: "child-turn-1",
+        providerItemId: asItemId(itemId),
+      },
+    });
+    const emitChildMessage = (itemId: string, text: string, phase: string) => {
+      harness.emit({
+        ...childEvent(`evt-${itemId}-delta`, itemId),
+        type: "content.delta",
+        payload: { streamKind: "assistant_text", delta: text },
+      });
+      harness.emit({
+        ...childEvent(`evt-${itemId}-completed`, itemId),
+        type: "item.completed",
+        payload: { itemType: "assistant_message", status: "completed", data: { item: { phase } } },
+      });
+    };
+    const childResults = (thread: ProviderRuntimeTestThread) =>
+      thread.activities
+        .filter((activity) => activity.kind === "subagent.result")
+        .map(
+          (activity) =>
+            activity.payload as {
+              status?: string;
+              data?: {
+                subagentLiveText?: string;
+                item?: { agentsStates?: Record<string, { status?: string; message?: string }> };
+              };
+            },
+        );
+    const childRow = (thread: ProviderRuntimeTestThread) =>
+      (thread.subagents ?? []).find(
+        (subagent) => subagent.agentThreadId === "child-provider-thread",
+      );
+
+    emitChildMessage("child-answer-1", "Two callers use the old path.", "partial_answer");
+    harness.emit({
+      ...childEvent("evt-child-tool-started", "child-tool-1"),
+      type: "item.started",
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Running command",
+        detail: "rg oldPath",
+      },
+    });
+    harness.emit({
+      ...childEvent("evt-child-tool-completed", "child-tool-1"),
+      type: "item.completed",
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Ran command",
+        detail: "rg oldPath",
+      },
+    });
+    await harness.drain();
+
+    const midway = await waitForThread(harness.readModel, (entry) =>
+      childResults(entry).some(
+        (payload) => payload.data?.subagentLiveText === "Two callers use the old path.",
+      ),
+    );
+    expect(childResults(midway).some((payload) => payload.status === "completed")).toBe(false);
+    expect(childRow(midway)?.status).not.toBe("completed");
+    expect(childRow(midway)?.resultBody ?? null).toBeNull();
+
+    emitChildMessage("child-answer-final", "Both now use the shared helper.", "final_answer");
+    await harness.drain();
+
+    const settled = await waitForThread(harness.readModel, (entry) =>
+      childResults(entry).some((payload) => payload.status === "completed"),
+    );
+    const completed = childResults(settled).filter((payload) => payload.status === "completed");
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.data?.item?.agentsStates?.["child-provider-thread"]).toEqual({
+      status: "completed",
+      message: "Two callers use the old path.\n\nBoth now use the shared helper.",
+    });
+    expect(childRow(settled)).toMatchObject({
+      status: "completed",
+      resultBody: "Two callers use the old path.\n\nBoth now use the shared helper.",
+    });
+  });
+
   it("retains a child result when turn and session completion arrive before item completion", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -101,6 +101,30 @@ it("preserves async questions in streamed items and restored conversation histor
   }
 });
 
+// Codex 0.164 can send a generated image as an attachment id with no inline
+// data; the generator relaxes `result` until the pin reaches that schema.
+it("accepts generated images with inline data or only an attachment id", () => {
+  const base = {
+    type: "imageGeneration",
+    id: "image-1",
+    status: "completed",
+    savedPath: "/tmp/project/image.png",
+  } as const;
+  for (const schema of [
+    CodexSchema.V2ItemCompletedNotification__ThreadItem,
+    CodexSchema.V2ThreadReadResponse__ThreadItem,
+    CodexSchema.V2ThreadTurnsListResponse__ThreadItem,
+    CodexSchema.V2ThreadItemsListResponse__ThreadItem,
+  ]) {
+    for (const item of [
+      { ...base, result: "aGVsbG8=" },
+      { ...base, fileId: "file-1" },
+    ]) {
+      assert.deepEqual(Schema.decodeUnknownSync(schema)(item), item);
+    }
+  }
+});
+
 it("accepts legacy questions without a blocking flag and preserves explicit false", () => {
   const payload = { itemId: "item", threadId: "thread", turnId: "turn", questions: [] };
   for (const schema of [
