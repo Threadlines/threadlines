@@ -6,7 +6,6 @@ import {
   resolveDesktopUpdateInstallConfirmation,
   useDesktopUpdateInstallConfirmationRequest,
 } from "../../lib/desktopUpdateInstallConfirmation";
-import { selectRunningSidebarThreadsAcrossEnvironments, useStore } from "../../store";
 import { fullVersionLabel } from "../desktopUpdate.logic";
 import {
   AlertDialog,
@@ -18,7 +17,8 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import { describeRunningAgentSessions } from "./agentSessionCopy";
+import { describeAgentWorkElsewhere, describeRunningAgentSessions } from "./agentSessionCopy";
+import { useRunningAgentWork } from "./useRunningAgentWork";
 
 function DesktopUpdateInstallDialogBody({
   state,
@@ -28,11 +28,11 @@ function DesktopUpdateInstallDialogBody({
   onConfirm: () => void;
 }) {
   // Live count: a session that finishes while the prompt is open turns the
-  // warning off, so the user never restarts against stale advice.
-  const runningCount = useStore(
-    (appState) => selectRunningSidebarThreadsAcrossEnvironments(appState).length,
-  );
+  // warning off, so the user never restarts against stale advice. Only this
+  // computer's threads count; the restart leaves other computers' work alone.
+  const { localCount: runningCount, remoteMachineLabels } = useRunningAgentWork();
   const hasRunningSessions = runningCount > 0;
+  const elsewhere = describeAgentWorkElsewhere(remoteMachineLabels);
   const version = state.downloadedVersion ?? state.availableVersion;
 
   return (
@@ -49,10 +49,12 @@ function DesktopUpdateInstallDialogBody({
           ) : (
             "the downloaded update"
           )}{" "}
-          and reopen when it's done. {describeRunningAgentSessions(runningCount)}
+          and reopen when it's done.{" "}
+          {describeRunningAgentSessions(runningCount, elsewhere !== null)}
           {hasRunningSessions
             ? ` Restarting now will stop ${runningCount === 1 ? "it" : "them"}.`
             : null}
+          {elsewhere ? ` ${elsewhere}` : null}
         </AlertDialogDescription>
       </AlertDialogHeader>
       <AlertDialogFooter>

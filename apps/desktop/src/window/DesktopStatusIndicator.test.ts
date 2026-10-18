@@ -286,6 +286,35 @@ describe("DesktopStatusIndicator", () => {
       }),
   );
 
+  it.effect("counts only this computer's threads toward the quit question", () =>
+    Effect.gen(function* () {
+      const { appCalls, trayCalls } = makeCalls();
+      const window = makeFakeWindow({ focused: false });
+
+      yield* Effect.gen(function* () {
+        const indicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+        const state = yield* DesktopState.DesktopState;
+        yield* indicator.configure;
+        // Work only on other computers shows on the taskbar, but quitting
+        // leaves it running, so it is no reason to ask.
+        yield* indicator.setStatus({
+          status: "working",
+          description: "2 threads are working",
+          runningThreadCount: 2,
+          localRunningThreadCount: 0,
+        });
+        assert.equal(yield* Ref.get(state.localRunningThreadCount), 0);
+        yield* indicator.setStatus({
+          status: "working",
+          description: "3 threads are working",
+          runningThreadCount: 3,
+          localRunningThreadCount: 1,
+        });
+        assert.equal(yield* Ref.get(state.localRunningThreadCount), 1);
+      }).pipe(Effect.provide(makeTestLayer({ appCalls, trayCalls, window, platform: "win32" })));
+    }),
+  );
+
   it.effect("drives the Windows taskbar with count chips and native progress", () =>
     Effect.gen(function* () {
       const { appCalls, trayCalls } = makeCalls();
@@ -300,7 +329,7 @@ describe("DesktopStatusIndicator", () => {
           description: "2 threads are working",
           runningThreadCount: 2,
         });
-        assert.equal(yield* Ref.get(state.runningThreadCount), 2);
+        assert.equal(yield* Ref.get(state.localRunningThreadCount), 2);
         yield* indicator.setStatus({
           status: "working",
           description: "2 threads are working",
@@ -311,7 +340,7 @@ describe("DesktopStatusIndicator", () => {
           description: "3 threads completed",
           completedThreadCount: 3,
         });
-        assert.equal(yield* Ref.get(state.runningThreadCount), 0);
+        assert.equal(yield* Ref.get(state.localRunningThreadCount), 0);
         yield* indicator.setStatus({ status: "idle", description: "No threads are working" });
       }).pipe(Effect.provide(makeTestLayer({ appCalls, trayCalls, window, platform: "win32" })));
 

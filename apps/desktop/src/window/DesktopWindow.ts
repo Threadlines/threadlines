@@ -671,7 +671,7 @@ const make = Effect.gen(function* () {
       } else if (
         environment.platform !== "darwin" &&
         !closingForQuit &&
-        Effect.runSync(Ref.get(state.runningThreadCount)) > 0
+        Effect.runSync(Ref.get(state.localRunningThreadCount)) > 0
       ) {
         event.preventDefault();
         void runPromise(electronApp.quit);

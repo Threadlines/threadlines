@@ -3115,8 +3115,9 @@ export function selectSidebarThreadsAcrossEnvironments(state: AppState): Sidebar
  * is running a turn, or the turn settled and background provider tasks
  * (subagents, deferred commands) will start it back up on their own, or an
  * agent in a room is answering on the side. Drives the
- * taskbar badge and the quit and update warnings, so a thread that is only
- * waiting on its subagents must not read as finished here.
+ * taskbar badge and, through {@link selectRunningSidebarThreadsByLocation},
+ * the quit and update warnings, so a thread that is only waiting on its
+ * subagents must not read as finished here.
  */
 export function selectRunningSidebarThreadsAcrossEnvironments(
   state: AppState,
@@ -3128,6 +3129,38 @@ export function selectRunningSidebarThreadsAcrossEnvironments(
       isWaitingOnBackgroundTasks(thread.latestTurn, thread.session) ||
       (thread.sideTurn ?? null) !== null,
   );
+}
+
+/**
+ * Whether a thread runs on this device's own server, the one the desktop app
+ * starts and stops. Until the primary environment is known every thread
+ * counts as local, so a warning about stopping work errs toward asking.
+ */
+export function isThreadOnPrimaryEnvironment(
+  thread: { readonly environmentId: string },
+  primaryEnvironmentId: EnvironmentId | null,
+): boolean {
+  return primaryEnvironmentId === null || thread.environmentId === primaryEnvironmentId;
+}
+
+export interface RunningSidebarThreadsByLocation {
+  /** On this device's server: quitting or restarting the desktop app stops them. */
+  readonly local: SidebarThreadSummary[];
+  /** On other computers, which keep running them while this app is closed. */
+  readonly remote: SidebarThreadSummary[];
+}
+
+/** Running threads split by whether closing this app would stop them. */
+export function selectRunningSidebarThreadsByLocation(
+  state: AppState,
+  primaryEnvironmentId: EnvironmentId | null,
+): RunningSidebarThreadsByLocation {
+  const local: SidebarThreadSummary[] = [];
+  const remote: SidebarThreadSummary[] = [];
+  for (const thread of selectRunningSidebarThreadsAcrossEnvironments(state)) {
+    (isThreadOnPrimaryEnvironment(thread, primaryEnvironmentId) ? local : remote).push(thread);
+  }
+  return { local, remote };
 }
 
 export function selectSidebarThreadsForProjectRef(
