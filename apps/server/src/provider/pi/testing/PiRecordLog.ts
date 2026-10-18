@@ -38,7 +38,8 @@ export const collectPiRecords = (rpc: PiRpc): Effect.Effect<PiRecordLog, never, 
         Effect.sync(() => {
           all.push(record);
           const index = all.length - 1;
-          for (const waiter of [...waiters]) {
+          // A copy: a matched waiter leaves the list during the loop.
+          for (const waiter of Array.from(waiters)) {
             if (index >= waiter.from && waiter.predicate(record)) {
               waiters.splice(waiters.indexOf(waiter), 1);
               Deferred.doneUnsafe(waiter.done, Effect.succeed(record));

@@ -94,9 +94,11 @@ export async function startTestModelServer(): Promise<TestServer> {
     const sendText = async (text: string, durationMs = 0) => {
       send({ ...base, choices: [{ index: 0, delta: { role: "assistant", content: "" } }] });
       const parts = text.match(/.{1,8}/gsu) ?? [text];
-      for (const part of parts) {
-        if (durationMs > 0)
+      // The first piece goes out at once, so a test sees the reply start right away.
+      for (const [index, part] of parts.entries()) {
+        if (durationMs > 0 && index > 0) {
           await new Promise((resolve) => setTimeout(resolve, durationMs / parts.length));
+        }
         send({ ...base, choices: [{ index: 0, delta: { content: part } }] });
       }
       finish("stop");

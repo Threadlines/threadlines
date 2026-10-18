@@ -30,7 +30,7 @@ interface PreviewPanelRivals {
   readonly doNotUse: string;
 }
 
-type PreviewPanelProvider = "claude" | "codex" | "opencode" | "muse";
+type PreviewPanelProvider = "claude" | "codex" | "opencode" | "muse" | "pi";
 
 const RIVALS: Record<PreviewPanelProvider, PreviewPanelRivals> = {
   claude: {
@@ -52,6 +52,11 @@ const RIVALS: Record<PreviewPanelProvider, PreviewPanelRivals> = {
     notThePanel: "Muse Code's own web fetch or computer use",
     doNotUse:
       "Do not use web_fetch, computer use, Playwright, or any other browser automation for the user's panel.",
+  },
+  pi: {
+    notThePanel: "a browser tool from a Pi extension or MCP server",
+    doNotUse:
+      "Do not use browser tools from other Pi extensions or MCP servers, Playwright, or any other browser automation for the user's panel.",
   },
 };
 
