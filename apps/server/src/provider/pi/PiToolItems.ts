@@ -163,6 +163,11 @@ export function piFileChanges(input: {
   readonly toolName: string;
   readonly args: unknown;
   readonly result: unknown;
+  /**
+   * `write` only: whether the file was there when the call started. Pi's
+   * result doesn't say, and only a new file's line count is the change.
+   */
+  readonly existedBefore?: boolean | undefined;
 }): ReadonlyArray<PiFileChange> {
   const path = stringField(input.args, "path");
   if (!path) return [];
@@ -175,7 +180,7 @@ export function piFileChanges(input: {
       : [{ path: relative, kind: "update" }];
   }
   const content = isRecord(input.args) ? input.args.content : undefined;
-  if (typeof content === "string") {
+  if (typeof content === "string" && input.existedBefore === false) {
     const lines = content.length === 0 ? 0 : content.replace(/\n$/u, "").split("\n").length;
     return [{ path: relative, kind: "add", additions: lines, deletions: 0 }];
   }
@@ -192,6 +197,8 @@ export function piToolData(input: {
   readonly failed?: boolean;
   /** The call has finished; only then do its file changes count. */
   readonly final?: boolean;
+  /** See `piFileChanges`. */
+  readonly existedBefore?: boolean | undefined;
 }): Record<string, unknown> {
   const base = { toolName: input.name, ...(input.args !== undefined ? { input: input.args } : {}) };
   switch (input.identity.kind) {
@@ -217,6 +224,7 @@ export function piToolData(input: {
               toolName: input.name,
               args: input.args,
               result: input.result,
+              existedBefore: input.existedBefore,
             }),
           };
     case "mcp": {

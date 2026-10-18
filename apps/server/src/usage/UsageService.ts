@@ -46,6 +46,7 @@ import {
 } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { grokMainHome } from "../provider/grok/GrokAccountFolder.ts";
+import { piAgentDir } from "../provider/pi/PiBinary.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { hourStartOf, UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
@@ -273,10 +274,18 @@ export const make = Effect.gen(function* () {
       .exists(grokSessions)
       .pipe(Effect.catchCause(() => Effect.succeed(false)));
 
+    // Pi's own folder, which Threadlines' Pi uses too. Its sessions are
+    // counted once Pi has kept one.
+    const piSessions = path.join(piAgentDir(process.env), "sessions");
+    const piUsed = yield* fileSystem
+      .exists(piSessions)
+      .pipe(Effect.catchCause(() => Effect.succeed(false)));
+
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
       ...(grokUsed ? [{ provider: "grok" as const, dir: grokSessions }] : []),
+      ...(piUsed ? [{ provider: "pi" as const, dir: piSessions }] : []),
     ];
   });
 

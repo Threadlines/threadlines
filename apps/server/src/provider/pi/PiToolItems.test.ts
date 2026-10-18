@@ -52,4 +52,20 @@ describe("PiToolItems", () => {
     });
     expect(shell.item).toEqual({ command: "echo hi", exitCode: 0 });
   });
+
+  it("counts a write's lines only for a new file", () => {
+    const write = (existedBefore: boolean) =>
+      piToolData({
+        name: "write",
+        identity: identifyPiTool("write"),
+        directory: "/repo",
+        args: { path: "notes.txt", content: "one\ntwo\n" },
+        result: { content: [{ type: "text", text: "Successfully wrote" }] },
+        final: true,
+        existedBefore,
+      }).changes;
+    expect(write(false)).toEqual([{ path: "notes.txt", kind: "add", additions: 2, deletions: 0 }]);
+    // Pi doesn't say what an overwrite replaced.
+    expect(write(true)).toEqual([{ path: "notes.txt", kind: "update" }]);
+  });
 });

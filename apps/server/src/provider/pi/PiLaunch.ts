@@ -1,7 +1,7 @@
 /**
  * How a `pi --mode rpc` process is launched for each kind of work: its flags,
- * the user's own extra flags, and its environment. Pure, so the table is
- * tested on its own (docs/providers/pi-plan.md, "Process and protocol").
+ * the user's own extra flags, and its environment. The table is pure, so it
+ * is tested on its own (docs/providers/pi-plan.md, "Process and protocol").
  *
  * Unlike Muse Code, a Pi process's flags never encode the access level or
  * plan mode: the Threadlines extension reads them from its environment at
@@ -11,6 +11,9 @@
  * @module provider/pi/PiLaunch
  */
 import type { ProviderInstanceEnvironment, RuntimeMode } from "@threadlines/contracts";
+import * as Data from "effect/Data";
+import type * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 
@@ -21,6 +24,19 @@ export interface PiLauncher {
   /** For a managed install, the path of Pi's `cli.js`. */
   readonly prefixArgs: ReadonlyArray<string>;
 }
+
+/** No Pi to run: not installed, too old, or Threadlines' copy can't start. */
+export class PiLaunchUnavailable extends Data.TaggedError("PiLaunchUnavailable")<{
+  /** Plain language, safe to show a user. */
+  readonly message: string;
+}> {}
+
+/**
+ * How to run Pi for one process. Run it in the process's scope: Threadlines'
+ * own copy stays leased until the scope closes, so an update never replaces
+ * files a running Pi has loaded.
+ */
+export type PiLaunch = Effect.Effect<PiLauncher, PiLaunchUnavailable, Scope.Scope>;
 
 /** Which conversation a process opens. */
 export type PiSessionTarget =

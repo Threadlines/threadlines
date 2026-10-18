@@ -52,7 +52,7 @@ const setup = Effect.gen(function* () {
   const adapter = yield* makePiAdapter({
     instanceId: INSTANCE_ID,
     settings: { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
-    launcher: () => ({ command: process.execPath, prefixArgs: [piCli!] }),
+    launch: Effect.succeed({ command: process.execPath, prefixArgs: [piCli!] }),
     instanceEnvironment: undefined,
     baseEnvironment: testPiEnvironment(home.agentDir),
     extensionDir: mkdtempSync(join(tmpdir(), "threadlines-pi-ext-")),

@@ -491,15 +491,22 @@ describe("ProcessDiagnostics", () => {
       processRow(400, 300, "ugrep -G --ignore-files --hidden -I -- pattern ."),
       // A genuinely orphaned dev process, reparented to launchd.
       processRow(500, 1, "node scripts/dev-runner.ts dev --port 5990"),
+      // Pi runs as Node, from Threadlines' own copy.
+      processRow(
+        600,
+        SERVER_PID,
+        "/Users/will/.threadlines/userdata/tools/node/24.21.0-darwin-arm64/bin/node /Users/will/.threadlines/userdata/tools/pi/9a/versions/1f/payload/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js --mode rpc --extension /x/threadlines-pi.ts",
+      ),
+      processRow(700, 600, "/bin/bash -c npm test"),
     ];
 
     // Chat prose mentioned the wrapper and helper pids; hints matched them too.
     const seeded = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
       urls: [],
-      pids: [300, 400],
+      pids: [300, 400, 700],
       portRows: [],
       processRows,
-      commandHints: ["zsh -c source snapshot", "ugrep -G --ignore-files"],
+      commandHints: ["zsh -c source snapshot", "ugrep -G --ignore-files", "/bin/bash -c npm test"],
       serverPid: SERVER_PID,
     });
     expect(seeded.runs).toEqual([]);

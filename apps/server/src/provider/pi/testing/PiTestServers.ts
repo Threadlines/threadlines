@@ -7,6 +7,7 @@
  *
  *   TOOL <name> <json-args>  one tool call, then "done: <result>" after it runs
  *   SLOW <ms> <text>         streams <text> over <ms>
+ *   a line REPLY <text>      exactly <text> (the line may sit inside a longer prompt)
  *   anything else            "echo: <text>"
  *
  * @module provider/pi/testing/PiTestServers
@@ -135,6 +136,11 @@ export async function startTestModelServer(): Promise<TestServer> {
     const slow = /^SLOW (\d+) ([\s\S]*)$/u.exec(text);
     if (slow) {
       await sendText(slow[2]!, Number(slow[1]));
+      return;
+    }
+    const reply = /^REPLY (.+)$/mu.exec(text);
+    if (reply) {
+      await sendText(reply[1]!);
       return;
     }
     await sendText(`echo: ${text}`);

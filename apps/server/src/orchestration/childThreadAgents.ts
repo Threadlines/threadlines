@@ -34,6 +34,8 @@ export const PLAN_MODE_DRIVERS: ReadonlySet<string> = new Set([
   "grok",
   // A read-only host whose answer is the plan.
   "muse",
+  // The Threadlines extension declines every change while planning.
+  "pi",
 ]);
 
 /** The provider's name, as the agent and the approval card see it. */

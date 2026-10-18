@@ -29,6 +29,7 @@ import { FxDriver, type FxDriverEnv } from "./Drivers/FxDriver.ts";
 import { GrokDriver, type GrokDriverEnv } from "./Drivers/GrokDriver.ts";
 import { MuseDriver, type MuseDriverEnv } from "./Drivers/MuseDriver.ts";
 import { OpenCodeDriver, type OpenCodeDriverEnv } from "./Drivers/OpenCodeDriver.ts";
+import { PiDriver, type PiDriverEnv } from "./Drivers/PiDriver.ts";
 import type { AnyProviderDriver } from "./ProviderDriver.ts";
 
 /**
@@ -43,6 +44,7 @@ export type BuiltInDriversEnv =
   | FxDriverEnv
   | OpenCodeDriverEnv
   | MuseDriverEnv
+  | PiDriverEnv
   | AntigravityDriverEnv
   | GrokDriverEnv
   | AcpRegistryDriverEnv;
@@ -52,7 +54,7 @@ export type BuiltInDriversEnv =
  * UI presentation — the registry itself is keyed by `driverKind`, so
  * iteration order has no functional effect on instance lookup.
  *
- * Codex, Claude, OpenCode and Muse Code are native drivers; fx, Cursor, Antigravity
+ * Codex, Claude, OpenCode, Muse Code and Pi are native drivers; fx, Cursor, Antigravity
  * and Grok are ACP descriptors on the shared `acp/AcpProviderDriver` core, and so is
  * every community agent (`AcpRegistryDriver`, one instance per agent).
  */
@@ -63,6 +65,7 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   CursorDriver,
   OpenCodeDriver,
   MuseDriver,
+  PiDriver,
   AntigravityDriver,
   GrokDriver,
   AcpRegistryDriver,

@@ -120,7 +120,7 @@ import {
 import {
   type PiAccessLevel,
   piAccessLevel,
-  type PiLauncher,
+  type PiLaunch,
   parsePiLaunchArgs,
   piProcessArgs,
   piProcessEnvironment,
@@ -180,8 +180,8 @@ const HIDDEN_COMMAND_SOURCES = new Set(["builtin"]);
 export interface PiAdapterOptions {
   readonly instanceId: ProviderInstanceId;
   readonly settings: PiSettings;
-  /** How to run Pi, looked up each time (a one-click install lands off PATH). */
-  readonly launcher: () => PiLauncher;
+  /** How to run Pi, looked up for each process and held for as long as it runs. */
+  readonly launch: PiLaunch;
   readonly instanceEnvironment: ProviderInstanceEnvironment | undefined;
   /** The server's environment; tests pass their own. */
   readonly baseEnvironment?: NodeJS.ProcessEnv | undefined;
@@ -246,6 +246,8 @@ interface ToolState {
   args: unknown;
   streamed: string;
   completed: boolean;
+  /** `write`: whether its file was there when the call started; unknown counts as there. */
+  existedBefore: boolean | undefined;
 }
 
 interface PendingDialog {
@@ -786,8 +788,22 @@ export function makePiAdapter(options: PiAdapterOptions) {
             args: event.args,
             streamed: "",
             completed: false,
+            existedBefore: undefined,
           };
           ctx.tools.set(key, state);
+          // Looked at as early as Threadlines can; a write that already
+          // happened reads as "there", which only leaves its counts out.
+          const writePath =
+            event.toolName === "write" &&
+            isRecord(event.args) &&
+            typeof event.args.path === "string"
+              ? NodePath.resolve(ctx.directory, event.args.path)
+              : undefined;
+          if (writePath) {
+            state.existedBefore = yield* fileSystem
+              .exists(writePath)
+              .pipe(Effect.orElseSucceed(() => true));
+          }
           // A message's text before its tool calls is its own row.
           yield* closeMessage(ctx, false);
           const detail = piToolDetail(state.identity, state.args);
@@ -864,6 +880,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
               result: event.result,
               failed,
               final: true,
+              existedBefore: state.existedBefore,
             }),
           },
         });
@@ -1193,7 +1210,18 @@ export function makePiAdapter(options: PiAdapterOptions) {
         return yield* Effect.gen(function* () {
           const nonce = (yield* randomUUIDv4).replaceAll("-", "");
           const access = piAccessLevel(ctx.runtimeMode);
-          const launcher = options.launcher();
+          const launcher = yield* options.launch.pipe(
+            Effect.provideService(Scope.Scope, scope),
+            Effect.mapError(
+              (error) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: ctx.threadId,
+                  detail: error.message,
+                  cause: error,
+                }),
+            ),
+          );
           const rpc = yield* startRpc({
             command: launcher.command,
             args: piProcessArgs(launcher, {
@@ -1347,7 +1375,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
     ) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const launcher = options.launcher();
+          const launcher = yield* options.launch;
           const rpc = yield* startRpc({
             command: launcher.command,
             args: piProcessArgs(launcher, {
@@ -2060,7 +2088,10 @@ export function makePiAdapter(options: PiAdapterOptions) {
 
 /** Commands from Pi's `get_commands` that Threadlines shows: not Pi's terminal ones, not ours. */
 export function visiblePiCommands<
-  T extends { readonly name: string; readonly sourceInfo?: { readonly source?: string } },
+  T extends {
+    readonly name: string;
+    readonly sourceInfo?: { readonly source?: string | undefined } | undefined;
+  },
 >(commands: ReadonlyArray<T>): ReadonlyArray<T> {
   return commands.filter(
     (command) =>

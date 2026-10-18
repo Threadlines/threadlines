@@ -24,6 +24,8 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parsePiLine,
+  piSessionIdFromFileName,
   type UsageRecord,
 } from "./usageTranscripts.ts";
 
@@ -113,6 +115,7 @@ export async function readTranscriptRecords(
 ): Promise<readonly UsageRecord[] | null> {
   const records: UsageRecord[] = [];
   const codexState = initialCodexScanState();
+  const piSessionId = provider === "pi" ? piSessionIdFromFileName(NodePath.basename(filePath)) : "";
 
   try {
     const lines = NodeReadline.createInterface({
@@ -137,6 +140,11 @@ export async function readTranscriptRecords(
       if (!mightCarryUsage(line, provider)) continue;
       if (provider === "grok") {
         records.push(...parseGrokLine(line));
+        continue;
+      }
+      if (provider === "pi") {
+        const record = parsePiLine(line, piSessionId);
+        if (record !== null) records.push(record);
         continue;
       }
       const record = parseClaudeLine(line);

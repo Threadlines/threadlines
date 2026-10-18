@@ -1252,6 +1252,14 @@ function selectHintedProcessOnlyRows(input: {
 const PROVIDER_SESSION_COMMAND_PATTERN =
   /(?:^|[\s/])(?:claude|codex|cursor-agent|opencode|muse(?:-bin-[\w.-]+)?)(?=$|[\s.])/i;
 
+/** Pi runs as Node (it sets no process title): its `pi` script or Threadlines'
+ *  copy's `cli.js`, in RPC mode. */
+const PI_SESSION_COMMAND_PATTERN =
+  /(?:(?:^|[\s\\/])pi(?:\.cmd)?|pi-coding-agent[\\/]dist[\\/](?:bundle[\\/])?cli\.js)\s(?:.*\s)?--mode\s+rpc(?:\s|$)/i;
+
+const isProviderSessionCommand = (command: string) =>
+  PROVIDER_SESSION_COMMAND_PATTERN.test(command) || PI_SESSION_COMMAND_PATTERN.test(command);
+
 /**
  * Pids living under a live provider session's process subtree. A session's
  * own children — shell wrappers around tool calls, search helpers, background
@@ -1290,7 +1298,7 @@ export function providerSessionShieldedPids(
     const row = serverStack.pop();
     if (!row || visited.has(row.pid)) continue;
     visited.add(row.pid);
-    if (PROVIDER_SESSION_COMMAND_PATTERN.test(row.command)) {
+    if (isProviderSessionCommand(row.command)) {
       collectSubtree(row.pid, shielded);
       continue;
     }
