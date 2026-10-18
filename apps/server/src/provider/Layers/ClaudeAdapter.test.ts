@@ -11047,3 +11047,174 @@ describe("ClaudeAdapterLive goals", () => {
     );
   });
 });
+
+describe("ClaudeAdapterLive MCP elicitation", () => {
+  /** A form request as Claude Code 2.1.301 hands it to `onElicitation`. */
+  const formRequest = {
+    serverName: "elicit",
+    message: "Who should the report be addressed to?",
+    mode: "form" as const,
+    requestedSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", title: "Name", minLength: 2 },
+        teamSize: { type: "integer", title: "Team size", minimum: 1, maximum: 50 },
+        tier: { type: "string", title: "Tier", enum: ["free", "pro"], enumNames: ["Free", "Pro"] },
+      },
+      required: ["name"],
+    },
+  };
+
+  const startElicitationSession = (harness: ReturnType<typeof makeHarness>) =>
+    Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: Array<ProviderRuntimeEvent> = [];
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const onElicitation = harness.getLastCreateQueryInput()?.options.onElicitation;
+      assert.isDefined(onElicitation);
+      /** Wait until an event of `type` has been emitted. */
+      const nextEvent = <T extends ProviderRuntimeEvent["type"]>(type: T) =>
+        Effect.gen(function* () {
+          while (!events.some((event) => event.type === type)) {
+            yield* Effect.yieldNow;
+          }
+          return events.find((event) => event.type === type) as Extract<
+            ProviderRuntimeEvent,
+            { type: T }
+          >;
+        });
+      return { adapter, events, onElicitation: onElicitation!, nextEvent };
+    });
+
+  it.effect("shows a tool server's form and answers it once the user's input fits", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const { adapter, onElicitation, nextEvent } = yield* startElicitationSession(harness);
+      const controller = new AbortController();
+      const answered = onElicitation(formRequest, {
+        signal: controller.signal,
+        requestId: "elicit-1",
+      });
+      const requested = yield* nextEvent("user-input.requested");
+      assert.deepEqual(requested.payload.elicitation, {
+        mode: "form",
+        serverName: "elicit",
+        message: "Who should the report be addressed to?",
+        fields: [
+          { name: "name", title: "Name", type: "string", required: true, minLength: 2 },
+          {
+            name: "teamSize",
+            title: "Team size",
+            type: "integer",
+            required: false,
+            minimum: 1,
+            maximum: 50,
+          },
+          {
+            name: "tier",
+            title: "Tier",
+            type: "string",
+            required: false,
+            options: [
+              { value: "free", label: "Free" },
+              { value: "pro", label: "Pro" },
+            ],
+          },
+        ],
+      });
+
+      // A name too short for the server stays open for the user to fix.
+      const requestId = ApprovalRequestId.make(requested.requestId ?? "");
+      const rejected = yield* adapter
+        .respondToUserInput(THREAD_ID, requestId, { action: "accept", content: { name: "W" } })
+        .pipe(Effect.flip);
+      assert.include(rejected.message, "Name");
+      yield* adapter.respondToUserInput(THREAD_ID, requestId, {
+        action: "accept",
+        content: { name: "Will", tier: "pro" },
+      });
+      assert.deepEqual(yield* Effect.promise(() => answered), {
+        action: "accept",
+        content: { name: "Will", tier: "pro" },
+      });
+      yield* nextEvent("user-input.resolved");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "cancels a prompt Claude gives up on, and one it can't show; a side answer never asks",
+    () => {
+      const harness = makeHarness();
+      const sideHarness = makeHarness();
+      return Effect.gen(function* () {
+        const { events, onElicitation, nextEvent } = yield* startElicitationSession(harness);
+
+        const controller = new AbortController();
+        const answered = onElicitation(
+          { ...formRequest, mode: "url", url: "https://example.com/oauth?state=abc" },
+          { signal: controller.signal, requestId: "elicit-url" },
+        );
+        yield* nextEvent("user-input.requested");
+        controller.abort();
+        assert.deepEqual(yield* Effect.promise(() => answered), { action: "cancel" });
+        yield* nextEvent("user-input.resolved");
+
+        // Given up on before it was asked: never shown at all.
+        const before = new AbortController();
+        before.abort();
+        assert.deepEqual(
+          yield* Effect.promise(() =>
+            onElicitation(formRequest, { signal: before.signal, requestId: "elicit-gone" }),
+          ),
+          { action: "cancel" },
+        );
+        assert.equal(events.filter((event) => event.type === "user-input.requested").length, 1);
+
+        // A link that isn't a web URL can't be shown.
+        assert.deepEqual(
+          yield* Effect.promise(() =>
+            onElicitation(
+              { ...formRequest, mode: "url", url: "file:///etc/passwd" },
+              { signal: new AbortController().signal, requestId: "elicit-file" },
+            ),
+          ),
+          { action: "cancel" },
+        );
+        const warning = yield* nextEvent("runtime.warning");
+        assert.include(warning.payload.message, "can't show");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.andThen(
+          Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            yield* adapter.startSession({
+              threadId: THREAD_ID,
+              provider: ProviderDriverKind.make("claudeAgent"),
+              runtimeMode: "full-access",
+              lockdown: "side-answer",
+            });
+            // No handler: the SDK declines every request, and a side answer
+            // never asks the user anything.
+            assert.isUndefined(sideHarness.getLastCreateQueryInput()?.options.onElicitation);
+          }).pipe(
+            Effect.provideService(Random.Random, makeDeterministicRandomService()),
+            Effect.provide(sideHarness.layer),
+          ),
+        ),
+      );
+    },
+  );
+});
