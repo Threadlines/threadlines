@@ -206,7 +206,11 @@ export function planPiRevert(
 
 /** Where a new thread forked from this one starts in Pi's tree. */
 export type PiForkPlan =
-  | { readonly kind: "fork"; readonly entryId: string }
+  /**
+   * Cut before `entryId`, the first message of `droppedTurnId`, whose start
+   * marker the copy keeps: the copy's first process marks it reverted.
+   */
+  | { readonly kind: "fork"; readonly entryId: string; readonly droppedTurnId: string }
   | { readonly kind: "clone" }
   /** No exact boundary: the new thread starts fresh with Threadlines' recap. */
   | { readonly kind: "contextSeed" };
@@ -229,21 +233,28 @@ export function planPiFork(
   const boundaries = boundariesOf(path);
   if (boundary.beforeTurnId !== undefined) {
     const plan = planPiRevert(boundaries, boundary.beforeTurnId);
-    return plan.kind === "fork" ? plan : { kind: "contextSeed" };
+    return plan.kind === "fork"
+      ? { kind: "fork", entryId: plan.entryId, droppedTurnId: boundary.beforeTurnId }
+      : { kind: "contextSeed" };
   }
   if (boundary.lastTurnId === undefined) return { kind: "clone" };
   const index = boundaries.findIndex((entry) => entry.turnId === boundary.lastTurnId);
   const turn = boundaries[index];
   if (!turn?.endMarkerId) return { kind: "contextSeed" };
   // Where a later turn of Threadlines' own starts; a turn Pi started can't be cut at.
-  const starts = new Set(
+  const starts = new Map(
     boundaries
       .slice(index + 1)
-      .flatMap((entry) => (entry.firstUserEntryId && !entry.late ? [entry.firstUserEntryId] : [])),
+      .flatMap((entry) =>
+        entry.firstUserEntryId && !entry.late
+          ? [[entry.firstUserEntryId, entry.turnId] as const]
+          : [],
+      ),
   );
   const after = path.slice(path.findIndex((entry) => entry.id === turn.endMarkerId) + 1);
   for (const entry of after) {
-    if (starts.has(entry.id)) return { kind: "fork", entryId: entry.id };
+    const droppedTurnId = starts.get(entry.id);
+    if (droppedTurnId !== undefined) return { kind: "fork", entryId: entry.id, droppedTurnId };
     if (isConversation(entry)) return { kind: "contextSeed" };
   }
   return { kind: "clone" };

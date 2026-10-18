@@ -306,6 +306,10 @@ interface SessionContext {
   contextWindow: number | undefined;
   pendingSeed: string | undefined;
   activeTurn: ActiveTurn | undefined;
+  /** The latest turn, running or finishing: its `done` resolves after its end marker. */
+  lastTurn: ActiveTurn | undefined;
+  /** Turns whose "reverted" marker couldn't be written yet; retried before the next turn. */
+  readonly pendingTombstones: Array<TurnId>;
   message: MessageState | undefined;
   readonly tools: Map<string, ToolState>;
   readonly dialogs: Map<ApprovalRequestId, PendingDialog>;
@@ -525,6 +529,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
           recheck: false,
         };
         ctx.activeTurn = turn;
+        ctx.lastTurn = turn;
         ctx.session = {
           ...ctx.session,
           status: "running",
@@ -1456,10 +1461,30 @@ export function makePiAdapter(options: PiAdapterOptions) {
           { timeout: STOP_STEP_TIMEOUT },
         )
         .pipe(
+          Effect.as(true),
           Effect.catch((error) =>
-            Effect.logWarning("Pi turn marker failed", { threadId: ctx.threadId, mark, error }),
+            Effect.logWarning("Pi turn marker failed", {
+              threadId: ctx.threadId,
+              mark,
+              error,
+            }).pipe(Effect.as(false)),
           ),
         );
+
+    /**
+     * Marks a turn a revert or fork dropped, whose start marker is still on
+     * the branch, so a restart doesn't count it. Kept for a retry when Pi
+     * can't take it now.
+     */
+    const markDropped = (ctx: SessionContext, proc: ProcessState, turnId: TurnId) =>
+      Effect.gen(function* () {
+        if (!(yield* markTurn(ctx, proc, turnId, "reverted"))) ctx.pendingTombstones.push(turnId);
+      });
+
+    const retryDropped = (ctx: SessionContext, proc: ProcessState) =>
+      Effect.gen(function* () {
+        for (const turnId of ctx.pendingTombstones.splice(0)) yield* markDropped(ctx, proc, turnId);
+      });
 
     /** Restarts the thread's process on its current session file. */
     const relaunch = (ctx: SessionContext) =>
@@ -1567,7 +1592,13 @@ export function makePiAdapter(options: PiAdapterOptions) {
             if (Option.isNone(result) || result.value.cancelled) return undefined;
           }
           const state = decodePi(PiState)(yield* rpc.request({ type: "get_state" }));
-          return Option.isSome(state) ? state.value.sessionFile : undefined;
+          const sessionFile = Option.isSome(state) ? state.value.sessionFile : undefined;
+          return sessionFile
+            ? {
+                sessionFile,
+                droppedTurnId: plan.kind === "fork" ? TurnId.make(plan.droppedTurnId) : undefined,
+              }
+            : undefined;
         }),
       );
 
@@ -1706,6 +1737,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
             contextWindow: undefined,
             pendingSeed: undefined,
             activeTurn: undefined,
+            lastTurn: undefined,
+            pendingTombstones: [],
             message: undefined,
             tools: new Map(),
             dialogs: new Map(),
@@ -1763,7 +1796,12 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 issue: "Pi has no exact place to fork this conversation.",
               });
             }
-            yield* launchProcess(ctx, { kind: "resume", sessionFile: forked });
+            const proc = yield* launchProcess(ctx, {
+              kind: "resume",
+              sessionFile: forked.sessionFile,
+            });
+            // The cut kept the next turn's start marker.
+            if (forked.droppedTurnId) yield* markDropped(ctx, proc, forked.droppedTurnId);
             opened = true;
           }
           if (!opened) {
@@ -1956,7 +1994,11 @@ export function makePiAdapter(options: PiAdapterOptions) {
         ctx.lifecycle.withPermit(
           Effect.gen(function* () {
             // One turn at a time: a send while Pi runs its own turn starts once it ends.
-            if (ctx.activeTurn) yield* Deferred.await(ctx.activeTurn.done);
+            // `lastTurn`, not just the active one: a finished turn is done only
+            // once its end marker is written, which must come before this
+            // turn's start marker.
+            const previous = ctx.activeTurn ?? ctx.lastTurn;
+            if (previous) yield* Deferred.await(previous.done);
             if (ctx.stopped) {
               return yield* new ProviderAdapterSessionNotFoundError({
                 provider: PROVIDER,
@@ -1990,7 +2032,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 : undefined;
             if (selection) yield* applyModel(ctx, selection);
             const turnId = TurnId.make(yield* randomUUIDv4);
-            // Where revert and fork cut.
+            // Where revert and fork cut; after any drop that couldn't be marked before.
+            yield* retryDropped(ctx, proc);
             yield* markTurn(ctx, proc, turnId, undefined);
             const text = ctx.pendingSeed
               ? withContextSeedPreamble(ctx.pendingSeed, content.text)
@@ -2022,40 +2065,40 @@ export function makePiAdapter(options: PiAdapterOptions) {
         yield* steerable;
         const content = yield* promptContent("prompt", input);
         const proc = yield* requireProcess(ctx, "prompt");
-        // Counted before the last check, so the turn can't end in between.
-        // `steer` alone stays queued forever if Pi just went idle; a prompt
-        // with this flag joins the running run or starts one. Its ack is
-        // waited for like the turn's own: an extension command holds it.
-        proc.pendingPrompts += 1;
-        const live = yield* steerable.pipe(
-          Effect.tapError(() =>
-            Effect.sync(() => {
-              proc.pendingPrompts -= 1;
+        // Counted before the last check, so the turn can't end in between,
+        // and uncounted however this ends. `steer` alone stays queued forever
+        // if Pi just went idle; a prompt with this flag joins the running run
+        // or starts one. Its ack is waited for like the turn's own: an
+        // extension command holds it.
+        const live = yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            proc.pendingPrompts += 1;
+          }),
+          () =>
+            Effect.gen(function* () {
+              const turn = yield* steerable;
+              yield* proc.rpc
+                .request(
+                  {
+                    type: "prompt",
+                    message: content.text,
+                    ...(content.images.length > 0 ? { images: content.images } : {}),
+                    streamingBehavior: "steer",
+                  },
+                  { timeout: null },
+                )
+                .pipe(Effect.mapError(requestError("prompt")));
+              return turn;
             }),
-          ),
+          () =>
+            Effect.suspend(() => {
+              proc.pendingPrompts -= 1;
+              const turn = ctx.activeTurn;
+              return turn && ctx.proc === proc
+                ? finishIfIdle(ctx, turn).pipe(Effect.forkIn(ctx.scope), Effect.asVoid)
+                : Effect.void;
+            }),
         );
-        yield* proc.rpc
-          .request(
-            {
-              type: "prompt",
-              message: content.text,
-              ...(content.images.length > 0 ? { images: content.images } : {}),
-              streamingBehavior: "steer",
-            },
-            { timeout: null },
-          )
-          .pipe(
-            Effect.mapError(requestError("prompt")),
-            Effect.ensuring(
-              Effect.suspend(() => {
-                proc.pendingPrompts -= 1;
-                const turn = ctx.activeTurn;
-                return turn && ctx.proc === proc
-                  ? finishIfIdle(ctx, turn).pipe(Effect.forkIn(ctx.scope), Effect.asVoid)
-                  : Effect.void;
-              }),
-            ),
-          );
         return {
           threadId: input.threadId,
           turnId: live.turnId,
@@ -2221,7 +2264,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
                   // The fork re-ran extensions without their settings: restart on the copy.
                   const proc = yield* relaunch(ctx);
                   // The dropped turn's start marker is still on the branch.
-                  yield* markTurn(ctx, proc, target.id, "reverted");
+                  yield* markDropped(ctx, proc, target.id);
                   updateCursor(ctx);
                   rolledBack = true;
                 }

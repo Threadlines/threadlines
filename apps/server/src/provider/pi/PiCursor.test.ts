@@ -81,10 +81,22 @@ describe("planPiRevert and planPiFork", () => {
   });
 
   it("forks through a turn by cutting before the next turn that has a message", () => {
-    expect(fork("e4", { lastTurnId: "t1" })).toEqual({ kind: "fork", entryId: "u2" });
-    expect(fork("e4", { lastTurnId: "t2" })).toEqual({ kind: "fork", entryId: "u4" });
+    expect(fork("e4", { lastTurnId: "t1" })).toEqual({
+      kind: "fork",
+      entryId: "u2",
+      droppedTurnId: "t2",
+    });
+    expect(fork("e4", { lastTurnId: "t2" })).toEqual({
+      kind: "fork",
+      entryId: "u4",
+      droppedTurnId: "t4",
+    });
     expect(fork("e4", { lastTurnId: "t4" })).toEqual({ kind: "clone" });
-    expect(fork("e4", { beforeTurnId: "t4" })).toEqual({ kind: "fork", entryId: "u4" });
+    expect(fork("e4", { beforeTurnId: "t4" })).toEqual({
+      kind: "fork",
+      entryId: "u4",
+      droppedTurnId: "t4",
+    });
     expect(fork("e4", {})).toEqual({ kind: "clone" });
     expect(fork("e4", { lastTurnId: "missing" })).toEqual({ kind: "contextSeed" });
     // A turn that never ended has no place that is exactly "through it".
