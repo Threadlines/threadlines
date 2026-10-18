@@ -22,7 +22,7 @@ import type {
 
 import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
-import { scratchIndexFileName } from "./scratchIndex.ts";
+import { SCRATCH_INDEX_CACHE_PREFIX, scratchIndexFileName } from "./scratchIndex.ts";
 import type { GitRemoteStatusOptions } from "./GitVcsDriver.ts";
 
 const baseLocalStatus: VcsStatusLocalResult = {
@@ -641,6 +641,10 @@ describe("VcsStatusBroadcaster", () => {
       );
       yield* fileSystem.writeFileString(
         path.join(worktreeGitDir, scratchIndexFileName("preview")),
+        "",
+      );
+      yield* fileSystem.writeFileString(
+        path.join(worktreeGitDir, `${SCRATCH_INDEX_CACHE_PREFIX}0123456789abcdef`),
         "",
       );
       yield* fileSystem.writeFileString(path.join(worktreeGitDir, "index"), "staged");

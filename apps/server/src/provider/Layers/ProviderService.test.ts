@@ -28,6 +28,7 @@ import { createModelSelection } from "@threadlines/shared/model";
 import { sideSessionKey } from "@threadlines/shared/threadParticipants";
 import { it, assert, vi } from "@effect/vitest";
 
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -724,6 +725,100 @@ it.effect("ProviderServiceLive writes canonical events to the emitting thread se
     assert.equal(canonicalEvents[0]?.threadId, "thread-canonical-thread-segment");
     assert.deepEqual(canonicalThreadIds, ["thread-canonical-thread-segment"]);
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "ProviderServiceLive records how long a sent turn waited for the agent's first output",
+  () =>
+    Effect.gen(function* () {
+      const codex = makeFakeCodexAdapter();
+      const recorded: Array<{
+        readonly event: string;
+        readonly properties: Readonly<Record<string, unknown>> | undefined;
+      }> = [];
+      const registry = makeAdapterRegistryMock({
+        [ProviderDriverKind.make("codex")]: codex.adapter,
+      });
+      const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(
+          Layer.succeed(AnalyticsService, {
+            record: (event, properties) => Effect.sync(() => recorded.push({ event, properties })),
+            flush: Effect.void,
+          }),
+        ),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      );
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId("thread-turn-latency");
+        const requestedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        // The message arrived, then the session had to start for it.
+        yield* advanceTestClock(200);
+        yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+        yield* advanceTestClock(300);
+        const turn = yield* provider.sendTurn({ threadId, input: "hello", requestedAt });
+        const turnEvent = (eventId: string) => ({
+          eventId: asEventId(eventId),
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          turnId: turn.turnId,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+
+        // Turn bookkeeping and the echoed message are not the agent answering.
+        yield* advanceTestClock(1_000);
+        codex.emit({ ...turnEvent("evt-latency-started"), type: "turn.started", payload: {} });
+        codex.emit({
+          ...turnEvent("evt-latency-user"),
+          type: "item.started",
+          itemId: "user-1",
+          payload: { itemType: "user_message" },
+        });
+        yield* advanceTestClock(500);
+        codex.emit({
+          ...turnEvent("evt-latency-first"),
+          type: "content.delta",
+          itemId: "msg-1",
+          payload: { streamKind: "assistant_text", delta: "Hi" },
+        });
+        yield* advanceTestClock(50);
+        codex.emit({
+          ...turnEvent("evt-latency-second"),
+          type: "content.delta",
+          itemId: "msg-1",
+          payload: { streamKind: "assistant_text", delta: " there" },
+        });
+        yield* advanceTestClock(50);
+      }).pipe(Effect.provide(providerLayer));
+
+      const samples = recorded.filter((entry) => entry.event === "provider.turn.first_output");
+      assert.equal(samples.length, 1);
+      const sample = samples[0]?.properties;
+      assert.include(sample, {
+        provider: "codex",
+        sessionStarted: true,
+        attachmentCount: 0,
+        handoffMs: 500,
+      });
+      const firstOutputMs = Number(sample?.firstOutputMs);
+      assert.isAtLeast(firstOutputMs, 2_000);
+      assert.isBelow(firstOutputMs, 2_100);
+    }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", () =>

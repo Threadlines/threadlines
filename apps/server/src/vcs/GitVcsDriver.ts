@@ -59,7 +59,7 @@ import { CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX } from "./checkpo
 import type { GitConfigSnapshot } from "./gitConfigSnapshot.ts";
 import * as GitVcsDriverCore from "./GitVcsDriverCore.ts";
 import { mergeRegionEditsIntoCurrent, parseUnifiedDiffRegions } from "./LineRegionMerge.ts";
-import { scratchIndexFileName } from "./scratchIndex.ts";
+import { makeScratchIndexes } from "./scratchIndex.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 
@@ -649,6 +649,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const vcsProcess = yield* VcsProcess.VcsProcess;
+  const scratchIndexes = yield* makeScratchIndexes;
   const capabilities = {
     kind: "git" as const,
     supportsWorktrees: true,
@@ -1062,17 +1063,6 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     },
   );
 
-  const resolveGitCommonDir = (cwd: string) =>
-    Effect.gen(function* () {
-      const result = yield* execute({
-        operation: "GitVcsDriver.checkpoints.resolveGitCommonDir",
-        cwd,
-        args: ["rev-parse", "--git-common-dir"],
-      });
-      const gitCommonDir = result.stdout.trim();
-      return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
-    });
-
   // Checkpoint snapshots store repository-root-relative paths; selective
   // restore operations anchor path arguments at the worktree toplevel so a
   // session cwd inside a subdirectory still addresses the right files.
@@ -1175,82 +1165,74 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     captureCheckpoint: Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(function* (input) {
       const operation = "GitVcsDriver.checkpoints.captureCheckpoint";
       yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
-      const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
-      const tempIndexPath = path.join(gitCommonDir, scratchIndexFileName("checkpoint"));
       const commitEnv: NodeJS.ProcessEnv = {
-        ...process.env,
-        GIT_INDEX_FILE: tempIndexPath,
         GIT_AUTHOR_NAME: "Threadlines",
         GIT_AUTHOR_EMAIL: "threadlines@users.noreply.github.com",
         GIT_COMMITTER_NAME: "Threadlines",
         GIT_COMMITTER_EMAIL: "threadlines@users.noreply.github.com",
       };
+      // Read by oid so the recorded head is exactly the commit the snapshot
+      // was layered on, even if HEAD moves while the capture runs.
+      const headCommit = yield* resolveHeadCommit(input.cwd);
 
-      const cleanupTempIndex = fileSystem
-        .remove(tempIndexPath, { force: true })
-        .pipe(Effect.ignore);
+      const commitOid = yield* scratchIndexes.withScratchIndex({
+        cwd: input.cwd,
+        purpose: "checkpoint",
+        tree: headCommit,
+        env: commitEnv,
+        git: (args, env, options) => execute({ operation, cwd: input.cwd, args, env, ...options }),
+        use: (env) =>
+          Effect.gen(function* () {
+            yield* execute({
+              operation,
+              cwd: input.cwd,
+              args: ["add", "-A", "--", "."],
+              env,
+            });
 
-      yield* Effect.gen(function* () {
-        // Read by oid so the recorded head is exactly the commit the snapshot
-        // was layered on, even if HEAD moves while the capture runs.
-        const headCommit = yield* resolveHeadCommit(input.cwd);
-        if (headCommit !== null) {
-          yield* execute({
-            operation,
-            cwd: input.cwd,
-            args: ["read-tree", headCommit],
-            env: commitEnv,
-          });
-        }
+            const writeTreeResult = yield* execute({
+              operation,
+              cwd: input.cwd,
+              args: ["write-tree"],
+              env,
+            });
+            const treeOid = writeTreeResult.stdout.trim();
+            if (treeOid.length === 0) {
+              return yield* new VcsProcessExitError({
+                operation,
+                command: "git write-tree",
+                cwd: input.cwd,
+                exitCode: 0,
+                detail: "git write-tree returned an empty tree oid.",
+              });
+            }
 
-        yield* execute({
-          operation,
-          cwd: input.cwd,
-          args: ["add", "-A", "--", "."],
-          env: commitEnv,
-        });
+            const message = checkpointCommitMessage(input.checkpointRef, headCommit);
+            const commitTreeResult = yield* execute({
+              operation,
+              cwd: input.cwd,
+              args: ["commit-tree", treeOid, "-m", message],
+              env,
+            });
+            const commitOid = commitTreeResult.stdout.trim();
+            if (commitOid.length === 0) {
+              return yield* new VcsProcessExitError({
+                operation,
+                command: "git commit-tree",
+                cwd: input.cwd,
+                exitCode: 0,
+                detail: "git commit-tree returned an empty commit oid.",
+              });
+            }
+            return commitOid;
+          }),
+      });
 
-        const writeTreeResult = yield* execute({
-          operation,
-          cwd: input.cwd,
-          args: ["write-tree"],
-          env: commitEnv,
-        });
-        const treeOid = writeTreeResult.stdout.trim();
-        if (treeOid.length === 0) {
-          return yield* new VcsProcessExitError({
-            operation,
-            command: "git write-tree",
-            cwd: input.cwd,
-            exitCode: 0,
-            detail: "git write-tree returned an empty tree oid.",
-          });
-        }
-
-        const message = checkpointCommitMessage(input.checkpointRef, headCommit);
-        const commitTreeResult = yield* execute({
-          operation,
-          cwd: input.cwd,
-          args: ["commit-tree", treeOid, "-m", message],
-          env: commitEnv,
-        });
-        const commitOid = commitTreeResult.stdout.trim();
-        if (commitOid.length === 0) {
-          return yield* new VcsProcessExitError({
-            operation,
-            command: "git commit-tree",
-            cwd: input.cwd,
-            exitCode: 0,
-            detail: "git commit-tree returned an empty commit oid.",
-          });
-        }
-
-        yield* execute({
-          operation,
-          cwd: input.cwd,
-          args: ["update-ref", input.checkpointRef, commitOid],
-        });
-      }).pipe(Effect.ensuring(cleanupTempIndex));
+      yield* execute({
+        operation,
+        cwd: input.cwd,
+        args: ["update-ref", input.checkpointRef, commitOid],
+      });
     }),
 
     hasCheckpointRef: Effect.fn("GitVcsDriver.checkpoints.hasCheckpointRef")(function* (input) {

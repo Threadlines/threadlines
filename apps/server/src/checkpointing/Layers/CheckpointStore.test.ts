@@ -12,6 +12,7 @@ import { describe, expect } from "vite-plus/test";
 
 import { checkpointRefForThreadTurn } from "../Utils.ts";
 import { CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX } from "../../vcs/checkpointRefs.ts";
+import { SCRATCH_INDEX_CACHE_PREFIX } from "../../vcs/scratchIndex.ts";
 import { CheckpointStoreLive } from "./CheckpointStore.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
@@ -99,6 +100,83 @@ function buildLargeText(lineCount = 5_000): string {
 }
 
 it.layer(TestLayer)("CheckpointStoreLive", (it) => {
+  describe("captureCheckpoint", () => {
+    it.effect("records the same snapshot from a cached scratch index as from a cold one", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tmp = yield* makeTmpDir();
+        const scratch = yield* makeTmpDir("checkpoint-store-cold-index-");
+        yield* initRepoWithCommit(tmp);
+        yield* writeTextFile(path.join(tmp, "edited.txt"), "edit v1\n");
+        yield* writeTextFile(path.join(tmp, "doomed.txt"), "doomed\n");
+        yield* writeTextFile(path.join(tmp, "crlf.txt"), "one\r\ntwo\r\n");
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "files"]);
+        // Older than any index written below, so git trusts their stat data.
+        const past = new Date(Date.now() - 60_000);
+        for (const name of ["README.md", "edited.txt", "doomed.txt", "crlf.txt"]) {
+          yield* fileSystem.utimes(path.join(tmp, name), past, past);
+        }
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-cached-capture");
+        let turn = 0;
+        const coldEnv = { GIT_INDEX_FILE: path.join(scratch, "index") };
+        const expectCaptureMatchesCold = Effect.gen(function* () {
+          yield* fileSystem.remove(coldEnv.GIT_INDEX_FILE, { force: true });
+          yield* git(tmp, ["read-tree", "HEAD"], coldEnv);
+          yield* git(tmp, ["add", "-A", "--", "."], coldEnv);
+          const coldTree = yield* git(tmp, ["write-tree"], coldEnv);
+          turn += 1;
+          const checkpointRef = checkpointRefForThreadTurn(threadId, turn);
+          yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+          expect(yield* git(tmp, ["rev-parse", `${checkpointRef}^{tree}`])).toBe(coldTree);
+        });
+        const cacheNames = fileSystem
+          .readDirectory(path.join(tmp, ".git"))
+          .pipe(
+            Effect.map((names) =>
+              names.filter((name) => name.startsWith(SCRATCH_INDEX_CACHE_PREFIX)),
+            ),
+          );
+
+        yield* expectCaptureMatchesCold;
+        expect(yield* cacheNames).toHaveLength(1);
+
+        // Right after that capture: an edit that keeps the size, a deletion
+        // and a new file.
+        yield* writeTextFile(path.join(tmp, "edited.txt"), "edit v2\n");
+        yield* fileSystem.remove(path.join(tmp, "doomed.txt"));
+        yield* writeTextFile(path.join(tmp, "fresh.txt"), "fresh\n");
+        yield* expectCaptureMatchesCold;
+
+        // New line-ending rules change crlf.txt's blob, not its bytes, even
+        // from an attributes file git ignores.
+        yield* writeTextFile(path.join(tmp, ".gitignore"), "/.gitattributes\n");
+        yield* expectCaptureMatchesCold;
+        yield* writeTextFile(path.join(tmp, ".gitattributes"), "*.txt text eol=lf\n");
+        yield* expectCaptureMatchesCold;
+        expect(yield* cacheNames).toHaveLength(1);
+
+        // Under ignoreStat, an index built from scratch marks every file it
+        // records as unchanged; a cached copy would then skip README.md's edit.
+        yield* git(tmp, ["config", "core.ignoreStat", "2"]);
+        for (const name of yield* cacheNames) {
+          yield* fileSystem.remove(path.join(tmp, ".git", name));
+        }
+        yield* expectCaptureMatchesCold;
+        yield* writeTextFile(path.join(tmp, "README.md"), "# TEST\n");
+        yield* expectCaptureMatchesCold;
+        yield* git(tmp, ["config", "--unset", "core.ignoreStat"]);
+
+        // A cache git cannot read falls back to the cold path.
+        for (const name of yield* cacheNames) {
+          yield* writeTextFile(path.join(tmp, ".git", name), "not an index");
+        }
+        yield* expectCaptureMatchesCold;
+      }),
+    );
+  });
+
   describe("diffCheckpoints", () => {
     it.effect("returns full oversized checkpoint diffs without truncation", () =>
       Effect.gen(function* () {

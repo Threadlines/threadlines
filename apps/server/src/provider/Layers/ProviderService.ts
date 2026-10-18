@@ -38,6 +38,7 @@ import {
   type ProviderSession,
 } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { parseSessionKey, sessionKeyThreadId } from "@threadlines/shared/threadParticipants";
@@ -69,6 +70,7 @@ import {
 } from "../Services/ProviderSessionDirectory.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
+import { makeTurnLatencyTracker, type TurnLatencySample } from "../turnLatency.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
   analyticsModelProperties,
@@ -307,6 +309,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const directory = yield* ProviderSessionDirectory;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+  const turnLatency = makeTurnLatencyTracker();
 
   const runtimeEventModel = (event: ProviderRuntimeEvent) =>
     directory.getBinding(event.threadId).pipe(
@@ -317,8 +320,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       Effect.catch(() => Effect.succeed(undefined)),
     );
 
+  const recordTurnLatency = (latency: TurnLatencySample | undefined) =>
+    latency === undefined
+      ? Effect.void
+      : analytics.record("provider.turn.first_output", {
+          provider: latency.provider,
+          ...analyticsModelProperties({ model: latency.model, provider: latency.provider }),
+          attachmentCount: latency.attachmentCount,
+          sessionStarted: latency.sessionStarted,
+          handoffMs: latency.handoffMs,
+          firstOutputMs: latency.firstOutputMs,
+        });
+
   const recordRuntimeEventAnalytics = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.gen(function* () {
+      yield* recordTurnLatency(turnLatency.observe(event, yield* Clock.currentTimeMillis));
       switch (event.type) {
         case "model.rerouted": {
           const reason = classifyModelRerouteReason(event.payload.reason);
@@ -586,6 +602,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
       }
 
+      turnLatency.sessionStarted(
+        input.binding.threadId,
+        yield* Clock.currentTimeMillis,
+        bindingInstanceId,
+      );
       yield* upsertSessionBinding(
         { ...resumed, providerInstanceId: bindingInstanceId },
         input.binding.threadId,
@@ -789,6 +810,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
           );
         }
+        turnLatency.sessionStarted(threadId, yield* Clock.currentTimeMillis, resolvedInstanceId);
         const sessionWithInstance = {
           ...session,
           providerInstanceId: resolvedInstanceId,
@@ -975,7 +997,33 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.kind": routed.adapter.provider,
         ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
       });
-      const turn = yield* routed.adapter.sendTurn(input);
+      const requestedAtMs =
+        input.requestedAt !== undefined ? Date.parse(input.requestedAt) : Number.NaN;
+      let latencySendId: number | undefined;
+      if (Number.isFinite(requestedAtMs)) {
+        const { handoffMs, sendId } = turnLatency.sending(input.threadId, {
+          requestedAtMs,
+          nowMs: yield* Clock.currentTimeMillis,
+          provider: routed.adapter.provider,
+          instanceId: routed.instanceId,
+          model: input.modelSelection?.model,
+          attachmentCount: input.attachments.length,
+        });
+        latencySendId = sendId;
+        yield* Effect.annotateCurrentSpan({ "provider.turn.handoff_ms": handoffMs });
+      }
+      const turn = yield* routed.adapter.sendTurn(input).pipe(
+        Effect.onError(() =>
+          Effect.sync(() => {
+            if (latencySendId !== undefined) {
+              turnLatency.notSent(input.threadId, latencySendId);
+            }
+          }),
+        ),
+      );
+      if (latencySendId !== undefined) {
+        yield* recordTurnLatency(turnLatency.sent(input.threadId, latencySendId, turn.turnId));
+      }
       yield* directory.upsert({
         threadId: input.threadId,
         provider: routed.adapter.provider,
@@ -1860,6 +1908,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         schema: ProviderStopSessionInput,
         payload: rawInput,
       });
+      turnLatency.sessionStopped(input.threadId);
       let metricProvider = "unknown";
       return yield* Effect.gen(function* () {
         const routed = yield* resolveRoutableSession({
@@ -2206,6 +2255,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         operation: "ProviderService.deleteThread",
         allowRecovery: true,
       });
+      turnLatency.sessionStopped(input.threadId);
       metricProvider = routed.adapter.provider;
       yield* Effect.annotateCurrentSpan({
         "provider.operation": "delete-thread",
