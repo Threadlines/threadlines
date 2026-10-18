@@ -249,13 +249,14 @@ describe.skipIf(!piCli)("PiAdapter with a real Pi", () => {
           expect(seenByFork.some((text) => text.includes("after revert"))).toBe(false);
 
           // Back on the moved thread, which restarted twice: revert counts back
-          // through the turns from before the restarts too.
-          const reverted = yield* adapter.rollbackThread(threadId, 2);
+          // through the turns from before the restarts too, and past the turn
+          // reverted earlier, which is gone.
+          const reverted = yield* adapter.rollbackThread(threadId, 4);
           expect(reverted.conversationRolledBack).toBe(true);
           yield* send(threadId, "final message");
           yield* turnEnd(threadId);
-          expect(lastUserMessages().some((text) => text.includes("after revert"))).toBe(true);
-          expect(lastUserMessages().some((text) => text.includes("after restart"))).toBe(false);
+          expect(lastUserMessages().some((text) => text.includes("first message"))).toBe(false);
+          expect(lastUserMessages().some((text) => text.includes("final message"))).toBe(true);
         }),
       ),
     120_000,

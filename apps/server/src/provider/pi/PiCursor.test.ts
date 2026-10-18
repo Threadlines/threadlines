@@ -16,7 +16,7 @@ const marker = (
   id: string,
   parentId: string | null,
   turnId: string,
-  mark: { readonly end?: true; readonly late?: true } = {},
+  mark: { readonly end?: true; readonly late?: true; readonly reverted?: true } = {},
 ) =>
   entry(id, parentId, {
     type: "custom",
@@ -91,6 +91,25 @@ describe("planPiRevert and planPiFork", () => {
     expect(fork("e4", { lastTurnId: "t3" })).toEqual({ kind: "contextSeed" });
   });
 
+  it("drops a reverted turn whose start marker is still on the branch", () => {
+    // Reverting t4 forks before u4, so the copy's branch ends at m4.
+    const after = [
+      ...entries.slice(
+        0,
+        entries.findIndex((item) => item.id === "u4"),
+      ),
+      marker("r4", "m4", "t4", { reverted: true }),
+      marker("m5", "r4", "t5"),
+      user("u5", "m5"),
+    ];
+    expect(piTurnBoundaries(after, "u5").map((boundary) => boundary.turnId)).toEqual([
+      "t1",
+      "t2",
+      "t3",
+      "t5",
+    ]);
+  });
+
   it("recaps instead of copying what came after a turn without Threadlines' markers", () => {
     // Said in Pi after Threadlines' last turn ended.
     const outside = [user("x1", "e4"), assistant("x2", "x1")];
@@ -105,6 +124,9 @@ describe("planPiRevert and planPiFork", () => {
     expect(planPiRevert(piTurnBoundaries([...entries, ...late], "p2"), "tp")).toEqual({
       kind: "unknown",
     });
+    // An extension rewrote an earlier message after the turn ended.
+    const edit = [entry("ce", "e4", { type: "context_edit", targetId: "u1" })];
+    expect(fork("ce", { lastTurnId: "t4" }, edit as never)).toEqual({ kind: "contextSeed" });
   });
 });
 

@@ -18,6 +18,9 @@
  * - A turn Pi starts by itself is marked once it is running ("late"): its
  *   start can't be cut at, but it still counts, and it shows where the turn
  *   before it stopped.
+ * - A revert forks before the dropped turn's first message, which leaves its
+ *   start marker on the branch; a "reverted" marker after it says the turn is
+ *   gone.
  * - A turn that crashed half way still has its start marker, so later turns
  *   stay exact.
  *
@@ -36,6 +39,11 @@ export interface PiResumeCursor {
   readonly sessionFile: string;
   /** The folder Pi runs the session in (its header's `cwd`). */
   readonly cwd: string;
+  /**
+   * What "Pi default" means for this thread (`provider/id`): the model its
+   * session started on, which Pi chose from its settings for that folder.
+   */
+  readonly defaultModel?: string;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -44,10 +52,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const makePiResumeCursor = (input: {
   readonly sessionFile: string;
   readonly cwd: string;
+  readonly defaultModel?: string | undefined;
 }): PiResumeCursor => ({
   schemaVersion: SCHEMA_VERSION,
   sessionFile: input.sessionFile,
   cwd: input.cwd,
+  ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
 });
 
 /** Reads a stored cursor; anything malformed is no cursor (a fresh session). */
@@ -55,7 +65,11 @@ export function parsePiResumeCursor(raw: unknown): PiResumeCursor | undefined {
   if (!isRecord(raw) || raw.schemaVersion !== SCHEMA_VERSION) return undefined;
   if (typeof raw.sessionFile !== "string" || raw.sessionFile.length === 0) return undefined;
   if (typeof raw.cwd !== "string" || raw.cwd.length === 0) return undefined;
-  return makePiResumeCursor({ sessionFile: raw.sessionFile, cwd: raw.cwd });
+  return makePiResumeCursor({
+    sessionFile: raw.sessionFile,
+    cwd: raw.cwd,
+    defaultModel: typeof raw.defaultModel === "string" ? raw.defaultModel : undefined,
+  });
 }
 
 export interface PiTurnBoundary {
@@ -73,6 +87,7 @@ interface PiTurnMarker {
   readonly turnId: string;
   readonly end: boolean;
   readonly late: boolean;
+  readonly reverted: boolean;
 }
 
 const markerOf = (entry: PiSessionEntry): PiTurnMarker | undefined =>
@@ -80,12 +95,23 @@ const markerOf = (entry: PiSessionEntry): PiTurnMarker | undefined =>
   entry.customType === PI_TURN_MARKER_TYPE &&
   isRecord(entry.data) &&
   typeof entry.data.turnId === "string"
-    ? { turnId: entry.data.turnId, end: entry.data.end === true, late: entry.data.late === true }
+    ? {
+        turnId: entry.data.turnId,
+        end: entry.data.end === true,
+        late: entry.data.late === true,
+        reverted: entry.data.reverted === true,
+      }
     : undefined;
 
-/** Entries the model reads as conversation (markers, settings and labels are not). */
+/**
+ * Entries that change what the model reads (markers, settings and labels
+ * don't). A compaction only restates what came before it, so it isn't one.
+ */
 const isConversation = (entry: PiSessionEntry) =>
-  entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary";
+  entry.type === "message" ||
+  entry.type === "custom_message" ||
+  entry.type === "branch_summary" ||
+  entry.type === "context_edit";
 
 /** The active branch, root to `leafId`. Abandoned branches are not on it. */
 function activePath(
@@ -116,6 +142,11 @@ function boundariesOf(path: ReadonlyArray<PiSessionEntry>): Array<PiTurnBoundary
     | undefined;
   for (const entry of path) {
     const marker = markerOf(entry);
+    if (marker?.reverted) {
+      // Nothing of a dropped turn is left on the branch but its start marker.
+      if (open?.turnId === marker.turnId) open = undefined;
+      continue;
+    }
     if (marker?.end) {
       if (open?.turnId === marker.turnId) open.endMarkerId = entry.id;
       continue;

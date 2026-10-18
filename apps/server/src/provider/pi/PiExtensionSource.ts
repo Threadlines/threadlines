@@ -58,9 +58,9 @@ export const PI_APPROVAL_OPTIONS = {
 export const PI_MODE_COMMAND = "threadlines-mode";
 
 /**
- * The turn marker command: `/threadlines-turn <nonce> <turnId> [end|late]`,
- * where a turn starts, where it ended, or a turn Pi started itself, once
- * running (see `PiCursor`).
+ * The turn marker command: `/threadlines-turn <nonce> <turnId>
+ * [end|late|reverted]`: where a turn starts, where it ended, a turn Pi started
+ * itself (once running), or that a revert dropped it (see `PiCursor`).
  */
 export const PI_TURN_COMMAND = "threadlines-turn";
 
@@ -256,7 +256,9 @@ export default async function threadlines(pi: ExtensionAPI) {
       if (!nonce || given !== nonce || !turnId) return;
       pi.appendEntry(
         TURN_MARKER,
-        mark === "end" ? { turnId, end: true } : mark === "late" ? { turnId, late: true } : { turnId },
+        mark === "end" || mark === "late" || mark === "reverted"
+          ? { turnId, [mark]: true }
+          : { turnId },
       );
     },
   });
@@ -374,11 +376,13 @@ export function parsePiApprovalTitle(title: string, nonce: string): PiApprovalRe
 }
 
 /** The turn marker command's prompt text. */
+export type PiTurnMark = "end" | "late" | "reverted";
+
 export const piTurnCommandText = (input: {
   readonly nonce: string;
   readonly turnId: string;
-  /** Where the turn ended, or a turn Pi started itself; the start of a turn otherwise. */
-  readonly mark?: "end" | "late" | undefined;
+  /** Where the turn ended, a turn Pi started itself, or a turn a revert dropped. */
+  readonly mark?: PiTurnMark | undefined;
 }) => `/${PI_TURN_COMMAND} ${input.nonce} ${input.turnId}${input.mark ? ` ${input.mark}` : ""}`;
 
 /** The mode command's prompt text, as the adapter sends it. */

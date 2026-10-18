@@ -94,6 +94,12 @@ export interface PiRpc {
   readonly send: (record: Readonly<Record<string, unknown>>) => Effect.Effect<void>;
   /** Every event and extension UI request, in arrival order. One consumer. */
   readonly records: Stream.Stream<PiRecord>;
+  /**
+   * How many records have been queued so far. Lines are read in order, so a
+   * reply that has resolved came after the records counted then: a caller
+   * that has handled that many has seen everything Pi said before replying.
+   */
+  readonly recordCount: () => number;
   /** Resolves once the process has exited. */
   readonly exited: Effect.Effect<PiExit>;
   readonly hasExited: Effect.Effect<boolean>;
@@ -252,6 +258,7 @@ export const startPiRpc = (
     // answers: the reason startup then hangs.
     let startupQuestion = false;
     let ready = false;
+    let recordCount = 0;
 
     const splitter = new PiLineSplitter();
     const handleLine = (line: string) => {
@@ -272,6 +279,7 @@ export const startPiRpc = (
         return;
       }
       if (!ready && value.type === "extension_ui_request") startupQuestion = true;
+      recordCount += 1;
       Queue.offerUnsafe(records, value as PiRecord);
     };
     yield* child.stdout.pipe(
@@ -422,6 +430,7 @@ export const startPiRpc = (
       request,
       send: write,
       records: Stream.fromQueue(records),
+      recordCount: () => recordCount,
       exited: Deferred.await(exited),
       hasExited: Deferred.isDone(exited),
       stderrTail: () => stderrTail,
