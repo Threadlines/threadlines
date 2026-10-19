@@ -754,6 +754,21 @@ export const ProviderRegistryLive = Layer.effect(
       return { outcome, providers };
     });
 
+    const readUsageBreakdowns = Effect.gen(function* () {
+      const instances = yield* instanceRegistry.listInstances;
+      const breakdowns = yield* Effect.forEach(
+        instances.filter((instance) => instance.enabled),
+        (instance) => {
+          const read = instance.accountUsage?.readUsageBreakdown;
+          return read === undefined
+            ? Effect.succeed([])
+            : read.pipe(Effect.map((reading) => [{ ...reading, instanceId: instance.instanceId }]));
+        },
+        { concurrency: "unbounded" },
+      );
+      return { breakdowns: breakdowns.flat() };
+    }).pipe(Effect.withSpan("ProviderRegistry.readUsageBreakdowns"));
+
     const setDataSharing = Effect.fn("setDataSharing")(function* (input: {
       readonly instanceId: ProviderInstanceId;
       readonly enabled: boolean;
@@ -999,6 +1014,7 @@ export const ProviderRegistryLive = Layer.effect(
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       consumeRateLimitResetCredit,
+      readUsageBreakdowns,
       setDataSharing,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,

@@ -2,10 +2,13 @@ import * as NodeOS from "node:os";
 
 import type { ClaudeSettings } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { resolveCommandOutsideWorkingFolder } from "@threadlines/shared/shell";
 
 import { expandHomePath } from "../../pathExpansion.ts";
+import { resolveLinkedWorktreeMainCheckout } from "../../vcs/CheckoutPresence.ts";
 
 /**
  * The Claude binary to hand the SDK. The SDK starts it outside the server's
@@ -59,6 +62,49 @@ export const resolveClaudeConfigDir = Effect.fn("resolveClaudeConfigDir")(functi
   const accountFolder = config.accountFolder.trim();
   if (accountFolder.length > 0) return path.resolve(expandHomePath(accountFolder));
   return yield* resolveClaudeMainConfigDir(config, environment);
+});
+
+/**
+ * The `settings.local.json` files Claude reads for a session in `cwd`, the
+ * shared one first. Claude Code keeps a repository's local settings (where a
+ * chat's "always allow" choices are saved) in the top folder of its main
+ * checkout, so every worktree and subfolder shares one file, and still reads
+ * a file in `cwd` itself on top of it. It shares only on systems with user
+ * ids, when the user owns that folder, its `.git` and its `.claude`, and not
+ * when the top folder is the home folder; otherwise only `cwd`'s file counts.
+ */
+export const claudeLocalSettingsFiles = Effect.fn("claudeLocalSettingsFiles")(function* (input: {
+  readonly cwd: string;
+  /** The `HOME` Claude runs with. */
+  readonly home: string;
+}): Effect.fn.Return<ReadonlyArray<string>, never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const cwd = path.resolve(input.cwd);
+  const own = path.join(cwd, ".claude", "settings.local.json");
+  const userId = process.geteuid?.() ?? process.getuid?.();
+  if (userId === undefined) return [own];
+  const exists = (target: string) =>
+    fileSystem.exists(target).pipe(Effect.orElseSucceed(() => false));
+  let top: string | undefined = cwd;
+  while (top !== undefined && !(yield* exists(path.join(top, ".git")))) {
+    const parent = path.dirname(top);
+    top = parent === top ? undefined : parent;
+  }
+  if (top === undefined) return [own];
+  const shared = (yield* resolveLinkedWorktreeMainCheckout(top)) ?? top;
+  if (shared === cwd || shared === path.resolve(input.home)) return [own];
+  const ownerOf = (target: string) =>
+    fileSystem.stat(target).pipe(
+      Effect.map((info) => Option.getOrUndefined(info.uid)),
+      Effect.orElseSucceed(() => undefined),
+    );
+  const sharedClaudeFolder = path.join(shared, ".claude");
+  const owned =
+    (yield* ownerOf(shared)) === userId &&
+    (yield* ownerOf(path.join(shared, ".git"))) === userId &&
+    (!(yield* exists(sharedClaudeFolder)) || (yield* ownerOf(sharedClaudeFolder)) === userId);
+  return owned ? [path.join(sharedClaudeFolder, "settings.local.json"), own] : [own];
 });
 
 /**

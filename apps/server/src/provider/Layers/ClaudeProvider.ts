@@ -11,6 +11,7 @@ import {
   type ServerProviderAuthCapabilities,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
+  type UsageBreakdownWindow,
 } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -33,10 +34,14 @@ import {
 import { compareSemverVersions } from "@threadlines/shared/semver";
 import {
   type ModelInfo as ClaudeModelInfo,
+  type Query as ClaudeQuery,
   query as claudeQuery,
+  type SDKControlGetUsageResponse,
+  type SettingSource as ClaudeSettingSource,
   type SlashCommand as ClaudeSlashCommand,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { ProviderUsageBreakdownReading } from "../ProviderDriver.ts";
 
 import {
   buildBooleanOptionDescriptor,
@@ -1284,37 +1289,36 @@ export const stopClaudeCliAfterSignInRenewal = (input: {
 };
 
 /**
- * Probe account information by spawning a lightweight Claude Agent SDK
- * session and reading the initialization result.
+ * Start Claude without a conversation, ask it something over the SDK's
+ * control channel, and stop it. The probes below are built on it.
  *
  * We pass a never-yielding AsyncIterable as the prompt so that no user
  * message is ever written to the subprocess stdin. This means the Claude
- * Code subprocess completes its local initialization IPC (returning
- * account info and slash commands) but never starts a model request. We
- * read the init data and then stop the subprocess.
+ * Code subprocess completes its local initialization IPC but never starts a
+ * model request. We ask what we need and then stop the subprocess.
  *
  * Startup is not free of side effects, though: on a normal sign-in that is
  * about to expire the CLI renews it, and stopping the CLI mid-renewal loses
- * the new token. `readStoredSignIn` lets the probe see that coming and leave
- * the CLI running until the renewal has landed (see
+ * the new token. `readStoredSignIn` lets the session see that coming and
+ * leave the CLI running until the renewal has landed (see
  * `stopClaudeCliAfterSignInRenewal`).
  *
- * The probe loads no MCP servers. It runs every few minutes and is stopped
- * right after init, so a server it connected could be killed mid OAuth
- * refresh: the server rotates the refresh token, the new one dies with the
- * process, and the user has to sign in again. Init data doesn't depend on
- * MCP (slash commands and skills come from settings and plugins).
- *
- * This is used as a fallback when `claude auth status` does not include
- * subscription type information.
+ * The session loads no MCP servers. It is stopped as soon as it answers, so
+ * a server it connected could be killed mid OAuth refresh: the server
+ * rotates the refresh token, the new one dies with the process, and the user
+ * has to sign in again.
  */
-const probeClaudeCapabilities = (
+const withQuietClaudeSession = <A>(
   claudeSettings: ClaudeSettings,
-  environment: NodeJS.ProcessEnv = process.env,
-  options?: {
+  environment: NodeJS.ProcessEnv,
+  options: {
     /** The instance's stored normal sign-in, for the renewal guard above. */
-    readonly readStoredSignIn?: Effect.Effect<ClaudeStoredSignIn>;
+    readonly readStoredSignIn?: Effect.Effect<ClaudeStoredSignIn> | undefined;
+    /** Settings files to load. Their hooks run at startup too. */
+    readonly settingSources: ReadonlyArray<ClaudeSettingSource>;
+    readonly timeoutMs: number;
   },
+  ask: (query: ClaudeQuery) => Promise<A>,
 ) => {
   const abort = new AbortController();
   const stop = Effect.sync(() => {
@@ -1322,7 +1326,7 @@ const probeClaudeCapabilities = (
   });
   return Effect.gen(function* () {
     const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-    const isRenewalDue = options?.readStoredSignIn
+    const isRenewalDue = options.readStoredSignIn
       ? checkClaudeSignInRenewalDue({
           readStoredSignIn: options.readStoredSignIn,
           environment: claudeEnvironment,
@@ -1331,11 +1335,10 @@ const probeClaudeCapabilities = (
     // Read before the CLI starts: this is the state it will act on.
     const renewalDue = yield* isRenewalDue;
     const stopAfterRenewal = stopClaudeCliAfterSignInRenewal({ renewalDue, isRenewalDue, stop });
-    return yield* Effect.tryPromise(async () => {
+    return yield* Effect.tryPromise(() => {
       const executable = claudeSdkExecutable(claudeSettings.binaryPath, claudeEnvironment);
       const q = claudeQuery({
-        // Never yield — we only need initialization data, not a conversation.
-        // This prevents any prompt from reaching the Anthropic API.
+        // Never yield: no prompt ever reaches the Anthropic API.
         // oxlint-disable-next-line require-yield
         prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
           await waitForAbortSignal(abort.signal);
@@ -1344,11 +1347,11 @@ const probeClaudeCapabilities = (
           persistSession: false,
           pathToClaudeCodeExecutable: executable,
           abortController: abort,
-          settingSources: ["user", "project", "local"],
+          settingSources: [...options.settingSources],
           mcpServers: {},
           strictMcpConfig: true,
           allowedTools: [],
-          // Named so the probe never picks up a settings `defaultMode` (the
+          // Named so the session never picks up a settings `defaultMode` (the
           // SDK stopped filling in "default" in 0.3.286).
           permissionMode: "default",
           // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
@@ -1356,6 +1359,47 @@ const probeClaudeCapabilities = (
           stderr: () => {},
         },
       });
+      return ask(q);
+    }).pipe(
+      Effect.timeoutOption(options.timeoutMs),
+      // Every way out goes through the renewal guard: a session that failed,
+      // timed out or was interrupted may have started a renewal all the same.
+      Effect.onExit(() => stopAfterRenewal),
+    );
+  }).pipe(
+    Effect.result,
+    Effect.map((result) => {
+      if (Result.isFailure(result)) return undefined;
+      return Option.isSome(result.success) ? result.success.value : undefined;
+    }),
+  );
+};
+
+/**
+ * Probe account information from a quiet Claude session's initialization
+ * result. Init data doesn't depend on MCP (slash commands and skills come
+ * from settings and plugins).
+ *
+ * This is used as a fallback when `claude auth status` does not include
+ * subscription type information.
+ */
+const probeClaudeCapabilities = (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+  options?: {
+    /** The instance's stored normal sign-in, for the renewal guard. */
+    readonly readStoredSignIn?: Effect.Effect<ClaudeStoredSignIn>;
+  },
+) =>
+  withQuietClaudeSession(
+    claudeSettings,
+    environment,
+    {
+      readStoredSignIn: options?.readStoredSignIn,
+      settingSources: ["user", "project", "local"],
+      timeoutMs: CAPABILITIES_PROBE_TIMEOUT_MS,
+    },
+    async (q) => {
       const init = await q.initializationResult();
       const account = init.account as
         | {
@@ -1371,20 +1415,68 @@ const probeClaudeCapabilities = (
         models: init.models ?? [],
         slashCommands: parseClaudeInitializationCommands(init.commands),
       } satisfies ClaudeCapabilitiesProbe;
-    }).pipe(
-      Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
-      // Every way out goes through the renewal guard: a probe that failed,
-      // timed out or was interrupted may have started a renewal all the same.
-      Effect.onExit(() => stopAfterRenewal),
-    );
-  }).pipe(
-    Effect.result,
-    Effect.map((result) => {
-      if (Result.isFailure(result)) return undefined;
-      return Option.isSome(result.success) ? result.success.value : undefined;
-    }),
+    },
   );
-};
+
+// Claude reads every transcript of the last week for its usage report: 1.6 s
+// on a busy week here, so a big history gets plenty of room.
+const USAGE_BREAKDOWN_TIMEOUT_MS = 90_000;
+
+type ClaudeUsageBehaviors = NonNullable<SDKControlGetUsageResponse["behaviors"]>;
+
+function usageBreakdownWindow(window: ClaudeUsageBehaviors["day"]): UsageBreakdownWindow {
+  const count = (value: number) => (Number.isSafeInteger(value) && value > 0 ? value : 0);
+  return {
+    requestCount: count(window.request_count),
+    sessionCount: count(window.session_count),
+    behaviors: (window.behaviors ?? []).flatMap((behavior) => {
+      const key = typeof behavior.key === "string" ? behavior.key.trim() : "";
+      return key.length > 0 && Number.isFinite(behavior.pct)
+        ? [{ key, pct: Math.min(100, Math.max(0, behavior.pct)), count: count(behavior.count) }]
+        : [];
+    }),
+  };
+}
+
+/**
+ * What used the instance's Claude limits over the last day and week, as
+ * Claude's `/usage` reports it from the transcripts in its config folder.
+ * Loads no settings, so no hook of the user's runs for it. Unavailable when
+ * Claude doesn't report one (no subscription, a CLI without the report, a
+ * failed scan) or the read fails.
+ */
+export const readClaudeUsageBreakdown = (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+  options?: { readonly readStoredSignIn?: Effect.Effect<ClaudeStoredSignIn> },
+): Effect.Effect<ProviderUsageBreakdownReading, never, Path.Path> =>
+  withQuietClaudeSession(
+    claudeSettings,
+    environment,
+    {
+      readStoredSignIn: options?.readStoredSignIn,
+      settingSources: [],
+      timeoutMs: USAGE_BREAKDOWN_TIMEOUT_MS,
+    },
+    async (q) => {
+      await q.initializationResult();
+      if (typeof q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET !== "function") {
+        return null;
+      }
+      return (await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()).behaviors;
+    },
+  ).pipe(
+    Effect.flatMap((behaviors): Effect.Effect<ProviderUsageBreakdownReading> =>
+      behaviors?.day && behaviors.week
+        ? Effect.map(DateTime.now, (now) => ({
+            status: "ready",
+            readAt: DateTime.formatIso(now),
+            day: usageBreakdownWindow(behaviors.day),
+            week: usageBreakdownWindow(behaviors.week),
+          }))
+        : Effect.succeed({ status: "unavailable" }),
+    ),
+  );
 
 const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,

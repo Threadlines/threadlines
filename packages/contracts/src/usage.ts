@@ -21,6 +21,7 @@
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 
 /**
  * Bumped whenever the shape of {@link UsageSummary} changes incompatibly. A
@@ -238,6 +239,56 @@ export const UsageSummary = Schema.Struct({
   scanDurationMs: NonNegativeInt,
 });
 export type UsageSummary = typeof UsageSummary.Type;
+
+/**
+ * What used a provider's limits over one window, as the provider's own
+ * `/usage` reports it from this machine's transcripts. Approximate: it
+ * leaves out other devices and the provider's own apps.
+ */
+export const UsageBreakdownWindow = Schema.Struct({
+  requestCount: NonNegativeInt,
+  sessionCount: NonNegativeInt,
+  /**
+   * Habits behind the usage (`long_context`, `high_parallel`, ...), as the
+   * provider names them. They overlap: shares don't add up to 100. Kept open
+   * so a key a newer provider adds still arrives; clients show the ones they
+   * can describe.
+   */
+  behaviors: Schema.Array(
+    Schema.Struct({
+      key: TrimmedNonEmptyString,
+      /** Share of the weighted usage, 0-100. */
+      pct: Schema.Number,
+      /** Requests in the window that showed it. */
+      count: NonNegativeInt,
+    }),
+  ),
+});
+export type UsageBreakdownWindow = typeof UsageBreakdownWindow.Type;
+
+/** One provider instance's breakdown, or why there is none. */
+export const ProviderUsageBreakdown = Schema.Union([
+  Schema.Struct({
+    instanceId: ProviderInstanceId,
+    status: Schema.Literal("ready"),
+    /** When the provider read it; readings are reused for a few minutes. */
+    readAt: Schema.String,
+    /** The last 24 hours. */
+    day: UsageBreakdownWindow,
+    /** The last 7 days. */
+    week: UsageBreakdownWindow,
+  }),
+  /** The provider didn't report one: no subscription, a CLI without the
+   *  report, or a failed read. */
+  Schema.Struct({ instanceId: ProviderInstanceId, status: Schema.Literal("unavailable") }),
+]);
+export type ProviderUsageBreakdown = typeof ProviderUsageBreakdown.Type;
+
+export const UsageBreakdownsResult = Schema.Struct({
+  /** One per provider instance with its own history on this machine. */
+  breakdowns: Schema.Array(ProviderUsageBreakdown),
+});
+export type UsageBreakdownsResult = typeof UsageBreakdownsResult.Type;
 
 export class UsageReadError extends Schema.TaggedError<UsageReadError>()("UsageReadError", {
   reason: Schema.Literals(["scanFailed", "invalidWindow"]),

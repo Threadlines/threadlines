@@ -1670,6 +1670,10 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(WS_METHODS.usageSummary, usage.readSummary(input), {
             "rpc.aggregate": "usage",
           }),
+        [WS_METHODS.usageBreakdowns]: () =>
+          observeRpcEffect(WS_METHODS.usageBreakdowns, providerRegistry.readUsageBreakdowns, {
+            "rpc.aggregate": "usage",
+          }),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,

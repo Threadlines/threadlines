@@ -78,7 +78,7 @@ import type {
   PullRequestUpdateInput,
 } from "./pullRequest.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
-import type { UsageSummary, UsageSummaryInput } from "./usage.ts";
+import type { UsageBreakdownsResult, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import type {
   ProjectFaviconInput,
   ProjectFaviconResult,
@@ -1662,6 +1662,9 @@ export interface EnvironmentApi {
    */
   usage?: {
     summary: (input: UsageSummaryInput) => Promise<UsageSummary>;
+    /** What used each provider's limits, by the provider's own report.
+     *  Optional for servers from before it. */
+    breakdowns?: () => Promise<UsageBreakdownsResult>;
   };
   sourceControl: {
     lookupRepository: (

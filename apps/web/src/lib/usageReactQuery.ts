@@ -3,6 +3,7 @@ import {
   USAGE_MAX_WINDOW_DAYS,
   UsageDay,
   type EnvironmentId,
+  type UsageBreakdownsResult,
   type UsageSummary,
   type UsageSummaryInput,
   type UsageWindowDays,
@@ -127,6 +128,23 @@ function describeUsageReadFailure(reason: unknown): string {
     return reason.message;
   }
   return "Unavailable";
+}
+
+/**
+ * What used each provider's limits, as the providers of one environment report
+ * it. Null when that environment's server predates the report.
+ */
+export function usageBreakdownsQueryOptions(environmentId: EnvironmentId | null) {
+  return queryOptions({
+    queryKey: ["usage", "breakdowns", environmentId] as const,
+    queryFn: async (): Promise<UsageBreakdownsResult | null> => {
+      const read = environmentId ? readEnvironmentApi(environmentId)?.usage?.breakdowns : undefined;
+      return read ? read() : null;
+    },
+    enabled: environmentId !== null,
+    // The server keeps a reading for ten minutes; asking sooner gets the same one.
+    staleTime: USAGE_STALE_TIME_MS,
+  });
 }
 
 /**

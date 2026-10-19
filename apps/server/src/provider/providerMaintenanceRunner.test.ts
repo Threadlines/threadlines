@@ -237,6 +237,7 @@ function makeRegistry(
         Ref.get(providersRef).pipe(
           Effect.map((providers) => ({ outcome: "nothingToReset" as const, providers })),
         ),
+      readUsageBreakdowns: Effect.succeed({ breakdowns: [] }),
       setDataSharing: () => Ref.get(providersRef).pipe(Effect.map((providers) => ({ providers }))),
       getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
         Effect.succeed(lifecycleFor(provider)),

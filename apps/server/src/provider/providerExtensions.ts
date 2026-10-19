@@ -88,6 +88,7 @@ import {
 import { codexAppServerCommandOptions } from "./codexAppServerArgs.ts";
 import {
   claudeInstanceBaseEnvironment,
+  claudeLocalSettingsFiles,
   makeClaudeEnvironment,
   resolveClaudeConfigDir,
 } from "./Drivers/ClaudeHome.ts";
@@ -3077,6 +3078,9 @@ const readClaudeHooks = Effect.fn("providerExtensions.readClaudeHooks")(function
   const projectDirectory = path.resolve(input.cwd);
   // The machine scope's cwd is the home directory, whose project file is the user file.
   const isHome = normalizedPathKey(projectDirectory) === normalizedPathKey(input.claudeHome);
+  const localSettingsFiles = isHome
+    ? []
+    : yield* claudeLocalSettingsFiles({ cwd: projectDirectory, home: input.claudeHome });
   const sources = [
     { source: "user", sourcePath: userSettings },
     ...(isHome
@@ -3086,10 +3090,7 @@ const readClaudeHooks = Effect.fn("providerExtensions.readClaudeHooks")(function
             source: "project",
             sourcePath: path.join(projectDirectory, ".claude", "settings.json"),
           },
-          {
-            source: "local",
-            sourcePath: path.join(projectDirectory, ".claude", "settings.local.json"),
-          },
+          ...localSettingsFiles.map((sourcePath) => ({ source: "local", sourcePath })),
         ]),
     ...input.plugins.flatMap((plugin) => {
       const installPath = optionalText(plugin.installPath);

@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -13,6 +15,7 @@ import {
 
 import {
   claudeInstanceBaseEnvironment,
+  claudeLocalSettingsFiles,
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
@@ -210,6 +213,51 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
           ),
         ).toBe("claude:config:/tmp/other-claude");
       }),
+    );
+  });
+
+  describe("claudeLocalSettingsFiles", () => {
+    it.effect.skipIf(process.platform === "win32")(
+      "reads a worktree's or subfolder's local settings from the main checkout first",
+      () =>
+        Effect.gen(function* () {
+          const dir = NodeFS.realpathSync(
+            NodeFS.mkdtempSync(`${NodeOS.tmpdir()}/claude-local-settings-`),
+          );
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+          );
+          const repo = `${dir}/repo`;
+          const git = (...args: ReadonlyArray<string>) =>
+            execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+              cwd: repo,
+              stdio: "ignore",
+            });
+          NodeFS.mkdirSync(`${repo}/packages/app`, { recursive: true });
+          NodeFS.mkdirSync(`${dir}/plain`);
+          git("init", "-q");
+          git("commit", "-q", "--allow-empty", "-m", "init");
+          git("worktree", "add", "-q", `${dir}/feature`, "-b", "feature");
+          const home = `${dir}/home`;
+          const local = (folder: string) => `${folder}/.claude/settings.local.json`;
+
+          expect(yield* claudeLocalSettingsFiles({ cwd: `${dir}/feature`, home })).toEqual([
+            local(repo),
+            local(`${dir}/feature`),
+          ]);
+          expect(yield* claudeLocalSettingsFiles({ cwd: `${repo}/packages/app`, home })).toEqual([
+            local(repo),
+            local(`${repo}/packages/app`),
+          ]);
+          expect(yield* claudeLocalSettingsFiles({ cwd: repo, home })).toEqual([local(repo)]);
+          expect(yield* claudeLocalSettingsFiles({ cwd: `${dir}/plain`, home })).toEqual([
+            local(`${dir}/plain`),
+          ]);
+          // A repository at the home folder keeps each folder's own file.
+          expect(
+            yield* claudeLocalSettingsFiles({ cwd: `${repo}/packages/app`, home: repo }),
+          ).toEqual([local(`${repo}/packages/app`)]);
+        }).pipe(Effect.scoped),
     );
   });
 });

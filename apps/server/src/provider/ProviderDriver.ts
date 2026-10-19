@@ -28,6 +28,7 @@ import type {
   ProviderInstanceEnvironment,
   ProviderInstanceId,
   ServerProviderRateLimitResetCreditOutcome,
+  ProviderUsageBreakdown,
 } from "@threadlines/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -146,7 +147,18 @@ export interface ProviderAuthTerminalCommand {
   readonly finished: (exitCode: number | null) => Effect.Effect<void>;
 }
 
+/** What used an instance's limits, as its provider reports it (see
+ *  `ProviderUsageBreakdown` in the usage contract). */
+export type ProviderUsageBreakdownReading = DistributiveOmit<ProviderUsageBreakdown, "instanceId">;
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
 export interface ProviderAccountUsageActions {
+  /**
+   * What used the instance's limits over the last day and week. Set only on
+   * an instance with its own history on this machine, so two instances
+   * reading the same transcripts don't both report them.
+   */
+  readonly readUsageBreakdown?: Effect.Effect<ProviderUsageBreakdownReading>;
   readonly consumeRateLimitResetCredit?: (input: {
     readonly idempotencyKey: string;
     readonly creditId?: string;
