@@ -1,0 +1,184 @@
+---
+import ThreadlinesGlyph from "../../components/ThreadlinesGlyph.astro";
+import Layout from "../../layouts/Layout.astro";
+import { comparisonPath, COMPARISONS } from "../../lib/comparisons";
+import { absoluteSiteUrl, ORGANIZATION_ID } from "../../lib/site";
+
+const title = "Threadlines compared with other coding agent apps";
+const otherNames = new Intl.ListFormat("en", { type: "conjunction" }).format(
+  COMPARISONS.map((comparison) => comparison.name),
+);
+const description = `How Threadlines compares with ${otherNames}, side by side. Each page is checked against the other app's own site.`;
+const formatDate = (isoDate: string) =>
+  new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(isoDate));
+
+const structuredData = [
+  {
+    "@context": "https://schema.org",
+    "@type": "CollectionPage",
+    name: title,
+    description,
+    url: absoluteSiteUrl("/compare"),
+    publisher: { "@id": ORGANIZATION_ID },
+    mainEntity: {
+      "@type": "ItemList",
+      itemListElement: COMPARISONS.map((comparison, index) => ({
+        "@type": "ListItem",
+        position: index + 1,
+        name: `Threadlines vs ${comparison.name}`,
+        url: absoluteSiteUrl(comparisonPath(comparison)),
+      })),
+    },
+  },
+];
+---
+
+<Layout
+  title={title}
+  description={description}
+  canonicalPath="/compare"
+  structuredData={structuredData}
+>
+  <section class="compare-index">
+    <div class="container compare-index-wrap">
+      <header class="compare-index-header">
+        <p class="eyebrow">Compare</p>
+        <h1 class="display">Threadlines, side by side</h1>
+        <p>
+          How Threadlines stacks up against other apps for running coding agents, including where
+          they're ahead. We check every page against the other app's own site.
+        </p>
+      </header>
+
+      <ul class="compare-grid">
+        {
+          COMPARISONS.map((comparison) => (
+            <li>
+              <a class="tile compare-tile" href={comparisonPath(comparison)}>
+                <span class="compare-tile-lockup">
+                  <ThreadlinesGlyph class="compare-tile-glyph" />
+                  <span class="compare-tile-vs">vs</span>
+                  <span class="compare-tile-name">{comparison.name}</span>
+                </span>
+                <span class="compare-tile-summary">{comparison.summary}</span>
+                <span class="compare-tile-checked">Checked {formatDate(comparison.checkedOn)}</span>
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+
+      <p class="compare-index-agents">
+        Looking for a specific agent? See <a href="/agents">every agent Threadlines runs</a>.
+      </p>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .compare-index {
+    padding: 72px 0 96px;
+  }
+
+  .compare-index-wrap {
+    max-width: 960px;
+  }
+
+  .compare-index-header {
+    max-width: 680px;
+    margin-bottom: 32px;
+  }
+
+  .compare-index-header h1 {
+    margin: 12px 0 14px;
+    font-size: clamp(30px, 5vw, 40px);
+  }
+
+  .compare-index-header > p:last-child {
+    color: var(--fg-muted);
+    font-size: 16px;
+    line-height: 1.6;
+    text-wrap: pretty;
+  }
+
+  .compare-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    list-style: none;
+  }
+
+  .compare-tile {
+    display: grid;
+    align-content: start;
+    gap: 10px;
+  }
+
+  .compare-tile-lockup {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .compare-tile :global(.compare-tile-glyph) {
+    width: auto;
+    height: 16px;
+  }
+
+  .compare-tile-vs {
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .compare-tile-name {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  .compare-tile-summary {
+    color: var(--fg-muted);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .compare-tile-checked {
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .compare-index-agents {
+    margin-top: 22px;
+    color: var(--fg-dim);
+    font-size: 14px;
+  }
+
+  .compare-index-agents a {
+    color: var(--fg-muted);
+    text-decoration: underline;
+    text-decoration-color: var(--underline);
+    text-underline-offset: 3px;
+    transition: color 0.2s ease;
+  }
+
+  .compare-index-agents a:hover {
+    color: var(--fg);
+  }
+
+  @media (max-width: 620px) {
+    .compare-index {
+      padding: 56px 0 80px;
+    }
+
+    .compare-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

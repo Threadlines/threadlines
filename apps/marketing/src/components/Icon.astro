@@ -1,0 +1,27 @@
+---
+import { ICONS, type IconName } from "../lib/icons";
+
+/** A decorative line icon from lib/icons.ts. It takes its color from the text and its size from the parent's font size, unless `size` is set. */
+interface Props {
+  name: IconName;
+  size?: number;
+  class?: string;
+}
+
+const { name, size, class: className } = Astro.props;
+const dimension = size ?? "1em";
+---
+
+<svg
+  class={className}
+  width={dimension}
+  height={dimension}
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="1.75"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  aria-hidden="true"
+  set:html={ICONS[name]}
+/>

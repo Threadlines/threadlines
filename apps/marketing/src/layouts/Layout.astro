@@ -1,5 +1,7 @@
 ---
 import Analytics from "@vercel/analytics/astro";
+
+import ThreadlinesGlyph from "../components/ThreadlinesGlyph.astro";
 import {
   absoluteSiteUrl,
   DEFAULT_SITE_DESCRIPTION,
@@ -114,34 +116,7 @@ const siteStructuredData = {
       <nav class="nav">
         <div class="nav-inner">
           <a href="/" class="nav-brand" aria-label="Threadlines home">
-            <svg class="nav-brand-glyph" viewBox="36 86 184 100" fill="none" aria-hidden="true">
-              <defs>
-                <linearGradient
-                  id="nav-glyph-live"
-                  gradientUnits="userSpaceOnUse"
-                  x1="108"
-                  y1="98"
-                  x2="194"
-                  y2="162"
-                >
-                  <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.45"></stop>
-                  <stop offset="1" stop-color="var(--accent-bright)"></stop>
-                </linearGradient>
-              </defs>
-              <g stroke-linecap="round" stroke-width="10">
-                <path d="M 44 98 L 212 98" stroke="var(--line-strong)"></path>
-                <path
-                  d="M 108 98 C 134 98 134 162 160 162 L 188 162"
-                  stroke="url(#nav-glyph-live)"></path>
-              </g>
-              <g fill="var(--node-strong)">
-                <circle cx="70" cy="98" r="7"></circle>
-                <circle cx="108" cy="98" r="8.5"></circle>
-                <circle cx="178" cy="98" r="7"></circle>
-              </g>
-              <circle cx="194" cy="162" r="21" fill="var(--accent-bright)" opacity="0.16"></circle>
-              <circle cx="194" cy="162" r="12.5" fill="var(--accent-bright)"></circle>
-            </svg>
+            <ThreadlinesGlyph class="nav-brand-glyph" />
             <span class="nav-brand-name">Threadlines</span>
           </a>
           <div class="nav-right">
@@ -190,6 +165,7 @@ const siteStructuredData = {
           </div>
           <div class="footer-links">
             <a href="/agents">Agents</a>
+            <a href="/compare">Compare</a>
             <a href="/changelog">Changelog</a>
             <a href="https://github.com/Threadlines/threadlines" target="_blank" rel="noopener noreferrer">GitHub</a>
             <a href="https://github.com/sponsors/Threadlines" target="_blank" rel="noopener noreferrer">Sponsor</a>
@@ -350,6 +326,24 @@ const siteStructuredData = {
     padding: 0 32px;
   }
 
+  /* A clickable tile: the only card the site uses. Hover shifts color only. */
+  .tile {
+    display: block;
+    height: 100%;
+    padding: 18px 18px 20px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    transition:
+      border-color 0.2s ease,
+      background 0.2s ease;
+  }
+
+  .tile:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-hover);
+  }
+
   :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
@@ -442,7 +436,7 @@ const siteStructuredData = {
   }
 
   /* The glyph's accent node stands in for the wordmark's period — never both. */
-  .nav-brand-glyph {
+  .nav-brand :global(.nav-brand-glyph) {
     height: 15px;
     width: auto;
     display: block;

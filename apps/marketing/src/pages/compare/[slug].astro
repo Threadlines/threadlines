@@ -1,0 +1,526 @@
+---
+import Faq from "../../components/Faq.astro";
+import Icon from "../../components/Icon.astro";
+import ThreadlinesGlyph from "../../components/ThreadlinesGlyph.astro";
+import Layout from "../../layouts/Layout.astro";
+import {
+  comparisonPath,
+  COMPARISONS,
+  type Comparison,
+  type ComparisonCell,
+  type ComparisonMark,
+} from "../../lib/comparisons";
+import type { IconName } from "../../lib/icons";
+import { absoluteSiteUrl, APPLICATION_ID, ORGANIZATION_ID, SITE_GITHUB_URL } from "../../lib/site";
+
+export function getStaticPaths() {
+  return COMPARISONS.map((comparison) => ({
+    params: { slug: comparison.slug },
+    props: { comparison },
+  }));
+}
+
+interface Props {
+  comparison: Comparison;
+}
+
+const { comparison } = Astro.props;
+const canonicalPath = comparisonPath(comparison);
+const others = COMPARISONS.filter((other) => other.slug !== comparison.slug);
+const checkedOn = new Intl.DateTimeFormat("en-US", {
+  month: "long",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+}).format(new Date(comparison.checkedOn));
+
+const markIcon: Record<ComparisonMark, IconName> = { yes: "check", partial: "partial", no: "minus" };
+const markLabel: Record<ComparisonMark, string> = { yes: "Yes", partial: "Partly", no: "No" };
+const cells = (row: Comparison["rows"][number]): ComparisonCell[] => [row.threadlines, row.other];
+
+const structuredData = [
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: comparison.title,
+    description: comparison.description,
+    url: absoluteSiteUrl(canonicalPath),
+    dateModified: comparison.checkedOn,
+    about: { "@id": APPLICATION_ID, "@type": "SoftwareApplication", name: "Threadlines" },
+    mentions: {
+      "@type": "SoftwareApplication",
+      name: comparison.name,
+      creator: { "@type": "Organization", name: comparison.maker },
+    },
+    publisher: { "@id": ORGANIZATION_ID },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Compare", item: absoluteSiteUrl("/compare") },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: `Threadlines vs ${comparison.name}`,
+        item: absoluteSiteUrl(canonicalPath),
+      },
+    ],
+  },
+];
+---
+
+<Layout
+  title={comparison.title}
+  description={comparison.description}
+  canonicalPath={canonicalPath}
+  structuredData={structuredData}
+>
+  <article class="compare">
+    <div class="container compare-wrap">
+      <a class="back-link" href="/compare"><span aria-hidden="true">←</span> All comparisons</a>
+
+      <header class="compare-header">
+        <p class="compare-lockup">
+          <ThreadlinesGlyph class="compare-lockup-glyph" />
+          <span>Threadlines</span>
+          <span class="compare-lockup-vs">vs</span>
+          <span>{comparison.name}</span>
+        </p>
+        <h1 class="display">{comparison.headline}</h1>
+        <p class="compare-intro">{comparison.intro}</p>
+        <div class="compare-actions">
+          <a class="primary-action" href="/download">
+            <Icon name="download" /> Download Threadlines
+          </a>
+          <a href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer">
+            View the source on GitHub <span aria-hidden="true">↗</span>
+          </a>
+        </div>
+      </header>
+
+      <section class="compare-section">
+        <div class="compare-table-wrap">
+          <table class="compare-table">
+            <thead>
+              <tr>
+                <th scope="col"><span class="visually-hidden">Feature</span></th>
+                <th scope="col">
+                  <span class="compare-column-brand">
+                    <ThreadlinesGlyph class="compare-column-glyph" />
+                    Threadlines
+                  </span>
+                </th>
+                <th scope="col">{comparison.name}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {
+                comparison.rows.map((row) => (
+                  <tr>
+                    <th scope="row">
+                      <span class="compare-label">
+                        <Icon name={row.icon} class="compare-label-icon" />
+                        {row.label}
+                      </span>
+                    </th>
+                    {cells(row).map((cell) => (
+                      <td>
+                        <span class="compare-cell">
+                          {cell.mark && (
+                            <span class={`compare-mark compare-mark-${cell.mark}`}>
+                              <Icon name={markIcon[cell.mark]} />
+                              <span class="visually-hidden">{markLabel[cell.mark]}:</span>
+                            </span>
+                          )}
+                          <span>{cell.text}</span>
+                        </span>
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="compare-section compare-picks">
+        <div>
+          <h2>Pick Threadlines if</h2>
+          <ul>
+            {
+              comparison.pickThreadlines.map((reason) => (
+                <li>
+                  <Icon name="check" class="compare-pick-icon" />
+                  {reason}
+                </li>
+              ))
+            }
+          </ul>
+        </div>
+        <div>
+          <h2>Pick {comparison.name} if</h2>
+          <ul>
+            {
+              comparison.pickOther.map((reason) => (
+                <li>
+                  <Icon name="check" class="compare-pick-icon compare-pick-icon-other" />
+                  {reason}
+                </li>
+              ))
+            }
+          </ul>
+        </div>
+      </section>
+
+      <figure class="compare-shot">
+        <img
+          src="/Screenshots/rooms/rooms.webp"
+          alt="A Threadlines thread where two agents from different companies work on the same bug"
+          width="1600"
+          height="934"
+          loading="lazy"
+          decoding="async"
+        />
+        <figcaption>Two agents in one Threadlines thread, tracking down the same bug.</figcaption>
+      </figure>
+
+      <section class="compare-section">
+        <h2>Questions</h2>
+        <Faq items={comparison.faq} />
+      </section>
+
+      <section class="compare-section compare-sources">
+        <p>
+          We checked these facts about {comparison.name} on {checkedOn}, against{" "}
+          {
+            comparison.sources.map((source, index) => (
+              <>
+                {index > 0 && (index === comparison.sources.length - 1 ? " and " : ", ")}
+                <a href={source.url} target="_blank" rel="noopener noreferrer">
+                  {source.label}
+                </a>
+              </>
+            ))
+          }
+          . Something out of date?{" "}
+          <a href={`${SITE_GITHUB_URL}/issues`} target="_blank" rel="noopener noreferrer">
+            Open an issue
+          </a>{" "}
+          and we'll fix it.
+        </p>
+        <p>
+          See every <a href="/agents">agent Threadlines runs</a>
+          {
+            others.map((other) => (
+              <>
+                {", or "}
+                <a href={comparisonPath(other)}>Threadlines vs {other.name}</a>
+              </>
+            ))
+          }
+          .
+        </p>
+        <p class="compare-disclaimer">
+          {comparison.name} is made by {comparison.maker}. Threadlines is an independent open-source
+          project and isn't affiliated with or endorsed by {comparison.maker}.
+        </p>
+      </section>
+    </div>
+  </article>
+</Layout>
+
+<style>
+  .compare {
+    padding: 40px 0 96px;
+  }
+
+  .compare-wrap {
+    max-width: 960px;
+  }
+
+  .back-link {
+    display: inline-flex;
+    gap: 8px;
+    color: var(--fg-dim);
+    font-size: 14px;
+    transition: color 0.2s ease;
+  }
+
+  .back-link:hover {
+    color: var(--fg);
+  }
+
+  .compare-header {
+    padding: 28px 0 30px;
+  }
+
+  .compare-lockup {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--fg);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .compare-lockup :global(.compare-lockup-glyph) {
+    width: auto;
+    height: 18px;
+  }
+
+  .compare-lockup-vs {
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .compare-column-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .compare-table :global(.compare-column-glyph) {
+    width: auto;
+    height: 12px;
+  }
+
+  .compare-header h1 {
+    max-width: 780px;
+    margin: 12px 0 10px;
+    font-size: clamp(28px, 4.5vw, 40px);
+    text-wrap: balance;
+  }
+
+  .compare-intro {
+    max-width: 620px;
+    color: var(--fg-muted);
+    font-size: 16px;
+    line-height: 1.6;
+    text-wrap: pretty;
+  }
+
+  .compare-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px 24px;
+    margin-top: 22px;
+  }
+
+  .compare-actions a {
+    color: var(--fg-muted);
+    font-size: 14px;
+    transition: color 0.2s ease;
+  }
+
+  .compare-actions a:hover {
+    color: var(--fg);
+  }
+
+  .compare-actions .primary-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: var(--accent-bright);
+    color: var(--accent-contrast);
+    font-weight: 600;
+  }
+
+  .compare-actions .primary-action:hover {
+    color: var(--accent-contrast);
+  }
+
+  .compare-section {
+    padding: 26px 0 28px;
+    border-top: 1px solid var(--border);
+  }
+
+  .compare-section h2 {
+    margin-bottom: 14px;
+    font-size: 19px;
+    letter-spacing: -0.015em;
+  }
+
+  .compare-table-wrap {
+    overflow-x: auto;
+  }
+
+  .compare-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+
+  .compare-table th,
+  .compare-table td {
+    padding: 11px 14px 11px 0;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .compare-table thead th {
+    padding-top: 0;
+    color: var(--fg);
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .compare-table tbody th {
+    width: 28%;
+    color: var(--fg-muted);
+    font-weight: 500;
+  }
+
+  .compare-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .compare-table :global(.compare-label-icon) {
+    flex: none;
+    color: var(--fg-dim);
+    font-size: 17px;
+  }
+
+  .compare-table td {
+    width: 36%;
+    color: var(--fg-muted);
+  }
+
+  .compare-cell {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .compare-mark {
+    display: inline-flex;
+    flex: none;
+    margin-top: 1px;
+    font-size: 16px;
+  }
+
+  .compare-mark-yes {
+    color: var(--ok);
+  }
+
+  .compare-mark-partial {
+    color: var(--warn);
+  }
+
+  .compare-mark-no {
+    color: var(--fg-faint);
+  }
+
+  .compare-table tbody tr:last-child th,
+  .compare-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .compare-picks {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 32px;
+  }
+
+  .compare-picks ul {
+    display: grid;
+    gap: 10px;
+    list-style: none;
+  }
+
+  .compare-picks li {
+    display: flex;
+    gap: 10px;
+    color: var(--fg-muted);
+    font-size: 15px;
+    line-height: 1.45;
+  }
+
+  .compare-picks :global(.compare-pick-icon) {
+    flex: none;
+    margin-top: 2px;
+    color: var(--accent-bright);
+    font-size: 17px;
+  }
+
+  .compare-picks :global(.compare-pick-icon-other) {
+    color: var(--fg-dim);
+  }
+
+  .compare-shot {
+    margin: 0 0 28px;
+  }
+
+  .compare-shot img {
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+  }
+
+  .compare-shot figcaption {
+    margin-top: 8px;
+    color: var(--fg-dim);
+    font-size: 13px;
+  }
+
+  .compare-sources {
+    display: grid;
+    gap: 10px;
+    color: var(--fg-dim);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .compare-sources a {
+    color: var(--fg-muted);
+    text-decoration: underline;
+    text-decoration-color: var(--underline);
+    text-underline-offset: 3px;
+    transition: color 0.2s ease;
+  }
+
+  .compare-sources a:hover {
+    color: var(--fg);
+  }
+
+  @media (max-width: 620px) {
+    .compare {
+      padding: 36px 0 80px;
+    }
+
+    .compare-picks {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 22px;
+    }
+
+    .compare-table tbody th {
+      width: 30%;
+    }
+
+    .compare-table :global(.compare-label-icon) {
+      display: none;
+    }
+  }
+</style>

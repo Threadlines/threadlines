@@ -3,6 +3,7 @@ import { getCollection } from "astro:content";
 
 import { agentPath, AGENTS } from "../lib/agents";
 import { changelogEntryPath } from "../lib/changelog";
+import { comparisonPath, COMPARISONS } from "../lib/comparisons";
 import { absoluteSiteUrl } from "../lib/site";
 
 function escapeXml(value: string): string {
@@ -28,6 +29,10 @@ export const GET: APIRoute = async () => {
     urlEntry("/download"),
     urlEntry("/agents"),
     ...AGENTS.map((agent) => urlEntry(agentPath(agent))),
+    urlEntry("/compare"),
+    ...COMPARISONS.map((comparison) =>
+      urlEntry(comparisonPath(comparison), new Date(comparison.checkedOn)),
+    ),
     urlEntry("/changelog"),
     ...changelogEntries.map((entry) => urlEntry(changelogEntryPath(entry), entry.data.date)),
   ];
