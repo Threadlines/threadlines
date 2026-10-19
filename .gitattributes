@@ -1,2 +1,7 @@
 # git autocrlf=true converts LF to CRLF on Windows, causing issues with oxfmt
 * text=auto eol=lf
+
+# Read-only Effect source for agents (scripts/sync-effect-source.ts). Kept
+# byte-for-byte so its CI check hashes the same on every platform, and marked
+# vendored so it stays out of language stats and collapses in diffs.
+.repos/** -text linguist-vendored linguist-generated
