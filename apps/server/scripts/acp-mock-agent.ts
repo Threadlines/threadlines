@@ -25,6 +25,10 @@ const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const authRequiredOnSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "auth";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+/** Ends every prompt with this stop reason and no reply, as a refusing model does. */
+const silentPromptStopReason = process.env.T3_ACP_SILENT_PROMPT_STOP_REASON;
+/** fx's retry notice, sent before that silent stop. */
+const silentPromptStatus = process.env.T3_ACP_SILENT_PROMPT_STATUS;
 // An agent that lists sign-in methods and refuses a session until signed in.
 // "1": signing in never helps. "until-authenticated": it does, for the life
 // of the process, so a start that authenticates first gets a session; this
@@ -396,6 +400,19 @@ const program = Effect.gen(function* () {
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
+
+      if (silentPromptStopReason) {
+        if (silentPromptStatus) {
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "session_info_update",
+              _meta: { fx: { modelResponseRecovery: { message: silentPromptStatus } } },
+            },
+          });
+        }
+        return { stopReason: silentPromptStopReason as "refusal" };
+      }
 
       if (emitConfigOptionUpdate) {
         yield* agent.client.sessionUpdate({

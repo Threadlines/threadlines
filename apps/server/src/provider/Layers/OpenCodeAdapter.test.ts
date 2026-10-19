@@ -244,6 +244,29 @@ describe("OpenCodeAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.live("names a failed run by OpenCode's error type", () =>
+    Effect.gen(function* () {
+      const { adapter, send, next, threadId, cwd } = yield* harness;
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        messageId: MessageId.make("m1"),
+        input: "go",
+      });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* send("session.inbox.delivered", { sessionID: ROOT, inboxID: "msg_tl_m1" });
+      yield* send("session.execution.failed", {
+        sessionID: ROOT,
+        error: { type: "provider.rate-limit", message: "Too many requests, slow down." },
+      });
+      const completed = yield* next((event) => event.type === "turn.completed");
+      expect(completed).toMatchObject({
+        turnId: turn.turnId,
+        payload: { state: "failed", failureCategory: "rate_limit" },
+      });
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.live("files a subagent's work under the agent, linked to its spawning call", () =>
     Effect.gen(function* () {
       const { adapter, calls, send, next, threadId, cwd } = yield* harness;

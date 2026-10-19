@@ -325,6 +325,57 @@ nativeControlsAdapterTestLayer("an agent driven through its own controls", (it) 
     }),
   );
 
+  it.effect(
+    "fails a refusal with no reply as a refusal, unless a retry notice came before it",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* NativeControlsAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const silentRefusalCategory = (env: Record<string, string>, threadId: ThreadId) =>
+          Effect.gen(function* () {
+            const wrapperPath = yield* Effect.promise(() =>
+              makeMockAgentWrapper({ T3_ACP_SILENT_PROMPT_STOP_REASON: "refusal", ...env }),
+            );
+            yield* serverSettings.updateSettings({
+              providers: { cursor: { binaryPath: wrapperPath } },
+            });
+            const turnCompletedFiber = yield* Stream.filter(
+              adapter.streamEvents,
+              (event) =>
+                String(event.threadId) === String(threadId) && event.type === "turn.completed",
+            ).pipe(Stream.runHead, Effect.forkChild);
+            yield* adapter.startSession({
+              threadId,
+              provider: ProviderDriverKind.make("cursor"),
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+            });
+            yield* adapter.sendTurn({ threadId, input: "do the thing", attachments: [] });
+            const turnCompleted = yield* Fiber.join(turnCompletedFiber);
+            assert.equal(turnCompleted._tag, "Some");
+            if (turnCompleted._tag !== "Some" || turnCompleted.value.type !== "turn.completed") {
+              return undefined;
+            }
+            assert.equal(turnCompleted.value.payload.state, "failed");
+            return turnCompleted.value.payload.failureCategory;
+          });
+
+        assert.equal(
+          yield* silentRefusalCategory({}, ThreadId.make("native-controls-silent-refusal")),
+          "refusal",
+        );
+        // An exhausted rate-limit retry ends the same way; its notice is in the
+        // message, so the wording decides.
+        assert.equal(
+          yield* silentRefusalCategory(
+            { T3_ACP_SILENT_PROMPT_STATUS: "Rate limited, retrying (3/3)" },
+            ThreadId.make("native-controls-silent-refusal-after-retry"),
+          ),
+          undefined,
+        );
+      }),
+  );
+
   it.effect("tells its driver when a model change is refused until sign-in", () =>
     Effect.gen(function* () {
       const adapter = yield* NativeControlsAdapter;

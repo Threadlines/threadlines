@@ -15,6 +15,7 @@ import {
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
+  type SDKAssistantMessageError,
   type SDKControlGetContextUsageResponse,
   type SDKMessage,
   type SDKRateLimitInfo,
@@ -44,6 +45,7 @@ import {
   type OrchestrationBackgroundTaskKind,
   type ProviderApprovalDecision,
   ProviderDriverKind,
+  type ProviderFailureCategory,
   ProviderInstanceId,
   type ProviderInteractionMode,
   ProviderItemId,
@@ -97,6 +99,7 @@ import {
   THREADLINES_CLAUDE_MCP_SERVER_NAME,
 } from "../claudeLongRunningTool.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
+import { httpStatusFailureCategory, withFailureCategory } from "../providerFailureCategory.ts";
 import {
   buildAgentPageInstructions,
   CLAUDE_ARTIFACT_ENVIRONMENT,
@@ -383,6 +386,8 @@ interface ClaudeTurnState {
   /** The service's error text, while the turn's newest message is the note
    *  the CLI writes in place of a reply when an API request fails. */
   apiErrorText?: string | undefined;
+  /** What kind of API error that note reports, alongside `apiErrorText`. */
+  apiErrorKind?: SDKAssistantMessageError | undefined;
 }
 
 /** A thinking block as a reasoning item. With summaries on, Claude streams a
@@ -1211,6 +1216,71 @@ function resultDisplayError(
     );
   }
   return result.errors.find((error) => !error.startsWith("[ede_diagnostic]"));
+}
+
+/** The failure category of Claude's API error kinds; `unknown` names none. */
+function claudeApiErrorCategory(
+  kind: SDKAssistantMessageError | undefined,
+): ProviderFailureCategory | undefined {
+  switch (kind) {
+    case "authentication_failed":
+    case "oauth_org_not_allowed":
+    case "account_on_hold":
+    case "verification_required":
+    case "cloud_credential_error":
+      return "auth";
+    case "billing_error":
+    case "rate_limit":
+      return "rate_limit";
+    case "overloaded":
+      return "overloaded";
+    case "invalid_request":
+      return "validation";
+    case "model_not_found":
+      return "model_unavailable";
+    case "server_error":
+      return "server_error";
+    case "max_output_tokens":
+      return "execution_limit";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Why a Claude turn failed, from the structured parts of its end: the kind of
+ * API error the CLI noted, the result's terminal reason and subtype, then the
+ * HTTP status of the request that failed.
+ */
+export function claudeFailureCategory(
+  result: SDKResultMessage | undefined,
+  apiErrorKind: SDKAssistantMessageError | undefined,
+): ProviderFailureCategory | undefined {
+  const fromApiError = claudeApiErrorCategory(apiErrorKind);
+  if (fromApiError) return fromApiError;
+  if (!result) return undefined;
+  switch (result.terminal_reason) {
+    case "prompt_too_long":
+      return "context_length";
+    case "max_turns":
+    case "budget_exhausted":
+    case "structured_output_retry_exhausted":
+      return "execution_limit";
+    case "image_error":
+      return "validation";
+    default:
+      break;
+  }
+  if (
+    result.subtype === "error_max_turns" ||
+    result.subtype === "error_max_budget_usd" ||
+    result.subtype === "error_max_structured_output_retries"
+  ) {
+    return "execution_limit";
+  }
+  return result.subtype === "success"
+    ? httpStatusFailureCategory(result.api_error_status)
+    : undefined;
 }
 
 function asRuntimeItemId(value: string): RuntimeItemId {
@@ -4242,6 +4312,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
     message: string,
     cause?: unknown,
+    failureCategory?: ProviderFailureCategory,
   ) {
     if (cause !== undefined) {
       void cause;
@@ -4268,6 +4339,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       payload: {
         message: providerMessage,
         class: isAuthenticationError ? "authentication_error" : "provider_error",
+        ...withFailureCategory(failureCategory),
         ...(cause !== undefined ? { detail: cause } : {}),
       },
       providerRefs: nativeProviderRefs(context),
@@ -4350,6 +4422,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     status: ProviderRuntimeTurnStatus,
     errorMessage?: string,
     result?: SDKResultMessage,
+    failureCategory?: ProviderFailureCategory,
   ) {
     const turnState = context.turnState;
     // A context message's own result always comes before its turn's; one
@@ -4393,6 +4466,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ? { totalCostUsd: result.total_cost_usd }
             : {}),
           ...(providerErrorMessage ? { errorMessage: providerErrorMessage } : {}),
+          ...withFailureCategory(failureCategory),
         },
         providerRefs: {},
       });
@@ -4478,6 +4552,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ? { totalCostUsd: result.total_cost_usd }
           : {}),
         ...(providerErrorMessage ? { errorMessage: providerErrorMessage } : {}),
+        ...withFailureCategory(failureCategory),
       },
       providerRefs: nativeProviderRefs(context),
     });
@@ -4635,6 +4710,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     yield* ensureSyntheticTurn(context);
+    // Claude is streaming again, so an API error it noted earlier no longer
+    // says why this turn might end.
+    if (context.turnState && message.parent_tool_use_id === null) {
+      context.turnState.apiErrorKind = undefined;
+    }
 
     const { event } = message;
 
@@ -6252,9 +6332,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         context.turnState.apiErrorText = boundedApiErrorText(
           extractAssistantTextBlocks(message).join("\n"),
         );
+        context.turnState.apiErrorKind = message.error;
       } else {
         // Claude carried on, so an earlier API error did not end the turn.
         context.turnState.apiErrorText = undefined;
+        context.turnState.apiErrorKind = undefined;
         yield* backfillAssistantTextBlocksFromSnapshot(context, message);
       }
     }
@@ -6294,11 +6376,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const status = turnStatusFromResult(message);
     const errorMessage = resultDisplayError(message, context.turnState?.apiErrorText);
 
+    const failureCategory =
+      status === "failed"
+        ? claudeFailureCategory(message, context.turnState?.apiErrorKind)
+        : undefined;
     if (status === "failed") {
-      yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
+      yield* emitRuntimeError(
+        context,
+        errorMessage ?? "Claude turn failed.",
+        undefined,
+        failureCategory,
+      );
     }
 
-    yield* completeTurn(context, status, errorMessage, message);
+    yield* completeTurn(context, status, errorMessage, message, failureCategory);
     // A goal's verdict lands as the turn ends; read it now rather than at the
     // watch's next beat.
     if (goalInPlay(context)) {
@@ -7520,8 +7611,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // reports it. The error is why the turn ended, so it must not be lost.
       const apiErrorText = context.turnState.apiErrorText;
       if (apiErrorText) {
-        yield* emitRuntimeError(context, apiErrorText);
-        yield* completeTurn(context, "failed", apiErrorText);
+        const failureCategory = claudeFailureCategory(undefined, context.turnState.apiErrorKind);
+        yield* emitRuntimeError(context, apiErrorText, undefined, failureCategory);
+        yield* completeTurn(context, "failed", apiErrorText, undefined, failureCategory);
       } else {
         yield* completeTurn(context, "interrupted", "Claude runtime stream ended.");
       }

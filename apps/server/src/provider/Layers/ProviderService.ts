@@ -385,6 +385,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               provider: event.provider,
             }),
             failureCategory: classifyProviderFailure({
+              category: event.payload.failureCategory,
               message: event.payload.errorMessage,
               reason: event.payload.stopReason ?? undefined,
             }),
@@ -404,6 +405,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               provider: event.provider,
             }),
             failureCategory: classifyProviderFailure({
+              category: event.payload.failureCategory,
               errorClass: event.payload.class,
               message: event.payload.message,
             }),

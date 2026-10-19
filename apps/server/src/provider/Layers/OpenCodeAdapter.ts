@@ -33,6 +33,7 @@ import {
   EventId,
   type OpenCodeSettings,
   type ProviderApprovalDecision,
+  type ProviderFailureCategory,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
@@ -46,6 +47,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { withFailureCategory } from "../providerFailureCategory.ts";
 import {
   MANAGED_WORKTREE_INSTRUCTION,
   renderThreadContextSeed,
@@ -346,6 +348,39 @@ function usedContextTokens(tokens: OpenCodeTokens): number {
       tokens.input + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0) + tokens.output,
     ),
   );
+}
+
+/**
+ * The failure category OpenCode's error type names (the `type` of its
+ * structured error, as in 2.0's `provider.rate-limit`). Types not listed leave
+ * it unset.
+ */
+export function openCodeFailureCategory(
+  type: string | undefined,
+): ProviderFailureCategory | undefined {
+  switch (type) {
+    case "provider.rate-limit":
+    case "provider.quota":
+      return "rate_limit";
+    case "provider.auth":
+      return "auth";
+    case "provider.content-filter":
+      return "refusal";
+    case "provider.transport":
+    case "provider.timeout":
+      return "network";
+    case "provider.internal":
+      return "server_error";
+    case "provider.invalid-request":
+    case "provider.unsupported-operation":
+      return "validation";
+    case "provider.no-route":
+      return "model_unavailable";
+    case "permission.rejected":
+      return "permission";
+    default:
+      return undefined;
+  }
 }
 
 function failureMessage(terminal: Extract<Terminal, { kind: "failed" }>): string {
@@ -971,7 +1006,11 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             terminal.kind === "succeeded"
               ? { state: "completed" }
               : terminal.kind === "failed"
-                ? { state: "failed", errorMessage: failureMessage(terminal) }
+                ? {
+                    state: "failed",
+                    errorMessage: failureMessage(terminal),
+                    ...withFailureCategory(openCodeFailureCategory(terminal.type)),
+                  }
                 : stopped || terminal.reason === "superseded"
                   ? { state: "interrupted", stopReason: terminal.reason ?? "user" }
                   : {

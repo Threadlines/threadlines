@@ -145,6 +145,17 @@ describe("AnalyticsProperties", () => {
       classifyProviderFailure({ message: "Context window exceeded for this request" }),
       "context_length",
     );
+    // The agent's own code beats both the error class and the wording.
+    assert.strictEqual(
+      classifyProviderFailure({
+        category: "context_length",
+        errorClass: "authentication_error",
+        message: "Please sign in again",
+      }),
+      "context_length",
+    );
+    // A stop reason alone still names the failure.
+    assert.strictEqual(classifyProviderFailure({ reason: "rate_limit" }), "rate_limit");
   });
 
   it("categorizes the failures providers actually report", () => {
@@ -182,6 +193,21 @@ describe("AnalyticsProperties", () => {
         "missing_directory",
       ],
       ["Error: spawn /usr/local/bin/claude ENOENT", "not_installed"],
+      ["You've hit your session limit · resets 1:50am (America/New_York)", "rate_limit"],
+      ["Credit balance is too low", "rate_limit"],
+      ["prompt is too long: 214000 tokens > 200000 maximum", "context_length"],
+      [
+        "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+        "network",
+      ],
+      ["unexpected status 500 Internal Server Error", "server_error"],
+      ['unexpected status 400 Bad Request: {"detail":"Unsupported parameter"}', "validation"],
+      ["The model refused to answer this request.", "refusal"],
+      // A refused connection is a network fault, not a model refusing.
+      ["connection refused by the proxy", "network"],
+      // A generic internal error defers to the cause it wraps.
+      ["Internal error: connection refused", "network"],
+      ["Internal error: spawn /usr/local/bin/claude ENOENT", "not_installed"],
     ] as const;
     for (const [message, category] of cases) {
       assert.strictEqual(

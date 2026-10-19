@@ -116,6 +116,32 @@ const RuntimeErrorClass = Schema.Literals([
 ]);
 export type RuntimeErrorClass = typeof RuntimeErrorClass.Type;
 
+/**
+ * Why a turn or a runtime failed, read by the driver from the agent's own
+ * structured error code (Codex's `codexErrorInfo`, Claude's API error kind,
+ * OpenCode's error type), never guessed from the message. Unset when the
+ * agent gave no code, or one the driver does not know.
+ *
+ * - `rate_limit`: a usage limit, quota, rate limit or exhausted credits.
+ * - `execution_limit`: the run hit a cap on its own size or cost (output
+ *   tokens, turns, a token or dollar budget).
+ * - `server_error`: the service failed internally (not overloaded).
+ */
+export const ProviderFailureCategory = Schema.Literals([
+  "auth",
+  "rate_limit",
+  "context_length",
+  "execution_limit",
+  "overloaded",
+  "server_error",
+  "model_unavailable",
+  "network",
+  "permission",
+  "validation",
+  "refusal",
+]);
+export type ProviderFailureCategory = typeof ProviderFailureCategory.Type;
+
 export const TOOL_LIFECYCLE_ITEM_TYPES = [
   "command_execution",
   "file_change",
@@ -549,6 +575,7 @@ const TurnCompletedPayload = Schema.Struct({
   modelUsage: Schema.optional(UnknownRecordSchema),
   totalCostUsd: Schema.optional(Schema.Number),
   errorMessage: Schema.optional(TrimmedNonEmptyStringSchema),
+  failureCategory: Schema.optional(ProviderFailureCategory),
 });
 export type TurnCompletedPayload = typeof TurnCompletedPayload.Type;
 
@@ -957,6 +984,7 @@ export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 const RuntimeErrorPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   class: Schema.optional(RuntimeErrorClass),
+  failureCategory: Schema.optional(ProviderFailureCategory),
   detail: Schema.optional(Schema.Unknown),
 });
 export type RuntimeErrorPayload = typeof RuntimeErrorPayload.Type;

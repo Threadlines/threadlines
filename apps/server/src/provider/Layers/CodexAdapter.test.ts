@@ -56,7 +56,11 @@ import {
   type CodexThreadGoal,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
-import { describeCodexTerminalInput, makeCodexAdapter } from "./CodexAdapter.ts";
+import {
+  codexFailureCategory,
+  describeCodexTerminalInput,
+  makeCodexAdapter,
+} from "./CodexAdapter.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
@@ -2080,6 +2084,92 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         return;
       }
       assert.equal(firstEvent.value.payload.class, "authentication_error");
+    }),
+  );
+
+  it.effect("names the failure from Codex's own error code", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 3)).pipe(
+        Effect.forkChild,
+      );
+
+      // A dropped stream whose upstream answered 429 is a rate limit, not a
+      // network fault, and the message alone says neither.
+      yield* runtime.emit({
+        id: asEventId("evt-coded-error"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "error",
+        turnId: asTurnId("turn-1"),
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          error: {
+            message: "stream disconnected before completion",
+            codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 429 } },
+          },
+          willRetry: false,
+        },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        id: asEventId("evt-coded-turn-failure"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        method: "turn/completed",
+        turnId: asTurnId("turn-1"),
+        payload: {
+          threadId: "thread-1",
+          turn: {
+            id: "turn-1",
+            items: [],
+            status: "failed",
+            error: { message: "Codex ran out of room", codexErrorInfo: "contextWindowExceeded" },
+          },
+        },
+      } satisfies ProviderEvent);
+
+      // An interrupted turn can carry an error as well; it did not fail.
+      yield* runtime.emit({
+        id: asEventId("evt-coded-turn-interrupt"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+        method: "turn/completed",
+        turnId: asTurnId("turn-2"),
+        payload: {
+          threadId: "thread-1",
+          turn: {
+            id: "turn-2",
+            items: [],
+            status: "interrupted",
+            error: { message: "Stopped", codexErrorInfo: "usageLimitExceeded" },
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const [runtimeError, turnCompleted, turnInterrupted] = yield* Fiber.join(eventsFiber);
+      assert.equal(runtimeError?.type, "runtime.error");
+      if (runtimeError?.type === "runtime.error") {
+        assert.equal(runtimeError.payload.failureCategory, "rate_limit");
+      }
+      assert.equal(turnCompleted?.type, "turn.completed");
+      if (turnCompleted?.type === "turn.completed") {
+        assert.equal(turnCompleted.payload.failureCategory, "context_length");
+      }
+      assert.equal(turnInterrupted?.type, "turn.completed");
+      if (turnInterrupted?.type === "turn.completed") {
+        assert.equal(turnInterrupted.payload.state, "interrupted");
+        assert.equal(turnInterrupted.payload.failureCategory, undefined);
+      }
+      // Codes Codex may add later name nothing yet.
+      assert.equal(codexFailureCategory("someFutureCode"), undefined);
+      assert.equal(codexFailureCategory({ someFutureCode: {} }), undefined);
     }),
   );
 

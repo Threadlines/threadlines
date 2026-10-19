@@ -12,6 +12,7 @@
 import type {
   ModelCapabilities,
   ProviderDriverKind,
+  ProviderFailureCategory,
   ProviderInteractionMode,
   ProviderOptionSelection,
   ProviderRuntimeEvent,
@@ -135,6 +136,8 @@ export interface AcpTurnOutcome {
   readonly stopReason?: string;
   /** The agent's own words for a failure, shown instead of a bare RPC error. */
   readonly errorMessage?: string;
+  /** Why it failed, when the agent's stop reason says so in a structured way. */
+  readonly failureCategory?: ProviderFailureCategory;
 }
 
 /** Runtime hooks handed to a vendor's extension registration. */

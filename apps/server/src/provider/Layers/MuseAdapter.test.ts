@@ -864,6 +864,9 @@ describe("MuseAdapter", () => {
       expect(completed.type === "turn.completed" && completed.payload.errorMessage).toContain(
         "usage limit is reached",
       );
+      expect(completed.type === "turn.completed" && completed.payload.failureCategory).toBe(
+        "rate_limit",
+      );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
