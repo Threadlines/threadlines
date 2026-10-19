@@ -809,8 +809,9 @@ export interface MakeProcessSnapshotOptions {
   readonly ttlMs?: number;
   readonly initialFailureBackoffMs?: number;
   readonly maxFailureBackoffMs?: number;
-  readonly queryTree?: () => Effect.Effect<ReadonlyArray<ProcessRow>, unknown>;
-  readonly queryAll?: () => Effect.Effect<ReadonlyArray<ProcessRow>, unknown>;
+  /** Any failure becomes a {@link ProcessDiagnosticsError}. */
+  readonly queryTree?: () => Effect.Effect<ReadonlyArray<ProcessRow>, Error>;
+  readonly queryAll?: () => Effect.Effect<ReadonlyArray<ProcessRow>, Error>;
 }
 
 function emptyProcessSnapshotEntry(): ProcessSnapshotEntry {

@@ -343,5 +343,7 @@ it.live("signs out and deletes only after the account has stopped running", () =
     yield* Fiber.join(removal);
     expect(spawned.map((entry) => entry.args)).toEqual([["logout"]]);
     expect(yield* fileSystem.exists(folder)).toBe(false);
-  }).pipe(Effect.provide(makeLayer(spawned, { stillRunning })), Effect.provide(NodeServices.layer));
+  }).pipe(
+    Effect.provide(Layer.provideMerge(makeLayer(spawned, { stillRunning }), NodeServices.layer)),
+  );
 });

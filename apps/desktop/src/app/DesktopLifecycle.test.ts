@@ -10,17 +10,24 @@ import type * as Electron from "electron";
 
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
+import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
+import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import {
   confirmQuitWithRunningAgentSessions,
   DESKTOP_SHUTDOWN_FAILSAFE_DURATION,
+  DesktopLifecycle,
   DesktopShutdown,
+  layer as lifecycleLayer,
   layerShutdown,
   requestDesktopShutdownAndWaitWithFailsafe,
 } from "./DesktopLifecycle.ts";
 import * as DesktopState from "./DesktopState.ts";
 
-const makeElectronAppLayer = (exitCodes: Array<number>) =>
+const makeElectronAppLayer = (
+  exitCodes: Array<number>,
+  on: ElectronApp.ElectronAppShape["on"] = () => Effect.void,
+) =>
   Layer.succeed(ElectronApp.ElectronApp, {
     metadata: Effect.die("unexpected metadata read"),
     name: Effect.succeed("Threadlines"),
@@ -42,7 +49,7 @@ const makeElectronAppLayer = (exitCodes: Array<number>) =>
     focus: Effect.void,
     cancelDockBounce: () => Effect.void,
     appendCommandLineSwitch: () => Effect.void,
-    on: () => Effect.void,
+    on,
   } satisfies ElectronApp.ElectronAppShape);
 
 const makeElectronDialogLayer = (input: {
@@ -250,4 +257,45 @@ describe("confirmQuitWithRunningAgentSessions", () => {
         }),
     }),
   );
+});
+
+describe("register", () => {
+  it.effect("removes its listeners when the caller's scope closes", () => {
+    const appListeners = new Set<string>();
+    const themeListeners = new Set<() => void>();
+    const track = <A>(set: Set<A>, value: A) =>
+      Effect.acquireRelease(
+        Effect.sync(() => set.add(value)),
+        () => Effect.sync(() => set.delete(value)),
+      ).pipe(Effect.asVoid);
+    const services = Layer.mergeAll(
+      layerShutdown,
+      DesktopState.layer,
+      Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
+        isDevelopment: false,
+        platform: "linux",
+      } as DesktopEnvironment.DesktopEnvironmentShape),
+      Layer.succeed(DesktopWindow.DesktopWindow, {} as DesktopWindow.DesktopWindowShape),
+      makeElectronDialogLayer({ calls: [], response: 0 }),
+      makeElectronAppLayer([], (eventName) => track(appListeners, eventName)),
+      Layer.succeed(ElectronTheme.ElectronTheme, {
+        onUpdated: (listener) => track(themeListeners, listener),
+      } as ElectronTheme.ElectronThemeShape),
+    );
+    return Effect.gen(function* () {
+      const lifecycle = yield* DesktopLifecycle;
+      const sigterm = process.listenerCount("SIGTERM");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* lifecycle.register;
+          assert.isAbove(appListeners.size, 0);
+          assert.strictEqual(themeListeners.size, 1);
+          assert.strictEqual(process.listenerCount("SIGTERM"), sigterm + 1);
+        }),
+      );
+      assert.strictEqual(appListeners.size, 0);
+      assert.strictEqual(themeListeners.size, 0);
+      assert.strictEqual(process.listenerCount("SIGTERM"), sigterm);
+    }).pipe(Effect.provide(lifecycleLayer.pipe(Layer.provide(services))));
+  });
 });

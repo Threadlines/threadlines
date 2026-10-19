@@ -17,6 +17,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Layer from "effect/Layer";
 import { describe, expect } from "vite-plus/test";
 
 import { ServerConfig } from "../../config.ts";
@@ -340,9 +341,12 @@ describe("Grok protocol mapping", () => {
 });
 
 /** A test server config; each session test provides it with Node services. */
-const testServices = ServerConfig.layerTest(process.cwd(), {
-  prefix: "threadlines-grok-adapter-test-",
-});
+const testServices = Layer.provideMerge(
+  ServerConfig.layerTest(process.cwd(), {
+    prefix: "threadlines-grok-adapter-test-",
+  }),
+  NodeServices.layer,
+);
 
 describe("Grok sessions", () => {
   it.live("runs a turn with Grok's prompt id, its turn mode and the extension client type", () =>
@@ -368,7 +372,7 @@ describe("Grok sessions", () => {
         "hello from grok",
       );
       expect(completedTurns(grok.events)[0]).toMatchObject({ payload: { state: "completed" } });
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("steers a running turn and shows Grok's context fill against the model's window", () =>
@@ -399,7 +403,7 @@ describe("Grok sessions", () => {
         usedTokens: 1234,
         maxTokens: 500_000,
       });
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("asks Grok's question as a question card and returns the answer in Grok's shape", () =>
@@ -428,7 +432,7 @@ describe("Grok sessions", () => {
         outcome: "accepted",
         answers: { "Which file?": ["b.ts"] },
       });
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("puts Grok in plan mode, shows its plan and leaves plan mode without building", () =>
@@ -453,7 +457,7 @@ describe("Grok sessions", () => {
         .flatMap((event) => (event.type === "content.delta" ? [event.payload.delta] : []))
         .join("");
       expect(text).toBe('plan reply {"outcome":"abandoned"}');
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("offers a session-wide approval only where Grok's grant lasts just the session", () =>
@@ -479,7 +483,7 @@ describe("Grok sessions", () => {
         "acceptForSession",
         "accept",
       ]);
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("fails a turn with Grok's own words rather than the bare RPC error", () =>
@@ -490,7 +494,7 @@ describe("Grok sessions", () => {
       expect(completedTurns(grok.events)[0]).toMatchObject({
         payload: { state: "failed", errorMessage: "Grok's model is overloaded. Try again soon." },
       });
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live(
@@ -526,7 +530,7 @@ describe("Grok sessions", () => {
           ["task.started", undefined],
           ["task.completed", "completed"],
         ]);
-      }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("rewinds Grok to the reverted message, and still can after a restart", () =>
@@ -572,7 +576,7 @@ describe("Grok sessions", () => {
         force: true,
       };
       expect(rewinds).toEqual([rewind, rewind]);
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("forks Grok's conversation at a turn, and refuses a turn it can't place", () =>
@@ -609,7 +613,7 @@ describe("Grok sessions", () => {
 
       const refused = yield* fork("grok-fork-2", "never-seen").pipe(Effect.flip);
       expect(refused.message).toContain("can't be forked");
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("opens Grok's own turn even when it starts as the prompt's turn closes", () =>
@@ -620,7 +624,7 @@ describe("Grok sessions", () => {
       const [userTurn, agentTurn] = completedTurns(grok.events);
       expect(replyTo(grok.events, userTurn!.turnId!)).toBe("ROOT_DONE");
       expect(replyTo(grok.events, agentTurn!.turnId!)).toBe("The subagent said SUBAGENT_DONE.");
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("keeps a wake-up that starts before the prompt's answer out of the prompt's turn", () =>
@@ -640,7 +644,7 @@ describe("Grok sessions", () => {
         ),
       );
       expect(wakeItems.size).toBe(1);
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("gives back-to-back wake-ups each a message of their own", () =>
@@ -658,7 +662,7 @@ describe("Grok sessions", () => {
       const firstItems = itemsOf(first?.turnId);
       expect(firstItems.size).toBe(1);
       for (const itemId of itemsOf(second?.turnId)) expect(firstItems.has(itemId)).toBe(false);
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("closes the session before the process ends", () =>
@@ -667,6 +671,6 @@ describe("Grok sessions", () => {
       yield* grok.adapter.stopSession(grok.threadId);
       const frames = yield* grok.frames();
       expect(frames.some((frame) => frame.method === "session/close")).toBe(true);
-    }).pipe(Effect.scoped, Effect.provide(testServices), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 });

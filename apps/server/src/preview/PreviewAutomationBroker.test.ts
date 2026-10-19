@@ -19,6 +19,10 @@ import {
   type PreviewAutomationBrokerService,
 } from "./PreviewAutomationBroker.ts";
 
+/** The failure a call ends with; its result is never read. */
+const failureOf = <E, R>(call: Effect.Effect<unknown, E, R>) =>
+  call.pipe(Effect.asVoid, Effect.flip);
+
 const threadId = ThreadId.make("thread-browser-a");
 const otherThreadId = ThreadId.make("thread-browser-b");
 const agentId = "agent-browser-a";
@@ -115,7 +119,7 @@ describe("PreviewAutomationBroker", () => {
         const broker = yield* make;
         const failure = yield* broker
           .invoke({ threadId, agentId, operation: "click", input: {} })
-          .pipe(Effect.flip);
+          .pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationNoHostError");
       }),
     ),
@@ -131,7 +135,7 @@ describe("PreviewAutomationBroker", () => {
         // silently drops the request would otherwise cost a full timeout.
         const failure = yield* broker
           .invoke({ threadId, agentId, operation: "click", input: {} })
-          .pipe(Effect.flip);
+          .pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationUnsupportedError");
       }),
     ),
@@ -147,7 +151,7 @@ describe("PreviewAutomationBroker", () => {
           .pipe(Effect.forkChild);
         const request = yield* nextRequest;
         yield* broker.respond({ requestId: request.requestId, error: "no element matched" });
-        const failure = yield* Fiber.join(call).pipe(Effect.flip);
+        const failure = yield* Fiber.join(call).pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationExecutionError");
         assert.include(failure.message, "no element matched");
       }),
@@ -165,7 +169,7 @@ describe("PreviewAutomationBroker", () => {
         yield* Effect.yieldNow;
 
         yield* TestClock.adjust("6 seconds");
-        const failure = yield* Fiber.join(call).pipe(Effect.flip);
+        const failure = yield* Fiber.join(call).pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationTimeoutError");
       }),
     ),
@@ -182,7 +186,7 @@ describe("PreviewAutomationBroker", () => {
         const request = yield* nextRequest;
 
         yield* TestClock.adjust("6 seconds");
-        const failure = yield* Fiber.join(call).pipe(Effect.flip);
+        const failure = yield* Fiber.join(call).pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationTimeoutError");
         // Otherwise the click is still queued behind whatever stalled, and lands
         // after the agent has been told it failed and has tried again.
@@ -204,7 +208,7 @@ describe("PreviewAutomationBroker", () => {
           .pipe(Effect.forkChild);
         yield* nextRequest;
         yield* TestClock.adjust("6 seconds");
-        yield* Fiber.join(first).pipe(Effect.flip);
+        yield* Fiber.join(first).pipe(failureOf);
 
         // The next thing down the wire is the next request, not a cancel the old
         // client would fail to decode and drop its subscription over.
@@ -261,7 +265,7 @@ describe("PreviewAutomationBroker", () => {
         yield* broker.progress({ requestId: request.requestId, awaitingUser: true });
         yield* TestClock.adjust("90 seconds");
 
-        const failure = yield* Fiber.join(call).pipe(Effect.flip);
+        const failure = yield* Fiber.join(call).pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationTimeoutError");
         assert.include(failure.message, "did not answer in time");
       }),
@@ -308,7 +312,7 @@ describe("PreviewAutomationBroker", () => {
         yield* broker.claim({ hostId: "windows", threadId });
 
         // The click was headed for pages the user is no longer looking at.
-        const failure = yield* Fiber.join(inFlight).pipe(Effect.flip);
+        const failure = yield* Fiber.join(inFlight).pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationDisconnectedError");
         assert.deepStrictEqual(yield* mac.nextMessage, { _tag: "release", threadId });
         yield* broker
@@ -369,8 +373,11 @@ describe("PreviewAutomationBroker", () => {
           .pipe(Effect.forkChild);
         yield* Effect.yieldNow;
 
-        yield* broker.connect({ threadId, hostId: "host-2", operations: ["click"] });
-        const failure = yield* Fiber.join(call).pipe(Effect.flip);
+        // Only host-2 arriving matters here, not its messages.
+        yield* broker
+          .connect({ threadId, hostId: "host-2", operations: ["click"] })
+          .pipe(Effect.asVoid);
+        const failure = yield* Fiber.join(call).pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationDisconnectedError");
       }),
     ),
@@ -389,7 +396,7 @@ describe("PreviewAutomationBroker", () => {
           requestId: request.requestId,
           result: { page: "x".repeat(PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES + 1) },
         });
-        const failure = yield* Fiber.join(call).pipe(Effect.flip);
+        const failure = yield* Fiber.join(call).pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationResultTooLargeError");
       }),
     ),
@@ -421,7 +428,7 @@ describe("PreviewAutomationBroker", () => {
         assert.strictEqual(busy.mimeType, "image/jpeg");
 
         const absurd = yield* screenshot("x".repeat(PREVIEW_AUTOMATION_SCREENSHOT_LIMIT_BYTES));
-        const failure = yield* Fiber.join(absurd).pipe(Effect.flip);
+        const failure = yield* Fiber.join(absurd).pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationResultTooLargeError");
         // A screenshot has nothing to narrow; the advice has to be something
         // the agent can actually do.
@@ -675,7 +682,7 @@ describe("PreviewAutomationBroker", () => {
 
         const failure = yield* broker
           .invoke({ threadId: otherThreadId, agentId, operation: "click", input: {} })
-          .pipe(Effect.flip);
+          .pipe(failureOf);
         assert.strictEqual(failure._tag, "PreviewAutomationNoHostError");
         assert.isTrue(yield* broker.hasHost(threadId));
         assert.isFalse(yield* broker.hasHost(otherThreadId));

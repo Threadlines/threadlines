@@ -33,15 +33,15 @@ const makeServerSettingsLayer = () =>
 
 it.layer(NodeServices.layer)("server settings", (it) => {
   it.effect("decodes nested settings patches", () =>
-    Effect.sync(() => {
-      const decodePatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+    Effect.gen(function* () {
+      const decodePatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
 
-      assert.deepEqual(decodePatch({ providers: { codex: { binaryPath: "/tmp/codex" } } }), {
+      assert.deepEqual(yield* decodePatch({ providers: { codex: { binaryPath: "/tmp/codex" } } }), {
         providers: { codex: { binaryPath: "/tmp/codex" } },
       });
 
       assert.deepEqual(
-        decodePatch({
+        yield* decodePatch({
           textGenerationModelSelection: {
             options: [{ id: "fastMode", value: false }],
           },
@@ -58,10 +58,10 @@ it.layer(NodeServices.layer)("server settings", (it) => {
   it.effect(
     "decodes legacy object-shaped textGenerationModelSelection.options from settings.json",
     () =>
-      Effect.sync(() => {
-        const decode = Schema.decodeUnknownSync(ServerSettings);
+      Effect.gen(function* () {
+        const decode = Schema.decodeUnknownEffect(ServerSettings);
 
-        const decoded = decode({
+        const decoded = yield* decode({
           textGenerationModelSelection: {
             provider: ProviderDriverKind.make("codex"),
             model: "gpt-5.4-mini",

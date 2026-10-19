@@ -83,6 +83,7 @@ import {
   selectConfigOptionCurrentValue,
 } from "./AcpProviderModels.ts";
 import { findModelConfigOption } from "./AcpRuntimeModel.ts";
+import { ProviderSetupError } from "../Errors.ts";
 
 const decodeAntigravitySettings = Schema.decodeSync(AntigravitySettings);
 
@@ -438,7 +439,11 @@ export const validateAntigravityRuntime = (
         await fs.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
       }
     },
-    catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+    catch: (cause) =>
+      new ProviderSetupError({
+        detail: cause instanceof Error ? cause.message : String(cause),
+        cause,
+      }),
   });
 
 // ── Descriptor ───────────────────────────────────────────────────────

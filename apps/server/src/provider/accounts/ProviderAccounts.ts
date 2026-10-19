@@ -61,6 +61,9 @@ import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegis
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
+import { ProviderSetupError } from "../Errors.ts";
+
+const isProviderAccountError = Schema.is(ProviderAccountError);
 
 const ACCOUNTS_DIRECTORY = "accounts";
 const CLEANUP_DIRECTORY = ".cleanup";
@@ -377,12 +380,16 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
         Effect.timeoutOption(SIGN_OUT_TIMEOUT),
       );
       if (Option.isNone(result)) {
-        return yield* Effect.fail(new Error(`${command.file} sign-out timed out`));
+        return yield* Effect.fail(
+          new ProviderSetupError({ detail: `${command.file} sign-out timed out` }),
+        );
       }
       // Both CLIs exit 0 when there was nothing to sign out of.
       if (result.value.code !== 0) {
         return yield* Effect.fail(
-          new Error(`${command.file} sign-out exited ${result.value.code}`),
+          new ProviderSetupError({
+            detail: `${command.file} sign-out exited ${result.value.code}`,
+          }),
         );
       }
     });
@@ -568,7 +575,7 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
                 .pipe(Effect.ignore);
             }
             const failure = Cause.squash(cause);
-            if (failure instanceof ProviderAccountError) return yield* Effect.fail(failure);
+            if (isProviderAccountError(failure)) return yield* Effect.fail(failure);
             yield* Effect.logWarning("adding a provider account failed", { cause });
             return yield* fail("settingsFailed", "The account could not be saved.");
           }),

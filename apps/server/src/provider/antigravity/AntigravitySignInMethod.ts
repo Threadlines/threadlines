@@ -45,6 +45,7 @@ import * as Effect from "effect/Effect";
 
 import { checkApiKeyWithModelList } from "../apiKeyCheck.ts";
 import { antigravityAgentDir, antigravityTokenPath } from "./AntigravityProfile.ts";
+import { ProviderSetupError } from "../Errors.ts";
 
 export interface AntigravitySignInConfig {
   readonly method: AntigravityAuthMethod;
@@ -240,7 +241,10 @@ export const writeAntigravityProfileSettings = (
       await writePrivateFileAtomically(target, `${JSON.stringify(merged, null, 2)}\n`);
     },
     catch: (cause) =>
-      new Error(`Couldn't save Antigravity's sign-in settings: ${String(cause)}`, { cause }),
+      new ProviderSetupError({
+        detail: `Couldn't save Antigravity's sign-in settings: ${String(cause)}`,
+        cause,
+      }),
   });
 
 // ── Credential fingerprint and check results ─────────────────────────

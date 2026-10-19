@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,7 +28,9 @@ export class DesktopRelayRetirement extends Context.Service<
 
 const { logInfo, logWarning } = DesktopObservability.makeComponentLogger("desktop-relay");
 
-class RelayRetirementRetry extends Error {}
+class RelayRetirementRetry extends Data.TaggedError("RelayRetirementRetry")<{
+  readonly message: string;
+}> {}
 
 type DeleteOutcome = "ended" | "retry";
 
@@ -50,11 +53,13 @@ const endRelaySession = (session: DesktopRelayStore.PersistedRelayPairingSession
         },
       );
       if (deleteOutcome(response.status) === "retry") {
-        throw new RelayRetirementRetry(`Relay answered HTTP ${response.status}.`);
+        throw new RelayRetirementRetry({ message: `Relay answered HTTP ${response.status}.` });
       }
     },
     catch: (cause) =>
-      cause instanceof RelayRetirementRetry ? cause : new RelayRetirementRetry(String(cause)),
+      cause instanceof RelayRetirementRetry
+        ? cause
+        : new RelayRetirementRetry({ message: String(cause) }),
   });
 
 const make = Effect.gen(function* () {

@@ -189,10 +189,10 @@ const latestMigrationId = migrationEntries.reduce((latest, [id]) => Math.max(lat
  * logs and to the desktop's readiness watchdog, which reads them back out of
  * the backend's stdout.
  */
-const withMigrationLogging = (
+const withMigrationLogging = <E>(
   id: number,
   name: string,
-  migration: Effect.Effect<void, unknown, SqlClient.SqlClient>,
+  migration: Effect.Effect<void, E, SqlClient.SqlClient>,
 ) =>
   Effect.gen(function* () {
     yield* Effect.log(

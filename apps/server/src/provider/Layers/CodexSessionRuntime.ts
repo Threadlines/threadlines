@@ -91,6 +91,8 @@ import {
   codexAppServerArgs,
   codexSideAnswerAppServerArgs,
 } from "../codexAppServerArgs.ts";
+
+const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
   EffectCodexSchema.V2ReviewStartResponse,
@@ -861,10 +863,7 @@ function isLoggedToolRouterExitCode(target: string | undefined, message: string)
  *  method-not-found / invalid-params from Codex binaries older than 0.143),
  *  so callers can fall back to a stabler boundary or a fresh thread. */
 export function isNativeThreadForkUnsupportedError(error: unknown): boolean {
-  return (
-    error instanceof CodexErrors.CodexAppServerRequestError &&
-    (error.code === -32601 || error.code === -32602)
-  );
+  return isCodexAppServerRequestError(error) && (error.code === -32601 || error.code === -32602);
 }
 
 export function isRecoverableThreadResumeError(error: unknown): boolean {
@@ -908,7 +907,7 @@ export function codexRequestTimeoutError(
 /** A request we gave up waiting on, which the app-server may still finish. */
 function isCodexRequestTimeoutError(error: unknown): boolean {
   return (
-    error instanceof CodexErrors.CodexAppServerRequestError &&
+    isCodexAppServerRequestError(error) &&
     error.errorMessage.startsWith(CODEX_REQUEST_TIMEOUT_PREFIX)
   );
 }
@@ -1147,7 +1146,7 @@ export interface CodexThreadRollbackResult {
 /** Codex refused the fork cut point, e.g. a legacy rollout whose turns have
  *  generated ids and no persisted boundary to cut at. */
 const isForkBoundaryRejectedError = (error: unknown): boolean =>
-  error instanceof CodexErrors.CodexAppServerRequestError && error.code === -32600;
+  isCodexAppServerRequestError(error) && error.code === -32600;
 
 /**
  * Undoes the last `numTurns` turns of a Codex thread.

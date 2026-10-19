@@ -15,6 +15,8 @@ import {
   removeLinkIfPresent,
 } from "../accountOverlay.ts";
 
+const isAccountOverlayError = Schema.is(AccountOverlayError);
+
 export interface CodexHomeLayout {
   readonly mode: "direct" | "authOverlay";
   readonly sharedHomePath: string;
@@ -88,10 +90,9 @@ const isCodexShadowHomeError = Schema.is(CodexShadowHomeError);
 function toShadowHomeError(cause: unknown): CodexShadowHomeError {
   if (isCodexShadowHomeError(cause)) return cause;
   return new CodexShadowHomeError({
-    detail:
-      cause instanceof AccountOverlayError
-        ? cause.detail
-        : "Failed to materialize Codex shadow home.",
+    detail: isAccountOverlayError(cause)
+      ? cause.detail
+      : "Failed to materialize Codex shadow home.",
     cause,
   });
 }

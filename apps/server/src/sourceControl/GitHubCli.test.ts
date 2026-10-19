@@ -47,7 +47,6 @@ describe("GitHubCli.layer", () => {
           state: "OPEN",
           autoMergeRequest: null,
         };
-        // @effect-diagnostics-next-line preferSchemaOverJson:off
         return Effect.succeed(
           processOutput(
             JSON.stringify(

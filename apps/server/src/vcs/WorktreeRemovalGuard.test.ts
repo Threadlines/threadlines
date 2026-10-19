@@ -1,10 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Cause from "effect/Cause";
 import type { WorktreeUsageThread } from "@threadlines/shared/worktreeUsage";
 
 import { ensureWorktreeRemovable } from "./WorktreeRemovalGuard.ts";
+
+/** A failure the code under test only passes along. */
+class TestFailure extends Data.TaggedError("TestFailure")<{ readonly message: string }> {}
 
 const WORKTREE = "/repo/.worktrees/feature";
 const OTHER = "/repo/.worktrees/other";
@@ -48,7 +52,7 @@ describe("ensureWorktreeRemovable", () => {
     Effect.gen(function* () {
       yield* ensureWorktreeRemovable({
         worktreePath: WORKTREE,
-        readThreads: Effect.fail(new Error("projection unavailable")),
+        readThreads: Effect.fail(new TestFailure({ message: "projection unavailable" })),
       });
     }),
   );

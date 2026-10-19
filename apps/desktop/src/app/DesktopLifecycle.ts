@@ -58,10 +58,8 @@ export type DesktopLifecycleRuntimeServices =
   | ElectronTheme.ElectronTheme;
 
 export interface DesktopLifecycleShape {
-  readonly relaunch: (
-    reason: string,
-  ) => Effect.Effect<void, never, DesktopLifecycleRuntimeServices>;
-  readonly register: Effect.Effect<void, never, Scope.Scope | DesktopLifecycleRuntimeServices>;
+  readonly relaunch: (reason: string) => Effect.Effect<void>;
+  readonly register: Effect.Effect<void, never, Scope.Scope>;
 }
 
 export class DesktopLifecycle extends Context.Service<DesktopLifecycle, DesktopLifecycleShape>()(
@@ -299,100 +297,118 @@ function quitFromSignal(
   );
 }
 
-export const layer = Layer.succeed(
-  DesktopLifecycle,
-  DesktopLifecycle.of({
-    relaunch: Effect.fn("desktop.lifecycle.relaunch")(function* (reason) {
-      const electronApp = yield* ElectronApp.ElectronApp;
-      const environment = yield* DesktopEnvironment.DesktopEnvironment;
-      const state = yield* DesktopState.DesktopState;
-      yield* logLifecycleInfo("desktop relaunch requested", { reason });
-      yield* Effect.gen(function* () {
-        yield* Effect.yieldNow;
-        yield* Ref.set(state.quitting, true);
-        yield* requestDesktopShutdownAndWaitWithFailsafe();
-        if (environment.isDevelopment) {
-          yield* electronApp.exit(75);
-          return;
-        }
-        yield* electronApp.relaunch({
-          execPath: process.execPath,
-          args: process.argv.slice(1),
-        });
-        yield* electronApp.exit(0);
-      }).pipe(
-        Effect.catchCause((cause) =>
-          logLifecycleError("desktop relaunch failed", {
-            cause: Cause.pretty(cause),
-          }),
-        ),
-        Effect.forkDetach,
-        Effect.asVoid,
-      );
-    }),
-    register: Effect.gen(function* () {
-      const desktopWindow = yield* DesktopWindow.DesktopWindow;
-      const electronApp = yield* ElectronApp.ElectronApp;
-      const electronTheme = yield* ElectronTheme.ElectronTheme;
-      const environment = yield* DesktopEnvironment.DesktopEnvironment;
-      const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
-      const runEffect = Effect.runPromiseWith(context);
-      let quitAllowed = false;
-      let quitRequestPending = false;
-      yield* electronTheme.onUpdated(() => {
-        void runEffect(
-          desktopWindow.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")),
-        );
-      });
-      yield* electronApp.on("before-quit", (event: Electron.Event) => {
-        handleBeforeQuit(
-          event,
-          runEffect,
-          () => quitAllowed,
-          () => {
-            quitAllowed = true;
-          },
-          () => quitRequestPending,
-          (pending) => {
-            quitRequestPending = pending;
-          },
-        );
-      });
-      yield* electronApp.on("activate", () => {
-        void runEffect(desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.activate")));
-      });
-      // Only ever fires in the process holding the single-instance lock: a
-      // second launch hands its argv over and exits, and we surface the window
-      // it was asking for. `activate` is backend-ready-aware, so a launch
-      // during startup no-ops and the window arrives at readiness.
-      yield* electronApp.on("second-instance", () => {
-        void runEffect(
-          desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.secondInstance")),
-        );
-      });
-      yield* electronApp.on("window-all-closed", () => {
-        void runEffect(
-          Effect.gen(function* () {
-            const app = yield* ElectronApp.ElectronApp;
-            const state = yield* DesktopState.DesktopState;
-            if (environment.platform !== "darwin" && !(yield* Ref.get(state.quitting))) {
-              yield* app.quit;
-            }
-          }).pipe(Effect.withSpan("desktop.lifecycle.windowAllClosed")),
-        );
-      });
+const relaunch = Effect.fn("desktop.lifecycle.relaunch")(function* (reason: string) {
+  const electronApp = yield* ElectronApp.ElectronApp;
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const state = yield* DesktopState.DesktopState;
+  yield* logLifecycleInfo("desktop relaunch requested", { reason });
+  yield* Effect.gen(function* () {
+    yield* Effect.yieldNow;
+    yield* Ref.set(state.quitting, true);
+    yield* requestDesktopShutdownAndWaitWithFailsafe();
+    if (environment.isDevelopment) {
+      yield* electronApp.exit(75);
+      return;
+    }
+    yield* electronApp.relaunch({
+      execPath: process.execPath,
+      args: process.argv.slice(1),
+    });
+    yield* electronApp.exit(0);
+  }).pipe(
+    Effect.catchCause((cause) =>
+      logLifecycleError("desktop relaunch failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+    Effect.forkDetach,
+    Effect.asVoid,
+  );
+});
 
-      if (environment.platform !== "win32") {
-        const allowSignalQuit = () => {
-          quitAllowed = true;
-        };
-        yield* addScopedListener(process, "SIGINT", () => {
-          quitFromSignal("SIGINT", runEffect, allowSignalQuit);
-        });
-        yield* addScopedListener(process, "SIGTERM", () => {
-          quitFromSignal("SIGTERM", runEffect, allowSignalQuit);
-        });
-      }
-    }).pipe(Effect.withSpan("desktop.lifecycle.register")),
+const register = Effect.gen(function* () {
+  const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  const electronApp = yield* ElectronApp.ElectronApp;
+  const electronTheme = yield* ElectronTheme.ElectronTheme;
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
+  const runEffect = Effect.runPromiseWith(context);
+  let quitAllowed = false;
+  let quitRequestPending = false;
+  yield* electronTheme.onUpdated(() => {
+    void runEffect(
+      desktopWindow.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")),
+    );
+  });
+  yield* electronApp.on("before-quit", (event: Electron.Event) => {
+    handleBeforeQuit(
+      event,
+      runEffect,
+      () => quitAllowed,
+      () => {
+        quitAllowed = true;
+      },
+      () => quitRequestPending,
+      (pending) => {
+        quitRequestPending = pending;
+      },
+    );
+  });
+  yield* electronApp.on("activate", () => {
+    void runEffect(desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.activate")));
+  });
+  // Only ever fires in the process holding the single-instance lock: a
+  // second launch hands its argv over and exits, and we surface the window
+  // it was asking for. `activate` is backend-ready-aware, so a launch
+  // during startup no-ops and the window arrives at readiness.
+  yield* electronApp.on("second-instance", () => {
+    void runEffect(
+      desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.secondInstance")),
+    );
+  });
+  yield* electronApp.on("window-all-closed", () => {
+    void runEffect(
+      Effect.gen(function* () {
+        const app = yield* ElectronApp.ElectronApp;
+        const state = yield* DesktopState.DesktopState;
+        if (environment.platform !== "darwin" && !(yield* Ref.get(state.quitting))) {
+          yield* app.quit;
+        }
+      }).pipe(Effect.withSpan("desktop.lifecycle.windowAllClosed")),
+    );
+  });
+
+  if (environment.platform !== "win32") {
+    const allowSignalQuit = () => {
+      quitAllowed = true;
+    };
+    yield* addScopedListener(process, "SIGINT", () => {
+      quitFromSignal("SIGINT", runEffect, allowSignalQuit);
+    });
+    yield* addScopedListener(process, "SIGTERM", () => {
+      quitFromSignal("SIGTERM", runEffect, allowSignalQuit);
+    });
+  }
+}).pipe(Effect.withSpan("desktop.lifecycle.register"));
+
+export const layer = Layer.effect(
+  DesktopLifecycle,
+  Effect.gen(function* () {
+    // Taken once here, so callers need none of these services. Only these:
+    // the whole context would carry the layer's own Scope over the caller's,
+    // and register's listeners must end with the caller's scope.
+    const services = Context.pick(
+      DesktopEnvironment.DesktopEnvironment,
+      DesktopShutdown,
+      DesktopState.DesktopState,
+      DesktopWindow.DesktopWindow,
+      ElectronApp.ElectronApp,
+      ElectronDialog.ElectronDialog,
+      ElectronTheme.ElectronTheme,
+    )(yield* Effect.context<DesktopLifecycleRuntimeServices>());
+    return DesktopLifecycle.of({
+      relaunch: (reason) => relaunch(reason).pipe(Effect.provideContext(services)),
+      register: register.pipe(Effect.provideContext(services)),
+    });
   }),
 );

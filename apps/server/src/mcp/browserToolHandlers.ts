@@ -12,16 +12,26 @@ import * as Effect from "effect/Effect";
 import { BrowserScreenshotToolkit, BrowserStandardToolkit } from "./browserTools.ts";
 import { McpInvocationContext } from "./McpInvocationContext.ts";
 import { PreviewAutomationBroker } from "../preview/PreviewAutomationBroker.ts";
-import type { PreviewAutomationOperation } from "@threadlines/contracts";
+import type { PreviewAutomationError, PreviewAutomationOperation } from "@threadlines/contracts";
 
+/**
+ * The broker answers with whatever the page sent; each tool's success schema
+ * checks it on the way out, so only the success type is cast here.
+ */
 const forward =
   (operation: PreviewAutomationOperation) =>
-  (input: unknown): Effect.Effect<never, never, never> =>
+  (
+    input: unknown,
+  ): Effect.Effect<never, PreviewAutomationError, McpInvocationContext | PreviewAutomationBroker> =>
     Effect.gen(function* () {
       const { threadId, agentId } = yield* McpInvocationContext;
       const broker = yield* PreviewAutomationBroker;
       return yield* broker.invoke({ threadId, agentId, operation, input });
-    }) as Effect.Effect<never, never, never>;
+    }) as Effect.Effect<
+      never,
+      PreviewAutomationError,
+      McpInvocationContext | PreviewAutomationBroker
+    >;
 
 export const BrowserToolkitHandlersLive = BrowserStandardToolkit.toLayer({
   browser_snapshot: forward("snapshot"),

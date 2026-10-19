@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import {
   GitCommandError,
   VcsWorktreeInUseError,
@@ -8,6 +9,10 @@ import {
   findWorktreeBlockingThreads,
   type WorktreeUsageThread,
 } from "@threadlines/shared/worktreeUsage";
+
+const isVcsWorktreeInUseError = Schema.is(VcsWorktreeInUseError);
+
+const isGitCommandError = Schema.is(GitCommandError);
 
 /** Any thread shape that records a checkout: live store threads and archived shells both qualify. */
 export interface WorktreeLinkedThread {
@@ -250,12 +255,15 @@ function toSentence(text: string): string {
  * own words without its "fatal:" prefix.
  */
 export function describeWorktreeRemovalError(error: unknown): string {
-  if (error instanceof VcsWorktreeInUseError) {
+  if (isVcsWorktreeInUseError(error)) {
     const names = error.blockingThreads.map((thread) => `"${threadTitle(thread)}"`);
     return names.length > 0 ? `Now in use by ${names.join(", ")}.` : "Now in use by a thread.";
   }
-  const detail =
-    error instanceof GitCommandError ? error.detail : error instanceof Error ? error.message : "";
+  const detail = isGitCommandError(error)
+    ? error.detail
+    : error instanceof Error
+      ? error.message
+      : "";
   if (/locked working tree/iu.test(detail)) {
     return "Something locked this worktree. Reopen the list to see what.";
   }

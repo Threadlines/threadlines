@@ -5,6 +5,7 @@
  *
  * @module provider/pi/testing/PiRecordLog
  */
+import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -14,13 +15,20 @@ import * as Stream from "effect/Stream";
 
 import type { PiRecord, PiRpc } from "../PiRpc.ts";
 
+/** No matching record arrived before the wait's timeout. */
+export class PiRecordTimeoutError extends Data.TaggedError("PiRecordTimeoutError") {
+  override get message(): string {
+    return "timed out waiting for a Pi record";
+  }
+}
+
 export interface PiRecordLog {
   readonly all: ReadonlyArray<PiRecord>;
   /** The first record at or after `from` (an index into `all`) that matches. */
   readonly waitFor: (
     predicate: (record: PiRecord) => boolean,
     options?: { readonly from?: number; readonly timeout?: Duration.Input },
-  ) => Effect.Effect<PiRecord, Error>;
+  ) => Effect.Effect<PiRecord, PiRecordTimeoutError>;
   /** Index of the next record to arrive. */
   readonly mark: () => number;
 }
@@ -63,7 +71,7 @@ export const collectPiRecords = (rpc: PiRpc): Effect.Effect<PiRecordLog, never, 
             Effect.timeoutOption(options?.timeout ?? Duration.seconds(20)),
           );
           return yield* Option.match(found, {
-            onNone: () => Effect.fail(new Error("timed out waiting for a Pi record")),
+            onNone: () => Effect.fail(new PiRecordTimeoutError()),
             onSome: Effect.succeed,
           });
         }),

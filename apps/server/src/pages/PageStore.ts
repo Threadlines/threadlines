@@ -73,6 +73,8 @@ export class PageStoreError extends Schema.TaggedError<PageStoreError>()("PageSt
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
+const isPageStoreError = Schema.is(PageStoreError);
+
 const storeError = (message: string, cause?: unknown) =>
   new PageStoreError({ message, ...(cause === undefined ? {} : { cause }) });
 
@@ -97,7 +99,7 @@ export const ensurePageAssetsDir = Effect.fn("PageStore.ensurePageAssetsDir")(fu
       return await NodeFs.realpath(dir);
     },
     catch: (cause) =>
-      cause instanceof PageStoreError
+      isPageStoreError(cause)
         ? cause
         : storeError("The page assets folder could not be made.", cause),
   });
@@ -142,7 +144,7 @@ export const readPageVersion = Effect.fn("PageStore.readPageVersion")(function* 
       }
     },
     catch: (cause) =>
-      cause instanceof PageStoreError ? cause : storeError("The page could not be read.", cause),
+      isPageStoreError(cause) ? cause : storeError("The page could not be read.", cause),
   });
 });
 
@@ -199,9 +201,7 @@ export const readPublishedPage = Effect.fn("PageStore.readPublishedPage")(functi
       }
     },
     catch: (cause) =>
-      cause instanceof PageStoreError
-        ? cause
-        : storeError("The published page could not be read.", cause),
+      isPageStoreError(cause) ? cause : storeError("The published page could not be read.", cause),
   });
   return { kind, content };
 });

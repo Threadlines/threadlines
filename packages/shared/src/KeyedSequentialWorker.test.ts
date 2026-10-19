@@ -1,9 +1,13 @@
 import { it } from "@effect/vitest";
 import { describe, expect } from "vite-plus/test";
+import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 
 import { makeKeyedSequentialWorker } from "./KeyedSequentialWorker.ts";
+
+/** A failure the code under test only passes along. */
+class TestFailure extends Data.TaggedError("TestFailure")<{ readonly message: string }> {}
 
 describe("makeKeyedSequentialWorker", () => {
   it.live("processes items for different keys concurrently", () =>
@@ -115,7 +119,7 @@ describe("makeKeyedSequentialWorker", () => {
         const worker = yield* makeKeyedSequentialWorker((_key: string, item: string) =>
           Effect.gen(function* () {
             if (item === "explode") {
-              return yield* Effect.fail(new Error("boom"));
+              return yield* Effect.fail(new TestFailure({ message: "boom" }));
             }
             processed.push(item);
           }),

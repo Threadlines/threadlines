@@ -135,8 +135,7 @@ const withService = <A, E>(
       unloads: yield* Ref.make(0),
     };
     return yield* run(probe).pipe(
-      Effect.provide(makeLayer(probe, options)),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.provideMerge(makeLayer(probe, options), NodeServices.layer)),
     );
   });
 

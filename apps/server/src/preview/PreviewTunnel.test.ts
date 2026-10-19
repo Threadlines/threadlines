@@ -36,7 +36,7 @@ const listen = (onConnection: (socket: Net.Socket) => void) =>
   );
 
 /** Pulls one event at a time, so a test can see exactly what arrived. */
-const pullEvents = (stream: Stream.Stream<PreviewTunnelEvent, unknown>) =>
+const pullEvents = <E>(stream: Stream.Stream<PreviewTunnelEvent, E>) =>
   Effect.gen(function* () {
     const pull = yield* Stream.toPull(stream);
     const buffered: PreviewTunnelEvent[] = [];
@@ -223,7 +223,10 @@ describe("PreviewTunnel", () => {
       Effect.gen(function* () {
         const { port } = yield* listen(() => {});
         const tunnels = yield* makePreviewTunnel({ ownPort: -1 });
-        yield* tunnels.open(sessionId, { tunnelId: "t7", host: "localhost", port });
+        // Only the tunnel existing matters here, not its events.
+        yield* tunnels
+          .open(sessionId, { tunnelId: "t7", host: "localhost", port })
+          .pipe(Effect.asVoid);
         const failure = yield* tunnels
           .write("session-b", { tunnelId: "t7", seq: 0, data: "aGk=" })
           .pipe(Effect.flip);

@@ -49,6 +49,7 @@ import {
 import type { AcpRegistryInstaller } from "./AcpRegistryInstaller.ts";
 import { planAcpRegistryLaunch } from "./AcpRegistryLaunch.ts";
 import { selectAcpRegistrySignIn } from "./AcpRegistrySignIn.ts";
+import { ProviderSetupError } from "../Errors.ts";
 
 const SIGN_IN_TIMEOUT = Duration.minutes(5);
 const SIGN_OUT_TIMEOUT = Duration.seconds(90);
@@ -132,7 +133,11 @@ export function makeAcpRegistryAuthFlows(input: AcpRegistryAuthInput): ProviderI
     Effect.acquireUseRelease(
       Effect.tryPromise({
         try: () => NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "threadlines-agent-sign-in-")),
-        catch: () => new Error(`Couldn't make a folder to start ${displayName} in.`),
+        catch: (cause) =>
+          new ProviderSetupError({
+            detail: `Couldn't make a folder to start ${displayName} in.`,
+            cause,
+          }),
       }),
       (dir) => use(dir).pipe(Effect.scoped),
       (dir) =>
@@ -200,7 +205,10 @@ export function makeAcpRegistryAuthFlows(input: AcpRegistryAuthInput): ProviderI
         yield* acp.start().pipe(
           Effect.timeoutOrElse({
             duration: SIGN_IN_TIMEOUT,
-            orElse: () => Effect.fail(new Error("Sign-in timed out after 5 minutes. Try again.")),
+            orElse: () =>
+              Effect.fail(
+                new ProviderSetupError({ detail: "Sign-in timed out after 5 minutes. Try again." }),
+              ),
           }),
         );
         yield* afterAuthChange(methodId);
@@ -235,7 +243,10 @@ export function makeAcpRegistryAuthFlows(input: AcpRegistryAuthInput): ProviderI
     ).pipe(
       Effect.timeoutOrElse({
         duration: SIGN_OUT_TIMEOUT,
-        orElse: () => Effect.fail(new Error(`${displayName} did not finish signing out.`)),
+        orElse: () =>
+          Effect.fail(
+            new ProviderSetupError({ detail: `${displayName} did not finish signing out.` }),
+          ),
       }),
       Effect.mapError((error) =>
         failure(

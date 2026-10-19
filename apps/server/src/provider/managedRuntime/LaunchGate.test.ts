@@ -99,13 +99,20 @@ describe("LaunchGate", () => {
         yield* Effect.flip(Effect.scoped(holdLaunchGate(gate, () => "closed" as const))),
         "closed",
       );
-      assert.equal(yield* Effect.flip(closeLaunchGate(gate, options)), "already closed");
+      assert.equal(
+        yield* closeLaunchGate(gate, options).pipe(Effect.asVoid, Effect.flip),
+        "already closed",
+      );
       yield* reopen;
       yield* Effect.scoped(holdLaunchGate(gate, () => "closed" as const));
 
       // A process that never ends: the close fails and leaves the gate open.
       yield* holdLaunchGate(gate, () => "closed" as const);
-      const closing = yield* closeLaunchGate(gate, options).pipe(Effect.flip, Effect.forkScoped);
+      const closing = yield* closeLaunchGate(gate, options).pipe(
+        Effect.asVoid,
+        Effect.flip,
+        Effect.forkScoped,
+      );
       yield* TestClock.adjust(Duration.seconds(46));
       assert.equal(yield* Fiber.join(closing), "still held");
       assert.isFalse(gate.busy);

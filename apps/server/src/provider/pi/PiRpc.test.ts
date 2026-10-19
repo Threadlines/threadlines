@@ -84,7 +84,7 @@ describe("startPiRpc", () => {
           expect(fast).toEqual({ which: "fast" });
           expect(yield* Fiber.join(slow)).toEqual({ which: "slow" });
 
-          const refused = yield* Effect.flip(rpc.request({ type: "refuse" }));
+          const refused = yield* rpc.request({ type: "refuse" }).pipe(Effect.asVoid, Effect.flip);
           expect(refused.kind).toBe("rejected");
           expect(refused.message).toBe("Nothing to compact");
 
@@ -98,7 +98,7 @@ describe("startPiRpc", () => {
 
           const waiting = yield* Effect.forkChild(rpc.request({ type: "slow" }, { timeout: null }));
           yield* rpc.send({ type: "exit" });
-          const failure = yield* Effect.flip(Fiber.join(waiting));
+          const failure = yield* Fiber.join(waiting).pipe(Effect.asVoid, Effect.flip);
           expect(failure.kind).toBe("exited");
           expect((yield* rpc.exited).code).toBe(3);
         }),

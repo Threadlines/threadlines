@@ -151,9 +151,12 @@ const unreachable = (host: string, port: number, cause: unknown) => {
   });
 };
 
+/** Why one connect attempt failed: the socket's own error, or no answer in time. */
+type ConnectFailure = Error | { readonly code: "ETIMEDOUT" };
+
 /** One attempt at one address, given up on timeout or interruption. */
 const connectTo = (address: string, port: number) =>
-  Effect.callback<Net.Socket, unknown>((resume) => {
+  Effect.callback<Net.Socket, ConnectFailure>((resume) => {
     const socket = Net.connect({ host: address, port, allowHalfOpen: true });
     const timer = setTimeout(() => {
       socket.destroy();

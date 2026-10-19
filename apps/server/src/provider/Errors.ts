@@ -236,6 +236,22 @@ export class ProviderSessionDirectoryPersistenceError extends Schema.TaggedError
   }
 }
 
+/**
+ * ProviderSetupError - A sign-in, sign-out or setup-check step failed. The
+ * detail is written for the user and is the whole message.
+ */
+export class ProviderSetupError extends Schema.TaggedError<ProviderSetupError>()(
+  "ProviderSetupError",
+  {
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export type ProviderAdapterError =
   | ProviderAdapterValidationError
   | ProviderAdapterSessionNotFoundError

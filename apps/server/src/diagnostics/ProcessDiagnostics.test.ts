@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -9,9 +10,12 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as ProcessDiagnostics from "./ProcessDiagnostics.ts";
 
+/** A failure the code under test only passes along. */
+class TestFailure extends Data.TaggedError("TestFailure")<{ readonly message: string }> {}
+
 const encoder = new TextEncoder();
 
-function itEffect(name: string, effect: () => Effect.Effect<void, unknown, never>): void {
+function itEffect<E>(name: string, effect: () => Effect.Effect<void, E, never>): void {
   it(name, async () => {
     await Effect.runPromise(effect());
   });
@@ -296,7 +300,7 @@ describe("ProcessDiagnostics", () => {
         maxFailureBackoffMs: 10_000,
         queryTree: () => {
           queryCount += 1;
-          return Effect.fail(new Error("query failed"));
+          return Effect.fail(new TestFailure({ message: "query failed" }));
         },
         queryAll: () => Effect.succeed([]),
       }).pipe(Effect.provide(spawnerLayer));

@@ -57,6 +57,8 @@ import {
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
 import { describeCodexTerminalInput, makeCodexAdapter } from "./CodexAdapter.ts";
+
+const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 it.effect("discovers compatible root Codex conversations without exposing subagents", () => {
@@ -182,8 +184,9 @@ it.effect("discovers compatible root Codex conversations without exposing subage
       );
     }),
   ).pipe(
-    Effect.provide(ServerConfig.layerTest(process.cwd(), process.cwd())),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd()), NodeServices.layer),
+    ),
   );
 });
 
@@ -917,7 +920,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
 
       assert.equal(result?._tag, "Failure");
       assert.ok(result?._tag === "Failure");
-      assert.ok(result.failure instanceof ProviderAdapterRequestError);
+      assert.ok(isProviderAdapterRequestError(result.failure));
       assert.match(result.failure.detail, /not a subagent of this conversation/);
     }),
   );
@@ -959,7 +962,7 @@ transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
         text: "Anyone there?",
       }).pipe(Effect.result);
       assert.ok(refused._tag === "Failure");
-      assert.ok(refused.failure instanceof ProviderAdapterRequestError);
+      assert.ok(isProviderAdapterRequestError(refused.failure));
       assert.equal(refused.failure.code, "subagent_input_parent_only");
       assert.match(refused.failure.detail, /only accepts messages from its parent/);
       assert.equal(runtime.startStoredThreadTurnImpl.mock.calls.length, 1);

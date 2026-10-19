@@ -30,6 +30,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -89,13 +90,21 @@ interface RatesCacheFile {
   readonly document: unknown;
 }
 
+/** A cache file that is not JSON. */
+class CacheFileParseError extends Data.TaggedError("CacheFileParseError")<{
+  readonly cause: unknown;
+}> {}
+
 /**
  * Both on-disk caches hold documents that are narrowed by hand downstream
  * (`decodeScanCache`, `parseRateTable`), so a schema here would only restate
  * `unknown`. A parse failure means one cold scan, never a failed read.
  */
-const parseJsonFile = (raw: string): Effect.Effect<unknown, unknown> =>
-  Effect.try(() => JSON.parse(raw) as unknown);
+const parseJsonFile = (raw: string): Effect.Effect<unknown, CacheFileParseError> =>
+  Effect.try({
+    try: () => JSON.parse(raw) as unknown,
+    catch: (cause) => new CacheFileParseError({ cause }),
+  });
 
 function readRatesCacheFile(document: unknown): RatesCacheFile | null {
   if (typeof document !== "object" || document === null) return null;

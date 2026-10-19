@@ -45,7 +45,7 @@ function request<A>(input: {
   readonly path: string;
   readonly bearer?: string;
   readonly body?: unknown;
-  readonly decode: (value: unknown) => Effect.Effect<A, unknown>;
+  readonly decode: (value: unknown) => Effect.Effect<A, Schema.SchemaError>;
 }): Effect.Effect<A, RelayApiError> {
   return Effect.gen(function* () {
     const response = yield* Effect.tryPromise({
