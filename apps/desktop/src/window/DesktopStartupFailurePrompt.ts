@@ -199,11 +199,15 @@ const makeDesktopStartupFailurePrompt = Effect.gen(function* () {
   const notifyDatabaseRecovery: DesktopStartupFailurePromptShape["notifyDatabaseRecovery"] =
     Effect.fn("desktop.startupFailurePrompt.notifyDatabaseRecovery")((result) =>
       Effect.gen(function* () {
+        const detail =
+          result.reason === "foreign"
+            ? `Its data folder held a copy of another app's database (most likely T3 Code's), brought in by mistake by an older version of ${environment.displayName}. The copy was moved here:\n\n${result.backupDir}\n\n${environment.displayName} started with a new database. The other app's own data wasn't changed.`
+            : `A damaged local database prevented startup. It was preserved here:\n\n${result.backupDir}\n\n${environment.displayName} started with a new database. Your old database files are preserved in that folder.`;
         const response = yield* electronDialog.showMessageBox({
           type: "warning",
           title: `${environment.displayName} repaired its local data`,
           message: `${environment.displayName} recovered and started`,
-          detail: `A damaged local database prevented startup. It was preserved here:\n\n${result.backupDir}\n\n${environment.displayName} started with a new database. Your old database files are preserved in that folder.`,
+          detail,
           buttons: ["OK", "Open Recovery Folder"],
           defaultId: 0,
           cancelId: 0,

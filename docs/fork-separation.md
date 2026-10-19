@@ -33,6 +33,13 @@ Legacy `BADCODE_*` and `T3CODE_*` variables may remain as compatibility aliases
 where removing them would lose user data or break installed apps. When multiple
 aliases are present, `THREADLINES_*` wins.
 
+The data folder is the exception. T3 Code still uses `T3CODE_HOME` and `~/.t3`
+for its own live data, so Threadlines reads neither: following them would open
+T3 Code's database. The two apps share their first migration ids and then
+diverge, and the server refuses a database whose migration history names other
+steps (`persistence/MigrationHistory.ts`). The desktop sets such a copy aside
+when it sits in the default `~/.threadlines`, where earlier versions copied it.
+
 Keep bundle IDs, app IDs, and existing local data paths stable unless a dedicated
 identity-migration release handles the data movement. New setup instructions
 should still use Threadlines environment names.

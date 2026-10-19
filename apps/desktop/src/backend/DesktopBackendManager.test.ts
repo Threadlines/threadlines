@@ -1,6 +1,7 @@
 import {
   DESKTOP_LAUNCH_ID_HEADER,
   DesktopBackendBootstrap,
+  FOREIGN_DATABASE_EXIT_CODE,
   type DesktopBackendBootstrap as DesktopBackendBootstrapValue,
 } from "@threadlines/contracts";
 import { assert, describe, it } from "@effect/vitest";
@@ -144,7 +145,7 @@ function makeManagerLayer(input: {
         }),
         Layer.succeed(DesktopDatabaseRecovery.DesktopDatabaseRecovery, {
           completePendingRecovery: Effect.succeed(Option.none()),
-          recoverIfCorrupt: () => Effect.succeed(Option.none()),
+          recover: () => Effect.succeed(Option.none()),
           ...input.databaseRecovery,
         }),
         Layer.succeed(DesktopWindow.DesktopWindow, {
@@ -168,6 +169,23 @@ function makeManagerLayer(input: {
     ),
   );
 }
+
+const DATABASE_RECOVERY_SCENARIOS = [
+  {
+    name: "a corrupt database",
+    output:
+      "effect/sql/SqlError: Failed to prepare statement\n[cause]: Error: file is not a database\n",
+    exitCode: 1,
+    reason: "corrupt",
+  },
+  {
+    name: "another app's database",
+    output:
+      "ForeignDatabaseError: The database at /tmp/threadlines/userdata/state.sqlite was made by another app\n",
+    exitCode: FOREIGN_DATABASE_EXIT_CODE,
+    reason: "foreign",
+  },
+] as const;
 
 describe("DesktopBackendManager", () => {
   it.effect("spawns the backend with fd3 bootstrap JSON and reports HTTP readiness", () =>
@@ -543,98 +561,101 @@ describe("DesktopBackendManager", () => {
       }),
   );
 
-  it.effect("preserves a corrupt database once and starts with fresh state", () =>
-    Effect.gen(function* () {
-      const starts = yield* Queue.unbounded<number>();
-      const recoveryReports =
-        yield* Queue.unbounded<DesktopStartupFailurePrompt.DesktopStartupFailureReport>();
-      const recoveryNotices =
-        yield* Queue.unbounded<DesktopDatabaseRecovery.DesktopDatabaseRecoveryResult>();
-      const finalExit = yield* Deferred.make<void>();
-      const ready = yield* Deferred.make<void>();
-      const promptCount = yield* Ref.make(0);
-      let startCount = 0;
+  it.effect.each(DATABASE_RECOVERY_SCENARIOS)(
+    "preserves $name once and starts with fresh state",
+    (scenario) =>
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const recoveryReports =
+          yield* Queue.unbounded<DesktopStartupFailurePrompt.DesktopStartupFailureReport>();
+        const recoveryNotices =
+          yield* Queue.unbounded<DesktopDatabaseRecovery.DesktopDatabaseRecoveryResult>();
+        const finalExit = yield* Deferred.make<void>();
+        const ready = yield* Deferred.make<void>();
+        const promptCount = yield* Ref.make(0);
+        let startCount = 0;
 
-      const spawnerLayer = Layer.succeed(
-        ChildProcessSpawner.ChildProcessSpawner,
-        ChildProcessSpawner.make(() =>
-          Effect.gen(function* () {
-            startCount += 1;
-            yield* Queue.offer(starts, startCount);
-            if (startCount <= 3) {
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              startCount += 1;
+              yield* Queue.offer(starts, startCount);
+              if (startCount <= 3) {
+                return makeProcess({
+                  stdout: Stream.make(new TextEncoder().encode(scenario.output)),
+                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(scenario.exitCode)),
+                });
+              }
+              const scope = yield* Scope.Scope;
+              yield* Scope.addFinalizer(
+                scope,
+                Deferred.succeed(finalExit, void 0).pipe(Effect.asVoid),
+              );
               return makeProcess({
-                stdout: Stream.make(
-                  new TextEncoder().encode(
-                    "effect/sql/SqlError: Failed to prepare statement\n[cause]: Error: file is not a database\n",
-                  ),
+                exitCode: Deferred.await(finalExit).pipe(
+                  Effect.as(ChildProcessSpawner.ExitCode(0)),
                 ),
-                exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+                kill: () => Deferred.succeed(finalExit, void 0).pipe(Effect.asVoid),
               });
-            }
-            const scope = yield* Scope.Scope;
-            yield* Scope.addFinalizer(
-              scope,
-              Deferred.succeed(finalExit, void 0).pipe(Effect.asVoid),
-            );
-            return makeProcess({
-              exitCode: Deferred.await(finalExit).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
-              kill: () => Deferred.succeed(finalExit, void 0).pipe(Effect.asVoid),
-            });
-          }),
-        ),
-      );
+            }),
+          ),
+        );
 
-      const managerLayer = makeManagerLayer({
-        spawnerLayer,
-        httpClientLayer: httpClientLayer((request) =>
-          startCount >= 4 ? Effect.succeed(responseForRequest(request, 200)) : Effect.never,
-        ),
-        databaseRecovery: {
-          recoverIfCorrupt: (report) =>
-            Queue.offer(recoveryReports, report).pipe(
-              Effect.as(
-                Option.some({
-                  backupDir: "/tmp/threadlines/userdata/recovery/database-test",
-                  databasePath: "/tmp/threadlines/userdata/state.sqlite",
-                  preservedFiles: ["state.sqlite"],
-                }),
+        const managerLayer = makeManagerLayer({
+          spawnerLayer,
+          httpClientLayer: httpClientLayer((request) =>
+            startCount >= 4 ? Effect.succeed(responseForRequest(request, 200)) : Effect.never,
+          ),
+          databaseRecovery: {
+            recover: (report) =>
+              Queue.offer(recoveryReports, report).pipe(
+                Effect.as(
+                  Option.some({
+                    reason: scenario.reason,
+                    backupDir: "/tmp/threadlines/userdata/recovery/database-test",
+                    databasePath: "/tmp/threadlines/userdata/state.sqlite",
+                    preservedFiles: ["state.sqlite"],
+                  }),
+                ),
               ),
-            ),
-        },
-        startupFailurePrompt: {
-          handle: () => Ref.update(promptCount, (count) => count + 1).pipe(Effect.as("quit")),
-          notifyDatabaseRecovery: (result) => Queue.offer(recoveryNotices, result),
-        },
-        desktopWindow: {
-          handleBackendReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),
-        },
-      });
+          },
+          startupFailurePrompt: {
+            handle: () => Ref.update(promptCount, (count) => count + 1).pipe(Effect.as("quit")),
+            notifyDatabaseRecovery: (result) => Queue.offer(recoveryNotices, result),
+          },
+          desktopWindow: {
+            handleBackendReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),
+          },
+        });
 
-      yield* Effect.gen(function* () {
-        const manager = yield* DesktopBackendManager.DesktopBackendManager;
-        yield* manager.start;
-        assert.equal(yield* Queue.take(starts), 1);
-        yield* TestClock.adjust(Duration.millis(500));
-        assert.equal(yield* Queue.take(starts), 2);
-        yield* TestClock.adjust(Duration.seconds(1));
-        assert.equal(yield* Queue.take(starts), 3);
+        yield* Effect.gen(function* () {
+          const manager = yield* DesktopBackendManager.DesktopBackendManager;
+          yield* manager.start;
+          assert.equal(yield* Queue.take(starts), 1);
+          yield* TestClock.adjust(Duration.millis(500));
+          assert.equal(yield* Queue.take(starts), 2);
+          yield* TestClock.adjust(Duration.seconds(1));
+          assert.equal(yield* Queue.take(starts), 3);
 
-        const report = yield* Queue.take(recoveryReports);
-        assert.include(report.outputTail, "file is not a database");
-        assert.equal(yield* Queue.take(starts), 4);
-        yield* Deferred.await(ready);
+          const report = yield* Queue.take(recoveryReports);
+          assert.deepEqual(report.lastExitCode, Option.some(scenario.exitCode));
+          assert.include(report.outputTail, scenario.output.trim());
+          assert.equal(yield* Queue.take(starts), 4);
+          yield* Deferred.await(ready);
 
-        const notice = yield* Queue.take(recoveryNotices);
-        assert.equal(notice.backupDir, "/tmp/threadlines/userdata/recovery/database-test");
-        assert.equal(yield* Ref.get(promptCount), 0);
-        assert.equal(yield* Queue.size(recoveryReports), 0);
+          const notice = yield* Queue.take(recoveryNotices);
+          assert.equal(notice.reason, scenario.reason);
+          assert.equal(notice.backupDir, "/tmp/threadlines/userdata/recovery/database-test");
+          assert.equal(yield* Ref.get(promptCount), 0);
+          assert.equal(yield* Queue.size(recoveryReports), 0);
 
-        const snapshot = yield* manager.snapshot;
-        assert.isTrue(snapshot.ready);
-        assert.equal(snapshot.restartAttempt, 0);
-        yield* manager.stop();
-      }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
-    }),
+          const snapshot = yield* manager.snapshot;
+          assert.isTrue(snapshot.ready);
+          assert.equal(snapshot.restartAttempt, 0);
+          yield* manager.stop();
+        }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+      }),
   );
 
   it.effect("does not loop automatic recovery when fresh state also fails", () =>
@@ -665,10 +686,11 @@ describe("DesktopBackendManager", () => {
         spawnerLayer,
         httpClientLayer: httpClientLayer(() => Effect.never),
         databaseRecovery: {
-          recoverIfCorrupt: () =>
+          recover: () =>
             Ref.update(recoveryCount, (count) => count + 1).pipe(
               Effect.as(
                 Option.some({
+                  reason: "corrupt" as const,
                   backupDir: "/tmp/threadlines/userdata/recovery/database-test",
                   databasePath: "/tmp/threadlines/userdata/state.sqlite",
                   preservedFiles: ["state.sqlite"],
@@ -733,11 +755,12 @@ describe("DesktopBackendManager", () => {
         spawnerLayer,
         httpClientLayer: httpClientLayer(() => Effect.never),
         databaseRecovery: {
-          recoverIfCorrupt: () =>
+          recover: () =>
             Deferred.succeed(recoveryStarted, void 0).pipe(
               Effect.andThen(Deferred.await(allowRecovery)),
               Effect.as(
                 Option.some({
+                  reason: "corrupt" as const,
                   backupDir: "/tmp/threadlines/userdata/recovery/database-test",
                   databasePath: "/tmp/threadlines/userdata/state.sqlite",
                   preservedFiles: ["state.sqlite"],

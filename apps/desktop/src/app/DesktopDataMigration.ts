@@ -8,9 +8,10 @@ import * as PlatformError from "effect/PlatformError";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
-const THREADLINES_BASE_DIR_NAME = ".threadlines";
+// Our own folder from before the rename. Not T3 Code's `~/.t3`: that is
+// another app's live data, and its database shares our first migration ids but
+// not the later ones, so a copy left Threadlines unable to start.
 const BADCODE_BASE_DIR_NAME = ".badcode";
-const LEGACY_T3CODE_BASE_DIR_NAME = ".t3";
 
 export type DesktopDataMigrationStatus =
   | "migrated"
@@ -47,7 +48,7 @@ const hasDirectoryEntries = (
     Effect.orElseSucceed(() => false),
   );
 
-export const migrateLegacyDesktopData = Effect.fn("desktop.dataMigration.legacyT3Code")(
+export const migrateLegacyDesktopData = Effect.fn("desktop.dataMigration.legacyBadcode")(
   function* (): Effect.fn.Return<
     DesktopDataMigrationStatus,
     DesktopDataMigrationError,
@@ -56,37 +57,17 @@ export const migrateLegacyDesktopData = Effect.fn("desktop.dataMigration.legacyT
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const defaultThreadlinesBaseDir = path.join(
-      environment.homeDirectory,
-      THREADLINES_BASE_DIR_NAME,
-    );
 
-    if (path.resolve(environment.baseDir) !== path.resolve(defaultThreadlinesBaseDir)) {
+    if (!DesktopEnvironment.usesDefaultBaseDir(environment)) {
       return "skipped-custom-base-dir";
     }
 
-    const legacySourceCandidates = [
-      path.join(environment.homeDirectory, BADCODE_BASE_DIR_NAME),
-      path.join(environment.homeDirectory, LEGACY_T3CODE_BASE_DIR_NAME),
-    ];
-    let legacyBaseDir: string | null = null;
-    let sawEmptyLegacyDir = false;
-    for (const candidate of legacySourceCandidates) {
-      const legacyHasEntries = yield* hasDirectoryEntries(fileSystem, candidate);
-      if (legacyHasEntries) {
-        legacyBaseDir = candidate;
-        break;
-      }
+    const legacyBaseDir = path.join(environment.homeDirectory, BADCODE_BASE_DIR_NAME);
+    if (!(yield* hasDirectoryEntries(fileSystem, legacyBaseDir))) {
       const legacyExists = yield* fileSystem
-        .exists(candidate)
+        .exists(legacyBaseDir)
         .pipe(Effect.orElseSucceed(() => false));
-      if (legacyExists) {
-        sawEmptyLegacyDir = true;
-      }
-    }
-
-    if (!legacyBaseDir) {
-      return sawEmptyLegacyDir ? "skipped-empty-legacy-dir" : "skipped-missing-legacy-dir";
+      return legacyExists ? "skipped-empty-legacy-dir" : "skipped-missing-legacy-dir";
     }
 
     const threadlinesExists = yield* fileSystem

@@ -97,7 +97,7 @@ function environmentLayer(input: {
       Layer.mergeAll(
         NodeServices.layer,
         DesktopConfig.layerTest({
-          T3CODE_HOME: input.baseDir,
+          THREADLINES_HOME: input.baseDir,
           T3CODE_PORT: "3773",
           VITE_DEV_SERVER_URL: input.isDevelopment === false ? undefined : "http://127.0.0.1:5733",
         }),

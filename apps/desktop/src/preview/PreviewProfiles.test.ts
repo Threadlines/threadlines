@@ -49,7 +49,7 @@ function makeLayer(baseDir: string, previewSession: Layer.Layer<PreviewSession.P
     runningUnderArm64Translation: false,
   }).pipe(
     Layer.provide(
-      Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ T3CODE_HOME: baseDir })),
+      Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ THREADLINES_HOME: baseDir })),
     ),
   );
   return PreviewProfiles.layer.pipe(

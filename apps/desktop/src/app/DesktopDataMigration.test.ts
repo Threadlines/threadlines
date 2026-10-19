@@ -70,7 +70,7 @@ describe("DesktopDataMigration", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("falls back to legacy .t3 data when .badcode is missing", () =>
+  it.effect("leaves T3 Code's .t3 folder alone", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -78,23 +78,20 @@ describe("DesktopDataMigration", () => {
         prefix: "threadlines-t3-data-migration-",
       });
 
+      // T3 Code's live data folder: its database shares our first migration
+      // ids but not the later ones, so a copy left Threadlines unable to start.
       yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3", "userdata"), {
         recursive: true,
       });
       yield* fileSystem.writeFileString(
-        path.join(homeDirectory, ".t3", "userdata", "settings.json"),
-        "legacy-settings",
+        path.join(homeDirectory, ".t3", "userdata", "state.sqlite"),
+        "t3code-database",
       );
 
       const status = yield* runMigration(homeDirectory);
 
-      assert.equal(status, "migrated");
-      assert.equal(
-        yield* fileSystem.readFileString(
-          path.join(homeDirectory, ".threadlines", "userdata", "settings.json"),
-        ),
-        "legacy-settings",
-      );
+      assert.equal(status, "skipped-missing-legacy-dir");
+      assert.isFalse(yield* fileSystem.exists(path.join(homeDirectory, ".threadlines")));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

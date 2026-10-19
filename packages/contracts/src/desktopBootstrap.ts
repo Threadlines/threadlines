@@ -46,3 +46,11 @@ export const DESKTOP_LAUNCH_ID_HEADER = "x-threadlines-desktop-launch-id";
  */
 export const MIGRATION_RUNNING_LOG_PREFIX = "Running migration ";
 export const MIGRATION_FINISHED_LOG_PREFIX = "Finished migration ";
+
+/**
+ * Exit code of a server that stopped because its database was made by another
+ * app (its migration history names other steps), so it left the file alone.
+ * The desktop reads the code rather than the error text, which a long trace can
+ * push out of the captured output, to set such a copy aside and start fresh.
+ */
+export const FOREIGN_DATABASE_EXIT_CODE = 78;

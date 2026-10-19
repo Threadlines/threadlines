@@ -225,7 +225,6 @@ describe("DesktopEnvironment", () => {
           BADCODE_HOME: "/tmp/compat-home",
           BADCODE_PORT: "5888",
           BADCODE_COMMIT_HASH: "badcodehash",
-          T3CODE_HOME: "/tmp/legacy-home",
           T3CODE_PORT: "4888",
           T3CODE_COMMIT_HASH: "legacyhash",
         },

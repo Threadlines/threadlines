@@ -151,6 +151,23 @@ function resolveDesktopRuntimeInfo(input: {
   };
 }
 
+const DEFAULT_BASE_DIR_NAME = ".threadlines";
+
+/**
+ * Whether Threadlines keeps its data in the default `~/.threadlines`. Only that
+ * folder is the desktop's to repair: earlier versions copied legacy data into
+ * it, while a THREADLINES_HOME someone chose may be another app's live folder.
+ */
+export function usesDefaultBaseDir(
+  environment: Pick<DesktopEnvironmentShape, "baseDir" | "homeDirectory" | "path">,
+): boolean {
+  const { path } = environment;
+  return (
+    path.resolve(environment.baseDir) ===
+    path.resolve(path.join(environment.homeDirectory, DEFAULT_BASE_DIR_NAME))
+  );
+}
+
 const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
   input: MakeDesktopEnvironmentInput,
 ): Effect.fn.Return<DesktopEnvironmentShape, Config.ConfigError, Path.Path> {
@@ -173,7 +190,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     },
   });
   const baseDir = Option.getOrElse(config.threadlinesHome, () =>
-    path.join(homeDirectory, ".threadlines"),
+    path.join(homeDirectory, DEFAULT_BASE_DIR_NAME),
   );
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
