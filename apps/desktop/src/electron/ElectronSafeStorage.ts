@@ -50,19 +50,23 @@ export class ElectronSafeStorage extends Context.Service<
   ElectronSafeStorageShape
 >()("@threadlines/desktop/ElectronSafeStorage") {}
 
+// The async methods use the same per-platform key stores as the synchronous
+// ones, which Electron deprecates in 45 and removes in 46, and they decrypt
+// payloads the synchronous `encryptString` wrote. They only work after the app
+// is ready; every caller runs from IPC handlers registered after `whenReady`.
 const make = ElectronSafeStorage.of({
-  isEncryptionAvailable: Effect.try({
-    try: () => Electron.safeStorage.isEncryptionAvailable(),
+  isEncryptionAvailable: Effect.tryPromise({
+    try: () => Electron.safeStorage.isAsyncEncryptionAvailable(),
     catch: (cause) => new ElectronSafeStorageAvailabilityError({ cause }),
   }),
   encryptString: (value) =>
-    Effect.try({
-      try: () => Electron.safeStorage.encryptString(value),
+    Effect.tryPromise({
+      try: () => Electron.safeStorage.encryptStringAsync(value),
       catch: (cause) => new ElectronSafeStorageEncryptError({ cause }),
     }),
   decryptString: (value) =>
-    Effect.try({
-      try: () => Electron.safeStorage.decryptString(Buffer.from(value)),
+    Effect.tryPromise({
+      try: async () => (await Electron.safeStorage.decryptStringAsync(Buffer.from(value))).result,
       catch: (cause) => new ElectronSafeStorageDecryptError({ cause }),
     }),
 });
