@@ -1,8 +1,9 @@
-import type {
-  ProviderDriverKind,
-  RuntimeMode,
-  ServerProvider,
-  ServerProviderModel,
+import {
+  LEGACY_RUNTIME_MODES,
+  type ProviderDriverKind,
+  type RuntimeMode,
+  type ServerProvider,
+  type ServerProviderModel,
 } from "@threadlines/contracts";
 import {
   LockIcon,
@@ -11,6 +12,8 @@ import {
   ShieldCheckIcon,
   type LucideIcon,
 } from "lucide-react";
+
+import { effectiveRuntimeMode } from "@threadlines/shared/runtimeMode";
 
 import {
   getModelUnsupportedRuntimeModes,
@@ -75,11 +78,16 @@ export interface RuntimeModeOption {
 export function deriveRuntimeModeOptions(input: {
   providers: ReadonlyArray<ServerProvider>;
   provider: ProviderDriverKind;
+  /** The selected instance's own snapshot, when known: a custom instance or a
+   *  community agent is not its driver's default instance. */
+  snapshot?: ServerProvider | null;
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
   modelName?: string;
 }): RuntimeModeOption[] {
-  const providerModes = getProviderSupportedRuntimeModes(input.providers, input.provider);
+  const providerModes = input.snapshot
+    ? (input.snapshot.supportedRuntimeModes ?? LEGACY_RUNTIME_MODES)
+    : getProviderSupportedRuntimeModes(input.providers, input.provider);
   const modelUnsupported = getModelUnsupportedRuntimeModes(
     input.models,
     input.model,
@@ -100,4 +108,49 @@ export function deriveRuntimeModeOptions(input: {
     }
     return option;
   });
+}
+
+/**
+ * The access level the composer shows: the one the chat runs at. That is the
+ * chosen level when the agent and model offer it, else the next safer one they
+ * do (`effectiveRuntimeMode`, the rule every driver applies). Until the
+ * server's agent list arrives nothing is known, so the choice shows as is.
+ */
+export function shownRuntimeMode(input: {
+  providers: ReadonlyArray<ServerProvider>;
+  mode: RuntimeMode;
+  options: ReadonlyArray<RuntimeModeOption>;
+}): RuntimeMode {
+  if (input.providers.length === 0) {
+    return input.mode;
+  }
+  const offered = input.options
+    .filter((option) => option.disabled !== true)
+    .map((option) => option.mode);
+  return effectiveRuntimeMode(input.mode, offered);
+}
+
+/** The composer's access-level controls for one agent and model. */
+export function deriveAccessLevel(input: {
+  providers: ReadonlyArray<ServerProvider>;
+  provider: ProviderDriverKind;
+  snapshot: ServerProvider | null | undefined;
+  models: ReadonlyArray<ServerProviderModel>;
+  model: string | null | undefined;
+  /** The level the thread's user chose. */
+  mode: RuntimeMode;
+}): { options: RuntimeModeOption[]; shown: RuntimeMode } {
+  const modelName = input.models.find((candidate) => candidate.slug === input.model)?.name;
+  const options = deriveRuntimeModeOptions({
+    providers: input.providers,
+    provider: input.provider,
+    snapshot: input.snapshot ?? null,
+    models: input.models,
+    model: input.model,
+    ...(modelName ? { modelName } : {}),
+  });
+  return {
+    options,
+    shown: shownRuntimeMode({ providers: input.providers, mode: input.mode, options }),
+  };
 }

@@ -31,7 +31,9 @@ import {
   AntigravitySettings,
   type ModelCapabilities,
   ProviderDriverKind,
+  type ProviderInteractionMode,
   type ProviderOptionSelection,
+  type RuntimeMode,
   type ServerProviderModel,
 } from "@threadlines/contracts";
 import {
@@ -94,6 +96,28 @@ export const ANTIGRAVITY_PRESENTATION = {
   displayName: DISPLAY_NAME,
   showInteractionModeToggle: true,
 } as const;
+
+/**
+ * The agent's own mode for a thread's access level. Antigravity has no Auto,
+ * so Auto runs at the next safer level, Auto-accept edits
+ * (`effectiveRuntimeMode`, the rule the composer shows).
+ */
+export function antigravityAgentMode(
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode | undefined,
+): "default" | "auto_edit" | "yolo" {
+  // `/plan` only writes a plan; nothing else should run unasked.
+  if (interactionMode === "plan") return "default";
+  switch (runtimeMode) {
+    case "full-access":
+      return "yolo";
+    case "auto":
+    case "auto-accept-edits":
+      return "auto_edit";
+    case "approval-required":
+      return "default";
+  }
+}
 
 // ── Sign-in URL ──────────────────────────────────────────────────────
 
@@ -537,18 +561,8 @@ export function makeAntigravityDescriptor(
     ...(signIn.method === "gemini-api-key" || signIn.method === "agent-platform"
       ? { authMethodId: signIn.method }
       : {}),
-    agentModeFor: ({ runtimeMode, interactionMode }) => {
-      // `/plan` only writes a plan; nothing else should run unasked.
-      if (interactionMode === "plan") return "default";
-      switch (runtimeMode) {
-        case "full-access":
-          return "yolo";
-        case "auto-accept-edits":
-          return "auto_edit";
-        default:
-          return "default";
-      }
-    },
+    agentModeFor: ({ runtimeMode, interactionMode }) =>
+      antigravityAgentMode(runtimeMode, interactionMode),
     classifyPermissionRequest: antigravityQuestion,
     permissionOptionWarning: antigravityOptionWarning,
     cancellationNotice: "The request was cancelled by the client.",

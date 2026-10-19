@@ -1,7 +1,10 @@
+import { LEGACY_RUNTIME_MODES, RUNTIME_MODES } from "@threadlines/contracts";
+import { effectiveRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { describe, expect, it } from "vite-plus/test";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import {
+  antigravityAgentMode,
   antigravityModelsFromChoices,
   parseAntigravitySignInUrl,
   resolveAntigravityModelId,
@@ -55,6 +58,18 @@ describe("Antigravity models", () => {
     expect(resolve("gemini-3.1-pro", "high")).toBe("gemini-pro-agent");
     expect(resolve("gemini-3.1-pro", "low")).toBe("gemini-3.1-pro-low");
     expect(resolve("gemini-3.7-flash-high")).toBe("gemini-3.7-flash-high");
+  });
+});
+
+describe("antigravityAgentMode", () => {
+  it("runs a level Antigravity lacks at the level the composer shows", () => {
+    for (const mode of RUNTIME_MODES) {
+      const shown = effectiveRuntimeMode(mode, LEGACY_RUNTIME_MODES)!;
+      expect(antigravityAgentMode(mode, "default"), mode).toBe(
+        antigravityAgentMode(shown, "default"),
+      );
+    }
+    expect(antigravityAgentMode("auto", "default")).toBe("auto_edit");
   });
 });
 

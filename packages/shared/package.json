@@ -314,6 +314,10 @@
     "./commandRuns": {
       "types": "./src/commandRuns.ts",
       "import": "./src/commandRuns.ts"
+    },
+    "./runtimeMode": {
+      "types": "./src/runtimeMode.ts",
+      "import": "./src/runtimeMode.ts"
     }
   },
   "scripts": {

@@ -25,10 +25,12 @@ import {
   ApprovalRequestId,
   ClaudeSettings,
   type ClaudeWorkflowSize,
+  LEGACY_RUNTIME_MODES,
   MessageId,
   ProviderDriverKind,
   ProviderItemId,
   ProviderRuntimeEvent,
+  RUNTIME_MODES,
   type RuntimeMode,
   ThreadId,
   ProviderInstanceId,
@@ -9913,6 +9915,67 @@ describe("ClaudeAdapterLive", () => {
         });
 
         assert.deepEqual(harness.query.setPermissionModeCalls, ["plan", expectedBase]);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "moves an Auto thread's permission mode with a switch to and from a model without Auto",
+    () => {
+      const harness = makeHarness({
+        resolveModelMetadata: (model) =>
+          Effect.succeed({
+            capabilities: createModelCapabilities({ optionDescriptors: [] }),
+            supportedRuntimeModes:
+              model === "claude-haiku-4-5" ? LEGACY_RUNTIME_MODES : RUNTIME_MODES,
+          }),
+      });
+      const instanceId = ProviderInstanceId.make("claudeAgent");
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: createModelSelection(instanceId, "claude-haiku-4-5"),
+          runtimeMode: "auto",
+        });
+        assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "acceptEdits");
+
+        const turnCompleted = (id: string) =>
+          Effect.gen(function* () {
+            const fiber = yield* Stream.filter(
+              adapter.streamEvents,
+              (event) => event.type === "turn.completed",
+            ).pipe(Stream.runHead, Effect.forkChild);
+            harness.query.emit({
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              errors: [],
+              session_id: "sdk-session-model-switch",
+              uuid: id,
+            } as unknown as SDKMessage);
+            yield* Fiber.join(fiber);
+          });
+
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "on a model with Auto",
+          modelSelection: createModelSelection(instanceId, "claude-opus-6"),
+          attachments: [],
+        });
+        yield* turnCompleted("result-opus");
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "back without Auto",
+          modelSelection: createModelSelection(instanceId, "claude-haiku-4-5"),
+          attachments: [],
+        });
+
+        assert.deepEqual(harness.query.setPermissionModeCalls, ["auto", "acceptEdits"]);
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),

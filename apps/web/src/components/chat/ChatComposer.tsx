@@ -207,7 +207,7 @@ import {
   providerModelSupportsInputModality,
 } from "../../providerModels";
 import {
-  deriveRuntimeModeOptions,
+  deriveAccessLevel,
   runtimeModeConfig,
   type RuntimeModeOption,
 } from "../../runtimeModeOptions";
@@ -1070,24 +1070,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
-  const composerProviderControls = useMemo(() => {
-    const selectedModelName = selectedProviderModels.find(
-      (candidate) => candidate.slug === selectedModel,
-    )?.name;
-    return {
+  const composerProviderControls = useMemo(
+    () => ({
       showInteractionModeToggle: getProviderInteractionModeToggle(
         providerStatuses,
         selectedProvider,
       ),
-      runtimeModeOptions: deriveRuntimeModeOptions({
-        providers: providerStatuses,
-        provider: selectedProvider,
-        models: selectedProviderModels,
-        model: selectedModel,
-        ...(selectedModelName ? { modelName: selectedModelName } : {}),
-      }),
-    };
-  }, [providerStatuses, selectedProvider, selectedProviderModels, selectedModel]);
+    }),
+    [providerStatuses, selectedProvider],
+  );
   const selectedModelSelection = useMemo<ModelSelection>(
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
@@ -1682,6 +1673,39 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       : null;
   const showRoomAgentTraits =
     roomAgentTraitsProps !== null && shouldRenderTraitsControls(roomAgentTraitsProps);
+
+  // The access level is the thread's, and each agent runs it at what its own
+  // agent and model offer, so the controls describe the agent the next message
+  // goes to: an addressed room agent, else the thread's own.
+  const accessAgentInstanceId =
+    addressedRoomAgent && addressedRoomAgentEntry ? addressedRoomAgentEntry.instanceId : null;
+  const accessAgentModel = addressedRoomAgent?.modelSelection.model ?? null;
+  const accessLevel = useMemo(() => {
+    const entry =
+      accessAgentInstanceId === null
+        ? undefined
+        : providerInstanceEntries.find(
+            (candidate) => candidate.instanceId === accessAgentInstanceId,
+          );
+    return deriveAccessLevel({
+      providers: providerStatuses,
+      provider: entry?.driverKind ?? selectedProvider,
+      snapshot: entry ? entry.snapshot : selectedProviderStatus,
+      models: entry?.models ?? selectedProviderModels,
+      model: entry ? accessAgentModel : selectedModel,
+      mode: runtimeMode,
+    });
+  }, [
+    accessAgentInstanceId,
+    accessAgentModel,
+    providerInstanceEntries,
+    providerStatuses,
+    runtimeMode,
+    selectedModel,
+    selectedProvider,
+    selectedProviderModels,
+    selectedProviderStatus,
+  ]);
 
   // The context window meter, its usage card, and the prompt suggestion
   // describe the agent the next message goes to: in a room, an added agent's
@@ -2450,7 +2474,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     String(selectedModelForPickerWithCustomFallback),
     activeFallbackModelDisplayName ?? "",
     interactionMode,
-    runtimeMode,
+    accessLevel.shown,
     composerFooterActionLayoutKey,
     composerFooterHasWideActions,
     isComposerPrimaryActionsCompact,
@@ -4076,8 +4100,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     {isComposerFooterCompact ? (
                       <CompactComposerControlsMenu
                         interactionMode={interactionMode}
-                        runtimeMode={runtimeMode}
-                        runtimeModeOptions={composerProviderControls.runtimeModeOptions}
+                        runtimeMode={accessLevel.shown}
+                        runtimeModeOptions={accessLevel.options}
                         showInteractionModeToggle={
                           composerProviderControls.showInteractionModeToggle
                         }
@@ -4122,8 +4146,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                             composerProviderControls.showInteractionModeToggle
                           }
                           interactionMode={interactionMode}
-                          runtimeMode={runtimeMode}
-                          runtimeModeOptions={composerProviderControls.runtimeModeOptions}
+                          runtimeMode={accessLevel.shown}
+                          runtimeModeOptions={accessLevel.options}
                           onToggleInteractionMode={toggleInteractionMode}
                           onRuntimeModeChange={handleRuntimeModeChange}
                         />
@@ -4208,8 +4232,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         !hasBlockingQuestion && composerSendState.hasSendableContent
                       }
                       preserveComposerFocusOnPointerDown={isMobileViewport}
-                      runtimeMode={runtimeMode}
-                      runtimeModeOptions={composerProviderControls.runtimeModeOptions}
+                      runtimeMode={accessLevel.shown}
+                      runtimeModeOptions={accessLevel.options}
                       onRuntimeModeChange={handleRuntimeModeChange}
                       followUpDelivery={followUpDelivery}
                       onFollowUpDeliveryChange={handleFollowUpDeliveryChange}
