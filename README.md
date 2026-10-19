@@ -116,7 +116,7 @@ Threadlines runs these coding agents, signed in with your own accounts:
 - [Grok Build](https://www.threadlines.dev/agents/grok) by xAI, in nightly builds until 0.7.0
 - [fx](https://www.threadlines.dev/agents/fx) by Vercel
 - [Muse Code](https://www.threadlines.dev/agents/muse-code) by Meta, in nightly builds until 0.7.0
-- [Pi](https://www.threadlines.dev/agents/pi) by Earendil, as a community agent
+- [Pi](https://www.threadlines.dev/agents/pi) by Earendil, in nightly builds until 0.7.0
 
 Other agents from the open [ACP registry](https://github.com/agentclientprotocol/registry)
 can run as community agents. Threadlines installs them but hasn't tested them.

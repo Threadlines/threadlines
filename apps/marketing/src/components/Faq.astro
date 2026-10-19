@@ -1,0 +1,89 @@
+---
+/** Questions that open one at a time when clicked, so a page shows only the questions until a reader picks one. */
+interface Props {
+  items: readonly { question: string; answer: string }[];
+}
+
+const { items } = Astro.props;
+---
+
+<div class="faq">
+  {
+    items.map((item) => (
+      <details>
+        <summary>
+          <span>{item.question}</span>
+          <svg
+            class="faq-chevron"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </summary>
+        <p>{item.answer}</p>
+      </details>
+    ))
+  }
+</div>
+
+<style>
+  .faq {
+    display: grid;
+    max-width: 72ch;
+  }
+
+  details {
+    border-bottom: 1px solid var(--border);
+  }
+
+  details:first-child {
+    border-top: 1px solid var(--border);
+  }
+
+  summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 13px 0;
+    color: var(--fg);
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
+    transition: color 0.2s ease;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  summary:hover {
+    color: var(--accent-bright);
+  }
+
+  .faq-chevron {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    color: var(--fg-dim);
+    transition: transform 0.2s ease;
+  }
+
+  details[open] .faq-chevron {
+    transform: rotate(180deg);
+  }
+
+  p {
+    padding: 0 0 16px;
+    color: var(--fg-muted);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+</style>
