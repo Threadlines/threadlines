@@ -594,14 +594,15 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   threadlinesHome: Flag.string("home-dir").pipe(
     Flag.withDescription(
-      "Base directory for all Threadlines data (equivalent to THREADLINES_HOME; legacy BADCODE_HOME and T3CODE_HOME are still accepted).",
+      "Base directory for all Threadlines data (equivalent to THREADLINES_HOME; legacy BADCODE_HOME is still accepted).",
     ),
+    // Not T3CODE_HOME: that is T3 Code's own setting, and following it would
+    // run Threadlines against T3 Code's data folder.
     Flag.withFallbackConfig(
-      resolveAliasedConfig(
+      Config.all([
         optionalStringConfig("THREADLINES_HOME"),
         optionalStringConfig("BADCODE_HOME"),
-        optionalStringConfig("T3CODE_HOME"),
-      ).pipe(Config.map(({ value }) => value)),
+      ]).pipe(Config.map(([threadlinesHome, badcodeHome]) => threadlinesHome ?? badcodeHome)),
     ),
   ),
   noBrowser: Flag.boolean("no-browser").pipe(

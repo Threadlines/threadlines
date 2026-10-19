@@ -743,21 +743,20 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
 
               if (
                 !nextState.automaticDatabaseRecoveryAttempted &&
-                DesktopDatabaseRecovery.isDefinitiveSqliteCorruption(report)
+                Option.isSome(DesktopDatabaseRecovery.databaseRecoveryReason(report))
               ) {
                 yield* Ref.update(state, (latest) => ({
                   ...latest,
                   automaticDatabaseRecoveryAttempted: true,
                 }));
-                const recoveryResult = yield* Effect.result(
-                  databaseRecovery.recoverIfCorrupt(report),
-                );
+                const recoveryResult = yield* Effect.result(databaseRecovery.recover(report));
                 if (Result.isSuccess(recoveryResult)) {
                   const recovered = recoveryResult.success;
                   if (Option.isSome(recovered)) {
                     yield* logBackendManagerWarning(
-                      "damaged SQLite database preserved; restarting with fresh state",
+                      "database that blocked startup preserved; restarting with fresh state",
                       {
+                        reason: recovered.value.reason,
                         backupDir: recovered.value.backupDir,
                         preservedFiles: recovered.value.preservedFiles.join(","),
                       },

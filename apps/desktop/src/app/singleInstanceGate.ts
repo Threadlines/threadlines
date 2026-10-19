@@ -68,7 +68,7 @@ export const resolveServerRuntimeStatePath = (input: {
   readonly path: SingleInstancePathApi;
 }): string => {
   const baseDir =
-    readDesktopEnvAlias(input.env, ["THREADLINES_HOME", "BADCODE_HOME", "T3CODE_HOME"]) ??
+    readDesktopEnvAlias(input.env, ["THREADLINES_HOME", "BADCODE_HOME"]) ??
     input.path.join(input.homeDirectory, ".threadlines");
   const stateDirName = isDesktopDevelopmentEnv(input.env) ? "dev" : "userdata";
   return input.path.join(baseDir, stateDirName, SERVER_RUNTIME_STATE_FILE_NAME);

@@ -39,7 +39,7 @@ function makeEnvironmentLayer(baseDir: string, appVersion = "0.0.17") {
     runningUnderArm64Translation: false,
   }).pipe(
     Layer.provide(
-      Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ T3CODE_HOME: baseDir })),
+      Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ THREADLINES_HOME: baseDir })),
     ),
   );
 }

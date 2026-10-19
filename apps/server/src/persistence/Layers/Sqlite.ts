@@ -4,11 +4,13 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { assertOwnMigrationHistory } from "../MigrationHistory.ts";
 import { runMigrations } from "../Migrations.ts";
 import { ServerConfig } from "../../config.ts";
 
 type RuntimeSqliteLayerConfig = {
   readonly filename: string;
+  readonly readonly?: boolean;
   readonly spanAttributes?: Record<string, unknown>;
 };
 
@@ -56,6 +58,13 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+
+  // Another app's database is refused before it is opened for writing.
+  if (yield* fs.exists(dbPath)) {
+    yield* assertOwnMigrationHistory(dbPath).pipe(
+      Effect.provide(makeRuntimeSqliteLayer({ filename: dbPath, readonly: true })),
+    );
+  }
 
   return Layer.provideMerge(
     setup,

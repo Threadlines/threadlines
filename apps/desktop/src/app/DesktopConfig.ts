@@ -128,7 +128,12 @@ export const DesktopConfig = Config.all({
     "T3CODE_DESKTOP_BACKEND_CWD",
   ),
   xdgConfigHome: trimmedString("XDG_CONFIG_HOME"),
-  threadlinesHome: trimmedStringAlias("THREADLINES_HOME", "BADCODE_HOME", "T3CODE_HOME"),
+  // T3CODE_HOME is T3 Code's own live setting, not an old name of ours:
+  // honoring it would point Threadlines at T3 Code's data folder.
+  threadlinesHome: firstSomeOption([
+    trimmedString("THREADLINES_HOME"),
+    trimmedString("BADCODE_HOME"),
+  ]),
   devServerUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option),
   devRemoteThreadlinesServerEntryPath: firstSomeOption([
     trimmedString("THREADLINES_DEV_REMOTE_THREADLINES_SERVER_ENTRY_PATH"),

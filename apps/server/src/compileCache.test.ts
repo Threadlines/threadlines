@@ -19,7 +19,7 @@ describe("resolveCompileCacheRoot", () => {
       cacheRootIn("/flag"),
     );
     expect(resolve(["serve", "--base-dir=~/flagged"])).toBe(cacheRootIn(home, "flagged"));
-    expect(resolve([], { T3CODE_HOME: " /legacy " })).toBe(cacheRootIn("/legacy"));
+    expect(resolve([], { BADCODE_HOME: " /legacy " })).toBe(cacheRootIn("/legacy"));
     expect(resolve([])).toBe(cacheRootIn(home, ".threadlines"));
   });
 

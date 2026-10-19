@@ -1,6 +1,7 @@
 /**
- * DesktopDatabaseRecovery - narrowly repairs a backend blocked by a damaged
- * SQLite state database.
+ * DesktopDatabaseRecovery - narrowly repairs a backend blocked by its state
+ * database: one SQLite reports as damaged, or another app's database (T3 Code's,
+ * copied in by earlier versions) that the server refused to upgrade.
  *
  * Recovery is a small crash-resumable transaction. The stopped database and
  * its WAL sidecars are copied and flushed first. A durable marker is then
@@ -11,6 +12,7 @@
  * journaling guarantees (NTFS on supported Windows installations).
  */
 
+import { FOREIGN_DATABASE_EXIT_CODE } from "@threadlines/contracts";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -43,6 +45,10 @@ const SQLITE_CORRUPTION_CODE = /\bsqlite_(?:corrupt|notadb)(?:_[a-z0-9_]+)?\b/i;
 const SQLITE_ERROR_CONTEXT =
   /(?:\[(?:cause|error)\]|\b(?:error|sqlerror|sqliteerror|node:sqlite)\b)/i;
 
+/** Why a database was set aside: SQLite called it damaged, or another app made it. */
+const DesktopDatabaseRecoveryReason = Schema.Literals(["corrupt", "foreign"]);
+export type DesktopDatabaseRecoveryReason = typeof DesktopDatabaseRecoveryReason.Type;
+
 const PendingRecoveryFile = Schema.Struct({
   name: Schema.Literals(DATABASE_FILE_NAMES),
   size: Schema.String,
@@ -51,6 +57,8 @@ const PendingRecoveryMarker = Schema.Struct({
   version: Schema.Literal(1),
   recoveryDirectoryName: Schema.String,
   files: Schema.Array(PendingRecoveryFile),
+  // Absent from markers written before foreign databases were recovered.
+  reason: Schema.optional(DesktopDatabaseRecoveryReason),
 });
 type PendingRecoveryMarker = typeof PendingRecoveryMarker.Type;
 
@@ -72,6 +80,7 @@ class DesktopDatabaseRecoveryProtocolError extends Data.TaggedError(
 }
 
 export interface DesktopDatabaseRecoveryResult {
+  readonly reason: DesktopDatabaseRecoveryReason;
   readonly backupDir: string;
   readonly databasePath: string;
   readonly preservedFiles: readonly string[];
@@ -92,8 +101,11 @@ export interface DesktopDatabaseRecoveryShape {
     Option.Option<DesktopDatabaseRecoveryResult>,
     DesktopDatabaseRecoveryError
   >;
-  /** Returns Some only after the damaged database has been safely preserved. */
-  readonly recoverIfCorrupt: (
+  /**
+   * Returns Some only after the database that blocked startup has been safely
+   * preserved, so the backend can start fresh.
+   */
+  readonly recover: (
     report: DesktopCrashReport.DesktopStartupFailureReport,
   ) => Effect.Effect<Option.Option<DesktopDatabaseRecoveryResult>, DesktopDatabaseRecoveryError>;
 }
@@ -121,6 +133,31 @@ export function isDefinitiveSqliteCorruption(
     );
   });
 }
+
+/** The server stopped because its database was made by another app. */
+export function isForeignDatabaseExit(
+  report: DesktopCrashReport.DesktopStartupFailureReport,
+): boolean {
+  return (
+    report.failureKind === "process-exit" &&
+    Option.contains(report.lastExitCode, FOREIGN_DATABASE_EXIT_CODE)
+  );
+}
+
+/** Why setting the database aside would let this failed startup succeed, if it would. */
+export function databaseRecoveryReason(
+  report: DesktopCrashReport.DesktopStartupFailureReport,
+): Option.Option<DesktopDatabaseRecoveryReason> {
+  if (isDefinitiveSqliteCorruption(report)) return Option.some("corrupt");
+  if (isForeignDatabaseExit(report)) return Option.some("foreign");
+  return Option.none();
+}
+
+const RECOVERY_REASON_TEXT: Record<DesktopDatabaseRecoveryReason, string> = {
+  corrupt: "Threadlines preserved a database that SQLite reported as corrupt.",
+  foreign:
+    "Threadlines set aside a database made by another app (most likely a copy of T3 Code's), which it refused to upgrade.",
+};
 
 const syncFile = (fileSystem: FileSystem.FileSystem, filePath: string) =>
   // Windows requires a writable handle for FlushFileBuffers/fsync.
@@ -205,6 +242,7 @@ export const completePendingDesktopDatabaseRecovery = Effect.fn(
     yield* fileSystem.remove(pendingPath);
 
     return Option.some({
+      reason: marker.reason ?? "corrupt",
       backupDir,
       databasePath,
       preservedFiles: marker.files.map(({ name }) => name),
@@ -223,132 +261,145 @@ export const completePendingDesktopDatabaseRecovery = Effect.fn(
   );
 });
 
-export const recoverCorruptDesktopDatabase = Effect.fn(
-  "desktop.databaseRecovery.recoverCorruptDatabase",
-)(function* (input: {
-  readonly stateDir: string;
-  readonly report: DesktopCrashReport.DesktopStartupFailureReport;
-}): Effect.fn.Return<
-  Option.Option<DesktopDatabaseRecoveryResult>,
-  DesktopDatabaseRecoveryError,
-  FileSystem.FileSystem | Path.Path
-> {
-  if (!isDefinitiveSqliteCorruption(input.report)) {
-    return Option.none();
-  }
-
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const databasePath = path.join(input.stateDir, DATABASE_FILE_NAME);
-  const recoveryId = (yield* randomUUIDv4).replaceAll("-", "");
-  const recoveryDirectoryName = `database-${recoveryId}`;
-  const recoveryRoot = path.join(input.stateDir, RECOVERY_DIRECTORY_NAME);
-  const partialBackupDir = path.join(recoveryRoot, `.${recoveryDirectoryName}.partial`);
-  const backupDir = path.join(recoveryRoot, recoveryDirectoryName);
-  const pendingPath = path.join(input.stateDir, DATABASE_RECOVERY_PENDING_FILE_NAME);
-  const pendingTempPath = `${pendingPath}.${recoveryId}.tmp`;
-
-  const recover = Effect.gen(function* () {
-    if (!(yield* fileSystem.exists(databasePath))) {
-      return Option.none<DesktopDatabaseRecoveryResult>();
+/**
+ * Preserves the database that blocked startup and removes it so the backend
+ * starts fresh. Another app's database is set aside only from a data folder
+ * the desktop owns (`ownsDatabaseFolder`), never from one a user pointed at,
+ * which may be that app's live folder.
+ */
+export const recoverDesktopDatabase = Effect.fn("desktop.databaseRecovery.recoverDatabase")(
+  function* (input: {
+    readonly stateDir: string;
+    readonly report: DesktopCrashReport.DesktopStartupFailureReport;
+    readonly ownsDatabaseFolder: boolean;
+  }): Effect.fn.Return<
+    Option.Option<DesktopDatabaseRecoveryResult>,
+    DesktopDatabaseRecoveryError,
+    FileSystem.FileSystem | Path.Path
+  > {
+    const reasonOption = databaseRecoveryReason(input.report);
+    if (
+      Option.isNone(reasonOption) ||
+      (reasonOption.value === "foreign" && !input.ownsDatabaseFolder)
+    ) {
+      return Option.none();
     }
-    if (yield* fileSystem.exists(pendingPath)) {
-      return yield* new DesktopDatabaseRecoveryProtocolError({
-        detail: "A previous database recovery must be completed first.",
-      });
-    }
+    const reason = reasonOption.value;
 
-    const existingFiles: Array<{
-      readonly name: (typeof DATABASE_FILE_NAMES)[number];
-      readonly size: string;
-    }> = [];
-    for (const name of DATABASE_FILE_NAMES) {
-      const source = path.join(input.stateDir, name);
-      if (yield* fileSystem.exists(source)) {
-        const sourceStat = yield* fileSystem.stat(source);
-        existingFiles.push({ name, size: String(sourceStat.size) });
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const databasePath = path.join(input.stateDir, DATABASE_FILE_NAME);
+    const recoveryId = (yield* randomUUIDv4).replaceAll("-", "");
+    const recoveryDirectoryName = `database-${recoveryId}`;
+    const recoveryRoot = path.join(input.stateDir, RECOVERY_DIRECTORY_NAME);
+    const partialBackupDir = path.join(recoveryRoot, `.${recoveryDirectoryName}.partial`);
+    const backupDir = path.join(recoveryRoot, recoveryDirectoryName);
+    const pendingPath = path.join(input.stateDir, DATABASE_RECOVERY_PENDING_FILE_NAME);
+    const pendingTempPath = `${pendingPath}.${recoveryId}.tmp`;
+
+    const recover = Effect.gen(function* () {
+      if (!(yield* fileSystem.exists(databasePath))) {
+        return Option.none<DesktopDatabaseRecoveryResult>();
       }
-    }
-
-    yield* fileSystem.makeDirectory(partialBackupDir, { recursive: true });
-    for (const file of existingFiles) {
-      const source = path.join(input.stateDir, file.name);
-      const target = path.join(partialBackupDir, file.name);
-      yield* fileSystem.copyFile(source, target);
-      yield* syncFile(fileSystem, target);
-      const [sourceStat, targetStat] = yield* Effect.all([
-        fileSystem.stat(source),
-        fileSystem.stat(target),
-      ]);
-      if (String(sourceStat.size) !== file.size || String(targetStat.size) !== file.size) {
+      if (yield* fileSystem.exists(pendingPath)) {
         return yield* new DesktopDatabaseRecoveryProtocolError({
-          detail: `${file.name} changed or its preserved copy was incomplete.`,
+          detail: "A previous database recovery must be completed first.",
         });
       }
-    }
 
-    yield* fileSystem.writeFileString(
-      path.join(partialBackupDir, "recovery.json"),
-      `${JSON.stringify(
-        {
-          reason: "Threadlines preserved a database that SQLite reported as corrupt.",
-          originalDatabasePath: databasePath,
-          files: existingFiles,
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    yield* syncFile(fileSystem, path.join(partialBackupDir, "recovery.json"));
-    yield* fileSystem.rename(partialBackupDir, backupDir);
+      const existingFiles: Array<{
+        readonly name: (typeof DATABASE_FILE_NAMES)[number];
+        readonly size: string;
+      }> = [];
+      for (const name of DATABASE_FILE_NAMES) {
+        const source = path.join(input.stateDir, name);
+        if (yield* fileSystem.exists(source)) {
+          const sourceStat = yield* fileSystem.stat(source);
+          existingFiles.push({ name, size: String(sourceStat.size) });
+        }
+      }
 
-    const marker: PendingRecoveryMarker = {
-      version: 1,
-      recoveryDirectoryName,
-      files: existingFiles,
-    };
-    const encodedMarker = yield* encodePendingRecoveryMarker(marker);
-    yield* fileSystem.writeFileString(pendingTempPath, `${encodedMarker}\n`);
-    yield* syncFile(fileSystem, pendingTempPath);
-    // The marker becomes visible atomically only after the complete backup is
-    // in its final directory. From this point, startup always resumes cleanup.
-    yield* fileSystem.rename(pendingTempPath, pendingPath);
+      yield* fileSystem.makeDirectory(partialBackupDir, { recursive: true });
+      for (const file of existingFiles) {
+        const source = path.join(input.stateDir, file.name);
+        const target = path.join(partialBackupDir, file.name);
+        yield* fileSystem.copyFile(source, target);
+        yield* syncFile(fileSystem, target);
+        const [sourceStat, targetStat] = yield* Effect.all([
+          fileSystem.stat(source),
+          fileSystem.stat(target),
+        ]);
+        if (String(sourceStat.size) !== file.size || String(targetStat.size) !== file.size) {
+          return yield* new DesktopDatabaseRecoveryProtocolError({
+            detail: `${file.name} changed or its preserved copy was incomplete.`,
+          });
+        }
+      }
 
-    return yield* completePendingDesktopDatabaseRecovery({ stateDir: input.stateDir });
-  });
+      yield* fileSystem.writeFileString(
+        path.join(partialBackupDir, "recovery.json"),
+        `${JSON.stringify(
+          {
+            reason: RECOVERY_REASON_TEXT[reason],
+            originalDatabasePath: databasePath,
+            files: existingFiles,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      yield* syncFile(fileSystem, path.join(partialBackupDir, "recovery.json"));
+      yield* fileSystem.rename(partialBackupDir, backupDir);
 
-  return yield* recover.pipe(
-    Effect.catch((cause) =>
-      fileSystem.remove(pendingTempPath, { force: true }).pipe(
-        Effect.ignore,
-        Effect.andThen(
-          // Before marker publication the originals are untouched, so this
-          // attempt's private copy is safe to remove. Once published, keep it:
-          // the next startup needs it to finish the transaction.
-          fileSystem.exists(pendingPath).pipe(
-            Effect.flatMap((published) =>
-              published
-                ? Effect.void
-                : Effect.all([
-                    fileSystem.remove(partialBackupDir, { recursive: true, force: true }),
-                    fileSystem.remove(backupDir, { recursive: true, force: true }),
-                  ]).pipe(Effect.asVoid),
+      const marker: PendingRecoveryMarker = {
+        version: 1,
+        recoveryDirectoryName,
+        files: existingFiles,
+        reason,
+      };
+      const encodedMarker = yield* encodePendingRecoveryMarker(marker);
+      yield* fileSystem.writeFileString(pendingTempPath, `${encodedMarker}\n`);
+      yield* syncFile(fileSystem, pendingTempPath);
+      // The marker becomes visible atomically only after the complete backup is
+      // in its final directory. From this point, startup always resumes cleanup.
+      yield* fileSystem.rename(pendingTempPath, pendingPath);
+
+      return yield* completePendingDesktopDatabaseRecovery({ stateDir: input.stateDir });
+    });
+
+    return yield* recover.pipe(
+      Effect.catch((cause) =>
+        fileSystem.remove(pendingTempPath, { force: true }).pipe(
+          Effect.ignore,
+          Effect.andThen(
+            // Before marker publication the originals are untouched, so this
+            // attempt's private copy is safe to remove. Once published, keep it:
+            // the next startup needs it to finish the transaction.
+            fileSystem.exists(pendingPath).pipe(
+              Effect.flatMap((published) =>
+                published
+                  ? Effect.void
+                  : Effect.all([
+                      fileSystem.remove(partialBackupDir, { recursive: true, force: true }),
+                      fileSystem.remove(backupDir, { recursive: true, force: true }),
+                    ]).pipe(Effect.asVoid),
+              ),
+              Effect.ignore,
             ),
-            Effect.ignore,
           ),
-        ),
-        Effect.andThen(
-          Effect.fail(
-            new DesktopDatabaseRecoveryError({
-              backupDir,
-              cause,
-            }),
+          Effect.andThen(
+            Effect.fail(
+              new DesktopDatabaseRecoveryError({
+                backupDir,
+                cause,
+              }),
+            ),
           ),
         ),
       ),
-    ),
-  );
-});
+    );
+  },
+);
 
 const makeDesktopDatabaseRecovery = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -366,8 +417,14 @@ const makeDesktopDatabaseRecovery = Effect.gen(function* () {
     completePendingRecovery: providePlatform(
       completePendingDesktopDatabaseRecovery({ stateDir: environment.stateDir }),
     ),
-    recoverIfCorrupt: (report) =>
-      providePlatform(recoverCorruptDesktopDatabase({ stateDir: environment.stateDir, report })),
+    recover: (report) =>
+      providePlatform(
+        recoverDesktopDatabase({
+          stateDir: environment.stateDir,
+          report,
+          ownsDatabaseFolder: DesktopEnvironment.usesDefaultBaseDir(environment),
+        }),
+      ),
   });
 });
 

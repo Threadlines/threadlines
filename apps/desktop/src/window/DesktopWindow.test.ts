@@ -1013,7 +1013,7 @@ describe("DesktopWindow", () => {
         createOptions,
         mainWindow,
         env: {
-          T3CODE_HOME: baseDir,
+          THREADLINES_HOME: baseDir,
         },
       });
 

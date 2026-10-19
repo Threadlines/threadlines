@@ -42,7 +42,7 @@ export const hostFlag = Flag.string("host").pipe(
 );
 export const baseDirFlag = Flag.string("base-dir").pipe(
   Flag.withDescription(
-    "Base directory path (equivalent to THREADLINES_HOME; legacy BADCODE_HOME and T3CODE_HOME are still accepted).",
+    "Base directory path (equivalent to THREADLINES_HOME; legacy BADCODE_HOME is still accepted).",
   ),
   Flag.optional,
 );
@@ -85,21 +85,10 @@ export const tailscaleServePortFlag = Flag.integer("tailscale-serve-port").pipe(
   Flag.optional,
 );
 
-const aliasedConfigOption = <A>(
-  threadlinesConfig: Config.Config<A>,
-  badcodeConfig: Config.Config<A>,
-  legacyT3CodeConfig: Config.Config<A>,
-) =>
-  Config.all({
-    threadlines: threadlinesConfig.pipe(Config.option),
-    badcode: badcodeConfig.pipe(Config.option),
-    legacyT3Code: legacyT3CodeConfig.pipe(Config.option),
-  }).pipe(
-    Config.map(({ threadlines, badcode, legacyT3Code }) =>
-      Option.getOrUndefined(
-        Option.isSome(threadlines) ? threadlines : Option.isSome(badcode) ? badcode : legacyT3Code,
-      ),
-    ),
+/** The first of these settings that is set, current name first, then the legacy ones. */
+const aliasedConfigOption = <A>(...configs: ReadonlyArray<Config.Config<A>>) =>
+  Config.all(configs.map((config) => config.pipe(Config.option))).pipe(
+    Config.map((values) => Option.getOrUndefined(values.find(Option.isSome) ?? Option.none<A>())),
   );
 
 const aliasedConfigWithDefault = <A>(
@@ -207,10 +196,11 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  // T3CODE_HOME is T3 Code's own live setting, not an old name of ours:
+  // honoring it would open T3 Code's database and upgrade it as ours.
   threadlinesHome: aliasedConfigOption(
     Config.string("THREADLINES_HOME"),
     Config.string("BADCODE_HOME"),
-    Config.string("T3CODE_HOME"),
   ),
   devUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
   noBrowser: aliasedConfigOption(

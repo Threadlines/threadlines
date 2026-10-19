@@ -7,6 +7,8 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 
+import { FOREIGN_DATABASE_EXIT_CODE } from "@threadlines/contracts";
+
 import type { DesktopStartupFailureReport } from "../app/DesktopCrashReport.ts";
 import * as DesktopDatabaseRecovery from "./DesktopDatabaseRecovery.ts";
 
@@ -81,8 +83,9 @@ describe("DesktopDatabaseRecovery", () => {
       }
       yield* fileSystem.writeFileString(path.join(stateDir, "settings.json"), "keep me");
 
-      const recovery = yield* DesktopDatabaseRecovery.recoverCorruptDesktopDatabase({
+      const recovery = yield* DesktopDatabaseRecovery.recoverDesktopDatabase({
         stateDir,
+        ownsDatabaseFolder: true,
         report: report(
           "effect/sql/SqlError: Failed to prepare statement\n[cause]: Error: file is not a database",
         ),
@@ -114,14 +117,64 @@ describe("DesktopDatabaseRecovery", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("sets aside another app's database only from a folder the desktop owns", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const stateDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-database-recovery-foreign-",
+      });
+      for (const fileName of databaseFiles) {
+        yield* fileSystem.writeFileString(path.join(stateDir, fileName), `contents:${fileName}`);
+      }
+      const foreignExit: DesktopStartupFailureReport = {
+        ...report("ForeignDatabaseError: The database was made by another app"),
+        lastExitCode: Option.some(FOREIGN_DATABASE_EXIT_CODE),
+        lastReason: `code=${FOREIGN_DATABASE_EXIT_CODE}`,
+      };
+
+      // A THREADLINES_HOME someone chose may be the other app's live folder.
+      const chosenFolder = yield* DesktopDatabaseRecovery.recoverDesktopDatabase({
+        stateDir,
+        report: foreignExit,
+        ownsDatabaseFolder: false,
+      });
+      assert.isTrue(Option.isNone(chosenFolder));
+      for (const fileName of databaseFiles) {
+        assert.isTrue(yield* fileSystem.exists(path.join(stateDir, fileName)));
+      }
+
+      const recovery = yield* DesktopDatabaseRecovery.recoverDesktopDatabase({
+        stateDir,
+        report: foreignExit,
+        ownsDatabaseFolder: true,
+      });
+      const recovered = Option.getOrUndefined(recovery);
+      assert.isDefined(recovered);
+      assert.equal(recovered.reason, "foreign");
+      for (const fileName of databaseFiles) {
+        assert.isFalse(yield* fileSystem.exists(path.join(stateDir, fileName)));
+        assert.equal(
+          yield* fileSystem.readFileString(path.join(recovered.backupDir, fileName)),
+          `contents:${fileName}`,
+        );
+      }
+      assert.include(
+        yield* fileSystem.readFileString(path.join(recovered.backupDir, "recovery.json")),
+        "T3 Code",
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("does nothing when the database is absent", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const stateDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "threadlines-database-recovery-empty-",
       });
-      const recovery = yield* DesktopDatabaseRecovery.recoverCorruptDesktopDatabase({
+      const recovery = yield* DesktopDatabaseRecovery.recoverDesktopDatabase({
         stateDir,
+        ownsDatabaseFolder: true,
         report: report("SqlError in node:sqlite: file is not a database"),
       });
       assert.isTrue(Option.isNone(recovery));
@@ -153,8 +206,9 @@ describe("DesktopDatabaseRecovery", () => {
       });
 
       const recovery = yield* Effect.result(
-        DesktopDatabaseRecovery.recoverCorruptDesktopDatabase({
+        DesktopDatabaseRecovery.recoverDesktopDatabase({
           stateDir,
+          ownsDatabaseFolder: true,
           report: report("[cause]: Error: file is not a database"),
         }).pipe(Effect.provideService(FileSystem.FileSystem, failingFileSystem)),
       );

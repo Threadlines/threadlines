@@ -28,7 +28,8 @@ import { fileURLToPath } from "node:url";
 /** The current build's folder plus the most recently used others. */
 const KEPT_BUILD_FOLDERS = 4;
 
-const HOME_ENV_NAMES = ["THREADLINES_HOME", "BADCODE_HOME", "T3CODE_HOME"] as const;
+// Not T3CODE_HOME: that is T3 Code's own setting (see cli/config.ts).
+const HOME_ENV_NAMES = ["THREADLINES_HOME", "BADCODE_HOME"] as const;
 const BOOTSTRAP_FD_ENV_NAMES = [
   "THREADLINES_BOOTSTRAP_FD",
   "BADCODE_BOOTSTRAP_FD",
