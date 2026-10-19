@@ -13,8 +13,9 @@ Threadlines sends product and reliability events such as:
 - app/server startup heartbeat;
 - whether each coding agent (Codex, Claude, and the other supported agents) is
   turned on, installed, and signed in (yes, no, or unknown), and whether its
-  startup check timed out. This is sent once the startup checks finish and
-  again when an answer changes;
+  startup check timed out. Community agents are answered together, as whether
+  any of them is, without saying which. This is sent once the startup checks
+  finish and again when an answer changes;
 - when a community agent (one from the open ACP registry) is installed or
   removed, with its public registry id and version;
 - provider session start, stop, and recovery;
