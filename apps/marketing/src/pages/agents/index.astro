@@ -1,0 +1,182 @@
+---
+import AgentMark from "../../components/AgentMark.astro";
+import Layout from "../../layouts/Layout.astro";
+import { agentPath, AGENTS } from "../../lib/agents";
+import { absoluteSiteUrl, ORGANIZATION_ID } from "../../lib/site";
+
+const title = "Coding agents that run in Threadlines";
+const agentNames = new Intl.ListFormat("en", { type: "conjunction" }).format(
+  AGENTS.map((agent) => agent.name),
+);
+const description = `Threadlines runs ${agentNames} in one free, open-source desktop app.`;
+
+const structuredData = [
+  {
+    "@context": "https://schema.org",
+    "@type": "CollectionPage",
+    name: title,
+    description,
+    url: absoluteSiteUrl("/agents"),
+    publisher: { "@id": ORGANIZATION_ID },
+    mainEntity: {
+      "@type": "ItemList",
+      itemListElement: AGENTS.map((agent, index) => ({
+        "@type": "ListItem",
+        position: index + 1,
+        name: agent.name,
+        url: absoluteSiteUrl(agentPath(agent)),
+      })),
+    },
+  },
+];
+---
+
+<Layout
+  title={title}
+  description={description}
+  canonicalPath="/agents"
+  structuredData={structuredData}
+>
+  <section class="agents-index">
+    <div class="container agents-wrap">
+      <header class="agents-header">
+        <p class="eyebrow">Agents</p>
+        <h1 class="display">The agents you already use</h1>
+        <p>
+          Threadlines doesn't ship a model of its own. It runs the coding agents you already have,
+          signed in with your own accounts. Pick one for each thread, or put two in the same thread.
+        </p>
+      </header>
+
+      <ul class="agent-list">
+        {
+          AGENTS.map((agent) => (
+            <li class="agent-row">
+              <a href={agentPath(agent)}>
+                <span class="agent-mark">
+                  <AgentMark slug={agent.slug} />
+                </span>
+                <span class="agent-row-text">
+                  <span class="agent-row-name">
+                    {agent.name}
+                    <span class="agent-row-maker">{agent.maker}</span>
+                  </span>
+                  <span class="agent-row-summary">{agent.summary}</span>
+                </span>
+                <span class="agent-row-arrow" aria-hidden="true">
+                  →
+                </span>
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .agents-index {
+    padding: 72px 0 96px;
+  }
+
+  .agents-wrap {
+    max-width: 860px;
+  }
+
+  .agents-header {
+    max-width: 680px;
+    margin-bottom: 32px;
+  }
+
+  .agents-header h1 {
+    margin: 12px 0 14px;
+    font-size: clamp(30px, 5vw, 40px);
+  }
+
+  .agents-header > p:last-child {
+    color: var(--fg-muted);
+    font-size: 16px;
+    line-height: 1.6;
+    text-wrap: pretty;
+  }
+
+  .agent-list {
+    list-style: none;
+  }
+
+  .agent-row {
+    border-top: 1px solid var(--border);
+  }
+
+  .agent-row:last-child {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .agent-row a {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 14px;
+    padding: 16px 0;
+  }
+
+  .agent-mark {
+    display: inline-flex;
+    width: 22px;
+    height: 22px;
+    margin-top: 1px;
+    color: var(--fg);
+  }
+
+  .agent-mark :global(svg),
+  .agent-mark :global(img) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .agent-row-text {
+    display: grid;
+    gap: 2px;
+  }
+
+  .agent-row-name {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  .agent-row-maker {
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  .agent-row-summary {
+    max-width: 64ch;
+    color: var(--fg-muted);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+
+  .agent-row-arrow {
+    color: var(--fg-dim);
+    transition: color 0.2s ease;
+  }
+
+  .agent-row a:hover .agent-row-arrow {
+    color: var(--accent-bright);
+  }
+
+  @media (max-width: 620px) {
+    .agents-index {
+      padding: 56px 0 80px;
+    }
+  }
+</style>

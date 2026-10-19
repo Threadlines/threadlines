@@ -1,19 +1,20 @@
 # Threadlines
 
 <p align="center">
-  <img src="apps/marketing/public/og.png" alt="Threadlines, the open-source workspace for Claude Code and Codex" width="100%" />
+  <img src="apps/marketing/public/og.png" alt="Threadlines, the open-source ADE for Claude Code, Codex and other coding agents" width="100%" />
 </p>
 
 [![CI](https://github.com/Threadlines/threadlines/actions/workflows/ci.yml/badge.svg)](https://github.com/Threadlines/threadlines/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/Threadlines/threadlines)](https://github.com/Threadlines/threadlines/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-**[Website](https://www.threadlines.dev/) · [Download](https://www.threadlines.dev/download/) · [What's new in v0.3](https://www.threadlines.dev/changelog/v0.3.0) · [Latest release](https://github.com/Threadlines/threadlines/releases/latest)**
+**[Website](https://www.threadlines.dev/) · [Download](https://www.threadlines.dev/download) · [Supported agents](https://www.threadlines.dev/agents) · [Changelog](https://www.threadlines.dev/changelog) · [Latest release](https://github.com/Threadlines/threadlines/releases/latest)**
 
-Threadlines is an open-source desktop workspace for Codex and Claude Code. Keep
-the agent conversation, a live browser, project files, terminal, and source
-control open together so you can see, steer, and recover agent work without
-reconstructing context across tools.
+Threadlines is an open-source ADE (agentic development environment) for Claude
+Code, Codex, OpenCode, Cursor, and other coding agents. Keep the agent
+conversation, a live browser, project files, terminal, and source control open
+together so you can see, steer, and recover agent work without reconstructing
+context across tools.
 
 ## Why Threadlines
 
@@ -103,11 +104,23 @@ vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-
 
 The artifact is written to `release/`.
 
-## Supported providers
+## Supported agents
 
-Codex and Claude Code are the actively maintained providers today. Drivers for
-other agents exist in the codebase, and support for more providers is open for
-the future as the product grows.
+Threadlines runs these coding agents, signed in with your own accounts:
+
+- [Codex](https://www.threadlines.dev/agents/codex) by OpenAI
+- [Claude Code](https://www.threadlines.dev/agents/claude-code) by Anthropic
+- [OpenCode](https://www.threadlines.dev/agents/opencode) by Anomaly
+- [Cursor](https://www.threadlines.dev/agents/cursor), through the Cursor CLI
+- [Antigravity](https://www.threadlines.dev/agents/antigravity) by Google
+- [Grok Build](https://www.threadlines.dev/agents/grok) by xAI, in nightly builds until 0.7.0
+- [fx](https://www.threadlines.dev/agents/fx) by Vercel
+- [Muse Code](https://www.threadlines.dev/agents/muse-code) by Meta, in nightly builds until 0.7.0
+- [Pi](https://www.threadlines.dev/agents/pi) by Earendil, as a community agent
+
+Other agents from the open [ACP registry](https://github.com/agentclientprotocol/registry)
+can run as community agents. Threadlines installs them but hasn't tested them.
+See [docs/providers/community-agents.md](./docs/providers/community-agents.md).
 
 ## Origins
 

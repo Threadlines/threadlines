@@ -1,6 +1,7 @@
 import type { APIRoute } from "astro";
 import { getCollection } from "astro:content";
 
+import { agentPath, AGENTS } from "../lib/agents";
 import { changelogEntryPath } from "../lib/changelog";
 import { absoluteSiteUrl } from "../lib/site";
 
@@ -24,8 +25,10 @@ export const GET: APIRoute = async () => {
   const changelogEntries = await getCollection("changelog");
   const urls = [
     urlEntry("/"),
-    urlEntry("/download/"),
-    urlEntry("/changelog/"),
+    urlEntry("/download"),
+    urlEntry("/agents"),
+    ...AGENTS.map((agent) => urlEntry(agentPath(agent))),
+    urlEntry("/changelog"),
     ...changelogEntries.map((entry) => urlEntry(changelogEntryPath(entry), entry.data.date)),
   ];
   const body = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join("")}</urlset>`;

@@ -1,0 +1,418 @@
+---
+import { getCollection } from "astro:content";
+
+import AgentMark from "../../components/AgentMark.astro";
+import Layout from "../../layouts/Layout.astro";
+import { agentPath, AGENTS, isInStableRelease, type Agent } from "../../lib/agents";
+import { latestStableVersion } from "../../lib/changelog";
+import {
+  absoluteSiteUrl,
+  APPLICATION_ID,
+  ORGANIZATION_ID,
+  SITE_GITHUB_URL,
+} from "../../lib/site";
+
+export function getStaticPaths() {
+  return AGENTS.map((agent) => ({ params: { slug: agent.slug }, props: { agent } }));
+}
+
+interface Props {
+  agent: Agent;
+}
+
+const { agent } = Astro.props;
+const canonicalPath = agentPath(agent);
+const stableVersion = latestStableVersion(await getCollection("changelog"));
+const inStable = isInStableRelease(agent, stableVersion);
+// Features newer than the stable app stay off the page until that release ships.
+const features = agent.features.filter((feature) => isInStableRelease(feature, stableVersion));
+const others = AGENTS.filter((other) => other.slug !== agent.slug);
+
+const structuredData = [
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: agent.title,
+    description: agent.description,
+    url: absoluteSiteUrl(canonicalPath),
+    about: { "@id": APPLICATION_ID, "@type": "SoftwareApplication", name: "Threadlines" },
+    mentions: {
+      "@type": "SoftwareApplication",
+      name: agent.name,
+      creator: { "@type": "Organization", name: agent.maker },
+    },
+    publisher: { "@id": ORGANIZATION_ID },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Agents", item: absoluteSiteUrl("/agents") },
+      { "@type": "ListItem", position: 2, name: agent.name, item: absoluteSiteUrl(canonicalPath) },
+    ],
+  },
+];
+---
+
+<Layout
+  title={agent.title}
+  description={agent.description}
+  canonicalPath={canonicalPath}
+  structuredData={structuredData}
+>
+  <article class="agent">
+    <div class="container agent-wrap">
+      <a class="back-link" href="/agents"><span aria-hidden="true">←</span> All agents</a>
+
+      <header class="agent-header">
+        <div class="agent-meta">
+          <span class="agent-mark"><AgentMark slug={agent.slug} /></span>
+          <span>{agent.name} in Threadlines</span>
+          {agent.community && <span class="agent-tag">Community agent</span>}
+        </div>
+        <h1 class="display">{agent.headline}</h1>
+        <p>{agent.intro}</p>
+        {
+          !inStable && (
+            <p class="agent-note">
+              {agent.name} support is in the{" "}
+              <a href={`${SITE_GITHUB_URL}/releases`} target="_blank" rel="noopener noreferrer">
+                nightly build
+              </a>{" "}
+              now and comes to the stable app in version {agent.since}.
+            </p>
+          )
+        }
+        <div class="agent-actions">
+          {inStable ? (
+            <a class="primary-action" href="/download">
+              Download Threadlines
+            </a>
+          ) : (
+            <a
+              class="primary-action"
+              href={`${SITE_GITHUB_URL}/releases`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Download the nightly build
+            </a>
+          )}
+          <a href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer">
+            View the source on GitHub <span aria-hidden="true">↗</span>
+          </a>
+        </div>
+      </header>
+
+      <section class="agent-section">
+        <h2>What works with {agent.name}</h2>
+        <div class="agent-features">
+          {
+            features.map((feature) => (
+              <div class="agent-feature">
+                <h3>{feature.title}</h3>
+                <p>{feature.description}</p>
+              </div>
+            ))
+          }
+        </div>
+      </section>
+
+      <section class="agent-section">
+        <h2>Set up {agent.name}</h2>
+        <ol class="agent-steps">
+          {agent.setup.map((step) => <li>{step}</li>)}
+        </ol>
+      </section>
+
+      <section class="agent-section">
+        <h2>Bring another agent into the thread</h2>
+        <p class="agent-lede">
+          Every agent in Threadlines shares the same threads, so {agent.name} doesn't have to work
+          alone. Add a second agent to a thread to get another opinion, or switch a thread to a
+          different agent and keep the conversation and your changes.
+        </p>
+        <figure class="agent-figure">
+          <img
+            src="/Screenshots/rooms/rooms.webp"
+            alt="A Threadlines thread where two agents from different companies work on the same bug"
+            width="1600"
+            height="934"
+            loading="lazy"
+            decoding="async"
+          />
+        </figure>
+      </section>
+
+      <section class="agent-section">
+        <h2>Questions</h2>
+        <dl class="agent-faq">
+          {
+            agent.faq.map((item) => (
+              <div>
+                <dt>{item.question}</dt>
+                <dd>{item.answer}</dd>
+              </div>
+            ))
+          }
+        </dl>
+      </section>
+
+      <section class="agent-section">
+        <h2>Other agents in Threadlines</h2>
+        <ul class="agent-others">
+          {
+            others.map((other) => (
+              <li>
+                <a
+                  href={agentPath(other)}
+                  aria-label={other.markIsWordmark ? other.name : undefined}
+                >
+                  <span class="agent-mark">
+                    <AgentMark slug={other.slug} />
+                  </span>
+                  {!other.markIsWordmark && other.name}
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+      </section>
+
+      <p class="agent-disclaimer">
+        {agent.name} is made by {agent.maker}. Threadlines is an independent open-source project and
+        isn't affiliated with or endorsed by {agent.maker}.
+      </p>
+    </div>
+  </article>
+</Layout>
+
+<style>
+  .agent {
+    padding: 48px 0 96px;
+  }
+
+  .agent-wrap {
+    max-width: 860px;
+  }
+
+  .back-link {
+    display: inline-flex;
+    gap: 8px;
+    color: var(--fg-dim);
+    font-size: 14px;
+    transition: color 0.2s ease;
+  }
+
+  .back-link:hover {
+    color: var(--fg);
+  }
+
+  .agent-header {
+    padding: 28px 0 30px;
+  }
+
+  .agent-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .agent-mark {
+    display: inline-flex;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    color: var(--fg);
+  }
+
+  .agent-mark :global(svg),
+  .agent-mark :global(img) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .agent-tag {
+    padding: 1px 7px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--fg-muted);
+  }
+
+  .agent-header h1 {
+    max-width: 780px;
+    margin: 14px 0 10px;
+    font-size: clamp(28px, 4.5vw, 40px);
+    text-wrap: balance;
+  }
+
+  .agent-header > p {
+    max-width: 640px;
+    color: var(--fg-muted);
+    font-size: 16px;
+    line-height: 1.6;
+    text-wrap: pretty;
+  }
+
+  .agent-header > p.agent-note {
+    margin-top: 12px;
+    color: var(--fg-dim);
+    font-size: 14px;
+  }
+
+  .agent-note a,
+  .agent-faq a {
+    text-decoration: underline;
+    text-decoration-color: var(--underline);
+    text-underline-offset: 3px;
+  }
+
+  .agent-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px 24px;
+    margin-top: 22px;
+  }
+
+  .agent-actions a {
+    color: var(--fg-muted);
+    font-size: 14px;
+    transition: color 0.2s ease;
+  }
+
+  .agent-actions a:hover {
+    color: var(--fg);
+  }
+
+  .agent-actions .primary-action {
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: var(--accent-bright);
+    color: var(--accent-contrast);
+    font-weight: 600;
+  }
+
+  .agent-actions .primary-action:hover {
+    color: var(--accent-contrast);
+  }
+
+  .agent-section {
+    padding: 26px 0 28px;
+    border-top: 1px solid var(--border);
+  }
+
+  .agent-section h2 {
+    margin-bottom: 14px;
+    font-size: 19px;
+    letter-spacing: -0.015em;
+  }
+
+  .agent-lede {
+    max-width: 64ch;
+    color: var(--fg-muted);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .agent-features {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px 32px;
+  }
+
+  .agent-feature h3 {
+    margin-bottom: 3px;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .agent-feature p,
+  .agent-steps,
+  .agent-faq dd {
+    color: var(--fg-muted);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+
+  .agent-steps {
+    display: grid;
+    gap: 8px;
+    max-width: 64ch;
+    padding-left: 22px;
+  }
+
+  .agent-steps li::marker {
+    color: var(--accent-bright);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .agent-figure {
+    margin-top: 18px;
+  }
+
+  .agent-figure img {
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+  }
+
+  .agent-faq {
+    display: grid;
+    gap: 16px;
+    max-width: 64ch;
+  }
+
+  .agent-faq dt {
+    margin-bottom: 3px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .agent-others {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    list-style: none;
+  }
+
+  .agent-others a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--fg-muted);
+    font-size: 14px;
+    font-weight: 600;
+    transition: color 0.2s ease;
+  }
+
+  .agent-others a:hover {
+    color: var(--fg);
+  }
+
+  .agent-disclaimer {
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 620px) {
+    .agent {
+      padding: 36px 0 80px;
+    }
+
+    .agent-features {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>
