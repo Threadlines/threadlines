@@ -4710,13 +4710,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     yield* ensureSyntheticTurn(context);
-    // Claude is streaming again, so an API error it noted earlier no longer
-    // says why this turn might end.
-    if (context.turnState && message.parent_tool_use_id === null) {
-      context.turnState.apiErrorKind = undefined;
-    }
 
     const { event } = message;
+
+    // A new reply has begun, so an API error Claude noted earlier did not end
+    // the turn: if the stream now ends, that error is not why. Only a new
+    // reply counts, never a late event of the request that failed.
+    if (
+      context.turnState &&
+      message.parent_tool_use_id === null &&
+      event.type === "message_start"
+    ) {
+      context.turnState.apiErrorText = undefined;
+      context.turnState.apiErrorKind = undefined;
+    }
 
     if (event.type === "content_block_delta") {
       if (event.delta.type === "thinking_delta" && context.turnState) {
