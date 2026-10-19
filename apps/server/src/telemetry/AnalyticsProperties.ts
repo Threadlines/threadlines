@@ -1,5 +1,10 @@
-import { isProviderAvailable, type ServerProvider } from "@threadlines/contracts";
+import {
+  AcpRegistryAgentId,
+  isProviderAvailable,
+  type ServerProvider,
+} from "@threadlines/contracts";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
+import * as Schema from "effect/Schema";
 
 export type AnalyticsModelKind = "known" | "custom" | "unknown";
 export type AnalyticsModelFamily =
@@ -88,17 +93,82 @@ const KNOWN_SAFE_MODELS = new Set([
 const SAFE_PUBLIC_MODEL_PATTERNS = [
   /^gpt-\d+(?:[.-][a-z0-9]+)*(?:-codex(?:-[a-z0-9]+)?)?$/,
   /^claude-(?:fable|haiku|opus|sonnet)-\d+(?:-\d+)*(?:-\d{8})?$/,
+  /^gemini-\d+(?:\.\d+)?(?:-[a-z0-9]+)*$/,
   /^composer-\d+(?:\.\d+)?$/,
   /^grok-\d+(?:\.\d+)?(?:-[a-z]+)*$/,
   /^(?:auto|default)$/,
 ];
 
+/**
+ * Public providers whose own catalog names follow them in a model id, the
+ * way agents that reach many providers write it (Pi, OpenCode):
+ * `google/gemini-2.5-pro`, `openrouter/anthropic/claude-sonnet-4.5`. Only
+ * these prefixes come off. Any other prefix may name a private gateway, and
+ * an Azure deployment name is the user's own words, so those stay custom.
+ */
+const PUBLIC_MODEL_PROVIDER_PREFIXES: ReadonlySet<string> = new Set([
+  "anthropic",
+  "cloudflare-ai-gateway",
+  "gemini",
+  "github-copilot",
+  "google",
+  "google-antigravity",
+  "google-gemini-cli",
+  "google-vertex",
+  "openai",
+  "openai-codex",
+  "opencode",
+  "openrouter",
+  "vercel",
+  "vercel-ai-gateway",
+  "xai",
+]);
+
+/**
+ * Every word a public model name behind a provider prefix may use. Those
+ * agents let users add their own models under a public provider's name
+ * (Pi's `models.json`), so `openai/gpt-5.4-acme-payroll` must stay custom
+ * even though its shape looks public. Versions are short numbers (`4o`,
+ * `8b`) or dates (`20250929`); a longer number could be an account's.
+ */
+const PUBLIC_MODEL_WORDS: ReadonlySet<string> = new Set([
+  "astra",
+  "beta",
+  "chat",
+  "claude",
+  "code",
+  "codex",
+  "composer",
+  "customtools",
+  "exp",
+  "fable",
+  "fast",
+  "flash",
+  "gemini",
+  "gpt",
+  "grok",
+  "haiku",
+  "latest",
+  "lite",
+  "luna",
+  "max",
+  "mini",
+  "nano",
+  "opus",
+  "preview",
+  "pro",
+  "reasoning",
+  "sol",
+  "sonnet",
+  "spark",
+  "terra",
+  "thinking",
+  "turbo",
+  "ultra",
+]);
+
 function normalizeModelString(model: string | null | undefined): string | undefined {
-  const normalized = model?.trim().toLowerCase();
-  if (!normalized) return undefined;
-  return normalized.length > MAX_ANALYTICS_MODEL_LENGTH
-    ? normalized.slice(0, MAX_ANALYTICS_MODEL_LENGTH)
-    : normalized;
+  return model?.trim().toLowerCase() || undefined;
 }
 
 function inferModelFamily(model: string | undefined): AnalyticsModelFamily {
@@ -124,6 +194,31 @@ function isSafeKnownModel(model: string): boolean {
   return SAFE_PUBLIC_MODEL_PATTERNS.some((pattern) => pattern.test(model));
 }
 
+/**
+ * The public name a model id may be reported as, or undefined when it may
+ * not. Claude versions get dashes the way Anthropic writes them (GitHub
+ * Copilot writes `claude-sonnet-4.5`). A name behind provider prefixes must
+ * have only public providers in front and only public words in it.
+ */
+function publicModelName(model: string): string | undefined {
+  // Too long to report whole, and a cut-off name could hide what made it private.
+  if (model.length > MAX_ANALYTICS_MODEL_LENGTH) return undefined;
+  const segments = model.split("/");
+  const bare = segments.pop() ?? "";
+  if (!segments.every((segment) => PUBLIC_MODEL_PROVIDER_PREFIXES.has(segment))) {
+    return undefined;
+  }
+  const name = bare.startsWith("claude-") ? bare.replaceAll(".", "-") : bare;
+  if (!isSafeKnownModel(name)) return undefined;
+  const hadPrefix = segments.length > 0;
+  return !hadPrefix ||
+    name
+      .split(/[-.]/)
+      .every((word) => /^(?:\d{1,4}[a-z]?|20\d{6})$/.test(word) || PUBLIC_MODEL_WORDS.has(word))
+    ? name
+    : undefined;
+}
+
 export function normalizeAnalyticsModel(
   model: string | null | undefined,
   _provider?: string,
@@ -137,19 +232,19 @@ export function normalizeAnalyticsModel(
     };
   }
 
-  const modelFamily = inferModelFamily(normalized);
-  if (isSafeKnownModel(normalized)) {
+  const name = publicModelName(normalized);
+  if (name !== undefined) {
     return {
-      model: normalized,
+      model: name,
       modelKind: "known",
-      modelFamily,
+      modelFamily: inferModelFamily(name),
     };
   }
 
   return {
     model: "custom",
     modelKind: "custom",
-    modelFamily,
+    modelFamily: inferModelFamily(normalized),
   };
 }
 
@@ -168,6 +263,23 @@ export function analyticsModelProperties({
     [kindKey]: normalized.modelKind,
     [familyKey]: normalized.modelFamily,
   };
+}
+
+const isAcpRegistryAgentId = Schema.is(AcpRegistryAgentId);
+
+/**
+ * Which agent an event is about: the driver, plus a community agent's public
+ * registry id (`pi-acp`), the same id its install event reports, so reports
+ * can name it rather than count it with every other agent. The id comes from
+ * the instance (`ProviderInstance.communityAgentId`), never from its name.
+ */
+export function analyticsAgentProperties(input: {
+  readonly provider: string;
+  readonly communityAgentId?: string | undefined;
+}): Record<string, string> {
+  return input.communityAgentId !== undefined && isAcpRegistryAgentId(input.communityAgentId)
+    ? { provider: input.provider, communityAgentId: input.communityAgentId }
+    : { provider: input.provider };
 }
 
 /**

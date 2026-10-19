@@ -72,6 +72,12 @@ export interface ProviderInstance {
   readonly displayName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
+  /**
+   * For a community agent installed from the ACP registry: the registry id
+   * of the agent this instance runs (`pi-acp`). Usage analytics name the
+   * agent by it.
+   */
+  readonly communityAgentId?: string | undefined;
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGenerationShape;

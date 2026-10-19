@@ -22,7 +22,15 @@ Threadlines sends product and reliability events such as:
 - how long a sent message waited, in milliseconds, before Threadlines handed it
   to the agent and before the agent's first output, and whether the agent had
   to start up for it;
-- selected model family and sanitized model slug for provider turns;
+- selected model family and sanitized model slug for provider turns. A public
+  model name sent through a well-known provider (`google/gemini-2.5-pro`,
+  `openrouter/anthropic/claude-sonnet-4.5`) is reported without the
+  provider part (`gemini-2.5-pro`), and only when every word in it is one
+  public model names use. Any other model name is reported only as `custom`;
+- for a community agent added from the ACP registry, its public registry id
+  (such as `pi-acp`) on session start, message, first-output, interrupt,
+  model reroute, and failure events, so reports can tell community agents
+  apart;
 - provider session start kind, such as fresh starts, resumes, same-provider
   restarts, and provider switches;
 - model reroute events with sanitized from/to model values and a categorized reason;

@@ -251,6 +251,9 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       });
       return {
         ...instance,
+        // Only an agent added from the registry has a listing: one whose
+        // settings name something else stays unnamed in analytics.
+        communityAgentId: listing !== null ? agentId : undefined,
         textGeneration: noTextGeneration(displayName),
         authFlows,
       };

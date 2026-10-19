@@ -37,6 +37,8 @@ export const isAgentOutputEvent = (event: ProviderRuntimeEvent): boolean => {
 /** How long one turn kept its sender waiting, measured from when the message reached the server. */
 export interface TurnLatencySample {
   readonly provider: string;
+  /** See `ProviderInstance.communityAgentId`. */
+  readonly communityAgentId?: string | undefined;
   readonly model: string | undefined;
   readonly attachmentCount: number;
   /** The agent's session started after the message arrived, so the wait includes its startup. */
@@ -84,6 +86,7 @@ export const makeTurnLatencyTracker = () => {
 
   const sampleOf = (turn: PendingTurn, firstOutputAtMs: number): TurnLatencySample => ({
     provider: turn.provider,
+    communityAgentId: turn.communityAgentId,
     model: turn.model,
     attachmentCount: turn.attachmentCount,
     sessionStarted: turn.sessionStarted,

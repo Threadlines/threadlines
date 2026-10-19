@@ -74,6 +74,7 @@ import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeTurnLatencyTracker, type TurnLatencySample } from "../turnLatency.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
+  analyticsAgentProperties,
   analyticsModelProperties,
   classifyModelRerouteReason,
   classifyProviderSessionStart,
@@ -322,11 +323,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       Effect.catch(() => Effect.succeed(undefined)),
     );
 
+  /** The community agent an instance runs, for analytics; undefined for every other instance. */
+  const communityAgentIdOf = (instanceId: ProviderInstanceId | undefined) =>
+    instanceId === undefined
+      ? Effect.succeed(undefined)
+      : registry.getInstanceInfo(instanceId).pipe(
+          Effect.map((info) => info.communityAgentId),
+          Effect.catch(() => Effect.succeed(undefined)),
+        );
+
   const recordTurnLatency = (latency: TurnLatencySample | undefined) =>
     latency === undefined
       ? Effect.void
       : analytics.record("provider.turn.first_output", {
-          provider: latency.provider,
+          ...analyticsAgentProperties(latency),
           ...analyticsModelProperties({ model: latency.model, provider: latency.provider }),
           attachmentCount: latency.attachmentCount,
           sessionStarted: latency.sessionStarted,
@@ -341,7 +351,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         case "model.rerouted": {
           const reason = classifyModelRerouteReason(event.payload.reason);
           yield* analytics.record("provider.model.rerouted", {
-            provider: event.provider,
+            ...analyticsAgentProperties({
+              provider: event.provider,
+              communityAgentId: yield* communityAgentIdOf(event.providerInstanceId),
+            }),
             ...analyticsModelProperties({
               model: event.payload.fromModel,
               provider: event.provider,
@@ -361,7 +374,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           if (event.payload.state !== "failed") return;
           const selectedModel = yield* runtimeEventModel(event);
           yield* analytics.record("provider.turn.failed", {
-            provider: event.provider,
+            ...analyticsAgentProperties({
+              provider: event.provider,
+              communityAgentId: yield* communityAgentIdOf(event.providerInstanceId),
+            }),
             ...analyticsModelProperties({
               model: selectedModel,
               provider: event.provider,
@@ -377,7 +393,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         case "runtime.error": {
           const selectedModel = yield* runtimeEventModel(event);
           yield* analytics.record("provider.runtime.error", {
-            provider: event.provider,
+            ...analyticsAgentProperties({
+              provider: event.provider,
+              communityAgentId: yield* communityAgentIdOf(event.providerInstanceId),
+            }),
             ...analyticsModelProperties({
               model: selectedModel,
               provider: event.provider,
@@ -826,7 +845,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           modelSelection: input.modelSelection,
         });
         yield* analytics.record("provider.session.started", {
-          provider: sessionWithInstance.provider,
+          ...analyticsAgentProperties({
+            provider: sessionWithInstance.provider,
+            communityAgentId: instanceInfo.communityAgentId,
+          }),
           sessionStartKind: classifyProviderSessionStart({
             hasPreviousBinding: persistedBinding !== undefined,
             previousProvider: persistedBinding?.provider,
@@ -999,6 +1021,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.kind": routed.adapter.provider,
         ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
       });
+      const communityAgentId = yield* communityAgentIdOf(routed.instanceId);
       const requestedAtMs =
         input.requestedAt !== undefined ? Date.parse(input.requestedAt) : Number.NaN;
       let latencySendId: number | undefined;
@@ -1007,6 +1030,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           requestedAtMs,
           nowMs: yield* Clock.currentTimeMillis,
           provider: routed.adapter.provider,
+          communityAgentId,
           instanceId: routed.instanceId,
           model: input.modelSelection?.model,
           attachmentCount: input.attachments.length,
@@ -1071,7 +1095,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         });
       }
       yield* analytics.record("provider.turn.sent", {
-        provider: routed.adapter.provider,
+        ...analyticsAgentProperties({ provider: routed.adapter.provider, communityAgentId }),
         ...analyticsModelProperties({
           model: input.modelSelection?.model,
           provider: routed.adapter.provider,
@@ -1155,7 +1179,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         },
       });
       yield* analytics.record("provider.turn.steered", {
-        provider: routed.adapter.provider,
+        ...analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
         attachmentCount: input.attachments.length,
         hasInput: typeof input.input === "string" && input.input.trim().length > 0,
       });
@@ -1327,9 +1354,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.turn_id": input.turnId,
         });
         yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
-        yield* analytics.record("provider.turn.interrupted", {
-          provider: routed.adapter.provider,
-        });
+        yield* analytics.record(
+          "provider.turn.interrupted",
+          analyticsAgentProperties({
+            provider: routed.adapter.provider,
+            communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+          }),
+        );
       }).pipe(
         withMetrics({
           counter: providerTurnsTotal,

@@ -6,6 +6,7 @@ import {
 } from "@threadlines/contracts";
 
 import {
+  analyticsAgentProperties,
   analyticsModelProperties,
   classifyProviderSessionStart,
   classifyModelRerouteReason,
@@ -63,6 +64,64 @@ describe("AnalyticsProperties", () => {
       modelKind: "custom",
       modelFamily: "other",
     });
+    const privateNames = [
+      // A public name behind a gateway nobody knows, or an Azure deployment.
+      "acme-gateway/claude-sonnet-5-5",
+      "azure/gpt-5.4",
+      "openrouter/acme/claude-sonnet-5-5",
+      // A user's own model added under a public provider's name.
+      "openai/gpt-5.4-acme-payroll",
+      "google/gemini-2.5-acme-payroll",
+      "openai/gpt-5.4-123456789012",
+      // Whatever made a long name private may be past the cut.
+      `gpt-5-${"a".repeat(96)}:acme`,
+    ];
+    for (const name of privateNames) {
+      assert.strictEqual(normalizeAnalyticsModel(name).model, "custom", name);
+    }
+  });
+
+  it("names public models that agents write behind a public provider", () => {
+    assert.deepStrictEqual(normalizeAnalyticsModel("google/gemini-2.5-pro"), {
+      model: "gemini-2.5-pro",
+      modelKind: "known",
+      modelFamily: "gemini",
+    });
+    assert.deepStrictEqual(normalizeAnalyticsModel("openrouter/anthropic/claude-sonnet-4.5"), {
+      model: "claude-sonnet-4-5",
+      modelKind: "known",
+      modelFamily: "claude",
+    });
+    assert.strictEqual(
+      normalizeAnalyticsModel("github-copilot/claude-opus-4.7").model,
+      "claude-opus-4-7",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("gemini-3-pro-preview").model,
+      "gemini-3-pro-preview",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("google/gemini-3.1-pro-preview-customtools").model,
+      "gemini-3.1-pro-preview-customtools",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("anthropic/claude-sonnet-4-5-20250929").model,
+      "claude-sonnet-4-5-20250929",
+    );
+  });
+
+  it("names a community agent by its registry id", () => {
+    assert.deepStrictEqual(
+      analyticsAgentProperties({ provider: "acpRegistry", communityAgentId: "pi-acp" }),
+      { provider: "acpRegistry", communityAgentId: "pi-acp" },
+    );
+    assert.deepStrictEqual(analyticsAgentProperties({ provider: "codex" }), {
+      provider: "codex",
+    });
+    assert.deepStrictEqual(
+      analyticsAgentProperties({ provider: "acpRegistry", communityAgentId: "/Users/someone" }),
+      { provider: "acpRegistry" },
+    );
   });
 
   it("emits prefixed model properties", () => {
