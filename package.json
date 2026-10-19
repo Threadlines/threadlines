@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare": "node scripts/patch-tsgo.mjs",
+    "prepare": "node scripts/patch-tsgo.mjs && node scripts/sign-tsc-for-task-cache.mjs",
     "dev": "node scripts/dev-runner.ts dev",
     "dev:server": "node scripts/dev-runner.ts dev:server",
     "dev:web": "node scripts/dev-runner.ts dev:web",
