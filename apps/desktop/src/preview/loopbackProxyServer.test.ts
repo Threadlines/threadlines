@@ -163,9 +163,10 @@ describe("startLoopbackProxyServer", () => {
     const port = await startServer((_request, response) => response.end("ok"));
 
     expect((await getThrough(proxy, `http://localhost:${port}/`)).status).toBe(407);
-    expect(
-      (await getThrough(proxy, `http://localhost:${port}/`, "Basic d3Jvbmc6cGFzcw==")).status,
-    ).toBe(407);
+    const wrongCredentials = `Basic ${Buffer.from("wrong:pass").toString("base64")}`;
+    expect((await getThrough(proxy, `http://localhost:${port}/`, wrongCredentials)).status).toBe(
+      407,
+    );
     const refused = await connectThrough(proxy, `localhost:${port}`);
     expect(refused.status).toBe(407);
     refused.socket.destroy();
