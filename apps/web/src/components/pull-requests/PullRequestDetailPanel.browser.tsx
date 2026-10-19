@@ -1053,7 +1053,7 @@ describe("PullRequestDetailPanel", () => {
     await rendered.cleanup();
   });
 
-  it("offers Update branch only while the branch is behind its base", async () => {
+  it("leads with Update branch only where the host will not merge a stale branch", async () => {
     const current = await renderPanel({
       detail: { viewer: { canWrite: true, canReview: false, canManage: true } },
     });
@@ -1061,24 +1061,23 @@ describe("PullRequestDetailPanel", () => {
     expect(page.getByTestId("pull-request-update-branch").elements()).toHaveLength(0);
     await current.cleanup();
 
+    // Behind its base on a host that merges it anyway, the way a repository
+    // without an up-to-date rule does: the merge still leads, and the update
+    // waits in the menu for anyone who wants the branch current.
     const behind = await renderPanel({
       detail: {
         viewer: { canWrite: true, canReview: false, canManage: true },
         baseComparison: "behind",
         behindBy: 3,
+        mergeGate: "clear",
       },
     });
     // The branch line carries how far behind it is; the full sentence is its
-    // tooltip. Update branch takes the primary slot while it is behind, and the
-    // merge it displaces moves into the menu rather than disappearing.
+    // tooltip.
     await expect.element(page.getByTestId("pull-request-behind")).toHaveTextContent("behind by 3");
-    expect(page.getByTestId("pull-request-merge").elements()).toHaveLength(0);
+    await expect.element(page.getByTestId("pull-request-merge")).toBeEnabled();
     await userEvent.click(page.getByRole("button", { name: "More pull request actions" }));
-    await expect.element(page.getByTestId("pull-request-merge-menu-item")).toBeVisible();
-    await userEvent.keyboard("{Escape}");
-
-    await userEvent.click(page.getByTestId("pull-request-update-branch"));
-    await userEvent.click(page.getByRole("menuitem", { name: "Rebase onto main" }));
+    await userEvent.click(page.getByTestId("pull-request-update-branch-rebase"));
 
     await vi.waitFor(() => {
       expect(behind.runAction).toHaveBeenCalledWith({
@@ -1087,8 +1086,20 @@ describe("PullRequestDetailPanel", () => {
         updateMethod: "rebase",
       });
     });
-
     await behind.cleanup();
+
+    // A host that insists on a current branch: the update is the thing to do.
+    const required = await renderPanel({
+      detail: {
+        viewer: { canWrite: true, canReview: false, canManage: true },
+        baseComparison: "behind",
+        behindBy: 3,
+        mergeGate: "behind",
+      },
+    });
+    await expect.element(page.getByTestId("pull-request-update-branch")).toBeVisible();
+    expect(page.getByTestId("pull-request-merge").elements()).toHaveLength(0);
+    await required.cleanup();
   });
 
   it("offers one Merge when ready button where the base runs a merge queue", async () => {
