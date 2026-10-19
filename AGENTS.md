@@ -126,7 +126,7 @@ Docs:
 - `packages/effect-codex-app-server`: typed client for the Codex app-server JSON-RPC protocol.
 - `packages/effect-acp`: Agent Client Protocol (ACP) bindings, used by the Cursor driver.
 - `packages/ssh`, `packages/tailscale`: remote-connection helpers.
-- `.repos/effect`: read-only copy of the Effect source for the installed `effect` version (each package's `src` and docs, `LLMS.md`, `ai-docs/`, `migration/`). Read it instead of guessing Effect 4 APIs, which changed a lot from Effect 3, and prefer its patterns. Search it by path (`rg <term> .repos/effect`); searches from the repo root skip it because the folder is hidden. Never edit or import from it. `patches/` changes a few Effect files on top. After an Effect upgrade, run `node scripts/sync-effect-source.ts`; CI fails until you do.
+- `.repos/effect`: read-only copy of the Effect source for the installed `effect` version (each package's `src`, docs and `package.upstream.json`, its `package.json` renamed so GitHub doesn't scan it as ours; `LLMS.md`, `ai-docs/`, `migration/`). Read it instead of guessing Effect 4 APIs, which changed a lot from Effect 3, and prefer its patterns. Search it by path (`rg <term> .repos/effect`); searches from the repo root skip it because the folder is hidden. Never edit or import from it. `patches/` changes a few Effect files on top. After an Effect upgrade, run `node scripts/sync-effect-source.ts`; CI fails until you do.
 
 ## Design System
 
