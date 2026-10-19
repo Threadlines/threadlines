@@ -1251,7 +1251,7 @@ interface TerminalManagerOptions {
   subprocessChecker?: TerminalSubprocessChecker;
   processRowsReader?: (
     platform: NodeJS.Platform,
-  ) => Effect.Effect<ReadonlyArray<ProcessRow>, unknown>;
+  ) => Effect.Effect<ReadonlyArray<ProcessRow>, Error>;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;

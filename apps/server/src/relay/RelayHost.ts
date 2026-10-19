@@ -75,6 +75,8 @@ import { computeDirectRoutes } from "./directRoutes.ts";
 import { openLoopbackSocket, openRelayPipeSocket } from "./relayPipe.ts";
 import { openSecurePipe, type SecureDuplex, type SecurePipeHandle } from "./securePipe.ts";
 
+const isRelayAccessError = Schema.is(RelayAccessError);
+
 /** Sessions issued to relay devices carry this subject, so device lists can tell them apart. */
 export const RELAY_DEVICE_SUBJECT = RELAY_DEVICE_SESSION_SUBJECT;
 /** Relay devices keep access while used; one idle this long must pair again. */
@@ -164,7 +166,7 @@ function platformName(os: string): string {
 }
 
 function toAccessError(error: unknown, fallback: string): RelayAccessError {
-  if (error instanceof RelayAccessError) return error;
+  if (isRelayAccessError(error)) return error;
   if (error instanceof RelayApiError) {
     const code = error.code;
     return new RelayAccessError({
@@ -1029,7 +1031,7 @@ const make = Effect.gen(function* () {
         .extendExpiry(sessionId, RELAY_DEVICE_SESSION_TTL)
         .pipe(Effect.orElseSucceed(() => false));
       if (!usable || !localOrigin) {
-        return yield* Effect.fail(new Error("This device's access ended."));
+        return yield* Effect.fail(new RelayAccessError({ detail: "This device's access ended." }));
       }
       const token = yield* sessions.issueWebSocketToken(sessionId);
       const localUrl = new URL("/ws", localOrigin);

@@ -34,6 +34,7 @@ import { makeAcpProviderRuntime } from "../acp/AcpProviderRuntime.ts";
 import type { AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
 import { checkApiKeyWithModelList } from "../apiKeyCheck.ts";
 import type { ProviderInstanceAuthFlows } from "../ProviderDriver.ts";
+import { ProviderSetupError } from "../Errors.ts";
 
 const SIGN_IN_TIMEOUT = Duration.minutes(10);
 const SIGN_OUT_TIMEOUT = Duration.seconds(30);
@@ -174,7 +175,10 @@ export function makeGrokAuthFlows(input: {
       yield* Fiber.join(login).pipe(
         Effect.timeoutOrElse({
           duration: SIGN_IN_TIMEOUT,
-          orElse: () => Effect.fail(new Error("Sign-in timed out after 10 minutes. Try again.")),
+          orElse: () =>
+            Effect.fail(
+              new ProviderSetupError({ detail: "Sign-in timed out after 10 minutes. Try again." }),
+            ),
         }),
         // Stopped from the panel: Grok drops the login it was waiting on.
         Effect.onInterrupt(() =>
@@ -209,7 +213,8 @@ export function makeGrokAuthFlows(input: {
       Effect.scoped,
       Effect.timeoutOrElse({
         duration: SIGN_OUT_TIMEOUT,
-        orElse: () => Effect.fail(new Error("Grok did not finish signing out.")),
+        orElse: () =>
+          Effect.fail(new ProviderSetupError({ detail: "Grok did not finish signing out." })),
       }),
       Effect.mapError((error) =>
         failure(error instanceof Error ? error.message : "Sign-out failed."),
@@ -223,14 +228,20 @@ export function makeGrokAuthFlows(input: {
   const checkKey = (emit: (line: string) => Effect.Effect<void>) =>
     Effect.gen(function* () {
       const key = input.environment.XAI_API_KEY?.trim();
-      if (!key) return yield* Effect.fail(new Error("Add an xAI API key first."));
+      if (!key) {
+        return yield* Effect.fail(new ProviderSetupError({ detail: "Add an xAI API key first." }));
+      }
       yield* emit("Checking the key with xAI…");
       const verdict = yield* checkXaiApiKey(key).pipe(
         Effect.provideService(HttpClient.HttpClient, input.httpClient),
       );
-      if (verdict.verdict === "unreachable") return yield* Effect.fail(new Error(verdict.message));
+      if (verdict.verdict === "unreachable") {
+        return yield* Effect.fail(new ProviderSetupError({ detail: verdict.message }));
+      }
       if (verdict.verdict === "rejected") {
-        return yield* Effect.fail(new Error(`xAI didn't accept this key: ${verdict.message}`));
+        return yield* Effect.fail(
+          new ProviderSetupError({ detail: `xAI didn't accept this key: ${verdict.message}` }),
+        );
       }
       const { initialized } = yield* grokProcess(input.environment);
       const decoded = decodeDefaultMethod(initialized);
@@ -240,9 +251,9 @@ export function makeGrokAuthFlows(input: {
           : undefined;
       if (method !== "xai.api_key") {
         return yield* Effect.fail(
-          new Error(
-            "xAI accepted this key, but Grok uses the sign-in saved in its folder instead.",
-          ),
+          new ProviderSetupError({
+            detail: "xAI accepted this key, but Grok uses the sign-in saved in its folder instead.",
+          }),
         );
       }
       yield* emit("xAI accepted this key. xAI bills Grok's requests per use.");

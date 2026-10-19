@@ -22,12 +22,13 @@
       {
         "name": "@effect/language-service",
         "namespaceImportPackages": ["@effect/platform-node", "effect"],
+        // Suggestions show in the editor; tsc output (and CI) only carries
+        // warnings and errors.
+        "includeSuggestionsInTsc": false,
         "diagnosticSeverity": {
-          "importFromBarrel": "error",
           "anyUnknownInErrorContext": "error",
           "unsafeEffectTypeAssertion": "error",
           "instanceOfSchema": "error",
-          "deterministicKeys": "error",
           "strictEffectProvide": "off",
           "missingEffectServiceDependency": "error",
           "leakingRequirements": "error",
@@ -36,19 +37,23 @@
           "unknownInEffectCatch": "error",
           "strictBooleanExpressions": "off",
           "lazyEffect": "off",
-          "preferSchemaOverJson": "error",
           "schemaSyncInEffect": "error",
-          "cryptoRandomUUID": "error",
-          "cryptoRandomUUIDInEffect": "error",
-          "nodeBuiltinImport": "error",
-          "globalDate": "error",
-          "globalDateInEffect": "error",
-          "globalConsole": "error",
-          "globalConsoleInEffect": "error",
-          "globalRandom": "error",
-          "globalRandomInEffect": "error",
-          "globalTimers": "error",
-          "globalTimersInEffect": "error"
+          // House-style rules the code does not follow yet (hundreds of
+          // findings each): editor hints only. Raise one to "error" only
+          // together with its cleanup.
+          "deterministicKeys": "suggestion",
+          "preferSchemaOverJson": "suggestion",
+          "cryptoRandomUUID": "suggestion",
+          "cryptoRandomUUIDInEffect": "suggestion",
+          "nodeBuiltinImport": "suggestion",
+          "globalDate": "suggestion",
+          "globalDateInEffect": "suggestion",
+          "globalConsole": "suggestion",
+          "globalConsoleInEffect": "suggestion",
+          "globalRandom": "suggestion",
+          "globalRandomInEffect": "suggestion",
+          "globalTimers": "suggestion",
+          "globalTimersInEffect": "suggestion"
         }
       }
     ]

@@ -139,7 +139,7 @@ export const readCodexSignIn = (signInHome: string, environment: NodeJS.ProcessE
  */
 const renewalsInFlight = new Map<string, Deferred.Deferred<boolean>>();
 
-const renewOnce = (signInHome: string, renewOwner: Effect.Effect<void, unknown>) =>
+const renewOnce = (signInHome: string, renewOwner: Effect.Effect<void, Error>) =>
   Effect.gen(function* () {
     const inFlight = renewalsInFlight.get(signInHome);
     if (inFlight !== undefined) {
@@ -181,7 +181,7 @@ const accessTokenExpiresAt = (accessToken: string): number | undefined => {
 export const borrowCodexSignIn = (input: {
   readonly signInHome: string;
   readonly environment: NodeJS.ProcessEnv;
-  readonly renewOwner: Effect.Effect<void, unknown>;
+  readonly renewOwner: Effect.Effect<void, Error>;
   readonly rejectedAccessToken?: string;
 }) =>
   Effect.gen(function* () {

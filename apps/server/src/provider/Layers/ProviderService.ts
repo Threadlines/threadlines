@@ -80,6 +80,8 @@ import {
   classifyProviderSessionStart,
   classifyProviderFailure,
 } from "../../telemetry/AnalyticsProperties.ts";
+
+const isProviderValidationError = Schema.is(ProviderValidationError);
 const isModelSelection = Schema.is(ModelSelection);
 
 /**
@@ -153,7 +155,7 @@ const decodeInputOrValidationError = <S extends Schema.Top>(input: {
 
 function isMissingProviderBindingForReview(error: unknown): error is ProviderValidationError {
   return (
-    error instanceof ProviderValidationError &&
+    isProviderValidationError(error) &&
     error.operation === "ProviderService.startReview" &&
     error.issue.includes("no persisted provider binding exists")
   );

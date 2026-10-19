@@ -50,11 +50,13 @@ updates:
       # production-dependencies job on every run. Bump manually, re-cutting
       # the patch, and check the chat timeline in a browser.
       - dependency-name: "@legendapp/list"
-      # TypeScript majors and @types/node majors are coordinated migrations.
-      # @types/node tracks the Node line CI runs (the workflows' setup-vp
-      # node-version) and Electron ships, not the newest release.
+      # TypeScript is pinned to an exact version @effect/tsgo ships a patched
+      # compiler for (`effect-tsgo patch` fails the install on any other), so
+      # it moves only together with @effect/tsgo. This also holds the
+      # marketing site's TypeScript 5.9, kept for astro check. @types/node
+      # majors are a coordinated migration: it tracks the Node line CI runs
+      # (the workflows' setup-vp node-version) and Electron ships.
       - dependency-name: "typescript"
-        update-types: ["version-update:semver-major"]
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
     groups:

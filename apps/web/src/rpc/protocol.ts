@@ -1,4 +1,5 @@
 import { WsRpcGroup } from "@threadlines/contracts";
+import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -214,6 +215,11 @@ function composeLifecycleHandlers(
   };
 }
 
+/** Whatever the URL provider failed with, kept whole for the triage below. */
+class UrlProviderFailure extends Data.TaggedError("UrlProviderFailure")<{
+  readonly cause: unknown;
+}> {}
+
 export function createWsRpcProtocolLayer(
   url: WsRpcProtocolSocketUrlProvider,
   handlers?: WsProtocolLifecycleHandlers,
@@ -228,9 +234,12 @@ export function createWsRpcProtocolLayer(
   // to sleep, which was never reconnected after it woke up.
   const resolvedUrl =
     typeof url === "function"
-      ? Effect.tryPromise({ try: () => url(), catch: (cause) => cause }).pipe(
+      ? Effect.tryPromise({
+          try: () => url(),
+          catch: (cause) => new UrlProviderFailure({ cause }),
+        }).pipe(
           Effect.map((rawUrl) => resolveWsRpcSocketUrl(rawUrl, options)),
-          Effect.catch((cause) => {
+          Effect.catch(({ cause }) => {
             lifecycle.onError(formatSocketErrorMessage(cause));
             return cause instanceof TransportUrlUnavailableError
               ? Effect.fail(

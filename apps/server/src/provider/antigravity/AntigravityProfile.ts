@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { resolveCommandPath } from "@threadlines/shared/shell";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
+import { ProviderSetupError } from "../Errors.ts";
 
 export interface AntigravityInstancePaths {
   /** `GEMINI_HOME` for this instance. */
@@ -119,7 +120,11 @@ export const acquireAntigravityTempDir = (tempRoot: string) =>
         await writePidMarker(join(dir, OWNER_FILE), process.pid);
         return dir;
       },
-      catch: (cause) => new Error(`Could not create Antigravity's temp dir: ${String(cause)}`),
+      catch: (cause) =>
+        new ProviderSetupError({
+          detail: `Could not create Antigravity's temp dir: ${String(cause)}`,
+          cause,
+        }),
     }),
     (dir) =>
       Effect.promise(() =>

@@ -27,7 +27,9 @@ export const relayDirectRouteLayer = HttpRouter.add(
 
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
     let write:
-      | ((chunk: Uint8Array | string | Socket.CloseEvent) => Effect.Effect<void, unknown>)
+      | ((
+          chunk: Uint8Array | string | Socket.CloseEvent,
+        ) => Effect.Effect<void, Socket.SocketError>)
       | null = null;
     let closeRequested: Socket.CloseEvent | null = null;
     const duplex: SecureDuplex = {

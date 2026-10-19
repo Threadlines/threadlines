@@ -13,6 +13,7 @@ import {
   TurnId,
   type ModelSelection,
 } from "@threadlines/contracts";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
@@ -24,6 +25,13 @@ import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "../persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "../project/Layers/RepositoryIdentityResolver.ts";
 import { WorkspacePathsLive } from "../workspace/Layers/WorkspacePaths.ts";
+
+/** A seed or verification step found the studio state wrong; the message says what. */
+class MarketingStudioSeedError extends Data.TaggedError("MarketingStudioSeedError")<{
+  readonly message: string;
+}> {}
+
+const seedError = (message: string) => new MarketingStudioSeedError({ message });
 
 interface MarketingThreadSeed {
   readonly title: string;
@@ -209,7 +217,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
     const seedScenario = (
       threadId: ThreadId,
       threadSeed: MarketingThreadSeed,
-    ): Effect.Effect<void, unknown> =>
+    ): Effect.Effect<void, Error> =>
       Effect.gen(function* () {
         const scenario = threadSeed.scenario;
         if (!scenario) {
@@ -505,7 +513,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
       );
       if (!project) {
         return yield* Effect.fail(
-          new Error(
+          seedError(
             "Marketing Studio project is missing from the orchestration snapshot: " +
               projectSeed.workspaceRoot,
           ),
@@ -602,7 +610,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
       );
       if (!project) {
         return yield* Effect.fail(
-          new Error(`Marketing Studio verification could not find ${projectSeed.workspaceRoot}.`),
+          seedError(`Marketing Studio verification could not find ${projectSeed.workspaceRoot}.`),
         );
       }
       for (const threadSeed of projectSeed.threads) {
@@ -616,7 +624,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
         );
         if (!thread || !thread.messages.some((message) => message.text === scenario.prompt)) {
           return yield* Effect.fail(
-            new Error(`Marketing Studio scenario transcript is missing: ${threadSeed.title}.`),
+            seedError(`Marketing Studio scenario transcript is missing: ${threadSeed.title}.`),
           );
         }
         const shellThread = verifiedShell.threads.find(
@@ -624,7 +632,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
         );
         if (!shellThread) {
           return yield* Effect.fail(
-            new Error(`Marketing Studio shell scenario is missing: ${threadSeed.title}.`),
+            seedError(`Marketing Studio shell scenario is missing: ${threadSeed.title}.`),
           );
         }
 
@@ -673,7 +681,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
         })();
         if (!matchesStatus) {
           return yield* Effect.fail(
-            new Error(
+            seedError(
               `Marketing Studio scenario status '${scenario.status}' is not projected for ${threadSeed.title}: ${JSON.stringify(
                 {
                   sessionStatus: shellThread.session?.status ?? null,
@@ -709,8 +717,7 @@ const main = async (): Promise<void> => {
   const result = await Effect.runPromise(
     seedThreads(input).pipe(
       Effect.scoped,
-      Effect.provide(makeRuntimeLayer(config)),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.provideMerge(makeRuntimeLayer(config), NodeServices.layer)),
     ),
   );
 

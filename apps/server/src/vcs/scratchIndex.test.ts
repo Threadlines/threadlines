@@ -4,11 +4,15 @@ import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import { describe, expect } from "vite-plus/test";
 
 import { makeScratchIndexes, type ScratchIndexGit } from "./scratchIndex.ts";
+
+/** A failure the code under test only passes along. */
+class TestFailure extends Data.TaggedError("TestFailure")<{ readonly message: string }> {}
 
 describe("makeScratchIndexes", () => {
   it.effect("keeps using its cache when a changed file is edited again", () =>
@@ -25,7 +29,7 @@ describe("makeScratchIndexes", () => {
       run(["commit", "-qm", "initial"]);
 
       const loads: Array<ReadonlyArray<string>> = [];
-      const git: ScratchIndexGit<Error> = (args, env) =>
+      const git: ScratchIndexGit<TestFailure> = (args, env) =>
         Effect.try({
           try: () => {
             if (args[0] === "read-tree") {
@@ -33,7 +37,7 @@ describe("makeScratchIndexes", () => {
             }
             return { stdout: run(args, env) };
           },
-          catch: (error) => error as Error,
+          catch: (error) => new TestFailure({ message: String(error) }),
         });
       const { withScratchIndex } = yield* makeScratchIndexes;
       const snapshot = withScratchIndex({

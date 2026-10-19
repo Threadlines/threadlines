@@ -79,6 +79,21 @@ export class OrchestrationListenerCallbackError extends Schema.TaggedError<Orche
   }
 }
 
+/**
+ * SideAnswerStartError - A side answer could not start. The detail is shown to
+ * the user after "The side answer could not start:".
+ */
+export class SideAnswerStartError extends Schema.TaggedError<SideAnswerStartError>()(
+  "SideAnswerStartError",
+  {
+    detail: Schema.String,
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export type OrchestrationDispatchError =
   | ProjectionRepositoryError
   | OrchestrationCommandInvariantError

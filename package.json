@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare": "node scripts/patch-tsgo.mjs && node scripts/sign-tsc-for-task-cache.mjs",
+    "prepare": "effect-tsgo patch && node scripts/sign-tsc-for-task-cache.mjs",
     "dev": "node scripts/dev-runner.ts dev",
     "dev:server": "node scripts/dev-runner.ts dev:server",
     "dev:web": "node scripts/dev-runner.ts dev:web",
@@ -54,7 +54,7 @@
     "@effect/tsgo": "catalog:",
     "@oxlint/plugins": "^1.88.0",
     "@types/node": "catalog:",
-    "@typescript/native-preview": "catalog:",
+    "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },

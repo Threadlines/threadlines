@@ -429,7 +429,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
           ? scenario.prListByHeadSelector?.[headSelector]
           : undefined;
       const queued = mappedQueue ?? mappedStdout ?? prListQueue.shift() ?? "[]";
-      if (queued instanceof GitHubCliError) {
+      if (isGitHubCliError(queued)) {
         return Effect.fail(queued);
       }
       const stdout = queued + "\n";

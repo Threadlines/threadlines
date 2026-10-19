@@ -194,7 +194,7 @@ describe("ProviderCommandReactor", () => {
     readonly projectStartingDuringRestart?: boolean;
     /** State left behind by a previous server process, seeded before the
      *  reactor starts. */
-    readonly beforeStart?: (engine: OrchestrationEngineShape) => Effect.Effect<void, unknown>;
+    readonly beforeStart?: (engine: OrchestrationEngineShape) => Effect.Effect<void, Error>;
     readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
     /** Instances that are no longer configured (an account was removed). */
     readonly removedInstanceIds?: ReadonlyArray<string>;

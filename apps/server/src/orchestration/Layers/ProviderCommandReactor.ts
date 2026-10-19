@@ -124,6 +124,7 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
+import { SideAnswerStartError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isCheckoutMissingError = Schema.is(CheckoutMissingError);
@@ -167,7 +168,8 @@ type ReactorWork =
   | ProviderIntentEvent
   | {
       readonly type: "continue";
-      readonly run: Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path | Scope.Scope>;
+      /** Failures are logged and dropped by the worker. */
+      readonly run: Effect.Effect<void, Error, FileSystem.FileSystem | Path.Path | Scope.Scope>;
     };
 
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
@@ -4116,7 +4118,9 @@ const make = Effect.gen(function* () {
     }
     const question = thread.messages.find((message) => message.id === sideTurn.messageId);
     if (question === undefined) {
-      return yield* Effect.fail(new Error("The question for this side answer was not found."));
+      return yield* Effect.fail(
+        new SideAnswerStartError({ detail: "The question for this side answer was not found." }),
+      );
     }
     const key = sideSessionKey(threadId, sideTurnId, sideTurn.participantId);
     const project = yield* resolveProject(thread.projectId);
@@ -4258,7 +4262,10 @@ const make = Effect.gen(function* () {
     yield* runSideTurn({ threadId, sideTurnId: sideTurn.sideTurnId, modelSelection }).pipe(
       Effect.timeoutOrElse({
         duration: SIDE_TURN_START_TIMEOUT,
-        orElse: () => Effect.fail(new Error("The side answer did not start in time.")),
+        orElse: () =>
+          Effect.fail(
+            new SideAnswerStartError({ detail: "The side answer did not start in time." }),
+          ),
       }),
       Effect.as(true),
       Effect.catchCause((cause) =>

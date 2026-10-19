@@ -41,6 +41,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -68,6 +69,8 @@ import {
   toAcpRegistryCatalog,
 } from "./AcpRegistryCatalog.ts";
 import { acpRegistryNodes } from "./AcpRegistryNodes.ts";
+
+const isAcpRegistryError = Schema.is(AcpRegistryError);
 
 /** How often the registry is read again for update notices, while a community agent is installed. */
 const UPDATE_CHECK_INTERVAL = Duration.hours(6);
@@ -280,7 +283,7 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
         )
         .pipe(
           Effect.catch((error) =>
-            error instanceof AcpRegistryError
+            isAcpRegistryError(error)
               ? Effect.fail(error)
               : fail("settingsFailed", `${entry.agent.name} could not be saved.`),
           ),

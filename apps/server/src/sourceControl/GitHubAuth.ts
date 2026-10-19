@@ -9,10 +9,13 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { planCliSpawn } from "../cliSpawn.ts";
 import { THREADLINES_GITHUB_CLI_ENV } from "./GitHubCliEnvironment.ts";
+
+const isSourceControlProviderError = Schema.is(SourceControlProviderError);
 
 const DEVICE_URL = "https://github.com/login/device";
 const AUTH_OUTPUT_LIMIT = 8_192;
@@ -89,20 +92,19 @@ export const make = Effect.fn("makeGitHubAuth")(function* (options: GitHubAuthOp
     return Number(exitCode);
   });
 
+  const configureGitFailed = () =>
+    new SourceControlProviderError({
+      provider: "github",
+      operation: "configureGit",
+      detail:
+        "Git is installed, but GitHub could not configure Git access. Run `gh auth setup-git --hostname github.com` to use your GitHub account for Git.",
+    });
   const setupGit = runCommand(["auth", "setup-git", "--hostname", "github.com"]).pipe(
     Effect.scoped,
     Effect.timeout("30 seconds"),
+    Effect.mapError(configureGitFailed),
     Effect.flatMap((exitCode) =>
-      exitCode === 0 ? Effect.void : Effect.fail(new Error("GitHub Git credential setup failed.")),
-    ),
-    Effect.mapError(
-      () =>
-        new SourceControlProviderError({
-          provider: "github",
-          operation: "configureGit",
-          detail:
-            "Git is installed, but GitHub could not configure Git access. Run `gh auth setup-git --hostname github.com` to use your GitHub account for Git.",
-        }),
+      exitCode === 0 ? Effect.void : Effect.fail(configureGitFailed()),
     ),
   );
 
@@ -172,7 +174,7 @@ export const make = Effect.fn("makeGitHubAuth")(function* (options: GitHubAuthOp
         current.status === "running"
           ? authState(
               "failed",
-              error instanceof SourceControlProviderError
+              isSourceControlProviderError(error)
                 ? error.detail
                 : "GitHub sign-in could not run. Check that GitHub CLI is installed and try again.",
             )

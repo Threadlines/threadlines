@@ -45,6 +45,7 @@ import {
   writeAntigravityProfileSettings,
   writeAntigravitySignInCheck,
 } from "./AntigravitySignInMethod.ts";
+import { ProviderSetupError } from "../Errors.ts";
 
 const SIGN_IN_TIMEOUT = Duration.minutes(5);
 const SIGN_OUT_TIMEOUT = Duration.seconds(90);
@@ -208,7 +209,10 @@ export function makeAntigravityAuthFlows(input: {
       yield* acp.start().pipe(
         Effect.timeoutOrElse({
           duration: SIGN_IN_TIMEOUT,
-          orElse: () => Effect.fail(new Error("Sign-in timed out after 5 minutes. Try again.")),
+          orElse: () =>
+            Effect.fail(
+              new ProviderSetupError({ detail: "Sign-in timed out after 5 minutes. Try again." }),
+            ),
         }),
       );
       yield* emit("Signed in.");
@@ -232,7 +236,10 @@ export function makeAntigravityAuthFlows(input: {
       Effect.scoped,
       Effect.timeoutOrElse({
         duration: SIGN_OUT_TIMEOUT,
-        orElse: () => Effect.fail(new Error("Antigravity did not finish signing out.")),
+        orElse: () =>
+          Effect.fail(
+            new ProviderSetupError({ detail: "Antigravity did not finish signing out." }),
+          ),
       }),
       Effect.mapError((error) =>
         failure(error instanceof Error ? error.message : "Sign-out failed."),

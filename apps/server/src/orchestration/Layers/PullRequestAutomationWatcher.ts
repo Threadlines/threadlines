@@ -48,6 +48,7 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 
 import { GitManager } from "../../git/GitManager.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
@@ -57,6 +58,8 @@ import {
   PullRequestAutomationWatcher,
   type PullRequestAutomationWatcherShape,
 } from "../Services/PullRequestAutomationWatcher.ts";
+
+const isPullRequestServiceError = Schema.is(PullRequestServiceError);
 
 const DEFAULT_SWEEP_INTERVAL_MS = 120 * 1_000;
 
@@ -679,12 +682,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           return false;
         }
         const failure = Exit.isFailure(outcome) ? Cause.squash(outcome.cause) : null;
-        const reason =
-          failure instanceof PullRequestServiceError
-            ? failure.detail
-            : failure instanceof Error
-              ? failure.message
-              : "GitHub did not merge it";
+        const reason = isPullRequestServiceError(failure)
+          ? failure.detail
+          : failure instanceof Error
+            ? failure.message
+            : "GitHub did not merge it";
         yield* Effect.logWarning("pull-request.auto-merge.merge-failed", {
           threadId: thread.id,
           number,
@@ -789,12 +791,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           return;
         }
         const failure = Cause.squash(outcome.cause);
-        const reason =
-          failure instanceof PullRequestServiceError
-            ? failure.detail
-            : failure instanceof Error
-              ? failure.message
-              : "GitHub did not take it back into the queue";
+        const reason = isPullRequestServiceError(failure)
+          ? failure.detail
+          : failure instanceof Error
+            ? failure.message
+            : "GitHub did not take it back into the queue";
         yield* Effect.logWarning("pull-request.auto-fix.requeue-failed", {
           threadId: thread.id,
           number,

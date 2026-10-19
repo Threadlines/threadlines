@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Fiber from "effect/Fiber";
 import * as Semaphore from "effect/Semaphore";
+import * as Schema from "effect/Schema";
 
 import { ServerConfig } from "../config.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -26,6 +27,8 @@ import {
 } from "./SourceControlToolPackages.ts";
 import { parseGitHubCliVersion, parseGitVersion } from "./SourceControlToolVersionAdvisory.ts";
 import { isWinGetInstallCancelled, isWinGetUpdateNotApplicable } from "./SourceControlWinGet.ts";
+
+const isSourceControlToolUpdateError = Schema.is(SourceControlToolUpdateError);
 
 const UPDATE_TIMEOUT_MS = 5 * 60_000;
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
@@ -318,10 +321,9 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
                 target,
                 operation,
                 status: "failed",
-                message:
-                  error instanceof SourceControlToolUpdateError
-                    ? error.reason
-                    : "The installer stopped unexpectedly. Try again.",
+                message: isSourceControlToolUpdateError(error)
+                  ? error.reason
+                  : "The installer stopped unexpectedly. Try again.",
               }).pipe(Effect.andThen(Effect.failCause(cause)));
             }),
             Effect.interruptible,

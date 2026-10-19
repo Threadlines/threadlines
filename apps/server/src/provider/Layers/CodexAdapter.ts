@@ -91,6 +91,8 @@ import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogg
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
 import { mcpRoomEndpointUrl } from "../../mcp/McpHttpServer.ts";
 import { roomSideKindOf, roomToolsFor } from "../../mcp/roomToolAccess.ts";
+
+const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
@@ -3902,7 +3904,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     ).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
       Effect.mapError((cause) =>
-        cause instanceof ProviderAdapterValidationError
+        isProviderAdapterValidationError(cause)
           ? cause
           : new ProviderAdapterRequestError({
               provider: PROVIDER,

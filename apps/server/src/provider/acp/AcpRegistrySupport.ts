@@ -72,6 +72,7 @@ import {
   NATIVE_ACP_MODEL_OPTION_MAPPING,
 } from "./AcpProviderModels.ts";
 import { makeAcpProviderRuntime } from "./AcpProviderRuntime.ts";
+import { ProviderSetupError } from "../Errors.ts";
 
 /** Some listed agents take a minute to answer their first `session/new`. */
 const HEALTH_CHECK_TIMEOUT = "90 seconds";
@@ -478,7 +479,11 @@ export function makeAcpRegistryDescriptor(
       const outcome = yield* Effect.acquireUseRelease(
         Effect.tryPromise({
           try: () => NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "threadlines-agent-check-")),
-          catch: () => new Error(`Couldn't make a folder to start ${displayName} in.`),
+          catch: (cause) =>
+            new ProviderSetupError({
+              detail: `Couldn't make a folder to start ${displayName} in.`,
+              cause,
+            }),
         }),
         startOnce,
         (scratch) =>

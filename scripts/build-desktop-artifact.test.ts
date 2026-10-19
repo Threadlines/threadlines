@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -22,6 +23,9 @@ import {
   createDesktopArtifactBuildEnv,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+
+/** A failure the code under test only passes along. */
+class TestFailure extends Data.TaggedError("TestFailure")<{ readonly message: string }> {}
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("resolves the dedicated nightly updater channel from nightly versions", () => {
@@ -97,7 +101,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const result = yield* retryTransientElectronPackaging(
         Effect.suspend(() => {
           attempts += 1;
-          return attempts < 3 ? Effect.fail(new Error("socket hang up")) : Effect.succeed("built");
+          return attempts < 3
+            ? Effect.fail(new TestFailure({ message: "socket hang up" }))
+            : Effect.succeed("built");
         }),
       );
 
@@ -112,7 +118,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const exit = yield* retryTransientElectronPackaging(
         Effect.suspend(() => {
           attempts += 1;
-          return Effect.fail(new Error("production dependency not found"));
+          return Effect.fail(new TestFailure({ message: "production dependency not found" }));
         }),
       ).pipe(Effect.exit);
 

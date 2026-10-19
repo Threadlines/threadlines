@@ -50,11 +50,15 @@ function normalizeRequest(tag: string, payload: unknown): NormalizedWsRpcRequest
   return { _tag: tag, payload };
 }
 
-function asEffect(result: UnaryResolverResult): Effect.Effect<unknown, unknown> {
-  // An Effect answers as it is, so a resolver can fail a call the way a server
-  // does. It has to be one that needs no services.
-  if (Effect.isEffect(result)) {
-    return result as Effect.Effect<unknown, unknown>;
+// An Effect answers as it is, so a resolver can fail a call the way a server
+// does, with one of the contract's errors. It has to be one that needs no
+// services.
+const isAnswerEffect = (result: UnaryResolverResult): result is Effect.Effect<unknown, Error> =>
+  Effect.isEffect(result);
+
+function asEffect(result: UnaryResolverResult): Effect.Effect<unknown, Error> {
+  if (isAnswerEffect(result)) {
+    return result;
   }
   if (result instanceof Promise) {
     return Effect.promise(() => result);
