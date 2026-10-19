@@ -36,12 +36,14 @@ const turn = {
   instanceId: "claudeAgent",
   model: "claude-opus-5-5",
   attachmentCount: 0,
+  sessionStartedEarly: false,
 };
 const sample = (firstOutputMs: number) => ({
   provider: "claudeAgent",
   model: "claude-opus-5-5",
   attachmentCount: 0,
   sessionStarted: false,
+  sessionStartedEarly: false,
   handoffMs: 400,
   firstOutputMs,
 });

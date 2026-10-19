@@ -21,8 +21,11 @@ Threadlines sends product and reliability events such as:
 - provider session start, stop, and recovery;
 - turn sent, steered, interrupted, and compact-requested events;
 - how long a sent message waited, in milliseconds, before Threadlines handed it
-  to the agent and before the agent's first output, and whether the agent had
-  to start up for it;
+  to the agent and before the agent's first output, whether the agent had to
+  start up for it, and whether it was started early while you typed;
+- when an agent started early while you typed went unused and was stopped, with
+  why (you stopped typing, or it started work or asked something on its own)
+  and how long it had been running;
 - selected model family and sanitized model slug for provider turns. A public
   model name sent through a well-known provider (`google/gemini-2.5-pro`,
   `openrouter/anthropic/claude-sonnet-4.5`) is reported without the

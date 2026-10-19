@@ -232,6 +232,7 @@ import type {
   OrchestrationThreadSearchInput,
   OrchestrationThreadSearchResult,
   OrchestrationGetTurnDiffInput,
+  OrchestrationWarmUpTurnInput,
   OrchestrationGetTurnDiffResult,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamItem,
@@ -1827,6 +1828,8 @@ export interface EnvironmentApi {
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;
+    /** Fire and forget: see `OrchestrationWarmUpTurnInput`. */
+    warmUpTurn: (input: OrchestrationWarmUpTurnInput) => Promise<void>;
     getTurnDiff: (input: OrchestrationGetTurnDiffInput) => Promise<OrchestrationGetTurnDiffResult>;
     getFullThreadDiff: (
       input: OrchestrationGetFullThreadDiffInput,

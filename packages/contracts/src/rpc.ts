@@ -164,6 +164,7 @@ import {
   OrchestrationGetTurnDiffInput,
   OrchestrationReplayEventsError,
   OrchestrationReplayEventsInput,
+  OrchestrationWarmUpTurnInput,
   OrchestrationRpcSchemas,
 } from "./orchestration.ts";
 import {
@@ -1467,6 +1468,11 @@ export const WsOrchestrationDispatchCommandRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationWarmUpTurnRpc = Rpc.make(ORCHESTRATION_WS_METHODS.warmUpTurn, {
+  payload: OrchestrationWarmUpTurnInput,
+  success: Schema.Void,
+});
+
 export const WsOrchestrationGetTurnDiffRpc = Rpc.make(ORCHESTRATION_WS_METHODS.getTurnDiff, {
   payload: OrchestrationGetTurnDiffInput,
   success: OrchestrationRpcSchemas.getTurnDiff.output,
@@ -1841,6 +1847,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRelaySubmitJoinRpc,
   WsRelayDirectRoutesRpc,
   WsOrchestrationDispatchCommandRpc,
+  WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationGetRevertPlanRpc,

@@ -380,6 +380,7 @@ export interface WsRpcClient {
   };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
+    readonly warmUpTurn: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.warmUpTurn>;
     readonly getTurnDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getTurnDiff>;
     readonly getFullThreadDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getFullThreadDiff>;
     readonly getRevertPlan: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getRevertPlan>;
@@ -1037,6 +1038,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           ? transport.request(execute)
           : transport.requestWithReconnectRetry(execute, dispatchCommandRetryOptions(input));
       },
+      // A hint while typing: never replayed on a new socket, since a stale
+      // one would only start an agent nobody is typing to anymore.
+      warmUpTurn: (input) =>
+        transport.request((client) => client[ORCHESTRATION_WS_METHODS.warmUpTurn](input)),
       getTurnDiff: (input) =>
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.getTurnDiff](input)),
       getFullThreadDiff: (input) =>

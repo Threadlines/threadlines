@@ -71,6 +71,43 @@ export interface ProviderServiceShape {
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, ProviderServiceError>;
 
+  /**
+   * Starts a session before its first message, while the user types
+   * (docs/early-agent-start.md). Reserves at once and starts in the
+   * background, so it never holds up the caller. It isn't the thread's until something uses
+   * it (`adoptEarlySession`, or any turn, goal, review or voice call): until
+   * then its events should be ignored, and it stops on its own once the
+   * typing stops. Answers what happened instead when it doesn't start: the
+   * driver doesn't allow it, one is already waiting (renewed), another start
+   * holds the key (busy), the limit is reached, or this checkout's starts did
+   * something on their own.
+   */
+  readonly startEarlySession: (
+    threadId: ThreadId,
+    input: ProviderSessionStartInput & { readonly providerInstanceId: ProviderInstanceId },
+  ) => Effect.Effect<
+    "started" | "renewed" | "busy" | "limit" | "blocked" | "unsupported",
+    ProviderServiceError
+  >;
+
+  /**
+   * Makes the key's early session the thread's, waiting for one still
+   * starting. Returns it as it started, when there was one.
+   */
+  readonly adoptEarlySession: (threadId: ThreadId) => Effect.Effect<ProviderSession | undefined>;
+
+  /** True while the key's runtime is an early session nobody has used. */
+  readonly isEarlySession: (threadId: ThreadId) => Effect.Effect<boolean>;
+
+  /**
+   * An early session started work or asked the user something on its own:
+   * stop it, and start no more early in that checkout on that instance.
+   */
+  readonly abandonEarlySession: (input: {
+    readonly threadId: ThreadId;
+    readonly reason: "turn_started" | "asked_user";
+  }) => Effect.Effect<void>;
+
   readonly listExternalThreads: (
     input: ProviderExternalThreadListInput,
   ) => Effect.Effect<ProviderExternalThreadListResult, ProviderServiceError>;

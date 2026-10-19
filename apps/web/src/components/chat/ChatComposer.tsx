@@ -129,6 +129,8 @@ import {
   roomDeliveryLabels,
 } from "./ComposerPrimaryActions";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { useAgentWarmUp } from "../../hooks/useAgentWarmUp";
+import { getThreadInFlightStatus } from "../../lib/threadSort";
 import { ComposerAgentInvitePanel } from "./ComposerAgentInvitePanel";
 import { ComposerChildThreadsPanel } from "./ComposerChildThreadsPanel";
 import { pendingChildThreads } from "../../childThreads";
@@ -185,6 +187,7 @@ import {
   pendingRoomInvite,
   resolveRoomDelivery,
   resolveRoomRecipient,
+  resolveRoomSend,
   roomActivityAgent,
   roomAgentKey,
   roomTurnOwners,
@@ -1116,6 +1119,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const roomRecipientId =
     activeThread !== undefined ? resolveRoomRecipient(activeThread, chosenRoomRecipientId) : null;
+  // Start the agent this message is for while it's being written, so it's
+  // ready when sent (docs/early-agent-start.md). Picked the way sending
+  // picks it, Rooms switch included.
+  const warmUpRoute =
+    activeThread !== undefined
+      ? resolveRoomSend({ enabled: roomsEnabled, thread: activeThread, threadRef: routeThreadRef })
+      : null;
+  useAgentWarmUp(
+    environmentId,
+    {
+      enabled: settings.startAgentsWhileTyping !== false,
+      threadId: activeThread?.id ?? null,
+      serverThreadExists,
+      // Background work counts: a message to another agent then goes on the
+      // side, not to that agent's own session.
+      turnActive:
+        phase === "running" ||
+        (activeThread !== undefined && getThreadInFlightStatus(activeThread) !== null) ||
+        isWaitingOnBackgroundTasks(activeThread?.latestTurn ?? null, activeThread?.session ?? null),
+      participantId: warmUpRoute?.recipient?.id ?? null,
+      modelSelection: warmUpRoute?.modelSelection ?? selectedModelSelection,
+      runtimeMode,
+    },
+    prompt,
+  );
   // "Send when done" picked for the message being written; asking now is the
   // default for each new one.
   const roomTurnId = activeThread?.latestTurn?.turnId;

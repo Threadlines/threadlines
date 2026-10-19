@@ -6,6 +6,7 @@
  *
  * @module ProviderCommandReactor
  */
+import type { OrchestrationWarmUpTurnInput } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
@@ -30,6 +31,13 @@ export interface ProviderCommandReactorShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /**
+   * The user is typing a message for a thread's agent: start its stopped
+   * session early, where that applies (docs/early-agent-start.md). Only
+   * queues the work; never fails.
+   */
+  readonly warmUp: (input: OrchestrationWarmUpTurnInput) => Effect.Effect<void>;
 }
 
 /**

@@ -43,6 +43,8 @@ export interface TurnLatencySample {
   readonly attachmentCount: number;
   /** The agent's session started after the message arrived, so the wait includes its startup. */
   readonly sessionStarted: boolean;
+  /** The agent's session was started early, while the user typed, and this was its first turn. */
+  readonly sessionStartedEarly: boolean;
   /** Until Threadlines handed the message to the agent. */
   readonly handoffMs: number;
   /** Until the agent's first visible output. */
@@ -90,6 +92,7 @@ export const makeTurnLatencyTracker = () => {
     model: turn.model,
     attachmentCount: turn.attachmentCount,
     sessionStarted: turn.sessionStarted,
+    sessionStartedEarly: turn.sessionStartedEarly,
     handoffMs: turn.handoffMs,
     firstOutputMs: Math.max(0, firstOutputAtMs - turn.requestedAtMs),
   });

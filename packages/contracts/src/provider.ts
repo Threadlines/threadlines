@@ -145,8 +145,9 @@ export const ProviderSessionStartInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
-  /** External imports require the selected native thread to resume exactly;
-   *  normal recovery keeps the historical fallback-to-fresh behavior. */
+  /** External imports and early starts require the selected native thread to
+   *  resume exactly; normal recovery keeps the historical fallback-to-fresh
+   *  behavior. */
   resumePolicy: Schema.optional(Schema.Literals(["fallback", "required"])),
   // Cross-driver handoff: provider-agnostic conversation rehydration used when
   // there is no native `resumeCursor` for the target driver. Adapters inject it

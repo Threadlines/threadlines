@@ -356,6 +356,7 @@ function createMockEnvironmentApi(input: {
   browse: EnvironmentApi["filesystem"]["browse"];
   dispatchCommand: EnvironmentApi["orchestration"]["dispatchCommand"];
   getRevertPlan?: EnvironmentApi["orchestration"]["getRevertPlan"];
+  warmUpTurn?: EnvironmentApi["orchestration"]["warmUpTurn"];
   previewAutomation?: EnvironmentApi["previewAutomation"];
 }): EnvironmentApi {
   return {
@@ -383,6 +384,7 @@ function createMockEnvironmentApi(input: {
     },
     orchestration: {
       dispatchCommand: input.dispatchCommand,
+      warmUpTurn: input.warmUpTurn ?? (async () => undefined),
       getTurnDiff: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getTurnDiff"],
@@ -3138,6 +3140,51 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await pressComposerKey("m");
       await waitForComposerText("m");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("starts the thread's agent once while a message is typed", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-warm-up" as MessageId,
+        targetText: "warm up",
+      }),
+    });
+    const warmUps = () =>
+      wsRequests.filter((request) => request._tag === ORCHESTRATION_WS_METHODS.warmUpTurn);
+
+    try {
+      for (const key of ["h", "e", "y"]) {
+        await pressComposerKey(key);
+      }
+      await vi.waitFor(() => expect(warmUps()).toHaveLength(1), {
+        timeout: 4_000,
+        interval: 50,
+      });
+      expect(warmUps()[0]).toMatchObject({ threadId: THREAD_ID, participantId: null });
+
+      // Still typing the same message to the same agent: nothing new.
+      await pressComposerKey("!");
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      expect(warmUps()).toHaveLength(1);
+
+      // The message went out; the agent may stop before the next one, which
+      // gets its own warm-up.
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "");
+      const composerEditor = await waitForComposerEditor();
+      await vi.waitFor(() => expect(composerEditor.textContent ?? "").toBe(""), {
+        timeout: 4_000,
+        interval: 16,
+      });
+      await waitForLayout();
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "next");
+      await vi.waitFor(() => expect(warmUps()).toHaveLength(2), {
+        timeout: 4_000,
+        interval: 50,
+      });
     } finally {
       await mounted.cleanup();
     }
