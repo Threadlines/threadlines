@@ -16,6 +16,7 @@ import {
   UserInputRequestedPayload,
   ProviderDriverKind,
   type ProviderEvent,
+  type ProviderFailureCategory,
   type ProviderExternalThreadCandidate,
   type ProviderExternalThreadSnapshot,
   type ProviderExternalThreadTranscriptMessage,
@@ -68,6 +69,7 @@ import {
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
+import { httpStatusFailureCategory, withFailureCategory } from "../providerFailureCategory.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { ServerConfig } from "../../config.ts";
@@ -553,6 +555,60 @@ export function readCodexSubagentParentThreadId(thread: CodexStoredThread): stri
 
 function providerErrorClass(message: string): "authentication_error" | "provider_error" {
   return isProviderAuthErrorMessage(message) ? "authentication_error" : "provider_error";
+}
+
+/** Codex's connection failures, which may carry the upstream HTTP status. */
+const CODEX_CONNECTION_ERROR_CODES = [
+  "httpConnectionFailed",
+  "responseStreamConnectionFailed",
+  "responseStreamDisconnected",
+  "responseTooManyFailedAttempts",
+] as const;
+
+/**
+ * The failure category Codex's `codexErrorInfo` names. Only codes listed here
+ * count: the protocol also allows arbitrary strings and objects, which leave
+ * the category unset.
+ */
+export function codexFailureCategory(info: unknown): ProviderFailureCategory | undefined {
+  if (typeof info === "string") {
+    switch (info) {
+      case "contextWindowExceeded":
+        return "context_length";
+      case "sessionBudgetExceeded":
+        return "execution_limit";
+      case "usageLimitExceeded":
+      case "rateLimitExceeded":
+        return "rate_limit";
+      case "serverOverloaded":
+      case "flexUnavailable":
+        return "overloaded";
+      case "internalServerError":
+        return "server_error";
+      case "unauthorized":
+        return "auth";
+      case "badRequest":
+        return "validation";
+      case "cyberPolicy":
+      case "misalignmentPolicyViolation":
+        return "refusal";
+      case "tooManyDenials":
+      case "sandboxError":
+        return "permission";
+      default:
+        return undefined;
+    }
+  }
+  if (typeof info !== "object" || info === null) return undefined;
+  if ("activeTurnNotSteerable" in info) return "validation";
+  const connectionCode = CODEX_CONNECTION_ERROR_CODES.find((code) => code in info);
+  if (connectionCode === undefined) return undefined;
+  const detail: unknown = (info as Record<string, unknown>)[connectionCode];
+  const status =
+    typeof detail === "object" && detail !== null && "httpStatusCode" in detail
+      ? detail.httpStatusCode
+      : undefined;
+  return httpStatusFailureCategory(typeof status === "number" ? status : undefined) ?? "network";
 }
 
 export interface CodexAdapterLiveOptions {
@@ -1916,13 +1972,18 @@ export function mapToRuntimeEvents(
     const hintedErrorMessage = errorMessage
       ? addProviderAuthHint(PROVIDER, errorMessage)
       : undefined;
+    const state = toTurnStatus(payload.turn.status);
+    // An interrupted turn can carry an error too; only a failed one is named.
+    const failureCategory =
+      state === "failed" ? codexFailureCategory(payload.turn.error?.codexErrorInfo) : undefined;
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
         type: "turn.completed",
         payload: {
-          state: toTurnStatus(payload.turn.status),
+          state,
           ...(hintedErrorMessage ? { errorMessage: hintedErrorMessage } : {}),
+          ...withFailureCategory(failureCategory),
         },
       },
     ];
@@ -2876,6 +2937,9 @@ export function mapToRuntimeEvents(
     // its whole reconnect schedule (20-30s of visible noise). An auth-shaped
     // error is terminal on the first attempt.
     const willRetry = payload?.willRetry === true && errorClass !== "authentication_error";
+    const failureCategory = willRetry
+      ? undefined
+      : codexFailureCategory(payload?.error.codexErrorInfo);
     return [
       {
         type: willRetry ? "runtime.warning" : "runtime.error",
@@ -2883,6 +2947,7 @@ export function mapToRuntimeEvents(
         payload: {
           message: addProviderAuthHint(PROVIDER, message),
           ...(!willRetry ? { class: errorClass } : {}),
+          ...withFailureCategory(failureCategory),
           ...(willRetry ? { warningKind: "api-retry" } : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },

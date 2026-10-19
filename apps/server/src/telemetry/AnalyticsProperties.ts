@@ -1,6 +1,7 @@
 import {
   AcpRegistryAgentId,
   isProviderAvailable,
+  type ProviderFailureCategory,
   type ServerProvider,
 } from "@threadlines/contracts";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
@@ -19,21 +20,18 @@ export type AnalyticsModelFamily =
   | "other"
   | "unknown";
 
+/**
+ * Why a turn or runtime failed: a driver's structured category when the agent
+ * gave one, otherwise what the message wording says.
+ */
 export type AnalyticsFailureCategory =
-  | "auth"
-  | "context_length"
+  | ProviderFailureCategory
   | "missing_directory"
-  | "model_unavailable"
-  | "network"
   | "not_installed"
-  | "overloaded"
-  | "permission"
   | "process_exit"
   | "provider_error"
-  | "rate_limit"
   | "session_lost"
   | "transport"
-  | "validation"
   | "unknown";
 
 export type AnalyticsRerouteReasonCategory =
@@ -285,7 +283,9 @@ export function analyticsAgentProperties(input: {
 /**
  * Ordered so a provider's own wording wins over generic transport words: the
  * first category with a matching pattern is the one reported. Patterns run
- * against the lowercased message, and only the category leaves the machine.
+ * against the lowercased message with `_` and `-` read as spaces (so
+ * `rate_limit` and `rate-limit` read as "rate limit"), and only the category
+ * leaves the machine.
  */
 const FAILURE_CATEGORY_PATTERNS: ReadonlyArray<
   readonly [AnalyticsFailureCategory, ReadonlyArray<string | RegExp>]
@@ -298,8 +298,13 @@ const FAILURE_CATEGORY_PATTERNS: ReadonlyArray<
       /\b429\b/,
       "quota",
       "usage limit",
+      "session limit",
       "hit your limit",
       "purchase more credits",
+      "insufficient credit",
+      "out of credits",
+      "credit balance",
+      "payment required",
     ],
   ],
   [
@@ -316,8 +321,28 @@ const FAILURE_CATEGORY_PATTERNS: ReadonlyArray<
     ],
   ],
   [
+    "execution_limit",
+    [
+      "max output tokens",
+      "maximum output tokens",
+      "output token limit",
+      "max turns",
+      "maximum number of turns",
+      "budget exceeded",
+      "budget exhausted",
+    ],
+  ],
+  [
     "context_length",
-    ["context length", "context window", "maximum context", "too many tokens", "token limit"],
+    [
+      "context length",
+      "context window",
+      "maximum context",
+      "too many tokens",
+      "token limit",
+      "prompt is too long",
+      "prompt too long",
+    ],
   ],
   ["overloaded", ["at capacity", "overloaded", /\b529\b/, /\b503\b/, "service unavailable"]],
   [
@@ -325,7 +350,7 @@ const FAILURE_CATEGORY_PATTERNS: ReadonlyArray<
     [
       "model unavailable",
       "model not available",
-      "model_not_found",
+      "model not found",
       "unknown model",
       "no such model",
       /\bmodel\b.*\bdoes not exist\b/,
@@ -366,15 +391,23 @@ const FAILURE_CATEGORY_PATTERNS: ReadonlyArray<
       "websocket",
       "connection refused",
       "connection reset",
+      "connection dropped",
+      "disconnected",
+      "error sending request",
+      "socket hang up",
     ],
   ],
+  // After network, whose "connection refused" is not a model refusing.
+  ["refusal", ["refused", "refusal", "content filter", "content policy", "usage policy"]],
   [
     "process_exit",
     ["process exited", "exited with code", "exited unexpectedly", "sigterm", "sigkill"],
   ],
   ["missing_directory", ["does not exist", "no longer exists", "no such file or directory"]],
+  // Late: "internal error" often wraps a more specific cause named in the same message.
+  ["server_error", ["internal server error", "internal error", "server error", "bad gateway"]],
   ["permission", ["permission", "not allowed", "access denied", "sandbox"]],
-  ["validation", ["invalid request", "validation"]],
+  ["validation", ["invalid request", "bad request", "validation"]],
 ];
 
 /**
@@ -393,14 +426,23 @@ function failureHaystack(input: {
   return `${input.message ?? ""} ${input.reason ?? ""}`
     .toLowerCase()
     .replace(QUOTED_PATH_PATTERN, " ")
-    .replace(BARE_PATH_PATTERN, " ");
+    .replace(BARE_PATH_PATTERN, " ")
+    .replace(/[_-]/g, " ");
 }
 
+/**
+ * The category a failure is reported under. The driver's structured category
+ * wins; the error class and the message wording fill in when it has none.
+ */
 export function classifyProviderFailure(input: {
+  readonly category?: ProviderFailureCategory | undefined;
   readonly errorClass?: string | undefined;
   readonly message?: string | null | undefined;
   readonly reason?: string | null | undefined;
 }): AnalyticsFailureCategory {
+  if (input.category !== undefined) {
+    return input.category;
+  }
   switch (input.errorClass) {
     case "authentication_error":
       return "auth";

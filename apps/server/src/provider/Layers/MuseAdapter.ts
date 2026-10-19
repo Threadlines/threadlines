@@ -44,7 +44,9 @@ import {
   type ServerProviderModel,
   type ThreadId,
   TurnId,
+  type ProviderFailureCategory,
 } from "@threadlines/contracts";
+import { withFailureCategory } from "../providerFailureCategory.ts";
 import {
   MANAGED_WORKTREE_INSTRUCTION,
   renderThreadContextSeed,
@@ -230,7 +232,11 @@ export interface MuseAdapterOptions {
 
 type Terminal =
   | { readonly kind: "completed" }
-  | { readonly kind: "failed"; readonly message: string }
+  | {
+      readonly kind: "failed";
+      readonly message: string;
+      readonly failureCategory?: ProviderFailureCategory;
+    }
   | { readonly kind: "interrupted"; readonly reason: string };
 
 interface HostState {
@@ -373,6 +379,14 @@ const decodeCompactResult = decodeWith(MuseCompactResult);
 const decodeReadOutput = decodeWith(MuseReadOutputResult);
 const decodeSubscriptionUsage = decodeWith(MuseSubscriptionUsage);
 const decodeAccountState = decodeWith(MuseAccountState);
+
+/** Why a Muse turn failed, when its error says so: a usage quota or a sign-in. */
+export function museFailureCategory(
+  completed: MuseTurnCompleted,
+): ProviderFailureCategory | undefined {
+  if (completed.error?.quota) return "rate_limit";
+  return completed.error?.kind === "authRequired" ? "auth" : undefined;
+}
 
 /** A Muse turn error in the words the chat shows. */
 export function museTurnErrorMessage(completed: MuseTurnCompleted): string {
@@ -624,7 +638,11 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             terminal.kind === "completed"
               ? { state: "completed" }
               : terminal.kind === "failed"
-                ? { state: "failed", errorMessage: terminal.message }
+                ? {
+                    state: "failed",
+                    errorMessage: terminal.message,
+                    ...withFailureCategory(terminal.failureCategory),
+                  }
                 : { state: "interrupted", stopReason: terminal.reason },
         });
         yield* Deferred.succeed(turn.done, undefined);
@@ -1513,7 +1531,11 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
                       kind: "interrupted",
                       reason: turn.stopRequested ? "user" : (value.reason ?? "cancelled"),
                     }
-                  : { kind: "failed", message: museTurnErrorMessage(value) },
+                  : {
+                      kind: "failed",
+                      message: museTurnErrorMessage(value),
+                      ...withFailureCategory(museFailureCategory(value)),
+                    },
             );
             if (value.error?.kind === "authRequired") yield* options.onAccountChanged;
             return;

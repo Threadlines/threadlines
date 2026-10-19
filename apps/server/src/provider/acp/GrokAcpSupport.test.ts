@@ -497,6 +497,21 @@ describe("Grok sessions", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  it.live("names a failed turn by Grok's stop reason when it says why", () =>
+    Effect.gen(function* () {
+      const grok = yield* startGrok("rate-limit");
+      yield* grok.adapter.sendTurn({ threadId: grok.threadId, input: "go", attachments: [] });
+      yield* grok.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(grok.events)[0]).toMatchObject({
+        payload: {
+          state: "failed",
+          errorMessage: "You've used this week's Grok allowance.",
+          failureCategory: "rate_limit",
+        },
+      });
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
   it.live(
     "opens a turn for Grok's own wake-up and keeps the subagent's output out of the thread",
     () =>

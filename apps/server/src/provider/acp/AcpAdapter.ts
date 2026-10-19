@@ -12,6 +12,7 @@ import {
   ApprovalRequestId,
   EventId,
   type ProviderApprovalDecision,
+  type ProviderFailureCategory,
   type ProviderInteractionMode,
   type ProviderOptionSelection,
   type ProviderRuntimeEvent,
@@ -24,6 +25,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { withFailureCategory } from "../providerFailureCategory.ts";
 import {
   isProviderPlanGateMessage,
   isProviderPlanGateReply,
@@ -491,6 +493,25 @@ function relativeToAnyRoot(
   return undefined;
 }
 
+/**
+ * A failure category as reported, except a refusal that came with a provider
+ * status: an exhausted rate-limit retry also ends as a bare refusal, and the
+ * status, part of the message, tells them apart.
+ */
+function reportedFailureCategory(
+  category: ProviderFailureCategory | undefined,
+  providerStatus: string | undefined,
+): ProviderFailureCategory | undefined {
+  return category === "refusal" && providerStatus ? undefined : category;
+}
+
+/** An ACP sign-in-required error, as thrown or as the cause of the adapter's wrapper. */
+function isAuthRequiredFailure(error: unknown): boolean {
+  const wrapped =
+    typeof error === "object" && error !== null && "cause" in error ? error.cause : undefined;
+  return isAcpAuthRequiredError(error) || isAcpAuthRequiredError(wrapped);
+}
+
 export function makeAcpAdapter<Settings extends AcpProviderSettings>(
   descriptor: AcpProviderDescriptor<Settings>,
   settings: Settings,
@@ -840,6 +861,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             state: outcome.state,
             stopReason: outcome.stopReason ?? null,
             ...(outcome.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
+            ...(outcome.state === "failed"
+              ? withFailureCategory(
+                  reportedFailureCategory(outcome.failureCategory, ctx.lastProviderStatus),
+                )
+              : {}),
           },
         });
         yield* Deferred.succeed(agentTurn.ended, undefined);
@@ -925,10 +951,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
      */
     const notifyAuthRequired = (error: unknown): Effect.Effect<void> => {
       const onAuthRequired = descriptor.onAuthRequired;
-      if (!onAuthRequired) return Effect.void;
-      const wrapped =
-        typeof error === "object" && error !== null && "cause" in error ? error.cause : undefined;
-      if (!isAcpAuthRequiredError(error) && !isAcpAuthRequiredError(wrapped)) return Effect.void;
+      if (!onAuthRequired || !isAuthRequiredFailure(error)) return Effect.void;
       return Effect.suspend(() => onAuthRequired(settings)).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("ACP onAuthRequired hook failed", {
@@ -1999,6 +2022,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   ? {
                       state: "failed",
                       stopReason: result.stopReason ?? null,
+                      ...withFailureCategory(
+                        reportedFailureCategory("refusal", ctx.lastProviderStatus),
+                      ),
                       // A rate-limit retry that ran out also surfaces as a
                       // bare refusal; the provider's own status tells them apart.
                       errorMessage: ctx.lastProviderStatus
@@ -2017,8 +2043,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }
           const failure = Cause.squash(exit.cause);
           yield* notifyAuthRequired(failure);
-          const reportedFailure =
-            ctx.promptOutcome?.state === "failed" ? ctx.promptOutcome.errorMessage : undefined;
+          const reportedOutcome =
+            ctx.promptOutcome?.state === "failed" ? ctx.promptOutcome : undefined;
+          const reportedFailure = reportedOutcome?.errorMessage;
+          const failureCategory =
+            reportedFailureCategory(reportedOutcome?.failureCategory, ctx.lastProviderStatus) ??
+            (isAuthRequiredFailure(failure) ? ("auth" as const) : undefined);
           const detail = reportedFailure
             ? reportedFailure
             : failure instanceof Error
@@ -2041,6 +2071,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               errorMessage: ctx.lastProviderStatus
                 ? `${detail} Provider status: ${ctx.lastProviderStatus}`
                 : detail,
+              ...withFailureCategory(failureCategory),
             },
           });
         }).pipe(

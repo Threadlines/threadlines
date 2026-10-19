@@ -298,6 +298,9 @@ const program = Effect.gen(function* () {
       } else if (scenario === "error") {
         yield* turnEnded(promptId, "error", "Grok's model is overloaded. Try again soon.");
         return yield* AcpError.AcpRequestError.internalError("Internal error");
+      } else if (scenario === "rate-limit") {
+        yield* turnEnded(promptId, "rate_limit", "You've used this week's Grok allowance.");
+        return yield* AcpError.AcpRequestError.internalError("Internal error");
       } else if (scenario === "wake" || scenario === "wake-twice" || scenario === "wake-now") {
         yield* sessionNotice({
           sessionUpdate: "subagent_spawned",

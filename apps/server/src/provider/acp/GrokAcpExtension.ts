@@ -217,6 +217,7 @@ export function grokTurnOutcome(stopReason: unknown, agentResult: unknown): AcpT
     return {
       state: "failed",
       stopReason: reason,
+      ...(reason === "rate_limit" || reason === "refusal" ? { failureCategory: reason } : {}),
       errorMessage:
         text ??
         (reason === "rate_limit"

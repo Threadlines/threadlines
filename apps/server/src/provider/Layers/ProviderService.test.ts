@@ -821,6 +821,81 @@ it.effect(
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("ProviderServiceLive reports a failure under the category the agent named", () =>
+  Effect.gen(function* () {
+    const codex = makeFakeCodexAdapter();
+    const recorded: Array<{
+      readonly event: string;
+      readonly properties: Readonly<Record<string, unknown>> | undefined;
+    }> = [];
+    const registry = makeAdapterRegistryMock({
+      [ProviderDriverKind.make("codex")]: codex.adapter,
+    });
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(
+      Layer.provide(
+        ProviderSessionRuntimeRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+      ),
+    );
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(
+        Layer.succeed(AnalyticsService, {
+          record: (event, properties) => Effect.sync(() => recorded.push({ event, properties })),
+          flush: Effect.void,
+        }),
+      ),
+      Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    );
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-named-failure");
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* provider.sendTurn({ threadId, input: "hello" });
+      const turnEvent = (eventId: string) => ({
+        eventId: asEventId(eventId),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        turnId: turn.turnId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* advanceTestClock(10);
+      // The wording alone would read as a sign-in problem.
+      codex.emit({
+        ...turnEvent("evt-named-runtime-error"),
+        type: "runtime.error",
+        payload: {
+          message: "Please sign in again",
+          class: "provider_error",
+          failureCategory: "rate_limit",
+        },
+      });
+      codex.emit({
+        ...turnEvent("evt-named-turn-failure"),
+        type: "turn.completed",
+        payload: {
+          state: "failed",
+          errorMessage: "Please sign in again",
+          failureCategory: "rate_limit",
+        },
+      });
+      yield* advanceTestClock(50);
+    }).pipe(Effect.provide(providerLayer));
+
+    const categoryOf = (event: string) =>
+      recorded.find((entry) => entry.event === event)?.properties?.failureCategory;
+    assert.equal(categoryOf("provider.runtime.error"), "rate_limit");
+    assert.equal(categoryOf("provider.turn.failed"), "rate_limit");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", () =>
   Effect.gen(function* () {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-service-"));

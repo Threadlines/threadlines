@@ -34,7 +34,10 @@ Threadlines sends product and reliability events such as:
 - provider session start kind, such as fresh starts, resumes, same-provider
   restarts, and provider switches;
 - model reroute events with sanitized from/to model values and a categorized reason;
-- failed turn and provider runtime error events with categorized failure reasons;
+- failed turn and provider runtime error events with categorized failure
+  reasons, such as a usage limit, a full context window or a refused request.
+  The category comes from the agent's own error code when it gives one, and
+  otherwise from the error's wording. Only the category is sent;
 - explicit thread fork events with sanitized source/target model values and
   context counts;
 - provider approval/request responses;
