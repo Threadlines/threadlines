@@ -10,7 +10,6 @@ import * as Cache from "effect/Cache";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import { identity } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
@@ -204,18 +203,42 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
   const semaphore = yield* Semaphore.make(1);
   const connection = yield* makeConnection;
 
-  const acquirer = semaphore.withPermits(1)(Effect.succeed(connection));
-  const transactionAcquirer = Effect.uninterruptibleMask((restore) => {
-    const fiber = Fiber.getCurrent()!;
-    const scope = Context.getUnsafe(fiber.context, Scope.Scope);
-    return Effect.as(
-      Effect.tap(restore(semaphore.take(1)), () => Scope.addFinalizer(scope, semaphore.release(1))),
-      connection,
-    );
+  // Plain statements and transactions share the one connection, so each holds
+  // it for its whole run: a plain statement while it executes, a transaction
+  // until COMMIT or ROLLBACK. A statement that let go of the connection before
+  // running could land inside another fiber's open transaction, where a
+  // rollback silently undid an acknowledged write. Upstream fixed the same race
+  // in effect 4.0.3 (Effect-TS/effect#8927).
+  //
+  // `withPermits` waits interruptibly and registers the release in the same
+  // step that takes the permit. The statement is built inside it because the
+  // unprepared methods call `db.prepare` as soon as they are called. Statements
+  // inside a transaction run on the bare connection the transaction holds.
+  const holdConnection = <A>(statement: () => Effect.Effect<A, SqlError>) =>
+    semaphore.withPermits(1)(Effect.suspend(statement));
+  const plainConnection = identity<Connection>({
+    execute: (sql, params, rowTransform) =>
+      holdConnection(() => connection.execute(sql, params, rowTransform)),
+    executeRaw: (sql, params) => holdConnection(() => connection.executeRaw(sql, params)),
+    executeValues: (sql, params) => holdConnection(() => connection.executeValues(sql, params)),
+    executeValuesUnprepared: (sql, params) =>
+      holdConnection(() => connection.executeValuesUnprepared(sql, params)),
+    executeUnprepared: (sql, params, rowTransform) =>
+      holdConnection(() => connection.executeUnprepared(sql, params, rowTransform)),
+    // Not implemented. A real stream would hold the connection until it ends.
+    executeStream: (sql, params, rowTransform) =>
+      connection.executeStream(sql, params, rowTransform),
   });
+  // Taken without interruption, so the permit is never counted without its
+  // release. `withTransaction` masks interruption here anyway; the one cost is
+  // that a waiting `sql.reserve` (unused here) cannot be cancelled.
+  const transactionAcquirer = Effect.as(
+    Effect.acquireRelease(semaphore.take(1), () => semaphore.release(1)),
+    connection,
+  );
 
   return yield* Client.make({
-    acquirer,
+    acquirer: Effect.succeed(plainConnection),
     compiler,
     transactionAcquirer,
     spanAttributes: [
