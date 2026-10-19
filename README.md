@@ -162,8 +162,6 @@ platform status, signing requirements, and auto-update behavior.
 
 ## Development Notes
 
-This is still early WIP. Expect sharp edges.
-
 Do not commit `.env` files, tokens, private keys, local app data, customer data,
 or screenshots containing secrets. See
 [SECURITY_GUARDRAILS.md](./SECURITY_GUARDRAILS.md) before publishing code or
