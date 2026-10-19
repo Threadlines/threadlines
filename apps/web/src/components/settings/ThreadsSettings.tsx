@@ -259,7 +259,8 @@ function NewThreadRoomRow() {
                         }
                       />
                       <DraftInput
-                        className="h-7 w-32 text-[13px]"
+                        size="sm"
+                        className="w-32 text-[13px]"
                         value={agent.role ?? ""}
                         placeholder="Name"
                         maxLength={ROOM_AGENT_ROLE_MAX_LENGTH}
