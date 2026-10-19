@@ -53,7 +53,6 @@ import {
   previewDrag,
   previewDetach,
   previewEvaluate,
-  previewLocalServers,
   previewMove,
   previewClearAllBrowsingData,
   previewClearBrowsingData,
@@ -62,6 +61,7 @@ import {
   previewListProfiles,
   previewOpenDevTools,
   previewProfilePartition,
+  systemIdleMs,
   previewScreenshot,
   previewCancelPick,
   previewPickElement,
@@ -117,7 +117,6 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(previewPress);
   yield* ipc.handle(previewScroll);
   yield* ipc.handle(previewWaitFor);
-  yield* ipc.handle(previewLocalServers);
   yield* ipc.handle(previewScreenshot);
   yield* ipc.handle(previewOpenDevTools);
   yield* ipc.handle(previewSetColorScheme);
@@ -134,6 +133,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(previewClearCache);
   yield* ipc.handle(previewClearAllBrowsingData);
   yield* ipc.handle(previewProfilePartition);
+  yield* ipc.handle(systemIdleMs);
   yield* ipc.handle(previewListProfiles);
   yield* ipc.handle(previewForgetProfile);
 

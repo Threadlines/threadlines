@@ -126,7 +126,6 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   previewPress: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_PRESS_CHANNEL, input),
   previewScroll: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SCROLL_CHANNEL, input),
   previewWaitFor: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_WAIT_FOR_CHANNEL, input),
-  previewLocalServers: () => ipcRenderer.invoke(IpcChannels.PREVIEW_LOCAL_SERVERS_CHANNEL),
   previewScreenshot: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_SCREENSHOT_CHANNEL, input),
   previewOpenDevTools: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_OPEN_DEVTOOLS_CHANNEL, input),
@@ -230,6 +229,22 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.PREVIEW_REVEAL_ELEMENT_CHANNEL, input),
   previewProfilePartition: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_PROFILE_PARTITION_CHANNEL, input),
+  servePreviewTunnels: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, request: unknown) => {
+      if (typeof request !== "object" || request === null) return;
+      listener(request as Parameters<typeof listener>[0]);
+    };
+    ipcRenderer.on(IpcChannels.PREVIEW_TUNNEL_REQUEST_CHANNEL, wrappedListener);
+    ipcRenderer.send(IpcChannels.PREVIEW_TUNNEL_SERVE_CHANNEL, "start");
+    return {
+      send: (reply) => ipcRenderer.send(IpcChannels.PREVIEW_TUNNEL_REPLY_CHANNEL, reply),
+      stop: () => {
+        ipcRenderer.removeListener(IpcChannels.PREVIEW_TUNNEL_REQUEST_CHANNEL, wrappedListener);
+        ipcRenderer.send(IpcChannels.PREVIEW_TUNNEL_SERVE_CHANNEL, "stop");
+      },
+    };
+  },
+  getSystemIdleMs: () => ipcRenderer.invoke(IpcChannels.SYSTEM_IDLE_MS_CHANNEL),
   previewListProfiles: () => ipcRenderer.invoke(IpcChannels.PREVIEW_LIST_PROFILES_CHANNEL),
   previewForgetProfile: (input) =>
     ipcRenderer.invoke(IpcChannels.PREVIEW_FORGET_PROFILE_CHANNEL, input),

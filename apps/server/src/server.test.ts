@@ -145,7 +145,9 @@ import { WorkspaceFileSystemLive } from "./workspace/Layers/WorkspaceFileSystem.
 import { WorkspacePathsLive } from "./workspace/Layers/WorkspacePaths.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriver from "./vcs/VcsDriver.ts";
+import * as LocalServers from "./preview/LocalServers.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
+import * as PreviewTunnel from "./preview/PreviewTunnel.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -721,6 +723,10 @@ const buildAppUnderTest = (options?: {
           // Real rather than mocked: it holds no resources and its whole
           // behaviour is the rendezvous, so a mock would only assert wiring.
           PreviewAutomationBroker.layer,
+          // Real too: a tunnel holds a socket only while one is open, and the
+          // scan only runs when asked.
+          PreviewTunnel.layer,
+          LocalServers.layer,
           // Pages are tested on their own (AgentPages.test.ts); here only the
           // endpoint and the read route need something to call.
           Layer.mock(AgentPages)({

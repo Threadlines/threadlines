@@ -80,7 +80,9 @@ import {
   observeRpcStream,
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
+import { LocalServers } from "./preview/LocalServers.ts";
 import { PreviewAutomationBroker } from "./preview/PreviewAutomationBroker.ts";
+import { PreviewTunnel } from "./preview/PreviewTunnel.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { PullRequestService } from "./pullRequest/PullRequestService.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
@@ -361,6 +363,8 @@ const makeWsRpcLayer = (currentSession: {
       const pullRequests = yield* PullRequestService;
       const vcsProvisioning = yield* VcsProvisioningService;
       const previewAutomationBroker = yield* PreviewAutomationBroker;
+      const previewTunnel = yield* PreviewTunnel;
+      const localServers = yield* LocalServers;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
       const providerAuthSessions = yield* ProviderAuthSessions;
@@ -1966,6 +1970,23 @@ const makeWsRpcLayer = (currentSession: {
             previewAutomationBroker.progress(input),
             { "rpc.aggregate": "preview" },
           ),
+        [WS_METHODS.previewAutomationActive]: (input) => previewAutomationBroker.active(input),
+        [WS_METHODS.previewTunnelOpen]: (input) =>
+          // Scoped to the subscription: the client letting go, or its socket
+          // dropping, closes the connection on this machine too.
+          observeRpcStreamEffect(
+            WS_METHODS.previewTunnelOpen,
+            previewTunnel.open(currentSessionId, input),
+            { "rpc.aggregate": "preview" },
+          ),
+        // Bytes and credits are the tunnel's traffic itself, hundreds a page
+        // load: left out of the RPC metrics and traces they would drown.
+        [WS_METHODS.previewTunnelWrite]: (input) => previewTunnel.write(currentSessionId, input),
+        [WS_METHODS.previewTunnelCredit]: (input) => previewTunnel.credit(currentSessionId, input),
+        [WS_METHODS.previewLocalServers]: () =>
+          observeRpcEffect(WS_METHODS.previewLocalServers, localServers.scan(), {
+            "rpc.aggregate": "preview",
+          }),
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeVcsStatus,

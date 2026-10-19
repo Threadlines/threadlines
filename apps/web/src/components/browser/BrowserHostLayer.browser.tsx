@@ -408,3 +408,49 @@ describe("EnvironmentBrowserHosts", () => {
     }
   });
 });
+
+describe("an agent whose browser moved here from another computer", () => {
+  afterEach(() => {
+    resetBrowserLiveStoreForTests();
+    resetThreadBrowserAutomationForTests();
+    useBrowserPanelStore.setState({ browserStateByThreadKey: {}, agentStateByThreadKey: {} });
+  });
+
+  it("is told its pages stayed behind, and acts on nothing here until it picks a tab", () => {
+    const users = { ...makeBrowserTab(), url: "http://localhost:3000/" };
+    useBrowserPanelStore.setState({
+      browserStateByThreadKey: {
+        [scopedThreadKey(SHOWN)]: { open: true, tabs: [users], activeTabId: users.id },
+      },
+    });
+    useBrowserLiveStore.getState().ensureLive(SHOWN, PROJECT);
+    const ask = (
+      operation: "click" | "navigate" | "tabs" | "selectTab",
+      input: Record<string, unknown> = {},
+      moved?: true,
+    ) =>
+      resolveThreadBrowserTarget(SHOWN, {
+        requestId: "request",
+        agentId: "agent",
+        operation,
+        input: input as never,
+        ...(moved === undefined ? {} : { moved }),
+      });
+
+    // Its click was aimed at a page on the other computer, not the user's tab here.
+    expect(() => ask("click", { target: { point: { x: 1, y: 1 } } }, true)).toThrow(
+      /moved to the computer the user is using/,
+    );
+    // Told once, held to it after: a navigate would otherwise take over the user's tab.
+    expect(() => ask("navigate", { url: "http://localhost:5173/" })).toThrow(/moved/);
+    expect(
+      ask("tabs")
+        .tabs()
+        .map((tab) => tab.agent),
+    ).toEqual([false]);
+
+    // Choosing a tab is choosing where to work.
+    expect(ask("selectTab", { tabId: users.id }).tabId).toBe(users.id);
+    expect(ask("click", { target: { point: { x: 1, y: 1 } } }).tabId).toBe(users.id);
+  });
+});

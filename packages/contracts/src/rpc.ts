@@ -23,7 +23,16 @@ import {
   PreviewAutomationClaimSchema,
   PreviewAutomationClientHostSchema,
   PreviewAutomationResponseSchema,
+  PreviewAutomationActivitySchema,
 } from "./previewAutomation.ts";
+import {
+  PreviewLocalServerSchema,
+  PreviewTunnelCreditSchema,
+  PreviewTunnelError,
+  PreviewTunnelEventSchema,
+  PreviewTunnelOpenSchema,
+  PreviewTunnelWriteSchema,
+} from "./previewTunnel.ts";
 import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
@@ -515,6 +524,11 @@ export const WS_METHODS = {
   previewAutomationProgress: "previewAutomationProgress",
   previewAutomationConnectClient: "previewAutomationConnectClient",
   previewAutomationClaim: "previewAutomationClaim",
+  previewAutomationActive: "previewAutomationActive",
+  previewTunnelOpen: "previewTunnelOpen",
+  previewTunnelWrite: "previewTunnelWrite",
+  previewTunnelCredit: "previewTunnelCredit",
+  previewLocalServers: "previewLocalServers",
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeServerConfig: "subscribeServerConfig",
@@ -1098,6 +1112,43 @@ export const WsPreviewAutomationClaimRpc = Rpc.make(WS_METHODS.previewAutomation
 export const WsPreviewAutomationProgressRpc = Rpc.make(WS_METHODS.previewAutomationProgress, {
   payload: PreviewAutomationProgressSchema,
   success: Schema.Void,
+});
+
+/** How recently this client's computer was used. Fire and forget. */
+export const WsPreviewAutomationActiveRpc = Rpc.make(WS_METHODS.previewAutomationActive, {
+  payload: PreviewAutomationActivitySchema,
+  success: Schema.Void,
+});
+
+/**
+ * One TCP connection to the server machine's loopback, for a browser page on
+ * another computer. Open while subscribed: unsubscribing, or the socket
+ * dropping, closes it. Never resubscribed: a byte stream cannot resume.
+ */
+export const WsPreviewTunnelOpenRpc = Rpc.make(WS_METHODS.previewTunnelOpen, {
+  payload: PreviewTunnelOpenSchema,
+  success: PreviewTunnelEventSchema,
+  error: PreviewTunnelError,
+  stream: true,
+});
+
+/** Bytes for an open tunnel, answered once written out. */
+export const WsPreviewTunnelWriteRpc = Rpc.make(WS_METHODS.previewTunnelWrite, {
+  payload: PreviewTunnelWriteSchema,
+  success: Schema.Void,
+  error: PreviewTunnelError,
+});
+
+/** The client delivered more of a tunnel's bytes. Fire and forget. */
+export const WsPreviewTunnelCreditRpc = Rpc.make(WS_METHODS.previewTunnelCredit, {
+  payload: PreviewTunnelCreditSchema,
+  success: Schema.Void,
+});
+
+/** Web servers listening on the environment's machine, for the browser's blank tab. */
+export const WsPreviewLocalServersRpc = Rpc.make(WS_METHODS.previewLocalServers, {
+  payload: Schema.Struct({}),
+  success: Schema.Array(PreviewLocalServerSchema),
 });
 
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
@@ -1707,6 +1758,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewAutomationProgressRpc,
   WsPreviewAutomationConnectClientRpc,
   WsPreviewAutomationClaimRpc,
+  WsPreviewAutomationActiveRpc,
+  WsPreviewTunnelOpenRpc,
+  WsPreviewTunnelWriteRpc,
+  WsPreviewTunnelCreditRpc,
+  WsPreviewLocalServersRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsListStashesRpc,

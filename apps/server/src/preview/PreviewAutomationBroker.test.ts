@@ -67,13 +67,14 @@ const attachClient = Effect.fn(function* (
   broker: PreviewAutomationBrokerService,
   hostId: string,
   machineLocal: boolean,
+  features: ReadonlyArray<PreviewAutomationHostFeature> = ["cancel"],
 ) {
   const scope = yield* Scope.make();
   const messages = yield* broker
     .connectClient({
       hostId,
       operations: ["click", "snapshot"],
-      features: ["cancel"],
+      features,
       machineLocal,
     })
     .pipe(Scope.provide(scope));
@@ -429,6 +430,242 @@ describe("PreviewAutomationBroker", () => {
       }),
     ),
   );
+
+  describe("following the user between computers", () => {
+    const TUNNEL: ReadonlyArray<PreviewAutomationHostFeature> = ["cancel", "loopbackTunnel"];
+    const minutes = (count: number) => count * 60_000;
+
+    it.effect("opens a new browser on the computer the user used last", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const broker = yield* make;
+          yield* TestClock.adjust("1 hour");
+          yield* attachClient(broker, "mac", true);
+          const windows = yield* attachClient(broker, "windows", false, TUNNEL);
+          yield* broker.active({ hostId: "mac", idleMs: minutes(50) });
+          yield* broker.active({ hostId: "windows", idleMs: 2_000 });
+
+          yield* broker
+            .invoke({ threadId, agentId, operation: "click", input: {} })
+            .pipe(Effect.forkChild);
+          assert.deepInclude(yield* windows.nextMessage, { threadId, operation: "click" });
+        }),
+      ),
+    );
+
+    it.effect(
+      "leaves a browser on the server's machine when the other computer can't reach its localhost",
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* make;
+            yield* TestClock.adjust("1 hour");
+            const mac = yield* attachClient(broker, "mac", true);
+            // Connected over the relay, say: no tunnel offered.
+            yield* attachClient(broker, "windows", false);
+            yield* broker.active({ hostId: "mac", idleMs: minutes(50) });
+            yield* broker.active({ hostId: "windows", idleMs: 0 });
+
+            yield* broker
+              .invoke({ threadId, agentId, operation: "click", input: {} })
+              .pipe(Effect.forkChild);
+            assert.deepInclude(yield* mac.nextMessage, { threadId, operation: "click" });
+          }),
+        ),
+    );
+
+    it.effect("moves a browser to the computer the user moved to, and tells the agent", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const broker = yield* make;
+          yield* TestClock.adjust("1 hour");
+          const mac = yield* attachClient(broker, "mac", true);
+          const windows = yield* attachClient(broker, "windows", false, TUNNEL);
+          yield* broker.active({ hostId: "mac", idleMs: 0 });
+
+          const first = yield* broker
+            .invoke({ threadId, agentId, operation: "click", input: {} })
+            .pipe(Effect.forkChild);
+          const onMac = yield* mac.nextMessage;
+          assert.deepInclude(onMac, { threadId, operation: "click" });
+          assert.notProperty(onMac, "moved");
+          yield* broker.respond({ requestId: (onMac as PreviewAutomationRequest).requestId });
+          yield* Fiber.join(first);
+
+          // The user walks over to the other computer and stays there.
+          yield* TestClock.adjust(minutes(5));
+          yield* broker.active({ hostId: "windows", idleMs: 1_000 });
+
+          yield* broker
+            .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+            .pipe(Effect.forkChild);
+          assert.deepStrictEqual(yield* mac.nextMessage, { _tag: "release", threadId });
+          const onWindows = yield* windows.nextMessage;
+          assert.deepInclude(onWindows, { threadId, operation: "snapshot", moved: true });
+
+          // Said once: the agent has been told.
+          yield* broker
+            .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+            .pipe(Effect.forkChild);
+          assert.notProperty(yield* windows.nextMessage, "moved");
+        }),
+      ),
+    );
+
+    it.effect("keeps a browser where it is while the user is still at that computer", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const broker = yield* make;
+          yield* TestClock.adjust("1 hour");
+          const mac = yield* attachClient(broker, "mac", true);
+          yield* attachClient(broker, "windows", false, TUNNEL);
+          yield* broker.active({ hostId: "mac", idleMs: 0 });
+          yield* broker
+            .invoke({ threadId, agentId, operation: "click", input: {} })
+            .pipe(Effect.forkChild);
+          const onMac = yield* mac.nextMessage;
+          yield* broker.respond({ requestId: (onMac as PreviewAutomationRequest).requestId });
+
+          // Touching the other computer a moment later is not leaving this one.
+          yield* TestClock.adjust("30 seconds");
+          yield* broker.active({ hostId: "windows", idleMs: 0 });
+          yield* broker
+            .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+            .pipe(Effect.forkChild);
+          assert.deepInclude(yield* mac.nextMessage, { threadId, operation: "snapshot" });
+        }),
+      ),
+    );
+
+    it.effect("does not move a browser out from under a call still running there", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const broker = yield* make;
+          yield* TestClock.adjust("1 hour");
+          const mac = yield* attachClient(broker, "mac", true);
+          const windows = yield* attachClient(broker, "windows", false, TUNNEL);
+          yield* broker.active({ hostId: "mac", idleMs: 0 });
+          yield* broker
+            .invoke({
+              threadId,
+              agentId: "agent-slow",
+              operation: "click",
+              input: {},
+              timeoutMs: minutes(10),
+            })
+            .pipe(Effect.forkChild);
+          const running = yield* mac.nextMessage;
+
+          yield* TestClock.adjust(minutes(5));
+          yield* broker.active({ hostId: "windows", idleMs: 0 });
+          yield* broker
+            .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+            .pipe(Effect.forkChild);
+          const snapshot = yield* mac.nextMessage;
+          assert.deepInclude(snapshot, { threadId, operation: "snapshot" });
+
+          // Once nothing is running there, the next call follows the user.
+          yield* broker.respond({ requestId: (running as PreviewAutomationRequest).requestId });
+          yield* broker.respond({ requestId: (snapshot as PreviewAutomationRequest).requestId });
+          yield* broker
+            .invoke({ threadId, agentId, operation: "click", input: {} })
+            .pipe(Effect.forkChild);
+          assert.deepStrictEqual(yield* mac.nextMessage, { _tag: "release", threadId });
+          assert.deepInclude(yield* windows.nextMessage, { threadId, operation: "click" });
+        }),
+      ),
+    );
+
+    it.effect("treats a client coming back under its own name as the same browser", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const broker = yield* make;
+          yield* TestClock.adjust("1 hour");
+          const before = yield* attachClient(broker, "windows", false, TUNNEL);
+          yield* broker.active({ hostId: "windows", idleMs: 0 });
+          yield* broker
+            .invoke({ threadId, agentId, operation: "click", input: {} })
+            .pipe(Effect.forkChild);
+          const first = (yield* before.nextMessage) as PreviewAutomationRequest;
+          yield* broker.respond({ requestId: first.requestId });
+
+          // The connection drops and comes back; the old one's goodbye arrives late.
+          const after = yield* attachClient(broker, "windows", false, TUNNEL);
+          const call = yield* broker
+            .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+            .pipe(Effect.forkChild);
+          const second = yield* after.nextMessage;
+          assert.deepInclude(second, { threadId, operation: "snapshot" });
+          // Same pages, same computer: nothing moved.
+          assert.notProperty(second, "moved");
+          yield* before.leave;
+          yield* broker.respond({
+            requestId: (second as PreviewAutomationRequest).requestId,
+            result: { ok: true },
+          });
+          assert.deepStrictEqual(yield* Fiber.join(call), { ok: true });
+        }),
+      ),
+    );
+
+    it.effect("keeps a thread with its browser across that client's reconnect", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const broker = yield* make;
+          yield* TestClock.adjust("1 hour");
+          yield* attachClient(broker, "mac", true);
+          const before = yield* attachClient(broker, "windows", false, TUNNEL);
+          yield* broker.active({ hostId: "windows", idleMs: 0 });
+          yield* broker
+            .invoke({ threadId, agentId, operation: "click", input: {} })
+            .pipe(Effect.forkChild);
+          const first = (yield* before.nextMessage) as PreviewAutomationRequest;
+          yield* broker.respond({ requestId: first.requestId });
+
+          // Both computers in use; the Mac a moment later. Then Windows drops and comes back.
+          yield* TestClock.adjust("20 seconds");
+          yield* broker.active({ hostId: "mac", idleMs: 0 });
+          yield* before.leave;
+          const after = yield* attachClient(broker, "windows", false, TUNNEL);
+
+          // Its pages are still on Windows, so the thread stays there.
+          yield* broker
+            .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+            .pipe(Effect.forkChild);
+          const second = yield* after.nextMessage;
+          assert.deepInclude(second, { threadId, operation: "snapshot" });
+          assert.notProperty(second, "moved");
+        }),
+      ),
+    );
+
+    it.effect("keeps a browser when an unused computer puts the thread back on screen", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const broker = yield* make;
+          yield* TestClock.adjust("1 hour");
+          const mac = yield* attachClient(broker, "mac", true);
+          const windows = yield* attachClient(broker, "windows", false, TUNNEL);
+          yield* broker.claim({ hostId: "windows", threadId, idleMs: 0 });
+
+          // The Mac app restarts overnight and restores the thread it showed.
+          yield* broker.claim({ hostId: "mac", threadId, idleMs: minutes(40) });
+          yield* broker
+            .invoke({ threadId, agentId, operation: "click", input: {} })
+            .pipe(Effect.forkChild);
+          assert.deepInclude(yield* windows.nextMessage, { threadId, operation: "click" });
+
+          // Someone actually opening it on the Mac takes it.
+          yield* broker.claim({ hostId: "mac", threadId, idleMs: 0 });
+          assert.deepStrictEqual(yield* windows.nextMessage, { _tag: "release", threadId });
+          yield* broker
+            .invoke({ threadId, agentId, operation: "snapshot", input: {} })
+            .pipe(Effect.forkChild);
+          assert.deepInclude(yield* mac.nextMessage, { threadId, operation: "snapshot" });
+        }),
+      ),
+    );
+  });
 
   it.effect("keeps one thread's browser out of another thread's calls", () =>
     Effect.scoped(

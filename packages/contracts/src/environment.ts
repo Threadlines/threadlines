@@ -43,6 +43,13 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    */
   browserScreenshotTypes: Schema.optionalKey(Schema.Boolean),
   /**
+   * The server carries a client's browser traffic for `localhost` to its own
+   * loopback (`previewTunnel.ts`), lists the web servers on its machine, and
+   * sends a thread's browser to the computer the user is using. Older servers
+   * keep it on their own machine, where `localhost` is the agent's.
+   */
+  browserLoopbackTunnel: Schema.optionalKey(Schema.Boolean),
+  /**
    * The server runs suggested shell commands from the chat
    * (`commandRuns.start`). Older servers omit it; clients then show no run
    * buttons.

@@ -11,6 +11,9 @@
 import type { EnvironmentId, ProjectId } from "@threadlines/contracts";
 import { useEffect, useState } from "react";
 
+import { readPrimaryEnvironmentDescriptor } from "../environments/primary";
+import { getSavedEnvironmentRecord } from "../environments/runtime/catalog";
+
 const partitionByProfileKey = new Map<string, string>();
 const pendingByProfileKey = new Map<string, Promise<string | null>>();
 
@@ -26,8 +29,20 @@ async function requestPartition(
   if (request === undefined) {
     return null;
   }
+  // Another computer's project: its pages' `localhost` is that computer's,
+  // whatever its server can do today. An older one says so when a page tries,
+  // rather than the page quietly opening this machine's port instead. A saved
+  // computer's threads only exist once its record does, so this is known by
+  // the time any of its pages are.
+  const loopbackTunnel =
+    getSavedEnvironmentRecord(environmentId) !== null &&
+    readPrimaryEnvironmentDescriptor()?.environmentId !== environmentId;
   try {
-    const { partition } = await request({ environmentId, projectId });
+    const { partition } = await request({
+      environmentId,
+      projectId,
+      ...(loopbackTunnel ? { loopbackTunnel: true } : {}),
+    });
     partitionByProfileKey.set(profileKey(environmentId, projectId), partition);
     return partition;
   } catch (error) {

@@ -199,10 +199,18 @@ import type {
   PreviewAutomationHost,
   PreviewAutomationHostMessage,
   PreviewAutomationProgress,
+  PreviewAutomationActivity,
   PreviewAutomationClaim,
   PreviewAutomationClientHost,
   PreviewAutomationResponse,
 } from "./previewAutomation.ts";
+import type {
+  PreviewLocalServer,
+  PreviewTunnelCredit,
+  PreviewTunnelEvent,
+  PreviewTunnelOpen,
+  PreviewTunnelWrite,
+} from "./previewTunnel.ts";
 import type {
   ChatAttachmentReadInput,
   ChatAttachmentReadResult,
@@ -592,6 +600,12 @@ export type DesktopPreviewSiteAllowed = typeof DesktopPreviewSiteAllowedSchema.T
 export const DesktopPreviewProfileInputSchema = Schema.Struct({
   environmentId: EnvironmentId,
   projectId: ProjectId,
+  /**
+   * The environment runs on another computer whose server carries loopback
+   * tunnels: the profile's `localhost` traffic goes there, so the agent's
+   * `http://localhost:5173` is its own dev server rather than this machine's.
+   */
+  loopbackTunnel: Schema.optionalKey(Schema.Boolean),
 });
 export type DesktopPreviewProfileInput = typeof DesktopPreviewProfileInputSchema.Type;
 
@@ -897,15 +911,51 @@ export const DesktopPreviewScreenshotSchema = Schema.Struct({
 });
 export type DesktopPreviewScreenshot = typeof DesktopPreviewScreenshotSchema.Type;
 
-/** A server listening on this machine, offered as a destination for the preview. */
-export const DesktopLocalServerSchema = Schema.Struct({
-  port: Schema.Number,
-  processName: Schema.String,
-  pid: Schema.Number,
-  /** The served page's title, which identifies a server better than "node". */
-  title: Schema.NullOr(Schema.String),
-});
-export type DesktopLocalServer = typeof DesktopLocalServerSchema.Type;
+/**
+ * The desktop asking the window to carry a browser page's connection to
+ * another computer's `localhost`.
+ *
+ * The desktop runs a small proxy for each such computer, and every connection
+ * a page makes to a loopback address arrives there. It cannot reach the other
+ * computer itself (the window holds that connection), so each one becomes a
+ * tunnel the window opens on the environment's server:
+ *
+ * - `open`: a page connected to `host:port`; answer `opened` or `closed`.
+ * - `write`: bytes from the page, in order; answer `written` once the server took them.
+ * - `end`: the page finished sending; answer `finished` once the server has
+ *   written everything before it and passed the end on.
+ * - `credit`: the desktop handed this many bytes of `data` to the page.
+ * - `close`: the page went; drop the tunnel.
+ */
+export type DesktopPreviewTunnelRequest =
+  | {
+      readonly type: "open";
+      readonly tunnelId: string;
+      readonly environmentId: EnvironmentId;
+      readonly host: string;
+      readonly port: number;
+    }
+  | { readonly type: "write"; readonly tunnelId: string; readonly data: Uint8Array }
+  | { readonly type: "end"; readonly tunnelId: string }
+  | { readonly type: "credit"; readonly tunnelId: string; readonly bytes: number }
+  | { readonly type: "close"; readonly tunnelId: string };
+
+/**
+ * The window's side of a tunnel. `closed` is final: with `error`, a sentence
+ * for whoever is looking at the page about why it could not connect.
+ */
+export type DesktopPreviewTunnelReply =
+  | { readonly type: "opened"; readonly tunnelId: string }
+  | { readonly type: "data"; readonly tunnelId: string; readonly data: Uint8Array }
+  | { readonly type: "end"; readonly tunnelId: string }
+  | { readonly type: "written"; readonly tunnelId: string; readonly bytes: number }
+  | { readonly type: "finished"; readonly tunnelId: string }
+  | { readonly type: "closed"; readonly tunnelId: string; readonly error?: string };
+
+export interface DesktopPreviewTunnelService {
+  readonly send: (reply: DesktopPreviewTunnelReply) => void;
+  readonly stop: () => void;
+}
 
 /**
  * An element the user pointed at in the preview.
@@ -1265,7 +1315,6 @@ export interface DesktopBridge {
   previewPress?: (input: DesktopPreviewPressInput) => Promise<void>;
   previewScroll?: (input: DesktopPreviewScrollInput) => Promise<void>;
   previewWaitFor?: (input: DesktopPreviewWaitForInput) => Promise<void>;
-  previewLocalServers?: () => Promise<readonly DesktopLocalServer[]>;
   previewScreenshot?: (input: DesktopPreviewScreenshotInput) => Promise<DesktopPreviewScreenshot>;
   previewOpenDevTools?: (input: DesktopPreviewTarget) => Promise<void>;
   previewSetColorScheme?: (input: DesktopPreviewColorSchemeInput) => Promise<void>;
@@ -1308,6 +1357,17 @@ export interface DesktopBridge {
   onPreviewBrowserCommand?: (
     listener: (command: DesktopPreviewBrowserCommand) => void,
   ) => () => void;
+  /**
+   * Carries the in-app browser's loopback tunnels (see
+   * `DesktopPreviewTunnelRequest`): this window takes them over the
+   * connections it holds. The latest window to call serves them; `stop`, or
+   * the window going, hands back, and the tunnels it carried close.
+   */
+  servePreviewTunnels?: (
+    listener: (request: DesktopPreviewTunnelRequest) => void,
+  ) => DesktopPreviewTunnelService;
+  /** Milliseconds since the last key or pointer input anywhere on this computer. */
+  getSystemIdleMs?: () => Promise<number>;
   /** The browser partition for a project's tabs. Remembers the profile so it can be cleared later. */
   previewProfilePartition?: (input: DesktopPreviewProfileInput) => Promise<DesktopPreviewPartition>;
   previewListProfiles?: () => Promise<readonly DesktopPreviewProfile[]>;
@@ -1522,6 +1582,28 @@ export interface EnvironmentApi {
       options?: { readonly onResubscribe?: () => void },
     ) => () => void;
     claim: (claim: PreviewAutomationClaim) => Promise<void>;
+    /** Only for servers that advertise `browserLoopbackTunnel`. */
+    active: (activity: PreviewAutomationActivity) => Promise<void>;
+  };
+  /**
+   * The browser's way to the environment's own `localhost` from another
+   * computer (`previewTunnel.ts`). Only for servers that advertise
+   * `browserLoopbackTunnel`.
+   */
+  previewLoopback: {
+    /**
+     * One connection, open until the returned call. `onClosed` comes once,
+     * when it ends any other way: with the failure when it failed.
+     */
+    open: (
+      input: PreviewTunnelOpen,
+      listener: (event: PreviewTunnelEvent) => void,
+      onClosed: (failure?: unknown) => void,
+    ) => () => void;
+    write: (input: PreviewTunnelWrite) => Promise<void>;
+    credit: (input: PreviewTunnelCredit) => Promise<void>;
+    /** Web servers listening on the environment's machine. */
+    localServers: () => Promise<readonly PreviewLocalServer[]>;
   };
   terminal: {
     open: (input: typeof TerminalOpenInput.Encoded) => Promise<TerminalSessionSnapshot>;

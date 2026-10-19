@@ -36,7 +36,11 @@ interface SubscribeOptions {
   readonly onResubscribe?: () => void;
   readonly tag?: string;
   readonly resubscribe?: boolean;
-  readonly onComplete?: () => void;
+  /**
+   * A non-resubscribing stream ended for a reason other than unsubscribing:
+   * with what it failed with, when it failed.
+   */
+  readonly onComplete?: (failure?: unknown) => void;
   /**
    * Fires every time a stream attempt fails and the subscription is about to
    * retry. Consumers use it to surface "live data is broken" states instead of
@@ -359,13 +363,13 @@ export class WsTransport {
           cancelCurrentStream = NOOP;
           if (!active || this.disposed) {
             if (active && options?.resubscribe === false) {
-              options.onComplete?.();
+              options.onComplete?.(error);
             }
             return;
           }
 
           if (options?.resubscribe === false) {
-            options.onComplete?.();
+            options.onComplete?.(error);
             return;
           }
 

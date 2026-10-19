@@ -1,5 +1,4 @@
 import {
-  DesktopLocalServerSchema,
   DesktopPreviewClickInputSchema,
   DesktopPreviewColorSchemeInputSchema,
   DesktopPreviewLifecycleInputSchema,
@@ -32,8 +31,10 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import * as LocalServers from "../../preview/LocalServers.ts";
+import { powerMonitor } from "electron";
+
 import * as PreviewAutomation from "../../preview/PreviewAutomation.ts";
+import * as PreviewLoopbackProxy from "../../preview/PreviewLoopbackProxy.ts";
 import * as PreviewProfiles from "../../preview/PreviewProfiles.ts";
 import * as PreviewSession from "../../preview/PreviewSession.ts";
 import * as IpcChannels from "../channels.ts";
@@ -156,16 +157,6 @@ export const previewWaitFor = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.waitFor")(function* (input) {
     const automation = yield* PreviewAutomation.PreviewAutomation;
     yield* automation.waitFor(input);
-  }),
-});
-
-export const previewLocalServers = makeIpcMethod({
-  channel: IpcChannels.PREVIEW_LOCAL_SERVERS_CHANNEL,
-  payload: Schema.Void,
-  result: Schema.Array(DesktopLocalServerSchema),
-  handler: Effect.fn("desktop.ipc.preview.localServers")(function* () {
-    const servers = yield* LocalServers.LocalServers;
-    return yield* servers.scan();
   }),
 });
 
@@ -305,8 +296,24 @@ export const previewProfilePartition = makeIpcMethod({
   result: DesktopPreviewPartitionSchema,
   handler: Effect.fn("desktop.ipc.preview.profilePartition")(function* (input) {
     const profiles = yield* PreviewProfiles.PreviewProfiles;
-    return { partition: yield* profiles.partitionFor(input) };
+    const sessions = yield* PreviewSession.PreviewSession;
+    const loopback = yield* PreviewLoopbackProxy.PreviewLoopbackProxy;
+    const partition = yield* profiles.partitionFor(input);
+    // Before the partition is handed out, so no page in it ever loads with
+    // `localhost` pointing at the wrong computer.
+    yield* loopback.route(
+      yield* sessions.getSession(partition),
+      input.loopbackTunnel === true ? input.environmentId : null,
+    );
+    return { partition };
   }),
+});
+
+export const systemIdleMs = makeIpcMethod({
+  channel: IpcChannels.SYSTEM_IDLE_MS_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Number,
+  handler: () => Effect.sync(() => powerMonitor.getSystemIdleTime() * 1000),
 });
 
 export const previewListProfiles = makeIpcMethod({

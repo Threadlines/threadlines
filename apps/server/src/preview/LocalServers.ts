@@ -1,13 +1,14 @@
 /**
- * Servers currently listening on this machine.
+ * Web servers currently listening on this machine.
  *
  * Discovered rather than configured: the point is to answer "what is running
- * right now" without the user knowing a port number. Local by design -- the
- * preview is a browser on this machine, so a remote environment's servers
- * would not be reachable from it anyway.
+ * right now" without the user knowing a port number. Asked of the server
+ * rather than the desktop because these are the agent's servers: a thread's
+ * browser may run on another computer, and its `localhost` comes here through
+ * the loopback tunnel, so the list it offers has to be this machine's.
  */
 
-import type { DesktopLocalServer } from "@threadlines/contracts";
+import type { PreviewLocalServer } from "@threadlines/contracts";
 import { execFile } from "node:child_process";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -26,8 +27,8 @@ const PROBE_CACHE_MS = 30_000;
 
 export class LocalServers extends Context.Service<
   LocalServers,
-  { readonly scan: () => Effect.Effect<ReadonlyArray<DesktopLocalServer>> }
->()("@threadlines/desktop/preview/LocalServers") {}
+  { readonly scan: () => Effect.Effect<ReadonlyArray<PreviewLocalServer>> }
+>()("@threadlines/server/preview/LocalServers") {}
 
 export const make = Effect.gen(function* LocalServersMake() {
   // Keyed by port and pid together: a different process on the same port is a
@@ -69,7 +70,7 @@ export const make = Effect.gen(function* LocalServersMake() {
       // which is the truth whether lsof is missing or genuinely found nothing.
       return yield* Effect.promise(
         () =>
-          new Promise<ReadonlyArray<DesktopLocalServer>>((resolve) => {
+          new Promise<ReadonlyArray<PreviewLocalServer>>((resolve) => {
             if (process.platform === "win32") {
               resolve([]);
               return;

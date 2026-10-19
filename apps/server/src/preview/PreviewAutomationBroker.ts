@@ -24,6 +24,7 @@ import {
   PreviewAutomationResultTooLargeError,
   PreviewAutomationTimeoutError,
   PreviewAutomationUnsupportedError,
+  type PreviewAutomationActivity,
   type PreviewAutomationError,
   type PreviewAutomationClaim,
   type PreviewAutomationClientHost,
@@ -67,6 +68,13 @@ export const PREVIEW_AUTOMATION_RESULT_LIMIT_BYTES = 512_000;
  * as text, so the text limit says nothing about it.
  */
 export const PREVIEW_AUTOMATION_SCREENSHOT_LIMIT_BYTES = 1_500_000;
+
+/**
+ * How recently a computer must have been used to count as the one the user is
+ * at. Long enough to cover reading a page without touching anything, short
+ * enough that walking to the other machine moves the browser within minutes.
+ */
+export const PREVIEW_AUTOMATION_PRESENT_MS = 2 * 60_000;
 
 /** The most a call's result may weigh before the agent is refused it. */
 export function previewAutomationResultLimitBytes(operation: PreviewAutomationOperation): number {
@@ -129,6 +137,8 @@ export class PreviewAutomationBroker extends Context.Service<
      * user is no longer looking at.
      */
     readonly claim: (claim: PreviewAutomationClaim) => Effect.Effect<void>;
+    /** How recently a client's computer was used: where the user is. */
+    readonly active: (activity: PreviewAutomationActivity) => Effect.Effect<void>;
     readonly respond: (response: PreviewAutomationResponse) => Effect.Effect<void>;
     /**
      * A request is now waiting on the user. Its deadline moves to
@@ -161,10 +171,24 @@ interface ClientHostConnection extends HostConnection {
   readonly sequence: number;
 }
 
+/**
+ * Who served a thread's browser last, and which agents used it there. Kept
+ * past that client leaving: the agents' idea of the page is still from there.
+ */
+interface ThreadHolder {
+  readonly hostId: string;
+  readonly agentIds: Set<string>;
+}
+
 interface PendingRequest {
   readonly threadId: ThreadId;
   readonly operation: PreviewAutomationOperation;
   readonly hostId: string;
+  /**
+   * The connection it was handed to. A client reconnecting keeps its host id,
+   * and the old connection's late goodbye must not fail the new one's calls.
+   */
+  readonly connection: HostConnection;
   readonly deferred: Deferred.Deferred<unknown, PreviewAutomationError>;
   /** When the agent is told it timed out. Moved once, by `progress`. */
   deadlineAt: number;
@@ -177,7 +201,11 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   // protect against, and a ref would only add ceremony.
   const hosts = new Map<ThreadId, HostConnection>();
   const clientHosts = new Map<string, ClientHostConnection>();
-  /** Which client holds each thread's browser. Kept until that client goes. */
+  /**
+   * Which client holds each thread's browser, by host id. Kept when that
+   * client drops: it keeps its id when it comes back, and its pages are still
+   * there. A thread whose holder is not connected finds another when called.
+   */
   const threadOwners = new Map<ThreadId, string>();
   const pending = new Map<string, PendingRequest>();
   /**
@@ -187,17 +215,74 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
    */
   const earlyClaims = new Map<string, Set<ThreadId>>();
   const MAX_EARLY_CLAIM_HOSTS = 64;
+  /**
+   * When each client's computer was last used, by host id rather than on the
+   * connection: a reconnecting client keeps its answer, and activity can
+   * arrive before the host registers. Bounded like the early claims.
+   */
+  const lastInputByHost = new Map<string, number>();
+  const MAX_INPUT_HOSTS = 64;
+  const holders = new Map<ThreadId, ThreadHolder>();
+  /** Agents told nothing yet about their thread's browser having moved. */
+  const movedAgents = new Map<ThreadId, Set<string>>();
+  const MAX_TRACKED_THREADS = 512;
   let requestSequence = 0;
   let clientSequence = 0;
+
+  const noteInput = (hostId: string, at: number) => {
+    const previous = lastInputByHost.get(hostId);
+    lastInputByHost.delete(hostId);
+    if (lastInputByHost.size >= MAX_INPUT_HOSTS) {
+      const oldest = lastInputByHost.keys().next().value;
+      if (oldest !== undefined) lastInputByHost.delete(oldest);
+    }
+    lastInputByHost.set(hostId, previous === undefined ? at : Math.max(previous, at));
+  };
+
+  const isPresent = (hostId: string, now: number) => {
+    const at = lastInputByHost.get(hostId);
+    return at !== undefined && now - at < PREVIEW_AUTOMATION_PRESENT_MS;
+  };
+
+  /**
+   * Whether a client's pages reach the agent's `localhost`: it is on the
+   * server's machine, or it carries loopback traffic back here.
+   */
+  const reachesLoopback = (connection: ClientHostConnection) =>
+    connection.machineLocal || connection.features.has("loopbackTunnel");
+
+  /**
+   * Records who serves a thread now. A different computer from the last one
+   * means every agent that used the browser there is working from pages that
+   * are not here, and is told so on its next call.
+   */
+  const recordHolder = (threadId: ThreadId, hostId: string) => {
+    const previous = holders.get(threadId);
+    if (previous?.hostId === hostId) return;
+    if (previous !== undefined && previous.agentIds.size > 0) {
+      const moved = movedAgents.get(threadId) ?? new Set<string>();
+      for (const agent of previous.agentIds) moved.add(agent);
+      movedAgents.set(threadId, moved);
+    }
+    holders.delete(threadId);
+    if (holders.size >= MAX_TRACKED_THREADS) {
+      const oldest = holders.keys().next().value;
+      if (oldest !== undefined) {
+        holders.delete(oldest);
+        movedAgents.delete(oldest);
+      }
+    }
+    holders.set(threadId, { hostId, agentIds: new Set() });
+  };
 
   /**
    * Settles everything still waiting on a host that has gone: for one thread,
    * or for every thread when a client-wide host leaves.
    */
-  const failPendingForHost = (threadId: ThreadId | null, hostId: string) => {
+  const failPendingForHost = (threadId: ThreadId | null, connection: HostConnection) => {
     const orphaned: PendingRequest[] = [];
     for (const [requestId, entry] of pending) {
-      if ((threadId === null || entry.threadId === threadId) && entry.hostId === hostId) {
+      if ((threadId === null || entry.threadId === threadId) && entry.connection === connection) {
         pending.delete(requestId);
         orphaned.push(entry);
       }
@@ -221,7 +306,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       if (hosts.get(threadId) === connection) {
         hosts.delete(threadId);
       }
-      return failPendingForHost(threadId, connection.hostId).pipe(
+      return failPendingForHost(threadId, connection).pipe(
         Effect.andThen(Queue.shutdown(connection.queue)),
         Effect.asVoid,
       );
@@ -254,11 +339,8 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     Effect.suspend(() => {
       if (clientHosts.get(connection.hostId) === connection) {
         clientHosts.delete(connection.hostId);
-        for (const [threadId, owner] of threadOwners) {
-          if (owner === connection.hostId) threadOwners.delete(threadId);
-        }
       }
-      return failPendingForHost(null, connection.hostId).pipe(
+      return failPendingForHost(null, connection).pipe(
         Effect.andThen(Queue.shutdown(connection.queue)),
         Effect.asVoid,
       );
@@ -292,9 +374,38 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return Stream.fromQueue(queue);
   });
 
+  const setOwner = (threadId: ThreadId, hostId: string) => {
+    threadOwners.delete(threadId);
+    if (threadOwners.size >= MAX_TRACKED_THREADS) {
+      const oldest = threadOwners.keys().next().value;
+      if (oldest !== undefined) threadOwners.delete(oldest);
+    }
+    threadOwners.set(threadId, hostId);
+  };
+
+  /** Gives a thread's browser to another client, and tells the one that had it. */
+  const transfer = Effect.fn("PreviewAutomationBroker.transfer")(function* (
+    threadId: ThreadId,
+    hostId: string,
+  ) {
+    const previous = threadOwners.get(threadId);
+    setOwner(threadId, hostId);
+    recordHolder(threadId, hostId);
+    const released = previous === undefined ? undefined : clientHosts.get(previous);
+    if (released === undefined || released.hostId === hostId) {
+      return;
+    }
+    yield* failPendingForHost(threadId, released);
+    yield* Queue.offer(released.queue, { _tag: "release", threadId });
+  });
+
   const claim = Effect.fn("PreviewAutomationBroker.claim")(function* (
     request: PreviewAutomationClaim,
   ) {
+    const now = yield* Clock.currentTimeMillis;
+    if (request.idleMs !== undefined) {
+      noteInput(request.hostId, now - request.idleMs);
+    }
     if (!clientHosts.has(request.hostId)) {
       if (!earlyClaims.has(request.hostId) && earlyClaims.size >= MAX_EARLY_CLAIM_HOSTS) {
         const oldest = earlyClaims.keys().next().value;
@@ -306,47 +417,111 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       );
       return;
     }
-    const previous = threadOwners.get(request.threadId);
-    threadOwners.set(request.threadId, request.hostId);
-    const released = previous === undefined ? undefined : clientHosts.get(previous);
-    if (released === undefined || released.hostId === request.hostId) {
+    // A panel put back on screen by a launch or a reconnect claims too. From
+    // a computer nobody is using, it does not take the browser from the one
+    // somebody is.
+    const ownerId = threadOwners.get(request.threadId);
+    if (
+      ownerId !== undefined &&
+      ownerId !== request.hostId &&
+      clientHosts.has(ownerId) &&
+      isPresent(ownerId, now) &&
+      !isPresent(request.hostId, now)
+    ) {
       return;
     }
-    yield* failPendingForHost(request.threadId, released.hostId);
-    yield* Queue.offer(released.queue, { _tag: "release", threadId: request.threadId });
+    yield* transfer(request.threadId, request.hostId);
   });
+
+  const active = Effect.fn("PreviewAutomationBroker.active")(function* (
+    activity: PreviewAutomationActivity,
+  ) {
+    noteInput(activity.hostId, (yield* Clock.currentTimeMillis) - activity.idleMs);
+  });
+
+  /** Whether a call is still running on a client for a thread. */
+  const hasPendingOn = (threadId: ThreadId, hostId: string) => {
+    for (const entry of pending.values()) {
+      if (entry.threadId === threadId && entry.hostId === hostId) return true;
+    }
+    return false;
+  };
+
+  /**
+   * The client among those reaching the agent's `localhost` whose computer
+   * was used last, or none when no such client has said.
+   */
+  const lastUsedClient = (): ClientHostConnection | undefined => {
+    let chosen: ClientHostConnection | undefined;
+    let chosenAt = Number.NEGATIVE_INFINITY;
+    for (const candidate of clientHosts.values()) {
+      const at = lastInputByHost.get(candidate.hostId);
+      if (at === undefined || !reachesLoopback(candidate)) continue;
+      if (at > chosenAt || (at === chosenAt && candidate.sequence > (chosen?.sequence ?? 0))) {
+        chosen = candidate;
+        chosenAt = at;
+      }
+    }
+    return chosen;
+  };
 
   /**
    * The host for one call: a client showing the thread the old way, else the
-   * client that holds the thread's browser, else a new holder -- preferring
-   * the server's own machine, where `localhost` is the agent's localhost, then
-   * the newest client.
+   * client that holds the thread's browser, else a new holder.
+   *
+   * A new holder is the computer the user used last, among clients whose
+   * pages reach the agent's `localhost`; with nobody having said, the server's
+   * own machine, then the newest client. A holder keeps the browser -- its
+   * tabs and sign-ins are there -- until the user is plainly elsewhere: its
+   * computer has gone unused for a while and another one is in use. Even then
+   * not while a call is running on it, which would be cut off halfway.
    */
-  const resolveHost = (threadId: ThreadId): HostConnection | undefined => {
+  const resolveHost = Effect.fn("PreviewAutomationBroker.resolveHost")(function* (
+    threadId: ThreadId,
+  ) {
     const legacy = hosts.get(threadId);
     if (legacy !== undefined) {
       return legacy;
     }
+    const now = yield* Clock.currentTimeMillis;
     const ownerId = threadOwners.get(threadId);
     const owner = ownerId === undefined ? undefined : clientHosts.get(ownerId);
     if (owner !== undefined) {
-      return owner;
+      const used = lastUsedClient();
+      const ownerAt = lastInputByHost.get(owner.hostId);
+      const moveTo =
+        used !== undefined &&
+        used !== owner &&
+        isPresent(used.hostId, now) &&
+        !isPresent(owner.hostId, now) &&
+        (ownerAt === undefined || (lastInputByHost.get(used.hostId) ?? 0) > ownerAt) &&
+        !hasPendingOn(threadId, owner.hostId)
+          ? used
+          : undefined;
+      if (moveTo === undefined) {
+        return owner;
+      }
+      yield* transfer(threadId, moveTo.hostId);
+      return moveTo;
     }
-    let chosen: ClientHostConnection | undefined;
-    for (const candidate of clientHosts.values()) {
-      if (
-        chosen === undefined ||
-        (candidate.machineLocal && !chosen.machineLocal) ||
-        (candidate.machineLocal === chosen.machineLocal && candidate.sequence > chosen.sequence)
-      ) {
-        chosen = candidate;
+    let chosen = lastUsedClient();
+    if (chosen === undefined) {
+      for (const candidate of clientHosts.values()) {
+        if (
+          chosen === undefined ||
+          (candidate.machineLocal && !chosen.machineLocal) ||
+          (candidate.machineLocal === chosen.machineLocal && candidate.sequence > chosen.sequence)
+        ) {
+          chosen = candidate;
+        }
       }
     }
     if (chosen !== undefined) {
-      threadOwners.set(threadId, chosen.hostId);
+      setOwner(threadId, chosen.hostId);
+      recordHolder(threadId, chosen.hostId);
     }
     return chosen;
-  };
+  });
 
   const respond = Effect.fn("PreviewAutomationBroker.respond")(function* (
     response: PreviewAutomationResponse,
@@ -374,7 +549,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const invoke = Effect.fn("PreviewAutomationBroker.invoke")(function* (
     input: PreviewAutomationInvokeInput,
   ) {
-    const connection = resolveHost(input.threadId);
+    const connection = yield* resolveHost(input.threadId);
     if (connection === undefined) {
       return yield* Effect.fail(
         new PreviewAutomationNoHostError({
@@ -391,6 +566,14 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       );
     }
 
+    // A per-thread host predates moving between computers; only client-wide
+    // hosts are held to account for which agents saw which pages.
+    let moved = false;
+    if (hosts.get(input.threadId) !== connection) {
+      holders.get(input.threadId)?.agentIds.add(input.agentId);
+      moved = movedAgents.get(input.threadId)?.delete(input.agentId) ?? false;
+    }
+
     requestSequence += 1;
     const requestId = `${input.threadId}:${requestSequence}`;
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
@@ -400,6 +583,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       threadId: input.threadId,
       operation: input.operation,
       hostId: connection.hostId,
+      connection,
       deferred,
       deadlineAt: startedAt + timeoutMs,
       awaitingUser: false,
@@ -444,6 +628,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       agentId: input.agentId,
       operation: input.operation,
       input: input.input as PreviewAutomationRequest["input"],
+      ...(moved ? { moved: true as const } : {}),
     }).pipe(
       Effect.andThen(Effect.raceFirst(Deferred.await(deferred), timedOut)),
       // Whatever settled it, this request is over. Left behind, its entry would
@@ -480,6 +665,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     connect,
     connectClient,
     claim,
+    active,
     respond,
     progress,
     invoke,

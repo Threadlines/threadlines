@@ -363,6 +363,7 @@ function createMockEnvironmentApi(input: {
     projects: {} as EnvironmentApi["projects"],
     attachments: {} as EnvironmentApi["attachments"],
     previewAutomation: input.previewAutomation ?? ({} as EnvironmentApi["previewAutomation"]),
+    previewLoopback: {} as EnvironmentApi["previewLoopback"],
     filesystem: {
       browse: input.browse,
     },
