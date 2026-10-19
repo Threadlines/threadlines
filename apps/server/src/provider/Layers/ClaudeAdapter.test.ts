@@ -2899,9 +2899,8 @@ describe("ClaudeAdapterLive", () => {
         uuid: "stream-after-retry",
         parent_tool_use_id: null,
         event: {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text: "Picking up" },
+          type: "message_start",
+          message: { id: "assistant-message-after-retry", role: "assistant", content: [] },
         },
       },
     ],
@@ -2952,40 +2951,73 @@ describe("ClaudeAdapterLive", () => {
     });
   }
 
-  it.effect("fails a turn whose stream ends on an API error before any result", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      const turnCompletedFiber = yield* Stream.filter(
-        adapter.streamEvents,
-        (event) => event.type === "turn.completed",
-      ).pipe(Stream.runHead, Effect.forkChild);
+  // A late event of the request that failed leaves the error standing; a new
+  // reply means Claude got past it, so a stream ending there only stopped.
+  for (const [after, events, expected] of [
+    ["nothing else", [], { state: "failed", errorMessage: API_REFUSAL_TEXT }],
+    [
+      "the failed request's last event",
+      [{ type: "message_stop" }],
+      { state: "failed", errorMessage: API_REFUSAL_TEXT },
+    ],
+    [
+      "Claude began a new reply",
+      [
+        {
+          type: "message_start",
+          message: { id: "assistant-message-after-error", role: "assistant", content: [] },
+        },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Trying" } },
+      ],
+      { state: "interrupted", errorMessage: "Claude runtime stream ended." },
+    ],
+  ] as const) {
+    it.effect(`ends a turn whose stream stops after an API error, then ${after}`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const turnCompletedFiber = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) => event.type === "turn.completed",
+        ).pipe(Stream.runHead, Effect.forkChild);
 
-      const session = yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        runtimeMode: "full-access",
-      });
-      yield* adapter.sendTurn({
-        threadId: session.threadId,
-        input: "hello",
-        attachments: [],
-      });
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "hello",
+          attachments: [],
+        });
 
-      harness.query.emit(apiErrorNote({ error: "authentication_failed", text: API_REFUSAL_TEXT }));
-      harness.query.finish();
+        harness.query.emit(
+          apiErrorNote({ error: "authentication_failed", text: API_REFUSAL_TEXT }),
+        );
+        for (const [index, event] of events.entries()) {
+          harness.query.emit({
+            type: "stream_event",
+            session_id: "sdk-session-api-error",
+            uuid: `stream-after-error-${index}`,
+            parent_tool_use_id: null,
+            event,
+          } as unknown as SDKMessage);
+        }
+        harness.query.finish();
 
-      const turnCompleted = yield* Fiber.join(turnCompletedFiber);
-      assert.equal(turnCompleted._tag, "Some");
-      if (turnCompleted._tag === "Some" && turnCompleted.value.type === "turn.completed") {
-        assert.equal(turnCompleted.value.payload.state, "failed");
-        assert.equal(turnCompleted.value.payload.errorMessage, API_REFUSAL_TEXT);
-      }
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
+        const turnCompleted = yield* Fiber.join(turnCompletedFiber);
+        assert.equal(turnCompleted._tag, "Some");
+        if (turnCompleted._tag === "Some" && turnCompleted.value.type === "turn.completed") {
+          assert.equal(turnCompleted.value.payload.state, expected.state);
+          assert.equal(turnCompleted.value.payload.errorMessage, expected.errorMessage);
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
 
   it.effect("completes a turn that carried on after an API error", () => {
     const harness = makeHarness();
