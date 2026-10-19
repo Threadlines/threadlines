@@ -12,6 +12,7 @@ import {
   type PullRequestCommit,
   type PullRequestLabel,
   type PullRequestMergeability,
+  type PullRequestMergeGate,
   type PullRequestMergeMethod,
   type PullRequestReaction,
   type PullRequestReactionContent,
@@ -63,6 +64,8 @@ const GitLabMergeRequestSchema = Schema.Struct({
   draft: Schema.optional(Schema.NullOr(Schema.Boolean)),
   work_in_progress: Schema.optional(Schema.NullOr(Schema.Boolean)),
   merge_status: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Why GitLab would or would not merge right now, on GitLab 15.6 and later. */
+  detailed_merge_status: Schema.optional(Schema.NullOr(Schema.String)),
   has_conflicts: Schema.optional(Schema.NullOr(Schema.Boolean)),
   created_at: TrimmedNonEmptyString,
   updated_at: TrimmedNonEmptyString,
@@ -239,6 +242,8 @@ export interface GitLabMergeRequestDetailRow extends GitLabMergeRequestRow {
   readonly checks: ReadonlyArray<PullRequestCheck>;
   /** Null where GitLab did not count, which is not the same as "up to date". */
   readonly behindBy: number | null;
+  /** Absent where GitLab does not say its rules hold the merge. */
+  readonly mergeGate?: PullRequestMergeGate;
   /** Null on a merge request with no revisions to place a comment against. */
   readonly diffRefs: GitLabDiffRefs | null;
 }
@@ -286,6 +291,18 @@ function toMergeability(
       // `unchecked` and `checking` mean GitLab has not finished the check.
       return "unknown";
   }
+}
+
+/**
+ * The one hold the gate takes from GitLab: a project that merges by
+ * fast-forward or semi-linear history will not merge a branch its target has
+ * moved past until it is rebased. Its other statuses say nothing here, and the
+ * merge itself still refuses what GitLab will not take.
+ */
+function toMergeGate(
+  raw: Schema.Schema.Type<typeof GitLabMergeRequestSchema>,
+): PullRequestMergeGate | undefined {
+  return raw.detailed_merge_status?.trim().toLowerCase() === "need_rebase" ? "behind" : undefined;
 }
 
 /** GitLab reports label names only, so there is no colour to carry. */
@@ -403,6 +420,7 @@ function toDiffRefs(
 function toDetailRow(
   raw: Schema.Schema.Type<typeof GitLabMergeRequestSchema>,
 ): GitLabMergeRequestDetailRow {
+  const mergeGate = toMergeGate(raw);
   return {
     ...toRow(raw),
     body: raw.description ?? "",
@@ -417,6 +435,7 @@ function toDetailRow(
     }),
     checks: toChecks(raw),
     behindBy: raw.diverged_commits_count ?? null,
+    ...(mergeGate === undefined ? {} : { mergeGate }),
     diffRefs: toDiffRefs(raw),
   };
 }

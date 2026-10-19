@@ -742,8 +742,8 @@ function PullRequestDetailHeader({
             className="size-3.5 shrink-0 opacity-60"
           />
           <BranchCopyButton branch={detail.headBranch} />
-          {/* Being behind the base is the reason a merge is refused or a check
-              is stale, so the branch line says so where it names the branch. */}
+          {/* Being behind the base can be why a merge is refused or a check is
+              stale, so the branch line says so where it names the branch. */}
           {behindLabel ? (
             <TooltipWrapper tooltip={freshness ?? behindLabel}>
               <span className="shrink-0" data-testid="pull-request-behind">
@@ -1188,15 +1188,16 @@ function usePullRequestActions({
   // things that stop it are the two it cannot fix: a draft, and a conflict.
   const mergeWhenReadyBlock = resolveMergeWhenReadyBlock(detail);
   const defaultMergeMethod = resolveDefaultMergeMethod(detail.mergeMethods, rememberedMergeMethod);
-  const canUpdateBranch = canWrite && isOpen && allows("update-branch");
+  const canUpdateBranch =
+    canWrite && isOpen && allows("update-branch") && detail.mergeability !== "conflicting";
   const isBehind = detail.baseComparison === "behind";
-  // Someone may still want the branch current for local testing, so the update
-  // stays reachable under a queue; it simply must not lead.
-  const showUpdateBranchInMenu = queue !== null && canUpdateBranch && isBehind;
+  // Trailing the base only stands in the merge's way where the host says so:
+  // most repositories merge a stale branch as it is, and the host's own
+  // auto-merge does exactly that.
+  const mustUpdate = detail.mergeGate === "behind";
 
   // One primary action for the state the branch is in: work it cannot merge
-  // through first, then bringing it up to date, then the merge itself. The
-  // displaced merge is not lost — it moves into the menu beside the rest.
+  // through first, then an update the host insists on, then the merge itself.
   // Under a queue the last two collapse into one button, and a pull request
   // already in the queue has no primary at all: the host owns it now.
   const primary: "resolve-conflicts" | "update-branch" | "merge" | "merge-when-ready" | null =
@@ -1206,11 +1207,15 @@ function usePullRequestActions({
         ? showMergeWhenReady
           ? "merge-when-ready"
           : null
-        : canUpdateBranch && isBehind && detail.mergeability !== "conflicting"
+        : canUpdateBranch && mustUpdate
           ? "update-branch"
           : showMerge
             ? "merge"
             : null;
+  // Where the update does not lead, someone may still want the branch current
+  // to test it against the latest base, so it waits in the menu.
+  const showUpdateBranchInMenu =
+    canUpdateBranch && (isBehind || mustUpdate) && primary !== "update-branch";
   // A queue refuses a direct merge, so the merge never reaches the menu either.
   const showMergeInMenu = queue === null && showMerge && primary !== "merge" && mergeBlock === null;
   const hasMenuWrites =
@@ -1222,8 +1227,8 @@ function usePullRequestActions({
   // The two menu halves: the hand-offs, and the writes that are not buttons.
   const hasMenu = handoffs !== null || hasMenuWrites;
 
-  // Under a queue two writes swap places: the update becomes a menu item and
-  // arming becomes the primary button. A write with a button of its own says so
+  // Under a queue arming becomes the primary button, and an update the host
+  // does not insist on is a menu item. A write with a button of its own says so
   // on that button; everything else says so on the line under the header.
   const runningOnItsOwnButton =
     (runningAction === "enable-auto-merge" && showMergeWhenReady) ||
@@ -1448,9 +1453,9 @@ function usePullRequestActions({
                 showUpdateBranchInMenu) ? (
                 <MenuSeparator />
               ) : null}
-              {/* Under a queue the update no longer leads, because the queue
-                  builds its own merge on the latest base; it stays here for
-                  anyone who wants the branch current to test it locally. */}
+              {/* An update the host does not need before it merges, or one a
+                  queue makes for itself, stays here for anyone who wants the
+                  branch current to test it against the latest base. */}
               {showUpdateBranchInMenu ? (
                 updateMethods.length > 1 ? (
                   updateMethods.map((method) => (
