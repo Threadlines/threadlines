@@ -2524,12 +2524,22 @@ describe("SourceControlPanel commit graph", () => {
       await expect.element(page.getByText("Copy full message")).toBeVisible();
 
       gitActionMock.toastAdd.mockClear();
-      await page.getByRole("button", { name: "Copy full message" }).click();
-      await vi.waitFor(() => {
-        expect(writeText).toHaveBeenCalledWith(COMMIT_DETAILS.message);
-      });
-      await expect.element(page.getByRole("button", { name: "Copied" })).toBeVisible();
-      expect(gitActionMock.toastAdd).not.toHaveBeenCalled();
+      // "Copied" turns back after a moment, and on a busy CI machine the
+      // click's reply can come later than that. The clock holds still until
+      // the label is read, then moves on to check that it turns back.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await page.getByRole("button", { name: "Copy full message" }).click();
+        await vi.waitFor(() => {
+          expect(writeText).toHaveBeenCalledWith(COMMIT_DETAILS.message);
+        });
+        await expect.element(page.getByRole("button", { name: "Copied" })).toBeVisible();
+        expect(gitActionMock.toastAdd).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(2_000);
+        await expect.element(page.getByRole("button", { name: "Copy full message" })).toBeVisible();
+      } finally {
+        vi.useRealTimers();
+      }
 
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 
