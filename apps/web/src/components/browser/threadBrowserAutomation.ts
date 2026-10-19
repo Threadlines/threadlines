@@ -101,6 +101,13 @@ function agentPinKey(threadRef: ScopedThreadRef, agentId: string): string {
 }
 
 /**
+ * The pin of an agent whose browser has just moved here from another
+ * computer: no tab has this id, so, like a tab closed under it, everything
+ * aimed at a page is refused until it opens or chooses one here.
+ */
+const MOVED_PIN = "\u0000moved";
+
+/**
  * Operations that pick their own tab, or none, and so are unaffected by the
  * agent's pinned tab having gone: listing tabs, opening one, choosing one.
  */
@@ -233,6 +240,9 @@ export function resolveThreadBrowserTarget(
     );
   }
   const key = agentPinKey(threadRef, request.agentId);
+  if (request.moved === true) {
+    agentTabPins.set(key, MOVED_PIN);
+  }
   const requestedTabId =
     typeof (request.input as { tabId?: unknown } | undefined)?.tabId === "string"
       ? (request.input as { tabId: string }).tabId
@@ -253,7 +263,9 @@ export function resolveThreadBrowserTarget(
   ) {
     store.setAgentTab(threadRef, null);
     throw new Error(
-      "The tab you were working in was closed. Call browser_tabs to see what is open, then browser_select_tab or browser_open_tab to choose where to work.",
+      previousPin === MOVED_PIN
+        ? "The browser moved to the computer the user is using now, and the pages you had open stayed on the other one. Open what you need with browser_open_tab, or call browser_tabs to see what is open here and browser_select_tab to choose one."
+        : "The tab you were working in was closed. Call browser_tabs to see what is open, then browser_select_tab or browser_open_tab to choose where to work.",
     );
   }
   const pinned = requestedTabId ?? (pinLost ? null : previousPin);

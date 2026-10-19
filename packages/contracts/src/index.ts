@@ -7,6 +7,7 @@ export * from "./relay.ts";
 export * from "./relayAccess.ts";
 export * from "./ipc.ts";
 export * from "./previewAutomation.ts";
+export * from "./previewTunnel.ts";
 export * from "./terminal.ts";
 export * from "./provider.ts";
 export * from "./providerAuth.ts";

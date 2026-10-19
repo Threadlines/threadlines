@@ -67,7 +67,9 @@ import * as CommandRuns from "./commandRuns/CommandRuns.ts";
 import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
 import * as PagePreview from "./pages/preview/PagePreview.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
+import * as LocalServers from "./preview/LocalServers.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
+import * as PreviewTunnel from "./preview/PreviewTunnel.ts";
 import { ProviderAccountsLive } from "./provider/accounts/ProviderAccounts.ts";
 import { AcpRegistryAgentsLive } from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { ProviderAuthSessionsLive } from "./provider/auth/ProviderAuthSessions.ts";
@@ -427,7 +429,14 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // `RelayLayerLive` ("Connect a device") rides along here: like the broker it
   // owns no project state, only sockets and the relay_devices table below.
   Layer.provideMerge(
-    Layer.mergeAll(PreviewAutomationBroker.layer, PagePreview.layer, DictationLive, RelayLayerLive),
+    Layer.mergeAll(
+      PreviewAutomationBroker.layer,
+      PreviewTunnel.layer,
+      LocalServers.layer,
+      PagePreview.layer,
+      DictationLive,
+      RelayLayerLive,
+    ),
   ),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),

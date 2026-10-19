@@ -41,6 +41,7 @@ import {
   notePageShown,
   runBrowserLifecycleCheck,
 } from "./browserLifecycle";
+import { serveLoopbackTunnels } from "./loopbackTunnels";
 import { connectEnvironmentBrowserHost } from "./previewAutomationHost";
 import { PreviewTabFrame, type PreviewFrameMode } from "./PreviewTabFrame";
 import {
@@ -78,22 +79,83 @@ const DEFAULT_HIDDEN_PAGE_SIZE = { width: 1280, height: 800 };
 /** How often idle pages are looked at, while there are any off screen. */
 const LIFECYCLE_CHECK_INTERVAL_MS = 15_000;
 
-/** This client's host id per environment, for claiming a thread's browser. */
-const hostByEnvironment = new Map<string, { hostId: string; clientHosts: boolean }>();
+/** How often this computer's use is reported while it is connected. */
+const PRESENCE_REPORT_INTERVAL_MS = 30_000;
+
+/**
+ * This client's host id per environment, for claiming a thread's browser;
+ * `presence` when the environment is told how recently this computer was used.
+ */
+const hostByEnvironment = new Map<
+  string,
+  { hostId: string; clientHosts: boolean; presence: boolean }
+>();
+
+/**
+ * This window's name to each environment, for as long as the page lives. A
+ * connection that drops and comes back is the same browser with the same
+ * pages, and must not read as the browser having moved to another computer.
+ */
+const stableHostIds = new Map<string, string>();
+function stableHostIdFor(environmentId: string): string {
+  let hostId = stableHostIds.get(environmentId);
+  if (hostId === undefined) {
+    hostId = `client:${Math.random().toString(36).slice(2)}`;
+    stableHostIds.set(environmentId, hostId);
+  }
+  return hostId;
+}
+
+/** Milliseconds since anyone touched this computer, or null outside the desktop. */
+async function readSystemIdleMs(): Promise<number | null> {
+  const read = window.desktopBridge?.getSystemIdleMs;
+  if (read === undefined) return null;
+  try {
+    return await read();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Tells environments how recently this computer was used, so a thread's
+ * browser opens, and moves, to the computer the user is at. One environment,
+ * or every one this client hosts a browser for.
+ */
+async function reportPresence(environmentId?: string): Promise<void> {
+  const idleMs = await readSystemIdleMs();
+  if (idleMs === null) return;
+  for (const [id, host] of hostByEnvironment) {
+    if (!host.presence || (environmentId !== undefined && id !== environmentId)) continue;
+    void readEnvironmentApi(id as EnvironmentId)
+      ?.previewAutomation.active({ hostId: host.hostId, idleMs })
+      .catch(() => undefined);
+  }
+}
 
 /**
  * Tells the environment the user opened this thread's browser here, so its
  * agent requests come to this client (and its pages) from now on.
+ *
+ * Also how a panel back on screen after a launch or a reconnect says so. With
+ * how recently this computer was used, the environment can tell the two
+ * apart: one put back on a computer nobody is at does not take the browser
+ * from one somebody is.
  */
 export function claimThreadBrowser(threadRef: ScopedThreadRef): void {
   const host = hostByEnvironment.get(threadRef.environmentId);
   if (host === undefined || !host.clientHosts) return;
-  // A connection being rebuilt is gone a moment before its host entry is.
-  // Skipping loses nothing: the host that replaces this one claims the thread
-  // on screen as it connects.
-  void readEnvironmentApi(threadRef.environmentId)
-    ?.previewAutomation.claim({ hostId: host.hostId, threadId: threadRef.threadId })
-    .catch(() => undefined);
+  void (async () => {
+    const idleMs = host.presence ? await readSystemIdleMs() : null;
+    // A connection being rebuilt is gone a moment before its host entry is.
+    // Skipping loses nothing: the host that replaces this one claims the
+    // thread on screen as it connects.
+    await readEnvironmentApi(threadRef.environmentId)?.previewAutomation.claim({
+      hostId: host.hostId,
+      threadId: threadRef.threadId,
+      ...(idleMs === null ? {} : { idleMs }),
+    });
+  })().catch(() => undefined);
 }
 
 /** Closes a thread's running browser: its pages end, its tabs stay. */
@@ -106,6 +168,14 @@ interface ConnectedEnvironment {
   readonly environmentId: EnvironmentId;
   readonly machineLocal: boolean;
   readonly clientHosts: boolean;
+  /** The server is told how recently this computer was used, and carries loopback tunnels. */
+  readonly presence: boolean;
+  /**
+   * This client's pages reach the environment's `localhost` through the
+   * loopback tunnel: another computer, connected directly rather than through
+   * the relay, whose server carries tunnels.
+   */
+  readonly loopbackTunnel: boolean;
 }
 
 /** This device's server and every connected saved computer, with what each can do. */
@@ -120,15 +190,20 @@ function useConnectedEnvironments(): ReadonlyArray<ConnectedEnvironment> {
         // The desktop's own server: the same machine, so the same localhost.
         machineLocal: true,
         clientHosts: primary.capabilities.browserClientHosts === true,
+        presence: primary.capabilities.browserLoopbackTunnel === true,
+        loopbackTunnel: false,
       });
     }
     for (const [environmentId, runtime] of Object.entries(saved)) {
       if (environmentId === primary?.environmentId) continue;
       if (runtime.connectionState !== "connected" || runtime.descriptor === null) continue;
+      const tunnels = runtime.descriptor.capabilities.browserLoopbackTunnel === true;
       environments.push({
         environmentId: environmentId as EnvironmentId,
         machineLocal: false,
         clientHosts: runtime.descriptor.capabilities.browserClientHosts === true,
+        presence: tunnels,
+        loopbackTunnel: tunnels && runtime.route !== "relay",
       });
     }
     return environments;
@@ -144,6 +219,8 @@ function EnvironmentBrowserHost({
   environmentId,
   machineLocal,
   clientHosts,
+  presence,
+  loopbackTunnel,
 }: ConnectedEnvironment) {
   // Connected is not yet callable: a saved computer reads as connected from
   // the moment its socket opens, before its connection is registered.
@@ -154,11 +231,14 @@ function EnvironmentBrowserHost({
     if (!callable || readEnvironmentApi(environmentId) === undefined) return;
     const connection = connectEnvironmentBrowserHost({
       environmentId,
+      hostId: stableHostIdFor(environmentId),
       machineLocal,
       clientHosts,
+      loopbackTunnel,
       resolveTarget: resolveThreadBrowserTarget,
       prepare: prepareThreadBrowser,
       onReconnect: () => {
+        void reportPresence(environmentId);
         const shown = useBrowserLiveStore.getState().shownThreadKey;
         const live =
           shown === null ? undefined : useBrowserLiveStore.getState().liveByThreadKey[shown];
@@ -186,7 +266,8 @@ function EnvironmentBrowserHost({
         subscribe: (listener) => useBrowserLiveStore.subscribe(listener),
       },
     });
-    hostByEnvironment.set(environmentId, { hostId: connection.hostId, clientHosts });
+    hostByEnvironment.set(environmentId, { hostId: connection.hostId, clientHosts, presence });
+    void reportPresence(environmentId);
     // A thread already on screen in this environment was opened here.
     const shown = useBrowserLiveStore.getState().shownThreadKey;
     const live = shown === null ? undefined : useBrowserLiveStore.getState().liveByThreadKey[shown];
@@ -199,12 +280,27 @@ function EnvironmentBrowserHost({
       }
       connection.disconnect();
     };
-  }, [callable, clientHosts, environmentId, machineLocal]);
+  }, [callable, clientHosts, environmentId, loopbackTunnel, machineLocal, presence]);
   return null;
 }
 
-/** One browser connection per connected environment, kept for as long as it is connected. */
+/**
+ * One browser connection per connected environment, kept for as long as it is
+ * connected, and this window's way to their `localhost`.
+ */
 export function EnvironmentBrowserHosts() {
+  useEffect(() => serveLoopbackTunnels(), []);
+  // How recently this computer was used, now and then and whenever the
+  // window comes forward: the agent's browser goes where the user is.
+  useEffect(() => {
+    const report = () => void reportPresence();
+    const timer = window.setInterval(report, PRESENCE_REPORT_INTERVAL_MS);
+    window.addEventListener("focus", report);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", report);
+    };
+  }, []);
   return useConnectedEnvironments().map((environment) => (
     <EnvironmentBrowserHost key={environment.environmentId} {...environment} />
   ));

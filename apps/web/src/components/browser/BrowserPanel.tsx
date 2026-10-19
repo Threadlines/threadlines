@@ -5,10 +5,11 @@ import {
 } from "../../lib/pickedElementContext";
 import type {
   AgentBrowserSitePolicy,
-  DesktopLocalServer,
   DesktopPreviewAnnotationMode,
   DesktopPreviewPickedElement,
   DesktopPreviewPickMode,
+  EnvironmentId,
+  PreviewLocalServer,
   ProjectId,
   ScopedThreadRef,
 } from "@threadlines/contracts";
@@ -66,6 +67,8 @@ import { BrowserFindBar } from "./BrowserFindBar";
 import { BrowserPageErrorsButton } from "./BrowserPageErrors";
 import { distillPageErrors, type PageErrorItem } from "./pageErrors";
 import { isElectron } from "../../env";
+import { readEnvironmentApi } from "../../environmentApi";
+import { readEnvironmentDescriptor } from "../../environments/runtime/catalog";
 import { useBrowserProfilePartition } from "../../lib/browserProfiles";
 import { useTheme } from "../../hooks/useTheme";
 import { copyTextToClipboard } from "../../lib/clipboard";
@@ -1323,6 +1326,7 @@ export function BrowserPanel({
               {activeTab !== null && activeTab.url === null ? (
                 <div className="pointer-events-auto absolute inset-0 z-10 overflow-auto bg-background px-3">
                   <LocalServerPicker
+                    environmentId={threadRef.environmentId}
                     onSelect={(port) => openAddress(activeTab.id, `http://localhost:${port}`)}
                   />
                 </div>
@@ -1783,20 +1787,37 @@ function NavButton({
  * A blank address bar is a worse starting point than it looks: the port a dev
  * server picked is exactly the thing nobody remembers. Rows rather than tiles,
  * separated by rules, so it reads as a list of facts.
+ *
+ * Asked of the thread's environment, since its `localhost` is that computer's
+ * even when this browser runs on another one.
  */
-function LocalServerPicker({ onSelect }: { onSelect: (port: number) => void }) {
-  const [servers, setServers] = useState<ReadonlyArray<DesktopLocalServer>>([]);
+function LocalServerPicker({
+  environmentId,
+  onSelect,
+}: {
+  environmentId: EnvironmentId;
+  onSelect: (port: number) => void;
+}) {
+  const [servers, setServers] = useState<ReadonlyArray<PreviewLocalServer>>([]);
   const [scanned, setScanned] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     const scan = () => {
-      void window.desktopBridge?.previewLocalServers?.().then((found) => {
-        if (!cancelled) {
-          setServers(found);
-          setScanned(true);
-        }
-      });
+      // An older server cannot say; its blank tab just shows nothing listening.
+      const capable =
+        readEnvironmentDescriptor(environmentId)?.capabilities.browserLoopbackTunnel === true;
+      const found = capable
+        ? readEnvironmentApi(environmentId)?.previewLoopback.localServers()
+        : Promise.resolve([]);
+      void found
+        ?.then((list) => {
+          if (!cancelled) {
+            setServers(list);
+            setScanned(true);
+          }
+        })
+        .catch(() => undefined);
     };
     scan();
     // Servers start and stop while the panel is open; a stale list would send
@@ -1806,7 +1827,7 @@ function LocalServerPicker({ onSelect }: { onSelect: (port: number) => void }) {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [environmentId]);
 
   return (
     <div className="mx-auto w-full max-w-md py-8">

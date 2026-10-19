@@ -37,6 +37,14 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       connectClient: (input, listener, options) =>
         rpcClient.previewAutomation.connectClient(input, listener, options),
       claim: (claim) => rpcClient.previewAutomation.claim(claim),
+      active: (activity) => rpcClient.previewAutomation.active(activity),
+    },
+    previewLoopback: {
+      open: (input, listener, onClosed) =>
+        rpcClient.previewLoopback.open(input, listener, { onComplete: onClosed }),
+      write: (input) => rpcClient.previewLoopback.write(input),
+      credit: (input) => rpcClient.previewLoopback.credit(input),
+      localServers: () => rpcClient.previewLoopback.localServers(),
     },
     projects: {
       searchEntries: rpcClient.projects.searchEntries,

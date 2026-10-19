@@ -735,10 +735,20 @@ function describe(cause: unknown): string {
  */
 export function connectEnvironmentBrowserHost(input: {
   readonly environmentId: EnvironmentId;
+  /**
+   * Who this client is to the environment, kept across reconnects: the same
+   * pages are still here, and a new name would read as another computer.
+   */
+  readonly hostId?: string;
   /** The client runs on the server's machine, so its `localhost` is the agent's. */
   readonly machineLocal: boolean;
   /** Whether the server routes to client-wide hosts; read when connecting. */
   readonly clientHosts: boolean;
+  /**
+   * The client's pages reach the server's `localhost` through the loopback
+   * tunnel, so the server may give it threads though it is another computer.
+   */
+  readonly loopbackTunnel?: boolean;
   readonly resolveTarget: (
     threadRef: ScopedThreadRef,
     request: PreviewAutomationRequest,
@@ -761,7 +771,7 @@ export function connectEnvironmentBrowserHost(input: {
   };
 }): { readonly hostId: string; readonly disconnect: () => void } {
   const bridge = window.desktopBridge;
-  const hostId = `client:${Math.random().toString(36).slice(2)}`;
+  const hostId = input.hostId ?? `client:${Math.random().toString(36).slice(2)}`;
   if (bridge === undefined) {
     return { hostId, disconnect: () => {} };
   }
@@ -832,7 +842,10 @@ export function connectEnvironmentBrowserHost(input: {
       {
         hostId,
         operations: PREVIEW_AUTOMATION_HOST_OPERATIONS,
-        features: PREVIEW_AUTOMATION_HOST_FEATURES,
+        features:
+          input.loopbackTunnel === true
+            ? [...PREVIEW_AUTOMATION_HOST_FEATURES, "loopbackTunnel"]
+            : PREVIEW_AUTOMATION_HOST_FEATURES,
         machineLocal: input.machineLocal,
       },
       listen(null),

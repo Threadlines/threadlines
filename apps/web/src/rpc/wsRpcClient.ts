@@ -36,8 +36,11 @@ type RpcInput<TTag extends RpcTag> = Parameters<RpcMethod<TTag>>[0];
 
 interface StreamSubscriptionOptions {
   readonly onResubscribe?: () => void;
-  /** Fires when a non-resubscribing stream ends for any reason other than unsubscribe. */
-  readonly onComplete?: () => void;
+  /**
+   * Fires when a non-resubscribing stream ends for any reason other than
+   * unsubscribe, with what it failed with when it failed.
+   */
+  readonly onComplete?: (failure?: unknown) => void;
   /** Fires when a stream attempt failed and the transport is about to retry. */
   readonly onRetry?: (error: unknown, attempt: number) => void;
 }
@@ -115,6 +118,14 @@ export interface WsRpcClient {
     readonly progress: RpcUnaryMethod<typeof WS_METHODS.previewAutomationProgress>;
     readonly connectClient: RpcInputStreamMethod<typeof WS_METHODS.previewAutomationConnectClient>;
     readonly claim: RpcUnaryMethod<typeof WS_METHODS.previewAutomationClaim>;
+    readonly active: RpcUnaryMethod<typeof WS_METHODS.previewAutomationActive>;
+  };
+  /** The browser's way to the environment's own `localhost`, from another computer. */
+  readonly previewLoopback: {
+    readonly open: RpcInputStreamMethod<typeof WS_METHODS.previewTunnelOpen>;
+    readonly write: RpcUnaryMethod<typeof WS_METHODS.previewTunnelWrite>;
+    readonly credit: RpcUnaryMethod<typeof WS_METHODS.previewTunnelCredit>;
+    readonly localServers: RpcUnaryNoArgMethod<typeof WS_METHODS.previewLocalServers>;
   };
   readonly projects: {
     readonly searchEntries: RpcUnaryMethod<typeof WS_METHODS.projectsSearchEntries>;
@@ -535,6 +546,22 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         ),
       claim: (input) =>
         transport.request((client) => client[WS_METHODS.previewAutomationClaim](input)),
+      active: (input) =>
+        transport.request((client) => client[WS_METHODS.previewAutomationActive](input)),
+    },
+    previewLoopback: {
+      // A byte stream cannot pick up where it left off: when the connection
+      // drops, the tunnel ends and the page sees its connection close.
+      open: (input, listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.previewTunnelOpen](input), listener, {
+          tag: WS_METHODS.previewTunnelOpen,
+          resubscribe: false,
+          ...(options?.onComplete ? { onComplete: options.onComplete } : {}),
+        }),
+      write: (input) => transport.request((client) => client[WS_METHODS.previewTunnelWrite](input)),
+      credit: (input) =>
+        transport.request((client) => client[WS_METHODS.previewTunnelCredit](input)),
+      localServers: () => transport.request((client) => client[WS_METHODS.previewLocalServers]({})),
     },
     projects: {
       searchEntries: (input) =>

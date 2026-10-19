@@ -208,8 +208,12 @@ export type PreviewAutomationError = typeof PreviewAutomationErrorSchema.Type;
  *
  * - `cancel`: the client understands {@link PreviewAutomationCancelSchema} and
  *   stops a request the server has given up on.
+ * - `loopbackTunnel`: the client's pages reach the server's `localhost`
+ *   through the loopback tunnel (`previewTunnel.ts`), so a thread's browser
+ *   can run there even though it is another computer. Only sent to servers
+ *   advertising `browserLoopbackTunnel`; older ones would refuse the word.
  */
-export const PreviewAutomationHostFeatureSchema = Schema.Literals(["cancel"]);
+export const PreviewAutomationHostFeatureSchema = Schema.Literals(["cancel", "loopbackTunnel"]);
 export type PreviewAutomationHostFeature = typeof PreviewAutomationHostFeatureSchema.Type;
 
 /**
@@ -220,6 +224,11 @@ export type PreviewAutomationHostFeature = typeof PreviewAutomationHostFeatureSc
  * most recently, or else a client on the server's own machine -- where
  * `localhost` means what the agent means by it -- or else the newest.
  * Advertised by servers with `browserClientHosts`.
+ *
+ * Servers with `browserLoopbackTunnel` also follow the user: among clients
+ * that can reach the agent's `localhost` (on its machine, or through the
+ * tunnel), a thread's browser goes to the computer the user touched last, and
+ * moves there from one nobody is using (see {@link PreviewAutomationActivitySchema}).
  */
 export const PreviewAutomationClientHostSchema = Schema.Struct({
   hostId: Schema.String,
@@ -230,12 +239,37 @@ export const PreviewAutomationClientHostSchema = Schema.Struct({
 });
 export type PreviewAutomationClientHost = typeof PreviewAutomationClientHostSchema.Type;
 
-/** The user opened this thread's browser on this client: route its requests here. */
+/**
+ * How long since anyone touched the computer a client runs on, in
+ * milliseconds: any key or pointer input on the machine, in Threadlines or not.
+ * It answers "is the user at this computer", which is where they will look.
+ */
+const IdleMsSchema = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+
+/**
+ * The user opened this thread's browser on this client: route its requests here.
+ *
+ * With `idleMs` (servers with `browserLoopbackTunnel`), a claim from a
+ * computer nobody is using -- a panel restored on launch or reconnect -- does
+ * not take the browser from one somebody is.
+ */
 export const PreviewAutomationClaimSchema = Schema.Struct({
   hostId: Schema.String,
   threadId: ThreadId,
+  idleMs: Schema.optionalKey(IdleMsSchema),
 });
 export type PreviewAutomationClaim = typeof PreviewAutomationClaimSchema.Type;
+
+/**
+ * A client's word on how recently its computer was used. Sent now and then
+ * while connected, and at once when its window comes to the front. Only sent
+ * to servers advertising `browserLoopbackTunnel`.
+ */
+export const PreviewAutomationActivitySchema = Schema.Struct({
+  hostId: Schema.String,
+  idleMs: IdleMsSchema,
+});
+export type PreviewAutomationActivity = typeof PreviewAutomationActivitySchema.Type;
 
 /** A client offering to service requests for one thread's browser panel. */
 export const PreviewAutomationHostSchema = Schema.Struct({
@@ -260,6 +294,13 @@ export const PreviewAutomationRequestSchema = Schema.Struct({
   operation: PreviewAutomationOperationSchema,
   /** Shaped by the operation; the host validates it against the matching input schema. */
   input: Schema.Json,
+  /**
+   * This agent last used the thread's browser on another computer, and the
+   * browser has moved here since. The pages it saw there are not here: the
+   * client lets go of its tab and refuses anything aimed at a page until it
+   * opens or chooses one, rather than acting on whatever this computer shows.
+   */
+  moved: Schema.optionalKey(Schema.Literal(true)),
 });
 export type PreviewAutomationRequest = typeof PreviewAutomationRequestSchema.Type;
 
