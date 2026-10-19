@@ -13,7 +13,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "oxlint": "^1.87.0",
+    "oxlint": "^1.88.0",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",
