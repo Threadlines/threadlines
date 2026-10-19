@@ -39,6 +39,8 @@ import type {
   ThreadId,
   ProviderSubagentInputRequest,
   ProviderSubagentInputResult,
+  ProviderCommandOutputInput,
+  ProviderCommandOutputResult,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
   ProviderTurnStartResult,
@@ -280,6 +282,15 @@ export interface ProviderServiceShape {
   readonly readSubagentTranscript: (
     input: ProviderSubagentTranscriptInput,
   ) => Effect.Effect<ProviderSubagentTranscriptResult, ProviderServiceError>;
+
+  /**
+   * What a command one of the thread's agents is running now has printed
+   * (see the adapter's `readCommandOutput`). Never starts a session; answers
+   * `unavailable` when no live one can read it.
+   */
+  readonly readCommandOutput: (
+    input: ProviderCommandOutputInput,
+  ) => Effect.Effect<ProviderCommandOutputResult, ProviderServiceError>;
 
   /** Send a user message straight to a spawned subagent (see the adapter's
    *  `sendSubagentInput`). */

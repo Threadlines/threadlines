@@ -453,6 +453,41 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("shows the newest line a running command printed under the working line", async () => {
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        timelineEntries={[
+          {
+            id: "entry-command",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-command",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run test",
+              executionState: "running",
+              // Streamed output, escape codes and a blank last line included.
+              outputPreview: "RUN v4\n\u001b[32m✓\u001b[39m src/a.test.ts (3 tests)\n\n",
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("Running tests")).toBeVisible();
+      const output = document.querySelector<HTMLElement>("[data-turn-working-output='true']");
+      expect(output?.textContent).toBe("✓ src/a.test.ts (3 tests)");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("shows how long a long check took, from the provider's stamps", async () => {
     const screen = await renderTimeline(
       <MessagesTimeline

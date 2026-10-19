@@ -122,6 +122,7 @@ import {
   threadlinesRoomToolOf,
   type ActivityStep,
 } from "./activitySteps";
+import { useLiveCommandOutputLine } from "./backgroundRunOutput";
 import {
   describeThreadStartCall,
   parseThreadStartResult,
@@ -3863,7 +3864,13 @@ function WorkflowRunTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "wo
  *  the state the turn is in ("Thinking", "Waiting for approval"). While the
  *  agent thinks out loud, its newest thought sits under the word. */
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { turnAgents, onOpenAgentsPanel } = use(TimelineRowCtx);
+  const { turnAgents, onOpenAgentsPanel, activeThreadEnvironmentId, activeThreadId } =
+    use(TimelineRowCtx);
+  const commandOutputLine = useLiveCommandOutputLine(
+    activeThreadEnvironmentId,
+    activeThreadId,
+    row.command,
+  );
   const { isWorking } = use(TimelineRowActivityCtx);
   const liveSubagents = turnAgents?.subagents ?? [];
   const takenAgents = useTurnAgents(row.trackerTurnIds, row.trackerAgentSpawnIds);
@@ -3948,6 +3955,16 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
             data-turn-working-thought="true"
           >
             {newestThoughtSentence(row.thought)}
+          </p>
+        ) : commandOutputLine ? (
+          // The newest line the running command printed, in the same place.
+          <p
+            ref={detailEntranceRef}
+            className="truncate pl-[19px] font-mono text-[11px] leading-4 text-muted-foreground/55"
+            title={commandOutputLine}
+            data-turn-working-output="true"
+          >
+            {commandOutputLine}
           </p>
         ) : null}
         {/* Each live agent keeps its own row, so concurrent updates change the

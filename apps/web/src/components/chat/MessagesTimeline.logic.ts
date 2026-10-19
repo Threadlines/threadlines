@@ -46,6 +46,7 @@ import {
   type SideAnswerView,
 } from "./sideAnswers";
 import { NO_LIVE_AGENT_TRACKER_KEYS, type LiveAgentTrackerKeys } from "./agentsPanel.logic";
+import type { LiveCommandOutput } from "./backgroundRunOutput";
 
 /** What a finished turn's footer says under its last message. */
 export interface TurnSummary {
@@ -235,6 +236,9 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         label: string;
         /** What the agent is thinking right now, in its own summary's words. */
         thought: string | null;
+        /** The command the agent is running right now, whose newest printed
+         *  line the row shows. */
+        command: LiveCommandOutput | null;
         /** Trackers this row took over from turns whose agents still work
          *  (takeLiveAgentTrackers); empty when none do. */
         trackerTurnIds: TurnId[];
@@ -702,6 +706,7 @@ export function deriveMessagesTimelineRows(input: {
         input.roomAgentNames,
       ),
       thought: resolveLiveThought(visibleTimelineEntries),
+      command: resolveLiveCommand(visibleTimelineEntries),
       ...tracker,
     });
   } else if (liveAgentCount > 0) {
@@ -724,6 +729,7 @@ export function deriveMessagesTimelineRows(input: {
           ? "Agent working"
           : "Agents working",
       thought: null,
+      command: null,
       ...tracker,
     });
   } else if (input.isWaitingOnBackgroundTasks) {
@@ -740,6 +746,7 @@ export function deriveMessagesTimelineRows(input: {
       createdAt: null,
       label: soleWorkflow ?? (waitingOn ? `Waiting on ${waitingOn}` : "Waiting"),
       thought: null,
+      command: null,
       ...tracker,
     });
   }
@@ -1651,6 +1658,23 @@ function resolveLiveThought(visibleTimelineEntries: ReadonlyArray<TimelineEntry>
   return newest?.kind === "work" ? liveThoughtText(newest.entry) : null;
 }
 
+/** The newest command still running in the exchange in view. A command the
+ *  agent started alongside others keeps running after a quicker one ends. */
+function resolveLiveCommand(
+  visibleTimelineEntries: ReadonlyArray<TimelineEntry>,
+): LiveCommandOutput | null {
+  for (let index = visibleTimelineEntries.length - 1; index >= 0; index -= 1) {
+    const timelineEntry = visibleTimelineEntries[index]!;
+    if (timelineEntry.kind === "message" && startsExchange(timelineEntry.message)) return null;
+    if (timelineEntry.kind !== "work") continue;
+    const { entry } = timelineEntry;
+    if (entry.itemType === "command_execution" && entry.executionState === "running") {
+      return { toolCallId: entry.toolCallId ?? null, streamedOutput: entry.outputPreview ?? null };
+    }
+  }
+  return null;
+}
+
 /**
  * A spawned agent's own tool calls are not the conversation's activity, so they
  * never reach the chat: not as expanded rows, and not in the receipt's counts.
@@ -2036,6 +2060,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.createdAt === bw.createdAt &&
         a.label === bw.label &&
         a.thought === bw.thought &&
+        a.command?.toolCallId === bw.command?.toolCallId &&
+        a.command?.streamedOutput === bw.command?.streamedOutput &&
         sameIds(a.trackerTurnIds, bw.trackerTurnIds) &&
         sameIds(a.trackerAgentSpawnIds, bw.trackerAgentSpawnIds)
       );
@@ -2271,7 +2297,7 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return 10 + STEP_LINE_PX * lines;
     }
     case "working":
-      return row.thought ? 46 : 30;
+      return row.thought || row.command ? 46 : 30;
     case "subagent-result":
       return 40;
     case "workflow-run":

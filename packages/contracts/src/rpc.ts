@@ -169,6 +169,8 @@ import {
   ProviderRealtimeAudioChunk,
   ProviderRealtimeError,
   ProviderRealtimeStartInput,
+  ProviderCommandOutputInput,
+  ProviderCommandOutputResult,
   ProviderSubagentInputError,
   ProviderSubagentInputRequest,
   ProviderSubagentInputResult,
@@ -471,6 +473,7 @@ export const WS_METHODS = {
   serverResolveBackgroundRuns: "server.resolveBackgroundRuns",
   serverStopBackgroundRun: "server.stopBackgroundRun",
   serverReadBackgroundRunOutput: "server.readBackgroundRunOutput",
+  serverReadCommandOutput: "server.readCommandOutput",
   serverReadWorkflowRunFile: "server.readWorkflowRunFile",
   serverReadWorkflowAgentTranscript: "server.readWorkflowAgentTranscript",
   serverSaveWorkflowCommand: "server.saveWorkflowCommand",
@@ -733,6 +736,11 @@ export const WsServerReadBackgroundRunOutputRpc = Rpc.make(
     success: ServerReadBackgroundRunOutputResult,
   },
 );
+
+export const WsServerReadCommandOutputRpc = Rpc.make(WS_METHODS.serverReadCommandOutput, {
+  payload: ProviderCommandOutputInput,
+  success: ProviderCommandOutputResult,
+});
 
 export const WsServerReadWorkflowRunFileRpc = Rpc.make(WS_METHODS.serverReadWorkflowRunFile, {
   payload: WorkflowReadRunFileInput,
@@ -1646,6 +1654,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerResolveBackgroundRunsRpc,
   WsServerStopBackgroundRunRpc,
   WsServerReadBackgroundRunOutputRpc,
+  WsServerReadCommandOutputRpc,
   WsServerReadWorkflowRunFileRpc,
   WsServerReadWorkflowAgentTranscriptRpc,
   WsServerSaveWorkflowCommandRpc,

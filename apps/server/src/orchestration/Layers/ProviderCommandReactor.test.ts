@@ -511,6 +511,7 @@ describe("ProviderCommandReactor", () => {
       },
       rollbackConversation: () => unsupported(),
       readSubagentTranscript: () => unsupported(),
+      readCommandOutput: () => unsupported(),
       sendSubagentInput: () => unsupported(),
       deleteThread: () => unsupported(),
       get streamEvents() {
