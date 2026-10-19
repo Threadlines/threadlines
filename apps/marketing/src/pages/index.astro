@@ -51,7 +51,15 @@ const appStructuredData = {
   sameAs: [SITE_GITHUB_URL, SITE_X_URL],
 };
 
-const showcases = [
+/** A tab in a homepage showcase: a looping clip, or a still from public/Screenshots/app when `image` is set. */
+interface ShowcaseClip {
+  name: string;
+  tab: string;
+  label: string;
+  image?: string;
+}
+
+const showcases: { id: string; kicker: string; title: string; description: string; clips: ShowcaseClip[] }[] = [
   {
     id: "inbox",
     kicker: "Across your projects",
@@ -97,13 +105,16 @@ const showcases = [
     ],
   },
   {
-    id: "providers",
-    kicker: "Codex and Claude Code",
-    title: "Keep the thread. Choose the provider.",
+    id: "agents",
+    kicker: "Every agent you use",
+    title: "Pick your agents, then switch any time",
     description:
-      "Switch providers with a conversation recap and the current working tree. Your code and the thread stay together when you change tools.",
+      "Choose your agents during setup. Every thread's model picker has a tab for each one, and a thread can change agents without losing the conversation or your changes.",
     clips: [
-      { name: "provider-switch", tab: "Switch providers", label: "The provider switch dialog in an existing project thread" },
+      { name: "agents-setup", tab: "Setup", image: "onboarding", label: "Threadlines setup asking which agents you use, with Codex, Claude, fx, Cursor, OpenCode, Antigravity, Muse Code, Grok and Pi to pick from" },
+      { name: "agents-claude", tab: "Claude Code", image: "picker-claude", label: "The model picker on a Claude thread, showing Claude's models and a tab for each agent" },
+      { name: "agents-cursor", tab: "Cursor", image: "picker-cursor", label: "The model picker showing Cursor's models, with Auto at the top" },
+      { name: "agents-fx", tab: "fx", image: "picker-fx", label: "The model picker showing fx's AI Gateway models with their prices" },
     ],
   },
 ];
@@ -332,29 +343,47 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
             </div>
           )}
           <div class="pv-frame">
-            {showcase.clips.map((clip, i) => (
-              <video
-                class:list={["pv-video", "pv-pane", i === 0 && "pv-active"]}
-                id={`clip-${clip.name}`}
-                role={showcase.clips.length > 1 ? "tabpanel" : undefined}
-                aria-labelledby={showcase.clips.length > 1 ? `tab-${clip.name}` : undefined}
-                aria-hidden={i !== 0}
-                muted
-                playsinline
-                loop
-                preload="none"
-                poster={`${L}/${mediaName(clip.name)}.webp`}
-                width="1600"
-                height="934"
-                aria-label={clip.label}
-              >
-                <source src={`${L}/${mediaName(clip.name)}.mp4`} type="video/mp4" />
-              </video>
-            ))}
+            {showcase.clips.map((clip, i) =>
+              clip.image ? (
+                <img
+                  class:list={["pv-still", "pv-pane", i === 0 && "pv-active"]}
+                  id={`clip-${clip.name}`}
+                  role={showcase.clips.length > 1 ? "tabpanel" : undefined}
+                  aria-labelledby={showcase.clips.length > 1 ? `tab-${clip.name}` : undefined}
+                  aria-hidden={i !== 0}
+                  src={`/Screenshots/app/${clip.image}.webp`}
+                  alt={clip.label}
+                  width="2400"
+                  height="1401"
+                  loading="lazy"
+                  decoding="async"
+                />
+              ) : (
+                <video
+                  class:list={["pv-video", "pv-pane", i === 0 && "pv-active"]}
+                  id={`clip-${clip.name}`}
+                  role={showcase.clips.length > 1 ? "tabpanel" : undefined}
+                  aria-labelledby={showcase.clips.length > 1 ? `tab-${clip.name}` : undefined}
+                  aria-hidden={i !== 0}
+                  muted
+                  playsinline
+                  loop
+                  preload="none"
+                  poster={`${L}/${mediaName(clip.name)}.webp`}
+                  width="1600"
+                  height="934"
+                  aria-label={clip.label}
+                >
+                  <source src={`${L}/${mediaName(clip.name)}.mp4`} type="video/mp4" />
+                </video>
+              ),
+            )}
             <button class="pv-expand" type="button" aria-label={`Expand ${showcase.kicker.toLowerCase()} demo`}>
               <span>Expand</span>
             </button>
-            <button class="pv-play" type="button" aria-label="Play video" set:html={playGlyphs} />
+            {showcase.clips.some((clip) => !clip.image) && (
+              <button class="pv-play" type="button" aria-label="Play video" set:html={playGlyphs} />
+            )}
           </div>
         </div>
       </section>
@@ -519,22 +548,22 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   }
 
   for (const set of document.querySelectorAll<HTMLElement>("[data-tabset]")) {
-    const panes = [...set.querySelectorAll<HTMLVideoElement>(".pv-pane")];
+    const panes = [...set.querySelectorAll<HTMLElement>(".pv-pane")];
     const steps = [...set.querySelectorAll<HTMLButtonElement>(".pv-step")];
     const select = (index: number) => {
       set.dataset.current = String(index);
       panes.forEach((pane, i) => {
         pane.classList.toggle("pv-active", index === i);
         pane.setAttribute("aria-hidden", String(index !== i));
-        syncVideo(pane);
+        if (pane instanceof HTMLVideoElement) syncVideo(pane);
       });
       steps.forEach((step, i) => {
         step.classList.toggle("pv-active", index === i);
         step.setAttribute("aria-selected", String(index === i));
         step.tabIndex = index === i ? 0 : -1;
       });
-      const video = panes[index];
-      if (video) syncPlayButton(video);
+      const pane = panes[index];
+      if (pane instanceof HTMLVideoElement) syncPlayButton(pane);
     };
     steps.forEach((step, i) => {
       step.addEventListener("click", () => select(i));
@@ -833,7 +862,8 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     overflow: hidden;
   }
 
-  .pv-frame video {
+  .pv-frame video,
+  .pv-frame .pv-still {
     position: absolute;
     inset: 0;
     width: 100%;

@@ -30,6 +30,13 @@ export interface AgentFeature extends Versioned {
   description: string;
 }
 
+/** A full-window capture from the Marketing Capture Studio, in public/Screenshots/app. */
+export interface AgentScreenshot {
+  file: string;
+  alt: string;
+  caption: string;
+}
+
 export interface AgentStep {
   icon: IconName;
   text: string;
@@ -48,6 +55,7 @@ export interface Agent extends Versioned {
   intro: string;
   /** One line for the /agents grid. */
   summary: string;
+  screenshot: AgentScreenshot;
   features: AgentFeature[];
   setup: AgentStep[];
   faq: { question: string; answer: string }[];
@@ -78,6 +86,11 @@ export const AGENTS: readonly Agent[] = [
     intro:
       "Threadlines runs OpenAI's Codex with your ChatGPT sign-in and keeps each thread's plan, subagents, diffs and pull request in view. Add Claude Code to the same thread whenever you want a second opinion.",
     summary: "Goals, subagents you can message, and your ChatGPT limits on screen.",
+    screenshot: {
+      file: "codex-checks-claude",
+      alt: "A Threadlines thread where the user asks GPT-6.1-Sol to check a fix and Sol answers",
+      caption: "Ask Codex to check a fix, right in the same thread.",
+    },
     features: [
       {
         icon: "gauge",
@@ -150,6 +163,11 @@ export const AGENTS: readonly Agent[] = [
     intro:
       "Threadlines runs Anthropic's Claude Code with your own sign-in, so your Claude plan, MCP servers and skills come along. Add Codex to the same thread whenever you want a second opinion.",
     summary: "Plan mode, live subagents, and your 5-hour and weekly limits.",
+    screenshot: {
+      file: "picker-claude",
+      alt: "The model picker on a Claude thread, showing Claude's models and a tab for each agent",
+      caption: "Pick any Claude model, or switch tabs to another agent.",
+    },
     features: [
       {
         icon: "gauge",
@@ -235,6 +253,11 @@ export const AGENTS: readonly Agent[] = [
     intro:
       "OpenCode lets you bring your own model accounts. Threadlines runs OpenCode 2 and gives each conversation a thread with its plan, subagents and diffs.",
     summary: "Your own model accounts, with plan mode, subagents and forks.",
+    screenshot: {
+      file: "picker-opencode",
+      alt: "The model picker showing OpenCode's models in a Threadlines thread",
+      caption: "OpenCode's models, right in the model picker.",
+    },
     features: [
       {
         icon: "sliders",
@@ -308,6 +331,11 @@ export const AGENTS: readonly Agent[] = [
     intro:
       "Cursor's agent also runs outside the editor, as the cursor-agent CLI. Threadlines drives it with your Cursor sign-in, so Cursor's models sit next to your other agents.",
     summary: "Cursor's CLI agent, with plan mode, questions and to-do lists.",
+    screenshot: {
+      file: "picker-cursor",
+      alt: "The model picker showing Cursor's models, with Auto at the top",
+      caption: "Cursor's models, Auto included, in the model picker.",
+    },
     features: [
       {
         icon: "account",
@@ -369,6 +397,11 @@ export const AGENTS: readonly Agent[] = [
     intro:
       "Antigravity is Google's agent-first IDE, and its agent also runs on its own. Threadlines installs and runs that agent for you, so Gemini models sit next to Claude Code and Codex.",
     summary: "Gemini models, a one-click install and four ways to sign in.",
+    screenshot: {
+      file: "onboarding",
+      alt: "Threadlines setup asking which agents you use, with Antigravity among nine agents",
+      caption: "Setup lists every agent. Pick Antigravity and Threadlines installs it.",
+    },
     features: [
       {
         icon: "package",
@@ -441,6 +474,11 @@ export const AGENTS: readonly Agent[] = [
     intro:
       "Grok Build is xAI's coding agent. Threadlines runs it with your Grok subscription and shows its subagents and shells as they run.",
     summary: "Live subagents and shells, mid-turn steering and credit meters.",
+    screenshot: {
+      file: "providers",
+      alt: "Settings › Providers listing each agent, with an Install button for Grok",
+      caption: "Install Grok Build from Settings › Providers in one click.",
+    },
     features: [
       {
         icon: "gauge",
@@ -509,6 +547,11 @@ export const AGENTS: readonly Agent[] = [
     intro:
       "fx is Vercel Labs' small, open-source coding agent. Threadlines runs it with Vercel AI Gateway models and shows each model's price in the picker.",
     summary: "AI Gateway models, with their prices in the picker.",
+    screenshot: {
+      file: "picker-fx",
+      alt: "The model picker showing fx's AI Gateway models with their prices",
+      caption: "fx's AI Gateway models with their prices, in the picker.",
+    },
     features: [
       {
         icon: "tag",
@@ -571,6 +614,11 @@ export const AGENTS: readonly Agent[] = [
     intro:
       "Meta ships Muse Code as a terminal tool. Threadlines gives it a desktop home, with plans you approve, subagents you can follow and your limits on screen.",
     summary: "Read-only plan mode, workflows, and your 5-hour and weekly limits.",
+    screenshot: {
+      file: "picker-muse",
+      alt: "The model picker showing Muse Code's models in a Threadlines thread",
+      caption: "Muse Code's models in the picker, next to your other agents.",
+    },
     features: [
       {
         icon: "gauge",
@@ -644,6 +692,11 @@ export const AGENTS: readonly Agent[] = [
     intro:
       "Pi is an open-source coding agent from Earendil that works with almost any model provider. Threadlines runs one Pi per chat, with your own Pi settings, extensions and sign-ins.",
     summary: "Almost any model provider, with approvals and plan mode.",
+    screenshot: {
+      file: "onboarding",
+      alt: "Threadlines setup asking which agents you use, with Pi among nine agents",
+      caption: "Setup lists Pi with the other agents. Pick it and Threadlines installs it.",
+    },
     features: [
       {
         icon: "account",

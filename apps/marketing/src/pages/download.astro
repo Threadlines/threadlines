@@ -1,5 +1,18 @@
 ---
+import { getCollection } from "astro:content";
+
 import Layout from "../layouts/Layout.astro";
+import { AGENTS, isInStableRelease } from "../lib/agents";
+import { latestStableVersion } from "../lib/changelog";
+
+// The setup screenshot comes from the next release; name the agents that aren't in this download yet.
+const stableVersion = latestStableVersion(await getCollection("changelog"));
+const upcomingAgents = AGENTS.filter((agent) => !isInStableRelease(agent, stableVersion));
+const upcomingVersions = [...new Set(upcomingAgents.map((agent) => agent.since))];
+const upcomingNote =
+  upcomingAgents.length > 0 && upcomingVersions.length === 1
+    ? `${new Intl.ListFormat("en", { type: "conjunction" }).format(upcomingAgents.map((agent) => agent.name))} ${upcomingAgents.length === 1 ? "arrives" : "arrive"} in version ${upcomingVersions[0]}.`
+    : null;
 ---
 
 <Layout
@@ -98,20 +111,18 @@ import Layout from "../layouts/Layout.astro";
       </p>
       <section class="dl-onboarding" aria-labelledby="dl-onboarding-title">
         <h2 id="dl-onboarding-title">From setup to your first thread</h2>
-        <p id="dl-onboarding-description">Check your tools, choose a folder, and start your first thread.</p>
-        <video
-          controls
-          playsinline
-          preload="none"
-          width="1600"
-          height="934"
-          poster="/Screenshots/onboarding-landscape-poster.png"
-          aria-label="Threadlines first-run walkthrough"
-          aria-describedby="dl-onboarding-description"
-        >
-          <source src="/Screenshots/onboarding-landscape.mp4" type="video/mp4" />
-          <a href="/Screenshots/onboarding-landscape.mp4">Watch the first-run walkthrough</a>
-        </video>
+        <p id="dl-onboarding-description">
+          Pick the agents you use, connect them, and choose a folder. Then start your first thread.
+          {upcomingNote && ` ${upcomingNote}`}
+        </p>
+        <img
+          src="/Screenshots/app/onboarding.webp"
+          alt="Threadlines setup asking which agents you use, with Codex, Claude, fx, Cursor, OpenCode, Antigravity, Muse Code, Grok and Pi to pick from"
+          width="2400"
+          height="1401"
+          loading="lazy"
+          decoding="async"
+        />
       </section>
     </div>
   </section>
@@ -277,15 +288,12 @@ import Layout from "../layouts/Layout.astro";
     font-size: 15px;
   }
 
-  .dl-onboarding video {
+  .dl-onboarding img {
     display: block;
     width: 100%;
     height: auto;
-  }
-
-  .dl-onboarding video:focus-visible {
-    outline: 2px solid var(--fg);
-    outline-offset: 4px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
   }
 
   .dl-title {
