@@ -49,7 +49,8 @@ const TOP_LEVEL_ENTRIES = [
 ];
 
 // The packages Threadlines installs. From each one: its source, the docs at its
-// root, and package.json, whose exports map shows the import paths.
+// root, and package.json (saved as package.upstream.json), whose exports map
+// shows the import paths.
 const PACKAGES = [
   "effect",
   "platform-node",
@@ -123,6 +124,18 @@ function copyEntry(source: string, destination: string, entry: string) {
   });
 }
 
+// GitHub's dependency graph reads every file named package.json as a manifest,
+// so a copied one turns the dev tools pinned in Effect's own repo into
+// Dependabot alerts and security PRs against Threadlines (PR #524). The renamed
+// copy keeps its exact contents for agents to read.
+function hideManifests(dir: string) {
+  for (const file of listFiles(dir)) {
+    if (file === "package.json" || file.endsWith("/package.json")) {
+      renameSync(join(dir, file), join(dir, dirname(file), "package.upstream.json"));
+    }
+  }
+}
+
 function check() {
   const version = installedEffectVersion();
   if (!existsSync(manifestPath)) {
@@ -188,6 +201,7 @@ function sync() {
         copyEntry(clone, staged, join(packageDir, entry));
       }
     }
+    hideManifests(staged);
 
     const files = listFiles(staged);
     const manifest: Manifest = {
