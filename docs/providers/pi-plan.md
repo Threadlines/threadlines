@@ -471,7 +471,7 @@ Where the build differs from the plan above, and why:
 3. **Sign in runs `pi --no-session`** in the sign-in terminal through the instance's `authFlows.terminalCommand`, so it runs whichever Pi chats use (Threadlines' copy included) and holds its lease while open. The hint says to type `/login`, then `/quit`.
 4. **Titles and commit messages share one builder** (`TextGenerationFromText`) with OpenCode and Muse Code, which carried identical copies.
 5. **A `write` that overwrote a file reports its path only.** Pi's result doesn't say what was replaced; the adapter checks whether the file existed when the call started and counts lines only for a new file.
-6. **The Usage page color for Pi is a placeholder** (`--provider-pi`, a neutral between Codex and Grok). New colors need Will's OK.
+6. **Usage colors (Will, Oct 18): Pi takes the blue of its logo, Grok a deep blue.** Pi's salmon and yellow both read as Claude's terracotta, in dark mode or under red-green color blindness. Grok's grey had been too close to Pi's. The Agents panel's lines use the same colors.
 
 ## Review log
 
