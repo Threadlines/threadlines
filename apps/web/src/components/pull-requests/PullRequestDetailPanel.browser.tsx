@@ -1229,6 +1229,10 @@ describe("PullRequestDetailPanel", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const rendered = await renderPanel();
 
+    // "Copied" turns back after a moment, and on a busy CI machine the
+    // click's reply can come later than that. The clock holds still until the
+    // label is read, then moves on to check that it turns back.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       await userEvent.click(page.getByTestId("pull-request-checkout-command"));
       await vi.waitFor(() => {
@@ -1239,7 +1243,12 @@ describe("PullRequestDetailPanel", () => {
       await expect
         .element(page.getByRole("button", { name: "Copied gh pr checkout 42" }))
         .toBeVisible();
+      await vi.advanceTimersByTimeAsync(2_500);
+      await expect
+        .element(page.getByRole("button", { name: "Copy gh pr checkout 42" }))
+        .toBeVisible();
     } finally {
+      vi.useRealTimers();
       if (previous) {
         Object.defineProperty(navigator, "clipboard", previous);
       }
