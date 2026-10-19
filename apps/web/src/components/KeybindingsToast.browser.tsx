@@ -175,6 +175,12 @@ function createBaseServerConfig(): ServerConfig {
           authMethod: "subscription",
           customModels: [],
         },
+        pi: {
+          enabled: false,
+          binaryPath: "",
+          launchArgs: "",
+          customModels: [],
+        },
       },
     },
   };

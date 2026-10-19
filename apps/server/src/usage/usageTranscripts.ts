@@ -81,6 +81,8 @@ export function mightCarryUsage(line: string, provider: UsageProviderKind): bool
       return line.includes('"token_count"');
     case "grok":
       return line.includes('"turn_completed"');
+    case "pi":
+      return line.includes('"usage"');
   }
 }
 
@@ -477,4 +479,91 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
       (leftoverUsd !== null && untickedTokens > 0 ? leftoverUsd * (tokens / untickedTokens) : null);
     return [make(entry.model, totals, cost)];
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Pi                                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** Entries that carry spending: Pi counts these in a session's totals. */
+const PI_USAGE_ENTRY_TYPES = new Set(["message", "usage", "compaction", "branch_summary"]);
+
+/**
+ * Parses one line of a Pi session file (`sessions/--<cwd>--/<time>_<id>.jsonl`).
+ *
+ * Spending sits on assistant messages, on tool results that did model work of
+ * their own, on standalone `usage` entries (cache warming) and on compaction
+ * and branch summaries. Pi reports `input` without the cached part and the
+ * cost in USD.
+ *
+ * Every revert and fork copies the history it keeps into a new file, ids and
+ * timestamps included, so the caller drops repeats by `dedupeKey`.
+ */
+export function parsePiLine(line: string, sessionId: string): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const entry = parsed as Record<string, unknown>;
+  const type = entry["type"];
+  if (typeof type !== "string" || !PI_USAGE_ENTRY_TYPES.has(type)) return null;
+  const id = typeof entry["id"] === "string" ? entry["id"] : null;
+  const timestamp = typeof entry["timestamp"] === "string" ? entry["timestamp"] : null;
+  const timestampMs = parseTimestampMs(timestamp);
+  if (timestampMs === null) return null;
+
+  const message =
+    type === "message" && typeof entry["message"] === "object" && entry["message"] !== null
+      ? (entry["message"] as Record<string, unknown>)
+      : null;
+  // The message for its own entry; the entry itself for the rest.
+  const source = type === "message" ? message : entry;
+  if (source === null) return null;
+  const usage = source["usage"];
+  if (typeof usage !== "object" || usage === null) return null;
+  const usageRecord = usage as Record<string, unknown>;
+
+  const provider = typeof source["provider"] === "string" ? source["provider"] : "";
+  const modelId = typeof source["model"] === "string" ? source["model"] : "";
+  // Pi's own `provider/id`, as its model picker names it. Summaries don't say
+  // which model wrote them.
+  const model = modelId.length === 0 ? "pi-summary" : provider ? `${provider}/${modelId}` : modelId;
+
+  const outputTokens = int(usageRecord["output"]);
+  const cacheCreationTokens = int(usageRecord["cacheWrite"]);
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: int(usageRecord["input"]),
+    cachedInputTokens: int(usageRecord["cacheRead"]),
+    cacheCreationTokens,
+    outputTokens,
+    reasoningTokens: Math.min(outputTokens, int(usageRecord["reasoning"])),
+  };
+  if (totalTokens(totals) === 0) return null;
+
+  const cost = usageRecord["cost"];
+  const total =
+    typeof cost === "object" && cost !== null ? (cost as Record<string, unknown>)["total"] : null;
+  return {
+    provider: "pi",
+    timestampMs,
+    model,
+    sessionId,
+    totals,
+    cacheCreation1hTokens: Math.min(cacheCreationTokens, int(usageRecord["cacheWrite1h"])),
+    reportedCostUsd:
+      typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null,
+    // Copies keep the entry's id and timestamp. An id alone is only unique
+    // within one session's tree.
+    dedupeKey: id === null ? null : `${id}:${timestamp}:${model}`,
+  };
+}
+
+/** `<time>_<session id>.jsonl` → the session id, or the file's name when it has another shape. */
+export function piSessionIdFromFileName(fileName: string): string {
+  const base = fileName.endsWith(".jsonl") ? fileName.slice(0, -".jsonl".length) : fileName;
+  const separator = base.indexOf("_");
+  return separator >= 0 ? base.slice(separator + 1) : base;
 }

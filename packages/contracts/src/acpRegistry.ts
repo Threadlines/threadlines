@@ -202,5 +202,11 @@ export const ServerProviderCommunity = Schema.Struct({
     selected: Schema.NullOr(bounded(128)),
     canSignOut: Schema.Boolean,
   }),
+  /**
+   * Set when Threadlines now has this agent built in (`pi-acp` → `pi`). The
+   * community copy keeps working and updating until the user removes it; the
+   * client offers the built-in one.
+   */
+  builtInDriver: Schema.optionalKey(ProviderDriverKind),
 });
 export type ServerProviderCommunity = typeof ServerProviderCommunity.Type;

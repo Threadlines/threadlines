@@ -11,9 +11,7 @@
  * @module textGeneration/MuseTextGeneration
  */
 import { TextGenerationError } from "@threadlines/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@threadlines/shared/git";
 import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
-import { extractJsonObject } from "@threadlines/shared/schemaJson";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -38,29 +36,14 @@ import {
 import type { ProviderInstanceEnvironment } from "@threadlines/contracts";
 import { museTurnErrorMessage } from "../provider/Layers/MuseAdapter.ts";
 import {
-  buildBranchNamePrompt,
-  buildCommitMessagePrompt,
-  buildPrContentPrompt,
-  buildThreadTitlePrompt,
-} from "./TextGenerationPrompts.ts";
-import type { TextGenerationShape } from "./TextGeneration.ts";
-import {
-  sanitizeCommitSubject,
-  sanitizePrTitle,
-  sanitizeThreadTitle,
-} from "./TextGenerationUtils.ts";
+  makeTextGenerationFromText,
+  type TextGenerationRequest,
+} from "./TextGenerationFromText.ts";
 
 const GENERATION_TIMEOUT = Duration.seconds(180);
-const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeItemEvent = Schema.decodeUnknownOption(MuseItemEvent);
 const decodeCompleted = Schema.decodeUnknownOption(MuseTurnCompleted);
 const decodeAccount = Schema.decodeUnknownOption(MuseAccountState);
-
-type Operation =
-  | "generateCommitMessage"
-  | "generatePrContent"
-  | "generateBranchName"
-  | "generateThreadTitle";
 
 export interface MuseTextGenerationOptions {
   readonly binaryPath: () => string;
@@ -75,12 +58,7 @@ export const makeMuseTextGeneration = (options: MuseTextGenerationOptions) =>
     const fileSystem = yield* FileSystem.FileSystem;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-    const generateText = (input: {
-      readonly operation: Operation;
-      readonly cwd: string;
-      readonly prompt: string;
-      readonly modelSelection: { readonly model: string; readonly options?: unknown };
-    }) =>
+    const generateText = (input: TextGenerationRequest) =>
       Effect.scoped(
         Effect.gen(function* () {
           const failure = (detail: string, cause?: unknown) =>
@@ -191,118 +169,5 @@ export const makeMuseTextGeneration = (options: MuseTextGenerationOptions) =>
         }),
       );
 
-    const generateJson = <S extends Schema.Top>(input: {
-      readonly operation: Operation;
-      readonly cwd: string;
-      readonly prompt: string;
-      readonly outputSchema: S;
-      readonly modelSelection: { readonly model: string; readonly options?: unknown };
-    }) =>
-      Effect.gen(function* () {
-        const text = yield* generateText(input);
-        if (!text.trim()) {
-          return yield* new TextGenerationError({
-            operation: input.operation,
-            detail: "Muse Code returned empty output.",
-          });
-        }
-        return yield* decodeJson(extractJsonObject(text))
-          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(input.outputSchema)))
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new TextGenerationError({
-                  operation: input.operation,
-                  detail: "Muse Code returned invalid structured output.",
-                  cause,
-                }),
-            ),
-          );
-      });
-
-    const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = (input) =>
-      Effect.gen(function* () {
-        const { prompt, outputSchema } = buildCommitMessagePrompt({
-          branch: input.branch,
-          stagedSummary: input.stagedSummary,
-          stagedPatch: input.stagedPatch,
-          includeBranch: input.includeBranch === true,
-          policy: input.policy,
-        });
-        const generated = yield* generateJson({
-          operation: "generateCommitMessage",
-          cwd: input.cwd,
-          prompt,
-          outputSchema,
-          modelSelection: input.modelSelection,
-        });
-        return {
-          subject: sanitizeCommitSubject(generated.subject),
-          body: generated.body.trim(),
-          ...("branch" in generated && typeof generated.branch === "string"
-            ? { branch: sanitizeFeatureBranchName(generated.branch) }
-            : {}),
-        };
-      });
-
-    const generatePrContent: TextGenerationShape["generatePrContent"] = (input) =>
-      Effect.gen(function* () {
-        const { prompt, outputSchema } = buildPrContentPrompt({
-          baseBranch: input.baseBranch,
-          headBranch: input.headBranch,
-          commitSummary: input.commitSummary,
-          diffSummary: input.diffSummary,
-          diffPatch: input.diffPatch,
-          policy: input.policy,
-          prTemplate: input.prTemplate,
-        });
-        const generated = yield* generateJson({
-          operation: "generatePrContent",
-          cwd: input.cwd,
-          prompt,
-          outputSchema,
-          modelSelection: input.modelSelection,
-        });
-        return { title: sanitizePrTitle(generated.title), body: generated.body.trim() };
-      });
-
-    const generateBranchName: TextGenerationShape["generateBranchName"] = (input) =>
-      Effect.gen(function* () {
-        const { prompt, outputSchema } = buildBranchNamePrompt({
-          message: input.message,
-          attachments: input.attachments,
-          policy: input.policy,
-        });
-        const generated = yield* generateJson({
-          operation: "generateBranchName",
-          cwd: input.cwd,
-          prompt,
-          outputSchema,
-          modelSelection: input.modelSelection,
-        });
-        return { branch: sanitizeBranchFragment(generated.branch) };
-      });
-
-    const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = (input) =>
-      Effect.gen(function* () {
-        const { prompt, outputSchema } = buildThreadTitlePrompt({
-          message: input.message,
-          attachments: input.attachments,
-        });
-        const generated = yield* generateJson({
-          operation: "generateThreadTitle",
-          cwd: input.cwd,
-          prompt,
-          outputSchema,
-          modelSelection: input.modelSelection,
-        });
-        return { title: sanitizeThreadTitle(generated.title) };
-      });
-
-    return {
-      generateCommitMessage,
-      generatePrContent,
-      generateBranchName,
-      generateThreadTitle,
-    } satisfies TextGenerationShape;
+    return makeTextGenerationFromText({ label: "Muse Code", generateText });
   });

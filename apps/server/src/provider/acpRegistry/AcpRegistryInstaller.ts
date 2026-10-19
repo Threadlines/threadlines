@@ -203,6 +203,11 @@ export interface AcpRegistryInstallerOptions {
   readonly nodeRelease?: ManagedNodePlatformRelease | null;
   /** Test seam: the manager of one Node.js release. Default: `makeManagedNode` under `nodeToolsDir`. */
   readonly makeNode?: (release: ManagedNodePlatformRelease) => ManagedNode;
+  /**
+   * Installs npm packages without running their install scripts, for a
+   * package that says it needs none (Pi). Default: scripts run.
+   */
+  readonly npmIgnoreScripts?: boolean;
   /** Test seam: the environment npm starts from. Default: the server's. */
   readonly env?: NodeJS.ProcessEnv;
   /** Test seam: limits small enough to reach in a test. */
@@ -248,7 +253,8 @@ const SHIM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
  * user's npm configuration says. The rest of that configuration (registry,
  * sign-in, proxy, certificates) stays in effect.
  * - `global`, `package-lock`: a local tree with a lockfile.
- * - `ignore-scripts`: install scripts run; some agents fetch their program in one.
+ * - `ignore-scripts`: install scripts run; some agents fetch their program in
+ *   one. An installer made with `npmIgnoreScripts` turns them off instead.
  * - `bin-links`, `install-strategy`: the package and its `.bin` entry are where they are looked for.
  * - `include`, `legacy-peer-deps`, `strict-peer-deps`, `force`, `dry-run`:
  *   the whole tree the lockfile names is installed. A reinstall is held to
@@ -257,12 +263,12 @@ const SHIM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
  *   configuration, say).
  * - `update-notifier`: npm's last lines are about this install.
  */
-const NPM_PINNED_FLAGS = [
+const npmPinnedFlags = (ignoreScripts: boolean) => [
   "--global=false",
   "--package-lock=true",
   "--no-audit",
   "--no-fund",
-  "--ignore-scripts=false",
+  `--ignore-scripts=${ignoreScripts}`,
   "--bin-links=true",
   "--install-strategy=hoisted",
   "--include=optional",
@@ -272,7 +278,7 @@ const NPM_PINNED_FLAGS = [
   "--force=false",
   "--dry-run=false",
   "--no-update-notifier",
-] as const;
+];
 
 const ReceiptMarker = Schema.Struct({
   releaseId: Schema.String.check(Schema.isPattern(MANAGED_RELEASE_ID_PATTERN)),
@@ -414,6 +420,7 @@ export function makeAcpRegistryInstaller(
   const maxDownloadBytes = options.limits?.maxDownloadBytes ?? MAX_DOWNLOAD_BYTES;
   const downloadTimeoutMs = options.limits?.downloadTimeoutMs ?? DOWNLOAD_TIMEOUT_MS;
   const lockWaitMs = options.limits?.lockWaitMs ?? LOCK_WAIT_MS;
+  const pinnedFlags = npmPinnedFlags(options.npmIgnoreScripts ?? false);
   // One install, confirm, prune or remove at a time in this installer.
   const operationLock = Semaphore.makeUnsafe(1);
   // The address comes from a list Threadlines doesn't write: the download
@@ -996,7 +1003,7 @@ export function makeAcpRegistryInstaller(
           const result = yield* runNpm(
             node,
             prefix,
-            ["ci", "--prefix", prefix, ...NPM_PINNED_FLAGS],
+            ["ci", "--prefix", prefix, ...pinnedFlags],
             NPM_INSTALL_TIMEOUT_MS,
             onLine,
           );
@@ -1008,15 +1015,7 @@ export function makeAcpRegistryInstaller(
           const result = yield* runNpm(
             node,
             prefix,
-            [
-              "install",
-              "--prefix",
-              prefix,
-              spec,
-              "--save=true",
-              "--save-exact",
-              ...NPM_PINNED_FLAGS,
-            ],
+            ["install", "--prefix", prefix, spec, "--save=true", "--save-exact", ...pinnedFlags],
             NPM_INSTALL_TIMEOUT_MS,
             onLine,
           );

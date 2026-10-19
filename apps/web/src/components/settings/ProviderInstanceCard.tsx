@@ -40,6 +40,7 @@ import {
   buildFxLoginCommand,
   buildMuseLoginCommand,
   buildOpenCodeLoginCommand,
+  buildPiLoginCommand,
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
   deriveClaudeLongLivedOAuthTokenState,
@@ -117,6 +118,7 @@ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const FX_DRIVER_KIND = ProviderDriverKind.make("fx");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const MUSE_DRIVER_KIND = ProviderDriverKind.make("muse");
+const PI_DRIVER_KIND = ProviderDriverKind.make("pi");
 const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
   "binaryPath",
   "launchArgs",
@@ -870,8 +872,10 @@ function ProviderAccountSignInSection(props: {
   const methodCopy = signInFlowCopy(props.driverKind, props.instance);
   const isClaude = props.driverKind === CLAUDE_DRIVER_KIND;
   // OpenCode's sign-in opens on a menu of providers to connect, in the
-  // terminal itself, so the terminal shows from the start.
-  const signInStartsInTerminal = props.driverKind === OPENCODE_DRIVER_KIND;
+  // terminal itself, and Pi's in Pi's own terminal app, so the terminal
+  // shows from the start.
+  const isPi = props.driverKind === PI_DRIVER_KIND;
+  const signInStartsInTerminal = props.driverKind === OPENCODE_DRIVER_KIND || isPi;
   // Antigravity and Grok sign in through a page, inside the agent: no
   // terminal. Where they can sign out, `signOut` says so.
   const browserSignIn =
@@ -950,21 +954,25 @@ function ProviderAccountSignInSection(props: {
             autoShowTerminal={(props.signInHandoffActive ?? false) || signInStartsInTerminal}
             surface={browserSignIn ? "browser" : "terminal"}
             runningHint={
-              signInStartsInTerminal
-                ? "Pick a provider in the terminal below, then finish any step it opens in your browser."
-                : methodCopy
-                  ? methodCopy.runningHint
-                  : undefined
+              isPi
+                ? "Type /login in the terminal below and pick a provider. When you're signed in, type /quit."
+                : signInStartsInTerminal
+                  ? "Pick a provider in the terminal below, then finish any step it opens in your browser."
+                  : methodCopy
+                    ? methodCopy.runningHint
+                    : undefined
             }
             buttonVariant={needsSignIn ? "default" : "ghost"}
             description={
               isClaude
                 ? "Signing in covers both chat and usage."
-                : signInStartsInTerminal
-                  ? "Connects a model provider, such as an OpenCode Go plan or your ChatGPT account, to OpenCode."
-                  : methodCopy
-                    ? methodCopy.description
-                    : undefined
+                : isPi
+                  ? "Connects a model provider to Pi, such as your ChatGPT plan or an API key."
+                  : signInStartsInTerminal
+                    ? "Connects a model provider, such as an OpenCode Go plan or your ChatGPT account, to OpenCode."
+                    : methodCopy
+                      ? methodCopy.description
+                      : undefined
             }
             statusRow={
               <>
@@ -1378,6 +1386,17 @@ interface ProviderInstanceCardProps {
   readonly autoSignIn?: boolean | undefined;
   /** The auto sign-in started, or there was nothing to start. */
   readonly onAutoSignInSettled?: ((instanceId: ProviderInstanceId) => void) | undefined;
+  /**
+   * Turned on from elsewhere (a community agent's "Use the built-in …"):
+   * install as soon as the server offers it, as the row's own Install does.
+   */
+  readonly autoInstall?: boolean | undefined;
+  readonly onAutoInstallSettled?: ((instanceId: ProviderInstanceId) => void) | undefined;
+  /**
+   * A community agent Threadlines now has built in, while the built-in one
+   * is off: the row says so and offers to switch.
+   */
+  readonly builtInReplacement?: { readonly label: string; readonly onUse: () => void } | undefined;
 }
 
 export interface ProviderAddAccountControls {
@@ -1439,6 +1458,9 @@ export function ProviderInstanceCard({
   remoteComputerName,
   autoSignIn = false,
   onAutoSignInSettled,
+  autoInstall = false,
+  onAutoInstallSettled,
+  builtInReplacement,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   const summary = getProviderSummary(liveProvider);
@@ -1550,6 +1572,11 @@ export function ProviderInstanceCard({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
       });
     }
+    if (driverKind === PI_DRIVER_KIND) {
+      return buildPiLoginCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+      });
+    }
     if (driverKind === OPENCODE_DRIVER_KIND) {
       return buildOpenCodeLoginCommand({
         binaryPath: readProviderConfigString(instance.config, "binaryPath"),
@@ -1628,6 +1655,11 @@ export function ProviderInstanceCard({
     const timeout = window.setTimeout(() => setPendingInstall(false), PENDING_INSTALL_TIMEOUT_MS);
     return () => window.clearTimeout(timeout);
   }, [pendingInstall]);
+  useEffect(() => {
+    if (!autoInstall) return;
+    setPendingInstall(true);
+    onAutoInstallSettled?.(instanceId);
+  }, [autoInstall, instanceId, onAutoInstallSettled]);
   // A just-added account that turns out to be signed in already (a folder
   // that held a login) has nothing to start; neither does one that never
   // gets as far as offering sign-in.
@@ -1776,77 +1808,85 @@ export function ProviderInstanceCard({
 
   const detectionLabel =
     agentStatus.kind === "off" ? agentDetectionLabel(agentStatus.detection, computerLabel) : null;
-  const actionsNode: ReactNode =
-    agentStatus.kind === "off" ? (
-      <>
-        {detectionLabel ? (
-          <span className="text-xs text-muted-foreground">{detectionLabel}</span>
-        ) : null}
-        {showPendingInstall ? (
-          <span className="text-xs text-muted-foreground">Starting install…</span>
-        ) : offAgentAction(agentStatus.detection) === "install" ? (
-          <Button
-            size="xs"
-            variant="outline"
-            aria-label={`Install ${displayName}`}
-            onClick={() => {
-              setPendingInstall(true);
-              void onEnabledChange(true).catch(() => setPendingInstall(false));
-            }}
-          >
-            Install
-          </Button>
-        ) : null}
-      </>
-    ) : providerInstallView && driverKind ? (
-      <ProviderInstallAction
-        instanceId={instanceId}
-        driverKind={driverKind}
-        displayName={displayName}
-        recipeDigest={confirmedRecipeDigest}
-        view={providerInstallView}
-        statusClassName="max-w-64"
-      />
-    ) : showRowSignIn && (methodRowStep?.kind === "settings" || communityRowStep) ? (
-      <Button
-        size="xs"
-        onClick={() => {
-          setDetailsSection("account");
-          onExpandedChange(true);
-        }}
-      >
-        {communityRowStep?.label ?? methodRowStep?.label}
+  const actionsNode: ReactNode = builtInReplacement ? (
+    <>
+      <span className="text-xs text-muted-foreground">
+        {builtInReplacement.label} is now built in
+      </span>
+      <Button size="xs" variant="outline" onClick={builtInReplacement.onUse}>
+        Use the built-in {builtInReplacement.label}
       </Button>
-    ) : showRowSignIn ? (
-      <ProviderSignInAction
-        {...(methodRowStep ? { label: methodRowStep.label } : {})}
-        instanceId={instanceId}
-        displayName={displayName}
-        autoStart={autoSignIn}
-        onStarted={() => {
-          setDetailsSection("account");
-          onExpandedChange(true);
-          if (autoSignIn) onAutoSignInSettled?.(instanceId);
-        }}
-      />
-    ) : showPendingInstall ? (
-      <span className="text-xs text-muted-foreground">Starting install…</span>
-    ) : usagePresentation && agentStatus.kind === "ready" ? (
-      <ProviderUsageMeter
-        usage={usagePresentation}
-        displayName={displayName}
-        onResetAccountUsage={onResetAccountUsage}
-        accountUsageResetInFlight={accountUsageResetInFlight}
-        onOpenUsage={() => {
-          setDetailsSection("usage");
-          onExpandedChange(true);
-        }}
-        onOpenSignIn={() => {
-          setDetailsSection(terminalLoginCommand ? "account" : "usage");
-          onExpandedChange(true);
-        }}
-      />
-    ) : null;
+    </>
+  ) : agentStatus.kind === "off" ? (
+    <>
+      {detectionLabel ? (
+        <span className="text-xs text-muted-foreground">{detectionLabel}</span>
+      ) : null}
+      {showPendingInstall ? (
+        <span className="text-xs text-muted-foreground">Starting install…</span>
+      ) : offAgentAction(agentStatus.detection) === "install" ? (
+        <Button
+          size="xs"
+          variant="outline"
+          aria-label={`Install ${displayName}`}
+          onClick={() => {
+            setPendingInstall(true);
+            void onEnabledChange(true).catch(() => setPendingInstall(false));
+          }}
+        >
+          Install
+        </Button>
+      ) : null}
+    </>
+  ) : providerInstallView && driverKind ? (
+    <ProviderInstallAction
+      instanceId={instanceId}
+      driverKind={driverKind}
+      displayName={displayName}
+      recipeDigest={confirmedRecipeDigest}
+      view={providerInstallView}
+      statusClassName="max-w-64"
+    />
+  ) : showRowSignIn && (methodRowStep?.kind === "settings" || communityRowStep) ? (
+    <Button
+      size="xs"
+      onClick={() => {
+        setDetailsSection("account");
+        onExpandedChange(true);
+      }}
+    >
+      {communityRowStep?.label ?? methodRowStep?.label}
+    </Button>
+  ) : showRowSignIn ? (
+    <ProviderSignInAction
+      {...(methodRowStep ? { label: methodRowStep.label } : {})}
+      instanceId={instanceId}
+      displayName={displayName}
+      autoStart={autoSignIn}
+      onStarted={() => {
+        setDetailsSection("account");
+        onExpandedChange(true);
+        if (autoSignIn) onAutoSignInSettled?.(instanceId);
+      }}
+    />
+  ) : showPendingInstall ? (
+    <span className="text-xs text-muted-foreground">Starting install…</span>
+  ) : usagePresentation && agentStatus.kind === "ready" ? (
+    <ProviderUsageMeter
+      usage={usagePresentation}
+      displayName={displayName}
+      onResetAccountUsage={onResetAccountUsage}
+      accountUsageResetInFlight={accountUsageResetInFlight}
+      onOpenUsage={() => {
+        setDetailsSection("usage");
+        onExpandedChange(true);
+      }}
+      onOpenSignIn={() => {
+        setDetailsSection(terminalLoginCommand ? "account" : "usage");
+        onExpandedChange(true);
+      }}
+    />
+  ) : null;
 
   // The row's on/off switch. An agent that is not on this computer has
   // nothing to switch on yet, so its row offers Install instead.

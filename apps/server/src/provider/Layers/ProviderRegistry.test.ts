@@ -2693,6 +2693,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 "grok",
                 "muse",
                 "opencode",
+                "pi",
               ]);
               assert.strictEqual(codexProvider?.enabled, false);
               assert.strictEqual(codexProvider?.status, "disabled");

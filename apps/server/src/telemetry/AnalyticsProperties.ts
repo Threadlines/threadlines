@@ -493,6 +493,7 @@ const READINESS_DRIVER_KEYS: Readonly<Record<string, string>> = {
   codex: "codex",
   cursor: "cursor",
   fx: "fx",
+  pi: "pi",
 };
 
 /** Same order of evidence the Settings status line uses. */

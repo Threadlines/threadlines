@@ -25,8 +25,10 @@ import {
   ACP_REGISTRY_DRIVER_KIND,
   type AcpRegistryCatalogAgent,
   AcpRegistrySettings,
+  ProviderDriverKind,
   type ServerProviderCommunity,
 } from "@threadlines/contracts";
+import { ACP_REGISTRY_REPLACED_AGENTS } from "@threadlines/shared/acpRegistry";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -537,6 +539,7 @@ export function makeAcpRegistryDescriptor(
         : currentAcpRegistryHealth(state, stamp.recipeDigest, Date.now());
     });
 
+  const builtInDriver = ACP_REGISTRY_REPLACED_AGENTS.get(input.agentId);
   const community = (): ServerProviderCommunity => {
     const offers = state.offers;
     const installed = state.lastInstalled;
@@ -572,6 +575,7 @@ export function makeAcpRegistryDescriptor(
         selected: selected?.method.id ?? null,
         canSignOut: offers?.canSignOut ?? false,
       },
+      ...(builtInDriver ? { builtInDriver: ProviderDriverKind.make(builtInDriver) } : {}),
     };
   };
 

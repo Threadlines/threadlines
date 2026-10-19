@@ -36,6 +36,8 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("opencode.sdk.event"),
   Schema.Literal("muse.msp.notification"),
   Schema.Literal("muse.msp.request"),
+  Schema.Literal("pi.rpc.event"),
+  Schema.Literal("pi.rpc.extension_ui"),
   Schema.Literal("acp.jsonrpc"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);

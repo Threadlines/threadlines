@@ -5,6 +5,8 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parsePiLine,
+  piSessionIdFromFileName,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -331,5 +333,105 @@ describe("totalTokens", () => {
         reasoningTokens: 25,
       }),
     ).toBe(100);
+  });
+});
+
+describe("parsePiLine", () => {
+  // An assistant entry as Pi 1.3.0 writes it to its session file.
+  const assistant = JSON.stringify({
+    type: "message",
+    id: "4853d7cb",
+    parentId: "5e29ac9a",
+    timestamp: "2026-10-18T18:02:26.279Z",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "hi" }],
+      provider: "anthropic",
+      model: "claude-x",
+      usage: {
+        input: 100,
+        output: 40,
+        cacheRead: 2_000,
+        cacheWrite: 300,
+        cacheWrite1h: 300,
+        reasoning: 10,
+        totalTokens: 2_440,
+        cost: {
+          input: 0.0003,
+          output: 0.0006,
+          cacheRead: 0.0006,
+          cacheWrite: 0.001,
+          total: 0.0025,
+        },
+      },
+      stopReason: "stop",
+      timestamp: 1_792_346_546_264,
+    },
+  });
+
+  it("reads an assistant entry's tokens and Pi's own cost, keyed so copies count once", () => {
+    const record = parsePiLine(assistant, "s1");
+    expect(record).toEqual({
+      provider: "pi",
+      timestampMs: Date.parse("2026-10-18T18:02:26.279Z"),
+      model: "anthropic/claude-x",
+      sessionId: "s1",
+      totals: {
+        uncachedInputTokens: 100,
+        cachedInputTokens: 2_000,
+        cacheCreationTokens: 300,
+        outputTokens: 40,
+        reasoningTokens: 10,
+      },
+      cacheCreation1hTokens: 300,
+      reportedCostUsd: 0.0025,
+      dedupeKey: "4853d7cb:2026-10-18T18:02:26.279Z:anthropic/claude-x",
+    });
+    // A revert or fork copies the entry, id and timestamp included, into another file.
+    expect(parsePiLine(assistant, "s2")?.dedupeKey).toBe(record?.dedupeKey);
+  });
+
+  it("counts summaries and usage entries, and skips entries that spent nothing", () => {
+    const compaction = parsePiLine(
+      JSON.stringify({
+        type: "compaction",
+        id: "c1",
+        parentId: "p",
+        timestamp: "2026-10-18T19:00:00.000Z",
+        summary: "…",
+        firstKeptEntryId: "x",
+        usage: { input: 5_000, output: 200, cacheRead: 0, cacheWrite: 0, cost: { total: 0.02 } },
+      }),
+      "s1",
+    );
+    expect(compaction).toMatchObject({ model: "pi-summary", reportedCostUsd: 0.02 });
+    const warm = parsePiLine(
+      JSON.stringify({
+        type: "usage",
+        id: "u1",
+        parentId: "p",
+        timestamp: "2026-10-18T19:00:00.000Z",
+        kind: "cache_warm",
+        provider: "anthropic",
+        model: "claude-x",
+        usage: { input: 0, output: 0, cacheRead: 50_000, cacheWrite: 0, cost: { total: 0.015 } },
+      }),
+      "s1",
+    );
+    expect(warm).toMatchObject({
+      model: "anthropic/claude-x",
+      totals: { cachedInputTokens: 50_000 },
+    });
+    const user = JSON.stringify({
+      type: "message",
+      id: "m1",
+      parentId: null,
+      timestamp: "2026-10-18T19:00:00.000Z",
+      message: { role: "user", content: "hello", timestamp: 1 },
+    });
+    expect(parsePiLine(user, "s1")).toBeNull();
+    expect(piSessionIdFromFileName("2026-10-18T18-04-31-383Z_01a1502f-c916.jsonl")).toBe(
+      "01a1502f-c916",
+    );
   });
 });

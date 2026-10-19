@@ -32,7 +32,13 @@ export interface AcpRegistryNodes {
   /** Runs an install that may use Node.js. `prune` leaves every release alone until it ends. */
   readonly whileInstalling: <A, E, R>(install: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
   /**
-   * Deletes the releases that none of `inUse` names. `inUse` is read once no
+   * Adds a source of releases every prune keeps as well: what runs on this
+   * Node.js besides community agents (Threadlines' own copy of Pi). Like
+   * `inUse`, a source that can't tell (undefined) stops the prune.
+   */
+  readonly keepAlso: (inUse: Effect.Effect<ReadonlyArray<NodeReleaseName> | undefined>) => void;
+  /**
+   * Deletes the releases that none of `inUse` (or a `keepAlso` source) names. `inUse` is read once no
    * install is running; while one is, or when `inUse` can't tell
    * (undefined), nothing is deleted. A release a running agent leases is
    * kept. Best effort: never fails.
@@ -67,6 +73,7 @@ export function acpRegistryNodes(toolsDir: string): AcpRegistryNodes {
   // install that starts while releases are being deleted waits for it.
   const turnstile = Semaphore.makeUnsafe(1);
   let installing = 0;
+  const otherUsers: Array<Effect.Effect<ReadonlyArray<NodeReleaseName> | undefined>> = [];
   const whileInstalling: AcpRegistryNodes["whileInstalling"] = (install) =>
     Effect.acquireUseRelease(
       turnstile.withPermit(
@@ -86,8 +93,12 @@ export function acpRegistryNodes(toolsDir: string): AcpRegistryNodes {
       .withPermit(
         Effect.gen(function* () {
           if (installing > 0) return;
-          const releases = yield* inUse;
-          if (releases === undefined) return;
+          const releases: Array<NodeReleaseName> = [];
+          for (const source of [inUse, ...otherUsers]) {
+            const named = yield* source;
+            if (named === undefined) return;
+            releases.push(...named);
+          }
           const keep = new Set(
             releases.map((release) => NodePath.basename(managedNodeRoot(toolsDir, release))),
           );
@@ -108,7 +119,11 @@ export function acpRegistryNodes(toolsDir: string): AcpRegistryNodes {
       )
       .pipe(Effect.ignore);
 
-  const registry: AcpRegistryNodes = { nodeFor, whileInstalling, prune };
+  const keepAlso: AcpRegistryNodes["keepAlso"] = (inUse) => {
+    otherUsers.push(inUse);
+  };
+
+  const registry: AcpRegistryNodes = { nodeFor, whileInstalling, keepAlso, prune };
   registries.set(toolsDir, registry);
   return registry;
 }

@@ -154,6 +154,10 @@ function trunkColor(providerLabel: string | null | undefined): string {
   if (provider?.includes("grok")) {
     return "var(--provider-grok)";
   }
+  // Whole word only: "pi" is inside too many other names.
+  if (provider === "pi") {
+    return "var(--provider-pi)";
+  }
   return "var(--border)";
 }
 

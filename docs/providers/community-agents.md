@@ -6,7 +6,9 @@ can install and run them, but it has not tested them. Some features may not
 work with a given agent.
 
 The agents Threadlines supports itself (Claude, Codex, Cursor, OpenCode,
-Antigravity, fx, Grok, Muse Code) are not in this list. Use the built-in one.
+Antigravity, fx, Grok, Muse Code, Pi) are not in this list. Use the built-in one.
+A Pi added from the list before Pi was built in keeps working and getting
+updates until you remove it; its row offers the built-in Pi.
 
 ## What you are trusting
 

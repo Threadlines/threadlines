@@ -22,6 +22,7 @@ describe("deriveProviderInstanceConfigMap", () => {
       "grok",
       "muse",
       "opencode",
+      "pi",
     ]);
   });
 

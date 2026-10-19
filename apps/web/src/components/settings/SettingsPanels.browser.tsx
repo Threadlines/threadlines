@@ -96,8 +96,18 @@ function renderWithTestRouter(children: ReactNode) {
  * slides as it grows. An element in it can hold still for two frames and then
  * move between a pointer's press and its release, which loses the click.
  */
-async function openProviderDetails(providerName: string) {
-  const toggle = page.getByLabelText(`Toggle ${providerName} details`);
+async function openProviderDetails(providerName: string, instanceId?: ProviderInstanceId) {
+  // Two rows can share a name (a community agent beside the built-in one it
+  // became); the instance id picks one.
+  const toggle = instanceId
+    ? page.elementLocator(
+        await vi.waitUntil(() =>
+          document.querySelector<HTMLElement>(
+            `[data-provider-instance-id="${instanceId}"] [aria-label="Toggle ${providerName} details"]`,
+          ),
+        ),
+      )
+    : page.getByLabelText(`Toggle ${providerName} details`);
   await toggle.click();
   const row = toggle.element().closest('[data-testid="provider-instance-row"]');
   if (!row) throw new Error(`Expected the ${providerName} toggle inside its provider row`);
@@ -3957,6 +3967,37 @@ describe("ProviderSettingsPanel community agents", () => {
     await expect.element(page.getByLabelText("Toggle Claude details")).toBeVisible();
   });
 
+  it("offers the built-in Pi on the community Pi row while the built-in one is off", async () => {
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockResolvedValue(DEFAULT_SERVER_SETTINGS);
+    stubServer({
+      listAcpRegistryAgents: vi.fn().mockResolvedValue(createCommunityCatalog([])),
+      updateSettings,
+    });
+    setServerConfigSnapshot(
+      communityServerConfig(
+        createCommunityProvider({ community: { builtInDriver: ProviderDriverKind.make("pi") } }),
+      ),
+    );
+
+    await mountProviders();
+
+    const communityRow = page.elementLocator(
+      await vi.waitUntil(() =>
+        document.querySelector<HTMLElement>(`[data-provider-instance-id="${PI_INSTANCE_ID}"]`),
+      ),
+    );
+    await expect.element(communityRow).toHaveTextContent("Pi is now built in");
+    await communityRow.getByRole("button", { name: "Use the built-in Pi" }).click();
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      updateSettings.mock.calls[0]![0].providerInstances?.[ProviderInstanceId.make("pi")]?.enabled,
+    ).toBe(true);
+  });
+
   it("updates an added agent to the listing it showed, and removes it only after asking", async () => {
     const updateProvider = vi.fn().mockResolvedValue({ providers: [] });
     const removeAcpRegistryAgent = vi.fn().mockResolvedValue(undefined);
@@ -4003,7 +4044,7 @@ describe("ProviderSettingsPanel community agents", () => {
       });
     });
 
-    await openProviderDetails("Pi");
+    await openProviderDetails("Pi", PI_INSTANCE_ID);
     await page.getByRole("button", { name: "Remove", exact: true }).click();
     await expect.element(page.getByRole("alertdialog")).toHaveTextContent("Remove Pi?");
     expect(removeAcpRegistryAgent).not.toHaveBeenCalled();
@@ -4046,7 +4087,7 @@ describe("ProviderSettingsPanel community agents", () => {
     );
 
     await mountProviders();
-    await openProviderDetails("Pi");
+    await openProviderDetails("Pi", PI_INSTANCE_ID);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await vi.waitFor(() => {
       expect(providerAuthHarness.startCalls).toEqual([

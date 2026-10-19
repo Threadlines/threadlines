@@ -30,7 +30,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
  */
 export const USAGE_CONTRACT_VERSION = 1 as const;
 
-export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok"]);
+export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "pi"]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
 /**

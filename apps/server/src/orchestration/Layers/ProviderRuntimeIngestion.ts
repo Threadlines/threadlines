@@ -905,6 +905,9 @@ const PER_ITEM_DIFF_EVIDENCE_PROVIDERS: ReadonlySet<string> = new Set([
   "grok",
   // Exact line counts from the stored patch or `patchSummary`; none otherwise.
   "muse",
+  // Exact counts from an edit's patch and a new file's text; an overwrite
+  // reports its path alone.
+  "pi",
 ]);
 
 function providerThreadIdFromEvent(event: ProviderRuntimeEvent): string | undefined {

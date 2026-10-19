@@ -1109,6 +1109,9 @@ export function ProviderSettingsPanel({
   // requests from the header's "+" to show an agent's add-account form, and
   // the account waiting for its removal to be confirmed.
   const [autoSignInIds, setAutoSignInIds] = useState<ReadonlySet<string>>(() => new Set());
+  // Built-in agents turned on from a community copy's "Use the built-in …":
+  // they install as soon as the server offers it.
+  const [autoInstallIds, setAutoInstallIds] = useState<ReadonlySet<string>>(() => new Set());
   const [addAccountRequests, setAddAccountRequests] = useState<Record<string, number>>({});
   const [accountToRemove, setAccountToRemove] = useState<ProviderSettingsRow | null>(null);
   const [isRemovingAccount, setIsRemovingAccount] = useState(false);
@@ -1119,6 +1122,14 @@ export function ProviderSettingsPanel({
   );
   const [isRemovingCommunityAgent, setIsRemovingCommunityAgent] = useState(false);
   const [communityRefreshRequest, setCommunityRefreshRequest] = useState(0);
+  const settleAutoInstall = useCallback((instanceId: ProviderInstanceId) => {
+    setAutoInstallIds((existing) => {
+      if (!existing.has(instanceId)) return existing;
+      const next = new Set(existing);
+      next.delete(instanceId);
+      return next;
+    });
+  }, []);
   const settleAutoSignIn = useCallback((instanceId: ProviderInstanceId) => {
     setAutoSignInIds((existing) => {
       if (!existing.has(instanceId)) return existing;
@@ -1416,6 +1427,26 @@ export function ProviderSettingsPanel({
     );
     const providerResetCredits = liveProvider?.accountUsage?.rateLimitResetCredits;
     const resetLabel = driverOption?.label ?? String(row.driver);
+    // A community agent Threadlines now has built in: offered while the
+    // built-in one is off.
+    const builtInDriver = isCommunityAgent ? liveProvider?.community?.builtInDriver : undefined;
+    const builtInRow = builtInDriver
+      ? rows.find((candidate) => candidate.isDefault && candidate.driver === builtInDriver)
+      : undefined;
+    const builtInReplacement =
+      builtInRow && !isProviderRowEnabled(builtInRow)
+        ? {
+            label: getDriverOption(builtInRow.driver)?.label ?? String(builtInRow.driver),
+            onUse: () => {
+              setAutoInstallIds((existing) => new Set(existing).add(builtInRow.instanceId));
+              setOpenInstanceDetails((existing) => ({
+                ...existing,
+                [builtInRow.instanceId]: true,
+              }));
+              void setProviderInstanceEnabled(builtInRow, true);
+            },
+          }
+        : undefined;
     return (
       <ProviderInstanceCard
         key={row.instanceId}
@@ -1453,6 +1484,9 @@ export function ProviderSettingsPanel({
         addAccount={addAccountControlsFor(row)}
         autoSignIn={autoSignInIds.has(row.instanceId)}
         onAutoSignInSettled={settleAutoSignIn}
+        autoInstall={autoInstallIds.has(row.instanceId)}
+        onAutoInstallSettled={settleAutoInstall}
+        builtInReplacement={builtInReplacement}
         onResetDefaults={
           row.isDefault && row.isDirty
             ? () => resetDefaultInstance(row.driver, isProviderRowEnabled(row))

@@ -48,6 +48,7 @@ import { ServerConfig } from "./config.ts";
 import { type DeepPartial, deepMerge } from "@threadlines/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@threadlines/shared/schemaJson";
 import { isAntigravityKeyEnvName } from "@threadlines/shared/antigravitySignIn";
+import { isPiKeyEnvName } from "./provider/pi/PiBinary.ts";
 import { applyServerSettingsPatch } from "@threadlines/shared/serverSettings";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
@@ -103,7 +104,8 @@ function redactProviderEnvironmentVariable(
 function isAlwaysSensitive(driver: string, name: string): boolean {
   return (
     (driver === "antigravity" && isAntigravityKeyEnvName(name)) ||
-    (driver === "grok" && name === "XAI_API_KEY")
+    (driver === "grok" && name === "XAI_API_KEY") ||
+    (driver === "pi" && isPiKeyEnvName(name))
   );
 }
 

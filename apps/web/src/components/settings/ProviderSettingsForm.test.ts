@@ -20,6 +20,7 @@ describe("ProviderSettingsForm helpers", () => {
       ProviderDriverKind.make("antigravity"),
       ProviderDriverKind.make("muse"),
       ProviderDriverKind.make("grok"),
+      ProviderDriverKind.make("pi"),
     ]);
   });
 

@@ -17,6 +17,15 @@ export const ACP_REGISTRY_BUILT_IN_AGENT_IDS: ReadonlySet<string> = new Set([
   "grok-build",
 ]);
 
+/**
+ * Registry agents Threadlines now has built in, by the driver that replaces
+ * each. They are left out of the community list too, but a copy the user
+ * already added keeps working and updating until they remove it.
+ */
+export const ACP_REGISTRY_REPLACED_AGENTS: ReadonlyMap<string, string> = new Map([
+  ["pi-acp", "pi"],
+]);
+
 const INSTANCE_ID_PREFIX = "acp_";
 
 /** A community agent's one instance. */
