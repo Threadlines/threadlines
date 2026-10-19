@@ -19,8 +19,8 @@
  *   start can't be cut at, but it still counts, and it shows where the turn
  *   before it stopped.
  * - A revert forks before the dropped turn's first message, which leaves its
- *   start marker on the branch; a "reverted" marker after it says the turn is
- *   gone.
+ *   start marker on the branch; a "reverted" marker anywhere after it says
+ *   the turn is gone.
  * - A turn that crashed half way still has its start marker, so later turns
  *   stay exact.
  *
@@ -144,7 +144,10 @@ function boundariesOf(path: ReadonlyArray<PiSessionEntry>): Array<PiTurnBoundary
     const marker = markerOf(entry);
     if (marker?.reverted) {
       // Nothing of a dropped turn is left on the branch but its start marker.
+      // A marker Pi took late (after a retry) can follow later turns.
       if (open?.turnId === marker.turnId) open = undefined;
+      const index = boundaries.findIndex((boundary) => boundary.turnId === marker.turnId);
+      if (index >= 0) boundaries.splice(index, 1);
       continue;
     }
     if (marker?.end) {

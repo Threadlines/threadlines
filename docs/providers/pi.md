@@ -28,6 +28,10 @@ The model picker lists every model Pi can use, grouped by provider, including on
 extensions add. `Pi default` is the model you set in Pi itself. The thinking picker offers the
 levels each model supports.
 
+Pi lists every model a provider has. Signed in with a ChatGPT plan, only the models Codex offers
+run (GPT-6.1 Sol and its siblings); the others stop with an error from OpenAI. Pick one of them, or
+set it as your default in Pi.
+
 ## Access Levels and Plan Mode
 
 | Threadlines       | Pi                                                               |

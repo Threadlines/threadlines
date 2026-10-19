@@ -625,32 +625,42 @@ export function makePiAdapter(options: PiAdapterOptions) {
         yield* closeMessage(ctx, terminal.kind !== "completed");
         yield* closeOpenTools(ctx, turn.turnId, terminal.kind !== "completed");
         yield* dropPendingDialogs(ctx, turn.turnId);
-        ctx.activeTurn = undefined;
-        ctx.turns.push({ id: turn.turnId });
-        const { activeTurnId: _active, ...session } = ctx.session;
-        ctx.session = { ...session, status: "ready", updatedAt: yield* nowIso };
-        if (turn.plan && terminal.kind === "completed" && turn.finalText?.trim()) {
-          yield* emit({
-            type: "turn.proposed.completed",
-            ...(yield* eventBase(ctx, turn.turnId)),
-            payload: { planMarkdown: turn.finalText.trim() },
-          });
-        }
-        yield* emit({
-          type: "turn.completed",
-          ...(yield* eventBase(ctx, turn.turnId)),
-          payload:
-            terminal.kind === "completed"
-              ? { state: "completed" }
-              : terminal.kind === "failed"
-                ? { state: "failed", errorMessage: terminal.message }
-                : { state: "interrupted", stopReason: terminal.reason },
-        });
+        // Once the turn stops being active its completion is published, even
+        // if the process closes meanwhile (a revert restarting Pi).
+        yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            ctx.activeTurn = undefined;
+            ctx.turns.push({ id: turn.turnId });
+            const { activeTurnId: _active, ...session } = ctx.session;
+            ctx.session = { ...session, status: "ready", updatedAt: yield* nowIso };
+            if (turn.plan && terminal.kind === "completed" && turn.finalText?.trim()) {
+              yield* emit({
+                type: "turn.proposed.completed",
+                ...(yield* eventBase(ctx, turn.turnId)),
+                payload: { planMarkdown: turn.finalText.trim() },
+              });
+            }
+            yield* emit({
+              type: "turn.completed",
+              ...(yield* eventBase(ctx, turn.turnId)),
+              payload:
+                terminal.kind === "completed"
+                  ? { state: "completed" }
+                  : terminal.kind === "failed"
+                    ? { state: "failed", errorMessage: terminal.message }
+                    : { state: "interrupted", stopReason: terminal.reason },
+            });
+          }),
+        );
         // Where the turn ended, before the next turn can start (it waits for
-        // `done`): a fork "through this turn" copies exactly up to here.
-        const proc = ctx.proc;
-        if (proc && !proc.closing) yield* markTurn(ctx, proc, turn.turnId, "end");
-        yield* Deferred.succeed(turn.done, undefined);
+        // `done`): a fork "through this turn" copies exactly up to here. `done`
+        // resolves however this ends, or the next send would wait forever.
+        yield* Effect.suspend(() => {
+          const proc = ctx.proc;
+          return proc && !proc.closing
+            ? markTurn(ctx, proc, turn.turnId, "end").pipe(Effect.asVoid)
+            : Effect.void;
+        }).pipe(Effect.ensuring(Deferred.succeed(turn.done, undefined)));
         yield* reportContextUsage(ctx);
       });
 
@@ -1478,7 +1488,13 @@ export function makePiAdapter(options: PiAdapterOptions) {
      */
     const markDropped = (ctx: SessionContext, proc: ProcessState, turnId: TurnId) =>
       Effect.gen(function* () {
-        if (!(yield* markTurn(ctx, proc, turnId, "reverted"))) ctx.pendingTombstones.push(turnId);
+        if (!(yield* markTurn(ctx, proc, turnId, "reverted"))) {
+          ctx.pendingTombstones.push(turnId);
+          return;
+        }
+        // A list seeded while the marker was missing still counts the turn.
+        const index = ctx.turns.findIndex((turn) => turn.id === turnId);
+        if (index >= 0) ctx.turns.splice(index, 1);
       });
 
     const retryDropped = (ctx: SessionContext, proc: ProcessState) =>

@@ -519,6 +519,19 @@ describe("ProcessDiagnostics", () => {
     });
     expect(seeded.runs).toEqual([]);
 
+    // A project's own `pi.js` job is not taken for a Pi chat.
+    const withProjectJob = [
+      ...processRows,
+      processRow(1000, SERVER_PID, "node /project/pi.js"),
+      processRow(1100, 1000, "sleep 60"),
+    ];
+    expect(
+      ProcessDiagnostics.providerSessionShieldedPids(withProjectJob, SERVER_PID),
+    ).not.toContain(1100);
+    expect(ProcessDiagnostics.providerSessionShieldedPids(withProjectJob, SERVER_PID)).toContain(
+      900,
+    );
+
     // The orphan is still found through its command hint.
     const orphan = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
       urls: [],

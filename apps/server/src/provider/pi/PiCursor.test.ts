@@ -120,6 +120,22 @@ describe("planPiRevert and planPiFork", () => {
       "t3",
       "t5",
     ]);
+    // Pi took the reverted marker late, after the next turn had started.
+    const late = [
+      ...entries.slice(
+        0,
+        entries.findIndex((item) => item.id === "u4"),
+      ),
+      marker("m5", "m4", "t5"),
+      user("u5", "m5"),
+      marker("r4", "u5", "t4", { reverted: true }),
+    ];
+    expect(piTurnBoundaries(late, "r4").map((boundary) => boundary.turnId)).toEqual([
+      "t1",
+      "t2",
+      "t3",
+      "t5",
+    ]);
   });
 
   it("recaps instead of copying what came after a turn without Threadlines' markers", () => {
