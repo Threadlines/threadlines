@@ -163,12 +163,14 @@ interface RuleSources {
  * following `git add -A` reads and hashes every file in the checkout (most
  * of a second in a mid-size repository, on every checkpoint). Instead, each
  * scratch index starts as a hard link to the checkout's cached one, and
- * `read-tree -m` loads the tree over it: entries the tree still matches keep
- * their stat data, so git re-reads only files that changed. Git replaces an
- * index by renaming a new file over it, so the link never changes the cache,
- * and it carries the cache's exact modification time, which git compares
- * file times against to catch edits made in the instant the index was
- * written.
+ * `read-tree -m -i` loads the tree over it: entries the tree still matches
+ * keep their stat data, so git re-reads only files that changed. (`-i` skips
+ * the merge's check that dropped entries still match the checkout, which
+ * refuses as soon as a file that differed from the tree was edited again.)
+ * Git replaces an index by renaming a new file over it, so the link never
+ * changes the cache, and it carries the cache's exact modification time,
+ * which git compares file times against to catch edits made in the instant
+ * the index was written.
  *
  * Stat data says nothing about how git turns bytes into a blob, so a cache
  * only serves the rules it was built under. Its name fingerprints the git
@@ -416,7 +418,7 @@ export const makeScratchIndexes = Effect.gen(function* () {
           const warm =
             warmFrom !== null &&
             (yield* fileSystem.link(warmFrom, indexPath).pipe(
-              Effect.andThen(input.git(["read-tree", "-m", tree], env)),
+              Effect.andThen(input.git(["read-tree", "-m", "-i", tree], env)),
               Effect.as(true),
               Effect.orElseSucceed(() => false),
             ));
