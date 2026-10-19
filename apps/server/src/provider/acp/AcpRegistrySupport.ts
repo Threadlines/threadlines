@@ -216,7 +216,13 @@ export function makeAcpRegistryDescriptor(
 
   const descriptor: AcpProviderDescriptor<AcpRegistrySettings> = {
     driverKind: ACP_REGISTRY_DRIVER_KIND,
-    presentation: { displayName, showInteractionModeToggle: false },
+    presentation: {
+      displayName,
+      showInteractionModeToggle: false,
+      // The agent's own mode is the user's pick, so the access level only
+      // decides whether Threadlines answers its permission requests itself.
+      supportedRuntimeModes: ["approval-required", "full-access"],
+    },
     settingsSchema: AcpRegistrySettings,
     defaultSettings: () => decodeSettings({}),
     maintenance: NO_MAINTENANCE,

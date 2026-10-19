@@ -11,6 +11,7 @@
  * @module provider/pi/PiLaunch
  */
 import type { ProviderInstanceEnvironment, RuntimeMode } from "@threadlines/contracts";
+import { effectiveRuntimeMode } from "@threadlines/shared/runtimeMode";
 import * as Data from "effect/Data";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
@@ -258,12 +259,13 @@ export const PI_EXTENSION_ENV = {
   secretsFile: "THREADLINES_PI_SECRETS_FILE",
 } as const;
 
-/** The access levels the extension knows. `auto` is never offered for Pi. */
-export type PiAccessLevel = Exclude<RuntimeMode, "auto">;
+/** The access levels the extension knows. Pi has no classifier, so no Auto. */
+export const PI_ACCESS_LEVELS = ["approval-required", "auto-accept-edits", "full-access"] as const;
+export type PiAccessLevel = (typeof PI_ACCESS_LEVELS)[number];
 
+/** A thread set to Auto runs at the next safer level, as with every agent without it. */
 export function piAccessLevel(runtimeMode: RuntimeMode): PiAccessLevel {
-  // Pi has no classifier: a thread that asks for auto gets approvals.
-  return runtimeMode === "auto" ? "approval-required" : runtimeMode;
+  return effectiveRuntimeMode(runtimeMode, PI_ACCESS_LEVELS);
 }
 
 export interface PiToolServer {

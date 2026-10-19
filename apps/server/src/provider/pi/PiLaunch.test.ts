@@ -96,7 +96,8 @@ describe("piProcessEnvironment", () => {
         secretsFile: "/tmp/secrets.json",
       },
     });
-    expect(chat[PI_EXTENSION_ENV.access]).toBe("approval-required");
+    // Pi has no Auto: it runs at the next safer level, Auto-accept edits.
+    expect(chat[PI_EXTENSION_ENV.access]).toBe("auto-accept-edits");
     expect(chat[PI_EXTENSION_ENV.plan]).toBe("1");
   });
 });

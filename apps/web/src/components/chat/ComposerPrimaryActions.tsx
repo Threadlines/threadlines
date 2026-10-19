@@ -384,8 +384,10 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                 </div>
                 <MenuRadioGroup
                   value={runtimeMode}
+                  // Shown is the level the chat runs at, which can differ from
+                  // the one chosen: picking it pins it.
                   onValueChange={(value) => {
-                    if (!value || value === runtimeMode) return;
+                    if (!value) return;
                     onRuntimeModeChange(value as RuntimeMode);
                   }}
                 >

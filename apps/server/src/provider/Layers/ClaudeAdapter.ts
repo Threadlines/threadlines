@@ -28,6 +28,7 @@ import {
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { parseCliArgs } from "@threadlines/shared/cliArgs";
+import { effectiveRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { compareSemverVersions } from "@threadlines/shared/semver";
 import { humanizeWorkflowName, parseWorkflowScriptMeta } from "@threadlines/shared/workflowScript";
 import {
@@ -46,6 +47,8 @@ import {
   ProviderInstanceId,
   type ProviderInteractionMode,
   ProviderItemId,
+  LEGACY_RUNTIME_MODES,
+  RUNTIME_MODES,
   type ProviderRuntimeEvent,
   type WorkflowRunUpdate,
   type ProviderRuntimeTurnStatus,
@@ -284,6 +287,35 @@ function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   return Exit.isSuccess(result) ? result.value : undefined;
 }
 
+// Every mode names its permission mode. Since SDK 0.3.286 an omitted one is
+// left to the CLI, which applies the user's or project's `defaultMode` (or auto
+// mode on third-party providers), so "ask before changes" would stop asking.
+const CLAUDE_PERMISSION_MODES: Record<RuntimeMode, PermissionMode> = {
+  "approval-required": "default",
+  "auto-accept-edits": "acceptEdits",
+  auto: "auto",
+  "full-access": "bypassPermissions",
+};
+
+/**
+ * Claude's permission mode for a thread's access level on a model. Auto needs a
+ * classifier-capable model (Opus 4.6+/Sonnet 4.6+); on others it runs at the
+ * next safer level (`effectiveRuntimeMode`, what the composer shows), so edits
+ * keep flowing and everything else falls back to in-app approval prompts.
+ */
+export function claudePermissionModeFor(
+  runtimeMode: RuntimeMode,
+  modelMetadata: Pick<ServerProviderModel, "supportedRuntimeModes"> | undefined,
+  model: string | undefined,
+): PermissionMode {
+  const supported = modelMetadata
+    ? (modelMetadata.supportedRuntimeModes ?? RUNTIME_MODES)
+    : claudeModelSupportsAutoRuntimeMode(model)
+      ? RUNTIME_MODES
+      : LEGACY_RUNTIME_MODES;
+  return CLAUDE_PERMISSION_MODES[effectiveRuntimeMode(runtimeMode, supported)];
+}
+
 function resolveClaudeFallbackModelOption(
   fallbackModel: ReadonlyArray<string>,
   primaryModels: ReadonlyArray<string | undefined>,
@@ -499,7 +531,9 @@ interface ClaudeSessionContext {
   readonly query: ClaudeQueryRuntime;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
-  readonly basePermissionMode: PermissionMode | undefined;
+  // The access level's permission mode on the current model; plan turns
+  // switch away from it and back.
+  basePermissionMode: PermissionMode | undefined;
   // Interaction mode of the most recent turn. canUseTool consults it so plan
   // turns never inherit the auto-allow of permissive runtime modes.
   currentInteractionMode: ProviderInteractionMode | undefined;
@@ -8425,26 +8459,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         yield* currentWorkflowSize,
       );
       const effectiveEffort = flagSettings.effortLevel;
-      // Every mode names its permission mode. Since SDK 0.3.286 an omitted
-      // one is left to the CLI, which applies the user's or project's
-      // `defaultMode` (or auto mode on third-party providers), so "ask before
-      // changes" would stop asking.
-      const runtimeModeToPermission: Record<RuntimeMode, PermissionMode> = {
-        "approval-required": "default",
-        "auto-accept-edits": "acceptEdits",
-        auto: "auto",
-        "full-access": "bypassPermissions",
-      };
-      const requestedPermissionMode = runtimeModeToPermission[input.runtimeMode];
-      // Auto mode needs a classifier-capable model (Opus 4.6+/Sonnet 4.6+).
-      // Older models clamp to acceptEdits: edits keep flowing and everything
-      // else falls back to in-app approval prompts instead of erroring.
-      const autoModeClamped =
-        requestedPermissionMode === "auto" &&
-        !(modelMetadata
-          ? (modelMetadata.supportedRuntimeModes?.includes("auto") ?? true)
-          : claudeModelSupportsAutoRuntimeMode(modelSelection?.model));
-      const permissionMode = autoModeClamped ? "acceptEdits" : requestedPermissionMode;
+      const permissionMode = claudePermissionModeFor(
+        input.runtimeMode,
+        modelMetadata,
+        modelSelection?.model,
+      );
+      const autoModeClamped = input.runtimeMode === "auto" && permissionMode !== "auto";
       const settings = {
         ...(flagSettings.alwaysThinkingEnabled !== null
           ? { alwaysThinkingEnabled: flagSettings.alwaysThinkingEnabled }
@@ -8965,6 +8985,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...context.session,
         model: modelSelection.model,
       };
+      // An Auto thread runs at Auto-accept edits on a model without Auto, so
+      // the permission mode follows a switch between such models.
+      const permissionMode = claudePermissionModeFor(
+        context.session.runtimeMode,
+        modelMetadata,
+        modelSelection.model,
+      );
+      if (permissionMode !== context.basePermissionMode) {
+        // In plan mode the switch back to the base mode applies it.
+        if (context.currentInteractionMode !== "plan") {
+          yield* Effect.tryPromise({
+            try: () => context.query.setPermissionMode(permissionMode),
+            catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
+          });
+        }
+        context.basePermissionMode = permissionMode;
+      }
     }
 
     // Apply option changes (effort, thinking, fast mode, ultracode, and the
