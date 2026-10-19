@@ -4,6 +4,7 @@ import {
   USAGE_WINDOW_DAY_OPTIONS,
   type ProviderInstanceId,
   type ServerProvider,
+  type UsageBreakdownsResult,
   type UsageProviderKind,
   type UsageSource,
   type UsageWindowDays,
@@ -1033,6 +1034,107 @@ export function buildUsagePlanLimitRows(
       },
     ];
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* What used the limits                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The habits Claude's `/usage` reports, as they read in the line under the
+ * plan limits ("mostly from long chats 92%"), with a tip for the hover. Keyed
+ * by Claude's own names; one this table doesn't know isn't shown.
+ */
+const USAGE_LIMIT_HABITS: Readonly<Record<string, { phrase: string; tip: string }>> = {
+  long_context: {
+    phrase: "long chats",
+    tip: "Requests carrying over 150k tokens of context. Start a new chat when the topic changes.",
+  },
+  cache_miss: {
+    phrase: "coming back to big chats",
+    tip: "A big chat picked up after a pause reads its whole context again. Compact it before you step away.",
+  },
+  subagent_heavy: {
+    phrase: "heavy subagent use",
+    tip: "Chats that hand a lot of work to subagents. Simpler subagent work can run on a cheaper model.",
+  },
+  high_parallel: {
+    phrase: "many chats at once",
+    tip: "Four or more chats ran at the same time, and they all draw from one limit.",
+  },
+  cron: {
+    phrase: "all-day chats",
+    tip: "Chats active for 8 hours or more, often loops or background work.",
+  },
+  max_effort: {
+    phrase: "max effort",
+    tip: "Requests at max reasoning effort. A lower level is fine for everyday work.",
+  },
+  workflow: {
+    phrase: "workflows",
+    tip: "Multi-agent workflows. Ultracode starts one for every task.",
+  },
+  always_on_context: {
+    phrase: "big always-on context",
+    tip: "Over 40k tokens sent with every request: instruction files, tool servers, skills and memory.",
+  },
+  large_tool_results: {
+    phrase: "large tool results",
+    tip: "Tool results over 10k tokens, which are sent again with every later request.",
+  },
+};
+
+/** How many habits the line names: the biggest few are what "mostly" means. */
+const USAGE_LIMIT_HABITS_SHOWN = 4;
+
+export interface UsageLimitHabit {
+  readonly key: string;
+  readonly phrase: string;
+  readonly tip: string;
+  readonly pct: number;
+}
+
+/** What used one provider instance's limits, for the line under its meters. */
+export interface UsageLimitHabitsLine {
+  /** Claude reports the last day and week only: a longer page window shows the week. */
+  readonly window: "day" | "week";
+  readonly requestCount: number;
+  readonly sessionCount: number;
+  readonly habits: readonly UsageLimitHabit[];
+}
+
+/**
+ * The line each provider instance gets under its plan-limit meters, for the
+ * window the page shows. An instance with nothing to say (no report, a quiet
+ * window, no habit worth naming) gets no line rather than an empty one.
+ */
+export function buildUsageLimitHabitLines(
+  result: UsageBreakdownsResult,
+  selected: UsagePageWindow,
+): ReadonlyMap<ProviderInstanceId, UsageLimitHabitsLine> {
+  const window = selected === "24h" ? "day" : "week";
+  const lines = new Map<ProviderInstanceId, UsageLimitHabitsLine>();
+  for (const breakdown of result.breakdowns) {
+    if (breakdown.status !== "ready") continue;
+    const report = breakdown[window];
+    const habits = report.behaviors
+      .flatMap((behavior) => {
+        const words = USAGE_LIMIT_HABITS[behavior.key];
+        return words && behavior.pct >= 1
+          ? [{ key: behavior.key, ...words, pct: behavior.pct }]
+          : [];
+      })
+      .toSorted((left, right) => right.pct - left.pct)
+      .slice(0, USAGE_LIMIT_HABITS_SHOWN);
+    if (report.requestCount === 0 || habits.length === 0) continue;
+    lines.set(breakdown.instanceId, {
+      window,
+      requestCount: report.requestCount,
+      sessionCount: report.sessionCount,
+      habits,
+    });
+  }
+  return lines;
 }
 
 /* -------------------------------------------------------------------------- */

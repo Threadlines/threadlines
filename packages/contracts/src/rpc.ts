@@ -36,7 +36,7 @@ import {
   DictationTranscribeInput,
   DictationTranscribeResult,
 } from "./dictation.ts";
-import { UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import { UsageBreakdownsResult, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
   GitActionProgressEvent,
   VcsCommitDetailsInput,
@@ -498,6 +498,7 @@ export const WS_METHODS = {
 
   // Usage reporting methods
   usageSummary: "usage.summary",
+  usageBreakdowns: "usage.breakdowns",
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
@@ -969,6 +970,11 @@ export const WsUsageSummaryRpc = Rpc.make(WS_METHODS.usageSummary, {
   payload: UsageSummaryInput,
   success: UsageSummary,
   error: UsageReadError,
+});
+
+export const WsUsageBreakdownsRpc = Rpc.make(WS_METHODS.usageBreakdowns, {
+  payload: Schema.Struct({}),
+  success: UsageBreakdownsResult,
 });
 
 export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
@@ -1670,6 +1676,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProviderInstructionFilesRpc,
   WsServerWriteProviderInstructionFileRpc,
   WsUsageSummaryRpc,
+  WsUsageBreakdownsRpc,
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlListRepositoriesRpc,
   WsSourceControlCloneRepositoryRpc,

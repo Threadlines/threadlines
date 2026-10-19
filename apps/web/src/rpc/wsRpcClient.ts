@@ -137,6 +137,7 @@ export interface WsRpcClient {
   };
   readonly usage: {
     readonly summary: RpcUnaryMethod<typeof WS_METHODS.usageSummary>;
+    readonly breakdowns: RpcUnaryNoArgMethod<typeof WS_METHODS.usageBreakdowns>;
   };
   readonly sourceControl: {
     readonly lookupRepository: RpcUnaryMethod<typeof WS_METHODS.sourceControlLookupRepository>;
@@ -579,6 +580,14 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       summary: (input) =>
         transport.requestWithReconnectRetry((client) => client[WS_METHODS.usageSummary](input), {
           label: WS_METHODS.usageSummary,
+          attemptTimeoutMs: 120_000,
+          totalBudgetMs: 180_000,
+        }),
+      // Pure read too. The server asks Claude, which reads a week of
+      // transcripts; the server gives it a minute and a half.
+      breakdowns: () =>
+        transport.requestWithReconnectRetry((client) => client[WS_METHODS.usageBreakdowns]({}), {
+          label: WS_METHODS.usageBreakdowns,
           attemptTimeoutMs: 120_000,
           totalBudgetMs: 180_000,
         }),

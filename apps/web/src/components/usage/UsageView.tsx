@@ -9,7 +9,7 @@ import {
 import type { UsageBreakdown } from "@threadlines/shared/usageMerge";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeftIcon, ChevronRightIcon, RotateCwIcon } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 
 import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -19,9 +19,11 @@ import { usageMeterColor } from "../../lib/providerUsage";
 import { cn } from "../../lib/utils";
 import {
   deriveUsageWindow,
+  usageBreakdownsQueryOptions,
   usageSummaryQueryOptions,
   useUsageEnvironmentTargets,
 } from "../../lib/usageReactQuery";
+import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useServerProviders } from "../../rpc/serverState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { PageTitlebar } from "../PageTitlebar";
@@ -31,8 +33,11 @@ import { ProviderUsageSignIn } from "../chat/providerSignIn";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Skeleton } from "../ui/skeleton";
+import { TooltipWrapper } from "../ui/tooltip";
 import {
   assignUsageModelSlots,
+  buildUsageLimitHabitLines,
+  type UsageLimitHabitsLine,
   buildDayWindowView,
   buildHourWindowView,
   buildUsageBarChart,
@@ -267,7 +272,7 @@ export function UsageView() {
             ) : null}
           </div>
 
-          <UsagePlanLimits nowMs={nowMs} />
+          <UsagePlanLimits nowMs={nowMs} selectedWindow={selectedWindow} />
 
           {!hasTargets ? (
             <p className="mt-10 text-sm text-muted-foreground/60">
@@ -398,11 +403,24 @@ function UsageWindowControls({
  * The subscription windows each provider reports, read from the same
  * presentation the composer and Settings use. Independent of the transcript
  * scan, so it shows while usage is still loading. Absent when no provider has
- * a plan to meter.
+ * a plan to meter. Under a provider's meters, one line says what used them
+ * most, when the provider reports it (Claude's `/usage`).
  */
-function UsagePlanLimits({ nowMs }: { readonly nowMs: number }) {
+function UsagePlanLimits({
+  nowMs,
+  selectedWindow,
+}: {
+  readonly nowMs: number;
+  readonly selectedWindow: UsagePageWindow;
+}) {
   const providers = useServerProviders();
   const rows = useMemo(() => buildUsagePlanLimitRows(providers, nowMs), [providers, nowMs]);
+  // A failed request means a server from before the report: no lines.
+  const breakdowns = useQuery(usageBreakdownsQueryOptions(usePrimaryEnvironmentId())).data;
+  const habitLines = useMemo(
+    () => (breakdowns ? buildUsageLimitHabitLines(breakdowns, selectedWindow) : null),
+    [breakdowns, selectedWindow],
+  );
   if (rows.length === 0) return null;
   return (
     <section className="mt-6" data-testid="usage-plan-limits">
@@ -467,12 +485,47 @@ function UsagePlanLimits({ nowMs }: { readonly nowMs: number }) {
                     ) : null}
                   </span>
                 ) : null}
+                {habitLines?.get(row.instanceId) ? (
+                  <UsageLimitHabitsText line={habitLines.get(row.instanceId)!} />
+                ) : null}
               </div>
             </div>
           );
         })}
       </div>
     </section>
+  );
+}
+
+/** "Last 7 days, mostly from long chats 92% · ...", each habit's tip on hover. */
+function UsageLimitHabitsText({ line }: { readonly line: UsageLimitHabitsLine }) {
+  const requests = line.requestCount.toLocaleString();
+  const chats = `${line.sessionCount.toLocaleString()} ${line.sessionCount === 1 ? "chat" : "chats"}`;
+  return (
+    <p
+      className="min-w-0 text-xs leading-5 text-muted-foreground @xl:col-span-2"
+      data-testid="usage-limit-habits"
+    >
+      <TooltipWrapper
+        tooltip={`From ${requests} requests in ${chats} in this computer's Claude history. Approximate: the habits overlap, and other devices and claude.ai aren't counted.`}
+      >
+        <span>{line.window === "day" ? "Last 24 hours" : "Last 7 days"}, mostly from </span>
+      </TooltipWrapper>
+      {line.habits.map((habit, index) => (
+        <Fragment key={habit.key}>
+          {index > 0 ? " · " : null}
+          {/* A habit and its share stay on one line when the text wraps. */}
+          <span className="whitespace-nowrap">
+            <TooltipWrapper tooltip={habit.tip}>
+              <span className="text-foreground/90 underline decoration-muted-foreground/50 decoration-dotted underline-offset-[3px]">
+                {habit.phrase}
+              </span>
+            </TooltipWrapper>{" "}
+            <span className={NUMBER_CLASS}>{Math.round(habit.pct)}%</span>
+          </span>
+        </Fragment>
+      ))}
+    </p>
   );
 }
 
