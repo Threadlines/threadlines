@@ -152,6 +152,54 @@ describe("deriveMessagesTimelineRows", () => {
     ).toEqual(["main-read"]);
   });
 
+  it("hands the working row the newest command still running", () => {
+    const workEntry = (id: string, overrides: Partial<WorkLogEntry> = {}) => ({
+      id,
+      kind: "work" as const,
+      createdAt: "2026-01-01T00:00:00Z",
+      entry: {
+        id,
+        createdAt: "2026-01-01T00:00:00Z",
+        label: id,
+        tone: "tool" as const,
+        turnId: "turn-1" as never,
+        ...overrides,
+      },
+    });
+    const command = workEntry("test-run", {
+      itemType: "command_execution",
+      executionState: "running",
+      toolCallId: "toolu_1",
+      outputPreview: "PASS src/a.test.ts\n",
+    });
+    const workingCommand = (timelineEntries: ReturnType<typeof workEntry>[]) => {
+      const rows = deriveMessagesTimelineRows({
+        timelineEntries,
+        isWorking: true,
+        activeTurnId: "turn-1" as never,
+        activeTurnStartedAt: "2026-01-01T00:00:00Z",
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
+      const working = rows.find((row) => row.kind === "working");
+      return working?.kind === "working" ? working.command : undefined;
+    };
+
+    expect(workingCommand([workEntry("main-read"), command])).toEqual({
+      toolCallId: "toolu_1",
+      streamedOutput: "PASS src/a.test.ts\n",
+    });
+    // A quicker command started alongside it ending doesn't hide it.
+    expect(
+      workingCommand([
+        command,
+        workEntry("lint", { itemType: "command_execution", toolCallId: "toolu_2" }),
+      ]),
+    ).toEqual({ toolCallId: "toolu_1", streamedOutput: "PASS src/a.test.ts\n" });
+    // Once it has ended there is no command to show.
+    expect(workingCommand([workEntry("test-run", { itemType: "command_execution" })])).toBe(null);
+  });
+
   it("keeps one work group when live agent commentary interleaves with the turn's steps", () => {
     const workEntry = (id: string, createdAt: string) => ({
       id,
@@ -237,6 +285,7 @@ describe("deriveMessagesTimelineRows", () => {
         createdAt: "2026-01-01T00:00:00Z",
         label: "Connecting",
         thought: null,
+        command: null,
         trackerTurnIds: [],
         trackerAgentSpawnIds: [],
       },
@@ -270,6 +319,7 @@ describe("deriveMessagesTimelineRows", () => {
         createdAt: null,
         label: "Agent working",
         thought: null,
+        command: null,
         trackerTurnIds: [],
         trackerAgentSpawnIds: [],
       },
@@ -304,6 +354,7 @@ describe("deriveMessagesTimelineRows", () => {
         createdAt: null,
         label: "Waiting",
         thought: null,
+        command: null,
         trackerTurnIds: [],
         trackerAgentSpawnIds: [],
       },

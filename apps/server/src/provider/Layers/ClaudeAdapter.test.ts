@@ -211,6 +211,12 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   };
 
   public readonly backgroundTasksCalls: Array<string | undefined> = [];
+  public taskOutputs = new Map<string, string>();
+
+  readonly getTaskOutput = async (taskId: string) => {
+    const output = this.taskOutputs.get(taskId) ?? "";
+    return { output, total_bytes: Buffer.byteLength(output), truncated: false };
+  };
 
   readonly backgroundTasks = async (toolUseId?: string): Promise<boolean> => {
     this.backgroundTasksCalls.push(toolUseId);
@@ -1791,6 +1797,81 @@ describe("ClaudeAdapterLive", () => {
       );
     },
   );
+
+  it.effect("reads what a running command has printed, by the tool call that started it", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "Run it", attachments: [] });
+      const nextEvent = (type: string) =>
+        Stream.filter(adapter.streamEvents, (event) => event.type === type).pipe(
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+      const read = (toolCallId: string) => adapter.readCommandOutput!(session.threadId, toolCallId);
+
+      const toolStarted = yield* nextEvent("item.started");
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-output",
+        uuid: "stream-output-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "tool-run", name: "Bash", input: {} },
+        },
+      } as unknown as SDKMessage);
+      yield* Fiber.join(toolStarted);
+      // Claude registers the command a few seconds in: until then there is nothing to read.
+      assert.deepEqual(yield* read("tool-run"), { status: "pending" });
+      assert.deepEqual(yield* read("tool-other"), { status: "unavailable" });
+
+      const taskStarted = yield* nextEvent("task.started");
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-run",
+        tool_use_id: "tool-run",
+        description: "pnpm test",
+        task_type: "local_bash",
+        is_backgrounded: false,
+        session_id: "sdk-session-output",
+        uuid: "task-run-started",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(taskStarted);
+      harness.query.taskOutputs.set("task-run", "line 1\nline 2\n");
+      assert.deepEqual(yield* read("tool-run"), {
+        status: "running",
+        tail: "line 1\nline 2\n",
+        totalBytes: 14,
+      });
+
+      const taskEnded = yield* nextEvent("task.completed");
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-run",
+        tool_use_id: "tool-run",
+        status: "completed",
+        output_file: "",
+        summary: "pnpm test",
+        session_id: "sdk-session-output",
+        uuid: "task-run-ended",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(taskEnded);
+      assert.deepEqual(yield* read("tool-run"), { status: "unavailable" });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("sends words the user did not type as written when Claude would run them", () => {
     const harness = makeHarness();

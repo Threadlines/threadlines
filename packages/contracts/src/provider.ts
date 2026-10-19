@@ -488,6 +488,33 @@ export const ProviderSubagentTranscriptResult = Schema.Struct({
 });
 export type ProviderSubagentTranscriptResult = typeof ProviderSubagentTranscriptResult.Type;
 
+/** A command an agent of `threadId` (its own or a room agent) is running now,
+ *  named by the tool call that started it. */
+export const ProviderCommandOutputInput = Schema.Struct({
+  threadId: ThreadId,
+  toolCallId: TrimmedNonEmptyString,
+});
+export type ProviderCommandOutputInput = typeof ProviderCommandOutputInput.Type;
+
+/**
+ * What a running command has printed so far, read from the live session.
+ * `pending`: a session knows the command but has nothing to read yet (Claude
+ * registers a command a few seconds after it starts). `unavailable`: no live
+ * session can read it (it ended, or the provider streams output instead).
+ */
+export const ProviderCommandOutputResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("running"),
+    /** The end of the output as the provider decoded it, escape sequences
+     *  included. */
+    tail: Schema.String,
+    /** Size of the whole output so far, in bytes. */
+    totalBytes: NonNegativeInt,
+  }),
+  Schema.Struct({ status: Schema.Literals(["pending", "unavailable"]) }),
+]);
+export type ProviderCommandOutputResult = typeof ProviderCommandOutputResult.Type;
+
 export class ProviderSubagentTranscriptError extends Schema.TaggedError<ProviderSubagentTranscriptError>()(
   "ProviderSubagentTranscriptError",
   {

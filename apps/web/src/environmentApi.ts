@@ -47,6 +47,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     },
     backgroundRuns: {
       readOutput: rpcClient.server.readBackgroundRunOutput,
+      readCommandOutput: rpcClient.server.readCommandOutput,
     },
     providers: {
       getExtensions: rpcClient.server.getProviderExtensions,

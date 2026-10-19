@@ -24,6 +24,8 @@ const RPC_METHODS_WITH_TRACING_DISABLED: ReadonlySet<string> = new Set([
   WS_METHODS.serverStopBackgroundRun,
   // Polled every few seconds while the run list is open.
   WS_METHODS.serverReadBackgroundRunOutput,
+  // Polled every few seconds while a command runs in a chat on screen.
+  WS_METHODS.serverReadCommandOutput,
 ]);
 
 function shouldTraceRpc(method: string): boolean {
