@@ -34,7 +34,7 @@ updates:
       # patches/@effect__platform-node-shared@4.0.0-beta.97.patch), and the
       # effect beta packages must move in lockstep — bumping satellites alone
       # (PRs #78/#79) splits the ecosystem across two betas. Bumped manually
-      # as one coordinated upgrade.
+      # as one coordinated upgrade, followed by scripts/sync-effect-source.ts.
       - dependency-name: "effect"
       - dependency-name: "@effect/*"
       # lexical is patched for spellcheck (patches/lexical@0.47.0.patch);

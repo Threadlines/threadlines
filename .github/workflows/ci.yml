@@ -56,6 +56,9 @@ jobs:
       - name: Vendored Playwright injected script is current
         run: node scripts/extract-playwright-injected.ts --check
 
+      - name: Vendored Effect source matches the installed version
+        run: node scripts/sync-effect-source.ts --check
+
       - name: Typecheck
         run: vp exec vp run -r --concurrency-limit 2 typecheck
 

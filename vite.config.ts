@@ -35,6 +35,7 @@ export default defineConfig({
   fmt: {
     ignorePatterns: [
       ".reference",
+      ".repos",
       "dist",
       "dist-electron",
       "node_modules",
@@ -54,6 +55,7 @@ export default defineConfig({
   },
   lint: {
     ignorePatterns: [
+      ".repos",
       "dist",
       "dist-electron",
       "node_modules",

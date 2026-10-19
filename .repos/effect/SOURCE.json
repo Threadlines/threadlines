@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/Effect-TS/effect.git",
+  "tag": "effect@4.0.0-beta.107",
+  "commit": "3c495ae7c96d43bfc3b8020250562a194c2c895e",
+  "effectVersion": "4.0.0-beta.107",
+  "files": 657,
+  "sha256": "5ecaeae29647c3ae73abc1cd545d2108f49a32ec825c458678e59bb9ce2e7cd0"
+}
