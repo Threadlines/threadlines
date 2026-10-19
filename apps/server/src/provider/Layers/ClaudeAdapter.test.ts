@@ -9323,6 +9323,31 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("refuses to start fresh when the conversation must be reopened", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const started = yield* adapter
+        .startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          resumeCursor: {
+            threadId: "resume-thread-1",
+            resume: "0f0e0d0c-0b0a-4908-8706-050403020100",
+            turnCount: 3,
+          },
+          resumePolicy: "required",
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(started), true);
+      assert.equal(harness.getLastCreateQueryInput(), undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("refuses to answer on the side without the conversation it was asked to fork", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

@@ -29,6 +29,7 @@ import { sideSessionKey } from "@threadlines/shared/threadParticipants";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -43,6 +44,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  ProviderAdapterProcessError,
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderUnsupportedError,
@@ -103,28 +105,29 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
   const goals = new Map<ThreadId, RuntimeThreadGoalSnapshot>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
-  const startSession = vi.fn((input: ProviderSessionStartInput) =>
-    Effect.sync(() => {
-      const now = "2026-01-01T00:00:00.000Z";
-      const session: ProviderSession = {
-        provider,
-        ...(input.providerInstanceId !== undefined
-          ? { providerInstanceId: input.providerInstanceId }
-          : {}),
-        status: "ready",
-        runtimeMode: input.runtimeMode,
-        threadId: input.threadId,
-        resumeCursor: input.resumeCursor ?? {
-          opaque: `resume-${String(input.threadId)}`,
-        },
-        cwd: input.cwd ?? process.cwd(),
-        ...(input.roomTools === true ? { roomTools: true } : {}),
-        createdAt: now,
-        updatedAt: now,
-      };
-      sessions.set(session.threadId, session);
-      return session;
-    }),
+  const startSession = vi.fn(
+    (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      Effect.sync(() => {
+        const now = "2026-01-01T00:00:00.000Z";
+        const session: ProviderSession = {
+          provider,
+          ...(input.providerInstanceId !== undefined
+            ? { providerInstanceId: input.providerInstanceId }
+            : {}),
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          resumeCursor: input.resumeCursor ?? {
+            opaque: `resume-${String(input.threadId)}`,
+          },
+          cwd: input.cwd ?? process.cwd(),
+          ...(input.roomTools === true ? { roomTools: true } : {}),
+          createdAt: now,
+          updatedAt: now,
+        };
+        sessions.set(session.threadId, session);
+        return session;
+      }),
   );
 
   const listExternalThreads = vi.fn((input: ProviderExternalThreadListInput) =>
@@ -316,6 +319,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       manualContextCompaction: "supported",
       reviewStart: provider === CODEX_DRIVER ? "supported" : "unsupported",
       threadGoals: provider === CODEX_DRIVER ? "supported" : "unsupported",
+      earlySessionStart: provider === CODEX_DRIVER ? "supported" : "unsupported",
     },
     startSession,
     ...(provider === CODEX_DRIVER ? { listExternalThreads, readExternalThread } : {}),
@@ -894,6 +898,379 @@ it.effect("ProviderServiceLive reports a failure under the category the agent na
     assert.equal(categoryOf("provider.runtime.error"), "rate_limit");
     assert.equal(categoryOf("provider.turn.failed"), "rate_limit");
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+const makeEarlyStartHarness = () => {
+  const codex = makeFakeCodexAdapter();
+  const recorded: Array<{
+    readonly event: string;
+    readonly properties: Readonly<Record<string, unknown>> | undefined;
+  }> = [];
+  const registry = makeAdapterRegistryMock({
+    [ProviderDriverKind.make("codex")]: codex.adapter,
+  });
+  const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
+  const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+  const layer = makeProviderServiceLive().pipe(
+    Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+    Layer.provide(directoryLayer),
+    Layer.provide(defaultServerSettingsLayer),
+    Layer.provide(
+      Layer.succeed(AnalyticsService, {
+        record: (event, properties) => Effect.sync(() => recorded.push({ event, properties })),
+        flush: Effect.void,
+      }),
+    ),
+    Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+  );
+  const earlyInput = (threadId: ThreadId, cwd = "/tmp/project") => ({
+    provider: ProviderDriverKind.make("codex"),
+    providerInstanceId: codexInstanceId,
+    threadId,
+    cwd,
+    runtimeMode: "full-access" as const,
+  });
+  return { codex, recorded, layer, earlyInput };
+};
+
+it.effect(
+  "ProviderServiceLive stops an early session nobody used once typing stops, and never resumes it",
+  () =>
+    Effect.gen(function* () {
+      const { codex, recorded, layer, earlyInput } = makeEarlyStartHarness();
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId("thread-early-unused");
+        assert.equal(yield* provider.startEarlySession(threadId, earlyInput(threadId)), "started");
+        yield* advanceTestClock(10);
+        assert.equal(yield* provider.isEarlySession(threadId), true);
+        // Still typing a minute later: the same session, renewed.
+        yield* advanceTestClock(60_000);
+        assert.equal(yield* provider.startEarlySession(threadId, earlyInput(threadId)), "renewed");
+        assert.equal(codex.startSession.mock.calls.length, 1);
+
+        // Three minutes without a sign of typing.
+        yield* advanceTestClock(3 * 60_000 + 30_000);
+        assert.equal(codex.stopSession.mock.calls.length, 1);
+        assert.deepInclude(
+          recorded.find((entry) => entry.event === "provider.session.early_unused")?.properties,
+          { reason: "idle" },
+        );
+
+        // Nothing used its conversation, so the next start begins fresh.
+        yield* provider.startSession(threadId, earlyInput(threadId));
+        assert.equal(codex.startSession.mock.calls.length, 2);
+        assert.equal(codex.startSession.mock.calls[1]?.[0]?.resumeCursor, undefined);
+        assert.equal(yield* provider.isEarlySession(threadId), false);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "ProviderServiceLive keeps an early session something used, and limits and blocks early starts",
+  () =>
+    Effect.gen(function* () {
+      const { codex, layer, earlyInput } = makeEarlyStartHarness();
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const used = asThreadId("thread-early-used");
+        const second = asThreadId("thread-early-second");
+        assert.equal(yield* provider.startEarlySession(used, earlyInput(used)), "started");
+        assert.equal(
+          yield* provider.startEarlySession(second, earlyInput(second, "/tmp/other")),
+          "started",
+        );
+        // Two waiting already.
+        const third = asThreadId("thread-early-third");
+        assert.equal(yield* provider.startEarlySession(third, earlyInput(third)), "limit");
+
+        // A goal (not a message) uses the first one: it is the thread's now.
+        yield* advanceTestClock(10);
+        yield* provider.setThreadGoal({ threadId: used, objective: "Ship it" });
+        assert.equal(yield* provider.isEarlySession(used), false);
+
+        // The second started work on its own: stopped, and its checkout blocked.
+        yield* provider.abandonEarlySession({ threadId: second, reason: "turn_started" });
+        assert.deepEqual(
+          codex.stopSession.mock.calls.map(([threadId]) => threadId),
+          [second],
+        );
+        const sameCheckout = asThreadId("thread-early-same-checkout");
+        assert.equal(
+          yield* provider.startEarlySession(sameCheckout, earlyInput(sameCheckout, "/tmp/other")),
+          "blocked",
+        );
+
+        // Long after typing stopped, only unused sessions would be stopped.
+        yield* advanceTestClock(10 * 60_000);
+        assert.deepEqual(
+          codex.stopSession.mock.calls.map(([threadId]) => threadId),
+          [second],
+        );
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "ProviderServiceLive keeps one start per agent at a time, and stops an early start given up mid-start",
+  () =>
+    Effect.gen(function* () {
+      const { codex, layer, earlyInput } = makeEarlyStartHarness();
+      const startNormally = codex.startSession.getMockImplementation()!;
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        // A start that takes its time.
+        const finishStart = yield* Deferred.make<void>();
+        codex.startSession.mockImplementationOnce((input) =>
+          Deferred.await(finishStart).pipe(Effect.andThen(startNormally(input))),
+        );
+        const slow = asThreadId("thread-early-slow");
+        assert.equal(yield* provider.startEarlySession(slow, earlyInput(slow)), "started");
+        let adopted = false;
+        const adoptFiber = yield* provider.adoptEarlySession(slow).pipe(
+          Effect.tap(() => Effect.sync(() => (adopted = true))),
+          Effect.forkChild,
+        );
+        yield* advanceTestClock(10);
+        assert.equal(adopted, false);
+        yield* Deferred.succeed(finishStart, undefined);
+        const session = yield* Fiber.join(adoptFiber);
+        assert.equal(session?.threadId, slow);
+        assert.equal(codex.startSession.mock.calls.length, 1);
+
+        // Given up while still starting: nothing is left running.
+        const stuck = yield* Deferred.make<void>();
+        codex.startSession.mockImplementationOnce((input) =>
+          Deferred.await(stuck).pipe(Effect.andThen(startNormally(input))),
+        );
+        const asking = asThreadId("thread-early-asking");
+        assert.equal(
+          yield* provider.startEarlySession(asking, earlyInput(asking, "/tmp/asking")),
+          "started",
+        );
+        yield* advanceTestClock(10);
+        yield* provider.abandonEarlySession({ threadId: asking, reason: "asked_user" });
+        const live = yield* provider.listSessions();
+        assert.equal(
+          live.some((entry) => entry.threadId === asking),
+          false,
+        );
+        const again = asThreadId("thread-early-asking-again");
+        assert.equal(
+          yield* provider.startEarlySession(again, earlyInput(again, "/tmp/asking")),
+          "blocked",
+        );
+
+        // An ordinary start holds the key while it starts: typing meanwhile
+        // starts nothing more.
+        const finishOrdinary = yield* Deferred.make<void>();
+        codex.startSession.mockImplementationOnce((input) =>
+          Deferred.await(finishOrdinary).pipe(Effect.andThen(startNormally(input))),
+        );
+        const startsBefore = codex.startSession.mock.calls.length;
+        const ordinary = asThreadId("thread-ordinary-slow");
+        const ordinaryStart = yield* provider
+          .startSession(ordinary, earlyInput(ordinary, "/tmp/ordinary"))
+          .pipe(Effect.forkChild);
+        yield* advanceTestClock(10);
+        assert.equal(
+          yield* provider.startEarlySession(ordinary, earlyInput(ordinary, "/tmp/ordinary")),
+          "busy",
+        );
+        yield* Deferred.succeed(finishOrdinary, undefined);
+        yield* Fiber.join(ordinaryStart);
+        assert.equal(codex.startSession.mock.calls.length, startsBefore + 1);
+        assert.equal(yield* provider.isEarlySession(ordinary), false);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "ProviderServiceLive withholds what an early session says until it is used, and stops one working alone",
+  () =>
+    Effect.gen(function* () {
+      const { codex, layer, earlyInput } = makeEarlyStartHarness();
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const delivered = yield* Ref.make<Array<string>>([]);
+        const consumer = yield* Stream.runForEach(provider.streamEvents, (event) =>
+          Ref.update(delivered, (current) => [...current, event.eventId]),
+        ).pipe(Effect.forkChild);
+        yield* advanceTestClock(10);
+        const eventOf = (threadId: ThreadId, eventId: string) => ({
+          eventId: asEventId(eventId),
+          provider: CODEX_DRIVER,
+          threadId,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+
+        const used = asThreadId("thread-early-held");
+        assert.equal(yield* provider.startEarlySession(used, earlyInput(used)), "started");
+        yield* advanceTestClock(10);
+        codex.emit({
+          ...eventOf(used, "evt-early-state"),
+          type: "session.state.changed",
+          payload: { state: "ready" },
+        });
+        codex.emit({
+          ...eventOf(used, "evt-early-warning"),
+          type: "runtime.warning",
+          payload: { message: "An MCP server failed to start." },
+        });
+        yield* advanceTestClock(10);
+        assert.deepEqual(yield* Ref.get(delivered), []);
+
+        // Used: its warning reaches the thread, and nothing else it said early.
+        yield* provider.sendTurn({ threadId: used, input: "hello" });
+        yield* advanceTestClock(10);
+        assert.deepEqual(yield* Ref.get(delivered), ["evt-early-warning"]);
+
+        // One that starts work on its own is stopped, and its turn never shows.
+        const alone = asThreadId("thread-early-alone");
+        assert.equal(
+          yield* provider.startEarlySession(alone, earlyInput(alone, "/tmp/alone")),
+          "started",
+        );
+        yield* advanceTestClock(10);
+        codex.emit({
+          ...eventOf(alone, "evt-early-turn"),
+          type: "turn.started",
+          turnId: "turn-alone",
+          payload: {},
+        });
+        yield* advanceTestClock(10);
+        assert.deepEqual(
+          codex.stopSession.mock.calls.map(([threadId]) => threadId),
+          [alone],
+        );
+        const sameCheckout = asThreadId("thread-early-alone-again");
+        assert.equal(
+          yield* provider.startEarlySession(sameCheckout, earlyInput(sameCheckout, "/tmp/alone")),
+          "blocked",
+        );
+        assert.deepEqual(yield* Ref.get(delivered), ["evt-early-warning"]);
+        yield* Fiber.interrupt(consumer);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "ProviderServiceLive stops an early session given up while something else holds its agent",
+  () =>
+    Effect.gen(function* () {
+      const { codex, layer, earlyInput } = makeEarlyStartHarness();
+      const listNormally = codex.listSessions.getMockImplementation()!;
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId("thread-early-key-held");
+        assert.equal(yield* provider.startEarlySession(threadId, earlyInput(threadId)), "started");
+        yield* advanceTestClock(10);
+
+        // A request that brings the agent back holds it for a while.
+        const finishRecovery = yield* Deferred.make<void>();
+        codex.hasSession.mockImplementationOnce(() => Effect.succeed(false));
+        codex.listSessions.mockImplementationOnce(() =>
+          Deferred.await(finishRecovery).pipe(Effect.andThen(listNormally())),
+        );
+        const interrupt = yield* provider
+          .interruptTurn({ threadId })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* advanceTestClock(10);
+
+        // Meanwhile the early agent starts work on its own: once the agent
+        // is free again, it is stopped.
+        codex.emit({
+          eventId: asEventId("evt-early-turn-held"),
+          provider: CODEX_DRIVER,
+          threadId,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          type: "turn.started",
+          turnId: "turn-held",
+          payload: {},
+        });
+        yield* advanceTestClock(10);
+        assert.equal(codex.stopSession.mock.calls.length, 0);
+        yield* Deferred.succeed(finishRecovery, undefined);
+        yield* Fiber.join(interrupt);
+        yield* advanceTestClock(10);
+        assert.deepEqual(
+          codex.stopSession.mock.calls.map(([stopped]) => stopped),
+          [threadId],
+        );
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("ProviderServiceLive brings an exited early session's agent back as the thread's", () =>
+  Effect.gen(function* () {
+    const { codex, layer, earlyInput } = makeEarlyStartHarness();
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-early-exited");
+      yield* provider.startSession(threadId, {
+        ...earlyInput(threadId),
+        resumeCursor: { opaque: "conversation-1" },
+      });
+      yield* provider.stopSession({ threadId });
+      assert.equal(yield* provider.startEarlySession(threadId, earlyInput(threadId)), "started");
+      yield* advanceTestClock(10);
+
+      // The early runtime exits on its own; a request brings the agent back.
+      yield* codex.adapter.stopSession(threadId);
+      yield* provider.interruptTurn({ threadId }).pipe(Effect.exit);
+      assert.equal(codex.startSession.mock.calls.length, 3);
+      assert.equal(yield* provider.isEarlySession(threadId), false);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "ProviderServiceLive leaves a conversation an early start can't reopen to the agent's next use",
+  () =>
+    Effect.gen(function* () {
+      const { codex, layer, earlyInput } = makeEarlyStartHarness();
+      const startNormally = codex.startSession.getMockImplementation()!;
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId("thread-early-gone");
+        const conversation = { opaque: "conversation-1" };
+        yield* provider.startSession(threadId, {
+          ...earlyInput(threadId),
+          resumeCursor: conversation,
+        });
+        yield* provider.stopSession({ threadId });
+
+        // The provider lost the conversation: it would quietly start a new one.
+        codex.startSession.mockImplementationOnce((input) =>
+          input.resumePolicy === "required"
+            ? Effect.fail(
+                new ProviderAdapterProcessError({
+                  provider: CODEX_DRIVER,
+                  threadId: input.threadId,
+                  detail: "The conversation is gone.",
+                }),
+              )
+            : startNormally({ ...input, resumeCursor: { opaque: "fresh-conversation" } }),
+        );
+        assert.equal(yield* provider.startEarlySession(threadId, earlyInput(threadId)), "started");
+        yield* advanceTestClock(10);
+        const live = yield* provider.listSessions();
+        assert.equal(
+          live.some((entry) => entry.threadId === threadId),
+          false,
+        );
+
+        // The next use brings the agent back on the same conversation, as it
+        // would have, and nothing the failed start left hides that agent.
+        yield* provider.compactContext({ threadId });
+        assert.equal(codex.startSession.mock.calls.length, 3);
+        assert.deepEqual(codex.startSession.mock.calls[2]?.[0]?.resumeCursor, conversation);
+        assert.equal(codex.startSession.mock.calls[2]?.[0]?.resumePolicy, undefined);
+        assert.equal(yield* provider.isEarlySession(threadId), false);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", () =>

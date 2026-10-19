@@ -85,6 +85,7 @@ import {
   type AcpRegistryAgentsShape,
 } from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
+import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
@@ -788,6 +789,9 @@ const buildAppUnderTest = (options?: {
             deleteThread: () => Effect.die(new Error("Unsupported provider call in test")),
             streamEvents: Stream.empty,
             ...options?.layers?.providerService,
+          }),
+          Layer.mock(ProviderCommandReactor)({
+            warmUp: () => Effect.void,
           }),
           Layer.mock(RelayHost)({
             snapshots: Stream.empty,

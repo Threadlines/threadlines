@@ -51,6 +51,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
+  warmUpTurn: "orchestration.warmUpTurn",
 } as const;
 
 export const ProviderApprovalPolicy = Schema.Literals([
@@ -4661,6 +4662,22 @@ export const OrchestrationGetTurnActivitiesResult = Schema.Struct({
   sharedPayloadValues: Schema.optionalKey(Schema.Literal(true)),
 });
 export type OrchestrationGetTurnActivitiesResult = typeof OrchestrationGetTurnActivitiesResult.Type;
+
+/**
+ * The user is typing a message for this agent: start its stopped session in
+ * the background, as the message would (docs/early-agent-start.md). A hint
+ * only: nothing is recorded, and the server ignores it whenever an early
+ * start doesn't apply.
+ */
+export const OrchestrationWarmUpTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  /** The room agent the message is for. Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** What the message would run on, as the composer would send it. */
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+});
+export type OrchestrationWarmUpTurnInput = typeof OrchestrationWarmUpTurnInput.Type;
 
 export const OrchestrationReplayEventsInput = Schema.Struct({
   fromSequenceExclusive: NonNegativeInt,

@@ -25,6 +25,7 @@ import {
   type OrchestrationThread,
   type ProviderSession,
   type ProviderSessionForkFrom,
+  type OrchestrationWarmUpTurnInput,
   type RuntimeMode,
   type ThreadContextSeed,
   ThreadCheckoutMissingActivityKind,
@@ -462,6 +463,8 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  /** When each turn start came off the event bus, for turn latency. */
+  const turnStartReceivedAt = new Map<string, string>();
   // Only explicit stops cancel durable message questions. Runtime reaping and
   // reconnects leave them answerable. Keep shutdown notifications covered until
   // a new session starts; no provider can send late notifications after restart.
@@ -965,6 +968,13 @@ const make = Effect.gen(function* () {
       readonly forkFrom?: ProviderSessionForkFrom;
       /** The room agent to run. Null or absent: the thread's own agent. */
       readonly participantId?: ThreadParticipantId | null;
+      /**
+       * Start early, while the user types the message that will need the
+       * session (docs/early-agent-start.md): only where that message would
+       * plainly start or resume the agent, and without making it the
+       * thread's. `runtimeMode` is the access level the message will carry.
+       */
+      readonly early?: { readonly runtimeMode: RuntimeMode };
     },
   ) {
     const thread = yield* resolveThread(threadId);
@@ -988,6 +998,11 @@ const make = Effect.gen(function* () {
       });
     }
     const sessionKey = participantSessionKey(threadId, participantId);
+    const early = options?.early;
+    // A session started early becomes the thread's here: whoever ensures a
+    // session is about to use it. Waits for one still starting.
+    const adoptedEarlySession =
+      early === undefined ? yield* providerService.adoptEarlySession(sessionKey) : undefined;
     const projectedSession =
       sessionSlotParticipantId(thread.session) === participantId ? thread.session : null;
     const baseModelSelection = participant?.modelSelection ?? thread.modelSelection;
@@ -1002,7 +1017,7 @@ const make = Effect.gen(function* () {
       agentInvitesMode(toolSettings) !== "off" ||
       agentThreadsMode(toolSettings) !== "off";
 
-    const desiredRuntimeMode = thread.runtimeMode;
+    const desiredRuntimeMode = early?.runtimeMode ?? thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
     const resolveActiveSession = (threadId: ThreadId) =>
       providerService
@@ -1159,40 +1174,42 @@ const make = Effect.gen(function* () {
       reportedMissingCheckouts.delete(threadId);
     }
 
+    const sessionStartInput = (input?: {
+      readonly resumeCursor?: unknown;
+      readonly contextSeed?: ThreadContextSeed;
+      readonly forkFrom?: ProviderSessionForkFrom;
+    }) => ({
+      threadId: sessionKey,
+      ...(preferredProvider ? { provider: preferredProvider } : {}),
+      providerInstanceId: desiredInstanceId,
+      ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+      modelSelection: desiredModelSelection,
+      ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+      ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
+      ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
+      ...(roomToolsWanted ? { roomTools: true } : {}),
+      ...(toolSettings?.enableAgentPages !== false ? { agentPages: true } : {}),
+      ...(toolSettings?.enableAgentPages !== false && toolSettings?.enableClaudeArtifacts === true
+        ? { artifacts: true }
+        : {}),
+      ...(toolSettings?.enableCommandRequests !== false ? { commandRequests: true } : {}),
+      runtimeMode: desiredRuntimeMode,
+    });
+
     const startProviderSession = (
       input?: {
         readonly resumeCursor?: unknown;
-        readonly provider?: ProviderDriverKind;
         readonly contextSeed?: ThreadContextSeed;
         readonly forkFrom?: ProviderSessionForkFrom;
       },
       startKind: "fresh" | "restart" | "handoff" = "fresh",
     ) =>
-      providerService
-        .startSession(sessionKey, {
-          threadId: sessionKey,
-          ...(preferredProvider ? { provider: preferredProvider } : {}),
-          providerInstanceId: desiredInstanceId,
-          ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
-          modelSelection: desiredModelSelection,
-          ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-          ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
-          ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
-          ...(roomToolsWanted ? { roomTools: true } : {}),
-          ...(toolSettings?.enableAgentPages !== false ? { agentPages: true } : {}),
-          ...(toolSettings?.enableAgentPages !== false &&
-          toolSettings?.enableClaudeArtifacts === true
-            ? { artifacts: true }
-            : {}),
-          ...(toolSettings?.enableCommandRequests !== false ? { commandRequests: true } : {}),
-          runtimeMode: desiredRuntimeMode,
-        })
-        .pipe(
-          withMetrics({
-            timer: providerSessionStartDuration,
-            attributes: { provider: preferredProvider, startKind },
-          }),
-        );
+      providerService.startSession(sessionKey, sessionStartInput(input)).pipe(
+        withMetrics({
+          timer: providerSessionStartDuration,
+          attributes: { provider: preferredProvider, startKind },
+        }),
+      );
 
     // A session that could not reopen its conversation owes the thread's
     // history to its next turn (see `owedHistorySeeds`).
@@ -1207,7 +1224,12 @@ const make = Effect.gen(function* () {
         }
       });
 
-    const bindSessionToThread = (session: ProviderSession) =>
+    // `adopting`: the session was started early, so the slot still describes
+    // an older runtime, and a turn waiting on it must keep its "starting".
+    const bindSessionToThread = (
+      session: ProviderSession,
+      bindOptions?: { readonly adopting?: boolean },
+    ) =>
       Effect.gen(function* () {
         if (session.providerInstanceId === undefined) {
           return yield* new ProviderAdapterRequestError({
@@ -1231,7 +1253,7 @@ const make = Effect.gen(function* () {
             : null;
         const mappedStatus = mapProviderSessionStatusToOrchestrationStatus(session.status);
         const shouldPreservePendingTurnStartup =
-          options?.preservePendingTurnStartup === true &&
+          (options?.preservePendingTurnStartup === true || bindOptions?.adopting === true) &&
           latestSession?.status === "starting" &&
           mappedStatus === "ready";
         // Provider-side identifiers can arrive through runtime ingestion or
@@ -1251,9 +1273,10 @@ const make = Effect.gen(function* () {
             providerSessionId: continuesSameInstance
               ? (latestSession?.providerSessionId ?? null)
               : null,
-            providerThreadId: continuesSameInstance
-              ? (latestSession?.providerThreadId ?? session.providerThreadId ?? null)
-              : (session.providerThreadId ?? null),
+            providerThreadId:
+              continuesSameInstance && bindOptions?.adopting !== true
+                ? (latestSession?.providerThreadId ?? session.providerThreadId ?? null)
+                : (session.providerThreadId ?? latestSession?.providerThreadId ?? null),
             runtimeMode: desiredRuntimeMode,
             // Checkout the runtime actually started in. The next turn compares
             // it against the thread's target checkout to decide whether the
@@ -1269,6 +1292,19 @@ const make = Effect.gen(function* () {
           createdAt,
         });
       });
+
+    if (early !== undefined) {
+      // The message would hand the thread to another instance, or the agent
+      // is already running: nothing to start early. One started early and
+      // still waiting is renewed, so it lasts while the typing goes on.
+      if (
+        !isSeededHandoff &&
+        (activeSession === undefined || (yield* providerService.isEarlySession(sessionKey)))
+      ) {
+        yield* providerService.startEarlySession(sessionKey, sessionStartInput());
+      }
+      return { sessionThreadId: sessionKey, nativeForkApplied: false };
+    }
 
     // Seeded handoff: don't reuse the outgoing instance's resume cursor.
     // Build a provider-agnostic seed from the transcript and start the new
@@ -1319,18 +1355,22 @@ const make = Effect.gen(function* () {
 
     // A live runtime for this agent is reused. While it holds the slot, a
     // projected "stopped" means the runtime is on its way out.
+    // An adopted early runtime is live although the slot still says stopped.
     const existingSessionThreadId =
       activeSession !== undefined &&
-      (projectedSession === null || projectedSession.status !== "stopped")
+      (adoptedEarlySession !== undefined ||
+        projectedSession === null ||
+        projectedSession.status !== "stopped")
         ? sessionKey
         : null;
     if (existingSessionThreadId) {
       // In a room the slot is re-stamped on every handover, so it can not
       // vouch for the mode this agent's runtime actually started in.
+      // Nor does it for a runtime started early, which the slot never saw.
       const inRoom = isRoomThread(thread);
       const runtimeModeChanged =
         thread.runtimeMode !==
-        (inRoom
+        (inRoom || adoptedEarlySession !== undefined
           ? (activeSession?.runtimeMode ?? projectedSession?.runtimeMode)
           : (projectedSession?.runtimeMode ?? activeSession?.runtimeMode));
       const cwdChanged =
@@ -1359,10 +1399,16 @@ const make = Effect.gen(function* () {
         projectedSession.status === "starting" &&
         (projectedSession.providerThreadId ?? null) === null &&
         (projectedSession.checkoutCwd ?? null) === null;
+      // An adopted early runtime is bound now, as a fresh start would have
+      // been, with whatever its start owes the next turn.
       const rebindAfterHandover =
-        inRoom && activeSession !== undefined && slotBlankedByHandover
-          ? bindSessionToThread(activeSession)
-          : Effect.void;
+        adoptedEarlySession !== undefined && activeSession !== undefined
+          ? bindSessionToThread(activeSession, { adopting: true }).pipe(
+              Effect.andThen(noteResumeFailure(adoptedEarlySession)),
+            )
+          : inRoom && activeSession !== undefined && slotBlankedByHandover
+            ? bindSessionToThread(activeSession)
+            : Effect.void;
 
       // A runtime started before its thread became a room, or before invites
       // were turned on, has no room tools. It gets them by restarting with
@@ -2073,11 +2119,14 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
     const key = turnStartKeyForEvent(event);
+    const receivedAt = turnStartReceivedAt.get(key);
+    turnStartReceivedAt.delete(key);
     if (yield* hasHandledTurnStartRecently(key)) {
       return;
     }
-    // On the server's clock: the event's own time comes from the sender's.
-    const requestedAt = yield* nowIso;
+    // On the server's clock, from when the event came in, before any wait
+    // behind this thread's earlier work: the event's own time is the sender's.
+    const requestedAt = receivedAt ?? (yield* nowIso);
     // A new turn is the user moving on after Stop, and supersedes a message
     // that was waiting on its own release or on a side answer: how this turn
     // ends decides whether the queue moves again.
@@ -3333,6 +3382,21 @@ const make = Effect.gen(function* () {
     }
     // In a room, the other agents' runtimes stop with the thread too.
     yield* stopIdleRoomAgentSessions(thread);
+    // So does any agent started early while the user typed, which the
+    // thread's session never showed (docs/early-agent-start.md).
+    yield* Effect.forEach(
+      [null, ...thread.participants.map((participant) => participant.id)],
+      (participantId) =>
+        Effect.gen(function* () {
+          const key = participantSessionKey(thread.id, participantId);
+          if (yield* providerService.isEarlySession(key)) {
+            yield* providerService
+              .stopSession({ threadId: key })
+              .pipe(Effect.ignoreCause({ log: true }));
+          }
+        }),
+      { discard: true },
+    );
     yield* endSideTurn(thread.id, thread.sideTurn, event.payload.createdAt);
 
     explicitlyStoppedThreads.add(thread.id);
@@ -4842,6 +4906,9 @@ const make = Effect.gen(function* () {
     );
 
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
+      if (event.type === "thread.turn-start-requested") {
+        turnStartReceivedAt.set(turnStartKeyForEvent(event), yield* nowIso);
+      }
       if (
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.meta-updated" ||
@@ -4927,9 +4994,67 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * The user is typing a message for one of this thread's agents: start its
+   * stopped session now, so the message finds it ready
+   * (docs/early-agent-start.md). Runs in the thread's worker, in order with
+   * its turn starts; the start itself goes on in the background.
+   */
+  const warmUpThread = (input: OrchestrationWarmUpTurnInput) =>
+    Effect.gen(function* () {
+      const settings = yield* serverSettingsService.getSettings.pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (settings?.startAgentsWhileTyping === false) {
+        return;
+      }
+      const thread = yield* resolveThread(input.threadId);
+      if (!thread || thread.archivedAt !== null) {
+        return;
+      }
+      // A turn running or on its way: the message will wait or steer anyway.
+      const session = thread.session;
+      if (
+        session !== null &&
+        (session.status === "running" ||
+          session.status === "starting" ||
+          (session.activeTurnId ?? null) !== null)
+      ) {
+        return;
+      }
+      // A session resumed with a goal running can go on with it by itself.
+      if (thread.goal?.status === "active") {
+        return;
+      }
+      const pendingTurnStart = yield* projectionTurnRepository
+        .getPendingTurnStartByThreadId({ threadId: input.threadId })
+        .pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isSome(pendingTurnStart)) {
+        return;
+      }
+      yield* ensureSessionForThread(input.threadId, yield* nowIso, {
+        participantId: input.participantId,
+        modelSelection: input.modelSelection,
+        early: { runtimeMode: input.runtimeMode },
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logDebug("provider command reactor did not start an agent early", {
+              threadId: input.threadId,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
+
+  const warmUp: ProviderCommandReactorShape["warmUp"] = (input) =>
+    worker.enqueue(String(input.threadId), { type: "continue", run: warmUpThread(input) });
+
   return {
     start,
     drain: worker.drain,
+    warmUp,
   } satisfies ProviderCommandReactorShape;
 });
 

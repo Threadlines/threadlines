@@ -9,6 +9,7 @@ import {
   ModelSelection,
   type OrchestrationCommand,
   type OrchestrationSession,
+  type OrchestrationWarmUpTurnInput,
   type OrchestrationWorkflowRunPatch,
   ProviderRuntimeEvent,
   ProviderSession,
@@ -313,6 +314,16 @@ describe("ProviderCommandReactor", () => {
         return projectStarting.pipe(Effect.as(session));
       },
     );
+    // Like ProviderService: an early runtime is listed, but waits to be adopted.
+    const earlyKeys = new Set<string>();
+    const startEarlySession = vi.fn<ProviderServiceShape["startEarlySession"]>((threadId, input) =>
+      earlyKeys.has(threadId)
+        ? Effect.succeed("renewed" as const)
+        : startSession(threadId, input).pipe(
+            Effect.tap(() => Effect.sync(() => earlyKeys.add(threadId))),
+            Effect.as("started" as const),
+          ),
+    );
     const sendTurn = vi.fn((_: unknown) =>
       Effect.succeed({
         threadId: ThreadId.make("thread-1"),
@@ -454,6 +465,15 @@ describe("ProviderCommandReactor", () => {
     });
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
+      startEarlySession,
+      adoptEarlySession: (threadId) =>
+        Effect.sync(() =>
+          earlyKeys.delete(threadId)
+            ? runtimeSessions.find((session) => session.threadId === threadId)
+            : undefined,
+        ),
+      isEarlySession: (threadId) => Effect.sync(() => earlyKeys.has(threadId)),
+      abandonEarlySession: () => Effect.void,
       listExternalThreads: () => unsupported(),
       readExternalThread: () => unsupported(),
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
@@ -652,7 +672,11 @@ describe("ProviderCommandReactor", () => {
       updateServerSettings: (patch: ServerSettingsPatch) =>
         Effect.runPromise(serverSettings.updateSettings(patch)),
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      warmUp: (warmUpInput: OrchestrationWarmUpTurnInput) =>
+        Effect.runPromise(reactor.warmUp(warmUpInput)),
       startSession,
+      startEarlySession,
+      earlyKeys,
       sendTurn,
       steerTurn,
       interruptTurn,
@@ -841,6 +865,109 @@ describe("ProviderCommandReactor", () => {
       turnId: "turn-1",
       state: "running",
     });
+  });
+
+  it("starts a stopped agent while the user types, and the message then uses it", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+
+    await harness.warmUp({
+      threadId,
+      participantId: null,
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      runtimeMode: "approval-required",
+    });
+    await waitFor(() => harness.startEarlySession.mock.calls.length === 1);
+    expect(harness.startEarlySession.mock.calls[0]?.[1]).toMatchObject({
+      cwd: PROJECT_ROOT,
+      modelSelection: { model: "gpt-5-codex" },
+      runtimeMode: "approval-required",
+    });
+    // The thread shows nothing of it until the message uses it.
+    const beforeSend = await harness.readModel();
+    expect(beforeSend.threads.find((entry) => entry.id === threadId)?.session ?? null).toBeNull();
+
+    // Still typing a minute later: the running early agent is renewed.
+    await harness.warmUp({
+      threadId,
+      participantId: null,
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      runtimeMode: "approval-required",
+    });
+    await waitFor(() => harness.startEarlySession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-after-warm-up"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-after-warm-up"),
+          role: "user",
+          text: "now go",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    // One start in all: the early one.
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.earlyKeys.has(threadId)).toBe(false);
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      return (
+        readModel.threads.find((entry) => entry.id === threadId)?.session?.status === "running"
+      );
+    });
+  });
+
+  it("starts nothing early while a turn runs, or with the setting off", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const warmUpInput = {
+      threadId,
+      participantId: null,
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      runtimeMode: "approval-required" as const,
+    };
+
+    await harness.updateServerSettings({ startAgentsWhileTyping: false });
+    await harness.warmUp(warmUpInput);
+    await harness.drain();
+    expect(harness.startEarlySession).not.toHaveBeenCalled();
+
+    await harness.updateServerSettings({ startAgentsWhileTyping: true });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-running"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-running"),
+          role: "user",
+          text: "work",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      return (
+        readModel.threads.find((entry) => entry.id === threadId)?.session?.status === "running"
+      );
+    });
+    await harness.warmUp(warmUpInput);
+    await harness.drain();
+    expect(harness.startEarlySession).not.toHaveBeenCalled();
   });
 
   it("hands the thread's history to a session that could not reopen its conversation", async () => {

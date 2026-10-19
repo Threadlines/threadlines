@@ -45,6 +45,7 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            warmUp: () => Effect.void,
           }),
         ),
         Layer.provideMerge(

@@ -67,6 +67,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <ClaudeArtifactsRow />
         <ClaudeWorkflowSizeRow />
         <CommandRequestsRow />
+        <StartAgentsWhileTypingRow />
       </SettingsSection>
 
       <SettingsSection title="Rooms" description={computerNote}>
@@ -418,6 +419,36 @@ function CommandRequestsRow() {
           checked={requestsOn}
           onCheckedChange={(checked) => updateSettings({ enableCommandRequests: Boolean(checked) })}
           aria-label="Enable command requests"
+        />
+      }
+    />
+  );
+}
+
+/** Early agent starts (docs/early-agent-start.md): on unless turned off. */
+function StartAgentsWhileTypingRow() {
+  const settings = useSettings();
+  const startOn = settings.startAgentsWhileTyping !== false;
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Start agents while you type"
+      description="A stopped Claude or Codex agent starts in the background as you type, so your message gets a faster first reply."
+      resetAction={
+        !startOn ? (
+          <SettingResetButton
+            label="start agents while you type"
+            onClick={() => updateSettings({ startAgentsWhileTyping: true })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={startOn}
+          onCheckedChange={(checked) =>
+            updateSettings({ startAgentsWhileTyping: Boolean(checked) })
+          }
+          aria-label="Start agents while you type"
         />
       }
     />

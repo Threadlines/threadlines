@@ -216,6 +216,10 @@ describe("ProviderSessionReaper", () => {
 
     const providerService: ProviderServiceShape = {
       startSession: () => unsupported(),
+      startEarlySession: () => Effect.succeed("unsupported" as const),
+      adoptEarlySession: () => Effect.succeed(undefined),
+      isEarlySession: () => Effect.succeed(false),
+      abandonEarlySession: () => Effect.void,
       listExternalThreads: () => unsupported(),
       readExternalThread: () => unsupported(),
       sendTurn: () => unsupported(),

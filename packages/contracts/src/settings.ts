@@ -926,6 +926,13 @@ export const ServerSettings = Schema.Struct({
    */
   enableCommandRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /**
+   * Start agents while you type: typing in a thread whose agent has stopped
+   * starts it in the background, so the message goes to a ready agent
+   * (docs/early-agent-start.md). Only for providers that support it. Never
+   * chosen: on.
+   */
+  startAgentsWhileTyping: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
    * The model and reasoning a new thread starts with on this computer.
    * `null`: the model last picked on the device opening the thread.
    */
@@ -1098,6 +1105,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
   claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
   enableCommandRequests: Schema.optionalKey(Schema.Boolean),
+  startAgentsWhileTyping: Schema.optionalKey(Schema.Boolean),
   // Whole values, replaced as sent: a new default never keeps an old one's
   // reasoning, and the list is the whole list.
   newThreadModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),

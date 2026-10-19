@@ -444,6 +444,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Claude workflow size"]
         : []),
       ...(settings.enableCommandRequests === false ? ["Command requests"] : []),
+      ...(settings.startAgentsWhileTyping === false ? ["Start agents while you type"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
       ...(agentThreadsMode(settings) !== "ask" ? ["Agents can start threads"] : []),
       ...(settings.wrapUpChildThreadsOnFinish !==
@@ -473,6 +474,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableClaudeArtifacts,
       settings.claudeWorkflowSize,
       settings.enableCommandRequests,
+      settings.startAgentsWhileTyping,
       settings.agentInvites,
       settings.agentThreads,
       settings.wrapUpChildThreadsOnFinish,
@@ -531,6 +533,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       enableClaudeArtifacts: false,
       claudeWorkflowSize: DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize,
       enableCommandRequests: true,
+      startAgentsWhileTyping: true,
       agentInvites: "ask",
       agentThreads: "ask",
       wrapUpChildThreadsOnFinish: DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish,

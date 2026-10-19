@@ -7895,6 +7895,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             threadId,
             detail: `Claude conversation ${requestedResumeState.resume} was not found to answer from.`,
           });
+        } else if (
+          transcriptResolution?.outcome === "missing" &&
+          input.resumePolicy === "required"
+        ) {
+          // This conversation or none (an early start, say): starting fresh
+          // is left to an ordinary start, which tells the thread.
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: `Claude conversation ${requestedResumeState.resume} was not found to resume.`,
+          });
         } else if (transcriptResolution?.outcome === "missing") {
           yield* Effect.logWarning("claude.resume.transcript-missing", {
             threadId,
@@ -9854,6 +9865,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       activeTurnSteering: "supported",
       threadGoals: "supported",
       threadGoalPause: "unsupported",
+      earlySessionStart: "supported",
     },
     startSession,
     sendTurn,

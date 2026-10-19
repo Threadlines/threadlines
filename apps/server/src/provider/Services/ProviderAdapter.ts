@@ -122,6 +122,14 @@ export interface ProviderAdapterCapabilities {
    * can rewind only to the turns it knows the positions of (Grok).
    */
   readonly conversationRollback?: "native" | "none";
+
+  /**
+   * Whether a session may be started before its first message, while the user
+   * is still typing (`ProviderService.startEarlySession`). Only for drivers
+   * whose start sends nothing to a model, saves nothing in the provider's own
+   * lists, and can't stop on a question. Absent: never started early.
+   */
+  readonly earlySessionStart?: "supported" | "unsupported";
 }
 
 export interface ProviderThreadTurnSnapshot {

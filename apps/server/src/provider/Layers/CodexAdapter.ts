@@ -4107,6 +4107,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       threadGoals: "supported",
       nativeThreadFork: "supported",
       realtimeVoice: "supported",
+      earlySessionStart: "supported",
     },
     startSession,
     listExternalThreads,

@@ -69,6 +69,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoalescing.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
+import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
@@ -371,6 +372,7 @@ const makeWsRpcLayer = (currentSession: {
       const providerAccounts = yield* ProviderAccounts;
       const acpRegistryAgents = yield* AcpRegistryAgents;
       const dictation = yield* DictationService;
+      const providerCommandReactor = yield* ProviderCommandReactor;
       const providerRegistry = yield* ProviderRegistry;
       const providerService = yield* ProviderService;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
@@ -689,6 +691,13 @@ const makeWsRpcLayer = (currentSession: {
         providerService.noteExtensionsChanged({ providerInstanceId: input.providerInstanceId });
 
       return WsRpcGroup.of({
+        // A hint while the user types; open to paired devices, like sending.
+        [ORCHESTRATION_WS_METHODS.warmUpTurn]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.warmUpTurn,
+            providerCommandReactor.warmUp(input),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,

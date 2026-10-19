@@ -157,6 +157,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     },
     orchestration: {
       dispatchCommand: rpcClient.orchestration.dispatchCommand,
+      warmUpTurn: rpcClient.orchestration.warmUpTurn,
       getTurnDiff: rpcClient.orchestration.getTurnDiff,
       getFullThreadDiff: rpcClient.orchestration.getFullThreadDiff,
       getRevertPlan: rpcClient.orchestration.getRevertPlan,
