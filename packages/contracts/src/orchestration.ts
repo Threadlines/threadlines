@@ -33,6 +33,7 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import { TerminalReuseIds } from "./terminal.ts";
 import {
   AwaitedWorkflowProgress,
   OrchestrationWorkflowRun,
@@ -960,8 +961,13 @@ export type OrchestrationCommandRun = typeof OrchestrationCommandRun.Type;
 export const CommandRunStartInput = Schema.Struct({
   threadId: ThreadId,
   runId: CommandRunId,
-  /** A new terminal tab; refused if a terminal with this id already exists. */
+  /**
+   * A new terminal tab, used when none of `reuseTerminalIds` is free;
+   * refused if a terminal with this id already exists.
+   */
   terminalId: TrimmedNonEmptyString,
+  /** The thread's tabs in drawer order; the run takes over the first free one. */
+  reuseTerminalIds: Schema.optional(TerminalReuseIds),
   mode: CommandRunMode,
   dialect: CommandDialect,
   command: TrimmedNonEmptyString,
@@ -973,6 +979,15 @@ export const CommandRunStartInput = Schema.Struct({
   rows: Schema.optional(PositiveInt),
 });
 export type CommandRunStartInput = typeof CommandRunStartInput.Type;
+
+/**
+ * The tab the run went into. Sent only for a start that named
+ * `reuseTerminalIds`: clients that don't know this result expect none.
+ */
+export const CommandRunStartResult = Schema.Struct({
+  terminalId: TrimmedNonEmptyString,
+});
+export type CommandRunStartResult = typeof CommandRunStartResult.Type;
 
 export const CommandRunSendOutputInput = Schema.Struct({
   threadId: ThreadId,

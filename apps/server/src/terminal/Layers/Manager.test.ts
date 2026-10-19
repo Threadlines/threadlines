@@ -225,6 +225,7 @@ interface CreateManagerOptions {
 // reports no descendants and swallows signals.
 const noopProcessTree: TerminalProcessTreeControl = {
   listDescendants: () => [],
+  listTerminalProcesses: () => [],
   signal: () => {},
   isAlive: () => false,
 };
@@ -1328,6 +1329,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         processKillGraceMs: 10,
         processTree: {
           listDescendants: () => [4242, 4243, 4244],
+          listTerminalProcesses: () => null,
           signal: (pid, signal) => {
             signals.push({ pid, signal });
             if (signal === "SIGKILL") alive.delete(pid);
@@ -2001,6 +2003,209 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         "submitted",
       ]);
       expect(yield* manager.readCommandRunOutput("run-1")).toBe("git add .\ngit commit");
+    }),
+  );
+
+  const runFinished = (updates: Ref.Ref<ReadonlyArray<TerminalCommandRunUpdate>>, runId: string) =>
+    waitFor(
+      Ref.get(updates).pipe(
+        Effect.map((list) => list.some((u) => u.type === "finished" && u.runId === runId)),
+      ),
+    );
+
+  it.effect("runs commands one after another in the thread's unused first tab", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+      });
+      const updates = yield* collectRunUpdates(manager);
+      const chosen: string[] = [];
+      const first = yield* manager.startCommandRun(
+        commandRunInput({ terminalId: "terminal-a", reuseTerminalIds: [DEFAULT_TERMINAL_ID] }),
+        (terminalId) =>
+          Effect.sync(() => chosen.push(`${terminalId} after ${ptyAdapter.spawnInputs.length}`)),
+      );
+      expect(first).toBe(DEFAULT_TERMINAL_ID);
+      // Told before anything spawned, so the run is recorded before it can end.
+      expect(chosen).toEqual([`${DEFAULT_TERMINAL_ID} after 0`]);
+
+      const shell = ptyAdapter.processes[0]!;
+      shell.emitData("\u001b]6973;run-1;start\u0007installed\r\n\u001b]6973;run-1;0\u0007% ");
+      yield* runFinished(updates, "run-1");
+
+      const second = yield* manager.startCommandRun(
+        commandRunInput({
+          runId: "run-2",
+          command: "pnpm test",
+          terminalId: "terminal-b",
+          reuseTerminalIds: [DEFAULT_TERMINAL_ID],
+        }),
+      );
+      expect(second).toBe(DEFAULT_TERMINAL_ID);
+      expect(ptyAdapter.spawnInputs).toHaveLength(2);
+      expect(ptyAdapter.spawnInputs[1]?.env).toMatchObject({ THREADLINES_RUN_ID: "run-2" });
+      yield* waitFor(Effect.sync(() => shell.killed));
+      // The first run's output stays above; the next starts on a line of its own.
+      const started = (yield* getEvents).filter(
+        (event) => event.type === "started" && event.terminalId === DEFAULT_TERMINAL_ID,
+      );
+      expect(started.at(-1)).toMatchObject({ snapshot: { history: "installed\r\n% \r\n" } });
+    }),
+  );
+
+  it.effect("never takes over a tab someone typed in, but the terminal's replies don't count", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+      });
+      yield* manager.open(openInput({ terminalId: "typed" }));
+      yield* manager.open(openInput({ terminalId: "shift-f3" }));
+      yield* manager.open(openInput({ terminalId: "replied" }));
+      yield* manager.write({ threadId: "thread-1", terminalId: "typed", data: "ls\r" });
+      // A key that reads like a cursor report from the first row.
+      yield* manager.write({ threadId: "thread-1", terminalId: "shift-f3", data: "\u001b[1;2R" });
+      // Cursor position, device attributes and a color, as xterm answers a prompt's queries.
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: "replied",
+        data: "\u001b[12;5R\u001b[?1;2c\u001b]11;rgb:0000/0000/0000\u001b\\",
+      });
+
+      const chosen = yield* manager.startCommandRun(
+        commandRunInput({
+          terminalId: "terminal-new",
+          reuseTerminalIds: ["typed", "shift-f3", "replied"],
+        }),
+      );
+      expect(chosen).toBe("replied");
+      expect(ptyAdapter.processes.slice(0, 2).map((process) => process.killed)).toEqual([
+        false,
+        false,
+      ]);
+    }),
+  );
+
+  it.effect("never takes over a tab while something runs in it or lives on its terminal", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+        processTree: {
+          ...noopProcessTree,
+          // A job an earlier command left behind, still on the first tab's terminal.
+          listTerminalProcesses: (pid) => (pid === 9000 ? [4321] : []),
+        },
+      });
+      yield* manager.open(openInput({ terminalId: "left-a-job" }));
+      yield* manager.startCommandRun(commandRunInput({ terminalId: "running" }));
+
+      const chosen = yield* manager.startCommandRun(
+        commandRunInput({
+          runId: "run-2",
+          terminalId: "terminal-new",
+          reuseTerminalIds: ["left-a-job", "running"],
+        }),
+      );
+      expect(chosen).toBe("terminal-new");
+      expect(ptyAdapter.processes.map((process) => process.killed)).toEqual([false, false, false]);
+    }),
+  );
+
+  it.effect("changes no tab until its run is recorded, nor one typed in meanwhile", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+      });
+      yield* manager.open(openInput());
+      const refused = yield* Effect.exit(
+        manager.startCommandRun(commandRunInput({ reuseTerminalIds: [DEFAULT_TERMINAL_ID] }), () =>
+          Effect.fail("not recorded"),
+        ),
+      );
+      expect(refused).toEqual(Exit.fail("not recorded"));
+
+      // Keys reach a tab without the lock a run holds while it is recorded.
+      const typedMeanwhile = yield* Effect.exit(
+        manager.startCommandRun(
+          commandRunInput({ reuseTerminalIds: [DEFAULT_TERMINAL_ID] }),
+          (terminalId) => manager.write({ threadId: "thread-1", terminalId, data: "g" }),
+        ),
+      );
+      expect(Exit.isFailure(typedMeanwhile)).toBe(true);
+      expect(ptyAdapter.processes).toHaveLength(1);
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+    }),
+  );
+
+  it.effect("gives scripts the free tab in their folder, again once each one ends", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, baseDir } = yield* createManager(50, {
+        // Poll-only path; see the platform note in the activity test above.
+        platform: "linux",
+        shellResolver: () => "/bin/zsh",
+        subprocessChecker: () => Effect.succeed(false),
+        subprocessPollIntervalMs: 20,
+      });
+      yield* manager.open(openInput());
+      yield* manager.open(openInput({ terminalId: "elsewhere", cwd: baseDir }));
+      const openForScript = (terminalId: string) =>
+        manager.open(
+          openInput({ terminalId, reuseTerminalIds: ["elsewhere", DEFAULT_TERMINAL_ID] }),
+        );
+
+      const first = yield* openForScript("terminal-a");
+      // Typed into as it is: no new shell.
+      expect(first.terminalId).toBe(DEFAULT_TERMINAL_ID);
+      expect(ptyAdapter.spawnInputs).toHaveLength(2);
+      // Held until the first script's keys arrive.
+      expect((yield* openForScript("terminal-b")).terminalId).toBe("terminal-b");
+
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "bun run lint\r",
+        origin: "script",
+      });
+      // Busy until polling is sure the script ended.
+      expect((yield* openForScript("terminal-c")).terminalId).toBe("terminal-c");
+      yield* waitFor(
+        openForScript("terminal-d").pipe(
+          Effect.map((opened) => opened.terminalId === DEFAULT_TERMINAL_ID),
+        ),
+        "1500 millis",
+      );
+    }),
+  );
+
+  it.effect("takes no tab over whose shell ran a PowerShell command itself", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "win32",
+        shellResolver: () => "pwsh.exe",
+      });
+      const updates = yield* collectRunUpdates(manager);
+      yield* manager.startCommandRun(
+        commandRunInput({ terminalId: "ran-here", dialect: "powershell", command: "npm install" }),
+      );
+      // The command ran in the tab's own shell, which may have moved since.
+      ptyAdapter.processes[0]!.emitData(
+        "\u001b]6973;run-1;start\u0007ok\r\n\u001b]6973;run-1;0\u0007",
+      );
+      yield* runFinished(updates, "run-1");
+
+      const chosen = yield* manager.startCommandRun(
+        commandRunInput({
+          runId: "run-2",
+          terminalId: "terminal-new",
+          dialect: "powershell",
+          command: "npm test",
+          reuseTerminalIds: ["ran-here"],
+        }),
+      );
+      expect(chosen).toBe("terminal-new");
     }),
   );
 });

@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const DEFAULT_TERMINAL_ID = "default";
+/** At most this many tabs are offered for a command to go into (`TerminalReuseIds`). */
+export const MAX_TERMINAL_REUSE_IDS = 64;
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const TerminalColsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(
@@ -29,6 +31,15 @@ const TerminalIdWithDefaultSchema = TerminalIdSchema.pipe(
   Schema.withDecodingDefault(Effect.succeed(DEFAULT_TERMINAL_ID)),
 );
 
+/**
+ * Tabs a command may go into instead of opening a new one, in the order the
+ * drawer lists them: the first free one (nothing typed in it, nothing running)
+ * is used (docs/terminal-command-runs.md).
+ */
+export const TerminalReuseIds = Schema.Array(TerminalIdSchema).check(
+  Schema.isMaxLength(MAX_TERMINAL_REUSE_IDS),
+);
+
 export const TerminalThreadInput = Schema.Struct({
   threadId: TrimmedNonEmptyStringSchema,
 });
@@ -47,12 +58,23 @@ export const TerminalOpenInput = Schema.Struct({
   cols: Schema.optional(TerminalColsSchema),
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
+  /**
+   * For a caller about to type a script: open the first of these tabs that is
+   * free and in this folder and environment, instead of `terminalId`. The tab
+   * it returns is held for that script (a write with `origin: "script"`).
+   */
+  reuseTerminalIds: Schema.optional(TerminalReuseIds),
 });
 export type TerminalOpenInput = Schema.Codec.Encoded<typeof TerminalOpenInput>;
 
 export const TerminalWriteInput = Schema.Struct({
   ...TerminalSessionInput.fields,
   data: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(65_536)),
+  /**
+   * `script`: a command Threadlines types for the user (a project script), not
+   * their keys. Once it finishes, the tab is free for the next command again.
+   */
+  origin: Schema.optional(Schema.Literal("script")),
 });
 export type TerminalWriteInput = Schema.Codec.Encoded<typeof TerminalWriteInput>;
 

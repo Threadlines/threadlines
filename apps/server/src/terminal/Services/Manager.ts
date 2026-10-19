@@ -82,13 +82,15 @@ export class TerminalCommandRunError extends Schema.TaggedError<TerminalCommandR
 ) {}
 
 /**
- * A suggested command for a new terminal tab (docs/terminal-command-runs.md).
+ * A suggested command for a terminal tab (docs/terminal-command-runs.md).
  * `run` spawns it as its own tracked process; `insert` types it at the prompt
- * of a fresh shell and leaves Enter to the user.
+ * of a fresh shell and leaves Enter to the user. It takes over the first free
+ * tab of `reuseTerminalIds`, or opens `terminalId` when none is free.
  */
 export interface TerminalCommandRunInput {
   readonly threadId: string;
   readonly terminalId: string;
+  readonly reuseTerminalIds?: ReadonlyArray<string>;
   readonly runId: string;
   readonly mode: "run" | "insert";
   readonly dialect: "posix" | "powershell";
@@ -140,7 +142,8 @@ export interface TerminalManagerShape {
    * Open or attach to a terminal session.
    *
    * Reuses an existing session for the same thread/terminal id and restores
-   * persisted history on first open.
+   * persisted history on first open. With `reuseTerminalIds`, opens the first
+   * free one of those instead and claims it; the snapshot names the tab.
    */
   readonly open: (
     input: TerminalOpenInput,
@@ -190,13 +193,18 @@ export interface TerminalManagerShape {
   ) => Effect.Effect<() => void>;
 
   /**
-   * Open a new terminal tab for a suggested command. Returns once the shell is
-   * spawned; how the run goes arrives through `subscribeCommandRuns`. Fails
-   * when the tab id is taken or the shell can't run commands this way.
+   * Start a suggested command in a free tab or a new one, and return the tab.
+   * `onTabChosen` runs once the tab is picked and before anything in it
+   * changes, with no other open or run of the thread in between; a failure
+   * there leaves every tab as it was. Returns once the shell is spawned; how
+   * the run goes arrives through `subscribeCommandRuns`. Fails when the new
+   * tab's id is taken, the tab was typed in meanwhile, or the shell can't run
+   * commands this way.
    */
-  readonly startCommandRun: (
+  readonly startCommandRun: <E = never>(
     input: TerminalCommandRunInput,
-  ) => Effect.Effect<void, TerminalCommandRunError | TerminalCwdError>;
+    onTabChosen?: (terminalId: string) => Effect.Effect<void, E>,
+  ) => Effect.Effect<string, TerminalCommandRunError | TerminalCwdError | E>;
 
   /**
    * The output a run has so far, while its tab is open: a `run` still going,

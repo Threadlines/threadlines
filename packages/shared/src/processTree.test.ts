@@ -2,7 +2,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
-import { isProcessAlive, listDescendantProcessIds, signalProcessSilently } from "./processTree.ts";
+import {
+  isProcessAlive,
+  listDescendantProcessIds,
+  listTerminalProcessIds,
+  signalProcessSilently,
+  terminalProcessIdsFromTable,
+} from "./processTree.ts";
 
 const spawned: ChildProcess[] = [];
 
@@ -78,5 +84,43 @@ describe.skipIf(process.platform === "win32")("signalProcessSilently", () => {
     expect(isProcessAlive(rootPid)).toBe(false);
     // Signaling the now-dead tree again must not throw.
     signalProcessSilently(rootPid, "SIGTERM");
+  });
+});
+
+describe("terminalProcessIdsFromTable", () => {
+  const table = [
+    "  100     1 ttys004",
+    "  101   100 ttys004", // the shell's child
+    "  102   101 ??", // a grandchild that dropped the terminal
+    "  103     1 ttys004", // a job left behind, reparented to pid 1
+    "  104     1 ttys005", // another tab
+    "  105     1 ??",
+    "",
+  ].join("\n");
+
+  it("finds the shell's descendants and everything else on its terminal", () => {
+    expect(terminalProcessIdsFromTable(table, 100)?.toSorted()).toEqual([101, 102, 103]);
+  });
+
+  it("finds nothing else for a shell alone on its terminal", () => {
+    expect(terminalProcessIdsFromTable(table, 104)).toEqual([]);
+  });
+
+  it("matches no terminal for a process without one", () => {
+    expect(terminalProcessIdsFromTable(table, 105)).toEqual([]);
+  });
+
+  it("can't tell for a shell that isn't in the table", () => {
+    expect(terminalProcessIdsFromTable(table, 999)).toBeNull();
+  });
+});
+
+describe.skipIf(process.platform === "win32")("listTerminalProcessIds", () => {
+  it("lists a live process's descendants", async () => {
+    const root = spawnTree();
+    expect(root.pid).toBeDefined();
+    if (root.pid === undefined) return;
+    const descendants = await waitForDescendants(root.pid, 2);
+    expect(listTerminalProcessIds(root.pid)).toEqual(expect.arrayContaining(descendants));
   });
 });

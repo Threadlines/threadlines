@@ -1,11 +1,12 @@
 /**
  * What the chat's command buttons do (docs/terminal-command-runs.md): start a
- * run in a new terminal tab, send a run's output to its agent, skip a request,
- * and bring a run's tab forward. ChatView builds this once per thread and
- * provides it through CommandRunActionsContext.
+ * run in a free terminal tab or a new one, send a run's output to its agent,
+ * skip a request, and bring a run's tab forward. ChatView builds this once per
+ * thread and provides it through CommandRunActionsContext.
  */
 import {
   CommandRunId,
+  MAX_TERMINAL_REUSE_IDS,
   type CommandDialect,
   type EnvironmentId,
   type OrchestrationCommandRun,
@@ -82,7 +83,9 @@ export function useCommandRunActions(input: {
         .start({
           threadId,
           runId: CommandRunId.make(randomUUID()),
+          // The server takes the first free tab of these, or opens this new one.
           terminalId,
+          reuseTerminalIds: terminalIds.slice(0, MAX_TERMINAL_REUSE_IDS),
           mode,
           dialect,
           command,
@@ -98,7 +101,7 @@ export function useCommandRunActions(input: {
           rows: RUN_TERMINAL_ROWS,
         })
         .then(
-          () => focusTerminal(terminalId),
+          (started) => focusTerminal(started?.terminalId ?? terminalId),
           (error: unknown) => {
             toastManager.add(
               stackedThreadToast({
@@ -111,7 +114,7 @@ export function useCommandRunActions(input: {
           },
         );
     },
-    [cwd, dialect, environmentId, focusTerminal, projectCwd, threadId, worktreePath],
+    [cwd, dialect, environmentId, focusTerminal, projectCwd, terminalIds, threadId, worktreePath],
   );
 
   const sendOutput = useCallback<CommandRunActions["sendOutput"]>(

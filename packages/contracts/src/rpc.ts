@@ -137,6 +137,7 @@ import {
   CommandRunSendOutputInput,
   CommandRunSendOutputResult,
   CommandRunStartInput,
+  CommandRunStartResult,
   AgentPageReadResult,
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
@@ -1035,6 +1036,8 @@ export const WsPagesReadRpc = Rpc.make(WS_METHODS.pagesRead, {
 
 export const WsCommandRunsStartRpc = Rpc.make(WS_METHODS.commandRunsStart, {
   payload: CommandRunStartInput,
+  // Undefined from servers that predate tab reuse, and for starts without it.
+  success: Schema.UndefinedOr(CommandRunStartResult),
   error: CommandRunError,
 });
 
