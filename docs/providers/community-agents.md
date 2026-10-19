@@ -70,8 +70,10 @@ Threadlines doesn't know what an untested agent's modes mean, so it never
 picks one for you. If the agent has modes, they show as a **Mode** option in
 the composer, next to the model.
 
-"Approval required" and "Full access" still decide how Threadlines answers
-when the agent asks for permission to do something.
+The access level only decides how Threadlines answers when the agent asks for
+permission to do something: Supervised asks you, Full access says yes. That's
+why these agents offer just those two levels. A chat set to Auto-accept edits
+or Auto runs as Supervised.
 
 ## What works
 

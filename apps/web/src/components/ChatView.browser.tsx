@@ -6880,6 +6880,59 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("shows the access level an agent without Auto runs a chat set to Auto at", async () => {
+    setDraftThreadWithoutWorktree();
+    const draftThread = useComposerDraftStore.getState().draftThreadsByThreadKey[THREAD_KEY]!;
+    useComposerDraftStore.setState({
+      draftThreadsByThreadKey: { [THREAD_KEY]: { ...draftThread, runtimeMode: "auto" } },
+    });
+
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (nextFixture) => {
+        // The draft's agent has no Auto level, as with Pi.
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: nextFixture.serverConfig.providers.map((provider, index) =>
+            index === 0
+              ? {
+                  ...provider,
+                  supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
+                }
+              : provider,
+          ),
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const footer = await waitForElement(
+        findVisibleComposerFooter,
+        "Unable to find composer footer.",
+      );
+      await vi.waitFor(() => {
+        expect(
+          footer.querySelector('button[aria-label="Access level: Auto-accept edits"]'),
+        ).not.toBeNull();
+      });
+      // The chat keeps its choice, for an agent that has Auto.
+      const chosen = () =>
+        useComposerDraftStore.getState().draftThreadsByThreadKey[THREAD_KEY]?.runtimeMode;
+      expect(chosen()).toBe("auto");
+
+      // Picking the level shown pins it.
+      footer.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]')!.click();
+      await clickSelectItemContainingText("Auto-accept edits");
+      await vi.waitFor(() => {
+        expect(chosen()).toBe("auto-accept-edits");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps removed terminal context pills removed when a new one is added", async () => {
     const removedLabel = "Terminal 1 lines 1-2";
     const addedLabel = "Terminal 2 lines 9-10";

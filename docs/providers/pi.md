@@ -41,6 +41,9 @@ set it as your default in Pi.
 | Full access       | Everything runs                                                  |
 | Plan mode         | Reading only; any change is declined and the answer is a plan    |
 
+Pi has no Auto level. A chat set to Auto, for example by your default, runs as Auto-accept edits,
+and the composer says so.
+
 `Always allow this session` allows all file edits for the rest of the chat, or that exact command again.
 
 Approvals are not a sandbox. Pi's own `!` shell commands and tools from other extensions don't

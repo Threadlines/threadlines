@@ -31,7 +31,12 @@ import type { ChildProcessSpawner } from "effect/unstable/process";
 
 import { detectPiBinary } from "../pi/PiBinary.ts";
 import type { PiInstallation } from "../pi/PiInstallation.ts";
-import { type PiLaunch, piProcessArgs, piProcessEnvironment } from "../pi/PiLaunch.ts";
+import {
+  PI_ACCESS_LEVELS,
+  type PiLaunch,
+  piProcessArgs,
+  piProcessEnvironment,
+} from "../pi/PiLaunch.ts";
 import {
   decodePi,
   type PiCommandInfo,
@@ -56,7 +61,7 @@ export const PI_PRESENTATION = {
   displayName: "Pi",
   // Plan mode is enforced by the Threadlines extension.
   showInteractionModeToggle: true,
-  supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
+  supportedRuntimeModes: PI_ACCESS_LEVELS,
 } as const;
 
 const DISCOVERY_STARTUP_TIMEOUT = Duration.seconds(15);

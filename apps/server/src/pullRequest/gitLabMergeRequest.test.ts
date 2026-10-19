@@ -7,6 +7,7 @@ import {
   decodeGitLabCommitsJson,
   decodeGitLabDiffsJson,
   decodeGitLabDiscussionsJson,
+  decodeGitLabMergeRequestDetailJson,
   decodeGitLabMergeRequestListJson,
   decodeGitLabNotesJson,
   decodeGitLabProjectJson,
@@ -62,6 +63,25 @@ describe("decodeGitLabMergeRequestListJson", () => {
     );
 
     assert.deepStrictEqual(rows[0]?.reviewRequestedLogins, ["hubot"]);
+  });
+});
+
+describe("decodeGitLabMergeRequestDetailJson", () => {
+  it("holds the merge for a rebase only where GitLab says the project needs one", () => {
+    const gate = (status: string | undefined) =>
+      success(
+        decodeGitLabMergeRequestDetailJson(
+          JSON.stringify(
+            mergeRequest({ diverged_commits_count: 2, detailed_merge_status: status }),
+          ),
+        ),
+      ).mergeGate;
+
+    // A fast-forward project will not merge a branch main has moved past.
+    assert.strictEqual(gate("need_rebase"), "behind");
+    // A merge-commit project takes the same stale branch as it is.
+    assert.strictEqual(gate("mergeable"), undefined);
+    assert.strictEqual(gate(undefined), undefined);
   });
 });
 

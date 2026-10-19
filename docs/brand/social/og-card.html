@@ -1,9 +1,18 @@
 <!doctype html>
+<!--
+  The site's social card (apps/marketing/public/og.png) and the README header.
+  Render at 2400x1260, device scale 1, and save over og.png. The screenshot is the
+  homepage hero's poster frame (1600px wide), drawn smaller so it stays sharp.
+-->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=2400, initial-scale=1" />
     <title>Threadlines social card</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400&display=swap"
+      rel="stylesheet"
+    />
     <style>
       * {
         box-sizing: border-box;
@@ -21,32 +30,32 @@
         position: relative;
         background: #09090b;
         color: #fafafa;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family:
+          "Hanken Grotesk",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
       }
 
       .ambient {
         position: absolute;
         inset: 0;
         background:
-          radial-gradient(circle at 76% 12%, rgba(110, 148, 250, 0.1), transparent 33%),
-          linear-gradient(180deg, #0d0d10 0%, #09090b 34%);
+          radial-gradient(circle at 70% 8%, oklch(0.62 0.19 264 / 0.16), transparent 38%),
+          radial-gradient(circle at 8% 92%, oklch(0.62 0.19 264 / 0.08), transparent 34%),
+          linear-gradient(180deg, #0d0d10 0%, #09090b 40%);
       }
 
-      .masthead {
+      .copy {
         position: absolute;
-        top: 42px;
-        right: 72px;
-        left: 72px;
-        display: flex;
-        height: 90px;
-        align-items: center;
-        justify-content: space-between;
-        gap: 48px;
+        top: 104px;
+        left: 104px;
+        width: 760px;
       }
 
       .brand {
         display: flex;
-        min-width: max-content;
         align-items: center;
         gap: 22px;
       }
@@ -62,40 +71,50 @@
         letter-spacing: -0.035em;
       }
 
-      .positioning {
-        color: rgba(250, 250, 250, 0.7);
-        font-size: 34px;
-        font-weight: 500;
-        letter-spacing: -0.018em;
-        white-space: nowrap;
-      }
-
-      .positioning strong {
-        color: #8ca5ff;
+      h1 {
+        margin: 92px 0 0;
+        font-size: 92px;
         font-weight: 600;
+        line-height: 1.04;
+        letter-spacing: -0.04em;
       }
 
-      .release {
-        min-width: max-content;
-        color: rgba(250, 250, 250, 0.42);
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-size: 25px;
-        letter-spacing: 0.04em;
+      h1 span {
+        color: oklch(0.7 0.17 264);
       }
 
-      .workspace {
+      .sub {
+        margin: 40px 0 0;
+        color: #a1a1aa;
+        font-size: 38px;
+        font-weight: 500;
+        line-height: 1.35;
+        letter-spacing: -0.015em;
+      }
+
+      .facts {
         position: absolute;
-        top: 154px;
-        right: 56px;
-        bottom: 44px;
-        left: 56px;
-        overflow: hidden;
-        border: 2px solid rgba(255, 255, 255, 0.16);
-        border-radius: 24px;
-        background: #1c1c1e;
+        bottom: 104px;
+        left: 104px;
+        color: #71717a;
+        font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 26px;
+        letter-spacing: 0.02em;
       }
 
-      .workspace img {
+      .shot {
+        position: absolute;
+        top: 222px;
+        right: 96px;
+        width: 1400px;
+        overflow: hidden;
+        border: 2px solid rgba(255, 255, 255, 0.14);
+        border-radius: 28px;
+        background: #1c1c1e;
+        box-shadow: 0 40px 120px rgba(0, 0, 0, 0.55);
+      }
+
+      .shot img {
         display: block;
         width: 100%;
         height: auto;
@@ -104,7 +123,7 @@
   </head>
   <body>
     <div class="ambient" aria-hidden="true"></div>
-    <header class="masthead">
+    <div class="copy">
       <div class="brand">
         <svg viewBox="36 86 184 100" fill="none" aria-hidden="true">
           <defs>
@@ -117,7 +136,7 @@
               y2="162"
             >
               <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.45" />
-              <stop offset="1" stop-color="#6e94fa" />
+              <stop offset="1" stop-color="oklch(0.7 0.17 264)" />
             </linearGradient>
           </defs>
           <g stroke-linecap="round" stroke-width="10">
@@ -129,21 +148,17 @@
             <circle cx="108" cy="98" r="8.5" />
             <circle cx="178" cy="98" r="7" />
           </g>
-          <circle cx="194" cy="162" r="21" fill="#6e94fa" fill-opacity="0.16" />
-          <circle cx="194" cy="162" r="12.5" fill="#6e94fa" />
+          <circle cx="194" cy="162" r="21" fill="oklch(0.7 0.17 264)" fill-opacity="0.16" />
+          <circle cx="194" cy="162" r="12.5" fill="oklch(0.7 0.17 264)" />
         </svg>
         <span class="brand-name">Threadlines</span>
       </div>
-      <div class="positioning">
-        Agents, browser, and <strong>source control</strong>. One workspace.
-      </div>
-      <div class="release">v0.3.0</div>
-    </header>
-    <main class="workspace">
-      <img
-        src="../../../apps/marketing/public/Screenshots/launch/workspace-four-panel-overview.png"
-        alt=""
-      />
+      <h1>Your coding agents, <span>together in one thread.</span></h1>
+      <p class="sub">An open-source ADE for Claude Code, Codex, OpenCode, Cursor and more.</p>
+    </div>
+    <p class="facts">Free · MIT · macOS, Windows, Linux</p>
+    <main class="shot">
+      <img src="../../../apps/marketing/public/Screenshots/rooms/rooms.webp" alt="" />
     </main>
   </body>
 </html>

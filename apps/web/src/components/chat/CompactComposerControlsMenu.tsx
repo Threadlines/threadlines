@@ -82,8 +82,10 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
         <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
         <MenuRadioGroup
           value={props.runtimeMode}
+          // Shown is the level the chat runs at, which can differ from the
+          // one chosen: picking it pins it, so only an empty value is skipped.
           onValueChange={(value) => {
-            if (!value || value === props.runtimeMode) return;
+            if (!value) return;
             props.onRuntimeModeChange(value as RuntimeMode);
           }}
         >
