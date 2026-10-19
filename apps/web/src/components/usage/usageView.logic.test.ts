@@ -1,6 +1,8 @@
 import {
+  ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
+  type UsageBreakdownWindow,
   type UsageBucket,
   type UsageDay,
   type UsageHourBucket,
@@ -14,6 +16,7 @@ import {
   buildDayWindowView,
   buildHourWindowView,
   buildUsageBarChart,
+  buildUsageLimitHabitLines,
   buildUsageStats,
   visibleUsageModels,
 } from "./usageView.logic";
@@ -224,5 +227,53 @@ describe("buildUsageStats", () => {
       ["Cache hit rate", "0.0%", "of input came from cache"],
       ["vs previous 24 hours", "+50%", "1K in the 24 hours before"],
     ]);
+  });
+});
+
+describe("buildUsageLimitHabitLines", () => {
+  const window = (overrides: Partial<UsageBreakdownWindow>): UsageBreakdownWindow => ({
+    requestCount: 100,
+    sessionCount: 4,
+    behaviors: [],
+    ...overrides,
+  });
+  const claude = ProviderInstanceId.make("claudeAgent");
+  const work = ProviderInstanceId.make("claude-work");
+  const result = {
+    breakdowns: [
+      {
+        instanceId: claude,
+        status: "ready" as const,
+        readAt: "2026-10-18T12:00:00.000Z",
+        day: window({ requestCount: 0, sessionCount: 0 }),
+        week: window({
+          behaviors: [
+            { key: "high_parallel", pct: 52, count: 900 },
+            { key: "long_context", pct: 92, count: 1300 },
+            // One Threadlines has no words for yet.
+            { key: "newer_habit", pct: 70, count: 10 },
+            { key: "cron", pct: 48, count: 5 },
+            { key: "subagent_heavy", pct: 84, count: 18 },
+            { key: "max_effort", pct: 30, count: 40 },
+          ],
+        }),
+      },
+      { instanceId: work, status: "unavailable" as const },
+    ],
+  };
+
+  it("names the four biggest habits for the week, and gives nothing for a quiet day", () => {
+    const week = buildUsageLimitHabitLines(result, 7);
+    expect(week.get(claude)?.habits.map((habit) => [habit.phrase, habit.pct])).toEqual([
+      ["long chats", 92],
+      ["heavy subagent use", 84],
+      ["many chats at once", 52],
+      ["all-day chats", 48],
+    ]);
+    // No report, no line.
+    expect(week.has(work)).toBe(false);
+    // A month view shows the week too: Claude reports nothing longer.
+    expect(buildUsageLimitHabitLines(result, 30).get(claude)?.window).toBe("week");
+    expect(buildUsageLimitHabitLines(result, "24h").has(claude)).toBe(false);
   });
 });

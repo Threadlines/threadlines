@@ -162,6 +162,7 @@ function createProviderServiceHarness(
       }),
     rollbackConversation,
     readSubagentTranscript: () => unsupported(),
+    readCommandOutput: () => unsupported(),
     sendSubagentInput: () => unsupported(),
     deleteThread: () => unsupported(),
     get streamEvents() {

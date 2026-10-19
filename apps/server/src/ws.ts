@@ -1432,6 +1432,15 @@ const makeWsRpcLayer = (currentSession: {
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverReadCommandOutput]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReadCommandOutput,
+            // A read that can't be made is an answer the line can stop on.
+            providerService
+              .readCommandOutput(input)
+              .pipe(Effect.orElseSucceed(() => ({ status: "unavailable" }) as const)),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverReadWorkflowRunFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReadWorkflowRunFile,
@@ -1659,6 +1668,10 @@ const makeWsRpcLayer = (currentSession: {
           ),
         [WS_METHODS.usageSummary]: (input) =>
           observeRpcEffect(WS_METHODS.usageSummary, usage.readSummary(input), {
+            "rpc.aggregate": "usage",
+          }),
+        [WS_METHODS.usageBreakdowns]: () =>
+          observeRpcEffect(WS_METHODS.usageBreakdowns, providerRegistry.readUsageBreakdowns, {
             "rpc.aggregate": "usage",
           }),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>

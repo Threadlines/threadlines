@@ -27,6 +27,7 @@ import {
   ProviderSessionStartInput,
   ProviderStartReviewInput,
   ProviderSubagentInputRequest,
+  ProviderCommandOutputInput,
   ProviderSubagentTranscriptInput,
   ProviderSteerTurnInput,
   ProviderStopSessionInput,
@@ -2176,6 +2177,34 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const readCommandOutput: ProviderServiceShape["readCommandOutput"] = Effect.fn(
+    "readCommandOutput",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.readCommandOutput",
+      schema: ProviderCommandOutputInput,
+      payload: rawInput,
+    });
+    // The command may be a room agent's, and only one session knows it, so
+    // each live session is asked in turn; none is started to answer.
+    let pending = false;
+    for (const sessionKey of yield* threadSessionKeys(input.threadId)) {
+      const answer = yield* Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: sessionKey,
+          operation: "ProviderService.readCommandOutput",
+          allowRecovery: false,
+        });
+        const read = routed.adapter.readCommandOutput;
+        if (!routed.isActive || read === undefined) return undefined;
+        return yield* read(routed.threadId, input.toolCallId);
+      }).pipe(Effect.orElseSucceed(() => undefined));
+      if (answer?.status === "running") return answer;
+      if (answer?.status === "pending") pending = true;
+    }
+    return { status: pending ? "pending" : "unavailable" } as const;
+  });
+
   const sendSubagentInput: ProviderServiceShape["sendSubagentInput"] = Effect.fn(
     "sendSubagentInput",
   )(function* (rawInput) {
@@ -2379,6 +2408,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getInstanceInfo,
     rollbackConversation,
     readSubagentTranscript,
+    readCommandOutput,
     sendSubagentInput,
     deleteThread,
     // Each access creates a fresh PubSub subscription so that multiple

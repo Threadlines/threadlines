@@ -23,6 +23,7 @@ import {
 } from "@threadlines/contracts";
 import { applyGitStatusStreamEvent } from "@threadlines/shared/git";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { type WsRpcProtocolClient } from "./protocol";
@@ -40,6 +41,9 @@ interface StreamSubscriptionOptions {
   /** Fires when a stream attempt failed and the transport is about to retry. */
   readonly onRetry?: (error: unknown, attempt: number) => void;
 }
+
+/** How long a polled read of a command's output may take. */
+const OUTPUT_READ_TIMEOUT = Option.some("5 seconds" as const);
 
 type RpcUnaryMethod<TTag extends RpcTag> =
   RpcMethod<TTag> extends (input: any, options?: any) => Effect.Effect<infer TSuccess, any, any>
@@ -137,6 +141,7 @@ export interface WsRpcClient {
   };
   readonly usage: {
     readonly summary: RpcUnaryMethod<typeof WS_METHODS.usageSummary>;
+    readonly breakdowns: RpcUnaryNoArgMethod<typeof WS_METHODS.usageBreakdowns>;
   };
   readonly sourceControl: {
     readonly lookupRepository: RpcUnaryMethod<typeof WS_METHODS.sourceControlLookupRepository>;
@@ -289,6 +294,7 @@ export interface WsRpcClient {
     readonly readBackgroundRunOutput: RpcUnaryMethod<
       typeof WS_METHODS.serverReadBackgroundRunOutput
     >;
+    readonly readCommandOutput: RpcUnaryMethod<typeof WS_METHODS.serverReadCommandOutput>;
     readonly stopBackgroundRun: RpcUnaryMethod<typeof WS_METHODS.serverStopBackgroundRun>;
     readonly getProviderExtensions: RpcUnaryMethod<typeof WS_METHODS.serverGetProviderExtensions>;
     readonly startProviderExtensionMcpOAuth: RpcUnaryMethod<
@@ -582,6 +588,14 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           attemptTimeoutMs: 120_000,
           totalBudgetMs: 180_000,
         }),
+      // Pure read too. The server asks Claude, which reads a week of
+      // transcripts; the server gives it a minute and a half.
+      breakdowns: () =>
+        transport.requestWithReconnectRetry((client) => client[WS_METHODS.usageBreakdowns]({}), {
+          label: WS_METHODS.usageBreakdowns,
+          attemptTimeoutMs: 120_000,
+          totalBudgetMs: 180_000,
+        }),
     },
     sourceControl: {
       lookupRepository: (input) =>
@@ -806,11 +820,21 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) =>
           client[WS_METHODS.serverStopBackgroundRun](input).pipe(Effect.withTracerEnabled(false)),
         ),
+      // Polled while a row is on screen: a read that hangs is cancelled
+      // rather than left waiting, so polls never pile up behind it.
       readBackgroundRunOutput: (input) =>
-        transport.request((client) =>
-          client[WS_METHODS.serverReadBackgroundRunOutput](input).pipe(
-            Effect.withTracerEnabled(false),
-          ),
+        transport.request(
+          (client) =>
+            client[WS_METHODS.serverReadBackgroundRunOutput](input).pipe(
+              Effect.withTracerEnabled(false),
+            ),
+          { timeout: OUTPUT_READ_TIMEOUT },
+        ),
+      readCommandOutput: (input) =>
+        transport.request(
+          (client) =>
+            client[WS_METHODS.serverReadCommandOutput](input).pipe(Effect.withTracerEnabled(false)),
+          { timeout: OUTPUT_READ_TIMEOUT },
         ),
       // Pure read. A plain request lost to a dropped socket left the plugins page empty with no
       // error until it remounted. With MCP and apps included the server may legitimately take

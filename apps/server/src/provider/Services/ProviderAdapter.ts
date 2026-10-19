@@ -26,6 +26,7 @@ import type {
   ProviderRealtimeOutputModality,
   ProviderSubagentInputRequest,
   ProviderSubagentInputResult,
+  ProviderCommandOutputResult,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
   ProviderSteerTurnInput,
@@ -369,6 +370,17 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     input: ProviderSubagentTranscriptInput,
   ) => Effect.Effect<ProviderSubagentTranscriptResult, TError>;
+
+  /**
+   * What a command the session is running now has printed so far, by the
+   * tool call that started it. Optional: drivers whose output already
+   * streams as `command_output` deltas omit it. Answers `unavailable` for a
+   * tool call the session doesn't know, so another session can be asked.
+   */
+  readonly readCommandOutput?: (
+    threadId: ThreadId,
+    toolCallId: string,
+  ) => Effect.Effect<ProviderCommandOutputResult, TError>;
 
   /**
    * Send a user message straight to a spawned subagent, starting a turn on

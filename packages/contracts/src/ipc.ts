@@ -78,7 +78,7 @@ import type {
   PullRequestUpdateInput,
 } from "./pullRequest.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
-import type { UsageSummary, UsageSummaryInput } from "./usage.ts";
+import type { UsageBreakdownsResult, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import type {
   ProjectFaviconInput,
   ProjectFaviconResult,
@@ -99,6 +99,8 @@ import type {
   DictationTranscribeResult,
 } from "./dictation.ts";
 import type {
+  ProviderCommandOutputInput,
+  ProviderCommandOutputResult,
   ProviderRealtimeAppendAudioInput,
   ProviderRealtimeAudioChunk,
   ProviderRealtimeStartInput,
@@ -1556,12 +1558,15 @@ export interface EnvironmentApi {
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
     favicon: (input: ProjectFaviconInput) => Promise<ProjectFaviconResult>;
   };
-  /** The commands agents leave running on this environment's machine.
+  /** The commands agents run on this environment's machine.
    * Optional so newer clients can still connect to older Threadlines servers. */
   backgroundRuns?: {
     readOutput: (
       input: ServerReadBackgroundRunOutputInput,
     ) => Promise<ServerReadBackgroundRunOutputResult>;
+    /** What a command an agent is running right now has printed. Optional
+     *  for the same reason. */
+    readCommandOutput?: (input: ProviderCommandOutputInput) => Promise<ProviderCommandOutputResult>;
   };
   /** Provider capabilities scoped to this backend environment. Optional so
    * newer clients can still connect to older Threadlines servers. */
@@ -1657,6 +1662,9 @@ export interface EnvironmentApi {
    */
   usage?: {
     summary: (input: UsageSummaryInput) => Promise<UsageSummary>;
+    /** What used each provider's limits, by the provider's own report.
+     *  Optional for servers from before it. */
+    breakdowns?: () => Promise<UsageBreakdownsResult>;
   };
   sourceControl: {
     lookupRepository: (

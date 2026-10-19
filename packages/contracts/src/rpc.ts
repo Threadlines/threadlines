@@ -36,7 +36,7 @@ import {
   DictationTranscribeInput,
   DictationTranscribeResult,
 } from "./dictation.ts";
-import { UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import { UsageBreakdownsResult, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
   GitActionProgressEvent,
   VcsCommitDetailsInput,
@@ -169,6 +169,8 @@ import {
   ProviderRealtimeAudioChunk,
   ProviderRealtimeError,
   ProviderRealtimeStartInput,
+  ProviderCommandOutputInput,
+  ProviderCommandOutputResult,
   ProviderSubagentInputError,
   ProviderSubagentInputRequest,
   ProviderSubagentInputResult,
@@ -471,6 +473,7 @@ export const WS_METHODS = {
   serverResolveBackgroundRuns: "server.resolveBackgroundRuns",
   serverStopBackgroundRun: "server.stopBackgroundRun",
   serverReadBackgroundRunOutput: "server.readBackgroundRunOutput",
+  serverReadCommandOutput: "server.readCommandOutput",
   serverReadWorkflowRunFile: "server.readWorkflowRunFile",
   serverReadWorkflowAgentTranscript: "server.readWorkflowAgentTranscript",
   serverSaveWorkflowCommand: "server.saveWorkflowCommand",
@@ -498,6 +501,7 @@ export const WS_METHODS = {
 
   // Usage reporting methods
   usageSummary: "usage.summary",
+  usageBreakdowns: "usage.breakdowns",
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
@@ -734,6 +738,11 @@ export const WsServerReadBackgroundRunOutputRpc = Rpc.make(
   },
 );
 
+export const WsServerReadCommandOutputRpc = Rpc.make(WS_METHODS.serverReadCommandOutput, {
+  payload: ProviderCommandOutputInput,
+  success: ProviderCommandOutputResult,
+});
+
 export const WsServerReadWorkflowRunFileRpc = Rpc.make(WS_METHODS.serverReadWorkflowRunFile, {
   payload: WorkflowReadRunFileInput,
   success: WorkflowReadRunFileResult,
@@ -969,6 +978,11 @@ export const WsUsageSummaryRpc = Rpc.make(WS_METHODS.usageSummary, {
   payload: UsageSummaryInput,
   success: UsageSummary,
   error: UsageReadError,
+});
+
+export const WsUsageBreakdownsRpc = Rpc.make(WS_METHODS.usageBreakdowns, {
+  payload: Schema.Struct({}),
+  success: UsageBreakdownsResult,
 });
 
 export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
@@ -1646,6 +1660,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerResolveBackgroundRunsRpc,
   WsServerStopBackgroundRunRpc,
   WsServerReadBackgroundRunOutputRpc,
+  WsServerReadCommandOutputRpc,
   WsServerReadWorkflowRunFileRpc,
   WsServerReadWorkflowAgentTranscriptRpc,
   WsServerSaveWorkflowCommandRpc,
@@ -1670,6 +1685,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProviderInstructionFilesRpc,
   WsServerWriteProviderInstructionFileRpc,
   WsUsageSummaryRpc,
+  WsUsageBreakdownsRpc,
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlListRepositoriesRpc,
   WsSourceControlCloneRepositoryRpc,

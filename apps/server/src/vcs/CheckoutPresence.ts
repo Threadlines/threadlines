@@ -165,6 +165,45 @@ export const isLinkedWorktreeCheckout = (
   });
 
 /**
+ * The main checkout a linked worktree belongs to, or undefined when `cwd` is
+ * not a linked worktree in git's standard layout.
+ *
+ * Read from git's own files rather than asked of git: the worktree's `.git`
+ * file names its admin folder (`<main>/.git/worktrees/<name>`), whose
+ * `commondir` names the repository's `.git`. Only that layout is trusted, and
+ * only when each link points back: the repository `.git` is the main
+ * checkout's own `.git` folder, and the admin folder is one of its worktrees.
+ * A bare repository, a separate git dir, or anything that does not line up
+ * answers undefined.
+ */
+export const resolveLinkedWorktreeMainCheckout = (
+  cwd: string,
+): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const checkout = path.resolve(cwd.trim());
+    const pointer = yield* fs.readFileString(path.join(checkout, ".git"));
+    const gitdirLine = pointer
+      .split(/\r?\n/u)
+      .find((line) => line.startsWith("gitdir:"))
+      ?.slice("gitdir:".length)
+      .trim();
+    if (!gitdirLine) return undefined;
+    const adminDir = yield* fs.realPath(path.resolve(checkout, gitdirLine));
+    const commonDirLine = (yield* fs.readFileString(path.join(adminDir, "commondir"))).trim();
+    const commonDir = yield* fs.realPath(path.resolve(adminDir, commonDirLine));
+    if (path.basename(commonDir) !== ".git") return undefined;
+    const mainCheckout = path.dirname(commonDir);
+    const mainDotGit = path.join(mainCheckout, ".git");
+    if ((yield* fs.stat(mainDotGit)).type !== "Directory") return undefined;
+    if ((yield* fs.realPath(mainDotGit)) !== commonDir) return undefined;
+    // The admin folder must be one of this repository's own worktrees.
+    if (path.dirname(adminDir) !== path.join(commonDir, "worktrees")) return undefined;
+    return mainCheckout;
+  }).pipe(Effect.orElseSucceed(() => undefined));
+
+/**
  * Where a thread's workspace should follow a provider session that reports a
  * working directory other than the one it was started in.
  *

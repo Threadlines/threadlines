@@ -668,6 +668,13 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
    *  to the background, as Ctrl+B does: their tool calls return at once and
    *  the turn goes on. Optional: absent on CLIs that predate it. */
   readonly backgroundTasks?: (toolUseId?: string) => Promise<boolean>;
+  /** The end of a shell task's output (the last 8 KiB), running or ended.
+   *  Optional: absent on CLIs that predate the get_task_output request. */
+  readonly getTaskOutput?: (taskId: string) => Promise<{
+    readonly output: string;
+    readonly total_bytes: number;
+    readonly truncated: boolean;
+  }>;
   readonly close: () => void;
 }
 
@@ -2341,6 +2348,12 @@ const CLAUDE_GOAL_PROPOSAL_WATCH_MS = 60_000;
 /** How long "steer now" waits for the SDK to take the steer before it moves
  *  running work to the background anyway. */
 const CLAUDE_STEER_TAKEN_TIMEOUT = Duration.seconds(2);
+/** How long a read of a running command's output may take; a slower one
+ *  answers "nothing yet" and the client asks again. */
+const CLAUDE_COMMAND_OUTPUT_READ_TIMEOUT = Duration.seconds(3);
+/** The most of a running command's output a read hands back: its end, which
+ *  holds the lines a client shows. Claude itself keeps the last 8 KiB. */
+const CLAUDE_COMMAND_OUTPUT_TAIL_CHARS = 4_096;
 /** The tool the model sets a goal of its own with. */
 const CLAUDE_PROPOSE_GOAL_TOOL_NAME = "ProposeGoal";
 /** Unanswered goal commands remembered past their wait. */
@@ -9336,6 +9349,44 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  /**
+   * What a Bash command running in the session has printed. Claude registers
+   * a command as a shell task a few seconds after it starts (`task_started`
+   * names the tool call); until then a command still in flight is pending.
+   */
+  const readCommandOutput: NonNullable<ClaudeAdapterShape["readCommandOutput"]> = Effect.fn(
+    "readCommandOutput",
+  )(function* (threadId, toolCallId) {
+    const context = sessions.get(threadId);
+    if (!context || context.stopped) return { status: "unavailable" } as const;
+    const getTaskOutput = context.query.getTaskOutput;
+    if (getTaskOutput === undefined) return { status: "unavailable" } as const;
+    const task = Array.from(context.tasks.entries()).find(
+      ([, candidate]) => candidate.toolUseId === toolCallId && candidate.taskType === "local_bash",
+    );
+    if (task === undefined) {
+      const inFlight = Array.from(context.inFlightTools.values()).some(
+        (tool) => tool.itemId === toolCallId,
+      );
+      return { status: inFlight ? "pending" : "unavailable" } as const;
+    }
+    const [taskId, snapshot] = task;
+    if (completedTaskStatusFromClaudeStatus(snapshot.status) !== undefined) {
+      return { status: "unavailable" } as const;
+    }
+    const read = yield* Effect.tryPromise(() => getTaskOutput.call(context.query, taskId)).pipe(
+      Effect.timeoutOption(CLAUDE_COMMAND_OUTPUT_READ_TIMEOUT),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    if (Option.isNone(read)) return { status: "pending" } as const;
+    const { output, total_bytes: totalBytes } = read.value;
+    return {
+      status: "running",
+      tail: output.slice(-CLAUDE_COMMAND_OUTPUT_TAIL_CHARS),
+      totalBytes: Number.isSafeInteger(totalBytes) && totalBytes > 0 ? totalBytes : 0,
+    } as const;
+  });
+
   const readSubagentTranscript: NonNullable<ClaudeAdapterShape["readSubagentTranscript"]> =
     Effect.fn("readSubagentTranscript")(function* (threadId, input) {
       const requestError = (detail: string) =>
@@ -9682,6 +9733,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     compactContext,
     readThread,
     readSubagentTranscript,
+    readCommandOutput,
     rollbackThread,
     respondToRequest,
     respondToUserInput,

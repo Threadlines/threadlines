@@ -39,6 +39,7 @@ import {
   makePendingClaudeProvider,
   probeClaudeCapabilities,
   readClaudeNormalAuthEmail,
+  readClaudeUsageBreakdown,
   refreshClaudeOAuthCredential,
   seedClaudeProviderUsage,
 } from "../Layers/ClaudeProvider.ts";
@@ -90,6 +91,10 @@ const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
  */
 const UNCLASSIFIED_ERROR_PROBE_MIN_INTERVAL_MS = 15_000;
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+// Claude's usage report reads a week of transcripts, and it moves slowly: one
+// reading serves the Usage page for a while. One that failed is retried sooner.
+const USAGE_BREAKDOWN_TTL = Duration.minutes(10);
+const USAGE_BREAKDOWN_RETRY_TTL = Duration.minutes(1);
 const CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE = "Claude sign-in expired. Sign in again, then retry.";
 
 function hasTransientClaudeProbeStatus(provider: ServerProvider): boolean {
@@ -435,6 +440,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             Effect.provideService(Path.Path, path),
           ),
       });
+      // One reading at a time: a Usage page opened twice shares the read.
+      const usageBreakdownCache = yield* Cache.makeWith(
+        () =>
+          readClaudeUsageBreakdown(effectiveConfig, processEnv, { readStoredSignIn }).pipe(
+            Effect.provideService(Path.Path, path),
+          ),
+        {
+          capacity: 1,
+          timeToLive: (exit) =>
+            Exit.isSuccess(exit) && exit.value.status === "ready"
+              ? USAGE_BREAKDOWN_TTL
+              : USAGE_BREAKDOWN_RETRY_TTL,
+        },
+      );
       const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(
         effectiveConfig,
         processEnv,
@@ -607,6 +626,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        // An account that shares the main folder's history would report the
+        // main instance's transcripts again, as with token usage above.
+        ...(accountFolder?.sharesMainHistory
+          ? {}
+          : {
+              accountUsage: {
+                readUsageBreakdown: Cache.get(usageBreakdownCache, "breakdown"),
+              },
+            }),
       } satisfies ProviderInstance;
     }),
 };

@@ -17,6 +17,7 @@ import type {
   ServerProviderRateLimitResetCreditConsumeResult,
   ServerProviderRateLimitResetCreditError,
   ServerProviderUpdateState,
+  UsageBreakdownsResult,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -53,6 +54,12 @@ export interface ProviderRegistryShape {
   readonly refreshInstance: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  /**
+   * What used each enabled instance's limits, from instances whose provider
+   * reports it. Never fails: an instance that can't read one says so.
+   */
+  readonly readUsageBreakdowns: Effect.Effect<UsageBreakdownsResult>;
 
   /**
    * Consume one provider-managed reset credit for the configured instance,
