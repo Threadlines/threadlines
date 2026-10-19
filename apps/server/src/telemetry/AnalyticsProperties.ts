@@ -529,12 +529,20 @@ export function classifyProviderSessionStart(input: {
 
 export type AnalyticsSignInState = "yes" | "no" | "unknown";
 
-/** Property prefixes for the drivers we report by name; others only count toward the totals. */
+/**
+ * Property prefixes for every driver. Community agents share one prefix, so it
+ * says whether any of them is on, installed or signed in, never which one.
+ */
 const READINESS_DRIVER_KEYS: Readonly<Record<string, string>> = {
+  acpRegistry: "communityAgent",
+  antigravity: "antigravity",
   claudeAgent: "claude",
   codex: "codex",
   cursor: "cursor",
   fx: "fx",
+  grok: "grok",
+  muse: "muse",
+  opencode: "opencode",
   pi: "pi",
 };
 

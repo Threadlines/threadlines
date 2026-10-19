@@ -5,6 +5,7 @@ import {
   type ServerProvider,
 } from "@threadlines/contracts";
 
+import { BUILT_IN_DRIVERS } from "../provider/builtInDrivers.ts";
 import {
   analyticsAgentProperties,
   analyticsModelProperties,
@@ -266,6 +267,33 @@ describe("AnalyticsProperties", () => {
         codexSignedIn: "unknown",
       },
     );
+  });
+
+  it("names every built-in agent, and community agents together without naming them", () => {
+    for (const { driverKind } of BUILT_IN_DRIVERS) {
+      const properties = providerReadinessProperties([providerSnapshot(driverKind)]);
+      assert.isTrue(
+        Object.keys(properties).some((key) => key.endsWith("Enabled")),
+        `${driverKind} has no readiness properties of its own`,
+      );
+    }
+
+    const communityAgent = (id: string, overrides: Partial<ServerProvider> = {}) =>
+      providerSnapshot("acpRegistry", {
+        instanceId: ProviderInstanceId.make(`acp-${id}`),
+        ...overrides,
+      });
+    const properties = providerReadinessProperties([
+      communityAgent("pi-acp"),
+      communityAgent("kimi-cli", { installed: false, auth: { status: "unknown" } }),
+    ]);
+    assert.include(properties, {
+      communityAgentEnabled: true,
+      communityAgentInstalled: true,
+      communityAgentSignedIn: "yes",
+    });
+    assert.notInclude(JSON.stringify(properties), "pi-acp");
+    assert.notInclude(JSON.stringify(properties), "kimi-cli");
   });
 
   it("does not count an agent whose check timed out as ready", () => {
