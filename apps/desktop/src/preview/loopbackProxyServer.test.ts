@@ -176,17 +176,21 @@ describe("startLoopbackProxyServer", () => {
     const tunnels = directTunnels();
     const proxy = await startProxy(tunnels.open);
     let seenHost: string | undefined;
+    let seenPath: string | undefined;
     let sawProxyHeader = false;
     const port = await startServer((request, response) => {
       seenHost = request.headers.host;
+      seenPath = request.url;
       sawProxyHeader = request.headers["proxy-authorization"] !== undefined;
       response.setHeader("set-cookie", ["a=1", "b=2"]);
-      response.end(`you asked for ${request.url}`);
+      response.end("the page");
     });
 
     const answer = await getThrough(proxy, `http://localhost:${port}/app?x=1`, credentials(proxy));
     expect(answer.status).toBe(200);
-    expect(answer.body).toBe("you asked for /app?x=1");
+    expect(answer.body).toBe("the page");
+    // The server sees the path, not the whole URL the proxy was handed.
+    expect(seenPath).toBe("/app?x=1");
     expect(answer.headers["set-cookie"]).toEqual(["a=1", "b=2"]);
     expect(seenHost).toBe(`localhost:${port}`);
     expect(sawProxyHeader).toBe(false);

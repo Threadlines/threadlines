@@ -9,18 +9,28 @@ import { loopbackAddresses, makePreviewTunnel } from "./PreviewTunnel.ts";
 
 const sessionId = "session-a";
 
-/** A server on loopback, closed with the test's scope. */
+/**
+ * A server on loopback, closed with the test's scope. Its connections are
+ * destroyed first: they are half-open by design, so one whose peer has gone
+ * would otherwise hold the close open forever.
+ */
 const listen = (onConnection: (socket: Net.Socket) => void) =>
   Effect.acquireRelease(
-    Effect.callback<{ server: Net.Server; port: number }>((resume) => {
-      const server = Net.createServer({ allowHalfOpen: true }, onConnection);
+    Effect.callback<{ server: Net.Server; port: number; sockets: Set<Net.Socket> }>((resume) => {
+      const sockets = new Set<Net.Socket>();
+      const server = Net.createServer({ allowHalfOpen: true }, (socket) => {
+        sockets.add(socket);
+        socket.once("close", () => sockets.delete(socket));
+        onConnection(socket);
+      });
       server.listen(0, "127.0.0.1", () => {
         const address = server.address() as Net.AddressInfo;
-        resume(Effect.succeed({ server, port: address.port }));
+        resume(Effect.succeed({ server, port: address.port, sockets }));
       });
     }),
-    ({ server }) =>
+    ({ server, sockets }) =>
       Effect.callback<void>((resume) => {
+        for (const socket of sockets) socket.destroy();
         server.close(() => resume(Effect.void));
       }),
   );
