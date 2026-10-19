@@ -770,6 +770,8 @@ export function TerminalViewport({
       attributeFilter: ["class", "style"],
     });
 
+    // When the snapshot this view was drawn from was taken; see applyPendingTerminalEvents.
+    let hydratedSnapshotAt: string | null = null;
     const applyTerminalEvent = (event: TerminalEvent) => {
       const activeTerminal = terminalRef.current;
       if (!activeTerminal) {
@@ -793,6 +795,10 @@ export function TerminalViewport({
         writeTerminalSnapshot(activeTerminal, event.snapshot, () =>
           isTerminalActive(activeTerminal),
         );
+        // Redrawn from this snapshot (a shell started in a tab that is
+        // showing, e.g. a command taking it over): output it holds that
+        // arrives after it must not be drawn again.
+        hydratedSnapshotAt = event.snapshot.updatedAt;
         return;
       }
 
@@ -834,8 +840,6 @@ export function TerminalViewport({
         handleSessionExited();
       }, 0);
     };
-    // When the snapshot this view was drawn from was taken; see applyPendingTerminalEvents.
-    let hydratedSnapshotAt: string | null = null;
     const applyPendingTerminalEvents = (
       terminalEventEntries: ReadonlyArray<{ id: number; event: TerminalEvent }>,
     ) => {

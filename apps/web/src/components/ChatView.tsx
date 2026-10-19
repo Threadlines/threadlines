@@ -5,6 +5,7 @@ import {
   type ApprovalRequestId,
   type ChatSkillReference,
   DEFAULT_MODEL,
+  MAX_TERMINAL_REUSE_IDS,
   defaultInstanceIdForDriver,
   type EnvironmentId,
   type MessageId,
@@ -3229,10 +3230,11 @@ export default function ChatView(props: ChatViewProps) {
     storeNewTerminal(activeThreadRef, terminalId);
     setTerminalFocusRequestId((value) => value + 1);
   }, [activeThreadRef, storeNewTerminal]);
-  // Suggested commands (docs/terminal-command-runs.md): a run's tab, brought
-  // forward with the keyboard in it. A tab the server just opened may not have
-  // reached this store yet; adding it here is what its started event does too.
-  const focusCommandRunTerminal = useCallback(
+  // A tab the server picked for a suggested command or a script
+  // (docs/terminal-command-runs.md), brought forward with the keyboard in it.
+  // A tab it just opened may not have reached this store yet; adding it here
+  // is what its started event does too.
+  const showTerminalTab = useCallback(
     (terminalId: string) => {
       if (!activeThreadRef) return;
       if (terminalState.terminalIds.includes(terminalId)) {
@@ -3264,7 +3266,7 @@ export default function ChatView(props: ChatViewProps) {
     projectCwd: activeProject?.cwd ?? null,
     worktreePath: activeThread?.worktreePath ?? null,
     terminalIds: terminalState.terminalIds,
-    focusTerminal: focusCommandRunTerminal,
+    focusTerminal: showTerminalTab,
     agentLabel: commandRunAgentLabel,
   });
   const performCloseTerminal = useCallback(
@@ -3871,7 +3873,6 @@ export default function ChatView(props: ChatViewProps) {
         cwd?: string;
         env?: Record<string, string>;
         worktreePath?: string | null;
-        preferNewTerminal?: boolean;
         rememberAsLastInvoked?: boolean;
       },
     ) => {
@@ -3884,16 +3885,6 @@ export default function ChatView(props: ChatViewProps) {
         });
       }
       const targetCwd = options?.cwd ?? gitCwd ?? activeProject.cwd;
-      const baseTerminalId =
-        terminalState.activeTerminalId ||
-        terminalState.terminalIds[0] ||
-        DEFAULT_THREAD_TERMINAL_ID;
-      const isBaseTerminalBusy = terminalState.runningTerminalIds.includes(baseTerminalId);
-      const wantsNewTerminal = Boolean(options?.preferNewTerminal) || isBaseTerminalBusy;
-      const shouldCreateNewTerminal = wantsNewTerminal;
-      const targetTerminalId = shouldCreateNewTerminal
-        ? `terminal-${randomUUID()}`
-        : baseTerminalId;
       const targetWorktreePath = options?.worktreePath ?? activeThread.worktreePath ?? null;
 
       setTerminalLaunchContext({
@@ -3901,17 +3892,6 @@ export default function ChatView(props: ChatViewProps) {
         cwd: targetCwd,
         worktreePath: targetWorktreePath,
       });
-      setTerminalOpen(true);
-      if (!activeThreadRef) {
-        return;
-      }
-      if (shouldCreateNewTerminal) {
-        storeNewTerminal(activeThreadRef, targetTerminalId);
-      } else {
-        storeSetActiveTerminal(activeThreadRef, targetTerminalId);
-      }
-      setTerminalFocusRequestId((value) => value + 1);
-
       const runtimeEnv = projectScriptRuntimeEnv({
         project: {
           cwd: activeProject.cwd,
@@ -3919,30 +3899,26 @@ export default function ChatView(props: ChatViewProps) {
         worktreePath: targetWorktreePath,
         ...(options?.env ? { extraEnv: options.env } : {}),
       });
-      const openTerminalInput: TerminalOpenInput = shouldCreateNewTerminal
-        ? {
-            threadId: activeThreadId,
-            terminalId: targetTerminalId,
-            cwd: targetCwd,
-            ...(targetWorktreePath !== null ? { worktreePath: targetWorktreePath } : {}),
-            env: runtimeEnv,
-            cols: SCRIPT_TERMINAL_COLS,
-            rows: SCRIPT_TERMINAL_ROWS,
-          }
-        : {
-            threadId: activeThreadId,
-            terminalId: targetTerminalId,
-            cwd: targetCwd,
-            ...(targetWorktreePath !== null ? { worktreePath: targetWorktreePath } : {}),
-            env: runtimeEnv,
-          };
 
       try {
-        await api.terminal.open(openTerminalInput);
+        // The server picks the first free tab (nothing typed or running in
+        // it, same folder) and holds it for this script, or opens this new one.
+        const opened = await api.terminal.open({
+          threadId: activeThreadId,
+          terminalId: `terminal-${randomUUID()}`,
+          reuseTerminalIds: terminalState.terminalIds.slice(0, MAX_TERMINAL_REUSE_IDS),
+          cwd: targetCwd,
+          ...(targetWorktreePath !== null ? { worktreePath: targetWorktreePath } : {}),
+          env: runtimeEnv,
+          cols: SCRIPT_TERMINAL_COLS,
+          rows: SCRIPT_TERMINAL_ROWS,
+        });
+        showTerminalTab(opened.terminalId);
         await api.terminal.write({
           threadId: activeThreadId,
-          terminalId: targetTerminalId,
+          terminalId: opened.terminalId,
           data: `${script.command}\r`,
+          origin: "script",
         });
       } catch (error) {
         setThreadError(
@@ -3955,16 +3931,11 @@ export default function ChatView(props: ChatViewProps) {
       activeProject,
       activeThread,
       activeThreadId,
-      activeThreadRef,
       gitCwd,
-      setTerminalOpen,
       setThreadError,
-      storeNewTerminal,
-      storeSetActiveTerminal,
       setLastInvokedScriptByProjectId,
+      showTerminalTab,
       environmentId,
-      terminalState.activeTerminalId,
-      terminalState.runningTerminalIds,
       terminalState.terminalIds,
     ],
   );

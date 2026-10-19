@@ -67,7 +67,7 @@ describe("ProjectSetupScriptRunner", () => {
                 restart: () => Effect.die(new Error("unused")),
                 close: () => Effect.void,
                 subscribe: () => Effect.succeed(() => undefined),
-                startCommandRun: () => Effect.void,
+                startCommandRun: () => Effect.die(new Error("unused")),
                 readCommandRunOutput: () => Effect.succeed(null),
                 subscribeCommandRuns: () => Effect.succeed(() => undefined),
               }),
@@ -90,11 +90,12 @@ describe("ProjectSetupScriptRunner", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it("opens the deterministic setup terminal with worktree env and writes the command", async () => {
+  it("writes the command into the free tab the terminal picks, with worktree env", async () => {
+    // The thread's first tab was never used, so the terminal hands it over.
     const open = vi.fn(() =>
       Effect.succeed({
         threadId: "thread-1",
-        terminalId: "setup-setup",
+        terminalId: "default",
         cwd: "/repo/worktrees/a",
         worktreePath: "/repo/worktrees/a",
         status: "running" as const,
@@ -129,7 +130,7 @@ describe("ProjectSetupScriptRunner", () => {
                 restart: () => Effect.die(new Error("unused")),
                 close: () => Effect.void,
                 subscribe: () => Effect.succeed(() => undefined),
-                startCommandRun: () => Effect.void,
+                startCommandRun: () => Effect.die(new Error("unused")),
                 readCommandRunOutput: () => Effect.succeed(null),
                 subscribeCommandRuns: () => Effect.succeed(() => undefined),
               }),
@@ -151,12 +152,14 @@ describe("ProjectSetupScriptRunner", () => {
       status: "started",
       scriptId: "setup",
       scriptName: "Setup",
-      terminalId: "setup-setup",
+      terminalId: "default",
       cwd: "/repo/worktrees/a",
     });
     expect(open).toHaveBeenCalledWith({
       threadId: "thread-1",
-      terminalId: "setup-setup",
+      // A new tab only when neither of these is free.
+      terminalId: expect.stringMatching(/^setup-setup-/),
+      reuseTerminalIds: ["default", "setup-setup"],
       cwd: "/repo/worktrees/a",
       worktreePath: "/repo/worktrees/a",
       env: {
@@ -166,8 +169,9 @@ describe("ProjectSetupScriptRunner", () => {
     });
     expect(write).toHaveBeenCalledWith({
       threadId: "thread-1",
-      terminalId: "setup-setup",
+      terminalId: "default",
       data: "bun install\r",
+      origin: "script",
     });
   });
 });

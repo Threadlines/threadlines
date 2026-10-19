@@ -1,4 +1,6 @@
-import { ProjectId } from "@threadlines/contracts";
+import { randomUUID } from "node:crypto";
+
+import { DEFAULT_TERMINAL_ID, ProjectId } from "@threadlines/contracts";
 import { projectScriptRuntimeEnv, setupProjectScript } from "@threadlines/shared/projectScripts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -44,24 +46,33 @@ const makeProjectSetupScriptRunner = Effect.gen(function* () {
         } as const;
       }
 
-      const terminalId = input.preferredTerminalId ?? `setup-${script.id}`;
       const cwd = input.worktreePath;
       const env = projectScriptRuntimeEnv({
         project: { cwd: project.workspaceRoot },
         worktreePath: input.worktreePath,
       });
 
-      yield* terminalManager.open({
+      // Like any command Threadlines starts for the user, the script takes a
+      // free tab (the thread's first tab, or its own from before, unused)
+      // before it opens a new one (docs/terminal-command-runs.md).
+      const opened = yield* terminalManager.open({
         threadId: input.threadId,
-        terminalId,
         cwd,
         worktreePath: input.worktreePath,
         env,
+        ...(input.preferredTerminalId !== undefined
+          ? { terminalId: input.preferredTerminalId }
+          : {
+              terminalId: `setup-${script.id}-${randomUUID().slice(0, 8)}`,
+              reuseTerminalIds: [DEFAULT_TERMINAL_ID, `setup-${script.id}`],
+            }),
       });
+      const terminalId = opened.terminalId;
       yield* terminalManager.write({
         threadId: input.threadId,
         terminalId,
         data: `${script.command}\r`,
+        origin: "script",
       });
 
       return {

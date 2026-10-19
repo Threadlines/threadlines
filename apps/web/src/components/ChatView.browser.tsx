@@ -1811,9 +1811,16 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
     return null;
   }
   if (tag === WS_METHODS.terminalOpen) {
+    // A script names tabs it may go into; here the first is always free.
+    const reuseTerminalIds = Array.isArray(body.reuseTerminalIds) ? body.reuseTerminalIds : [];
     return {
       threadId: typeof body.threadId === "string" ? body.threadId : THREAD_ID,
-      terminalId: typeof body.terminalId === "string" ? body.terminalId : "default",
+      terminalId:
+        typeof reuseTerminalIds[0] === "string"
+          ? reuseTerminalIds[0]
+          : typeof body.terminalId === "string"
+            ? body.terminalId
+            : "default",
       cwd: typeof body.cwd === "string" ? body.cwd : "/repo/project",
       worktreePath:
         typeof body.worktreePath === "string"
@@ -4991,6 +4998,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(openRequest).toMatchObject({
             _tag: WS_METHODS.terminalOpen,
             threadId: THREAD_ID,
+            // The thread's unused first tab before a new one.
+            reuseTerminalIds: ["default"],
             cwd: "/repo/project",
             env: {
               THREADLINES_PROJECT_ROOT: "/repo/project",
@@ -5005,10 +5014,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
           const writeRequest = wsRequests.find(
             (request) => request._tag === WS_METHODS.terminalWrite,
           );
+          // Typed into the tab the server picked.
           expect(writeRequest).toMatchObject({
             _tag: WS_METHODS.terminalWrite,
             threadId: THREAD_ID,
+            terminalId: "default",
             data: "bun run lint\r",
+            origin: "script",
           });
         },
         { timeout: 8_000, interval: 16 },

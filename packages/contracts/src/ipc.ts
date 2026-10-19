@@ -213,6 +213,7 @@ import type {
   CommandRunSendOutputInput,
   CommandRunSendOutputResult,
   CommandRunStartInput,
+  CommandRunStartResult,
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
@@ -1649,7 +1650,8 @@ export interface EnvironmentApi {
    * environment descriptor's `commandRuns` capability says it is there.
    */
   commandRuns?: {
-    start: (input: CommandRunStartInput) => Promise<void>;
+    /** The tab it went into; undefined from older servers. */
+    start: (input: CommandRunStartInput) => Promise<CommandRunStartResult | undefined>;
     sendOutput: (input: CommandRunSendOutputInput) => Promise<CommandRunSendOutputResult>;
   };
   filesystem: {

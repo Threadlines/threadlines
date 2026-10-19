@@ -3,7 +3,7 @@
 When an agent can't run a command itself (it needs your password or a sign-in,
 its sandbox or permissions blocked it, or it's a dev server you should own), it
 used to tell you to copy the command into a terminal. Threadlines lets you run
-it from the chat instead, in a new tab of the built-in terminal.
+it from the chat instead, in the built-in terminal.
 
 There are two ways a command reaches you:
 
@@ -19,15 +19,15 @@ Nothing runs until you click.
 
 ## Run, or put it in the terminal
 
-**Run** starts the command in a new terminal tab as its own process, so
+**Run** starts the command in a terminal tab as its own process, so
 Threadlines knows exactly when it ends and how (its exit code), and keeps its
 output. The tab shows the command line, then the output as it comes, and stays
 open as a normal shell afterwards. Ctrl+C stops the command, not the tab. Under the block or on the
 card a line says how it is going: running, finished (and how long it took),
 exited with a code, or stopped.
 
-**Put in terminal** opens a new tab, waits for the shell's prompt, and types
-the command there without pressing Enter. You check it, change it if you need
+**Put in terminal** starts a fresh shell in a terminal tab, waits for its
+prompt, and types the command there without pressing Enter. You check it, change it if you need
 to, and press Enter yourself. Threadlines does not follow a command after you
 press Enter; the line under it says it ran.
 
@@ -82,7 +82,25 @@ message, the line says it didn't reach the agent and offers the send again.
 
 ## Where it runs
 
-Each run gets a new terminal tab in the thread's folder (its worktree when it
+A run goes into the first free tab of the thread's terminal, and opens a new
+tab only when none is free. A tab is free when nothing runs in it and you
+haven't typed in it since its shell started: the thread's first tab before you
+ever opened it, a tab you opened and left alone, or the tab an earlier run or
+script left behind. The next run then starts below the earlier one's output, so
+a few commands in a row share one tab. A tab you typed in (even answering a
+command's question), one with a command still going, and one with any other
+process on its terminal (a job an earlier command left in the background, or a
+helper your prompt keeps) are never taken over. On Windows Threadlines can't
+see which processes a tab holds, so only a tab whose shell never started gets
+used there.
+
+The Run buttons for your project's scripts in the chat header, and the setup
+script a new worktree runs, take a free tab the same way. They type into the
+shell that's there, so it also has to be in the folder and environment the
+script needs. Clicking Run on the same script again, once it has finished, uses
+the same tab.
+
+Every run is in the thread's folder (its worktree when it
 has one), with the same environment the terminal drawer gives any tab. On
 macOS and Linux a command written for bash or zsh runs in your shell when it
 is one of those, or in zsh, bash or sh otherwise, and the tab then carries on
@@ -99,7 +117,18 @@ on code blocks stay, since they only act when you click them.
 
 - `packages/shared/src/shellCommandSafety.ts` reads a command and decides Run,
   Put in terminal, or nothing. The server checks every run against it again.
-- The terminal manager (`apps/server/src/terminal/`) starts a run as
+- The terminal manager (`apps/server/src/terminal/`) picks the tab
+  (`chooseFreeTab`) under the thread's terminal lock, from the tabs the client
+  lists in drawer order. A tab counts as typed in once its shell gets any
+  input other than the terminal's own replies (cursor and device reports,
+  color answers) and scripts Threadlines types (`origin: "script"` writes). It
+  is busy while a command typed into it may still run (until subprocess
+  polling has seen it idle a few times), while a script that picked it is yet
+  to be typed, and while `ps` shows any other process on its terminal or under
+  its shell. The run is recorded (`onTabChosen`) before anything in the tab
+  changes; a tab typed in meanwhile is left alone and the run fails. Taking a
+  tab over stops its idle shell and keeps what it showed.
+  It starts a run as
   `<shell> -i -c <wrapper>`. The wrapper, in `commandRunShell.ts`, takes the
   command from an environment variable, prints it dimmed and a start marker
   (output is kept from there, so shell startup noise and the echo stay out),

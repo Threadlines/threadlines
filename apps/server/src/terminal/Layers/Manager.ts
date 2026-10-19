@@ -1,6 +1,7 @@
 import {
   DEFAULT_TERMINAL_ID,
   type TerminalEvent,
+  type TerminalOpenInput,
   type TerminalSessionSnapshot,
   type TerminalSessionStatus,
 } from "@threadlines/contracts";
@@ -9,6 +10,7 @@ import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup
 import {
   isProcessAlive,
   listDescendantProcessIds,
+  listTerminalProcessIds,
   signalProcessSilently,
 } from "@threadlines/shared/processTree";
 import {
@@ -219,6 +221,17 @@ interface TerminalSessionState {
   shellName: string | null;
   /** A suggested command this tab is carrying out (docs/terminal-command-runs.md). */
   commandRun: ActiveCommandRun | null;
+  /**
+   * The user's input reached this shell (keys or a paste; not the terminal's
+   * own replies, nor a script Threadlines typed). Its folder, variables and
+   * jobs may now be theirs, so no later command or script takes the tab over.
+   * Reset per spawn.
+   */
+  typedIn: boolean;
+  /** Held for a script whose caller picked this tab and has yet to type it. */
+  scriptPending: boolean;
+  /** A suggested command ran inside this shell itself (PowerShell's do), so it may have moved. */
+  commandRanInShell: boolean;
   /** Where each `insert` went into this tab's history, for sending its output later. */
   insertMarks: Map<string, number>;
 }
@@ -1157,18 +1170,73 @@ function createSessionState(input: {
     shellName: null,
     commandRun: null,
     insertMarks: new Map(),
+    typedIn: false,
+    scriptPending: false,
+    commandRanInShell: false,
   };
+}
+
+/**
+ * A live tab nothing has claimed: its shell is up, nothing the user typed or
+ * a script started may still be running (polling clears that a few checks
+ * after it ends), nothing was typed in it and no suggested command ran inside
+ * it. Free when, in addition, no other process lives on its terminal (see
+ * `takeIfFree`).
+ */
+function isTabUnclaimed(
+  session: TerminalSessionState,
+): session is TerminalSessionState & { pid: number } {
+  return (
+    session.status === "running" &&
+    session.process !== null &&
+    session.pid !== null &&
+    session.commandRun === null &&
+    !session.hasRunningSubprocess &&
+    !session.subprocessPollingArmed &&
+    !session.typedIn &&
+    !session.scriptPending &&
+    !session.commandRanInShell
+  );
+}
+
+// Built from the escape and bell characters so the pattern itself holds no
+// control codes: the reports a terminal sends on its own (cursor position,
+// device attributes, status, mode and window reports, focus in and out,
+// keyboard flags) and its string replies (OSC colors, DCS).
+const REPLY_ESC = String.fromCharCode(0x1b);
+const REPLY_BEL = String.fromCharCode(0x07);
+const TERMINAL_REPLY_PATTERN = new RegExp(
+  [
+    `${REPLY_ESC}\\[[?>=]?[0-9;]*\\$?[RcnytIO]`,
+    `${REPLY_ESC}\\[\\?[0-9;]*u`,
+    `${REPLY_ESC}\\][^${REPLY_BEL}${REPLY_ESC}]*(?:${REPLY_BEL}|${REPLY_ESC}\\\\)`,
+    `${REPLY_ESC}P[^${REPLY_ESC}]*${REPLY_ESC}\\\\`,
+  ].join("|"),
+  "g",
+);
+
+// Shift/Ctrl/Alt+F3 (`ESC[1;2R` to `ESC[1;8R`) reads exactly like a cursor
+// report from the first row, so it always counts as typing.
+const MODIFIED_F3_PATTERN = new RegExp(`${REPLY_ESC}\\[1;[2-8]R`);
+
+/** Input that is only the terminal answering the shell, not anyone typing. */
+function isTerminalReplyOnly(data: string): boolean {
+  if (MODIFIED_F3_PATTERN.test(data)) return false;
+  return data.replace(TERMINAL_REPLY_PATTERN, "").length === 0;
 }
 
 /** Inspects and signals the shell's descendant processes; injectable for tests. */
 export interface TerminalProcessTreeControl {
   readonly listDescendants: (rootPid: number) => ReadonlyArray<number>;
+  /** What else stopping this shell would touch; null when that can't be known. */
+  readonly listTerminalProcesses: (shellPid: number) => ReadonlyArray<number> | null;
   readonly signal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
   readonly isAlive: (pid: number) => boolean;
 }
 
 const defaultProcessTreeControl: TerminalProcessTreeControl = {
   listDescendants: listDescendantProcessIds,
+  listTerminalProcesses: listTerminalProcessIds,
   signal: signalProcessSilently,
   isAlive: isProcessAlive,
 };
@@ -2250,6 +2318,9 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       yield* modifyManagerState((state) => {
         session.status = "starting";
         session.lineEditorActive = null;
+        session.typedIn = false;
+        session.scriptPending = false;
+        session.commandRanInShell = false;
         session.cwd = input.cwd;
         session.worktreePath = input.worktreePath ?? null;
         session.cols = input.cols;
@@ -2727,129 +2798,200 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       }).pipe(Effect.ignoreCause({ log: true })),
     );
 
+    /**
+     * Whether a live tab could be stopped or typed into without touching
+     * anything else: unclaimed (see isTabUnclaimed), `fits`, and no other
+     * process on its terminal. `claim` holds it for a script within the same
+     * step, so nothing else picks it between the check and the claim.
+     */
+    const takeIfFree = (
+      session: TerminalSessionState,
+      fits: (session: TerminalSessionState) => boolean,
+      claim: boolean,
+    ) =>
+      Effect.sync(() => {
+        if (!isTabUnclaimed(session) || !fits(session)) return false;
+        const others = processTree.listTerminalProcesses(session.pid);
+        if (others === null || others.length > 0) return false;
+        if (claim) session.scriptPending = true;
+        return true;
+      });
+
+    /**
+     * The first free tab of `candidates` (docs/terminal-command-runs.md): a
+     * live one (see takeIfFree), or one with no shell and no saved output.
+     * Null when none is. Call with the thread's lock held.
+     */
+    const chooseFreeTab = Effect.fn("terminal.chooseFreeTab")(function* (
+      threadId: string,
+      candidates: ReadonlyArray<string>,
+      options: {
+        readonly fits?: (session: TerminalSessionState) => boolean;
+        readonly claim?: boolean;
+      } = {},
+    ): Effect.fn.Return<{
+      readonly terminalId: string;
+      readonly session: TerminalSessionState | null;
+    } | null> {
+      const fits = options.fits ?? (() => true);
+      for (const terminalId of new Set(candidates)) {
+        const existing = yield* getSession(threadId, terminalId);
+        if (Option.isSome(existing)) {
+          if (yield* takeIfFree(existing.value, fits, options.claim === true)) {
+            return { terminalId, session: existing.value };
+          }
+          continue;
+        }
+        yield* flushPersist(threadId, terminalId);
+        const history = yield* readHistory(threadId, terminalId).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        if (history === "") return { terminalId, session: null };
+      }
+      return null;
+    });
+
+    /** `open` for one tab, with the thread's lock held. */
+    const openTab = Effect.fn("terminal.openTab")(function* (
+      input: TerminalOpenInput,
+      terminalId: string,
+    ) {
+      yield* assertValidCwd(input.cwd);
+
+      const sessionKey = toSessionKey(input.threadId, terminalId);
+      const existing = yield* getSession(input.threadId, terminalId);
+      if (Option.isNone(existing)) {
+        yield* flushPersist(input.threadId, terminalId);
+        const history = yield* readHistory(input.threadId, terminalId);
+        const cols = input.cols ?? DEFAULT_OPEN_COLS;
+        const rows = input.rows ?? DEFAULT_OPEN_ROWS;
+        const createdAt = yield* nowIso;
+        const session: TerminalSessionState = createSessionState({
+          threadId: input.threadId,
+          terminalId,
+          cwd: input.cwd,
+          worktreePath: input.worktreePath ?? null,
+          history,
+          createdAt,
+          cols,
+          rows,
+          env: input.env,
+          subprocessPoll: freshSubprocessPollSchedule(),
+        });
+
+        const createdSession = session;
+        yield* modifyManagerState((state) => {
+          const sessions = new Map(state.sessions);
+          sessions.set(sessionKey, createdSession);
+          return [undefined, { ...state, sessions }] as const;
+        });
+
+        yield* evictInactiveSessionsIfNeeded();
+        yield* startSession(
+          session,
+          {
+            threadId: input.threadId,
+            terminalId,
+            cwd: input.cwd,
+            ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
+            cols,
+            rows,
+            ...(input.env ? { env: input.env } : {}),
+          },
+          "started",
+        );
+        return snapshot(session);
+      }
+
+      const liveSession = existing.value;
+      const nextRuntimeEnv = normalizedRuntimeEnv(input.env);
+      const currentRuntimeEnv = liveSession.runtimeEnv;
+      const targetCols = input.cols ?? liveSession.cols;
+      const targetRows = input.rows ?? liveSession.rows;
+      const runtimeEnvChanged = !Equal.equals(currentRuntimeEnv, nextRuntimeEnv);
+      // A tab carrying out a suggested command is only attached to: the
+      // drawer opening it must not respawn the command's shell.
+      const carryingCommand = liveSession.commandRun !== null;
+
+      if (!carryingCommand && (liveSession.cwd !== input.cwd || runtimeEnvChanged)) {
+        yield* stopProcess(liveSession);
+        liveSession.cwd = input.cwd;
+        liveSession.worktreePath = input.worktreePath ?? null;
+        liveSession.runtimeEnv = nextRuntimeEnv;
+        liveSession.history = "";
+        liveSession.pendingHistoryControlSequence = null;
+        liveSession.pendingProcessEvents = [];
+        liveSession.pendingProcessEventIndex = 0;
+        liveSession.processEventDrainRunning = false;
+        liveSession.runningSubprocessCommand = null;
+        liveSession.submittedCommand = null;
+        liveSession.terminalCommandInputState = createTerminalCommandInputState();
+        yield* persistHistory(liveSession.threadId, liveSession.terminalId, liveSession.history);
+      } else if (liveSession.status === "exited" || liveSession.status === "error") {
+        liveSession.runtimeEnv = nextRuntimeEnv;
+        liveSession.worktreePath = input.worktreePath ?? null;
+        liveSession.history = "";
+        liveSession.pendingHistoryControlSequence = null;
+        liveSession.pendingProcessEvents = [];
+        liveSession.pendingProcessEventIndex = 0;
+        liveSession.processEventDrainRunning = false;
+        liveSession.runningSubprocessCommand = null;
+        liveSession.submittedCommand = null;
+        liveSession.terminalCommandInputState = createTerminalCommandInputState();
+        yield* persistHistory(liveSession.threadId, liveSession.terminalId, liveSession.history);
+      }
+
+      if (!liveSession.process) {
+        yield* startSession(
+          liveSession,
+          {
+            threadId: input.threadId,
+            terminalId,
+            cwd: input.cwd,
+            worktreePath: liveSession.worktreePath,
+            cols: targetCols,
+            rows: targetRows,
+            ...(input.env ? { env: input.env } : {}),
+          },
+          "started",
+        );
+        return snapshot(liveSession);
+      }
+
+      if (liveSession.cols !== targetCols || liveSession.rows !== targetRows) {
+        liveSession.cols = targetCols;
+        liveSession.rows = targetRows;
+        liveSession.updatedAt = laterThan(liveSession.updatedAt, yield* nowIso);
+        liveSession.process.resize(targetCols, targetRows);
+      }
+
+      return snapshot(liveSession);
+    });
+
     const open: TerminalManagerShape["open"] = (input) =>
       withThreadLock(
         input.threadId,
         Effect.gen(function* () {
-          const terminalId = input.terminalId ?? DEFAULT_TERMINAL_ID;
-          yield* assertValidCwd(input.cwd);
-
-          const sessionKey = toSessionKey(input.threadId, terminalId);
-          const existing = yield* getSession(input.threadId, terminalId);
-          if (Option.isNone(existing)) {
-            yield* flushPersist(input.threadId, terminalId);
-            const history = yield* readHistory(input.threadId, terminalId);
-            const cols = input.cols ?? DEFAULT_OPEN_COLS;
-            const rows = input.rows ?? DEFAULT_OPEN_ROWS;
-            const createdAt = yield* nowIso;
-            const session: TerminalSessionState = createSessionState({
-              threadId: input.threadId,
-              terminalId,
-              cwd: input.cwd,
-              worktreePath: input.worktreePath ?? null,
-              history,
-              createdAt,
-              cols,
-              rows,
-              env: input.env,
-              subprocessPoll: freshSubprocessPollSchedule(),
-            });
-
-            const createdSession = session;
-            yield* modifyManagerState((state) => {
-              const sessions = new Map(state.sessions);
-              sessions.set(sessionKey, createdSession);
-              return [undefined, { ...state, sessions }] as const;
-            });
-
-            yield* evictInactiveSessionsIfNeeded();
-            yield* startSession(
-              session,
-              {
-                threadId: input.threadId,
-                terminalId,
-                cwd: input.cwd,
-                ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
-                cols,
-                rows,
-                ...(input.env ? { env: input.env } : {}),
-              },
-              "started",
-            );
-            return snapshot(session);
+          if (input.reuseTerminalIds === undefined) {
+            return yield* openTab(input, input.terminalId ?? DEFAULT_TERMINAL_ID);
           }
-
-          const liveSession = existing.value;
-          const nextRuntimeEnv = normalizedRuntimeEnv(input.env);
-          const currentRuntimeEnv = liveSession.runtimeEnv;
-          const targetCols = input.cols ?? liveSession.cols;
-          const targetRows = input.rows ?? liveSession.rows;
-          const runtimeEnvChanged = !Equal.equals(currentRuntimeEnv, nextRuntimeEnv);
-          // A tab carrying out a suggested command is only attached to: the
-          // drawer opening it must not respawn the command's shell.
-          const carryingCommand = liveSession.commandRun !== null;
-
-          if (!carryingCommand && (liveSession.cwd !== input.cwd || runtimeEnvChanged)) {
-            yield* stopProcess(liveSession);
-            liveSession.cwd = input.cwd;
-            liveSession.worktreePath = input.worktreePath ?? null;
-            liveSession.runtimeEnv = nextRuntimeEnv;
-            liveSession.history = "";
-            liveSession.pendingHistoryControlSequence = null;
-            liveSession.pendingProcessEvents = [];
-            liveSession.pendingProcessEventIndex = 0;
-            liveSession.processEventDrainRunning = false;
-            liveSession.runningSubprocessCommand = null;
-            liveSession.submittedCommand = null;
-            liveSession.terminalCommandInputState = createTerminalCommandInputState();
-            yield* persistHistory(
-              liveSession.threadId,
-              liveSession.terminalId,
-              liveSession.history,
-            );
-          } else if (liveSession.status === "exited" || liveSession.status === "error") {
-            liveSession.runtimeEnv = nextRuntimeEnv;
-            liveSession.worktreePath = input.worktreePath ?? null;
-            liveSession.history = "";
-            liveSession.pendingHistoryControlSequence = null;
-            liveSession.pendingProcessEvents = [];
-            liveSession.pendingProcessEventIndex = 0;
-            liveSession.processEventDrainRunning = false;
-            liveSession.runningSubprocessCommand = null;
-            liveSession.submittedCommand = null;
-            liveSession.terminalCommandInputState = createTerminalCommandInputState();
-            yield* persistHistory(
-              liveSession.threadId,
-              liveSession.terminalId,
-              liveSession.history,
-            );
-          }
-
-          if (!liveSession.process) {
-            yield* startSession(
-              liveSession,
-              {
-                threadId: input.threadId,
-                terminalId,
-                cwd: input.cwd,
-                worktreePath: liveSession.worktreePath,
-                cols: targetCols,
-                rows: targetRows,
-                ...(input.env ? { env: input.env } : {}),
-              },
-              "started",
-            );
-            return snapshot(liveSession);
-          }
-
-          if (liveSession.cols !== targetCols || liveSession.rows !== targetRows) {
-            liveSession.cols = targetCols;
-            liveSession.rows = targetRows;
-            liveSession.updatedAt = laterThan(liveSession.updatedAt, yield* nowIso);
-            liveSession.process.resize(targetCols, targetRows);
-          }
-
-          return snapshot(liveSession);
+          // A script is about to be typed in: only a shell already in its
+          // folder and environment can take it as is.
+          const runtimeEnv = normalizedRuntimeEnv(input.env);
+          const chosen = yield* chooseFreeTab(input.threadId, input.reuseTerminalIds, {
+            fits: (session) =>
+              session.cwd === input.cwd && Equal.equals(session.runtimeEnv, runtimeEnv),
+            claim: true,
+          });
+          const terminalId = chosen?.terminalId ?? input.terminalId ?? DEFAULT_TERMINAL_ID;
+          // A shell already showing keeps its size; the size asked for is a new tab's.
+          const { cols: _cols, rows: _rows, ...sized } = input;
+          const opened = yield* openTab(chosen?.session ? sized : input, terminalId);
+          // Held (a live tab already was, when it was picked): a second script
+          // or run must not pick it before this caller's script arrives.
+          const session = yield* getSession(input.threadId, terminalId);
+          if (Option.isSome(session)) session.value.scriptPending = true;
+          return opened;
         }),
       );
 
@@ -2863,6 +3005,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           threadId: input.threadId,
           terminalId,
         });
+      }
+      if (input.origin === "script") {
+        session.scriptPending = false;
+      } else if (!session.typedIn && !isTerminalReplyOnly(input.data)) {
+        // Also while a command runs: keys typed ahead reach the shell after it.
+        session.typedIn = true;
       }
       if (session.commandRun?.mode === "run") {
         // Keys typed into a running command (an answer, a password) are not a
@@ -3025,18 +3173,22 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         }),
       );
 
-    const startCommandRun: TerminalManagerShape["startCommandRun"] = (
+    const startCommandRun: TerminalManagerShape["startCommandRun"] = <E = never>(
       input: TerminalCommandRunInput,
+      onTabChosen?: (terminalId: string) => Effect.Effect<void, E>,
     ) =>
       withThreadLock(
         input.threadId,
         Effect.gen(function* () {
-          const existing = yield* getSession(input.threadId, input.terminalId);
-          if (Option.isSome(existing)) {
+          const chosen = yield* chooseFreeTab(input.threadId, input.reuseTerminalIds ?? []);
+          const terminalId = chosen?.terminalId ?? input.terminalId;
+          if (chosen === null && Option.isSome(yield* getSession(input.threadId, terminalId))) {
             return yield* new TerminalCommandRunError({
               message: "That terminal tab is already open.",
             });
           }
+          if (onTabChosen !== undefined) yield* onTabChosen(terminalId);
+
           yield* assertValidCwd(input.cwd);
           let runCandidates: ShellCandidate[] | undefined;
           if (input.mode === "run") {
@@ -3053,19 +3205,50 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
           const cols = input.cols ?? DEFAULT_OPEN_COLS;
           const rows = input.rows ?? DEFAULT_OPEN_ROWS;
-          const createdAt = yield* nowIso;
-          const session = createSessionState({
-            threadId: input.threadId,
-            terminalId: input.terminalId,
-            cwd: input.cwd,
-            worktreePath: input.worktreePath ?? null,
-            history: "",
-            createdAt,
-            cols,
-            rows,
-            env: input.env,
-            subprocessPoll: freshSubprocessPollSchedule(),
-          });
+          let session: TerminalSessionState;
+          const taken = chosen?.session ?? null;
+          if (taken !== null) {
+            // Keys can reach a tab without this lock: typed in while the run
+            // was being recorded, it is the user's now. (No second look at the
+            // process table: only the untouched shell itself could have started
+            // something meanwhile, a prompt helper that goes with it.)
+            if (!isTabUnclaimed(taken)) {
+              return yield* new TerminalCommandRunError({
+                message:
+                  "Someone started typing in that terminal tab, so the command didn't go in.",
+              });
+            }
+            // The idle shell goes first: stopping it later would also end this run.
+            yield* stopProcess(taken);
+            // What the tab showed stays above; the command starts on a line of its own.
+            if (taken.history.length > 0 && !taken.history.endsWith("\n")) {
+              taken.history = capHistory(`${taken.history}\r\n`, historyLineLimit);
+              taken.historyAppendedTotal += 2;
+              yield* queuePersist(input.threadId, terminalId, taken.history);
+            }
+            taken.runtimeEnv = normalizedRuntimeEnv(input.env);
+            session = taken;
+          } else {
+            const created = createSessionState({
+              threadId: input.threadId,
+              terminalId,
+              cwd: input.cwd,
+              worktreePath: input.worktreePath ?? null,
+              history: "",
+              createdAt: yield* nowIso,
+              cols,
+              rows,
+              env: input.env,
+              subprocessPoll: freshSubprocessPollSchedule(),
+            });
+            yield* modifyManagerState((state) => {
+              const sessions = new Map(state.sessions);
+              sessions.set(toSessionKey(input.threadId, terminalId), created);
+              return [undefined, { ...state, sessions }] as const;
+            });
+            yield* evictInactiveSessionsIfNeeded();
+            session = created;
+          }
           session.commandRun = {
             runId: input.runId,
             mode: input.mode,
@@ -3077,18 +3260,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             outputClipped: false,
             outputStarted: false,
           };
-          yield* modifyManagerState((state) => {
-            const sessions = new Map(state.sessions);
-            sessions.set(toSessionKey(input.threadId, input.terminalId), session);
-            return [undefined, { ...state, sessions }] as const;
-          });
-          yield* evictInactiveSessionsIfNeeded();
 
           yield* startSession(
             session,
             {
               threadId: input.threadId,
-              terminalId: input.terminalId,
+              terminalId,
               cwd: input.cwd,
               worktreePath: input.worktreePath ?? null,
               cols,
@@ -3107,6 +3284,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               message: "The terminal could not start.",
             });
           }
+          // PowerShell runs the command in the tab's own shell, which may then
+          // be somewhere else; a POSIX run's command gets a subshell of its own.
+          if (input.mode === "run" && input.dialect === "powershell") {
+            session.commandRanInShell = true;
+          }
           const at = yield* nowIso;
           if (input.mode === "run") {
             // Unless it already ended (a quick command can finish before
@@ -3115,7 +3297,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               yield* publishEvent({
                 type: "activity",
                 threadId: input.threadId,
-                terminalId: input.terminalId,
+                terminalId,
                 createdAt: at,
                 hasRunningSubprocess: true,
                 command: session.runningSubprocessCommand,
@@ -3123,7 +3305,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               });
               yield* publishRunUpdate({ type: "running", runId: input.runId, at });
             }
-            return;
+            return terminalId;
           }
           // An insert waits for the prompt (see the drain loop); shells that
           // never announce one get it typed after a short pause.
@@ -3136,6 +3318,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
                   Effect.andThen(insertCommand(session, input.runId, pid)),
                 )
           ).pipe(Effect.forkIn(workerScope));
+          return terminalId;
         }),
       );
 

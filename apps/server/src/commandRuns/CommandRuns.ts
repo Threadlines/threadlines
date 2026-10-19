@@ -2,9 +2,9 @@
  * Suggested commands (docs/terminal-command-runs.md): an agent asks the user
  * to run a command (`ask_user_to_run`), or the user clicks Run on a shell code
  * block in a reply. This service records the request, starts each run in a
- * new terminal tab, follows the tab's run updates into the thread, and hands
- * a run's output to the agent it was for: by itself when a request's Run
- * finishes, or when the user asks.
+ * free terminal tab or a new one, follows the tab's run updates into the
+ * thread, and hands a run's output to the agent it was for: by itself when a
+ * request's Run finishes, or when the user asks.
  *
  * The terminal does the running; orchestration keeps the record and decides
  * every send, so Stop, reverts, skips and rooms are respected in one place.
@@ -20,6 +20,7 @@ import {
   type CommandRunSendOutputInput,
   type CommandRunSendOutputResult,
   type CommandRunStartInput,
+  type CommandRunStartResult,
   type OrchestrationCommandRun,
   type OrchestrationThread,
   type ThreadId,
@@ -62,8 +63,13 @@ export interface CommandRunsShape {
     scope: McpInvocationScope,
     input: { readonly command: string; readonly reason: string },
   ) => Effect.Effect<CommandRequestOutcome>;
-  /** A chat button: record the run and open its terminal tab. */
-  readonly start: (input: CommandRunStartInput) => Effect.Effect<void, CommandRunError>;
+  /**
+   * A chat button: record the run and start it in a free terminal tab or a
+   * new one. Says which tab when the start named tabs to reuse.
+   */
+  readonly start: (
+    input: CommandRunStartInput,
+  ) => Effect.Effect<CommandRunStartResult | undefined, CommandRunError>;
   /** "Send output": the run's output, as the user's message to its agent. */
   readonly sendOutput: (
     input: CommandRunSendOutputInput,
@@ -402,53 +408,66 @@ const make = Effect.gen(function* () {
         origin = { turnId: message.turnId, participantId: message.participantId ?? null };
       }
 
-      yield* engine
-        .dispatch({
-          type: "thread.command-run.start",
-          commandId: CommandId.make(`command-run-start:${input.runId}`),
-          threadId: input.threadId,
-          run: {
-            runId: input.runId,
+      // The terminal picks the tab (a free one, or a new one) and records the
+      // run there before anything in it changes, so its updates find it.
+      let recorded = false;
+      const started = yield* terminals
+        .startCommandRun(
+          {
+            threadId: input.threadId,
             terminalId: input.terminalId,
+            ...(input.reuseTerminalIds !== undefined
+              ? { reuseTerminalIds: input.reuseTerminalIds }
+              : {}),
+            runId: input.runId,
             mode: input.mode,
             dialect: input.dialect,
             command: input.command,
-            source: input.source,
-            turnId: origin.turnId,
-            participantId: origin.participantId,
             cwd: input.cwd,
-            autoSend: input.source.kind === "request" && input.mode === "run",
+            ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
+            ...(input.env !== undefined ? { env: input.env } : {}),
+            ...(input.cols !== undefined ? { cols: input.cols } : {}),
+            ...(input.rows !== undefined ? { rows: input.rows } : {}),
           },
-          createdAt: yield* nowIso,
-        })
-        .pipe(Effect.mapError((error) => failWith(error.message)));
-
-      runThreads.set(input.runId, input.threadId);
-      const started = yield* terminals
-        .startCommandRun({
-          threadId: input.threadId,
-          terminalId: input.terminalId,
-          runId: input.runId,
-          mode: input.mode,
-          dialect: input.dialect,
-          command: input.command,
-          cwd: input.cwd,
-          ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
-          ...(input.env !== undefined ? { env: input.env } : {}),
-          ...(input.cols !== undefined ? { cols: input.cols } : {}),
-          ...(input.rows !== undefined ? { rows: input.rows } : {}),
-        })
+          (terminalId) =>
+            Effect.gen(function* () {
+              yield* engine
+                .dispatch({
+                  type: "thread.command-run.start",
+                  commandId: CommandId.make(`command-run-start:${input.runId}`),
+                  threadId: input.threadId,
+                  run: {
+                    runId: input.runId,
+                    terminalId,
+                    mode: input.mode,
+                    dialect: input.dialect,
+                    command: input.command,
+                    source: input.source,
+                    turnId: origin.turnId,
+                    participantId: origin.participantId,
+                    cwd: input.cwd,
+                    autoSend: input.source.kind === "request" && input.mode === "run",
+                  },
+                  createdAt: yield* nowIso,
+                })
+                .pipe(Effect.mapError((error) => failWith(error.message)));
+              recorded = true;
+              runThreads.set(input.runId, input.threadId);
+            }),
+        )
         .pipe(Effect.result);
-      if (started._tag === "Failure") {
-        runThreads.delete(input.runId);
-        const message = started.failure.message;
-        yield* dispatchProgress(
-          input.threadId,
-          { runId: input.runId, status: "failed", finishedAt: yield* nowIso, error: message },
-          "failed",
-        ).pipe(Effect.ignore);
-        return yield* failWith(message);
+      if (started._tag === "Success") {
+        return input.reuseTerminalIds !== undefined ? { terminalId: started.success } : undefined;
       }
+      const message = started.failure.message;
+      if (!recorded) return yield* failWith(message);
+      runThreads.delete(input.runId);
+      yield* dispatchProgress(
+        input.threadId,
+        { runId: input.runId, status: "failed", finishedAt: yield* nowIso, error: message },
+        "failed",
+      ).pipe(Effect.ignore);
+      return yield* failWith(message);
     });
 
   const sendOutput: CommandRunsShape["sendOutput"] = (input) =>
