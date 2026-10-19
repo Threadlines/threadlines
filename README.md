@@ -42,6 +42,12 @@ context across tools.
 - **One usage picture across machines.** Token and cost dashboards read the
   agents' own transcripts on every computer you run, merged into one view.
 
+## Screenshots
+
+| Pick your agents                                                                                                                       | Preview your site                                                                           | Review the changes                                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| ![Threadlines setup asking which agents you use, with nine agents to pick from](apps/marketing/public/Screenshots/app/onboarding.webp) | ![The built-in browser beside a thread](apps/marketing/public/Screenshots/app/browser.webp) | ![Source control with changed files and Git history beside a thread](apps/marketing/public/Screenshots/app/source-control.webp) |
+
 ## Installation
 
 > [!NOTE]

@@ -132,14 +132,14 @@ const structuredData = [
 
       <figure class="agent-shot">
         <img
-          src="/Screenshots/rooms/rooms.webp"
-          alt="A Threadlines thread where two agents from different companies work on the same bug"
-          width="1600"
-          height="934"
+          src={`/Screenshots/app/${agent.screenshot.file}.webp`}
+          alt={agent.screenshot.alt}
+          width="2400"
+          height="1401"
           fetchpriority="high"
           decoding="async"
         />
-        <figcaption>Threadlines with two agents working on one bug.</figcaption>
+        <figcaption>{agent.screenshot.caption}</figcaption>
       </figure>
 
       <section class="agent-section">

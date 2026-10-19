@@ -2,6 +2,11 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <!-- The X profile banner. Render at 1500x500 with device scale 2 and save as x-banner-workspace.png. -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <style>
       * {
         box-sizing: border-box;
@@ -18,7 +23,12 @@
         overflow: hidden;
         position: relative;
         color: #fafafa;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family:
+          "Hanken Grotesk",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
       }
       .ambient {
         position: absolute;
@@ -61,7 +71,7 @@
         white-space: nowrap;
       }
       .positioning strong {
-        color: #8ca5ff;
+        color: oklch(0.7 0.17 264);
         font-weight: 600;
       }
       .window {
@@ -77,10 +87,15 @@
           0 -2px 60px rgba(110, 148, 250, 0.1),
           0 8px 40px rgba(0, 0, 0, 0.6);
       }
+      .window {
+        bottom: 0;
+      }
+      /* Shows the middle of the shot: Opus asking GPT-6.1-Sol on the side, and Sol's answer. */
       .window img {
         display: block;
         width: 100%;
         height: auto;
+        margin-top: -300px;
       }
     </style>
   </head>
@@ -99,7 +114,7 @@
               y2="162"
             >
               <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.45" />
-              <stop offset="1" stop-color="#6e94fa" />
+              <stop offset="1" stop-color="oklch(0.7 0.17 264)" />
             </linearGradient>
           </defs>
           <g stroke-linecap="round" stroke-width="10">
@@ -114,19 +129,15 @@
             <circle cx="108" cy="98" r="8.5" />
             <circle cx="178" cy="98" r="7" />
           </g>
-          <circle cx="194" cy="162" r="21" fill="#6e94fa" fill-opacity="0.16" />
-          <circle cx="194" cy="162" r="12.5" fill="#6e94fa" />
+          <circle cx="194" cy="162" r="21" fill="oklch(0.7 0.17 264)" fill-opacity="0.16" />
+          <circle cx="194" cy="162" r="12.5" fill="oklch(0.7 0.17 264)" />
         </svg>
         <span class="brand-name">Threadlines</span>
       </div>
-      <div class="positioning">
-        Agents, browser, and <strong>source control</strong>. One workspace.
-      </div>
+      <div class="positioning">Your coding agents, <strong>together in one thread.</strong></div>
     </header>
     <div class="window">
-      <img
-        src="../../../apps/marketing/public/Screenshots/launch/workspace-four-panel-overview.png"
-      />
+      <img src="../../../apps/marketing/public/Screenshots/app/two-agents.webp" />
     </div>
   </body>
 </html>
