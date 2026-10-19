@@ -7,6 +7,7 @@
 [![CI](https://github.com/Threadlines/threadlines/actions/workflows/ci.yml/badge.svg)](https://github.com/Threadlines/threadlines/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/Threadlines/threadlines)](https://github.com/Threadlines/threadlines/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![As seen on Open Source Alternatives](https://www.opensourcealternatives.to/badge-osa.svg)](https://www.opensourcealternatives.to)
 
 **[Website](https://www.threadlines.dev/) · [Download](https://www.threadlines.dev/download) · [Supported agents](https://www.threadlines.dev/agents) · [Changelog](https://www.threadlines.dev/changelog) · [Latest release](https://github.com/Threadlines/threadlines/releases/latest)**
 
@@ -18,6 +19,12 @@ context across tools.
 
 ## Why Threadlines
 
+- **Several agents in one thread.** Add a second agent to check the first one's
+  work, or ask Codex or Claude a question while another agent keeps going.
+- **Agents start their own threads.** An agent can split a big job across new
+  threads, each on the model it picks, and their answers come back to it.
+- **Pull requests and CI beside the chat.** Review a pull request and its checks
+  next to the thread that made it, and send feedback straight to the agent.
 - **A browser beside every thread.** Review visual changes and send the exact
   page state back to the agent without leaving the workspace.
 - **Source control you can act on.** Inspect per-file changes and the commit
@@ -26,8 +33,8 @@ context across tools.
   or terminal lines directly to the next message.
 - **Nothing runs invisibly.** Track tasks, subagents, and background processes,
   including their live state and stop controls.
-- **Durable, provider-flexible sessions.** Resume work after restarts and switch
-  between Codex and Claude Code without losing the thread or working tree.
+- **Durable sessions, any agent.** Resume work after restarts and switch a
+  thread to another agent without losing the conversation or working tree.
 - **Set up in minutes.** A first-run checklist installs the agent CLIs with one
   click and signs you in without leaving the app.
 - **Your phone is a client.** Pair it with a QR code and check on running
@@ -38,23 +45,24 @@ context across tools.
 ## Installation
 
 > [!NOTE]
-> Threadlines drives locally installed coding agents:
-> [Codex CLI](https://developers.openai.com/codex/cli) and
-> [Claude Code](https://claude.com/product/claude-code). If they are missing,
-> the first-run setup installs them with one click and signs you in without
-> leaving the app. Installing them yourself beforehand works too.
+> Threadlines drives coding agents installed on your computer, such as
+> [Codex](https://developers.openai.com/codex/cli) and
+> [Claude Code](https://claude.com/product/claude-code) (see
+> [Supported agents](#supported-agents)). If one is missing, the first-run setup
+> installs it with one click and signs you in without leaving the app.
+> Installing them yourself beforehand works too.
 
 ### Desktop app
 
 Install the latest stable desktop app from the
-[download page](https://www.threadlines.dev/download/) or
+[download page](https://www.threadlines.dev/download) or
 [GitHub Releases](https://github.com/Threadlines/threadlines/releases/latest).
 
 Signed Windows and macOS builds and a Linux x64 AppImage are published through
 the desktop release workflow. Linux builds are unsigned; integrity for
 auto-updates is verified through the updater manifest hashes.
 
-Then open a local project and start a thread with the provider you already use.
+Then open a local project and start a thread with the agent you already use.
 
 ### Self-host with Docker
 
@@ -92,7 +100,7 @@ vp run dev
 ```
 
 On Windows, clone the repository **outside** OneDrive-synced folders
-(Desktop/Documents by default) — syncing `node_modules`, `.git`, and build
+(Desktop/Documents by default). Syncing `node_modules`, `.git`, and build
 output noticeably slows installs, builds, and file watching.
 
 ### Local desktop artifact
@@ -136,11 +144,9 @@ compatibility policy.
 
 ## Configuration
 
-New configuration should use `THREADLINES_*` environment variables:
-
-- new local configuration should use `THREADLINES_*` environment variables;
-- new installs default to a separate `~/.threadlines` data directory;
-- the `threadlines` CLI is the supported command.
+- Configure Threadlines with `THREADLINES_*` environment variables.
+- New installs keep their data in a separate `~/.threadlines` directory.
+- The `threadlines` CLI is the supported command.
 
 Usage analytics are enabled by default in official builds and can be disabled
 from Settings. See [docs/telemetry.md](./docs/telemetry.md) for what Threadlines
