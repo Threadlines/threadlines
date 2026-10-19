@@ -3,9 +3,12 @@ import Analytics from "@vercel/analytics/astro";
 import {
   absoluteSiteUrl,
   DEFAULT_SITE_DESCRIPTION,
+  ORGANIZATION_ID,
+  SITE_GITHUB_URL,
   SITE_NAME,
   SITE_SOCIAL_IMAGE,
   SITE_TWITTER_HANDLE,
+  SITE_X_URL,
 } from "../lib/site";
 
 interface Props {
@@ -27,12 +30,26 @@ const {
 const canonicalUrl = absoluteSiteUrl(canonicalPath);
 const socialImageUrl = absoluteSiteUrl(SITE_SOCIAL_IMAGE);
 const robotsContent = noindex ? "noindex,follow" : "index,follow";
-const websiteStructuredData = {
+const siteStructuredData = {
   "@context": "https://schema.org",
-  "@type": "WebSite",
-  name: SITE_NAME,
-  url: absoluteSiteUrl("/"),
-  description: DEFAULT_SITE_DESCRIPTION,
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": ORGANIZATION_ID,
+      name: SITE_NAME,
+      url: absoluteSiteUrl("/"),
+      logo: absoluteSiteUrl("/icon.png"),
+      sameAs: [SITE_GITHUB_URL, SITE_X_URL],
+    },
+    {
+      "@type": "WebSite",
+      name: SITE_NAME,
+      alternateName: "Threadlines ADE",
+      url: absoluteSiteUrl("/"),
+      description: DEFAULT_SITE_DESCRIPTION,
+      publisher: { "@id": ORGANIZATION_ID },
+    },
+  ],
 };
 ---
 
@@ -84,7 +101,7 @@ const websiteStructuredData = {
     <link rel="icon" type="image/png" href="/favicon-16x16.png" sizes="16x16" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>{title}</title>
-    <script is:inline type="application/ld+json" set:html={JSON.stringify(websiteStructuredData)} />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(siteStructuredData)} />
     {
       structuredData.map((data) => (
         <script is:inline type="application/ld+json" set:html={JSON.stringify(data)} />
@@ -172,6 +189,7 @@ const websiteStructuredData = {
             </span>
           </div>
           <div class="footer-links">
+            <a href="/agents">Agents</a>
             <a href="/changelog">Changelog</a>
             <a href="https://github.com/Threadlines/threadlines" target="_blank" rel="noopener noreferrer">GitHub</a>
             <a href="https://github.com/sponsors/Threadlines" target="_blank" rel="noopener noreferrer">Sponsor</a>
