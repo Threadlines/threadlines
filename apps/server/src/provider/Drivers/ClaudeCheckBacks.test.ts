@@ -58,6 +58,9 @@ describe("Claude check-backs", () => {
     const job = { id: "j", schedule: "10 15 * * *", recurring: false, prompt: "Remind me" };
     const first = claudeCheckBacksFromSessionCrons(state, [job], at("2026-10-20T15:08:00Z"), "UTC");
     expect(first[0]?.scheduledFor).toBe("2026-10-20T15:10:00.000Z");
+    // Nothing this session set it: the CLI restored it from disk, so it
+    // outlives the session (no Cancel, never reported cancelled).
+    expect(first[0]?.durable).toBe(true);
     // Claude runs it a few minutes late: it is still today's, not tomorrow's.
     const late = claudeCheckBacksFromSessionCrons(state, [job], at("2026-10-20T15:14:00Z"), "UTC");
     expect(late[0]?.scheduledFor).toBe("2026-10-20T15:10:00.000Z");
@@ -65,6 +68,18 @@ describe("Claude check-backs", () => {
       [],
     );
     expect(state.nextFire.size).toBe(0);
+
+    // A repeating job that fires moves on to its next time, even within the
+    // same minute.
+    const repeating = { id: "r", schedule: "*/5 * * * *", recurring: true, prompt: "Look" };
+    claudeCheckBacksFromSessionCrons(state, [repeating], at("2026-10-20T15:27:00Z"), "UTC");
+    const fired = claudeCheckBacksFromSessionCrons(
+      state,
+      [repeating],
+      at("2026-10-20T15:30:10Z"),
+      "UTC",
+    );
+    expect(fired[0]?.scheduledFor).toBe("2026-10-20T15:35:00.000Z");
   });
 
   it("tells a fired check-back's turn by its prompt, even one Claude clipped", () => {

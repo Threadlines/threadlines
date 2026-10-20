@@ -142,8 +142,10 @@ function nextFireFor(
   const known = state.nextFire.get(cron.id);
   if (known && (!cron.recurring || known.ms > nowMs)) return known;
   // A job first seen right after it was set: its next match after "just
-  // before now" is the one Claude will run.
-  const next = nextCronMatch(cron.schedule, new Date(nowMs - MINUTE_MS), timeZone);
+  // before now" is the one Claude will run. A repeating job whose time has
+  // come moves on past that time, even within the same minute.
+  const after = known ? Math.max(known.ms, nowMs - MINUTE_MS) : nowMs - MINUTE_MS;
+  const next = nextCronMatch(cron.schedule, new Date(after), timeZone);
   return next ? { ms: next.getTime(), exact: false } : undefined;
 }
 
@@ -196,7 +198,9 @@ export function claudeCheckBacksFromSessionCrons(
       recurring: cron.recurring,
       ...(schedule ? { schedule } : {}),
       ...(description ? { description } : {}),
-      durable: record?.durable ?? false,
+      // A job neither set by a CronCreate nor a wake-up this session saw came
+      // from disk (a durable job the CLI restored): it outlives the session.
+      durable: record ? record.durable : wakeup === undefined,
     });
   }
   for (const id of [...state.nextFire.keys()]) {

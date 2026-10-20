@@ -152,9 +152,12 @@ export function nextCronMatch(
   while (instant <= limit) {
     const wall = wallAt(instant);
     if (!fields.months.has(wall.month) || !dayMatches(fields, wall)) {
-      // On to the next day: a whole day's worth of minutes from this one.
-      // Daylight-saving days land an hour off, which the next check fixes.
-      instant += ((23 - wall.hour) * 60 + (60 - wall.minute)) * MINUTE_MS;
+      // On toward the next day, stopping an hour short of the clock's
+      // midnight: a day that springs forward is an hour shorter, and a whole
+      // day's worth of minutes would pass its midnight. The next check takes
+      // the rest of the way.
+      const toMidnight = (23 - wall.hour) * 60 + (60 - wall.minute);
+      instant += Math.max(toMidnight - 60, 60 - wall.minute) * MINUTE_MS;
       continue;
     }
     if (!fields.hours.has(wall.hour)) {

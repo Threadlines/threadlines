@@ -3664,19 +3664,22 @@ export default function ChatView(props: ChatViewProps) {
       const api = readEnvironmentApi(environmentId);
       if (!api) return;
       const session = activeThread?.session;
-      const runningWork =
-        session && (session.participantId ?? null) === checkBack.participantId
-          ? (session.pendingBackgroundTaskCount ?? 0)
-          : 0;
-      if (runningWork > 0) {
+      // The thread's session says what its working agent left running; for
+      // another agent in the room nothing here does, so the user is asked.
+      const holdsSlot = (session?.participantId ?? null) === checkBack.participantId;
+      const runningWork = holdsSlot ? (session?.pendingBackgroundTaskCount ?? 0) : 0;
+      const stopBackgroundWork = runningWork > 0 || !holdsSlot;
+      if (stopBackgroundWork) {
         const confirmed = await readLocalApi()?.dialogs.confirm(
           [
             "Cancel the check-back?",
-            `This stops the agent's session, and ${
-              runningWork === 1
-                ? "the command it left running"
-                : `the ${runningWork} commands it left running`
-            } with it.`,
+            holdsSlot
+              ? `This stops the agent's session, and ${
+                  runningWork === 1
+                    ? "the command it left running"
+                    : `the ${runningWork} commands it left running`
+                } with it.`
+              : "This stops that agent's session, and anything it left running with it.",
           ].join("\n"),
         );
         if (!confirmed) return;
@@ -3687,7 +3690,7 @@ export default function ChatView(props: ChatViewProps) {
           commandId: newCommandId(),
           threadId: activeThreadId,
           participantId: checkBack.participantId,
-          stopBackgroundWork: runningWork > 0,
+          stopBackgroundWork,
           createdAt: new Date().toISOString(),
         })
         .catch((error: unknown) => {

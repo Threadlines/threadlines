@@ -1830,6 +1830,57 @@ describe("ClaudeAdapterLive", () => {
             Effect.forkChild,
           );
 
+        // Claude sets the job in a turn of this session.
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "Watch the deploy",
+          attachments: [],
+        });
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-check-back",
+          uuid: "cron-create-tool",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "toolu_cron",
+              name: "CronCreate",
+              input: { cron: "*/5 * * * *", prompt: "Look at the deploy", recurring: true },
+            },
+          },
+        } as unknown as SDKMessage);
+        const created = yield* nextEvent("item.completed");
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-check-back",
+          uuid: "cron-create-result",
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "toolu_cron", content: "Scheduled." }],
+          },
+          tool_use_result: {
+            id: "job-1",
+            humanSchedule: "every 5 minutes",
+            recurring: true,
+            durable: false,
+          },
+        } as unknown as SDKMessage);
+        yield* Fiber.join(created);
+        const turnDone = yield* nextEvent("turn.completed");
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-session-check-back",
+          uuid: "cron-create-turn-done",
+        } as unknown as SDKMessage);
+        yield* Fiber.join(turnDone);
+
         const reported = yield* nextEvent("session.check-backs.updated");
         yield* runHook("Stop", {
           hook_event_name: "Stop",

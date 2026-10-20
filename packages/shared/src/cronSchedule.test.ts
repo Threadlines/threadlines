@@ -22,6 +22,11 @@ describe("nextCronMatch", () => {
     expect(
       nextCronMatch("30 1 * * *", at("2026-10-31T12:00:00Z"), "America/New_York")?.toISOString(),
     ).toBe("2026-11-01T05:30:00.000Z");
+    // Across the clocks going forward (Mar 8 2026, a 23-hour day): Monday's
+    // midnight, not a week later.
+    expect(
+      nextCronMatch("0 0 * * 1", at("2026-03-08T05:00:00Z"), "America/New_York")?.toISOString(),
+    ).toBe("2026-03-09T04:00:00.000Z");
     expect(nextCronMatch("0-30/10 8 * * *", at("2026-10-20T08:11:00Z"), "UTC")?.toISOString()).toBe(
       "2026-10-20T08:20:00.000Z",
     );
