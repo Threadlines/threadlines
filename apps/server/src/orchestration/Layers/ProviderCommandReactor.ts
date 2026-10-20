@@ -150,6 +150,7 @@ type ProviderIntentEvent = Extract<
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested"
+      | "thread.check-back-cancel-requested"
       | "thread.session-set"
       | "thread.goal-set-requested"
       | "thread.goal-clear-requested"
@@ -3318,6 +3319,65 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Cancels one agent's check-backs by stopping that agent's runtime, the
+   * only way to remove a schedule from it; the room's other agents keep
+   * theirs. Background work the agent left running would stop too, so
+   * without the user's word for that it is refused here, where the work is
+   * known, not only where the user was asked.
+   */
+  const processCheckBackCancelRequested = Effect.fn("processCheckBackCancelRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.check-back-cancel-requested" }>,
+  ) {
+    const { threadId, participantId, stopBackgroundWork } = event.payload;
+    const sessionKey = participantSessionKey(threadId, participantId);
+    const runtime = (yield* providerService
+      .listSessions()
+      .pipe(Effect.orElseSucceed(() => [] as const))).find(
+      (session) => session.threadId === sessionKey && session.status !== "closed",
+    );
+    const note = (summary: string, tone: "info" | "error") =>
+      orchestrationEngine
+        .dispatch({
+          type: "thread.activity.append",
+          commandId: serverCommandId("check-back-cancel"),
+          threadId,
+          activity: {
+            id: EventId.make(crypto.randomUUID()),
+            tone,
+            kind: "check-back.cancel",
+            summary,
+            payload: {},
+            turnId: null,
+            participantId,
+            createdAt: event.payload.createdAt,
+          },
+          createdAt: event.payload.createdAt,
+        })
+        .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+    if (runtime === undefined) {
+      // Nothing is running to come back: the list was stale.
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.check-backs.set",
+          commandId: serverCommandId("check-backs-clear"),
+          threadId,
+          participantId,
+          checkBacks: [],
+          createdAt: event.payload.createdAt,
+        })
+        .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+      return;
+    }
+    if ((runtime.pendingBackgroundTaskCount ?? 0) > 0 && !stopBackgroundWork) {
+      yield* note("Check-back not cancelled: the agent has work running", "error");
+      return;
+    }
+    yield* providerService
+      .stopSession({ threadId: sessionKey })
+      .pipe(Effect.ignoreCause({ log: true }));
+  });
+
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
   ) {
@@ -4525,6 +4585,9 @@ const make = Effect.gen(function* () {
       case "thread.background-task-stop-requested":
         yield* processBackgroundTaskStopRequested(event);
         return;
+      case "thread.check-back-cancel-requested":
+        yield* processCheckBackCancelRequested(event);
+        return;
       case "thread.context-compact-requested":
         yield* processContextCompactRequested(event);
         return;
@@ -4924,6 +4987,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested" ||
+        event.type === "thread.check-back-cancel-requested" ||
         event.type === "thread.session-set" ||
         event.type === "thread.goal-set-requested" ||
         event.type === "thread.goal-clear-requested" ||

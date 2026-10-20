@@ -1,5 +1,6 @@
 import {
   type OrchestrationAgentPage,
+  type OrchestrationCheckBack,
   type OrchestrationWorkflowRun,
   type OrchestrationCommandRequest,
   type ApprovalRequestId,
@@ -3652,6 +3653,53 @@ export default function ChatView(props: ChatViewProps) {
       terminalState.terminalOpen,
     ],
   );
+  /**
+   * Cancels an agent's check-backs. Nothing drops one schedule from a live
+   * agent, so its runtime stops (only that agent's); work it left running
+   * stops with it, which the user is asked about first.
+   */
+  const cancelCheckBack = useCallback(
+    async (checkBack: OrchestrationCheckBack) => {
+      if (!activeThreadId) return;
+      const api = readEnvironmentApi(environmentId);
+      if (!api) return;
+      const session = activeThread?.session;
+      const runningWork =
+        session && (session.participantId ?? null) === checkBack.participantId
+          ? (session.pendingBackgroundTaskCount ?? 0)
+          : 0;
+      if (runningWork > 0) {
+        const confirmed = await readLocalApi()?.dialogs.confirm(
+          [
+            "Cancel the check-back?",
+            `This stops the agent's session, and ${
+              runningWork === 1
+                ? "the command it left running"
+                : `the ${runningWork} commands it left running`
+            } with it.`,
+          ].join("\n"),
+        );
+        if (!confirmed) return;
+      }
+      await api.orchestration
+        .dispatchCommand({
+          type: "thread.check-back.cancel",
+          commandId: newCommandId(),
+          threadId: activeThreadId,
+          participantId: checkBack.participantId,
+          stopBackgroundWork: runningWork > 0,
+          createdAt: new Date().toISOString(),
+        })
+        .catch((error: unknown) => {
+          setThreadError(
+            activeThreadId,
+            error instanceof Error ? error.message : "Could not cancel the check-back.",
+          );
+        });
+    },
+    [activeThread?.session, activeThreadId, environmentId, setThreadError],
+  );
+
   /** Stops one workflow run; the reactor finds the runtime that holds it. */
   const stopWorkflowRun = useCallback(
     (taskId: string) => {
@@ -7592,6 +7640,8 @@ export default function ChatView(props: ChatViewProps) {
                 isWorking={isWorking}
                 isWaitingOnBackgroundTasks={waitingOnBackgroundTasks}
                 awaitedTasks={awaitedTasks}
+                checkBacks={activeThread.checkBacks}
+                onCancelCheckBack={cancelCheckBack}
                 activeStatusLabel={activeStatusLabel}
                 activeTurnInProgress={isWorking || !latestTurnSettled}
                 activeTurnId={activeLatestTurn?.turnId ?? null}

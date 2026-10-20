@@ -9,6 +9,7 @@ import {
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
 import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logic";
+import { nextCheckBack } from "./chat/checkBacks";
 import { isHandedBackCompletion } from "@threadlines/shared/childThreads";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
@@ -36,6 +37,7 @@ export interface ThreadStatusPill {
     | "Plan Ready"
     | "Waiting"
     | "Answering"
+    | "Checking back"
     | "Failed";
   colorClass: string;
   dotClass: string;
@@ -45,6 +47,8 @@ export interface ThreadStatusPill {
    * background work: how many still owe it an answer.
    */
   childThreadCount?: number;
+  /** "Checking back": when the soonest check-back fires. */
+  checkBackAt?: string;
 }
 
 export const THREAD_STATUS_DOT_CLASSES = {
@@ -68,6 +72,7 @@ type ThreadStatusInput = Pick<
   | "sideTurn"
   | "pendingChildApproval"
   | "awaitedChildThreadCount"
+  | "checkBacks"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -396,6 +401,19 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // Settled, and an agent set itself to come back: the row says when, not
+  // when it was last at work.
+  const checkBack = nextCheckBack(thread.checkBacks);
+  if (checkBack !== null && isLatestTurnSettled(thread.latestTurn, thread.session)) {
+    return {
+      label: "Checking back",
+      colorClass: "text-cyan-600 dark:text-cyan-300/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
+      pulse: false,
+      checkBackAt: checkBack.scheduledFor,
+    };
+  }
+
   return null;
 }
 
@@ -602,6 +620,7 @@ type InboxLifecycleInput = Pick<
   | "awaitedChildThreadCount"
   | "handedBackTurnId"
   | "queuedFollowUpCount"
+  | "checkBacks"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -1259,6 +1278,7 @@ function generalChatLineRank(status: ThreadStatusPill | null): number {
     case "Waiting":
       return 2;
     case "Completed":
+    case "Checking back":
       return 3;
   }
 }

@@ -20,6 +20,7 @@ import {
   type MessageAgentModel,
   type MessageId,
   type OrchestrationAwaitedBackgroundTask,
+  type OrchestrationCheckBack,
   type SideTurnId,
   type ThreadParticipantId,
   type TurnId,
@@ -230,6 +231,14 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         request: OrchestrationCommandRequest;
       }
     | {
+        /** When the thread's agents will come back by themselves, once the
+         *  turn has settled (checkBacks.ts). */
+        kind: "check-back";
+        id: string;
+        createdAt: string | null;
+        checkBacks: ReadonlyArray<OrchestrationCheckBack>;
+      }
+    | {
         kind: "working";
         id: string;
         createdAt: string | null;
@@ -427,6 +436,8 @@ export function deriveMessagesTimelineRows(input: {
   isWaitingOnBackgroundTasks?: boolean | undefined;
   /** What that work is, when the server described it (describedAwaitedTasks). */
   awaitedTasks?: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | null | undefined;
+  /** Times the thread's agents set themselves to come back (Thread.checkBacks). */
+  checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
   activeStatusLabel?: string | undefined;
   activeTurnInProgress?: boolean;
   activeTurnId?: TurnId | null;
@@ -748,6 +759,17 @@ export function deriveMessagesTimelineRows(input: {
       thought: null,
       command: null,
       ...tracker,
+    });
+  }
+
+  // A settled thread an agent will come back to says when, at the tail.
+  if (!input.isWorking && input.checkBacks && input.checkBacks.length > 0) {
+    rows.push({
+      ...UNPLACED,
+      kind: "check-back",
+      id: "check-back-row",
+      createdAt: null,
+      checkBacks: input.checkBacks,
     });
   }
 
@@ -2067,6 +2089,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
 
+    case "check-back":
+      return a.checkBacks === (b as typeof a).checkBacks;
+
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
 
@@ -2298,6 +2323,8 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
     }
     case "working":
       return row.thought || row.command ? 46 : 30;
+    case "check-back":
+      return 46;
     case "subagent-result":
       return 40;
     case "workflow-run":

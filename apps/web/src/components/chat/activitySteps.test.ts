@@ -515,6 +515,49 @@ describe("other steps", () => {
     expect(room("package.json")).toMatchObject({ label: "Used a tool" });
   });
 
+  it("says an agent set a check-back when Claude schedules itself", () => {
+    const steps = deriveWorkLogEntries(
+      [
+        {
+          kind: "tool.started",
+          summary: "Tool call",
+          tone: "tool" as const,
+          payload: {
+            itemType: "dynamic_tool_call",
+            toolCallId: "toolu_1",
+            status: "inProgress",
+            title: "Tool call",
+            detail: "ScheduleWakeup",
+            data: { toolName: "ScheduleWakeup", input: {} },
+          },
+        },
+        {
+          kind: "tool.completed",
+          summary: "Tool call",
+          tone: "tool" as const,
+          payload: {
+            itemType: "dynamic_tool_call",
+            toolCallId: "toolu_1",
+            status: "completed",
+            title: "Tool call",
+            detail: "ScheduleWakeup: prompt=Check CI",
+            data: {
+              toolName: "ScheduleWakeup",
+              input: { delaySeconds: 900, reason: "Waiting for CI", prompt: "Check CI" },
+            },
+          },
+        },
+      ].map((activity, index) => ({
+        ...activity,
+        id: EventId.make(`activity-${index}`),
+        createdAt: `2026-09-24T02:50:0${index}.000Z`,
+        turnId: TurnId.make("turn-1"),
+      })),
+      undefined,
+    ).map((workEntry) => activityStepFromWorkLogEntry(workEntry));
+    expect(steps).toMatchObject([{ routine: false, icon: "clock", label: "Set a check-back" }]);
+  });
+
   it("names the agent a room tool call gave by its id the way the room does", () => {
     const sol = "3b978ce5-f00c-44e6-9bda-6caee5545ba2";
     const gone = "6f1d2a0c-58b7-4c0e-9a51-0d5c3a9b7e44";

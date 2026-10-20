@@ -743,6 +743,111 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("keeps a room agent's check-backs while another agent works, and notes one it had to skip", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.participant.add",
+        commandId: CommandId.make("cmd-check-back-add-astra"),
+        threadId,
+        participant: {
+          id: astraId,
+          handle: "astra",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-check-back-astra-working"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          participantId: astraId,
+          activeTurnId: asTurnId("turn-astra"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+
+    // The thread's own Claude reports a check-back while Astra holds the room.
+    harness.emit({
+      type: "session.check-backs.updated",
+      eventId: asEventId("evt-check-backs"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: now,
+      payload: {
+        checkBacks: [
+          {
+            id: "job-1",
+            scheduledFor: "2026-01-01T00:15:00.000Z",
+            exact: true,
+            recurring: false,
+            description: "Waiting for CI",
+            durable: false,
+          },
+        ],
+      },
+    });
+    await harness.drain();
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.checkBacks).toEqual([
+      {
+        id: "job-1",
+        participantId: null,
+        scheduledFor: "2026-01-01T00:15:00.000Z",
+        exact: true,
+        recurring: false,
+        description: "Waiting for CI",
+        durable: false,
+      },
+    ]);
+
+    // It fires while Astra still works: the turn is stopped, and the chat says so.
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: asTurnId("turn-check-back"),
+      createdAt: now,
+      updatedAt: now,
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-check-back-fires"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: now,
+      turnId: asTurnId("turn-check-back"),
+      payload: {
+        trigger: {
+          kind: "check-back",
+          checkBackId: "job-1",
+          scheduledFor: "2026-01-01T00:15:00.000Z",
+        },
+      },
+    });
+    await harness.drain();
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities
+        .filter((activity) => activity.kind.startsWith("check-back."))
+        .map((activity) => activity.kind),
+    ).toEqual(["check-back.skipped"]);
+  });
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

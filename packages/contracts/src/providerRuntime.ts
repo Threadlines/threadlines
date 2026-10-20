@@ -204,6 +204,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "thread.token-usage.updated",
   "goal.updated",
   "goal.cleared",
+  "session.check-backs.updated",
   "thread.realtime.started",
   "thread.realtime.item-added",
   "thread.realtime.audio.delta",
@@ -266,6 +267,7 @@ const SubagentMetadataUpdatedType = Schema.Literal("subagent.metadata.updated");
 const ThreadTokenUsageUpdatedType = Schema.Literal("thread.token-usage.updated");
 const GoalUpdatedType = Schema.Literal("goal.updated");
 const GoalClearedType = Schema.Literal("goal.cleared");
+const SessionCheckBacksUpdatedType = Schema.Literal("session.check-backs.updated");
 const ThreadRealtimeStartedType = Schema.Literal("thread.realtime.started");
 const ThreadRealtimeItemAddedType = Schema.Literal("thread.realtime.item-added");
 const ThreadRealtimeAudioDeltaType = Schema.Literal("thread.realtime.audio.delta");
@@ -520,6 +522,30 @@ export type GoalUpdatedPayload = typeof GoalUpdatedPayload.Type;
 const GoalClearedPayload = Schema.Struct({});
 export type GoalClearedPayload = typeof GoalClearedPayload.Type;
 
+/** A time the agent set itself to come back (see OrchestrationCheckBack;
+ *  the agent is the event's own). */
+export const RuntimeCheckBack = Schema.Struct({
+  id: TrimmedNonEmptyStringSchema,
+  scheduledFor: IsoDateTime,
+  exact: Schema.Boolean,
+  recurring: Schema.Boolean,
+  schedule: Schema.optional(TrimmedNonEmptyStringSchema),
+  description: Schema.optional(TrimmedNonEmptyStringSchema),
+  durable: Schema.Boolean,
+});
+export type RuntimeCheckBack = typeof RuntimeCheckBack.Type;
+
+/**
+ * The session's pending check-backs, whole (an authoritative level signal).
+ * `ended`: ones that will not fire because the runtime stopped while they
+ * were pending.
+ */
+const SessionCheckBacksUpdatedPayload = Schema.Struct({
+  checkBacks: Schema.Array(RuntimeCheckBack),
+  ended: Schema.optional(Schema.Array(RuntimeCheckBack)),
+});
+export type SessionCheckBacksUpdatedPayload = typeof SessionCheckBacksUpdatedPayload.Type;
+
 const ThreadRealtimeStartedPayload = Schema.Struct({
   realtimeSessionId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
@@ -562,9 +588,20 @@ const ThreadRealtimeClosedPayload = Schema.Struct({
 });
 export type ThreadRealtimeClosedPayload = typeof ThreadRealtimeClosedPayload.Type;
 
+/** What started a turn the provider began by itself, when it said. */
+export const TurnTrigger = Schema.Struct({
+  /** A check-back the agent had set fired. */
+  kind: Schema.Literal("check-back"),
+  checkBackId: Schema.optional(TrimmedNonEmptyStringSchema),
+  scheduledFor: Schema.optional(IsoDateTime),
+  recurring: Schema.optional(Schema.Boolean),
+});
+export type TurnTrigger = typeof TurnTrigger.Type;
+
 const TurnStartedPayload = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   effort: Schema.optional(TrimmedNonEmptyStringSchema),
+  trigger: Schema.optional(TurnTrigger),
 });
 export type TurnStartedPayload = typeof TurnStartedPayload.Type;
 
@@ -1080,6 +1117,14 @@ const ProviderRuntimeGoalUpdatedEvent = Schema.Struct({
 });
 export type ProviderRuntimeGoalUpdatedEvent = typeof ProviderRuntimeGoalUpdatedEvent.Type;
 
+const ProviderRuntimeSessionCheckBacksUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionCheckBacksUpdatedType,
+  payload: SessionCheckBacksUpdatedPayload,
+});
+export type ProviderRuntimeSessionCheckBacksUpdatedEvent =
+  typeof ProviderRuntimeSessionCheckBacksUpdatedEvent.Type;
+
 const ProviderRuntimeGoalClearedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: GoalClearedType,
@@ -1443,6 +1488,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeThreadTokenUsageUpdatedEvent,
   ProviderRuntimeGoalUpdatedEvent,
   ProviderRuntimeGoalClearedEvent,
+  ProviderRuntimeSessionCheckBacksUpdatedEvent,
   ProviderRuntimeThreadRealtimeStartedEvent,
   ProviderRuntimeThreadRealtimeItemAddedEvent,
   ProviderRuntimeThreadRealtimeAudioDeltaEvent,

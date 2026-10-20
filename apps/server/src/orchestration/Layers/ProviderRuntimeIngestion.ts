@@ -15,6 +15,7 @@ import {
   type SideTurnId,
   type OrchestrationSideTurnOutcome,
   TurnId,
+  type TurnTrigger,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
   type OrchestrationThread,
@@ -33,6 +34,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { countUnifiedDiffStats, type DiffLineStats } from "@threadlines/shared/diffStats";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
+import { sameCheckBacks } from "@threadlines/shared/checkBacks";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import {
   participantSessionKey,
@@ -2846,6 +2848,84 @@ const make = Effect.gen(function* () {
       });
     });
 
+  /** What started a turn the provider began by itself, if it said. Some
+   *  runtimes send `turn.started` with no payload at all. */
+  const turnTriggerOf = (event: Extract<ProviderRuntimeEvent, { readonly type: "turn.started" }>) =>
+    (event.payload as { readonly trigger?: TurnTrigger } | undefined)?.trigger;
+
+  /** A note in the chat about one of an agent's check-backs. */
+  const appendCheckBackActivity = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly kind: "check-back.fired" | "check-back.skipped" | "check-back.ended";
+    readonly summary: string;
+    readonly tag: string;
+    readonly payload: Record<string, unknown>;
+    readonly turnId: TurnId | null;
+  }) =>
+    orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: providerCommandId(input.event, input.tag),
+      threadId: input.threadId,
+      activity: {
+        id: EventId.make(`${input.event.eventId}:${input.tag}`),
+        tone: "info",
+        kind: input.kind,
+        summary: input.summary,
+        payload: input.payload,
+        turnId: input.turnId,
+        participantId: input.event.participantId ?? null,
+        createdAt: input.event.createdAt,
+      },
+      createdAt: input.event.createdAt,
+    });
+
+  /**
+   * An agent's check-backs, as its runtime reported them. They belong to the
+   * agent rather than the session slot: one that handed the room on still
+   * has them, so they are recorded whoever holds the slot. Ones that ended
+   * with the runtime get a note, so a promise to come back never just
+   * disappears.
+   */
+  const recordCheckBacks = (
+    event: Extract<ProviderRuntimeEvent, { readonly type: "session.check-backs.updated" }>,
+    thread: NonNullable<Effect.Success<ReturnType<typeof resolveThreadShell>>>,
+  ) =>
+    Effect.gen(function* () {
+      const participantId = event.participantId ?? null;
+      const current = (thread.checkBacks ?? []).filter(
+        (checkBack) => checkBack.participantId === participantId,
+      );
+      if (!sameCheckBacks(current, event.payload.checkBacks)) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.check-backs.set",
+          commandId: providerCommandId(event, "check-backs-set"),
+          threadId: thread.id,
+          participantId,
+          checkBacks: event.payload.checkBacks.map((checkBack) => ({
+            ...checkBack,
+            participantId,
+          })),
+          createdAt: event.createdAt,
+        });
+      }
+      for (const [index, ended] of (event.payload.ended ?? []).entries()) {
+        yield* appendCheckBackActivity({
+          event,
+          threadId: thread.id,
+          kind: "check-back.ended",
+          summary: "Check-back cancelled",
+          tag: `check-back-ended-${index}`,
+          payload: {
+            scheduledFor: ended.scheduledFor,
+            recurring: ended.recurring,
+            ...(ended.description ? { description: ended.description } : {}),
+          },
+          turnId: null,
+        });
+      }
+    });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       // Realtime audio/item traffic is intentionally in-memory only. Keep this
@@ -2880,6 +2960,10 @@ const make = Effect.gen(function* () {
         yield* processSideTurnEvent({ ...event, sideTurnId: event.sideTurnId }, thread);
         return;
       }
+      if (event.type === "session.check-backs.updated") {
+        yield* recordCheckBacks(event, thread);
+        return;
+      }
       // In a room, only the agent holding the session slot is working; an
       // idle agent's runtime (starting up, being reaped, finishing stray
       // background work) must not overwrite the working agent's state.
@@ -2900,6 +2984,23 @@ const make = Effect.gen(function* () {
             event.turnId,
             "rejected",
           );
+          // A check-back that fires while another agent holds the room is
+          // stopped like any self-started turn; the chat says it was skipped.
+          const trigger = turnTriggerOf(event);
+          if (trigger?.kind === "check-back") {
+            yield* appendCheckBackActivity({
+              event,
+              threadId: thread.id,
+              kind: "check-back.skipped",
+              summary: "Check-back skipped",
+              tag: "check-back-skipped",
+              payload: {
+                ...(trigger.scheduledFor ? { scheduledFor: trigger.scheduledFor } : {}),
+                ...(trigger.recurring !== undefined ? { recurring: trigger.recurring } : {}),
+              },
+              turnId: null,
+            });
+          }
           const agentId = event.participantId ?? null;
           const agentKey = participantSessionKey(thread.id, agentId);
           const wakeTurnId = event.turnId;
@@ -2933,6 +3034,23 @@ const make = Effect.gen(function* () {
           event.turnId,
           "main",
         );
+        // Nobody typed this turn: a check-back the agent set fired. The chat
+        // marks it where a message would start a turn.
+        const trigger = turnTriggerOf(event);
+        if (trigger?.kind === "check-back") {
+          yield* appendCheckBackActivity({
+            event,
+            threadId: thread.id,
+            kind: "check-back.fired",
+            summary: "Checked back",
+            tag: "check-back-fired",
+            payload: {
+              ...(trigger.scheduledFor ? { scheduledFor: trigger.scheduledFor } : {}),
+              ...(trigger.recurring !== undefined ? { recurring: trigger.recurring } : {}),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+          });
+        }
       }
       if (
         STRICT_PROVIDER_LIFECYCLE_GUARD &&

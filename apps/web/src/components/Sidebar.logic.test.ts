@@ -499,6 +499,46 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Completed", pulse: false });
   });
 
+  it("says when an agent will come back once a seen turn has settled", () => {
+    const settled = {
+      ...baseThread,
+      interactionMode: "default" as const,
+      latestTurn: makeLatestTurn(),
+      lastVisitedAt: "2026-03-09T11:00:00.000Z",
+      session: {
+        ...baseThread.session,
+        status: "ready" as const,
+        orchestrationStatus: "ready" as const,
+      },
+      checkBacks: [
+        {
+          id: "wake-2",
+          participantId: null,
+          scheduledFor: "2026-03-09T12:30:00.000Z",
+          exact: true,
+          recurring: false,
+          durable: false,
+        },
+        {
+          id: "wake-1",
+          participantId: null,
+          scheduledFor: "2026-03-09T12:00:00.000Z",
+          exact: true,
+          recurring: false,
+          durable: false,
+        },
+      ],
+    };
+    expect(resolveThreadStatusPill({ thread: settled })).toMatchObject({
+      label: "Checking back",
+      checkBackAt: "2026-03-09T12:00:00.000Z",
+    });
+    // A result nobody has read comes first.
+    expect(
+      resolveThreadStatusPill({ thread: { ...settled, lastVisitedAt: undefined } }),
+    ).toMatchObject({ label: "Completed" });
+  });
+
   it("does not keep working after the matching latest turn has completed", () => {
     const threadWithMatchingMessage = {
       ...baseThread,

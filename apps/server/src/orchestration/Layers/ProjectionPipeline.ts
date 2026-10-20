@@ -1,3 +1,4 @@
+import { replaceAgentCheckBacks } from "@threadlines/shared/checkBacks";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
@@ -1059,6 +1060,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             ...effectiveCwdOf(event.payload),
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.check-backs-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            checkBacks: replaceAgentCheckBacks(existingRow.value.checkBacks ?? [], event.payload),
             updatedAt: event.payload.updatedAt,
           });
           return;

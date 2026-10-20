@@ -1129,6 +1129,32 @@ export const OrchestrationThreadGoal = Schema.Struct({
 });
 export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
 
+/**
+ * A time an agent set itself to come back to the thread (Claude's
+ * ScheduleWakeup and CronCreate). It belongs to the agent that set it, not
+ * to the session slot, and lives only as long as that agent's runtime unless
+ * `durable`.
+ */
+export const OrchestrationCheckBack = Schema.Struct({
+  /** The provider's id for the schedule. */
+  id: TrimmedNonEmptyString,
+  /** The room agent that set it; null for the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** When it fires next. */
+  scheduledFor: IsoDateTime,
+  /** True when the provider stated the time; false when it was worked out
+   *  from the schedule, which the provider may run a little late. */
+  exact: Schema.Boolean,
+  recurring: Schema.Boolean,
+  /** The provider's own wording of a repeating schedule ("every 5 minutes"). */
+  schedule: Schema.optional(TrimmedNonEmptyString),
+  /** Why the agent will come back, in its words, clipped. */
+  description: Schema.optional(TrimmedNonEmptyString),
+  /** Saved by the provider to outlive the runtime that set it. */
+  durable: Schema.Boolean,
+});
+export type OrchestrationCheckBack = typeof OrchestrationCheckBack.Type;
+
 export const ThreadDoneOverrideState = Schema.Literals(["done", "active"]);
 export type ThreadDoneOverrideState = typeof ThreadDoneOverrideState.Type;
 
@@ -1696,6 +1722,8 @@ export const OrchestrationThread = Schema.Struct({
   goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Times the thread's agents set themselves to come back. Absent: none. */
+  checkBacks: Schema.optional(Schema.Array(OrchestrationCheckBack)),
   voiceActive: Schema.optional(Schema.Boolean),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
@@ -1851,6 +1879,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Times the thread's agents set themselves to come back. Absent: none. */
+  checkBacks: Schema.optional(Schema.Array(OrchestrationCheckBack)),
   voiceActive: Schema.optional(Schema.Boolean),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
@@ -2584,6 +2614,21 @@ const ThreadBackgroundTaskStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Cancels an agent's check-backs. Nothing removes one schedule from a live
+ * runtime, so this stops that one agent's runtime (never the room's other
+ * agents); `stopBackgroundWork` says the user agreed to stop its running
+ * background work too, and without it the server refuses when there is some.
+ */
+const ThreadCheckBackCancelCommand = Schema.Struct({
+  type: Schema.Literal("thread.check-back.cancel"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  stopBackgroundWork: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 /** Re-requests the thread's last user message after a failed turn. The
  *  server recovers the message from the thread's history, so the client
  *  never rebuilds text or attachments. */
@@ -2709,6 +2754,18 @@ const ThreadGoalClearCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Provider-internal: an agent's pending check-backs, as its runtime reports
+ *  them; replaces that agent's list. Emitted by runtime ingestion off
+ *  `session.check-backs.updated`. */
+const ThreadCheckBacksSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.check-backs.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  checkBacks: Schema.Array(OrchestrationCheckBack),
+  createdAt: IsoDateTime,
+});
+
 /** Provider-internal: record provider-reported goal state (null when the
  *  provider cleared it). Emitted by runtime ingestion off `goal.updated` /
  *  `goal.cleared` events. */
@@ -2778,6 +2835,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadChildrenStopCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadCheckBackCancelCommand,
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
   ThreadProposedPlanDismissCommand,
@@ -2826,6 +2884,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadChildrenStopCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadCheckBackCancelCommand,
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
   ThreadProposedPlanDismissCommand,
@@ -3354,6 +3413,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadRealtimeStateSetCommand,
   ThreadEffectiveCwdSetCommand,
+  ThreadCheckBacksSetCommand,
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
   ThreadGoalStateSetCommand,
@@ -3449,8 +3509,10 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.checkpoint-revert-requested",
   "thread.reverted",
   "thread.session-stop-requested",
+  "thread.check-back-cancel-requested",
   "thread.session-set",
   "thread.effective-cwd-set",
+  "thread.check-backs-set",
   "thread.goal-set-requested",
   "thread.goal-clear-requested",
   "thread.goal-state-set",
@@ -3982,6 +4044,20 @@ export const ThreadGoalClearRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadCheckBacksSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  checkBacks: Schema.Array(OrchestrationCheckBack),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadCheckBackCancelRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  stopBackgroundWork: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadGoalStateSetPayload = Schema.Struct({
   threadId: ThreadId,
   goal: Schema.NullOr(OrchestrationThreadGoal),
@@ -4378,6 +4454,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.effective-cwd-set"),
     payload: ThreadEffectiveCwdSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.check-backs-set"),
+    payload: ThreadCheckBacksSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.check-back-cancel-requested"),
+    payload: ThreadCheckBackCancelRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

@@ -1,3 +1,4 @@
+import { checkBackActivityLabel } from "./components/chat/checkBacks";
 import * as Option from "effect/Option";
 import { formatWorkflowProgress } from "@threadlines/shared/workflowRuns";
 import * as Schema from "effect/Schema";
@@ -3339,7 +3340,10 @@ function toDerivedWorkLogEntry(
     id: activity.id,
     ...(activity.eventSequence !== undefined ? { eventSequence: activity.eventSequence } : {}),
     createdAt: activity.createdAt,
-    label: runtimeWarningDisplay?.label ?? (taskLabel || activity.summary),
+    label:
+      runtimeWarningDisplay?.label ??
+      checkBackActivityLabel(activity.kind, activity.payload, Date.now()) ??
+      (taskLabel || activity.summary),
     tone:
       activity.kind === "task.progress"
         ? "thinking"

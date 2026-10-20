@@ -111,6 +111,14 @@
       "types": "./src/semver.ts",
       "import": "./src/semver.ts"
     },
+    "./checkBacks": {
+      "types": "./src/checkBacks.ts",
+      "import": "./src/checkBacks.ts"
+    },
+    "./cronSchedule": {
+      "types": "./src/cronSchedule.ts",
+      "import": "./src/cronSchedule.ts"
+    },
     "./Net": {
       "types": "./src/Net.ts",
       "import": "./src/Net.ts"

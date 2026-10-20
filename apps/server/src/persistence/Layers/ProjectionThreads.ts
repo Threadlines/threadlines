@@ -16,6 +16,7 @@ import {
 } from "../Services/ProjectionThreads.ts";
 import {
   ModelSelection,
+  OrchestrationCheckBack,
   OrchestrationThreadGoal,
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
@@ -30,6 +31,9 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
     goal: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadGoal)),
+    checkBacks: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationCheckBack))),
+    ),
     linkedPullRequests: Schema.fromJsonString(Schema.Array(OrchestrationThreadLinkedPullRequest)),
     queuedFollowUps: Schema.fromJsonString(Schema.Array(OrchestrationQueuedFollowUp)),
     participants: Schema.fromJsonString(Schema.Array(OrchestrationThreadParticipant)),
@@ -63,6 +67,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           effective_cwd,
           effective_cwd_source,
           goal,
+          check_backs,
           voice_active,
           diff_stat_baseline_turn_count,
           latest_turn_id,
@@ -110,6 +115,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.effectiveCwd},
           ${row.effectiveCwdSource ?? null},
           ${row.goal === null ? null : JSON.stringify(row.goal)},
+          ${row.checkBacks && row.checkBacks.length > 0 ? JSON.stringify(row.checkBacks) : null},
           ${row.voiceActive ?? 0},
           ${row.diffStatBaselineTurnCount ?? 0},
           ${row.latestTurnId},
@@ -157,6 +163,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           effective_cwd = excluded.effective_cwd,
           effective_cwd_source = excluded.effective_cwd_source,
           goal = excluded.goal,
+          check_backs = excluded.check_backs,
           voice_active = excluded.voice_active,
           diff_stat_baseline_turn_count = excluded.diff_stat_baseline_turn_count,
           latest_turn_id = excluded.latest_turn_id,
@@ -211,6 +218,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           effective_cwd AS "effectiveCwd",
           effective_cwd_source AS "effectiveCwdSource",
           goal AS "goal",
+          check_backs AS "checkBacks",
           voice_active AS "voiceActive",
           diff_stat_baseline_turn_count AS "diffStatBaselineTurnCount",
           latest_turn_id AS "latestTurnId",
@@ -267,6 +275,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           effective_cwd AS "effectiveCwd",
           effective_cwd_source AS "effectiveCwdSource",
           goal AS "goal",
+          check_backs AS "checkBacks",
           voice_active AS "voiceActive",
           diff_stat_baseline_turn_count AS "diffStatBaselineTurnCount",
           latest_turn_id AS "latestTurnId",
