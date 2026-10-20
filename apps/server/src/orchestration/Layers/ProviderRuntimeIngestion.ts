@@ -59,6 +59,7 @@ import {
 import { toOrchestrationThreadGoal } from "../threadGoalLifecycle.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { AgentPages } from "../../pages/AgentPages.ts";
+import { McpApps } from "../../mcpApps/McpApps.ts";
 import {
   projectRuntimeEventToActivities,
   subagentSessionProviderStamp,
@@ -1247,6 +1248,7 @@ const make = Effect.gen(function* () {
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const agentPages = yield* AgentPages;
+  const mcpApps = yield* McpApps;
   const path = yield* Path.Path;
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
@@ -2881,6 +2883,25 @@ const make = Effect.gen(function* () {
     });
 
   /**
+   * A finished MCP call whose tool ships an app: the call is kept for its
+   * card before the step that names it is appended (docs/mcp-apps.md). A side
+   * answer's call is kept for its agent's own session, never as that
+   * session's, so the card asks before any of the app's calls run.
+   */
+  const recordMcpAppCall = (event: ProviderRuntimeEvent, threadId: ThreadId) =>
+    event.type === "item.completed" && event.payload.mcpApp && event.itemId
+      ? mcpApps.recordCall({
+          threadId,
+          toolCallId: event.itemId,
+          participantId: event.participantId ?? null,
+          providerInstanceId: event.providerInstanceId ?? null,
+          call: event.payload.mcpApp,
+          fromSideAnswer: event.sideTurnId !== undefined,
+          createdAt: event.createdAt,
+        })
+      : Effect.void;
+
+  /**
    * An agent's check-backs, as its runtime reported them. They belong to the
    * agent rather than the session slot: one that handed the room on still
    * has them, so they are recorded whoever holds the slot. Ones that ended
@@ -2957,6 +2978,7 @@ const make = Effect.gen(function* () {
       }
       if (!thread) return;
       if (event.sideTurnId !== undefined) {
+        yield* recordMcpAppCall(event, thread.id);
         yield* processSideTurnEvent({ ...event, sideTurnId: event.sideTurnId }, thread);
         return;
       }
@@ -4091,6 +4113,8 @@ const make = Effect.gen(function* () {
           yield* syncProviderTurnDiffSummary({ event, thread, turnId, files, now });
         }
       }
+
+      yield* recordMcpAppCall(event, thread.id);
 
       const activities = yield* projectRuntimeActivities(event, attributionThread);
       yield* Effect.forEach(activities, (activity) =>

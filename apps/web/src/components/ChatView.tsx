@@ -249,6 +249,7 @@ import {
   useTerminalStateStore,
 } from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { McpAppSidePanel } from "./chat/McpAppCard";
 import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./chat/ComposerPullRequestRow";
 import { type ComposerGoalSetInput, threadGoalControls } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
@@ -3653,6 +3654,25 @@ export default function ChatView(props: ChatViewProps) {
       terminalState.terminalOpen,
     ],
   );
+  /** A message an MCP app card asked to send: it goes into the composer,
+   *  after anything already typed, for the user to send (docs/mcp-apps.md). */
+  const putMcpAppMessage = useCallback(
+    (text: string) => {
+      const nextPrompt = appendRestoredFollowUpText(promptRef.current, [text]);
+      promptRef.current = nextPrompt;
+      setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+      const composer = composerRef.current;
+      composer?.resetCursorState({
+        cursor: collapseExpandedComposerCursor(nextPrompt, nextPrompt.length),
+        prompt: nextPrompt,
+      });
+      // After the editor has taken the new text: focusing reports what it
+      // holds, and before then that is still the old prompt.
+      window.requestAnimationFrame(() => composer?.focusAtEnd());
+    },
+    [composerDraftTarget, composerRef, setComposerDraftPrompt],
+  );
+
   /**
    * Cancels an agent's check-backs. Nothing drops one schedule from a live
    * agent, so its runtime stops (only that agent's); work it left running
@@ -7645,6 +7665,7 @@ export default function ChatView(props: ChatViewProps) {
                 awaitedTasks={awaitedTasks}
                 checkBacks={activeThread.checkBacks}
                 onCancelCheckBack={cancelCheckBack}
+                onPutMcpAppMessage={putMcpAppMessage}
                 activeStatusLabel={activeStatusLabel}
                 activeTurnInProgress={isWorking || !latestTurnSettled}
                 activeTurnId={activeLatestTurn?.turnId ?? null}
@@ -7695,6 +7716,13 @@ export default function ChatView(props: ChatViewProps) {
                 onOpenThread={onOpenForkSourceThread}
               />
             </CommandRunActionsContext>
+            {/* An MCP app open beside the chat: outside the timeline, so it keeps
+                running when its card scrolls away. */}
+            <McpAppSidePanel
+              environmentId={environmentId}
+              threadId={activeThreadId ?? null}
+              onPutMessage={putMcpAppMessage}
+            />
 
             {/* scroll to bottom button — shown when user has scrolled away from the bottom. */}
             {showScrollToBottom && (

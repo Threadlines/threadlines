@@ -2709,6 +2709,27 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return { status: pending ? "pending" : "unavailable" } as const;
   });
 
+  const agentSession: ProviderServiceShape["agentSession"] = Effect.fn("agentSession")(
+    function* (input) {
+      const routed = yield* resolveRoutableSession({
+        threadId: input.sessionKey,
+        operation: "ProviderService.agentSession",
+        allowRecovery: input.recover,
+      }).pipe(Effect.orElseSucceed(() => null));
+      if (routed === null || !routed.isActive) return null;
+      if (input.providerInstanceId !== null && routed.instanceId !== input.providerInstanceId) {
+        return null;
+      }
+      const sessions = yield* routed.adapter.listSessions();
+      const session = sessions.find((candidate) => candidate.threadId === routed.threadId);
+      return {
+        adapter: routed.adapter,
+        sessionKey: routed.threadId,
+        providerThreadId: session?.providerThreadId ?? null,
+      };
+    },
+  );
+
   const sendSubagentInput: ProviderServiceShape["sendSubagentInput"] = Effect.fn(
     "sendSubagentInput",
   )(function* (rawInput) {
@@ -2930,6 +2951,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     rollbackConversation,
     readSubagentTranscript,
     readCommandOutput,
+    agentSession,
     sendSubagentInput,
     deleteThread,
     // Each access creates a fresh PubSub subscription so that multiple

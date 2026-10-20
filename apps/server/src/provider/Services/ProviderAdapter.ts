@@ -27,6 +27,7 @@ import type {
   ProviderSubagentInputRequest,
   ProviderSubagentInputResult,
   ProviderCommandOutputResult,
+  McpAppToolResult,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
   ProviderSteerTurnInput,
@@ -39,6 +40,7 @@ import type {
   TurnId,
   RuntimeTaskId,
 } from "@threadlines/contracts";
+import type { McpResourceContent, McpToolUi } from "@threadlines/shared/mcpApps";
 import type {
   OrchestrationWorkflowRun,
   WorkflowCommandLocation,
@@ -389,6 +391,36 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     toolCallId: string,
   ) => Effect.Effect<ProviderCommandOutputResult, TError>;
+
+  /**
+   * MCP Apps (docs/mcp-apps.md), through the session's own MCP client and
+   * with no model turn. Optional: providers whose runtime cannot reach its
+   * MCP servers outside a turn omit them.
+   *
+   * - `readMcpResource`: a server's `ui://` resource, as `resources/read`
+   *   returns its contents.
+   * - `callMcpTool`: a tool on a server, with no approval prompt (the caller
+   *   has already decided it may run).
+   * - `readMcpToolUi`: a tool's app metadata as its server declares it now;
+   *   null for a tool that declares none, undefined when the runtime cannot
+   *   say.
+   */
+  readonly readMcpResource?: (
+    threadId: ThreadId,
+    input: { readonly server: string; readonly uri: string },
+  ) => Effect.Effect<ReadonlyArray<McpResourceContent>, TError>;
+  readonly callMcpTool?: (
+    threadId: ThreadId,
+    input: {
+      readonly server: string;
+      readonly tool: string;
+      readonly arguments: Readonly<Record<string, unknown>>;
+    },
+  ) => Effect.Effect<McpAppToolResult, TError>;
+  readonly readMcpToolUi?: (
+    threadId: ThreadId,
+    input: { readonly server: string; readonly tool: string },
+  ) => Effect.Effect<McpToolUi | null | undefined, TError>;
 
   /**
    * Send a user message straight to a spawned subagent, starting a turn on

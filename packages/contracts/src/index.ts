@@ -16,6 +16,7 @@ export * from "./acpRegistry.ts";
 export * from "./providerExtensions.ts";
 export * from "./providerInstance.ts";
 export * from "./providerRuntime.ts";
+export * from "./mcpApps.ts";
 export * from "./model.ts";
 export * from "./keybindings.ts";
 export * from "./server.ts";

@@ -106,6 +106,12 @@ import type {
   ProviderRealtimeStartInput,
 } from "./provider.ts";
 import type {
+  McpAppCallToolInput,
+  McpAppLoadInput,
+  McpAppLoadResult,
+  McpAppToolResult,
+} from "./mcpApps.ts";
+import type {
   ProviderExtensionMcpOAuthStartInput,
   ProviderExtensionMcpOAuthStartResult,
   ProviderExtensionMcpReloadInput,
@@ -1651,6 +1657,12 @@ export interface EnvironmentApi {
     /** What a command an agent is running right now has printed. Optional
      *  for the same reason. */
     readCommandOutput?: (input: ProviderCommandOutputInput) => Promise<ProviderCommandOutputResult>;
+  };
+  /** MCP app cards (docs/mcp-apps.md). Optional so newer clients can still
+   *  connect to older Threadlines servers. */
+  mcpApps?: {
+    load: (input: McpAppLoadInput) => Promise<McpAppLoadResult>;
+    callTool: (input: McpAppCallToolInput) => Promise<McpAppToolResult>;
   };
   /** Provider capabilities scoped to this backend environment. Optional so
    * newer clients can still connect to older Threadlines servers. */

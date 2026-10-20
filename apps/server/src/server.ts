@@ -63,6 +63,8 @@ import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import * as McpPagesServer from "./mcp/McpPagesServer.ts";
 import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
 import * as AgentPages from "./pages/AgentPages.ts";
+import * as McpApps from "./mcpApps/McpApps.ts";
+import { McpAppCallRepositoryLive } from "./persistence/Layers/McpAppCalls.ts";
 import * as CommandRuns from "./commandRuns/CommandRuns.ts";
 import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
 import * as PagePreview from "./pages/preview/PagePreview.ts";
@@ -400,9 +402,16 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Agent pages (what `show_page` does) sit here for the same reason: they
   // record pages through the engine and projections that layer supplies. So
   // do suggested commands (`ask_user_to_run` and the chat's Run buttons),
-  // which also run in the terminal layer below.
+  // which also run in the terminal layer below. MCP app cards record their
+  // calls from ingestion and reach agents through the provider layer.
   Layer.provideMerge(
-    Layer.mergeAll(ThreadContextSeedBuilderLive, AgentPages.layer, CommandRuns.layer),
+    Layer.mergeAll(
+      ThreadContextSeedBuilderLive,
+      AgentPages.layer,
+      CommandRuns.layer,
+      // The calls' table also serves thread deletion's cleanup.
+      McpApps.layer.pipe(Layer.provideMerge(McpAppCallRepositoryLive)),
+    ),
   ),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   // Settings-owned provider sign-in. Listed before the terminal layer so it

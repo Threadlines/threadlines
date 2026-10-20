@@ -10,6 +10,7 @@ import {
   ProviderSession,
   ProviderInstanceId,
   RoomAgentRequestId,
+  RuntimeItemId,
 } from "@threadlines/contracts";
 import {
   ApprovalRequestId,
@@ -27,6 +28,7 @@ import {
 } from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -54,6 +56,9 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { type AdoptPageInput, AgentPages } from "../../pages/AgentPages.ts";
+import * as McpApps from "../../mcpApps/McpApps.ts";
+import { McpAppCallRepositoryLive } from "../../persistence/Layers/McpAppCalls.ts";
+import { McpAppCallRepository } from "../../persistence/Services/McpAppCalls.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
@@ -154,6 +159,7 @@ function createProviderServiceHarness() {
     rollbackConversation: () => unsupported(),
     readSubagentTranscript: () => unsupported(),
     readCommandOutput: () => unsupported(),
+    agentSession: () => Effect.succeed(null),
     sendSubagentInput: () => unsupported(),
     deleteThread: () => unsupported(),
     get streamEvents() {
@@ -228,7 +234,10 @@ async function waitForThread(
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | McpAppCallRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -288,6 +297,7 @@ describe("ProviderRuntimeIngestion", () => {
           assetsDirOf: () => null,
         }),
       ),
+      Layer.provideMerge(McpApps.layer.pipe(Layer.provideMerge(McpAppCallRepositoryLive))),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
@@ -300,6 +310,7 @@ describe("ProviderRuntimeIngestion", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const mcpAppCalls = await runtime.runPromise(Effect.service(McpAppCallRepository));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -371,6 +382,7 @@ describe("ProviderRuntimeIngestion", () => {
       setProviderSession: provider.setSession,
       interruptedThreadIds: provider.interruptedThreadIds,
       adoptedPages,
+      mcpAppCalls,
       drain,
     };
   }
@@ -741,6 +753,86 @@ describe("ProviderRuntimeIngestion", () => {
       participantId: astraId,
       activeTurnId: "turn-astra",
     });
+  });
+
+  it("keeps an MCP app's call for its card, and puts only the app on the step", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const bigResult = { content: [{ type: "text", text: "x".repeat(10_000) }] };
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-mcp-app-call"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: now,
+      turnId: asTurnId("turn-1"),
+      itemId: RuntimeItemId.make("call-counter"),
+      payload: {
+        itemType: "mcp_tool_call",
+        status: "completed",
+        title: "MCP tool call",
+        mcpApp: {
+          server: "probe-apps",
+          tool: "show_counter",
+          resourceUri: "ui://probe-apps/counter.html",
+          arguments: { start: 3 },
+          result: bigResult,
+        },
+      },
+    });
+    await harness.drain();
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "tool.completed"),
+    );
+    const step = thread.activities.find((activity) => activity.kind === "tool.completed");
+    expect(step?.payload).toMatchObject({
+      mcpApp: {
+        server: "probe-apps",
+        tool: "show_counter",
+        resourceUri: "ui://probe-apps/counter.html",
+      },
+    });
+    expect(Object.keys((step?.payload ?? {}) as object)).not.toContain("result");
+    // The whole result is kept for the view, uncut by the step's limits.
+    const kept = await Effect.runPromise(
+      harness.mcpAppCalls.get({ threadId, toolCallId: "call-counter" }),
+    );
+    expect(Option.getOrThrow(kept)).toMatchObject({
+      providerInstanceId: "codex",
+      participantId: null,
+      call: { arguments: { start: 3 }, result: bigResult },
+      truncated: false,
+    });
+
+    // A side answer's call is kept too, never as its agent's own session's.
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-mcp-app-side-call"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      sideTurnId: SideTurnId.make("side-mcp-app"),
+      createdAt: now,
+      itemId: RuntimeItemId.make("call-side-counter"),
+      payload: {
+        itemType: "mcp_tool_call",
+        status: "completed",
+        mcpApp: {
+          server: "probe-apps",
+          tool: "show_counter",
+          resourceUri: "ui://probe-apps/counter.html",
+          result: null,
+        },
+      },
+    });
+    await harness.drain();
+    const side = await Effect.runPromise(
+      harness.mcpAppCalls.get({ threadId, toolCallId: "call-side-counter" }),
+    );
+    expect(Option.getOrThrow(side).providerThreadId).toBeNull();
   });
 
   it("keeps a room agent's check-backs while another agent works, and notes one it had to skip", async () => {

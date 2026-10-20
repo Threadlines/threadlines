@@ -39,6 +39,7 @@ import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapte
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
 import { ServerSettingsService } from "../src/serverSettings.ts";
 import { AgentPages } from "../src/pages/AgentPages.ts";
+import { McpApps } from "../src/mcpApps/McpApps.ts";
 import { makeProviderServiceLive } from "../src/provider/Layers/ProviderService.ts";
 import { makeCodexAdapter } from "../src/provider/Layers/CodexAdapter.ts";
 import {
@@ -310,6 +311,7 @@ export const makeOrchestrationIntegrationHarness = (
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
       // No provider publishes a page in these tests.
       Layer.provideMerge(Layer.mock(AgentPages)({ assetsDirOf: () => null })),
+      Layer.provideMerge(Layer.mock(McpApps)({ recordCall: () => Effect.void })),
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(serverSettingsLayer),
     );

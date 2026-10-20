@@ -22,6 +22,8 @@ import {
   type ProviderExternalThreadTranscriptMessage,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type McpAppToolResult,
+  type RuntimeMcpAppCall,
   SubagentMetadataUpdatedPayload,
   type ProviderRequestKind,
   type ProviderRealtimeAudioChunk,
@@ -57,6 +59,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { isRootAgentPath } from "@threadlines/shared/subagentPath";
+import { isMcpAppResourceUri, mcpToolUiFromMeta } from "@threadlines/shared/mcpApps";
 import { resolveCodexServiceTier } from "../../codexServiceTier.ts";
 
 import {
@@ -1517,6 +1520,46 @@ function runtimeEventBase(
   };
 }
 
+/**
+ * A finished MCP tool call whose tool ships an app (docs/mcp-apps.md), as the
+ * step's `mcpApp`. Codex names the app on the call itself. A call that failed
+ * with no result gives its view the error as an error result.
+ */
+function codexMcpAppCall(
+  item: EffectCodexSchema.V2ItemCompletedNotification["item"],
+): RuntimeMcpAppCall | undefined {
+  if (item.type !== "mcpToolCall") return undefined;
+  const resourceUri = item.mcpAppResourceUri ?? item.mcpAppUi?.resourceUri;
+  if (!isMcpAppResourceUri(resourceUri) || item.status === "inProgress") return undefined;
+  const server = item.server.trim();
+  const tool = item.tool.trim();
+  if (server.length === 0 || tool.length === 0) return undefined;
+  const args = item.arguments;
+  const result: McpAppToolResult | null = item.result
+    ? {
+        content: item.result.content,
+        ...(isJsonObject(item.result.structuredContent)
+          ? { structuredContent: item.result.structuredContent }
+          : {}),
+        ...(isJsonObject(item.result._meta) ? { _meta: item.result._meta } : {}),
+        ...(item.status === "failed" ? { isError: true } : {}),
+      }
+    : item.error
+      ? { content: [{ type: "text", text: item.error.message }], isError: true }
+      : null;
+  return {
+    server,
+    tool,
+    resourceUri,
+    ...(isJsonObject(args) ? { arguments: args } : {}),
+    result,
+  };
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function mapItemLifecycle(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -1544,6 +1587,7 @@ function mapItemLifecycle(
       : lifecycle === "item.completed"
         ? completedItemStatus(item)
         : undefined;
+  const mcpApp = lifecycle === "item.completed" ? codexMcpAppCall(item) : undefined;
 
   return {
     ...runtimeEventBase(event, canonicalThreadId),
@@ -1554,6 +1598,7 @@ function mapItemLifecycle(
       ...(itemTitle(itemType) ? { title: itemTitle(itemType) } : {}),
       ...(detail ? { detail } : {}),
       data: canonicalItemLifecycleData(payload, item),
+      ...(mcpApp ? { mcpApp } : {}),
     },
   };
 }
@@ -3618,6 +3663,64 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
+  const mapMcpAppError =
+    (threadId: ThreadId, method: string) =>
+    (cause: ProviderAdapterSessionNotFoundError | CodexSessionRuntimeError) =>
+      cause._tag === "ProviderAdapterSessionNotFoundError"
+        ? cause
+        : mapCodexRuntimeError(threadId, method, cause);
+
+  const readMcpResource: NonNullable<CodexAdapterShape["readMcpResource"]> = (threadId, input) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => session.runtime.readMcpResource(input)),
+      Effect.map((response) =>
+        response.contents.map((content) => ({
+          uri: content.uri,
+          ...(content.mimeType ? { mimeType: content.mimeType } : {}),
+          ...("text" in content && typeof content.text === "string" ? { text: content.text } : {}),
+          ...("blob" in content && typeof content.blob === "string" ? { blob: content.blob } : {}),
+          ...(content._meta !== undefined ? { _meta: content._meta } : {}),
+        })),
+      ),
+      Effect.mapError(mapMcpAppError(threadId, "mcpServer/resource/read")),
+    );
+
+  const callMcpTool: NonNullable<CodexAdapterShape["callMcpTool"]> = (threadId, input) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) =>
+        session.runtime.callMcpTool({
+          server: input.server,
+          tool: input.tool,
+          // Arguments arrive as JSON from the card's view, over RPC.
+          arguments: input.arguments as EffectCodexSchema.V2McpServerToolCallParams["arguments"],
+        }),
+      ),
+      Effect.map((response): McpAppToolResult => ({
+        content: response.content,
+        ...(isJsonObject(response.structuredContent)
+          ? { structuredContent: response.structuredContent }
+          : {}),
+        ...(response.isError ? { isError: true } : {}),
+        ...(isJsonObject(response._meta) ? { _meta: response._meta } : {}),
+      })),
+      Effect.mapError(mapMcpAppError(threadId, "mcpServer/tool/call")),
+    );
+
+  const readMcpToolUi: NonNullable<CodexAdapterShape["readMcpToolUi"]> = (threadId, input) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => session.runtime.listMcpServerTools(input.server)),
+      Effect.map((response) => {
+        const server = response.data.find((entry) => entry.name === input.server);
+        const tool = server
+          ? Object.values(server.tools).find((candidate) => candidate.name === input.tool)
+          : undefined;
+        // A tool the server lists without app metadata declares none; one it
+        // does not list at all is unknown.
+        return tool === undefined ? undefined : mcpToolUiFromMeta(tool._meta);
+      }),
+      Effect.mapError(mapMcpAppError(threadId, "mcpServerStatus/list")),
+    );
+
   const setThreadGoal: NonNullable<CodexAdapterShape["setThreadGoal"]> = (input) =>
     requireSession(input.threadId).pipe(
       Effect.flatMap((session) =>
@@ -4121,6 +4224,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     realtimeAppendAudio,
     realtimeListVoices,
     compactContext,
+    readMcpResource,
+    callMcpTool,
+    readMcpToolUi,
     setThreadGoal,
     getThreadGoal,
     clearThreadGoal,

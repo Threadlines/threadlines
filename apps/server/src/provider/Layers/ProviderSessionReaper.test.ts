@@ -261,6 +261,7 @@ describe("ProviderSessionReaper", () => {
       rollbackConversation: () => unsupported(),
       readSubagentTranscript: () => unsupported(),
       readCommandOutput: () => unsupported(),
+      agentSession: () => Effect.succeed(null),
       sendSubagentInput: () => unsupported(),
       deleteThread: () => unsupported(),
       streamEvents: Stream.empty,

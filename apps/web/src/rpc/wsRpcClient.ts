@@ -47,6 +47,8 @@ interface StreamSubscriptionOptions {
 
 /** How long a polled read of a command's output may take. */
 const OUTPUT_READ_TIMEOUT = Option.some("5 seconds" as const);
+/** An MCP app card's load or tool call (see loadMcpApp). */
+const MCP_APP_REQUEST_TIMEOUT = Option.some("2 minutes" as const);
 
 type RpcUnaryMethod<TTag extends RpcTag> =
   RpcMethod<TTag> extends (input: any, options?: any) => Effect.Effect<infer TSuccess, any, any>
@@ -306,6 +308,8 @@ export interface WsRpcClient {
       typeof WS_METHODS.serverReadBackgroundRunOutput
     >;
     readonly readCommandOutput: RpcUnaryMethod<typeof WS_METHODS.serverReadCommandOutput>;
+    readonly loadMcpApp: RpcUnaryMethod<typeof WS_METHODS.serverLoadMcpApp>;
+    readonly callMcpAppTool: RpcUnaryMethod<typeof WS_METHODS.serverCallMcpAppTool>;
     readonly stopBackgroundRun: RpcUnaryMethod<typeof WS_METHODS.serverStopBackgroundRun>;
     readonly getProviderExtensions: RpcUnaryMethod<typeof WS_METHODS.serverGetProviderExtensions>;
     readonly startProviderExtensionMcpOAuth: RpcUnaryMethod<
@@ -864,6 +868,16 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
             client[WS_METHODS.serverReadCommandOutput](input).pipe(Effect.withTracerEnabled(false)),
           { timeout: OUTPUT_READ_TIMEOUT },
         ),
+      // A card's view may load through an agent session started for it, and a
+      // tool call an app makes runs as long as the tool does.
+      loadMcpApp: (input) =>
+        transport.request((client) => client[WS_METHODS.serverLoadMcpApp](input), {
+          timeout: MCP_APP_REQUEST_TIMEOUT,
+        }),
+      callMcpAppTool: (input) =>
+        transport.request((client) => client[WS_METHODS.serverCallMcpAppTool](input), {
+          timeout: MCP_APP_REQUEST_TIMEOUT,
+        }),
       // Pure read. A plain request lost to a dropped socket left the plugins page empty with no
       // error until it remounted. With MCP and apps included the server may legitimately take
       // most of a minute, so one attempt gets that long.

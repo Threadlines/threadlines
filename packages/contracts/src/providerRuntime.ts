@@ -21,6 +21,7 @@ import {
   OrchestrationSubagentStatus,
   ProviderApprovalDecision,
 } from "./orchestration.ts";
+import { RuntimeMcpAppCall } from "./mcpApps.ts";
 import { AwaitedWorkflowProgress, WorkflowRunUpdate } from "./workflow.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
@@ -665,6 +666,8 @@ export const ItemLifecyclePayload = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   data: Schema.optional(Schema.Unknown),
+  /** On a completed MCP tool call whose tool declares an app (mcpApps.ts). */
+  mcpApp: Schema.optional(RuntimeMcpAppCall),
 });
 export type ItemLifecyclePayload = typeof ItemLifecyclePayload.Type;
 

@@ -47,6 +47,13 @@ import {
 } from "./dictation.ts";
 import { UsageBreakdownsResult, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
+  McpAppCallToolInput,
+  McpAppError,
+  McpAppLoadInput,
+  McpAppLoadResult,
+  McpAppToolResult,
+} from "./mcpApps.ts";
+import {
   GitActionProgressEvent,
   VcsCommitDetailsInput,
   VcsCommitDetailsResult,
@@ -485,6 +492,8 @@ export const WS_METHODS = {
   serverStopBackgroundRun: "server.stopBackgroundRun",
   serverReadBackgroundRunOutput: "server.readBackgroundRunOutput",
   serverReadCommandOutput: "server.readCommandOutput",
+  serverLoadMcpApp: "server.loadMcpApp",
+  serverCallMcpAppTool: "server.callMcpAppTool",
   serverReadWorkflowRunFile: "server.readWorkflowRunFile",
   serverReadWorkflowAgentTranscript: "server.readWorkflowAgentTranscript",
   serverSaveWorkflowCommand: "server.saveWorkflowCommand",
@@ -757,6 +766,20 @@ export const WsServerReadBackgroundRunOutputRpc = Rpc.make(
 export const WsServerReadCommandOutputRpc = Rpc.make(WS_METHODS.serverReadCommandOutput, {
   payload: ProviderCommandOutputInput,
   success: ProviderCommandOutputResult,
+});
+
+/** Open an MCP app card (docs/mcp-apps.md). */
+export const WsServerLoadMcpAppRpc = Rpc.make(WS_METHODS.serverLoadMcpApp, {
+  payload: McpAppLoadInput,
+  success: McpAppLoadResult,
+  error: McpAppError,
+});
+
+/** A tool an MCP app card's view calls on its own server. */
+export const WsServerCallMcpAppToolRpc = Rpc.make(WS_METHODS.serverCallMcpAppTool, {
+  payload: McpAppCallToolInput,
+  success: McpAppToolResult,
+  error: McpAppError,
 });
 
 export const WsServerReadWorkflowRunFileRpc = Rpc.make(WS_METHODS.serverReadWorkflowRunFile, {
@@ -1721,6 +1744,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerStopBackgroundRunRpc,
   WsServerReadBackgroundRunOutputRpc,
   WsServerReadCommandOutputRpc,
+  WsServerLoadMcpAppRpc,
+  WsServerCallMcpAppToolRpc,
   WsServerReadWorkflowRunFileRpc,
   WsServerReadWorkflowAgentTranscriptRpc,
   WsServerSaveWorkflowCommandRpc,

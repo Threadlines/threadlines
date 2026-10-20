@@ -6,7 +6,9 @@ import * as Arr from "effect/Array";
 import { compareTranscriptPosition } from "@threadlines/shared/transcriptOrder";
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { isMcpAppResourceUri } from "@threadlines/shared/mcpApps";
 import {
+  type McpAppRef,
   type OrchestrationAgentPage,
   type OrchestrationWorkflowRun,
   type OrchestrationCommandRequest,
@@ -147,6 +149,9 @@ export interface McpAuthReconnectAction {
 
 export interface WorkLogEntry {
   id: string;
+  /** The app a finished MCP tool call's tool ships: the chat shows it as a
+   *  card under the step (docs/mcp-apps.md). */
+  mcpApp?: McpAppRef;
   eventSequence?: number | undefined;
   createdAt: string;
   /** Provider-stamped lifecycle completion time. Combined with `createdAt`
@@ -560,6 +565,14 @@ export interface ForkContextEntry {
   seedMode?: ThreadForkSeedOutcomePayload["seedMode"];
 }
 
+/** An MCP app card: the finished tool call whose tool ships the app
+ *  (docs/mcp-apps.md). */
+export interface McpAppEntry {
+  readonly toolCallId: string;
+  readonly ref: McpAppRef;
+  readonly turnId: TurnId | null;
+}
+
 export type TimelineEntry = { eventSequence?: number | undefined } & (
   | {
       id: string;
@@ -608,6 +621,12 @@ export type TimelineEntry = { eventSequence?: number | undefined } & (
       kind: "workflow-run";
       createdAt: string;
       run: OrchestrationWorkflowRun;
+    }
+  | {
+      id: string;
+      kind: "mcp-app";
+      createdAt: string;
+      app: McpAppEntry;
     }
   | {
       id: string;
@@ -3438,6 +3457,10 @@ function toDerivedWorkLogEntry(
   if (toolCallId) {
     entry.toolCallId = toolCallId;
   }
+  const mcpApp = readMcpAppRef(payload?.mcpApp);
+  if (mcpApp && toolCallId) {
+    entry.mcpApp = mcpApp;
+  }
   if (browserReceipt) {
     entry.browserReceipt = browserReceipt;
   }
@@ -4045,6 +4068,19 @@ function mergeDerivedWorkLogEntries(
     ...(spawnedAgentIds ? { spawnedAgentIds } : {}),
     ...(browserReceipt ? { browserReceipt } : {}),
   };
+}
+
+/** A step's `mcpApp` (see WorkLogEntry), if it is one. */
+function readMcpAppRef(value: unknown): McpAppRef | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const { server, tool, resourceUri } = value as Record<string, unknown>;
+  return typeof server === "string" &&
+    server.length > 0 &&
+    typeof tool === "string" &&
+    tool.length > 0 &&
+    isMcpAppResourceUri(resourceUri)
+    ? { server, tool, resourceUri }
+    : undefined;
 }
 
 function deriveAuthReconnectAction(
@@ -5972,6 +6008,21 @@ export function deriveTimelineEntries(
       ...(entry.eventSequence !== undefined ? { eventSequence: entry.eventSequence } : {}),
       entry,
     }));
+  // A tool that ships an app shows it as a card right under the step that
+  // ran it: the same place in the transcript, after the step.
+  const mcpAppRows: TimelineEntry[] = workEntries.flatMap((entry) =>
+    entry.mcpApp && entry.toolCallId
+      ? [
+          {
+            id: `mcp-app:${entry.toolCallId}`,
+            kind: "mcp-app" as const,
+            createdAt: entry.createdAt,
+            ...(entry.eventSequence !== undefined ? { eventSequence: entry.eventSequence } : {}),
+            app: { toolCallId: entry.toolCallId, ref: entry.mcpApp, turnId: entry.turnId ?? null },
+          },
+        ]
+      : [],
+  );
   const subagentResultRows: TimelineEntry[] = subagentResults.map((result) => ({
     id: result.id,
     kind: "subagent-result",
@@ -6017,6 +6068,7 @@ export function deriveTimelineEntries(
     ...messageRows,
     ...proposedPlanRows,
     ...workRows,
+    ...mcpAppRows,
     ...pageRows,
     ...workflowRunRows,
     ...commandRequestRows,
