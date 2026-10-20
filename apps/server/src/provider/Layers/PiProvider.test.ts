@@ -167,7 +167,7 @@ describe.skipIf(!piCli)("PiProvider with a real Pi", () => {
         expect(snapshot.status).toBe("warning");
         expect(snapshot.auth.status).toBe("unauthenticated");
         expect(snapshot.models).toEqual([]);
-        expect(snapshot.message).toContain("/login");
+        expect(snapshot.message).toContain("Sign in");
       }),
     ),
   );

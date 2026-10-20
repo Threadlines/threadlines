@@ -9,7 +9,9 @@
  * Neither surface has room for the interactive terminal that settings can
  * open, so a run that stalls past the auto-expand threshold hands off: the
  * action becomes "Open Settings", deep-linked to this instance's card, where
- * the same live session is waiting with its terminal and copy fallback.
+ * the same live session is waiting with its terminal and copy fallback. A
+ * question the agent asks (Pi's list of providers) hands off the same way
+ * from the composer; the setup screen answers it in its own row.
  *
  * @module providerSignIn
  */
@@ -38,8 +40,15 @@ export interface ProviderSignInFlowView {
   readonly isStarting: boolean;
   readonly hasRun: boolean;
   readonly hasFailed: boolean;
-  /** True once the run has earned the terminal only settings can show. */
-  readonly needsTerminal: boolean;
+  /**
+   * True once the run needs what only Settings can show: the terminal, or
+   * (where this surface can't answer them) the agent's questions.
+   */
+  readonly needsSettings: boolean;
+  /** The agent is waiting on the user: a question, or a device code to type. */
+  readonly asking: boolean;
+  /** `asking`, on a surface that can't show it: the user continues in Settings. */
+  readonly waitingInSettings: boolean;
   /** Last visible output line, already stripped of control sequences. */
   readonly lastLine: string;
   /** The server's plain-language failure reason, when it gave one. */
@@ -50,15 +59,23 @@ export interface ProviderSignInFlowView {
 export function toProviderSignInFlowView(input: {
   readonly instanceId: ProviderInstanceId | null;
   readonly controller: ProviderConnectFlowController;
+  /** The surface shows the agent's questions itself (the setup screen). */
+  readonly answersQuestions?: boolean;
 }): ProviderSignInFlowView {
   const { controller, instanceId } = input;
+  const { question, pageRequest } = controller.state;
+  const asking = controller.isActive && (question !== null || pageRequest?.code != null);
+  const waitingInSettings = controller.hasRun && asking && input.answersQuestions !== true;
   return {
     instanceId,
     isActive: controller.isActive,
     isStarting: controller.isStarting,
     hasRun: controller.hasRun,
     hasFailed: controller.hasRun && controller.state.status === "failed",
-    needsTerminal: controller.hasRun && controller.needsTerminal,
+    // A surface that shows the question needs no help while it waits on the user.
+    needsSettings: waitingInSettings || (controller.hasRun && controller.needsTerminal && !asking),
+    asking,
+    waitingInSettings,
     lastLine: controller.state.lastLine,
     failureDetail: controller.startError ?? controller.state.detail,
     start: controller.start,
@@ -75,6 +92,9 @@ export function isProviderSignInInFlight(view: ProviderSignInFlowView): boolean 
  * yet. Deliberately short: every surface that shows it truncates.
  */
 export function providerSignInStatusText(view: ProviderSignInFlowView): string | null {
+  if (view.asking) {
+    return view.waitingInSettings ? "Signing in… continue in Settings." : "Signing in…";
+  }
   if (isProviderSignInInFlight(view)) {
     return view.lastLine.trim().length > 0
       ? `Signing in… ${view.lastLine}`
@@ -123,7 +143,7 @@ export function ProviderSignInButton({
   if (isCommunityAgent) {
     return <ProviderSignInSettingsLink instanceId={view.instanceId} className={className} />;
   }
-  if (view.needsTerminal && !view.hasFailed) {
+  if (view.needsSettings && !view.hasFailed) {
     return <ProviderSignInSettingsLink instanceId={view.instanceId} className={className} />;
   }
   if (isProviderSignInInFlight(view)) {

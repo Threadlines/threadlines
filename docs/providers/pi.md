@@ -15,8 +15,17 @@ Open `Settings -> Providers` and turn Pi on.
   until it restarts, so an update never changes Pi under a running chat.
 - `Update` runs `pi update --self` for your own Pi (Nix: `nix profile upgrade pi`), and installs
   Pi's newest release for Threadlines' copy.
-- `Sign in` opens Pi in a terminal. Type `/login`, pick a provider and follow its steps, then type
-  `/quit`. Pi keeps the sign-in in its own folder (`~/.pi/agent`); Threadlines never reads it.
+- `Sign in` lists what Pi can connect to: an account (ChatGPT, GitHub Copilot, SuperGrok and
+  others) or an API key. Pick one and Threadlines takes the next step: it opens the sign-in page,
+  shows the code to type when the provider uses one, or asks for the key in a password field. The
+  setup screen asks the same in Pi's row; the chat sends you to Settings for it.
+- Pi keeps the sign-in in its own folder (`~/.pi/agent`); Threadlines never reads it. A key you type
+  goes straight to Pi, exactly as typed. (Pi's `!command` form for keys works only in Pi's own
+  `/login`.)
+- Claude Pro/Max is in the list, as it is in Pi's own `/login`. Anthropic bills Claude used through
+  Pi from your plan's extra usage, not its included usage.
+- To use Pi's own sign-in instead, open `Prefer your own terminal?`, choose `Open it here`, then
+  type `/login`.
 - An API key works without signing in: add it as an environment variable on the Pi row (for
   example `OPENAI_API_KEY`). Threadlines always stores it as a secret.
 
@@ -64,7 +73,7 @@ messages, and Pi's spending on the Usage page.
 - A turn Pi starts by itself (from an extension) can't be reverted exactly. Threadlines trims its
   own history and says Pi still remembers.
 - Pi's terminal-only commands (`/model`, `/login`, `/tree` and the like) don't run from the
-  composer.
+  composer. Sign in from Settings instead.
 
 ## Moving From the Community Pi
 

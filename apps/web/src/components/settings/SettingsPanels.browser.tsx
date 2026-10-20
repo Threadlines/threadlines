@@ -246,6 +246,23 @@ const providerAuthHarness = vi.hoisted(() => {
         readonly requestId: string;
         readonly url: string;
         readonly message: string | null;
+        readonly code?: string;
+        readonly settled: boolean;
+      }
+    | {
+        readonly type: "question";
+        readonly flowId: string;
+        readonly requestId: string;
+        readonly kind: "choice" | "text" | "secret";
+        readonly message: string;
+        readonly placeholder?: string;
+        readonly options?: ReadonlyArray<{
+          readonly id: string;
+          readonly label: string;
+          readonly detail?: string;
+          readonly group?: string;
+          readonly configured?: boolean;
+        }>;
         readonly settled: boolean;
       }
   );
@@ -258,19 +275,24 @@ const providerAuthHarness = vi.hoisted(() => {
     readonly listener: (event: AuthEvent) => void;
   }>();
   const startCalls: Array<{ instanceId: string; flow: string }> = [];
+  /** Whether each start said its client answers questions. */
+  const startQuestions: Array<boolean | undefined> = [];
   const respondCalls: Array<{
     instanceId: string;
     flowId: string;
     requestId: string;
     accept: boolean;
+    value?: string;
   }> = [];
 
   return {
     startCalls,
+    startQuestions,
     respondCalls,
     reset() {
       listeners.clear();
       startCalls.length = 0;
+      startQuestions.length = 0;
       respondCalls.length = 0;
     },
     emit(event: AuthEvent) {
@@ -281,8 +303,9 @@ const providerAuthHarness = vi.hoisted(() => {
       }
     },
     client: {
-      start: (input: { instanceId: string; flow: string }) => {
+      start: (input: { instanceId: string; flow: string; questions?: boolean }) => {
         startCalls.push({ instanceId: input.instanceId, flow: input.flow });
+        startQuestions.push(input.questions);
         return Promise.resolve();
       },
       write: () => Promise.resolve(),
@@ -293,6 +316,7 @@ const providerAuthHarness = vi.hoisted(() => {
         flowId: string;
         requestId: string;
         accept: boolean;
+        value?: string;
       }) => {
         respondCalls.push({ ...input });
         return Promise.resolve();
@@ -2192,6 +2216,175 @@ describe("GeneralSettingsPanel observability", () => {
     });
 
     await expect.element(page.getByText("Signed in", { exact: true })).toBeVisible();
+  });
+
+  it("asks Pi's sign-in questions in Settings and never shows a typed key", async () => {
+    const piInstanceId = ProviderInstanceId.make("pi");
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      shell: { openExternal },
+      server: {},
+    } as unknown as LocalApi;
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          instanceId: piInstanceId,
+          driver: ProviderDriverKind.make("pi"),
+          displayName: "Pi",
+          status: "error",
+          auth: { status: "unauthenticated" },
+          models: [],
+        },
+      ],
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [piInstanceId]: { driver: ProviderDriverKind.make("pi"), enabled: true, config: {} },
+        },
+      },
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await openProviderDetails("Pi", piInstanceId);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startCalls).toEqual([{ instanceId: "pi", flow: "login" }]);
+    });
+    expect(providerAuthHarness.startQuestions).toEqual([true]);
+
+    const at = "2026-10-20T10:00:00.000Z";
+    const emit = (
+      event: Parameters<typeof providerAuthHarness.emit>[0] extends infer E
+        ? E extends { readonly instanceId: string; readonly createdAt: string }
+          ? Omit<E, "instanceId" | "createdAt">
+          : never
+        : never,
+    ) => providerAuthHarness.emit({ instanceId: "pi", createdAt: at, ...event } as never);
+    emit({
+      type: "command",
+      flow: "login",
+      command: "Sign in to Pi",
+      flowId: "flow-1",
+      surface: "browser",
+    });
+    emit({ type: "status", status: "running", exitCode: null, detail: null });
+    emit({
+      type: "question",
+      flowId: "flow-1",
+      requestId: "choice-1",
+      kind: "choice",
+      message: "Choose what Pi connects to",
+      options: [
+        {
+          id: "oauth:openai",
+          label: "OpenAI (ChatGPT subscription)",
+          group: "Sign in with an account",
+        },
+        { id: "api_key:anthropic", label: "Anthropic", group: "Use an API key", configured: true },
+        { id: "api_key:groq", label: "Groq", group: "Use an API key" },
+      ],
+      settled: false,
+    });
+
+    await expect.element(page.getByText("Choose what Pi connects to")).toBeVisible();
+    await expect.element(page.getByText("Sign in with an account")).toBeVisible();
+    await expect.element(page.getByText("Connected")).toBeVisible();
+    // Pi takes a pasted address in its own question, not the shared field.
+    await expect
+      .element(page.getByRole("textbox", { name: "Address the browser ended on" }))
+      .not.toBeInTheDocument();
+    await page.getByRole("option", { name: "Groq" }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.respondCalls).toEqual([
+        {
+          instanceId: "pi",
+          flowId: "flow-1",
+          requestId: "choice-1",
+          accept: true,
+          value: "api_key:groq",
+        },
+      ]);
+    });
+
+    emit({
+      type: "question",
+      flowId: "flow-1",
+      requestId: "choice-1",
+      kind: "choice",
+      message: "Choose what Pi connects to",
+      settled: true,
+    });
+    emit({
+      type: "question",
+      flowId: "flow-1",
+      requestId: "key-1",
+      kind: "secret",
+      message: "Enter Groq API key",
+      settled: false,
+    });
+    const key = page.getByLabelText("Enter Groq API key");
+    await expect.element(key).toHaveAttribute("type", "password");
+    await key.fill("gsk-typed-secret");
+    await page.getByRole("button", { name: "Continue" }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.respondCalls.at(-1)).toEqual({
+        instanceId: "pi",
+        flowId: "flow-1",
+        requestId: "key-1",
+        accept: true,
+        value: "gsk-typed-secret",
+      });
+    });
+    emit({
+      type: "question",
+      flowId: "flow-1",
+      requestId: "key-1",
+      kind: "secret",
+      message: "Enter Groq API key",
+      settled: true,
+    });
+    await expect.element(page.getByLabelText("Enter Groq API key")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("gsk-typed-secret");
+
+    // A device code stays up until the run ends, and opens nothing by itself.
+    emit({
+      type: "pageRequest",
+      flowId: "flow-1",
+      requestId: "code-1",
+      url: "https://github.com/login/device",
+      message: null,
+      code: "ABCD-1234",
+      settled: false,
+    });
+    await expect
+      .element(page.getByTestId("provider-auth-device-code"))
+      .toHaveTextContent("ABCD-1234");
+    expect(openExternal).not.toHaveBeenCalled();
+    await page.getByRole("button", { name: "Copy code and open page" }).click();
+    expect(openExternal).toHaveBeenCalledWith("https://github.com/login/device");
+    await expect.element(page.getByTestId("provider-auth-device-code")).toBeVisible();
+
+    emit({ type: "status", status: "succeeded", exitCode: null, detail: null });
+    await expect.element(page.getByText("Signed in", { exact: true })).toBeVisible();
+
+    // Pi's own terminal sign-in is still one click away.
+    await page.getByText("Prefer your own terminal?").click();
+    await expect.element(page.getByText("Then type /login and pick a provider.")).toBeVisible();
+    await page.getByRole("button", { name: "Open it here" }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startQuestions).toEqual([true, false]);
+    });
   });
 
   it("signs a signed-out provider in from its row without opening the card first", async () => {

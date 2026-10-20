@@ -20,7 +20,7 @@ import {
   browserSignInLabel,
 } from "@threadlines/shared/providerAuthCommands";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { CheckIcon, FolderIcon, GitBranchIcon, LoaderIcon } from "lucide-react";
+import { CheckIcon, ExternalLinkIcon, FolderIcon, GitBranchIcon, LoaderIcon } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
 import { useShallow } from "zustand/react/shallow";
@@ -36,11 +36,13 @@ import {
   useSourceControlSetup,
 } from "../../lib/sourceControlDiscoveryState";
 import { cn } from "../../lib/utils";
+import { ensureLocalApi } from "../../localApi";
 import { useServerConfig, useServerProviders } from "../../rpc/serverState";
 import { selectWorkspaceProjectsAcrossEnvironments, useStore } from "../../store";
 import { GitHubIcon, ThreadlinesGlyph } from "../Icons";
 import { ThreadlinesFigure } from "../ThreadlinesFigure";
-import { BrowserRedirectField } from "../settings/ProviderConnectFlow";
+import { ProviderAuthQuestionForm } from "../settings/ProviderAuthQuestionForm";
+import { BrowserRedirectField, ProviderDeviceCode } from "../settings/ProviderConnectFlow";
 import { AgentRow, AgentUpdateTag, type AgentRowTone } from "../settings/AgentRow";
 import {
   agentStatusLine,
@@ -294,8 +296,14 @@ function SetupSignInAgentRow({
   readonly updateControls: ProviderUpdateControls;
 }) {
   const controller = useProviderConnectFlow({ instanceId: agent.row.instanceId, flow: "login" });
-  const view = toProviderSignInFlowView({ instanceId: agent.row.instanceId, controller });
+  // Pi's questions (which provider, then a key or a code) are answered in the row.
+  const view = toProviderSignInFlowView({
+    instanceId: agent.row.instanceId,
+    controller,
+    answersQuestions: true,
+  });
   const isBrowserFlow = BROWSER_SIGN_IN_DRIVERS.has(String(agent.driverKind));
+  const { question, pageRequest } = controller.state;
   return (
     <SetupAgentRowFrame
       agent={agent}
@@ -321,7 +329,47 @@ function SetupSignInAgentRow({
         </>
       }
     >
-      {isBrowserFlow && controller.isActive && controller.state.signInUrl ? (
+      {controller.isActive && (question || pageRequest?.code) ? (
+        <div className="grid gap-1.5 pb-3 pl-9 pr-1">
+          {question ? (
+            <>
+              <p className="text-xs text-foreground">{question.message}</p>
+              <ProviderAuthQuestionForm question={question} onAnswer={controller.answerQuestion} />
+            </>
+          ) : pageRequest ? (
+            <ProviderDeviceCode request={pageRequest} />
+          ) : null}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* The page opens by itself; this is the way back to it. */}
+            {controller.state.signInUrl && !pageRequest?.code ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                className="h-6 gap-1 px-2 text-xs"
+                onClick={() => {
+                  void ensureLocalApi()
+                    .shell.openExternal(controller.state.signInUrl!)
+                    .catch(() => {});
+                }}
+              >
+                <ExternalLinkIcon className="size-3" aria-hidden />
+                Open sign-in page
+              </Button>
+            ) : null}
+            {/* Ends the agent's sign-in too, so nothing keeps waiting after the user leaves. */}
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="h-6 px-2 text-xs text-muted-foreground"
+              onClick={controller.reset}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : isBrowserFlow && controller.isActive && controller.state.signInUrl ? (
         <div className="pb-3 pl-9 pr-1">
           <BrowserRedirectField onSubmit={controller.submitRedirect} />
         </div>

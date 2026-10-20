@@ -70,6 +70,7 @@ describe("provider connect flow state", () => {
       requestId: "page-1",
       url: "https://agent.example/login",
       message: "Sign in to Example",
+      code: null,
     });
 
     // Answered on any device: every panel lets go of it. An answer to an
@@ -85,6 +86,60 @@ describe("provider connect flow state", () => {
         event({ type: "status", status: "failed", exitCode: null, detail: "Timed out." }),
       ]).pageRequest,
     ).toBeNull();
+  });
+
+  it("shows what the agent asks until it is answered, and says it as the step", () => {
+    const asked = event({
+      type: "question",
+      flowId: "flow-1",
+      requestId: "question-1",
+      kind: "choice",
+      message: "Choose what Pi connects to",
+      options: [{ id: "oauth:openai", label: "OpenAI (ChatGPT subscription)" }],
+      settled: false,
+    });
+    const running = [
+      event({ type: "command", flow: "login", command: "Sign in to Pi", surface: "browser" }),
+      event({ type: "status", status: "starting", exitCode: null, detail: null }),
+      event({ type: "status", status: "running", exitCode: null, detail: null }),
+    ];
+    const line = (state: ProviderConnectFlowState) =>
+      providerConnectStatusLine({ flow: "login", state, displayName: "Pi" });
+    // Before any page or question, a browser sign-in has nothing to finish in the browser.
+    expect(line(replay(running))).toBe("Signing in to Pi");
+
+    const asking = replay([...running, asked]);
+    expect(asking.question).toMatchObject({ requestId: "question-1", kind: "choice" });
+    expect(line(asking)).toBe("Choose what Pi connects to");
+    expect(
+      replay([
+        ...running,
+        asked,
+        event({ ...asked, type: "question", settled: true } as ProviderAuthEventBody),
+      ]).question,
+    ).toBeNull();
+
+    // A device code is the step until the run ends.
+    const code = replay([
+      ...running,
+      event({
+        type: "pageRequest",
+        flowId: "flow-1",
+        requestId: "page-1",
+        url: "https://github.com/login/device",
+        message: null,
+        code: "ABCD-1234",
+        settled: false,
+      }),
+    ]);
+    expect(code.pageRequest?.code).toBe("ABCD-1234");
+    expect(line(code)).toBe("Enter the code below on the sign-in page.");
+    expect(
+      applyProviderAuthEvent(
+        code,
+        event({ type: "status", status: "succeeded", exitCode: null, detail: null }),
+      ),
+    ).toMatchObject({ pageRequest: null, question: null });
   });
 
   it("waits for a URL split across output chunks to finish before taking it", () => {

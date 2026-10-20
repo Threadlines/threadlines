@@ -45,6 +45,24 @@ describe("piProcessArgs", () => {
         launchArgs: ["--tools", "bash,read", "--model", "x/y", "-xt=ask", "-nbt"],
       }),
     ).toEqual(["/pi/cli.js", "--mode", "rpc", "--model", "x/y", "--no-session", "--no-tools"]);
+    // A sign-in loads the user's extensions (their providers count) and its own.
+    expect(
+      piProcessArgs(managed, {
+        purpose: "signIn",
+        launchArgs: ["-e", "./mine.ts", "--tools", "bash"],
+        extensionPath: "/sign-in.ts",
+      }),
+    ).toEqual([
+      "/pi/cli.js",
+      "--mode",
+      "rpc",
+      "-e",
+      "./mine.ts",
+      "--no-session",
+      "--no-tools",
+      "--extension",
+      "/sign-in.ts",
+    ]);
   });
 });
 

@@ -452,6 +452,153 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
     }).pipe(Effect.provide(settingsLayer)),
   );
 
+  it.effect("asks the agent's questions, hands it the answers, and never shows them", () =>
+    Effect.gen(function* () {
+      const answers: Array<string | null> = [];
+      let releaseLogin: (() => void) | null = null;
+      const flows: ProviderInstanceAuthFlows = {
+        flows: ["login"],
+        describe: () => "Sign in",
+        run: ({ ask, showCode }) =>
+          Effect.gen(function* () {
+            answers.push(
+              yield* ask({
+                kind: "choice",
+                message: "Choose a provider",
+                options: [
+                  { id: "oauth:github", label: "GitHub", group: "Accounts" },
+                  { id: "key:openai", label: "OpenAI", group: "API keys", configured: true },
+                ],
+              }),
+            );
+            answers.push(yield* ask({ kind: "secret", message: "Enter OpenAI API key" }));
+            yield* showCode({
+              url: "https://github.com/login/device",
+              code: "ABCD-1234",
+              message: "Enter the code",
+            });
+            // Withdrawn by the agent (its browser callback won): no answer.
+            answers.push(
+              yield* ask({ kind: "text", message: "Or paste the address" }).pipe(
+                Effect.timeoutOption("20 millis"),
+                Effect.map((answer) => (answer._tag === "Some" ? answer.value : "withdrawn")),
+              ),
+            );
+            yield* Effect.callback<void>((resume) => {
+              releaseLogin = () => resume(Effect.void);
+            });
+          }),
+        completeRedirect: () => Effect.void,
+        // Only for clients that can't answer.
+        terminalCommand: (_flow, client) =>
+          Effect.succeed(
+            client.questions
+              ? undefined
+              : {
+                  file: "/tools/agent",
+                  args: [],
+                  env: {},
+                  display: "agent",
+                  finished: () => Effect.void,
+                },
+          ),
+      };
+      const harness = yield* createSessions(() => Effect.succeed(flows));
+      yield* harness.subscribeTo(CODEX_INSTANCE);
+      const questions = harness.getEvents.pipe(
+        Effect.map((events) =>
+          events.flatMap((event) => (event.type === "question" ? [event] : [])),
+        ),
+      );
+
+      // An older client, which can't show questions, gets the terminal.
+      yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+      expect(harness.ptyAdapter.spawnInputs).toHaveLength(1);
+      yield* harness.sessions.stop({ instanceId: CODEX_INSTANCE });
+
+      yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login", questions: true });
+      yield* waitFor(questions.pipe(Effect.map((events) => events.length === 1)));
+      const [choice] = yield* questions;
+      expect(choice).toMatchObject({
+        kind: "choice",
+        message: "Choose a provider",
+        settled: false,
+      });
+
+      // Only one of the choices is an answer.
+      const wrong = yield* Effect.flip(
+        harness.sessions.respond({
+          instanceId: CODEX_INSTANCE,
+          flowId: choice!.flowId,
+          requestId: choice!.requestId,
+          accept: true,
+          value: "key:anthropic",
+        }),
+      );
+      expect(wrong.reason).toBe("inputRejected");
+      yield* harness.sessions.respond({
+        instanceId: CODEX_INSTANCE,
+        flowId: choice!.flowId,
+        requestId: choice!.requestId,
+        accept: true,
+        value: "key:openai",
+      });
+      yield* waitFor(questions.pipe(Effect.map((events) => events.length === 3)));
+      const secret = (yield* questions)[2]!;
+      expect(secret).toMatchObject({ kind: "secret", settled: false });
+      yield* harness.sessions.respond({
+        instanceId: CODEX_INSTANCE,
+        flowId: secret.flowId,
+        requestId: secret.requestId,
+        accept: true,
+        value: "sk-live-secret",
+      });
+
+      // The code stays up after the agent moves on, and a panel that opens
+      // late sees it too.
+      yield* waitFor(Effect.sync(() => releaseLogin !== null));
+      const late: Array<ProviderAuthEvent> = [];
+      const unsubscribe = yield* harness.sessions.subscribe(CODEX_INSTANCE, (event) =>
+        Effect.sync(() => void late.push(event)),
+      );
+      unsubscribe();
+      const [codeRequest] = late.filter((event) => event.type === "pageRequest");
+      expect(codeRequest).toMatchObject({
+        code: "ABCD-1234",
+        url: "https://github.com/login/device",
+        settled: false,
+      });
+      // An older panel shows it as a plain page; its answer leaves the code up.
+      if (codeRequest?.type === "pageRequest") {
+        yield* harness.sessions.respond({
+          instanceId: CODEX_INSTANCE,
+          flowId: codeRequest.flowId,
+          requestId: codeRequest.requestId,
+          accept: true,
+        });
+      }
+      expect(answers).toEqual(["key:openai", "sk-live-secret", "withdrawn"]);
+      expect((yield* questions).map((event) => [event.kind, event.settled])).toEqual([
+        ["choice", false],
+        ["choice", true],
+        ["secret", false],
+        ["secret", true],
+        ["text", false],
+        ["text", true],
+      ]);
+
+      releaseLogin!();
+      yield* waitFor(
+        harness.getEvents.pipe(Effect.map((events) => statusesOf(events).includes("succeeded"))),
+      );
+      const events = yield* harness.getEvents;
+      expect(
+        events.filter((event) => event.type === "pageRequest").map((event) => event.settled),
+      ).toEqual([false, true]);
+      expect(JSON.stringify(events)).not.toContain("sk-live-secret");
+    }).pipe(Effect.provide(settingsLayer)),
+  );
+
   it.effect("tells every panel watching a run that it was stopped", () =>
     Effect.gen(function* () {
       const harness = yield* createSessions();

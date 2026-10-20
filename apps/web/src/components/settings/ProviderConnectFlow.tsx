@@ -17,6 +17,7 @@ import {
   providerConnectStatusLine,
 } from "./providerConnectFlow.logic";
 import { useIsCommunityAgent } from "./communityAgents";
+import { ProviderAuthQuestionForm } from "./ProviderAuthQuestionForm";
 import type { ProviderConnectFlowState } from "./providerConnectFlow.logic";
 import { useProviderConnectFlow } from "./useProviderConnectFlow";
 
@@ -128,6 +129,24 @@ export interface ProviderConnectFlowProps {
    * page's final address when the browser ran on another device.
    */
   readonly surface?: "terminal" | "browser";
+  /**
+   * Whether a browser sign-in takes the address its page ended on. False for
+   * a flow that asks for it itself (Pi asks in its own question).
+   */
+  readonly acceptsRedirect?: boolean;
+  /**
+   * A browser sign-in the agent can also run in its own terminal (Pi's
+   * `/login`): the command fallback stays, with what to type in it, and can
+   * open right here.
+   */
+  readonly terminalFallback?:
+    | {
+        /** What to do once the command runs, under the command. */
+        readonly hint: string;
+        /** The running line while it runs here. */
+        readonly runningHint: string;
+      }
+    | undefined;
 }
 
 /**
@@ -188,13 +207,67 @@ export function BrowserRedirectField(props: { readonly onSubmit: (url: string) =
 }
 
 /**
- * Settings-owned provider sign-in.
- *
- * The whole flow stays on this page: the server runs the provider's auth
- * command in an ephemeral PTY, the panel shows the last output line, and a
- * "Show details" toggle reveals the real terminal for flows that need a
- * pasted code or a menu choice.
+ * A device sign-in's page and the code to type on it, shown until the run
+ * ends: opening the page doesn't take the code away. Nothing opens by itself.
  */
+export function ProviderDeviceCode(props: {
+  readonly request: NonNullable<ProviderConnectFlowState["pageRequest"]>;
+}) {
+  const codeCopy = useCopyToClipboard();
+  const linkCopy = useCopyToClipboard();
+  const { url, message, code } = props.request;
+  if (code === null) return null;
+  return (
+    <div
+      className="grid gap-1.5 rounded-sm border border-group-divider px-2.5 py-2"
+      data-agent-row-toggle-ignore
+    >
+      <p className="text-xs text-foreground">{message ?? "Enter this code on the sign-in page."}</p>
+      <code
+        className="font-mono text-[15px] font-medium tracking-[0.12em] text-foreground"
+        data-testid="provider-auth-device-code"
+      >
+        {code}
+      </code>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button
+          type="button"
+          size="xs"
+          className="h-6 gap-1 px-2 text-xs"
+          onClick={() => {
+            codeCopy.copyToClipboard(code, undefined);
+            void ensureLocalApi()
+              .shell.openExternal(url)
+              .catch(() => {});
+          }}
+        >
+          <ExternalLinkIcon className="size-3" aria-hidden />
+          Copy code and open page
+        </Button>
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          className="h-6 gap-1 px-2 text-xs"
+          onClick={() => codeCopy.copyToClipboard(code, undefined)}
+        >
+          <CopyIcon className="size-2.5" />
+          {codeCopy.isCopied ? "Copied" : "Copy code"}
+        </Button>
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          className="h-6 gap-1 px-2 text-xs text-muted-foreground"
+          onClick={() => linkCopy.copyToClipboard(url, undefined)}
+        >
+          {linkCopy.isCopied ? "Copied" : "Copy link"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * A page the agent asked to have opened, shown as text until the user opens
  * it. Opening it is also the answer the agent is waiting for.
@@ -253,6 +326,15 @@ function ProviderPageRequest(props: {
   );
 }
 
+/**
+ * Settings-owned provider sign-in.
+ *
+ * The whole flow stays on this page: the server runs the provider's auth
+ * command in an ephemeral PTY, the panel shows the last output line, and a
+ * "Show details" toggle reveals the real terminal for flows that need a
+ * pasted code or a menu choice. A flow that asks its questions here (Pi's)
+ * shows them as a list or a field instead.
+ */
 export function ProviderConnectFlow({
   instanceId,
   flow,
@@ -265,6 +347,8 @@ export function ProviderConnectFlow({
   autoShowTerminal = false,
   runningHint,
   surface = "terminal",
+  acceptsRedirect = true,
+  terminalFallback,
 }: ProviderConnectFlowProps) {
   const [showFallback, setShowFallback] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -291,6 +375,7 @@ export function ProviderConnectFlow({
     reset,
     submitRedirect,
     answerPageRequest,
+    answerQuestion,
   } = useProviderConnectFlow({
     instanceId,
     flow,
@@ -305,7 +390,11 @@ export function ProviderConnectFlow({
     },
   });
 
-  const isBrowserFlow = surface === "browser" || state.surface === "browser";
+  // A run says how it signs in; before one, the agent's usual way. Pi's
+  // terminal fallback is a terminal run of a browser sign-in.
+  const isBrowserFlow =
+    state.command !== null ? state.surface === "browser" : surface === "browser";
+  const terminalFallbackRun = terminalFallback !== undefined && !isBrowserFlow;
   // A community agent's links wait for a click: Threadlines hasn't tested
   // the agent, and the address is the agent's own.
   const isCommunityAgent = useIsCommunityAgent(instanceId);
@@ -318,10 +407,13 @@ export function ProviderConnectFlow({
       setShowTerminal(false);
       return;
     }
-    if (needsTerminal || (autoShowTerminal && isProviderConnectFlowActive(state.status))) {
+    if (
+      needsTerminal ||
+      ((autoShowTerminal || terminalFallbackRun) && isProviderConnectFlowActive(state.status))
+    ) {
       setShowTerminal(true);
     }
-  }, [autoShowTerminal, isBrowserFlow, needsTerminal, state.status]);
+  }, [autoShowTerminal, isBrowserFlow, needsTerminal, state.status, terminalFallbackRun]);
 
   // Open the printed sign-in page once per run. Most CLIs open the browser
   // themselves; the ones that cannot (fx inside WSL) print a device-code URL
@@ -350,10 +442,10 @@ export function ProviderConnectFlow({
     openSignInUrl(url);
   }, [isBrowserFlow, isCommunityAgent, state.signInUrl, state.status]);
 
-  const startFlow = () => {
+  const startFlow = (options?: { readonly terminal?: boolean }) => {
     setShowTerminal(false);
     openedSignInUrlRef.current = null;
-    start();
+    start(options);
   };
 
   // Cancel and Dismiss both clear the server-side session too, so a finished
@@ -363,8 +455,14 @@ export function ProviderConnectFlow({
     setShowTerminal(false);
   };
 
-  const statusLine = providerConnectStatusLine({ flow, state, displayName, runningHint });
-  const displayCommand = state.command ?? command;
+  const statusLine = providerConnectStatusLine({
+    flow,
+    state,
+    displayName,
+    runningHint: terminalFallbackRun ? terminalFallback.runningHint : runningHint,
+  });
+  // A browser run's "command" is its name; the fallback is the real command.
+  const displayCommand = state.surface === "terminal" ? (state.command ?? command) : command;
   const panelOpen = state.status !== "idle" || isStarting;
 
   const actionButton = (
@@ -377,7 +475,7 @@ export function ProviderConnectFlow({
         buttonVariant === "ghost" && "text-muted-foreground hover:text-foreground",
       )}
       disabled={isActive || isStarting}
-      onClick={startFlow}
+      onClick={() => startFlow()}
     >
       {isActive || isStarting ? <LoaderIcon className="size-2.5 animate-spin" /> : null}
       {state.status === "failed" ? "Try again" : actionLabel}
@@ -480,15 +578,23 @@ export function ProviderConnectFlow({
             />
           ) : null}
 
-          {isActive && state.pageRequest ? (
-            <ProviderPageRequest
-              displayName={displayName}
-              request={state.pageRequest}
-              onAnswer={answerPageRequest}
-            />
+          {isActive && state.question ? (
+            <ProviderAuthQuestionForm question={state.question} onAnswer={answerQuestion} />
           ) : null}
 
-          {isBrowserFlow && !isCommunityAgent && isActive && state.signInUrl ? (
+          {isActive && state.pageRequest ? (
+            state.pageRequest.code !== null ? (
+              <ProviderDeviceCode request={state.pageRequest} />
+            ) : (
+              <ProviderPageRequest
+                displayName={displayName}
+                request={state.pageRequest}
+                onAnswer={answerPageRequest}
+              />
+            )
+          ) : null}
+
+          {isBrowserFlow && acceptsRedirect && !isCommunityAgent && isActive && state.signInUrl ? (
             <BrowserRedirectField onSubmit={submitRedirect} />
           ) : null}
         </div>
@@ -496,7 +602,7 @@ export function ProviderConnectFlow({
 
       {/* A community agent's login command lives in Threadlines' own tools
           folder: there is nothing to copy into another terminal. */}
-      {isBrowserFlow || isCommunityAgent ? null : (
+      {isCommunityAgent || (isBrowserFlow && terminalFallback === undefined) ? null : (
         <details
           className="group"
           open={showFallback}
@@ -521,6 +627,21 @@ export function ProviderConnectFlow({
               {isCopied ? "Copied" : "Copy"}
             </Button>
           </div>
+          {terminalFallback ? (
+            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-xs text-muted-foreground">{terminalFallback.hint}</span>
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                disabled={isActive || isStarting}
+                onClick={() => startFlow({ terminal: true })}
+              >
+                Open it here
+              </Button>
+            </div>
+          ) : null}
         </details>
       )}
     </div>
