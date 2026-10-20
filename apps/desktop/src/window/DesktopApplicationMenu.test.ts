@@ -222,6 +222,28 @@ describe("DesktopApplicationMenu", () => {
     }),
   );
 
+  it.effect("routes Go > Fleet and View > Toggle Sidebar to the renderer", () =>
+    Effect.gen(function* () {
+      const fleet = yield* configureMenu("linux");
+      const goItems = submenuItems(fleet.template, (item) => item.label === "Go", "Go");
+      // Mirrors in-app shortcuts, so no native accelerator may steal the keys.
+      assert.isUndefined(findMenuItem(goItems, "Fleet").accelerator);
+      clickMenuItem(goItems, "Fleet");
+      assert.equal(
+        yield* Deferred.await(fleet.selectedAction),
+        DesktopWindow.OPEN_FLEET_MENU_ACTION,
+      );
+
+      const sidebar = yield* configureMenu("darwin");
+      const viewItems = submenuItems(sidebar.template, (item) => item.label === "View", "View");
+      clickMenuItem(viewItems, "Toggle Sidebar");
+      assert.equal(
+        yield* Deferred.await(sidebar.selectedAction),
+        DesktopWindow.TOGGLE_SIDEBAR_MENU_ACTION,
+      );
+    }),
+  );
+
   it.effect("opens the GitHub repository from the Help menu", () =>
     Effect.gen(function* () {
       const { template, openedExternalUrl } = yield* configureMenu("darwin");

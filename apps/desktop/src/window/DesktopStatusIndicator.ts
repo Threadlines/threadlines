@@ -400,6 +400,14 @@ const make = Effect.gen(function* () {
       click: () => runTrayEffect("new-thread", dispatchRendererAction("new-thread")),
     },
     {
+      label: "Fleet",
+      click: () =>
+        runTrayEffect(
+          DesktopWindow.OPEN_FLEET_MENU_ACTION,
+          dispatchRendererAction(DesktopWindow.OPEN_FLEET_MENU_ACTION),
+        ),
+    },
+    {
       label: "Settings…",
       click: () => runTrayEffect("open-settings", dispatchRendererAction("open-settings")),
     },

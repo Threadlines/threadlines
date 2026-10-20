@@ -80,6 +80,11 @@ export const MARKETING_CAPTURE_CONTENT_SIZE = {
 const PRINT_SCREEN_ACCELERATOR = "PrintScreen";
 const PRINT_SCREEN_KEYS = new Set(["print", "printscreen"]);
 export const OPEN_SCREEN_CLIP_MENU_ACTION = "open-screen-clip";
+/** Renderer actions the Go menu and the tray send; the app shell navigates on them. */
+export const OPEN_FLEET_MENU_ACTION = "open-fleet";
+export const OPEN_GENERAL_CHATS_MENU_ACTION = "open-general-chats";
+export const OPEN_USAGE_MENU_ACTION = "open-usage";
+export const TOGGLE_SIDEBAR_MENU_ACTION = "toggle-sidebar";
 
 type WindowTitleBarOptions = Pick<
   Electron.BrowserWindowConstructorOptions,

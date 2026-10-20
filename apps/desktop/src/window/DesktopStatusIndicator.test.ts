@@ -385,6 +385,28 @@ describe("DesktopStatusIndicator", () => {
     }),
   );
 
+  it.effect("routes the status menu Fleet action through the renderer bridge", () =>
+    Effect.gen(function* () {
+      const { appCalls, trayCalls } = makeCalls();
+      const dispatchedActions: DispatchedMenuAction[] = [];
+      const window = makeFakeWindow({ focused: true });
+
+      yield* Effect.gen(function* () {
+        const indicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+        yield* indicator.configure;
+
+        const fleetItem = trayCalls.buildMenu.at(-1)?.find((item) => item.label === "Fleet");
+        if (typeof fleetItem?.click !== "function") {
+          throw new Error("Expected a Fleet tray item with a click handler.");
+        }
+        fleetItem.click({} as Electron.MenuItem, {} as Electron.BrowserWindow, {} as KeyboardEvent);
+        yield* Effect.promise(() => Promise.resolve());
+      }).pipe(Effect.provide(makeTestLayer({ appCalls, dispatchedActions, trayCalls, window })));
+
+      assert.deepEqual(dispatchedActions, [{ action: "open-fleet" }]);
+    }),
+  );
+
   it.effect("routes the macOS status menu New Thread action through the renderer bridge", () =>
     Effect.gen(function* () {
       const { appCalls, trayCalls } = makeCalls();
