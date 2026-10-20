@@ -230,7 +230,7 @@ export class LiveMcpApp {
   }
 
   private place() {
-    if (this.disposed) return;
+    if (this.disposed || this.state.stopped) return;
     const slot = this.state.expanded ? this.sideSlot : this.inlineSlot;
     if (slot === null) {
       // Between places: kept running out of sight.
@@ -262,8 +262,7 @@ export class LiveMcpApp {
       expandedKey = null;
       notifyExpanded();
     }
-    // Calls still waiting for the reader are refused: nobody is asked any more.
-    for (const call of this.state.pending) call.decide("deny");
+    this.denyPending();
     const host = this.host;
     const finish = () => {
       host?.dispose();
@@ -285,12 +284,33 @@ export class LiveMcpApp {
   // ------------------------------------------------------------------
   // The bridge
 
+  /** Calls still waiting for the reader are refused: the view that asked is
+   *  gone, or nobody will be asked any more. */
+  private denyPending() {
+    for (const call of this.state.pending) call.decide("deny");
+  }
+
+  /**
+   * The view left its document for another, a way to carry what it shows to
+   * a server of its own: its frame and bridge go at once, so nothing it
+   * loaded keeps running or calling tools, and the card says it was stopped.
+   */
+  private stop() {
+    if (this.state.stopped) return;
+    this.denyPending();
+    this.host?.dispose();
+    this.host = null;
+    window.removeEventListener("message", this.onMessage);
+    this.frame.removeEventListener("load", this.onLoad);
+    this.frame.remove();
+    this.update({ stopped: true });
+    if (this.state.expanded) this.setExpanded(false);
+  }
+
   private readonly onLoad = () => {
     const loaded = this.frame.contentWindow;
     if (loaded !== null && loaded === this.loadedWindow) {
-      // The view left its document for another: stopped.
-      this.update({ stopped: true });
-      if (this.state.expanded) this.setExpanded(false);
+      this.stop();
       return;
     }
     this.loadedWindow = loaded;
@@ -311,7 +331,12 @@ export class LiveMcpApp {
   private hostFor(target: Window): McpAppHost {
     const current = this.host;
     if (current?.target === target) return current;
-    current?.dispose();
+    if (current) {
+      // The view loaded again in a new window (moved where a browser can't
+      // keep it running): what the old one asked for is not asked any more.
+      this.denyPending();
+      current.dispose();
+    }
     const { app } = this;
     const host = new McpAppHost({
       target,
@@ -353,10 +378,7 @@ export class LiveMcpApp {
         },
         sizeChanged: (height) => this.update({ contentHeight: height }),
         requestTeardown: () => this.setExpanded(false),
-        viewLeft: () => {
-          this.update({ stopped: true });
-          if (this.state.expanded) this.setExpanded(false);
-        },
+        viewLeft: () => this.stop(),
       },
     });
     this.host = host;

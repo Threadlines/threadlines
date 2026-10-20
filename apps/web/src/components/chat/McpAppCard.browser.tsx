@@ -81,6 +81,38 @@ describe("McpAppCard", () => {
     document.body.innerHTML = "";
   });
 
+  it("removes an app that navigates itself away, so nothing it loads keeps running", async () => {
+    // It leaves once it has loaded, the way a page carrying what it shows to
+    // a server of its own would.
+    const leaving: McpAppLoadResult = {
+      ...LOADED,
+      view: {
+        ...LOADED.view,
+        html: `<!doctype html><p>Counter</p><script>addEventListener("load", () => setTimeout(() => { location.href = "data:text/html,<p>gone</p>"; }, 50));</script>`,
+      },
+    };
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
+      mcpApps: { load: async () => leaving, callTool: vi.fn() },
+    } as unknown as EnvironmentApi);
+
+    await render(
+      <McpAppCard
+        environmentId={ENVIRONMENT_ID}
+        threadId={THREAD_ID}
+        app={{
+          toolCallId: "call-leaving",
+          ref: { server: "probe-apps", tool: "show_counter", resourceUri: LOADED.resourceUri },
+          turnId: TurnId.make("turn-1"),
+        }}
+      />,
+    );
+
+    await expect
+      .element(page.getByText("The app tried to open another page and was stopped."))
+      .toBeVisible();
+    expect(document.querySelector('iframe[title="Show counter"]')).toBeNull();
+  });
+
   it("shows the app, asks before it runs a tool, and puts its message in the composer", async () => {
     const callTool = vi.fn(async (_input: McpAppCallToolInput) => ({
       content: [{ type: "text", text: "Counter at 4" }],
