@@ -33,6 +33,8 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     childThreadFamilyOpenById: {},
     inboxProjectScopeKey: null,
     inboxEnvironmentScopeId: null,
+    collapsedInboxGroups: {},
+    sidebarListOpen: true,
     defaultAdvertisedEndpointKey: null,
     ...overrides,
   };
@@ -593,6 +595,21 @@ describe("uiStateStore persistence round-trip", () => {
       JSON.stringify({ inboxEnvironmentScopeId: "" } satisfies PersistedUiState),
     );
     expect(readPersistedState().inboxEnvironmentScopeId).toBe(null);
+  });
+
+  it("remembers a hidden thread list and folded inbox groups across a restart", () => {
+    // A fresh install shows the list: nothing stored means open.
+    window.localStorage.removeItem(PERSISTED_STATE_KEY);
+    expect(readPersistedState().sidebarListOpen).toBe(true);
+
+    persistState(
+      makeUiState({
+        sidebarListOpen: false,
+        collapsedInboxGroups: { "computer:env-macbook": true },
+      }),
+    );
+    expect(readPersistedState().sidebarListOpen).toBe(false);
+    expect(readPersistedState().collapsedInboxGroups).toEqual({ "computer:env-macbook": true });
   });
 
   it("preserves all-collapsed project state across restart", () => {

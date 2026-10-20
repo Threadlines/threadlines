@@ -37,6 +37,10 @@ export interface PersistedUiState {
   threadWrapUpOnPullRequestSettledById?: Record<string, boolean>;
   /** See `UiInboxState.childThreadFamilyOpenById`. */
   childThreadFamilyOpenById?: Record<string, boolean>;
+  /** See `UiInboxState.collapsedInboxGroups`. */
+  collapsedInboxGroups?: Record<string, boolean>;
+  /** See `UiLayoutState.sidebarListOpen`. */
+  sidebarListOpen?: boolean;
 }
 
 export interface UiProjectState {
@@ -120,13 +124,29 @@ export interface UiInboxState {
   inboxProjectScopeKey: string | null;
   /** Which machine the list is narrowed to; null is All machines. */
   inboxEnvironmentScopeId: string | null;
+  /**
+   * Which group headers the user folded while the inbox is grouped by project
+   * or computer, by group key. Absent means open, the default. Kept on this
+   * device, like the families above.
+   */
+  collapsedInboxGroups: Record<string, boolean>;
+}
+
+export interface UiLayoutState {
+  /**
+   * Whether the thread list beside the rail is showing on wide screens.
+   * Hiding it leaves the rail. Phones show the list as a sheet instead, which
+   * always starts closed.
+   */
+  sidebarListOpen: boolean;
 }
 
 export interface UiEndpointState {
   defaultAdvertisedEndpointKey: string | null;
 }
 
-export interface UiState extends UiProjectState, UiThreadState, UiInboxState, UiEndpointState {}
+export interface UiState
+  extends UiProjectState, UiThreadState, UiInboxState, UiLayoutState, UiEndpointState {}
 
 export interface SyncProjectInput {
   /** Physical project key (env + cwd). Used for manual sort order. */
@@ -155,6 +175,8 @@ const initialState: UiState = {
   childThreadFamilyOpenById: {},
   inboxProjectScopeKey: null,
   inboxEnvironmentScopeId: null,
+  collapsedInboxGroups: {},
+  sidebarListOpen: true,
   defaultAdvertisedEndpointKey: null,
 };
 
@@ -213,6 +235,8 @@ export function readPersistedState(): UiState {
         parsed.threadWrapUpOnPullRequestSettledById,
       ),
       childThreadFamilyOpenById: sanitizePersistedBooleanRecord(parsed.childThreadFamilyOpenById),
+      collapsedInboxGroups: sanitizePersistedBooleanRecord(parsed.collapsedInboxGroups),
+      sidebarListOpen: parsed.sidebarListOpen !== false,
     };
   } catch {
     return initialState;
@@ -429,6 +453,8 @@ export function persistState(state: UiState): void {
         inboxEnvironmentScopeId: state.inboxEnvironmentScopeId,
         threadWrapUpOnPullRequestSettledById: state.threadWrapUpOnPullRequestSettledById,
         childThreadFamilyOpenById: state.childThreadFamilyOpenById,
+        collapsedInboxGroups: state.collapsedInboxGroups,
+        sidebarListOpen: state.sidebarListOpen,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -893,6 +919,27 @@ export function setChildThreadFamilyOpen(
 }
 
 /**
+ * Folds or unfolds one group of the grouped inbox. Open is the default, so
+ * unfolding forgets the entry rather than storing it.
+ */
+export function setInboxGroupCollapsed(
+  state: UiState,
+  groupKey: string,
+  collapsed: boolean,
+): UiState {
+  if ((state.collapsedInboxGroups[groupKey] ?? false) === collapsed) {
+    return state;
+  }
+  const next = { ...state.collapsedInboxGroups };
+  if (collapsed) {
+    next[groupKey] = true;
+  } else {
+    delete next[groupKey];
+  }
+  return { ...state, collapsedInboxGroups: next };
+}
+
+/**
  * The user's word for one thread on wrapping up once its pull request
  * settles. From here on the thread stops following the app setting.
  */
@@ -1060,6 +1107,9 @@ interface UiStateStore extends UiState {
   clearThreadUi: (threadKey: string) => void;
   setThreadWrapUpOnPullRequestSettled: (threadKey: string, wrapUp: boolean) => void;
   setChildThreadFamilyOpen: (parentThreadKey: string, open: boolean) => void;
+  setInboxGroupCollapsed: (groupKey: string, collapsed: boolean) => void;
+  setSidebarListOpen: (open: boolean) => void;
+  toggleSidebarListOpen: () => void;
   setThreadChangedFilesExpanded: (
     threadId: string,
     turnId: string,
@@ -1102,6 +1152,12 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setThreadWrapUpOnPullRequestSettled(state, threadKey, wrapUp)),
   setChildThreadFamilyOpen: (parentThreadKey, open) =>
     set((state) => setChildThreadFamilyOpen(state, parentThreadKey, open)),
+  setInboxGroupCollapsed: (groupKey, collapsed) =>
+    set((state) => setInboxGroupCollapsed(state, groupKey, collapsed)),
+  setSidebarListOpen: (open) =>
+    set((state) => (state.sidebarListOpen === open ? state : { ...state, sidebarListOpen: open })),
+  toggleSidebarListOpen: () =>
+    set((state) => ({ ...state, sidebarListOpen: !state.sidebarListOpen })),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded, defaultExpanded) =>
     set((state) =>
       setThreadChangedFilesExpanded(state, threadId, turnId, expanded, defaultExpanded),
