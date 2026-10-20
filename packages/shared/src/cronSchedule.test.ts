@@ -27,6 +27,10 @@ describe("nextCronMatch", () => {
     expect(
       nextCronMatch("0 0 * * 1", at("2026-03-08T05:00:00Z"), "America/New_York")?.toISOString(),
     ).toBe("2026-03-09T04:00:00.000Z");
+    // Clocks that jump two hours (Antarctica/Troll, Mar 29 2026).
+    expect(
+      nextCronMatch("0 0 * * 1", at("2026-03-29T00:00:00Z"), "Antarctica/Troll")?.toISOString(),
+    ).toBe("2026-03-29T22:00:00.000Z");
     expect(nextCronMatch("0-30/10 8 * * *", at("2026-10-20T08:11:00Z"), "UTC")?.toISOString()).toBe(
       "2026-10-20T08:20:00.000Z",
     );

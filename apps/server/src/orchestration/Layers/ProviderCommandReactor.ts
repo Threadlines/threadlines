@@ -3331,9 +3331,8 @@ const make = Effect.gen(function* () {
   ) {
     const { threadId, participantId, stopBackgroundWork } = event.payload;
     const sessionKey = participantSessionKey(threadId, participantId);
-    const runtime = (yield* providerService
-      .listSessions()
-      .pipe(Effect.orElseSucceed(() => [] as const))).find(
+    const sessions = yield* providerService.listSessions().pipe(Effect.option);
+    const runtime = Option.getOrUndefined(sessions)?.find(
       (session) => session.threadId === sessionKey && session.status !== "closed",
     );
     const note = (summary: string, tone: "info" | "error") =>
@@ -3355,15 +3354,24 @@ const make = Effect.gen(function* () {
           createdAt: event.payload.createdAt,
         })
         .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+    if (Option.isNone(sessions)) {
+      yield* note("Check-back not cancelled: couldn't reach the agent's session", "error");
+      return;
+    }
     if (runtime === undefined) {
-      // Nothing is running to come back: the list was stale.
+      // Nothing is running to come back: the list was stale. Jobs saved to
+      // disk outlive the session, so they stay.
+      const thread = yield* resolveThread(threadId);
+      const kept = (thread?.checkBacks ?? []).filter(
+        (checkBack) => checkBack.participantId === participantId && checkBack.durable,
+      );
       yield* orchestrationEngine
         .dispatch({
           type: "thread.check-backs.set",
           commandId: serverCommandId("check-backs-clear"),
           threadId,
           participantId,
-          checkBacks: [],
+          checkBacks: kept,
           createdAt: event.payload.createdAt,
         })
         .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));

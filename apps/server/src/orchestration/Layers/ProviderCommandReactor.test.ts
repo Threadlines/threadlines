@@ -2725,6 +2725,54 @@ describe("ProviderCommandReactor", () => {
     ]);
   });
 
+  it("clears a stale check-back list but keeps the jobs saved to disk", async () => {
+    const { harness, threadId, astraId, dispatch, now } =
+      await startRoomWithMessageQueuedForAstra();
+    // Astra's runtime is gone; its list still names a check-back and a job
+    // saved to disk, which outlives any session.
+    const saved = {
+      id: "cron-saved",
+      participantId: astraId,
+      scheduledFor: "2026-01-02T09:00:00.000Z",
+      exact: false,
+      recurring: true,
+      durable: true,
+    };
+    await dispatch({
+      type: "thread.check-backs.set",
+      commandId: CommandId.make("cmd-astra-stale-check-backs"),
+      threadId,
+      participantId: astraId,
+      checkBacks: [
+        {
+          id: "wake-stale",
+          participantId: astraId,
+          scheduledFor: "2026-01-01T01:00:00.000Z",
+          exact: true,
+          recurring: false,
+          durable: false,
+        },
+        saved,
+      ],
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.check-back.cancel",
+      commandId: CommandId.make("cmd-cancel-stale-check-back"),
+      threadId,
+      participantId: astraId,
+      stopBackgroundWork: false,
+      createdAt: now,
+    });
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return thread?.checkBacks?.length === 1;
+    });
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.checkBacks).toEqual([saved]);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+  });
+
   it("says so in the thread when no runtime could stop the task", async () => {
     const { harness, threadId, dispatch, now } = await startRoomWithMessageQueuedForAstra();
     await dispatch({
