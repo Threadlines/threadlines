@@ -1756,6 +1756,30 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("keeps a client app's session off /peer, the linked computers' socket", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const bearerToken = yield* getAuthenticatedBearerSessionToken();
+      const wsTokenUrl = yield* getHttpServerUrl("/api/auth/ws-token");
+      const wsTokenBody = (yield* Effect.promise(() =>
+        fetch(wsTokenUrl, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearerToken}` },
+        }).then((response) => response.json()),
+      )) as { readonly token: string };
+      const peerUrl = yield* getHttpServerUrl("/peer");
+
+      const withOwnerToken = yield* Effect.promise(() =>
+        fetch(`${peerUrl}?wsToken=${encodeURIComponent(wsTokenBody.token)}`),
+      );
+      const withoutToken = yield* Effect.promise(() => fetch(peerUrl));
+
+      assert.equal(withOwnerToken.status, 403);
+      assert.equal(withoutToken.status, 401);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("includes CORS headers on remote auth success responses", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
