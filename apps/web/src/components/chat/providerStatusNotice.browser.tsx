@@ -40,7 +40,9 @@ function makeSignInView(overrides: Partial<ProviderSignInFlowView> = {}): Provid
     isStarting: false,
     hasRun: false,
     hasFailed: false,
-    needsTerminal: false,
+    needsSettings: false,
+    asking: false,
+    waitingInSettings: false,
     lastLine: "",
     failureDetail: null,
     start: () => {},
@@ -210,7 +212,7 @@ describe("provider status composer notice", () => {
         signIn={makeSignInView({
           isActive: true,
           hasRun: true,
-          needsTerminal: true,
+          needsSettings: true,
           lastLine: "Paste the code from your browser:",
         })}
       />,

@@ -73,6 +73,8 @@ const makeSignedOutAgent = (mockEnv: Readonly<Record<string, string>>) =>
             pages.push({ ...request, closed: agent.state.gate.busy });
             return answerPage;
           }),
+        showCode: () => Effect.void,
+        ask: () => Effect.succeed(null),
       });
     return {
       ...agent,

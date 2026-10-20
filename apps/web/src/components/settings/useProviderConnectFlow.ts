@@ -88,6 +88,13 @@ export interface ProviderConnectFlowController {
    * `true` once the user chose to open it, `false` to refuse.
    */
   readonly answerPageRequest: (accept: boolean) => Promise<void>;
+  /**
+   * Answers what the agent asked (`state.question`): the chosen option's id
+   * or the typed text, or null to cancel. Rejects with the server's reason.
+   * The surface that answers opens the pages that follow, like one that
+   * started the run.
+   */
+  readonly answerQuestion: (value: string | null) => Promise<void>;
   /** True between the start click and the server's first status event. */
   readonly isStarting: boolean;
   /** True while the server reports the flow starting or running. */
@@ -108,7 +115,11 @@ export interface ProviderConnectFlowController {
   readonly startError: string | null;
   readonly outputBufferRef: RefObject<string>;
   readonly terminalWriteRef: RefObject<((data: string) => void) | null>;
-  readonly start: () => void;
+  /**
+   * Starts the flow. `terminal` asks for the agent's own terminal sign-in
+   * where the flow would otherwise ask its questions in the panel (Pi).
+   */
+  readonly start: (options?: { readonly terminal?: boolean }) => void;
   /** Cancels the server session and clears everything this hook is showing. */
   readonly reset: () => void;
   /** Ends any run on the instance, not only this hook's, and resolves once the server has. */
@@ -236,39 +247,43 @@ export function useProviderConnectFlow(input: {
     return () => window.clearInterval(timer);
   }, [isActive]);
 
-  const start = useCallback(() => {
-    const providerAuth = readProviderAuthClient();
-    if (instanceId === null || providerAuth === null) {
-      return;
-    }
-    outputBufferRef.current = "";
-    sessionFlowRef.current = null;
-    const requestId = randomUUID();
-    requestIdRef.current = requestId;
-    ownedFlowIdRef.current = null;
-    setState(initialProviderConnectFlowState);
-    setStartError(null);
-    setHasRun(true);
-    setIsStarting(true);
-    void providerAuth
-      .start({
-        instanceId,
-        flow,
-        cols: PROVIDER_CONNECT_TERMINAL_COLS,
-        rows: PROVIDER_CONNECT_TERMINAL_ROWS,
-        requestId,
-      })
-      .catch((error: unknown) => {
-        requestIdRef.current = null;
-        setStartError(
-          error instanceof Error ? error.message : "The sign-in command could not be started.",
-        );
-        onStartError?.(error);
-      })
-      .finally(() => {
-        setIsStarting(false);
-      });
-  }, [flow, instanceId, onStartError]);
+  const start = useCallback(
+    (options?: { readonly terminal?: boolean }) => {
+      const providerAuth = readProviderAuthClient();
+      if (instanceId === null || providerAuth === null) {
+        return;
+      }
+      outputBufferRef.current = "";
+      sessionFlowRef.current = null;
+      const requestId = randomUUID();
+      requestIdRef.current = requestId;
+      ownedFlowIdRef.current = null;
+      setState(initialProviderConnectFlowState);
+      setStartError(null);
+      setHasRun(true);
+      setIsStarting(true);
+      void providerAuth
+        .start({
+          instanceId,
+          flow,
+          cols: PROVIDER_CONNECT_TERMINAL_COLS,
+          rows: PROVIDER_CONNECT_TERMINAL_ROWS,
+          requestId,
+          questions: options?.terminal !== true,
+        })
+        .catch((error: unknown) => {
+          requestIdRef.current = null;
+          setStartError(
+            error instanceof Error ? error.message : "The sign-in command could not be started.",
+          );
+          onStartError?.(error);
+        })
+        .finally(() => {
+          setIsStarting(false);
+        });
+    },
+    [flow, instanceId, onStartError],
+  );
 
   const flowId = state.flowId;
   const clearLocalState = useCallback(() => {
@@ -328,6 +343,28 @@ export function useProviderConnectFlow(input: {
     [flowId, instanceId, pageRequestId],
   );
 
+  const questionId = state.question?.requestId ?? null;
+  const answerQuestion = useCallback(
+    async (value: string | null) => {
+      const client = readProviderAuthClient();
+      if (instanceId === null || client === null || flowId === null || questionId === null) {
+        return;
+      }
+      // The page this answer leads to opens here, even for a run another
+      // surface started (the composer hands a question off to Settings).
+      // Claimed first: the page can arrive before the answer's reply.
+      ownedFlowIdRef.current = flowId;
+      await client.respond({
+        instanceId,
+        flowId,
+        requestId: questionId,
+        accept: value !== null,
+        ...(value !== null ? { value } : {}),
+      });
+    },
+    [flowId, instanceId, questionId],
+  );
+
   const needsTerminal = shouldAutoExpandTerminal({ status: state.status, runningForMs });
 
   // Stable identity: consumers feed this straight into notice `useMemo`s that
@@ -347,9 +384,11 @@ export function useProviderConnectFlow(input: {
       stopAnyRun,
       submitRedirect,
       answerPageRequest,
+      answerQuestion,
     }),
     [
       answerPageRequest,
+      answerQuestion,
       hasRun,
       isActive,
       isStarting,

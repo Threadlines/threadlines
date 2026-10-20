@@ -7,8 +7,10 @@
  * user's own `pi` when it is new enough, else the copy Threadlines installs
  * (`PiRuntime`), leased for as long as the process runs.
  *
- * Pi keeps its own sign-ins. Sign in opens Pi itself in the sign-in terminal,
- * where the user types `/login`; Threadlines never reads Pi's credentials.
+ * Pi keeps its own sign-ins. Sign in asks Pi's `/login` questions in the
+ * sign-in panel (`PiSignIn`); a client that can't show them, or a user who
+ * prefers it, gets Pi itself in the sign-in terminal. Pi saves what the user
+ * enters; Threadlines never reads Pi's credentials.
  *
  * @module provider/Drivers/PiDriver
  */
@@ -46,6 +48,7 @@ import { isDefaultPiCommand, PI_PACKAGE_NAME, piUserMaintenance } from "../pi/Pi
 import { findPiInstallation, type PiInstallation, piLaunchFor } from "../pi/PiInstallation.ts";
 import { type PiLaunch, parsePiLaunchArgs, piProcessEnvironment } from "../pi/PiLaunch.ts";
 import { piManagedRuntime } from "../pi/PiRuntime.ts";
+import { runPiSignIn } from "../pi/PiSignIn.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -209,6 +212,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
           maintenance = maintenanceFor(current, realCommandPath);
         });
 
+      const extensionDir = NodePath.join(serverConfig.stateDir, "pi");
+
       // What the last check found: the models (for thinking-level checks) and Pi's default.
       let liveModels: ReadonlyArray<ServerProviderModel> = [];
       let defaultModel: PiProbeFacts["defaultModel"];
@@ -218,7 +223,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         settings,
         launch,
         instanceEnvironment: environment,
-        extensionDir: NodePath.join(serverConfig.stateDir, "pi"),
+        extensionDir,
         models: () => liveModels,
         defaultModel: () => defaultModel,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
@@ -296,13 +301,29 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         authFlows: {
           flows: ["login"],
           describe: () => "Sign in to Pi",
-          run: () =>
-            Effect.fail({ message: "Pi signs in in its own terminal: type /login there." }),
-          // Pi itself, without a saved session: the user types `/login`.
+          // Pi's sign-in, asked in the panel: which provider, then what it needs.
+          run: ({ flow, report, ask, showCode }) =>
+            flow === "login"
+              ? runPiSignIn({
+                  launch,
+                  launchArgs,
+                  instanceEnvironment: environment,
+                  cwd: serverConfig.cwd,
+                  extensionDir,
+                  report,
+                  ask,
+                  showCode,
+                }).pipe(
+                  Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                )
+              : Effect.fail({ message: "Pi has no such sign-in flow." }),
+          // Pi itself, without a saved session, where the user types `/login`:
+          // for a client that can't show questions, or a user who asks for it.
           // The copy it runs stays leased until the terminal closes.
-          terminalCommand: (flow) =>
+          terminalCommand: (flow, client) =>
             Effect.gen(function* () {
-              if (flow !== "login") return undefined;
+              if (flow !== "login" || client.questions) return undefined;
               const leaseScope = yield* Scope.make();
               const launcher = yield* launch.pipe(
                 Scope.provide(leaseScope),
@@ -318,7 +339,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
               };
             }),
           completeRedirect: () =>
-            Effect.fail({ message: "Finish signing in inside Pi's terminal." }),
+            Effect.fail({ message: "Paste the address in Pi's question instead." }),
         },
       } satisfies ProviderInstance;
     }),

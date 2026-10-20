@@ -287,7 +287,8 @@ An update never touches files a running Pi has loaded, and a failed install leav
 
 **Sign-in.**
 
-- Pi signs in only inside its terminal app (`/login`). The Sign in button opens Threadlines' sign-in terminal running `pi`, using the same launch description, and tells the user to type `/login`. This is the terminal-first path OpenCode already uses (`signInStartsInTerminal`).
+- Pi's `/login` lives in its terminal app, but its sign-in API (`ModelRuntime.login`, reached through the model registry extensions get) does not. The Sign in button runs a short-lived `pi --mode rpc --no-session` with a sign-in extension (`PiSignInExtensionSource`, run by `PiSignIn`) that lists Pi's providers and asks what each sign-in needs as questions in Threadlines' sign-in panel: a list, a password field for keys, a field for a pasted code. Pages open like any browser sign-in; device codes stay in the panel until the run ends. Typed keys are escaped so Pi stores them literally.
+- The terminal stays as the fallback: a client too old for questions gets `pi --no-session` in the sign-in terminal, and so does a user who chooses `Open it here` under `Prefer your own terminal?`. A Pi whose runtime lacks the API says so and points there.
 - After a one-click install, the sign-in re-resolves the binary (`ProviderAuthSessions`).
 
 **API keys** need no terminal. The Pi card takes them as the instance's environment variables, and Pi's key names join the always-sensitive list (`serverSettings.ts`), as Grok's and Antigravity's did.
@@ -305,15 +306,15 @@ An update never touches files a running Pi has loaded, and a failed install leav
 
 T3 Code runs Pi with whatever sign-in the user set up in Pi, and has no Anthropic-specific code: no block, no warning, no detection. Its docs tell users to run `pi`, then `/login`. We do the same:
 
-- Pi keeps its own credentials. Threadlines never reads, stores or relays them.
-- Threadlines has no Claude sign-in of its own for Pi. The Pi Sign in button opens Pi's terminal and says to type `/login`, as above.
+- Pi keeps its own credentials. Threadlines never reads or stores them; the sign-in panel passes Pi only what the user types (a key, or the code a copy-code sign-in shows).
+- **Decided (Will, Oct 20):** the Pi sign-in list Threadlines shows includes Claude Pro/Max, as Pi's own `/login` does. It runs Pi's own Claude sign-in; Threadlines relays the steps and stores nothing.
 - No Claude-specific notice or check.
 
 Background, for when this is revisited:
 
 - Pi's Claude Pro/Max sign-in presents itself as Claude Code, and Pi warns that it's billed as Anthropic "extra usage".
 - Since April 2026, Anthropic bills third-party harnesses on a subscription per token from "extra usage".
-- Anthropic's legal page forbids app makers from offering Claude.ai login in their own app, or collecting, storing or relaying Claude.ai tokens. We do neither.
+- Anthropic's legal page forbids app makers from offering Claude.ai login in their own app, or collecting, storing or relaying Claude.ai tokens. We don't touch tokens; listing Pi's Claude sign-in in our panel is the Oct 20 decision above.
 - OpenCode, Crush and Roo Code removed their own Claude-subscription sign-in after Anthropic asked. JetBrains ThinkRail, which starts Pi's sign-in from its own screen, is debating removing the Claude option (its issue #437).
 - ChatGPT through Pi is approved: OpenAI's "Sign in with ChatGPT" page lists Pi.
 

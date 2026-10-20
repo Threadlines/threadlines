@@ -1,6 +1,6 @@
 import type { ProviderDriverKind, ServerProvider } from "@threadlines/contracts";
 
-import { BROWSER_SIGN_IN_DRIVERS } from "./providerAuthCommands.ts";
+import { BROWSER_SIGN_IN_DRIVERS, GUIDED_SIGN_IN_DRIVERS } from "./providerAuthCommands.ts";
 
 export const PROVIDER_AUTH_RECONNECT_COMMANDS = {
   claudeAgent: "claude auth login",
@@ -52,12 +52,14 @@ export function providerAuthReconnectCommand(provider: ProviderDriverKind): stri
 
 /**
  * Whether Threadlines can run this provider's sign-in itself: its terminal
- * login command, or a sign-in the agent runs in the browser (Antigravity).
+ * login command, a sign-in the agent runs in the browser (Antigravity), or
+ * one whose questions Threadlines asks (Pi).
  */
 export function providerCanSignIn(provider: ProviderDriverKind): boolean {
   return (
     providerAuthReconnectCommand(provider) !== undefined ||
-    BROWSER_SIGN_IN_DRIVERS.has(String(provider))
+    BROWSER_SIGN_IN_DRIVERS.has(String(provider)) ||
+    GUIDED_SIGN_IN_DRIVERS.has(String(provider))
   );
 }
 

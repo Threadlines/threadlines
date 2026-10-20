@@ -38,6 +38,12 @@ export const ProviderAuthStartInput = Schema.Struct({
    * `command` event so that client (and only it) knows the run is its own.
    */
   requestId: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
+  /**
+   * The starting client shows `question` events and answers them. A flow
+   * that asks questions (Pi's) runs the agent's own terminal sign-in instead
+   * when this is false or missing, as it is from older clients.
+   */
+  questions: Schema.optional(Schema.Boolean),
 });
 export type ProviderAuthStartInput = Schema.Codec.Encoded<typeof ProviderAuthStartInput>;
 
@@ -67,12 +73,18 @@ export const ProviderAuthStopInput = Schema.Struct({
 });
 export type ProviderAuthStopInput = Schema.Codec.Encoded<typeof ProviderAuthStopInput>;
 
-/** The user's answer to a `pageRequest`: opened the page (`accept`), or cancelled. */
+/**
+ * The user's answer to a `pageRequest` (opened the page, or not) or to a
+ * `question`: `accept` with the chosen option's id or the typed text in
+ * `value`, or `accept: false` to cancel the sign-in. The value can be an API
+ * key: the server hands it to the agent and keeps no copy.
+ */
 export const ProviderAuthRespondInput = Schema.Struct({
   instanceId: ProviderInstanceId,
   flowId: Schema.String,
   requestId: Schema.String,
   accept: Schema.Boolean,
+  value: Schema.optional(Schema.String.check(Schema.isMaxLength(16_384))),
 });
 export type ProviderAuthRespondInput = Schema.Codec.Encoded<typeof ProviderAuthRespondInput>;
 
@@ -143,6 +155,45 @@ const ProviderAuthPageRequestEvent = Schema.Struct({
   url: Schema.String.check(Schema.isMaxLength(4096)),
   /** What the agent says the page is for. */
   message: Schema.NullOr(Schema.String.check(Schema.isMaxLength(1024))),
+  /**
+   * A one-time code to type on the page (a device sign-in). The panel shows
+   * it until the run ends; such a request takes no answer.
+   */
+  code: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+  settled: Schema.Boolean,
+});
+
+export const ProviderAuthQuestionKind = Schema.Literals(["choice", "text", "secret"]);
+export type ProviderAuthQuestionKind = typeof ProviderAuthQuestionKind.Type;
+
+/** One answer to a `choice` question. */
+export const ProviderAuthQuestionOption = Schema.Struct({
+  id: Schema.String.check(Schema.isMaxLength(256)),
+  label: Schema.String.check(Schema.isMaxLength(256)),
+  /** A second line, e.g. what the option signs in with. */
+  detail: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  /** Options sharing a group are listed under it, in order of appearance. */
+  group: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+  /** Already set up, e.g. a provider the agent is signed in to. */
+  configured: Schema.optional(Schema.Boolean),
+});
+export type ProviderAuthQuestionOption = typeof ProviderAuthQuestionOption.Type;
+
+/**
+ * The agent asks the user something the sign-in can't go on without: which
+ * provider to connect, an API key (`secret`, typed into a password field), or
+ * a code from the sign-in page. Answered with `providerAuth.respond`; a second
+ * event with `settled: true` tells every panel it was answered or withdrawn.
+ */
+const ProviderAuthQuestionEvent = Schema.Struct({
+  ...ProviderAuthEventBase.fields,
+  type: Schema.Literal("question"),
+  flowId: Schema.String,
+  requestId: Schema.String,
+  kind: ProviderAuthQuestionKind,
+  message: Schema.String.check(Schema.isMaxLength(1024)),
+  placeholder: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  options: Schema.optional(Schema.Array(ProviderAuthQuestionOption).check(Schema.isMaxLength(500))),
   settled: Schema.Boolean,
 });
 
@@ -151,6 +202,7 @@ export const ProviderAuthEvent = Schema.Union([
   ProviderAuthOutputEvent,
   ProviderAuthStatusEvent,
   ProviderAuthPageRequestEvent,
+  ProviderAuthQuestionEvent,
 ]);
 export type ProviderAuthEvent = typeof ProviderAuthEvent.Type;
 

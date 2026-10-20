@@ -35,6 +35,13 @@ export const BROWSER_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([
   GROK_DRIVER_KIND,
 ]);
 
+/**
+ * Drivers whose sign-in asks its questions in Threadlines' sign-in panel
+ * (which provider to connect, then a key or a code), with the agent's own
+ * terminal sign-in as the fallback (Pi).
+ */
+export const GUIDED_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([PI_DRIVER_KIND]);
+
 /** What a driver's browser sign-in is called where a command would be shown. */
 export function browserSignInLabel(driver: string): string {
   return driver === GROK_DRIVER_KIND ? "Sign in with Grok" : "Sign in with Google";
@@ -207,8 +214,8 @@ export function buildMuseLoginCommand(input: { readonly binaryPath: string }): s
 
 /**
  * `pi --no-session` — Pi itself, where the user types `/login` to connect a
- * model provider. Pi signs in only inside its own terminal app; nothing is
- * saved as a conversation.
+ * model provider: the fallback to the sign-in Threadlines asks in its panel.
+ * Nothing is saved as a conversation.
  */
 export function buildPiLoginCommand(input: { readonly binaryPath: string }): string {
   return `${shellWord(input.binaryPath.trim() || "pi")} --no-session`;

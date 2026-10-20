@@ -1,6 +1,8 @@
 import type {
   ProviderAuthEvent,
   ProviderAuthFlow,
+  ProviderAuthQuestionKind,
+  ProviderAuthQuestionOption,
   ProviderAuthStatus,
 } from "@threadlines/contracts";
 
@@ -47,6 +49,16 @@ export interface ProviderConnectFlowState {
     readonly requestId: string;
     readonly url: string;
     readonly message: string | null;
+    /** A device sign-in's code to type on the page; such a request takes no answer. */
+    readonly code: string | null;
+  } | null;
+  /** What the agent asked and is waiting on (which provider, a key, a code). */
+  readonly question: {
+    readonly requestId: string;
+    readonly kind: ProviderAuthQuestionKind;
+    readonly message: string;
+    readonly placeholder: string | null;
+    readonly options: ReadonlyArray<ProviderAuthQuestionOption>;
   } | null;
 }
 
@@ -62,6 +74,7 @@ export const initialProviderConnectFlowState: ProviderConnectFlowState = {
   signInUrl: null,
   urlScanTail: "",
   pageRequest: null,
+  question: null,
 };
 
 const OPEN_LINE_CHARS = 2048;
@@ -147,7 +160,7 @@ export function applyProviderAuthEvent(
           ? { lastLine: "", openLine: "", signInUrl: null, urlScanTail: "" }
           : {}),
         // A request belongs to the run that made it.
-        ...(event.status === "running" ? {} : { pageRequest: null }),
+        ...(event.status === "running" ? {} : { pageRequest: null, question: null }),
       };
     case "pageRequest":
       if (event.settled) {
@@ -157,7 +170,26 @@ export function applyProviderAuthEvent(
       }
       return {
         ...state,
-        pageRequest: { requestId: event.requestId, url: event.url, message: event.message },
+        pageRequest: {
+          requestId: event.requestId,
+          url: event.url,
+          message: event.message,
+          code: event.code ?? null,
+        },
+      };
+    case "question":
+      if (event.settled) {
+        return state.question?.requestId === event.requestId ? { ...state, question: null } : state;
+      }
+      return {
+        ...state,
+        question: {
+          requestId: event.requestId,
+          kind: event.kind,
+          message: event.message,
+          placeholder: event.placeholder ?? null,
+          options: event.options ?? [],
+        },
       };
   }
 }
@@ -204,7 +236,14 @@ export function providerConnectStatusLine(input: {
           ? `Signing out of ${input.displayName}`
           : `Starting ${input.displayName} sign-in`;
     case "running":
+      // What the agent asked is the step the user is on.
+      if (input.state.question) return input.state.question.message;
+      if (input.state.pageRequest?.code) return "Enter the code below on the sign-in page.";
       if (input.runningHint) return input.runningHint;
+      // A browser sign-in has nothing to finish in the browser before it opens a page.
+      if (input.state.surface === "browser" && !input.state.signInUrl && !isSignOut && !isToken) {
+        return `Signing in to ${input.displayName}`;
+      }
       return isToken
         ? "Finish authorization in your browser. The token is saved here automatically."
         : isSignOut

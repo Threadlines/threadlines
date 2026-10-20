@@ -65,7 +65,16 @@ export type PiProcessSpec =
   /** Copies a session into another folder: no extensions, no tools, no model needed. */
   | { readonly purpose: "fork"; readonly sessionFile: string }
   /** Titles and commit messages: nothing written, no tools, the user's extensions on. */
-  | { readonly purpose: "utility"; readonly launchArgs: ReadonlyArray<string> };
+  | { readonly purpose: "utility"; readonly launchArgs: ReadonlyArray<string> }
+  /**
+   * One sign-in: nothing written, the sign-in extension and the user's own
+   * (whose providers can be signed in to as well).
+   */
+  | {
+      readonly purpose: "signIn";
+      readonly launchArgs: ReadonlyArray<string>;
+      readonly extensionPath: string;
+    };
 
 function sessionFlags(session: PiSessionTarget): ReadonlyArray<string> {
   switch (session.kind) {
@@ -103,6 +112,15 @@ export function piProcessArgs(launcher: PiLauncher, spec: PiProcessSpec): Array<
     case "utility":
       // A tools list would override `--no-tools`: these processes run no tools at all.
       return [...base, ...withoutToolSelection(spec.launchArgs), "--no-session", "--no-tools"];
+    case "signIn":
+      return [
+        ...base,
+        ...withoutToolSelection(spec.launchArgs),
+        "--no-session",
+        "--no-tools",
+        "--extension",
+        spec.extensionPath,
+      ];
   }
 }
 
@@ -289,6 +307,8 @@ export function piProcessEnvironment(input: {
     readonly toolServers: ReadonlyArray<PiToolServer>;
     readonly secretsFile: string;
   };
+  /** Only for a sign-in: the file holding the sign-in extension's nonce. */
+  readonly signInSecretsFile?: string;
 }): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(input.baseEnv ?? process.env)) {
@@ -305,5 +325,6 @@ export function piProcessEnvironment(input: {
     env[PI_EXTENSION_ENV.toolServers] = JSON.stringify(input.extension.toolServers);
     env[PI_EXTENSION_ENV.secretsFile] = input.extension.secretsFile;
   }
+  if (input.signInSecretsFile) env[PI_EXTENSION_ENV.secretsFile] = input.signInSecretsFile;
   return env;
 }

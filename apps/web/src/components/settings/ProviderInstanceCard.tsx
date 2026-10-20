@@ -872,10 +872,10 @@ function ProviderAccountSignInSection(props: {
   const methodCopy = signInFlowCopy(props.driverKind, props.instance);
   const isClaude = props.driverKind === CLAUDE_DRIVER_KIND;
   // OpenCode's sign-in opens on a menu of providers to connect, in the
-  // terminal itself, and Pi's in Pi's own terminal app, so the terminal
-  // shows from the start.
+  // terminal itself, so the terminal shows from the start. Pi's asks the
+  // same here, as a list, with Pi's own terminal as the fallback.
   const isPi = props.driverKind === PI_DRIVER_KIND;
-  const signInStartsInTerminal = props.driverKind === OPENCODE_DRIVER_KIND || isPi;
+  const signInStartsInTerminal = props.driverKind === OPENCODE_DRIVER_KIND;
   // Antigravity and Grok sign in through a page, inside the agent: no
   // terminal. Where they can sign out, `signOut` says so.
   const browserSignIn =
@@ -952,15 +952,23 @@ function ProviderAccountSignInSection(props: {
             }
             command={props.terminalLoginCommand}
             autoShowTerminal={(props.signInHandoffActive ?? false) || signInStartsInTerminal}
-            surface={browserSignIn ? "browser" : "terminal"}
-            runningHint={
+            surface={browserSignIn || isPi ? "browser" : "terminal"}
+            acceptsRedirect={!isPi}
+            terminalFallback={
               isPi
-                ? "Type /login in the terminal below and pick a provider. When you're signed in, type /quit."
-                : signInStartsInTerminal
-                  ? "Pick a provider in the terminal below, then finish any step it opens in your browser."
-                  : methodCopy
-                    ? methodCopy.runningHint
-                    : undefined
+                ? {
+                    hint: "Then type /login and pick a provider.",
+                    runningHint:
+                      "Type /login in the terminal below and pick a provider. When you're signed in, type /quit.",
+                  }
+                : undefined
+            }
+            runningHint={
+              signInStartsInTerminal
+                ? "Pick a provider in the terminal below, then finish any step it opens in your browser."
+                : methodCopy
+                  ? methodCopy.runningHint
+                  : undefined
             }
             buttonVariant={needsSignIn ? "default" : "ghost"}
             description={

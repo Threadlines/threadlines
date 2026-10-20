@@ -8,7 +8,7 @@
  * extensions loaded, so providers that extensions add count, and asks
  * `get_state`, `get_available_models` and `get_commands`. Pi lists only models
  * it has credentials for, so ready means at least one model; none means Pi
- * needs signing in (`/login` in Pi) or a key.
+ * needs signing in (Threadlines asks Pi's `/login` questions) or a key.
  *
  * @module provider/Layers/PiProvider
  */
@@ -324,7 +324,7 @@ export interface PiProbeFacts {
 }
 
 const SIGN_IN_MESSAGE =
-  "Pi has no models it can use yet. Sign in (Pi's /login) or add a provider key, then check again.";
+  "Pi has no models it can use yet. Sign in to connect a provider, or add a provider key.";
 
 export const checkPiProviderStatus = (input: {
   readonly settings: PiSettings;

@@ -61,7 +61,11 @@ import { resolveOpenCodeBinary } from "../opencode/OpenCodeBinary.ts";
 import { PtyAdapter, type PtyAdapterShape, type PtyProcess } from "../../terminal/Services/PTY.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
-import type { ProviderAuthTerminalCommand, ProviderInstanceAuthFlows } from "../ProviderDriver.ts";
+import type {
+  ProviderAuthQuestion,
+  ProviderAuthTerminalCommand,
+  ProviderInstanceAuthFlows,
+} from "../ProviderDriver.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
 
 const DEFAULT_COLS = 100;
@@ -182,7 +186,7 @@ export interface ProviderAuthSessionsShape {
   readonly write: (input: ProviderAuthWriteInput) => Effect.Effect<void, ProviderAuthError>;
   readonly resize: (input: ProviderAuthResizeInput) => Effect.Effect<void, ProviderAuthError>;
   readonly stop: (input: ProviderAuthStopInput) => Effect.Effect<void, ProviderAuthError>;
-  /** The user's answer to an agent's request to open a page. */
+  /** The user's answer to an agent's request to open a page, or to its question. */
   readonly respond: (input: ProviderAuthRespondInput) => Effect.Effect<void, ProviderAuthError>;
   /**
    * Attach to one instance's event stream. Replays the current command and
@@ -215,6 +219,42 @@ export interface ProviderAuthSessionsOptions {
   readonly scrollbackChars?: number;
 }
 
+interface PendingPage {
+  readonly url: string;
+  readonly message: string | null;
+  /** A device sign-in's code: shown with the page, never answered. */
+  readonly code?: string | undefined;
+  readonly answered: Deferred.Deferred<boolean>;
+}
+
+interface PendingQuestion {
+  readonly question: ProviderAuthQuestion;
+  /** The answer, or null when cancelled, withdrawn or stopped. */
+  readonly answered: Deferred.Deferred<string | null>;
+}
+
+const clip = (value: string, max: number) => (value.length > max ? value.slice(0, max) : value);
+
+/** A question cut to what the wire carries: an agent's text has no length limit. */
+function clampQuestion(question: ProviderAuthQuestion): ProviderAuthQuestion {
+  return {
+    kind: question.kind,
+    message: clip(question.message, 1024),
+    ...(question.placeholder ? { placeholder: clip(question.placeholder, 256) } : {}),
+    ...(question.options
+      ? {
+          options: question.options.slice(0, 500).map((option) => ({
+            id: clip(option.id, 256),
+            label: clip(option.label, 256),
+            ...(option.detail ? { detail: clip(option.detail, 256) } : {}),
+            ...(option.group ? { group: clip(option.group, 64) } : {}),
+            ...(option.configured ? { configured: true } : {}),
+          })),
+        }
+      : {}),
+  };
+}
+
 interface SessionState {
   readonly flow: ProviderAuthFlow;
   readonly command: string;
@@ -228,15 +268,13 @@ interface SessionState {
   readonly surface: "terminal" | "browser";
   /** An instance's terminal command: told once how it ended. */
   terminalFinished: ((exitCode: number | null) => Effect.Effect<void>) | null;
-  /** Pages the agent asked to have opened, waiting for the user's answer. */
-  readonly pageRequests: Map<
-    string,
-    {
-      readonly url: string;
-      readonly message: string | null;
-      readonly answered: Deferred.Deferred<boolean>;
-    }
-  >;
+  /**
+   * Pages the agent asked to have opened, waiting for the user's answer, and
+   * device sign-in pages with their code, shown until the run ends.
+   */
+  readonly pageRequests: Map<string, PendingPage>;
+  /** Questions the agent asked, waiting for the user's answer. */
+  readonly questions: Map<string, PendingQuestion>;
   runFiber: Fiber.Fiber<void, never> | null;
   status: ProviderAuthStatus;
   exitCode: number | null;
@@ -462,22 +500,79 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
       return finished ? finished(exitCode) : Effect.void;
     });
 
-  /** Answers every page the agent is still waiting on with "no". */
-  const declinePageRequests = (instanceId: ProviderInstanceId, session: SessionState) =>
+  const pageRequestEvent = (
+    instanceId: ProviderInstanceId,
+    session: SessionState,
+    requestId: string,
+    pending: PendingPage,
+    settled: boolean,
+  ) =>
+    Effect.map(nowIso, (createdAt): ProviderAuthEvent => ({
+      type: "pageRequest",
+      instanceId,
+      createdAt,
+      flowId: session.flowId,
+      requestId,
+      url: pending.url,
+      message: pending.message,
+      ...(pending.code !== undefined ? { code: pending.code } : {}),
+      settled,
+    }));
+
+  const questionEvent = (
+    instanceId: ProviderInstanceId,
+    session: SessionState,
+    requestId: string,
+    question: ProviderAuthQuestion,
+    settled: boolean,
+  ) =>
+    Effect.map(nowIso, (createdAt): ProviderAuthEvent => ({
+      type: "question",
+      instanceId,
+      createdAt,
+      flowId: session.flowId,
+      requestId,
+      kind: question.kind,
+      message: question.message,
+      ...(question.placeholder !== undefined ? { placeholder: question.placeholder } : {}),
+      ...(question.options !== undefined ? { options: question.options } : {}),
+      settled,
+    }));
+
+  /** Removes a question and tells every panel; no-op once it was answered. */
+  const withdrawQuestion = (
+    instanceId: ProviderInstanceId,
+    session: SessionState,
+    questionId: string,
+    answer: string | null,
+  ) =>
+    Effect.gen(function* () {
+      const pending = session.questions.get(questionId);
+      if (!pending) return;
+      session.questions.delete(questionId);
+      yield* publish(
+        instanceId,
+        yield* questionEvent(instanceId, session, questionId, pending.question, true),
+      );
+      yield* Deferred.succeed(pending.answered, answer);
+    });
+
+  /**
+   * Ends everything the run is still showing: pages the agent waits on are
+   * answered "no", questions get no answer, and device codes go away.
+   */
+  const settlePending = (instanceId: ProviderInstanceId, session: SessionState) =>
     Effect.gen(function* () {
       for (const [pageRequestId, pending] of session.pageRequests) {
         session.pageRequests.delete(pageRequestId);
-        yield* publish(instanceId, {
-          type: "pageRequest",
+        yield* publish(
           instanceId,
-          createdAt: yield* nowIso,
-          flowId: session.flowId,
-          requestId: pageRequestId,
-          url: pending.url,
-          message: pending.message,
-          settled: true,
-        });
+          yield* pageRequestEvent(instanceId, session, pageRequestId, pending, true),
+        );
         yield* Deferred.succeed(pending.answered, false);
+      }
+      for (const questionId of session.questions.keys()) {
+        yield* withdrawQuestion(instanceId, session, questionId, null);
       }
     });
 
@@ -532,7 +627,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         yield* Effect.sync(() => process.kill()).pipe(Effect.ignore);
       }
       sessions.delete(String(instanceId));
-      yield* declinePageRequests(instanceId, session);
+      yield* settlePending(instanceId, session);
       const runFiber = session.runFiber;
       session.runFiber = null;
       if (runFiber) yield* Fiber.interrupt(runFiber).pipe(Effect.ignore);
@@ -557,6 +652,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         surface: "browser",
         terminalFinished: null,
         pageRequests: new Map(),
+        questions: new Map(),
         runFiber: null,
         status: "starting",
         exitCode: null,
@@ -593,27 +689,72 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
               Effect.gen(function* () {
                 if (!current() || !/^https?:\/\//iu.test(url) || url.length > 4096) return false;
                 const pageRequestId = randomUUID();
-                const answered = yield* Deferred.make<boolean>();
-                session.pageRequests.set(pageRequestId, { url, message, answered });
-                yield* publish(instanceId, {
-                  type: "pageRequest",
-                  instanceId,
-                  createdAt: yield* nowIso,
-                  flowId: session.flowId,
-                  requestId: pageRequestId,
+                const pending: PendingPage = {
                   url,
-                  message: message === null ? null : message.slice(0, 1024),
-                  settled: false,
-                });
-                return yield* Deferred.await(answered);
+                  message: message === null ? null : clip(message, 1024),
+                  answered: yield* Deferred.make<boolean>(),
+                };
+                session.pageRequests.set(pageRequestId, pending);
+                yield* publish(
+                  instanceId,
+                  yield* pageRequestEvent(instanceId, session, pageRequestId, pending, false),
+                );
+                return yield* Deferred.await(pending.answered);
               }),
+            showCode: ({ url, code, message }) =>
+              Effect.gen(function* () {
+                if (!current() || !/^https?:\/\//iu.test(url) || url.length > 4096) return;
+                // One code at a time: a new one replaces the last.
+                for (const [pageRequestId, pending] of session.pageRequests) {
+                  if (pending.code === undefined) continue;
+                  session.pageRequests.delete(pageRequestId);
+                  yield* publish(
+                    instanceId,
+                    yield* pageRequestEvent(instanceId, session, pageRequestId, pending, true),
+                  );
+                }
+                const pageRequestId = randomUUID();
+                const pending: PendingPage = {
+                  url,
+                  message: message === null ? null : clip(message, 1024),
+                  code: clip(code, 64),
+                  answered: yield* Deferred.make<boolean>(),
+                };
+                session.pageRequests.set(pageRequestId, pending);
+                yield* publish(
+                  instanceId,
+                  yield* pageRequestEvent(instanceId, session, pageRequestId, pending, false),
+                );
+              }),
+            ask: (question) => {
+              const questionId = randomUUID();
+              return Effect.gen(function* () {
+                if (!current()) return null;
+                const pending: PendingQuestion = {
+                  question: clampQuestion(question),
+                  answered: yield* Deferred.make<string | null>(),
+                };
+                session.questions.set(questionId, pending);
+                yield* publish(
+                  instanceId,
+                  yield* questionEvent(instanceId, session, questionId, pending.question, false),
+                );
+                return yield* Deferred.await(pending.answered);
+              }).pipe(Effect.ensuring(withdrawQuestion(instanceId, session, questionId, null)));
+            },
           })
           .pipe(
             Effect.matchEffect({
-              onSuccess: () => (current() ? finishSuccess(instanceId, session) : Effect.void),
+              onSuccess: () =>
+                current()
+                  ? settlePending(instanceId, session).pipe(
+                      Effect.andThen(finishSuccess(instanceId, session)),
+                    )
+                  : Effect.void,
               onFailure: (failure) =>
                 current()
                   ? Effect.gen(function* () {
+                      yield* settlePending(instanceId, session);
                       session.detail = failure.message;
                       yield* publishStatus(instanceId, session, "failed");
                       // A failed sign-in can leave the agent signed out.
@@ -704,7 +845,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           return yield* Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
               const instanceTerminal = terminalCommand
-                ? yield* terminalCommand(input.flow).pipe(
+                ? yield* terminalCommand(input.flow, { questions: input.questions === true }).pipe(
                     Effect.mapError(
                       (failure) =>
                         new ProviderAuthError({
@@ -822,6 +963,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           surface: "terminal",
           terminalFinished: prepared.terminalFinished,
           pageRequests: new Map(),
+          questions: new Map(),
           runFiber: null,
           status: "starting",
           exitCode: null,
@@ -977,25 +1119,41 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
       Effect.gen(function* () {
         const instanceId = ProviderInstanceId.make(input.instanceId);
         const session = sessions.get(String(instanceId));
-        const pending =
-          session?.flowId === input.flowId ? session.pageRequests.get(input.requestId) : undefined;
-        if (!session || !pending) {
+        const current = session?.flowId === input.flowId ? session : undefined;
+        const question = current?.questions.get(input.requestId);
+        if (current && question) {
+          const answer = input.accept ? (input.value ?? "") : null;
+          const options = question.question.options;
+          if (
+            answer !== null &&
+            question.question.kind === "choice" &&
+            !options?.some((option) => option.id === answer)
+          ) {
+            return yield* new ProviderAuthError({
+              instanceId: String(instanceId),
+              reason: "inputRejected",
+              detail: "That isn't one of the choices.",
+            });
+          }
+          // The answer goes to the agent only: an API key is never published.
+          yield* withdrawQuestion(instanceId, current, input.requestId, answer);
+          return;
+        }
+        const pending = current?.pageRequests.get(input.requestId);
+        if (!current || !pending) {
           return yield* new ProviderAuthError({
             instanceId: String(instanceId),
             reason: "notRunning",
           });
         }
-        session.pageRequests.delete(input.requestId);
-        yield* publish(instanceId, {
-          type: "pageRequest",
+        // A device code takes no answer: one from an older panel, which shows
+        // it as a plain page, must not take the code away from every panel.
+        if (pending.code !== undefined) return;
+        current.pageRequests.delete(input.requestId);
+        yield* publish(
           instanceId,
-          createdAt: yield* nowIso,
-          flowId: session.flowId,
-          requestId: input.requestId,
-          url: pending.url,
-          message: pending.message,
-          settled: true,
-        });
+          yield* pageRequestEvent(instanceId, current, input.requestId, pending, true),
+        );
         yield* Deferred.succeed(pending.answered, input.accept);
       }),
     subscribe: (instanceId, listener) =>
@@ -1036,17 +1194,17 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           detail: session?.detail ?? null,
         }).pipe(Effect.ignoreCause({ log: true }));
         // A panel that opens late still sees what the agent is waiting on.
-        for (const [pageRequestId, pending] of session?.pageRequests ?? []) {
-          yield* listener({
-            type: "pageRequest",
-            instanceId,
-            createdAt,
-            flowId: session!.flowId,
-            requestId: pageRequestId,
-            url: pending.url,
-            message: pending.message,
-            settled: false,
-          }).pipe(Effect.ignoreCause({ log: true }));
+        if (session) {
+          for (const [pageRequestId, pending] of session.pageRequests) {
+            yield* listener(
+              yield* pageRequestEvent(instanceId, session, pageRequestId, pending, false),
+            ).pipe(Effect.ignoreCause({ log: true }));
+          }
+          for (const [questionId, pending] of session.questions) {
+            yield* listener(
+              yield* questionEvent(instanceId, session, questionId, pending.question, false),
+            ).pipe(Effect.ignoreCause({ log: true }));
+          }
         }
 
         return () => {

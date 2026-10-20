@@ -23,6 +23,8 @@
  */
 import type {
   ProviderAuthFlow,
+  ProviderAuthQuestionKind,
+  ProviderAuthQuestionOption,
   ProviderDriverKind,
   ProviderInstanceConfig,
   ProviderInstanceEnvironment,
@@ -120,17 +122,37 @@ export interface ProviderInstanceAuthFlows {
       readonly url: string;
       readonly message: string | null;
     }) => Effect.Effect<boolean>;
+    /**
+     * Shows a page and the one-time code to type on it (a device sign-in)
+     * until the run ends. Nothing opens by itself, and nothing is answered:
+     * the agent learns the outcome from its own provider.
+     */
+    readonly showCode: (request: {
+      readonly url: string;
+      readonly code: string;
+      readonly message: string | null;
+    }) => Effect.Effect<void>;
+    /**
+     * Asks the user a question in the panel and resolves to the answer: the
+     * chosen option's id, or the typed text. Null when the user cancelled or
+     * the flow was stopped. Interrupting it withdraws the question. Only
+     * reached from a client that answers questions (see `terminalCommand`).
+     */
+    readonly ask: (question: ProviderAuthQuestion) => Effect.Effect<string | null>;
   }) => Effect.Effect<void, { readonly message: string }>;
   /**
    * For a flow that is the agent's own login command: what to run in the
    * sign-in terminal instead of `run`, or undefined when the flow isn't one.
-   * The effect prepares for it first (the instance's processes are stopped
-   * and kept from starting) and fails with a plain reason when it can't.
-   * `finished` is called exactly once: with the exit code when the command
-   * ends, or null when it was stopped or never started.
+   * `questions` says whether the starting client can answer `ask`; a flow
+   * that asks returns its terminal form when it can't. The effect prepares
+   * for it first (the instance's processes are stopped and kept from
+   * starting) and fails with a plain reason when it can't. `finished` is
+   * called exactly once: with the exit code when the command ends, or null
+   * when it was stopped or never started.
    */
   readonly terminalCommand?: (
     flow: ProviderAuthFlow,
+    client: { readonly questions: boolean },
   ) => Effect.Effect<ProviderAuthTerminalCommand | undefined, { readonly message: string }>;
   /** The address a browser on another device ended on, for the pending sign-in. */
   readonly completeRedirect: (url: string) => Effect.Effect<void, { readonly message: string }>;
@@ -141,6 +163,14 @@ export interface ProviderInstanceAuthFlows {
    * (a check would test the old key).
    */
   readonly builtFrom?: (entry: ProviderInstanceConfig) => boolean;
+}
+
+/** What a sign-in asks the user (see `ProviderAuthQuestionEvent`). */
+export interface ProviderAuthQuestion {
+  readonly kind: ProviderAuthQuestionKind;
+  readonly message: string;
+  readonly placeholder?: string | undefined;
+  readonly options?: ReadonlyArray<ProviderAuthQuestionOption> | undefined;
 }
 
 export interface ProviderAuthTerminalCommand {
