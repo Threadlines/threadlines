@@ -55,13 +55,22 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
-import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
+import type { ProviderAdapterError, ProviderServiceError } from "../Errors.ts";
+import type { ProviderAdapterCapabilities, ProviderAdapterShape } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
+/** One agent's running session, as `agentSession` finds it. */
+export interface ProviderAgentSession {
+  readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+  /** The session key to address the adapter with. */
+  readonly sessionKey: ThreadId;
+  /** The provider's own id for the session's conversation, when it has one. */
+  readonly providerThreadId: string | null;
+}
+
 export interface ProviderServiceShape {
   /**
    * Start a provider session.
@@ -328,6 +337,20 @@ export interface ProviderServiceShape {
   readonly readCommandOutput: (
     input: ProviderCommandOutputInput,
   ) => Effect.Effect<ProviderCommandOutputResult, ProviderServiceError>;
+
+  /**
+   * The running session of one agent of a thread, by its session key, for an
+   * operation that must reach exactly that agent's runtime (an MCP app card
+   * calling the MCP server its agent used, docs/mcp-apps.md). `recover`
+   * starts the session again from its binding; otherwise a session that is
+   * not running answers null, as does one bound to another provider instance
+   * than `providerInstanceId`.
+   */
+  readonly agentSession: (input: {
+    readonly sessionKey: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId | null;
+    readonly recover: boolean;
+  }) => Effect.Effect<ProviderAgentSession | null, ProviderServiceError>;
 
   /** Send a user message straight to a spawned subagent (see the adapter's
    *  `sendSubagentInput`). */

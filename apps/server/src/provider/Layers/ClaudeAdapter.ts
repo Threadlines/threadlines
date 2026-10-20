@@ -69,6 +69,8 @@ import {
   type RuntimeCheckBack,
   type RuntimeContentStreamKind,
   type TurnTrigger,
+  type RuntimeMcpAppCall,
+  type McpAppToolResult,
   RuntimeItemId,
   type RuntimeMode,
   RuntimeRequestId,
@@ -184,6 +186,15 @@ import {
   type ClaudeSessionCron,
 } from "../Drivers/ClaudeCheckBacks.ts";
 import { sameCheckBacks } from "@threadlines/shared/checkBacks";
+import {
+  CLAUDE_MCP_TOOLS_STALE_MS,
+  claudeMcpCallResult,
+  claudeMcpToolApps,
+  claudeMcpToolName,
+  claudeMcpToolResult,
+  makeClaudeMcpAppState,
+  type ClaudeMcpAppState,
+} from "../Drivers/ClaudeMcpApps.ts";
 import { claudeSdkExecutable, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { mcpElicitationPrompt, mcpElicitationResponse } from "../mcpElicitation.ts";
 import {
@@ -605,6 +616,8 @@ interface ClaudeSessionContext {
   readonly tasks: Map<string, ClaudeTaskSnapshot>;
   /** Times Claude set itself to come back (see ClaudeCheckBacks.ts). */
   readonly checkBacks: ClaudeCheckBackState;
+  /** Which of the session's MCP tools ship an app (see ClaudeMcpApps.ts). */
+  readonly mcpApps: ClaudeMcpAppState;
   /** What started the turn Claude is about to begin by itself, learned from
    *  the prompt it submitted before the turn's first output. */
   pendingTurnTrigger: TurnTrigger | undefined;
@@ -730,6 +743,22 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
     readonly total_bytes: number;
     readonly truncated: boolean;
   }>;
+  /** The session's MCP servers and their tools; each tool's `_meta` holds
+   *  its MCP Apps keys on CLIs that pass them on. */
+  readonly mcpServerStatus?: () => Promise<unknown>;
+  /** One `ui://` resource from a server (MCP Apps). Optional: absent on
+   *  CLIs that predate the mcp_read_resource request. */
+  readonly readMcpResource?: (
+    serverName: string,
+    uri: string,
+  ) => Promise<{ readonly contents?: ReadonlyArray<unknown> }>;
+  /** The SDK's raw control request, which `mcp_call` (a tool call with no
+   *  model turn) has no method of its own for yet. */
+  readonly request?: (request: {
+    readonly subtype: "mcp_call";
+    readonly tool: string;
+    readonly arguments: Readonly<Record<string, unknown>>;
+  }) => Promise<unknown>;
   readonly close: () => void;
 }
 
@@ -2474,6 +2503,11 @@ const CLAUDE_COMMAND_OUTPUT_READ_TIMEOUT = Duration.seconds(3);
 /** The most of a running command's output a read hands back: its end, which
  *  holds the lines a client shows. Claude itself keeps the last 8 KiB. */
 const CLAUDE_COMMAND_OUTPUT_TAIL_CHARS = 4_096;
+/** How long reading the session's MCP tools may hold up a finished MCP tool
+ *  call's step; a slower read leaves that step without its app. */
+const CLAUDE_MCP_TOOLS_READ_TIMEOUT = Duration.millis(1500);
+/** How long reading an app's view, or a tool call an app makes, may take. */
+const CLAUDE_MCP_APP_REQUEST_TIMEOUT = Duration.seconds(30);
 /** The tool the model sets a goal of its own with. */
 const CLAUDE_PROPOSE_GOAL_TOOL_NAME = "ProposeGoal";
 /** Unanswered goal commands remembered past their wait. */
@@ -5691,6 +5725,65 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       : checkout;
   });
 
+  /**
+   * The session's MCP tools and their apps (ClaudeMcpApps.ts). Read again
+   * when never read, when `force`d, or when `toolName` is missing from a read
+   * older than CLAUDE_MCP_TOOLS_STALE_MS (a server may still have been
+   * connecting). Undefined when the CLI cannot say, or did not in time.
+   */
+  const readClaudeMcpTools = (
+    context: ClaudeSessionContext,
+    options: { readonly toolName?: string; readonly force?: boolean },
+  ) =>
+    Effect.gen(function* () {
+      const state = context.mcpApps;
+      const mcpServerStatus = context.query.mcpServerStatus;
+      if (mcpServerStatus === undefined) return undefined;
+      const missing = options.toolName !== undefined && !state.tools.has(options.toolName);
+      const stale = Date.now() - state.readAtMs > CLAUDE_MCP_TOOLS_STALE_MS;
+      if (!options.force && state.readAtMs > 0 && !(missing && stale)) return state.tools;
+      const read = yield* Effect.tryPromise(() => mcpServerStatus.call(context.query)).pipe(
+        Effect.timeoutOption(CLAUDE_MCP_TOOLS_READ_TIMEOUT),
+        Effect.orElseSucceed(() => Option.none()),
+      );
+      if (Option.isNone(read)) return undefined;
+      state.tools = claudeMcpToolApps(read.value);
+      state.readAtMs = Date.now();
+      return state.tools;
+    });
+
+  /** A finished MCP tool call whose tool ships an app, as the step's
+   *  `mcpApp` (docs/mcp-apps.md); undefined for any other call. Its
+   *  structured content and `_meta` are only in `tool_use_result`. */
+  const claudeMcpAppCall = (
+    context: ClaudeSessionContext,
+    tool: ToolInFlight,
+    toolResult: { readonly block: Record<string, unknown>; readonly isError: boolean },
+    toolUseResult: unknown,
+  ) =>
+    Effect.gen(function* () {
+      const tools = yield* readClaudeMcpTools(context, { toolName: tool.toolName });
+      const app = tools?.get(tool.toolName);
+      const resourceUri = app?.ui?.resourceUri;
+      if (!app || !resourceUri) return undefined;
+      const structured =
+        toolUseResult !== null && typeof toolUseResult === "object"
+          ? (toolUseResult as { readonly structuredContent?: unknown; readonly _meta?: unknown })
+          : undefined;
+      return {
+        server: app.server,
+        tool: app.tool,
+        resourceUri,
+        arguments: tool.input,
+        result: claudeMcpToolResult({
+          content: toolResult.block.content,
+          structuredContent: structured?.structuredContent,
+          isError: toolResult.isError,
+          meta: structured?._meta,
+        }),
+      } satisfies RuntimeMcpAppCall;
+    });
+
   const handleUserMessage = Effect.fn("handleUserMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -5778,6 +5871,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
       }
       const itemStatus = toolResult.isError ? "failed" : "completed";
+      // A tool that ships an app shows it under its step. Its structured
+      // content is only in `tool_use_result` (one tool_result per message).
+      const mcpApp =
+        tool.itemType === "mcp_tool_call" && isMcpToolName(tool.toolName)
+          ? yield* claudeMcpAppCall(
+              context,
+              tool,
+              toolResult,
+              toolResults.length === 1
+                ? (message as { readonly tool_use_result?: unknown }).tool_use_result
+                : undefined,
+            )
+          : undefined;
       const fileChangeStat = context.fileChangeStatsByToolUseId.get(toolResult.toolUseId);
       context.fileChangeStatsByToolUseId.delete(toolResult.toolUseId);
       const toolData = {
@@ -5860,6 +5966,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           title: tool.title,
           ...(tool.detail ? { detail: tool.detail } : {}),
           data: toolData,
+          ...(mcpApp ? { mcpApp } : {}),
         },
         providerRefs: nativeProviderRefs(context, {
           providerItemId: tool.itemId,
@@ -9015,6 +9122,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         fileChangeStatsByToolUseId,
         tasks: new Map(),
         checkBacks: makeClaudeCheckBackState(),
+        mcpApps: makeClaudeMcpAppState(),
         pendingTurnTrigger: undefined,
         bashCommandsByToolUseId: new Map(),
         codexExecRuns: new Map(),
@@ -9655,6 +9763,86 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     } as const;
   });
 
+  /** A live session's MCP Apps request, or an error naming why not. */
+  const mcpAppRequestError = (method: string, detail: string) =>
+    new ProviderAdapterRequestError({ provider: PROVIDER, method, detail });
+
+  const readMcpResource: NonNullable<ClaudeAdapterShape["readMcpResource"]> = Effect.fn(
+    "readMcpResource",
+  )(function* (threadId, input) {
+    const context = yield* requireSession(threadId);
+    const read = context.query.readMcpResource;
+    if (read === undefined) {
+      return yield* mcpAppRequestError(
+        "readMcpResource",
+        "This Claude Code version cannot read MCP app views.",
+      );
+    }
+    const result = yield* Effect.tryPromise({
+      try: () => read.call(context.query, input.server, input.uri),
+      catch: (cause) => mcpAppRequestError("readMcpResource", toMessage(cause, "Read failed.")),
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: CLAUDE_MCP_APP_REQUEST_TIMEOUT,
+        orElse: () => Effect.fail(mcpAppRequestError("readMcpResource", "Timed out.")),
+      }),
+    );
+    return (result.contents ?? []).flatMap((entry) => {
+      if (entry === null || typeof entry !== "object") return [];
+      const content = entry as Record<string, unknown>;
+      if (typeof content.uri !== "string") return [];
+      return [
+        {
+          uri: content.uri,
+          ...(typeof content.mimeType === "string" ? { mimeType: content.mimeType } : {}),
+          ...(typeof content.text === "string" ? { text: content.text } : {}),
+          ...(typeof content.blob === "string" ? { blob: content.blob } : {}),
+          ...(content._meta !== undefined ? { _meta: content._meta } : {}),
+        },
+      ];
+    });
+  });
+
+  const callMcpTool: NonNullable<ClaudeAdapterShape["callMcpTool"]> = Effect.fn("callMcpTool")(
+    function* (threadId, input) {
+      const context = yield* requireSession(threadId);
+      const request = context.query.request;
+      if (request === undefined) {
+        return yield* mcpAppRequestError(
+          "callMcpTool",
+          "This Claude Code version cannot run an MCP app's tool calls.",
+        );
+      }
+      const response = yield* Effect.tryPromise({
+        try: () =>
+          request.call(context.query, {
+            subtype: "mcp_call",
+            tool: claudeMcpToolName(input.server, input.tool),
+            arguments: input.arguments,
+          }),
+        catch: (cause) => mcpAppRequestError("callMcpTool", toMessage(cause, "Tool call failed.")),
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: CLAUDE_MCP_APP_REQUEST_TIMEOUT,
+          orElse: () => Effect.fail(mcpAppRequestError("callMcpTool", "Timed out.")),
+        }),
+      );
+      return claudeMcpCallResult(response) satisfies McpAppToolResult;
+    },
+  );
+
+  const readMcpToolUi: NonNullable<ClaudeAdapterShape["readMcpToolUi"]> = Effect.fn(
+    "readMcpToolUi",
+  )(function* (threadId, input) {
+    const context = yield* requireSession(threadId);
+    const tools = yield* readClaudeMcpTools(context, { force: true });
+    if (tools === undefined) return undefined;
+    const tool = tools.get(claudeMcpToolName(input.server, input.tool));
+    // A tool the status names without app metadata declares none; one the
+    // status does not name at all is unknown.
+    return tool === undefined ? undefined : tool.ui;
+  });
+
   const readSubagentTranscript: NonNullable<ClaudeAdapterShape["readSubagentTranscript"]> =
     Effect.fn("readSubagentTranscript")(function* (threadId, input) {
       const requestError = (detail: string) =>
@@ -10003,6 +10191,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     readThread,
     readSubagentTranscript,
     readCommandOutput,
+    readMcpResource,
+    callMcpTool,
+    readMcpToolUi,
     rollbackThread,
     respondToRequest,
     respondToUserInput,

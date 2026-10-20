@@ -150,6 +150,7 @@ import * as LocalServers from "./preview/LocalServers.ts";
 import * as PreviewAutomationBroker from "./preview/PreviewAutomationBroker.ts";
 import * as PreviewTunnel from "./preview/PreviewTunnel.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
+import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
@@ -737,6 +738,9 @@ const buildAppUnderTest = (options?: {
             pendingVersionIds: Effect.succeed(new Set<string>()),
             assetsDirOf: () => null,
           }),
+          // MCP app cards are tested on their own (McpApps.test.ts); here
+          // only the routes need something to call.
+          Layer.mock(McpApps)({}),
           // Suggested commands are tested on their own; here only the routes
           // and the tool endpoint need something to call.
           Layer.mock(CommandRuns)({

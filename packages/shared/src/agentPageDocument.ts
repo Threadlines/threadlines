@@ -20,6 +20,7 @@ import {
   PAGE_LEFT_METHOD,
   SIZE_CHANGED_METHOD,
 } from "./agentPages.ts";
+import { scriptLiteral, wrapHtmlDocument } from "./framedDocument.ts";
 
 // A scrollbar inside the reply reads as a box within the thread, so a page
 // taller than its frame scrolls without one. Focus rings paint inward so the
@@ -55,17 +56,6 @@ const DOCUMENT_CSS =
   ".tl-document th,.tl-document td{padding:6px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}" +
   ".tl-document th{font-weight:600}.tl-document hr{border:0;border-top:1px solid var(--border);margin:20px 0}" +
   ".tl-document img{max-width:100%}.tl-document input[type=checkbox]{margin:0 6px 0 0}";
-
-/**
- * A value as a script literal that nothing in it can end early: `<`, `>` and
- * `/` (a closing script tag) and the two line separators JSON leaves bare are
- * written as escapes, which read back as the same characters.
- */
-const scriptLiteral = (value: unknown) =>
-  JSON.stringify(value).replace(
-    /[<>/\u2028\u2029]/g,
-    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
 
 // Runs first, before anything the page says. It removes WebRTC, which no
 // content policy governs; rewrites its own theme <style> when the host's theme
@@ -116,27 +106,6 @@ export function renderAgentPageMarkdown(markdown: string): string {
 }
 
 /**
- * Where a page's leading doctype ends, with anything a parser skips before it
- * (a byte order mark, white space, comments); null when the page has none.
- * The doctype must stay first, or the page drops into quirks mode; everything
- * else goes after the wrapper. A scan, not a pattern: it reads each character
- * once, however the page repeats comment markers.
- */
-function leadingDoctypeEnd(content: string): number | null {
-  let index = content.startsWith("\uFEFF") ? 1 : 0;
-  for (;;) {
-    while (index < content.length && /\s/.test(content[index]!)) index += 1;
-    if (!content.startsWith("<!--", index)) break;
-    const commentEnd = content.indexOf("-->", index + 4);
-    if (commentEnd === -1) return null;
-    index = commentEnd + 3;
-  }
-  if (content.slice(index, index + 9).toLowerCase() !== "<!doctype") return null;
-  const end = content.indexOf(">", index + 9);
-  return end === -1 ? null : end + 1;
-}
-
-/**
  * The whole document a host puts into a page's frame: the content policy,
  * the theme and the bootstrap script first, then the page exactly as stored.
  *
@@ -159,8 +128,5 @@ export function buildAgentPageDocument(input: {
   if (input.kind === "markdown") {
     return `<!doctype html><html><head>${wrapper}</head><body>${renderAgentPageMarkdown(input.content)}</body></html>`;
   }
-  const doctypeEnd = leadingDoctypeEnd(input.content);
-  return doctypeEnd !== null
-    ? `${input.content.slice(0, doctypeEnd)}${wrapper}${input.content.slice(doctypeEnd)}`
-    : `<!doctype html>${wrapper}${input.content}`;
+  return wrapHtmlDocument(input.content, wrapper);
 }

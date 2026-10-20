@@ -4774,6 +4774,63 @@ describe("deriveTimelineEntries", () => {
     expect(entries.map((entry) => entry.kind)).toEqual(["message", "workflow-run", "message"]);
   });
 
+  it("shows an MCP tool's app as a card right under the step that ran it", () => {
+    const work = deriveWorkLogEntries([
+      makeActivity({
+        id: "app-call-started",
+        eventSequence: 2,
+        kind: "tool.started",
+        summary: "MCP tool call",
+        tone: "tool",
+        payload: { itemType: "mcp_tool_call", toolCallId: "call-app", status: "inProgress" },
+      }),
+      makeActivity({
+        id: "app-call-done",
+        eventSequence: 3,
+        kind: "tool.completed",
+        summary: "MCP tool call",
+        tone: "tool",
+        payload: {
+          itemType: "mcp_tool_call",
+          toolCallId: "call-app",
+          status: "completed",
+          mcpApp: {
+            server: "probe-apps",
+            tool: "show_counter",
+            resourceUri: "ui://probe-apps/counter.html",
+          },
+        },
+      }),
+    ]);
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("ask"),
+          role: "user",
+          text: "Count",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          streaming: false,
+          eventSequence: 1,
+        },
+        {
+          id: MessageId.make("reply"),
+          role: "assistant",
+          text: "Here it is",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          streaming: false,
+          eventSequence: 4,
+        },
+      ],
+      [],
+      work,
+    );
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "work", "mcp-app", "message"]);
+    expect(entries[2]).toMatchObject({
+      kind: "mcp-app",
+      app: { toolCallId: "call-app", ref: { tool: "show_counter" } },
+    });
+  });
+
   it("keeps messages, plans, and collapsed tools in event order when the clock moves backward", () => {
     const before = "2026-02-23T00:10:00.000Z";
     const after = "2026-02-23T00:05:00.000Z";

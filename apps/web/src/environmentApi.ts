@@ -57,6 +57,10 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       readOutput: rpcClient.server.readBackgroundRunOutput,
       readCommandOutput: rpcClient.server.readCommandOutput,
     },
+    mcpApps: {
+      load: rpcClient.server.loadMcpApp,
+      callTool: rpcClient.server.callMcpAppTool,
+    },
     providers: {
       getExtensions: rpcClient.server.getProviderExtensions,
       startExtensionMcpOAuth: rpcClient.server.startProviderExtensionMcpOAuth,

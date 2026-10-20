@@ -1,10 +1,12 @@
 import * as Equal from "effect/Equal";
 import { estimateWorkflowRunCardHeight } from "./workflowRunView";
+import { MCP_APP_CARD_ESTIMATED_PX } from "./mcpAppClient";
 import {
   formatAwaitedTasks,
   formatSoleAwaitedWorkflow,
   type ModelFallbackState,
   type ForkContextEntry,
+  type McpAppEntry,
   type SubagentResultEntry,
   type TimelineEntry,
   type WorkLogEntry,
@@ -207,6 +209,13 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         id: string;
         createdAt: string;
         run: OrchestrationWorkflowRun;
+      }
+    | {
+        /** An MCP app, under the step whose tool shipped it (McpAppCard). */
+        kind: "mcp-app";
+        id: string;
+        createdAt: string;
+        app: McpAppEntry;
       }
     | {
         kind: "fork-context";
@@ -603,6 +612,17 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (timelineEntry.kind === "mcp-app") {
+      nextRows.push({
+        ...UNPLACED,
+        kind: "mcp-app",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        app: timelineEntry.app,
+      });
+      continue;
+    }
+
     // A running agent's streamed commentary never reaches the conversation:
     // the turn's activity row summarizes what is running, and the rail carries
     // the detail. Filtered with the agent-attributed entries above; this arm
@@ -903,6 +923,7 @@ function isAgentRow(row: MessagesTimelineRow): boolean {
     row.kind === "work" ||
     row.kind === "subagent-result" ||
     row.kind === "workflow-run" ||
+    row.kind === "mcp-app" ||
     row.kind === "working" ||
     (row.kind === "message" && row.message.role === "assistant")
   );
@@ -1018,9 +1039,11 @@ function placeAgentLines(
           ? (row.result.turnId ?? null)
           : row.kind === "workflow-run"
             ? row.run.turnId
-            : row.kind === "page"
-              ? row.page.turnId
-              : null;
+            : row.kind === "mcp-app"
+              ? row.app.turnId
+              : row.kind === "page"
+                ? row.page.turnId
+                : null;
   // The agent whose own row this is; undefined for rows that are not one
   // agent's own work (your messages, side exchanges, plans). A page is the
   // agent's that showed it. A turn no message names yet is the working
@@ -1980,6 +2003,8 @@ function timelineRowTurnId(row: MessagesTimelineRow): TurnId | null | undefined 
       return row.result.turnId;
     case "workflow-run":
       return row.run.turnId;
+    case "mcp-app":
+      return row.app.turnId;
     default:
       return null;
   }
@@ -1997,6 +2022,9 @@ function concreteTimelineEntryTurnId(entry: TimelineEntry): TurnId | null | unde
   }
   if (entry.kind === "workflow-run") {
     return entry.run.turnId;
+  }
+  if (entry.kind === "mcp-app") {
+    return entry.app.turnId;
   }
   return undefined;
 }
@@ -2100,6 +2128,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "workflow-run":
       return a.run === (b as typeof a).run;
+
+    case "mcp-app":
+      return a.app.toolCallId === (b as typeof a).app.toolCallId;
 
     case "fork-context":
       return a.forkContext === (b as typeof a).forkContext;
@@ -2329,6 +2360,9 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return 40;
     case "workflow-run":
       return estimateWorkflowRunCardHeight(row.run);
+    case "mcp-app":
+      // Its title line and the app at its starting height (McpAppCard).
+      return MCP_APP_CARD_ESTIMATED_PX;
     case "fork-context":
       return 90;
     case "proposed-plan":

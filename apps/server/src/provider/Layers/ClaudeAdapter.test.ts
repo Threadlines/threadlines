@@ -220,6 +220,20 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     return { output, total_bytes: Buffer.byteLength(output), truncated: false };
   };
 
+  /** What `mcpServerStatus()` answers, as a test sets it. */
+  public mcpStatus: unknown = [];
+  public readonly mcpCalls: Array<unknown> = [];
+
+  readonly mcpServerStatus = async (): Promise<unknown> => this.mcpStatus;
+
+  readonly request = async (request: unknown): Promise<unknown> => {
+    this.mcpCalls.push(request);
+    return {
+      subtype: "success",
+      response: { content: '{"count":4}', structuredContent: { count: 4 } },
+    };
+  };
+
   readonly backgroundTasks = async (toolUseId?: string): Promise<boolean> => {
     this.backgroundTasksCalls.push(toolUseId);
     return true;
@@ -1927,6 +1941,100 @@ describe("ClaudeAdapterLive", () => {
             : null,
           [0, ["job-1"]],
         );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "gives a finished MCP call whose tool ships an app its app, and runs the app's calls",
+    () => {
+      const harness = makeHarness();
+      const sdkSession = "sdk-session-mcp-app";
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "Count", attachments: [] });
+        harness.query.mcpStatus = [
+          {
+            name: "probe apps",
+            status: "connected",
+            tools: [
+              { name: "show_counter", _meta: { ui: { resourceUri: "ui://probe/counter.html" } } },
+              { name: "bump", _meta: { ui: { visibility: ["app"] } } },
+            ],
+          },
+        ];
+        const completed = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) => event.type === "item.completed" && event.itemId === "toolu_app",
+        ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+
+        harness.query.emit({
+          type: "stream_event",
+          session_id: sdkSession,
+          uuid: "mcp-app-tool-use",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "toolu_app",
+              // Claude writes the server's name with "_" for anything but letters,
+              // digits, "_" and "-".
+              name: "mcp__probe_apps__show_counter",
+              input: { start: 3 },
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "user",
+          session_id: sdkSession,
+          uuid: "mcp-app-result",
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "toolu_app", content: '{"count":3}' }],
+          },
+          tool_use_result: { content: '{"count":3}', structuredContent: { count: 3 } },
+        } as unknown as SDKMessage);
+
+        const [event] = yield* Fiber.join(completed);
+        assert.deepEqual(event?.type === "item.completed" ? event.payload.mcpApp : null, {
+          server: "probe apps",
+          tool: "show_counter",
+          resourceUri: "ui://probe/counter.html",
+          arguments: { start: 3 },
+          result: {
+            content: [{ type: "text", text: '{"count":3}' }],
+            structuredContent: { count: 3 },
+          },
+        });
+
+        // The app's own call goes to the same server, under Claude's name for it.
+        assert.deepEqual(
+          yield* adapter.readMcpToolUi!(session.threadId, { server: "probe apps", tool: "bump" }),
+          {
+            resourceUri: null,
+            visibility: ["app"],
+          },
+        );
+        const result = yield* adapter.callMcpTool!(session.threadId, {
+          server: "probe apps",
+          tool: "bump",
+          arguments: {},
+        });
+        assert.deepEqual(harness.query.mcpCalls, [
+          { subtype: "mcp_call", tool: "mcp__probe_apps__bump", arguments: {} },
+        ]);
+        assert.deepEqual(result.structuredContent, { count: 4 });
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),

@@ -344,6 +344,24 @@ export interface CodexSessionRuntimeShape {
   readonly realtimeListVoices: Effect.Effect<ProviderRealtimeVoicesList, CodexSessionRuntimeError>;
   readonly compactContext: Effect.Effect<void, CodexSessionRuntimeError>;
   /**
+   * MCP Apps (docs/mcp-apps.md), through this thread's MCP servers with no
+   * model turn: a server's `ui://` resource, a tool call (no approval prompt;
+   * the caller has decided it may run), and one server's tools as it
+   * declares them now.
+   */
+  readonly readMcpResource: (input: {
+    readonly server: string;
+    readonly uri: string;
+  }) => Effect.Effect<EffectCodexSchema.V2McpResourceReadResponse, CodexSessionRuntimeError>;
+  readonly callMcpTool: (input: {
+    readonly server: string;
+    readonly tool: string;
+    readonly arguments: EffectCodexSchema.V2McpServerToolCallParams["arguments"];
+  }) => Effect.Effect<EffectCodexSchema.V2McpServerToolCallResponse, CodexSessionRuntimeError>;
+  readonly listMcpServerTools: (
+    server: string,
+  ) => Effect.Effect<EffectCodexSchema.V2ListMcpServerStatusResponse, CodexSessionRuntimeError>;
+  /**
    * Have this runtime's own auth manager refresh the sign-in (managed auth:
    * it rewrites `auth.json` and serializes against its own refreshes). A
    * room's side answer borrows the renewed token.
@@ -3065,6 +3083,43 @@ export const makeCodexSessionRuntime = (
           }),
         );
       }),
+      readMcpResource: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          return yield* withCodexRequestTimeout(
+            "read an MCP app view",
+            client.request("mcpServer/resource/read", {
+              threadId: providerThreadId,
+              server: input.server,
+              uri: input.uri,
+            }),
+          );
+        }),
+      callMcpTool: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          return yield* withCodexRequestTimeout(
+            "run an MCP app's tool call",
+            client.request("mcpServer/tool/call", {
+              threadId: providerThreadId,
+              server: input.server,
+              tool: input.tool,
+              ...(input.arguments !== undefined ? { arguments: input.arguments } : {}),
+            }),
+          );
+        }),
+      listMcpServerTools: (server) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          return yield* withCodexRequestTimeout(
+            "list an MCP server's tools",
+            client.request("mcpServerStatus/list", {
+              threadId: providerThreadId,
+              serverName: server,
+              detail: "toolsAndAuthOnly",
+            }),
+          );
+        }),
       setGoal: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;

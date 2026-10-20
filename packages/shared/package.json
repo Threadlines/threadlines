@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./mcpApps": {
+      "types": "./src/mcpApps.ts",
+      "import": "./src/mcpApps.ts"
+    },
+    "./mcpAppDocument": {
+      "types": "./src/mcpAppDocument.ts",
+      "import": "./src/mcpAppDocument.ts"
+    },
     "./mcpElicitation": {
       "types": "./src/mcpElicitation.ts",
       "import": "./src/mcpElicitation.ts"

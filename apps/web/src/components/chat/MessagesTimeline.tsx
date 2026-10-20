@@ -66,6 +66,7 @@ import {
   isScrollMetricsAtEnd,
 } from "../ChatView.logic";
 import { AGENT_PAGE_TITLE_MIDDLE_PX, AgentPageRow } from "./AgentPageRow";
+import { McpAppCard } from "./McpAppCard";
 import {
   CodeBlockRunScopeContext,
   CommandOutputMessage,
@@ -275,6 +276,8 @@ interface TimelineRowSharedState {
   onStopSideAnswer?: ((sideTurnId: SideTurnId) => void) | undefined;
   /** Cancels an agent's check-backs (ChatView.cancelCheckBack). */
   onCancelCheckBack?: ((checkBack: OrchestrationCheckBack) => void) | undefined;
+  /** Puts a message an MCP app asked to send into the composer. */
+  onPutMcpAppMessage?: ((text: string) => void) | undefined;
   /** Opens or closes a side answer's one-line status to watch it written. */
   onToggleSideAnswer: (sideTurnId: SideTurnId) => void;
   /** Scrolls to a message: a side answer posted below, or its question. */
@@ -760,6 +763,8 @@ interface MessagesTimelineProps {
   /** Times the thread's agents set themselves to come back (Thread.checkBacks). */
   checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
   onCancelCheckBack?: ((checkBack: OrchestrationCheckBack) => void) | undefined;
+  /** Puts a message an MCP app card asked to send into the composer. */
+  onPutMcpAppMessage?: ((text: string) => void) | undefined;
   activeStatusLabel?: string | undefined;
   activeTurnInProgress: boolean;
   activeTurnId?: TurnId | null;
@@ -856,6 +861,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   awaitedTasks = null,
   checkBacks,
   onCancelCheckBack,
+  onPutMcpAppMessage,
   activeStatusLabel,
   activeTurnInProgress,
   activeTurnId,
@@ -1928,6 +1934,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workflowRunActions,
       onOpenThread,
       onCancelCheckBack,
+      onPutMcpAppMessage,
       threadStartCallsByTurn,
       anchorOwnsLiveAgents,
     }),
@@ -1973,6 +1980,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workflowRunActions,
       onOpenThread,
       onCancelCheckBack,
+      onPutMcpAppMessage,
       threadStartCallsByTurn,
       anchorOwnsLiveAgents,
     ],
@@ -2507,6 +2515,7 @@ function rowBottomPadding(row: TimelineRow): string {
     case "work":
     case "subagent-result":
     case "workflow-run":
+    case "mcp-app":
     case "working":
     case "page":
       return "pb-2";
@@ -2588,6 +2597,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       ) : null}
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
       {row.kind === "workflow-run" ? <WorkflowRunTimelineRow row={row} /> : null}
+      {row.kind === "mcp-app" ? <McpAppTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "check-back" ? <CheckBackTimelineRow row={row} /> : null}
       {row.kind === "side-status" ? <SideStatusTimelineRow row={row} /> : null}
@@ -3869,6 +3879,31 @@ function WorkflowRunTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "wo
         />
       ) : null}
       <WorkflowRunCard run={row.run} actions={ctx.workflowRunActions} />
+    </div>
+  );
+}
+
+/** An MCP app under the step whose tool shipped it (McpAppCard). */
+function McpAppTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mcp-app" }> }) {
+  const ctx = use(TimelineRowCtx);
+  if (ctx.activeThreadId === null) {
+    return null;
+  }
+  return (
+    <div className="min-w-0 px-1">
+      {row.agentLine?.heads ? (
+        <AgentAuthorLine
+          agent={row.agentLine.agent}
+          turnId={row.agentLine.turnId}
+          asWritten={row.agentLine.asWritten}
+        />
+      ) : null}
+      <McpAppCard
+        environmentId={ctx.activeThreadEnvironmentId}
+        threadId={ctx.activeThreadId}
+        app={row.app}
+        onPutMessage={ctx.onPutMcpAppMessage}
+      />
     </div>
   );
 }

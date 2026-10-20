@@ -72,6 +72,7 @@ import { OrchestrationEngineService } from "./orchestration/Services/Orchestrati
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
+import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import { ThreadBootstrap } from "./orchestration/Services/ThreadBootstrap.ts";
 import { ThreadSearch } from "./orchestration/Services/ThreadSearch.ts";
@@ -350,6 +351,7 @@ const makeWsRpcLayer = (currentSession: {
       const relayHost = yield* RelayHost;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const agentPages = yield* AgentPages;
+      const mcpApps = yield* McpApps;
       const commandRuns = yield* CommandRuns;
       const threadSearch = yield* ThreadSearch;
       const usage = yield* UsageService;
@@ -1454,6 +1456,14 @@ const makeWsRpcLayer = (currentSession: {
               .pipe(Effect.orElseSucceed(() => ({ status: "unavailable" }) as const)),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverLoadMcpApp]: (input) =>
+          observeRpcEffect(WS_METHODS.serverLoadMcpApp, mcpApps.load(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverCallMcpAppTool]: (input) =>
+          observeRpcEffect(WS_METHODS.serverCallMcpAppTool, mcpApps.callTool(input), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverReadWorkflowRunFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReadWorkflowRunFile,

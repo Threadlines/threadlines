@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import { McpAppCallRepository } from "../../persistence/Services/McpAppCalls.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -40,6 +41,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager;
+  const mcpAppCalls = yield* McpAppCallRepository;
 
   const deleteProviderThread = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     logCleanupCauseUnlessInterrupted({
@@ -55,12 +57,21 @@ const make = Effect.gen(function* () {
       threadId,
     });
 
+  // What its MCP app cards kept: the calls and the views their servers sent.
+  const forgetMcpAppCalls = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+    logCleanupCauseUnlessInterrupted({
+      effect: mcpAppCalls.deleteByThreadId(threadId),
+      message: "thread deletion cleanup skipped MCP app calls",
+      threadId,
+    });
+
   const processThreadDeleted = Effect.fn("processThreadDeleted")(function* (
     event: ThreadDeletedEvent,
   ) {
     const { threadId } = event.payload;
     yield* deleteProviderThread(threadId);
     yield* closeThreadTerminals(threadId);
+    yield* forgetMcpAppCalls(threadId);
   });
 
   const processThreadDeletedSafely = (event: ThreadDeletedEvent) =>

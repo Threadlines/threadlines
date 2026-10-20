@@ -3,6 +3,7 @@ import {
   EventId,
   isToolLifecycleItemType,
   TurnId,
+  type McpAppRef,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
   type ThreadTokenUsageSnapshot,
@@ -1173,6 +1174,17 @@ export function projectRuntimeEventToActivities(
                       ? COLLAB_AGENT_PAYLOAD_TEXT_LIMITS
                       : DEFAULT_PAYLOAD_TEXT_LIMITS,
                   ),
+                }
+              : {}),
+            // The app the call's tool ships; its card loads the rest by the
+            // call's id (docs/mcp-apps.md).
+            ...(event.payload.mcpApp && event.itemId
+              ? {
+                  mcpApp: {
+                    server: event.payload.mcpApp.server,
+                    tool: event.payload.mcpApp.tool,
+                    resourceUri: event.payload.mcpApp.resourceUri,
+                  } satisfies McpAppRef,
                 }
               : {}),
           },

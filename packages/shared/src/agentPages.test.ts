@@ -26,11 +26,24 @@ const policyIndex = (document: string) => document.indexOf('http-equiv="Content-
 
 describe("buildAgentPageDocument", () => {
   it("puts the content policy before everything the page says, keeping a doctype first", () => {
-    const page = "<!-- note --> <!DOCTYPE html><script>steal()</script><html><head></head></html>";
+    const page = " <!DOCTYPE html><script>steal()</script><html><head></head></html>";
     const document = buildAgentPageDocument({ content: page, kind: "html", theme });
-    expect(document.startsWith("<!-- note --> <!DOCTYPE html>")).toBe(true);
+    expect(document.startsWith(" <!DOCTYPE html>")).toBe(true);
     expect(policyIndex(document)).toBeGreaterThan(0);
     expect(policyIndex(document)).toBeLessThan(document.indexOf("steal()"));
+  });
+
+  it("puts the policy first when anything comes before the page's doctype", () => {
+    // "<!-->" is a whole comment to the browser, so the script after it runs;
+    // only a doctype that opens the page is kept ahead of the policy.
+    for (const page of [
+      "<!--><script>steal()</script><!-- --><!DOCTYPE html><p>x</p>",
+      "<!-- note --> <!DOCTYPE html><script>steal()</script>",
+    ]) {
+      const document = buildAgentPageDocument({ content: page, kind: "html", theme });
+      expect(document.startsWith("<!doctype html>")).toBe(true);
+      expect(policyIndex(document)).toBeLessThan(document.indexOf("steal()"));
+    }
   });
 
   it("reads a page that repeats comment markers in one pass", () => {

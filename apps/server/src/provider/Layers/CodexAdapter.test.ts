@@ -424,6 +424,15 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   compactContext = Effect.promise(() => this.compactContextImpl());
 
+  readMcpResource = () =>
+    Effect.succeed<EffectCodexSchema.V2McpResourceReadResponse>({ contents: [] });
+
+  callMcpTool = () =>
+    Effect.succeed<EffectCodexSchema.V2McpServerToolCallResponse>({ content: [] });
+
+  listMcpServerTools = () =>
+    Effect.succeed<EffectCodexSchema.V2ListMcpServerStatusResponse>({ data: [] });
+
   public readonly renewSignInImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
 
   renewSignIn = Effect.promise(() => this.renewSignInImpl());
@@ -1735,6 +1744,58 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       assert.equal(firstEvent.value.itemId, "msg_1");
       assert.equal(firstEvent.value.turnId, "turn-1");
       assert.equal(firstEvent.value.payload.itemType, "assistant_message");
+    }),
+  );
+
+  it.effect("gives a finished MCP call whose tool ships an app its app and full result", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-mcp-app-complete"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("mcp_1"),
+        payload: {
+          completedAtMs: 1_778_000_000_000,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            type: "mcpToolCall",
+            id: "mcp_1",
+            server: "probe-apps",
+            tool: "show_counter",
+            status: "completed",
+            arguments: { start: 3 },
+            mcpAppResourceUri: "ui://probe-apps/counter.html",
+            result: {
+              content: [{ type: "text", text: "Counter at 3" }],
+              structuredContent: { count: 3 },
+            },
+          },
+        },
+      });
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "item.completed") {
+        return;
+      }
+      assert.deepEqual(firstEvent.value.payload.mcpApp, {
+        server: "probe-apps",
+        tool: "show_counter",
+        resourceUri: "ui://probe-apps/counter.html",
+        arguments: { start: 3 },
+        result: {
+          content: [{ type: "text", text: "Counter at 3" }],
+          structuredContent: { count: 3 },
+        },
+      });
     }),
   );
 
