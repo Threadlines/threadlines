@@ -10,7 +10,8 @@ import type { SecureDuplex } from "./securePipe.ts";
  * Direct connections from "Connect a device" devices on the same network or
  * Tailscale. There is no HTTP sign-in: the end-to-end handshake with the key
  * pinned at pairing is the sign-in, and nothing reaches the app until it
- * succeeds. Unknown devices get a plain 404 without an upgrade, and the
+ * succeeds. Unknown devices get a plain 404 without an upgrade (410 for one
+ * this server removed), and the
  * number of connections still handshaking is capped overall and per address.
  */
 export const relayDirectRouteLayer = HttpRouter.add(
@@ -44,7 +45,13 @@ export const relayDirectRouteLayer = HttpRouter.add(
     };
 
     const handle = yield* relay.acceptDirect({ deviceId, duplex, admission });
-    if (!handle) return HttpServerResponse.empty({ status: 404 });
+    if (!handle) {
+      // A device this server removed hears so (410), so a linked computer
+      // can mark its link removed instead of retrying a wrong address.
+      return HttpServerResponse.empty({
+        status: (yield* relay.isRevokedDevice(deviceId)) ? 410 : 404,
+      });
+    }
 
     const socket = yield* request.upgrade.pipe(
       Effect.tapError(() => Effect.sync(() => handle.close("Upgrade failed."))),

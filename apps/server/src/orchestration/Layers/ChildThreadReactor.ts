@@ -27,6 +27,7 @@ import { childReportMessageId, clampLaunchToCeiling } from "../childThreadDecisi
 import {
   childDeliveryAfterRestart,
   childDeliveryForQuietCandidate,
+  finishedTurnAfterRestart,
   isQuietCandidate,
 } from "../childThreadDelivery.ts";
 import {
@@ -141,7 +142,13 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         const parent = yield* readThread(parentId);
         const request = parent?.childRequests.open.find((entry) => entry.requestId === requestId);
-        if (parent === undefined || request === undefined || request.status !== "starting") {
+        // A child on a linked computer is set up there (RemoteChildReactor).
+        if (
+          parent === undefined ||
+          request === undefined ||
+          request.status !== "starting" ||
+          request.remote !== undefined
+        ) {
           return;
         }
         const launch = request.launch;
@@ -155,8 +162,11 @@ export const makeChildThreadReactor = Effect.gen(function* () {
         }
         const exit = yield* Effect.exit(
           bootstrap.startChild({
-            parentThreadId: parent.id,
-            parentTurnId: request.callerTurnId,
+            lineage: {
+              kind: "local",
+              parentThreadId: parent.id,
+              parentTurnId: request.callerTurnId,
+            },
             projectId: parent.projectId,
             requestId,
             childThreadId: request.childThreadId,
@@ -203,7 +213,9 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       }
       const parent = yield* readThread(child.parentThreadId);
       const owed =
-        parent?.childRequests.open.filter((entry) => entry.childThreadId === childId) ?? [];
+        parent?.childRequests.open.filter(
+          (entry) => entry.childThreadId === childId && entry.remote === undefined,
+        ) ?? [];
       if (parent === undefined || owed.length === 0) {
         return;
       }
@@ -328,6 +340,11 @@ export const makeChildThreadReactor = Effect.gen(function* () {
           }
           continue;
         }
+        // Requests to linked computers are RemoteChildReactor's: their child
+        // isn't here, and a missing local child means nothing for them.
+        if (request.remote !== undefined) {
+          continue;
+        }
         if (request.status === "starting") {
           yield* setUpChild(parent.id, request.requestId).pipe(Effect.forkDetach);
           continue;
@@ -343,31 +360,7 @@ export const makeChildThreadReactor = Effect.gen(function* () {
         const childTurns = yield* turns
           .listByThreadId({ threadId: child.id })
           .pipe(Effect.orElseSucceed(() => [] as const));
-        // The turn that durably finished the answer, if one did: the turn the
-        // request's message started, or for an answer waiting on background
-        // work, the latest follow-up that work started on its own.
-        const candidateEnded =
-          childTurns.find((entry) => entry.turnId === request.candidateTurnId)?.completedAt ?? "";
-        const finishedTurn =
-          request.status === "running"
-            ? childTurns.find(
-                (turn) =>
-                  turn.pendingMessageId === request.childMessageId && turn.state === "completed",
-              )
-            : request.status === "awaiting_background"
-              ? childTurns
-                  .filter(
-                    (turn) =>
-                      turn.state === "completed" &&
-                      turn.pendingMessageId === null &&
-                      turn.turnId !== null &&
-                      turn.turnId !== request.candidateTurnId &&
-                      turn.requestedAt >= candidateEnded,
-                  )
-                  .toSorted((left, right) => left.requestedAt.localeCompare(right.requestedAt))
-                  .at(-1)
-              : undefined;
-        const finishedTurnId = finishedTurn?.turnId ?? null;
+        const finishedTurnId = finishedTurnAfterRestart(childTurns, request);
         const delivery = childDeliveryAfterRestart(child, request, finishedTurnId);
         yield* dispatch(
           { ...delivery, threadId: parent.id, createdAt: yield* nowIso },

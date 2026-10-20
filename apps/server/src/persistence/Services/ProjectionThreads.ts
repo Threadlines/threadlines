@@ -28,6 +28,7 @@ import {
   TurnId,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  ThreadRemoteOrigin,
 } from "@threadlines/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -139,6 +140,8 @@ export const ProjectionThread = Schema.Struct({
   handedBackAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   handedBackTurnId: Schema.optional(Schema.NullOr(TurnId)),
   archivedWithParentAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** See `OrchestrationThread.remoteOrigin`. Absent or null reads as none. */
+  remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
   /** On a parent: see `OrchestrationThread.childRequests`. Absent or null reads as none. */
   childRequests: Schema.optional(Schema.NullOr(OrchestrationChildRequestState)),
   /**

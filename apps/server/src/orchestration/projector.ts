@@ -83,6 +83,9 @@ import {
   ThreadChildRequestUpdatedPayload,
   ThreadChildRequestsResetPayload,
   ThreadHandedBackPayload,
+  ThreadRemoteCancelQueuedPayload,
+  ThreadRemoteCancelsDeliveredPayload,
+  ThreadRemoteChildUpdatedPayload,
   ThreadParentAttachmentSetPayload,
   ThreadSideTurnInterruptRequestedPayload,
   ThreadSideTurnRunningPayload,
@@ -375,6 +378,7 @@ export function projectEvent(
             parentThreadId: payload.parentThreadId ?? null,
             parentTurnId: payload.parentTurnId ?? null,
             attachedToParent: payload.attachedToParent ?? false,
+            ...(payload.remoteOrigin !== undefined ? { remoteOrigin: payload.remoteOrigin } : {}),
             voiceActive: false,
             latestTurn: null,
             createdAt: payload.createdAt,
@@ -873,6 +877,48 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) =>
           updateChildRequests(nextBase, payload.threadId, childRequestStateOn.reset),
+        ),
+      );
+
+    case "thread.remote-child-updated":
+      return decodeForEvent(
+        ThreadRemoteChildUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.remoteChildUpdated(state, payload.child),
+          ),
+        ),
+      );
+
+    case "thread.remote-cancel-queued":
+      return decodeForEvent(
+        ThreadRemoteCancelQueuedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.remoteCancelQueued(state, payload.cancel),
+          ),
+        ),
+      );
+
+    case "thread.remote-cancels-delivered":
+      return decodeForEvent(
+        ThreadRemoteCancelsDeliveredPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.remoteCancelsDelivered(state, payload.requestIds),
+          ),
         ),
       );
 

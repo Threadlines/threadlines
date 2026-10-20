@@ -19,7 +19,7 @@ export type AuthSessionClientMetadataRecord = typeof AuthSessionClientMetadataRe
 export const AuthSessionRecord = Schema.Struct({
   sessionId: AuthSessionId,
   subject: Schema.String,
-  role: Schema.Literals(["owner", "client"]),
+  role: Schema.Literals(["owner", "client", "peer"]),
   method: Schema.Literals(["browser-session-cookie", "bearer-session-token"]),
   client: AuthSessionClientMetadataRecord,
   issuedAt: Schema.DateTimeUtcFromString,
@@ -32,7 +32,7 @@ export type AuthSessionRecord = typeof AuthSessionRecord.Type;
 export const CreateAuthSessionInput = Schema.Struct({
   sessionId: AuthSessionId,
   subject: Schema.String,
-  role: Schema.Literals(["owner", "client"]),
+  role: Schema.Literals(["owner", "client", "peer"]),
   method: Schema.Literals(["browser-session-cookie", "bearer-session-token"]),
   client: AuthSessionClientMetadataRecord,
   issuedAt: Schema.DateTimeUtcFromString,

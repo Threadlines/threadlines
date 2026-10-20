@@ -25,6 +25,7 @@ import {
   OrchestrationSideTurn,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  ThreadRemoteOrigin,
 } from "@threadlines/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
@@ -40,6 +41,7 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     sideTurn: Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn)),
     agentRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationAgentRequestState)),
     childRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
+    remoteOrigin: Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin)),
     roomContext: Schema.fromJsonString(
       Schema.Record(Schema.String, OrchestrationRoomContextCursor),
     ),
@@ -93,6 +95,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id,
           archived_with_parent_at,
           child_requests,
+          remote_origin_json,
           done_override,
           done_override_at,
           last_seen_at,
@@ -141,6 +144,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.handedBackTurnId ?? null},
           ${row.archivedWithParentAt ?? null},
           ${row.childRequests ? JSON.stringify(row.childRequests) : null},
+          ${row.remoteOrigin ? JSON.stringify(row.remoteOrigin) : null},
           ${row.doneOverride ?? null},
           ${row.doneOverrideAt ?? null},
           ${row.lastSeenAt ?? null},
@@ -189,6 +193,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id = excluded.handed_back_turn_id,
           archived_with_parent_at = excluded.archived_with_parent_at,
           child_requests = excluded.child_requests,
+          remote_origin_json = excluded.remote_origin_json,
           done_override = excluded.done_override,
           done_override_at = excluded.done_override_at,
           last_seen_at = excluded.last_seen_at,
@@ -244,6 +249,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -301,6 +307,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",

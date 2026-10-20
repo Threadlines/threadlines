@@ -26,6 +26,7 @@ import type {
   ProjectId,
   ThreadId,
   ThreadMessageOrigin,
+  ThreadRemoteOrigin,
   TurnId,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
@@ -57,11 +58,23 @@ export class ChildBootstrapError extends Schema.TaggedError<ChildBootstrapError>
   }
 }
 
+/**
+ * Where a child comes from: a thread on this computer (it joins that family,
+ * or starts separated when it reports nothing back), or a thread on a linked
+ * computer (docs/design/fleet.md), recorded as its remote origin.
+ */
+export type ChildBootstrapLineage =
+  | {
+      readonly kind: "local";
+      readonly parentThreadId: ThreadId;
+      /** The parent's turn whose agent started it. */
+      readonly parentTurnId: TurnId;
+    }
+  | { readonly kind: "remote"; readonly remoteOrigin: ThreadRemoteOrigin };
+
 /** Everything a child's setup needs, all of it saved with its request. */
 export interface ChildBootstrapInput {
-  readonly parentThreadId: ThreadId;
-  /** The parent's turn whose agent started it. */
-  readonly parentTurnId: TurnId;
+  readonly lineage: ChildBootstrapLineage;
   readonly projectId: ProjectId;
   readonly requestId: ChildRequestId;
   readonly childThreadId: ThreadId;
@@ -72,6 +85,11 @@ export interface ChildBootstrapInput {
   readonly fromThread: ThreadMessageOrigin;
   /** When the request was made; the child is created with this stamp. */
   readonly createdAt: IsoDateTime;
+  /**
+   * Asked before each stage: false stops the setup there (a request
+   * cancelled meanwhile, docs/design/fleet.md rev 3). Absent: always go on.
+   */
+  readonly checkpoint?: (stage: ChildBootstrapStage) => Effect.Effect<boolean>;
 }
 
 export interface ThreadBootstrapShape {

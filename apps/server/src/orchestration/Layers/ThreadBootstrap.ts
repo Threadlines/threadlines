@@ -477,9 +477,13 @@ const make = Effect.gen(function* () {
           interactionMode: launch.interactionMode,
           branch: null,
           worktreePath: null,
-          parentThreadId: input.parentThreadId,
-          parentTurnId: input.parentTurnId,
-          attachedToParent: launch.reportBack,
+          ...(input.lineage.kind === "local"
+            ? {
+                parentThreadId: input.lineage.parentThreadId,
+                parentTurnId: input.lineage.parentTurnId,
+                attachedToParent: launch.reportBack,
+              }
+            : { remoteOrigin: input.lineage.remoteOrigin }),
           createdAt: input.createdAt,
         })
         .pipe(Effect.mapError(stageError("create")));
@@ -699,9 +703,28 @@ const make = Effect.gen(function* () {
           detail: turnReceipt.value.error ?? "it was refused earlier.",
         });
       }
+      const proceed = (stage: ChildBootstrapStage) =>
+        input.checkpoint === undefined
+          ? Effect.void
+          : input.checkpoint(stage).pipe(
+              Effect.flatMap((go) =>
+                go
+                  ? Effect.void
+                  : Effect.fail(
+                      new ChildBootstrapError({
+                        stage,
+                        detail: `${STAGE_FAILURE[stage]}: it was cancelled.`,
+                      }),
+                    ),
+              ),
+            );
+      yield* proceed("create");
       const created = yield* narrowChildModes(input, yield* ensureChildThread(input));
+      yield* proceed("worktree");
       const placed = yield* ensureChildWorktree(input, created);
+      yield* proceed("setup");
       yield* ensureChildSetup(input, placed);
+      yield* proceed("turn");
       return yield* startChildTurn(input);
     });
 

@@ -12,7 +12,10 @@ import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
-export type SessionRole = "owner" | "client";
+/** `peer`: another computer's server, linked to this one (docs/design/fleet.md). */
+export type SessionRole = "owner" | "client" | "peer";
+/** The roles a client app's session (and so a pairing credential) can have. */
+export type ClientSessionRole = Exclude<SessionRole, "peer">;
 
 export interface IssuedSession {
   readonly sessionId: AuthSessionId;

@@ -55,6 +55,16 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * buttons.
    */
   commandRuns: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server links to other computers' servers and runs agents' threads on
+   * them (`links.*`, docs/design/fleet.md). Older servers omit it; clients
+   * then hide link UI for them.
+   */
+  computerLinks: Schema.optionalKey(Schema.Boolean),
+  /** The server runs scheduled tasks. Absent until a server ships them. */
+  scheduledTasks: Schema.optionalKey(Schema.Boolean),
+  /** The server moves threads to linked computers. Absent until a server ships it. */
+  threadMove: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

@@ -2994,6 +2994,22 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.child-requests-reset":
       return updateChildRequestState(state, event.payload.threadId, childRequestStateOn.reset);
 
+    // Children on linked computers (docs/design/fleet.md), kept on the parent.
+    case "thread.remote-child-updated":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.remoteChildUpdated(current, event.payload.child),
+      );
+
+    case "thread.remote-cancel-queued":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.remoteCancelQueued(current, event.payload.cancel),
+      );
+
+    case "thread.remote-cancels-delivered":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.remoteCancelsDelivered(current, event.payload.requestIds),
+      );
+
     // On a child. Like a done mark, neither moves `updatedAt`: the inbox
     // weighs both against real activity.
     case "thread.handed-back":

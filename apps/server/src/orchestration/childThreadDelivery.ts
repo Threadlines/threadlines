@@ -4,7 +4,9 @@
  * ingestion calls it once a child's turn has ended and its words are final,
  * the reactor once a child that was finishing background work goes quiet,
  * and startup for whatever a restart cut off. Each returns the command to
- * dispatch, or null when the turn answers nothing.
+ * dispatch, or null when the turn answers nothing. The same rules decide a
+ * child's answers to a parent on a linked computer (LinkRequests), whose
+ * requests live in a ledger rather than on a parent here.
  */
 import {
   type ChildRequestOutcome,
@@ -16,6 +18,12 @@ import {
 } from "@threadlines/contracts";
 
 import { childReportMessageId, childReportText } from "./childThreadDecisions.ts";
+
+/** What the delivery rules read of a request, wherever it is kept. */
+export type ChildDeliveryRequest = Pick<
+  OrchestrationChildRequest,
+  "requestId" | "status" | "childMessageId" | "candidateTurnId"
+>;
 
 /** How a child's turn ended. */
 export interface ChildTurnEnd {
@@ -62,7 +70,7 @@ const settleCommandId = (requestId: OrchestrationChildRequest["requestId"]) =>
   CommandId.make(`server:child-request:${requestId}:settle`);
 
 function settle(
-  request: OrchestrationChildRequest,
+  request: ChildDeliveryRequest,
   outcome: ChildRequestOutcome,
   text: string,
   turnId: TurnId | null,
@@ -81,7 +89,7 @@ function settle(
 /** What the child had said so far, for an answer cut short. */
 const partialAnswer = (
   child: Pick<OrchestrationThread, "messages">,
-  request: OrchestrationChildRequest,
+  request: ChildDeliveryRequest,
 ) => {
   const candidate =
     request.candidateTurnId === undefined
@@ -100,7 +108,8 @@ const partialAnswer = (
  * this turn as the answer so far).
  */
 export function childDeliveryForTurnEnd(input: {
-  readonly parent: OrchestrationThread;
+  /** The child's open requests: on its parent here, or in the link ledger. */
+  readonly owned: ReadonlyArray<ChildDeliveryRequest>;
   readonly child: OrchestrationThread;
   readonly end: ChildTurnEnd;
   /** The message that started the ended turn, if any. */
@@ -108,12 +117,11 @@ export function childDeliveryForTurnEnd(input: {
   /** The child's background work it still waits on, as of the turn's end. */
   readonly awaitedBackgroundTaskCount: number;
 }): ChildDelivery | null {
-  const { parent, child, end } = input;
+  const { owned, child, end } = input;
   // The request whose own message started this turn comes first. Only a turn
   // no message started (the follow-up a child's background work starts on
   // its own) continues a request waiting on that work; a turn the parent or
   // the user started answers its own message, never an older request.
-  const owned = parent.childRequests.open.filter((entry) => entry.childThreadId === child.id);
   const request =
     owned.find(
       (entry) => entry.status === "running" && entry.childMessageId === input.pendingMessageId,
@@ -172,7 +180,7 @@ export function childDeliveryForTurnEnd(input: {
  */
 export function childDeliveryForQuietCandidate(
   child: OrchestrationThread,
-  request: OrchestrationChildRequest,
+  request: ChildDeliveryRequest,
 ): ChildDelivery | null {
   if (request.status !== "awaiting_background" || request.candidateTurnId === undefined) {
     return null;
@@ -191,7 +199,7 @@ export function childDeliveryForQuietCandidate(
  */
 export function isQuietCandidate(
   child: OrchestrationThread,
-  request: OrchestrationChildRequest,
+  request: ChildDeliveryRequest,
 ): boolean {
   const session = child.session;
   return (
@@ -209,13 +217,51 @@ export function isQuietCandidate(
 }
 
 /**
+ * The turn that durably finished a request's answer before a restart, if one
+ * did: the turn its message started, or, for an answer waiting on background
+ * work, the latest follow-up that work started on its own.
+ */
+export function finishedTurnAfterRestart(
+  childTurns: ReadonlyArray<{
+    readonly turnId: TurnId | null;
+    readonly pendingMessageId: MessageId | null;
+    readonly state: string;
+    readonly requestedAt: string;
+    readonly completedAt: string | null;
+  }>,
+  request: ChildDeliveryRequest,
+): TurnId | null {
+  const candidateEnded =
+    childTurns.find((entry) => entry.turnId === request.candidateTurnId)?.completedAt ?? "";
+  const finishedTurn =
+    request.status === "running"
+      ? childTurns.find(
+          (turn) => turn.pendingMessageId === request.childMessageId && turn.state === "completed",
+        )
+      : request.status === "awaiting_background"
+        ? childTurns
+            .filter(
+              (turn) =>
+                turn.state === "completed" &&
+                turn.pendingMessageId === null &&
+                turn.turnId !== null &&
+                turn.turnId !== request.candidateTurnId &&
+                turn.requestedAt >= candidateEnded,
+            )
+            .toSorted((left, right) => left.requestedAt.localeCompare(right.requestedAt))
+            .at(-1)
+        : undefined;
+  return finishedTurn?.turnId ?? null;
+}
+
+/**
  * A request a server restart cut off: an answer that durably finished is
  * delivered; anything else is reported as interrupted, with what the child had
  * said so far, so the agent that asked can send it a message to continue.
  */
 export function childDeliveryAfterRestart(
   child: OrchestrationThread,
-  request: OrchestrationChildRequest,
+  request: ChildDeliveryRequest,
   finishedTurnId: TurnId | null,
 ): ChildDelivery {
   if (finishedTurnId !== null) {

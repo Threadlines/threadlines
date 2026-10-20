@@ -39,7 +39,8 @@ export interface ServerPairingLinkRecord {
 export interface ServerClientSessionRecord {
   readonly sessionId: AuthSessionId;
   readonly subject: string;
-  readonly role: "owner" | "client";
+  /** `peer`: another computer's server linked to this one (docs/design/fleet.md). */
+  readonly role: "owner" | "client" | "peer";
   readonly method: "browser-session-cookie" | "bearer-session-token";
   readonly client: AuthClientMetadata;
   readonly issuedAt: string;

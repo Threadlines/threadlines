@@ -67,6 +67,7 @@ import {
 } from "./ProviderActivityProjection.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { childDeliveryForTurnEnd } from "../childThreadDelivery.ts";
+import { RemoteRequestTurnEnds } from "../Services/RemoteRequestTurnEnds.ts";
 import {
   carriedBackgroundTasks,
   NO_BACKGROUND_TASKS,
@@ -1246,6 +1247,8 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  // Computer links, when this server has them: see RemoteRequestTurnEnds.
+  const remoteRequestTurnEnds = yield* Effect.serviceOption(RemoteRequestTurnEnds);
   const serverSettingsService = yield* ServerSettingsService;
   const agentPages = yield* AgentPages;
   const mcpApps = yield* McpApps;
@@ -2769,15 +2772,40 @@ const make = Effect.gen(function* () {
     readonly createdAt: string;
   }) {
     const child = yield* resolveThreadDetail(input.threadId);
-    if (child === undefined || child === null || child.parentThreadId === null) {
+    if (child === undefined || child === null) {
+      return;
+    }
+    // A thread a linked computer's agent started here answers through the
+    // link ledger (docs/design/fleet.md, "Records on B"), by the same rules.
+    if ((child.remoteOrigin ?? null) !== null) {
+      if (Option.isSome(remoteRequestTurnEnds)) {
+        const turn = yield* projectionTurnRepository
+          .getByTurnId({ threadId: input.threadId, turnId: input.turnId })
+          .pipe(
+            Effect.map(Option.getOrUndefined),
+            Effect.orElseSucceed(() => undefined),
+          );
+        yield* remoteRequestTurnEnds.value.onTurnEnd({
+          child,
+          end: { turnId: input.turnId, outcome: input.outcome, error: input.error },
+          pendingMessageId: turn?.pendingMessageId ?? null,
+          createdAt: input.createdAt,
+        });
+      }
+      return;
+    }
+    if (child.parentThreadId === null) {
       return;
     }
     const parent = yield* resolveThreadDetail(child.parentThreadId);
-    if (
-      parent === undefined ||
-      parent === null ||
-      !parent.childRequests.open.some((request) => request.childThreadId === child.id)
-    ) {
+    // Requests to a child on a linked computer are RemoteChildReactor's.
+    const owned =
+      parent === undefined || parent === null
+        ? []
+        : parent.childRequests.open.filter(
+            (request) => request.childThreadId === child.id && request.remote === undefined,
+          );
+    if (parent === undefined || parent === null || owned.length === 0) {
       return;
     }
     const turn = yield* projectionTurnRepository
@@ -2787,7 +2815,7 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => undefined),
       );
     const delivery = childDeliveryForTurnEnd({
-      parent,
+      owned,
       child,
       end: { turnId: input.turnId, outcome: input.outcome, error: input.error },
       pendingMessageId: turn?.pendingMessageId ?? null,

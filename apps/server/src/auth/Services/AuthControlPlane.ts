@@ -9,14 +9,14 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Context from "effect/Context";
-import type { SessionRole } from "./SessionCredentialService.ts";
+import type { ClientSessionRole, SessionRole } from "./SessionCredentialService.ts";
 
 export const DEFAULT_SESSION_SUBJECT = "cli-issued-session";
 
 export interface IssuedPairingLink {
   readonly id: string;
   readonly credential: string;
-  readonly role: SessionRole;
+  readonly role: ClientSessionRole;
   readonly subject: string;
   readonly label?: string;
   readonly createdAt: DateTime.Utc;
@@ -42,7 +42,7 @@ export interface AuthControlPlaneShape {
   readonly createPairingLink: (input?: {
     readonly ttl?: Duration.Duration;
     readonly label?: string;
-    readonly role?: SessionRole;
+    readonly role?: ClientSessionRole;
     readonly subject?: string;
   }) => Effect.Effect<IssuedPairingLink, AuthControlPlaneError>;
   readonly listPairingLinks: (input?: {

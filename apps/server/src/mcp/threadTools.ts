@@ -9,6 +9,12 @@
  * description that starts work says to end the turn rather than wait; a
  * model left to guess polls.
  */
+import {
+  AgentThreadAgent,
+  AgentThreadReadResult,
+  AgentThreadStatusWord,
+  AgentThreadSummary,
+} from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
@@ -16,30 +22,11 @@ import { McpRoomInvocation } from "./roomTools.ts";
 
 const dependencies = [McpRoomInvocation];
 
-/** How a thread is doing, in one word an agent can act on. */
-export const ThreadStatusWord = Schema.Literals([
-  "working",
-  "needs the user",
-  "waiting",
-  "failed",
-  "idle",
-  "wrapped",
-]);
+/** How a thread is doing, in one word an agent can act on (shared with linked computers). */
+export const ThreadStatusWord = AgentThreadStatusWord;
 export type ThreadStatusWord = typeof ThreadStatusWord.Type;
 
-const ThreadSummary = Schema.Struct({
-  threadId: Schema.String,
-  title: Schema.String,
-  status: ThreadStatusWord,
-  branch: Schema.NullOr(Schema.String),
-  model: Schema.String,
-  /** Its final replies come back to the thread that started it. */
-  attached: Schema.Boolean,
-  /** The thread that started it: "you", a title, or null when nobody did. */
-  startedBy: Schema.NullOr(Schema.String),
-  /** The calling thread itself. */
-  you: Schema.optional(Schema.Boolean),
-});
+const ThreadSummary = AgentThreadSummary;
 export type ThreadSummary = typeof ThreadSummary.Type;
 
 export const ThreadAgentsResult = Schema.Struct({
@@ -49,27 +36,25 @@ export const ThreadAgentsResult = Schema.Struct({
   approval: Schema.optional(Schema.Literals(["ask", "auto"])),
   /** What a thread runs on when `agent` is left out: your own model. */
   yours: Schema.optional(Schema.Struct({ instanceId: Schema.String, model: Schema.String })),
-  agents: Schema.Array(
-    Schema.Struct({
-      /** Pass as thread_start's `agent.instanceId`. */
-      instanceId: Schema.String,
-      name: Schema.String,
-      /** How it is paid for: "Codex · ChatGPT Pro Subscription". */
-      billing: Schema.String,
-      models: Schema.Array(
-        Schema.Struct({
-          /** Pass as thread_start's `agent.model`. */
-          model: Schema.String,
-          name: Schema.String,
-        }),
-      ),
-      /** Models left off a long list; thread_agents with this `instanceId` lists them all. */
-      moreModels: Schema.optional(Schema.Number),
-    }),
-  ),
+  agents: Schema.Array(AgentThreadAgent),
   /** Providers that are set up but can't take a thread now, and why. */
   unavailable: Schema.Array(
     Schema.Struct({ instanceId: Schema.String, name: Schema.String, reason: Schema.String }),
+  ),
+  /**
+   * Linked computers a thread can be started on (thread_start's `computer`),
+   * with their own agents. `reachable: false`: offline right now; its agents
+   * are as last seen.
+   */
+  computers: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        environmentId: Schema.String,
+        reachable: Schema.Boolean,
+        agents: Schema.Array(AgentThreadAgent),
+      }),
+    ),
   ),
 });
 export type ThreadAgentsResult = typeof ThreadAgentsResult.Type;
@@ -96,8 +81,13 @@ export const ThreadStartResult = Schema.Struct({
         threadId: Schema.String,
         title: Schema.String,
         model: Schema.String,
-        /** `worktree`: its own new worktree. `project_folder`: shares the project folder. */
-        workspace: Schema.Literals(["worktree", "project_folder"]),
+        /**
+         * `worktree`: its own new worktree. `project_folder`: shares the
+         * project folder. `remote`: on a linked computer, in its own checkout.
+         */
+        workspace: Schema.Literals(["worktree", "project_folder", "remote"]),
+        /** The linked computer it runs on; absent: this one. */
+        computer: Schema.optional(Schema.String),
       }),
     ),
   ),
@@ -111,32 +101,7 @@ export const ThreadListResult = Schema.Struct({
 });
 export type ThreadListResult = typeof ThreadListResult.Type;
 
-export const ThreadReadResult = Schema.Struct({
-  outcome: Schema.Literals(["ok", "off", "not_allowed", "refused"]),
-  detail: Schema.optional(Schema.String),
-  thread: Schema.optional(ThreadSummary),
-  messages: Schema.Array(
-    Schema.Struct({
-      messageId: Schema.String,
-      sequence: Schema.Number,
-      at: Schema.String,
-      role: Schema.Literals(["user", "assistant"]),
-      author: Schema.String,
-      /**
-       * `user`: the user wrote it. `agent`: an agent in that thread did.
-       * `thread_request` / `thread_report`: another thread's agent did.
-       */
-      origin: Schema.Literals(["user", "agent", "thread_request", "thread_report"]),
-      text: Schema.String,
-      clipped: Schema.optional(Schema.Boolean),
-      streaming: Schema.optional(Schema.Boolean),
-    }),
-  ),
-  /** Pass as `after` later for only newer messages; null when there are none. */
-  next: Schema.NullOr(Schema.Number),
-  /** More messages follow this page; read again with `after: next`. */
-  more: Schema.Boolean,
-});
+export const ThreadReadResult = AgentThreadReadResult;
 export type ThreadReadResult = typeof ThreadReadResult.Type;
 
 export const ThreadSendResult = Schema.Struct({
@@ -203,7 +168,7 @@ const drivesThreads = <T extends Tool.Any>(tool: T): T =>
 export const ThreadAgentsTool = readsThreads(
   Tool.make("thread_agents", {
     description:
-      "The agents a thread you start can run on: each ready provider, how it is paid for, and its models, plus your own model, which threads use when you don't pick one. Pass one as thread_start's `agent`. A provider with a long model list shows its first ones and how many more it has; pass its `instanceId` to list them all.",
+      "The agents a thread you start can run on: each ready provider, how it is paid for, and its models, plus your own model, which threads use when you don't pick one. Pass one as thread_start's `agent`. A provider with a long model list shows its first ones and how many more it has; pass its `instanceId` to list them all. `computers` lists other computers linked to this one, each with its own agents: pass a computer's name as thread_start's `computer` and one of its agents as `agent`.",
     parameters: Schema.Struct({
       instanceId: Schema.optional(
         Schema.String.annotate({ description: "List only this provider, with every model." }),
@@ -217,7 +182,7 @@ export const ThreadAgentsTool = readsThreads(
 export const ThreadStartTool = drivesThreads(
   Tool.make("thread_start", {
     description:
-      "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own. Threads get your current access and interaction modes, never more. `runSetup: false` skips the project's setup script, for quick research. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes; with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. At most 5 threads per call and 5 per user message.",
+      "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own. Threads get your current access and interaction modes, never more. `runSetup: false` skips the project's setup script, for quick research. `computer` starts them on another linked computer (a name or id from thread_agents' `computers`) in its copy of this project: from your branch when you pushed it, otherwise from that computer's default branch, without your unpushed changes. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes; with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. At most 5 threads per call and 5 per user message.",
     parameters: Schema.Struct({
       threads: Schema.Array(
         Schema.Struct({
@@ -230,6 +195,12 @@ export const ThreadStartTool = drivesThreads(
         }),
       ),
       reportBack: Schema.optional(Schema.Boolean),
+      computer: Schema.optional(
+        Schema.String.annotate({
+          description:
+            "A linked computer's name or id, from thread_agents. Leave out for this one.",
+        }),
+      ),
     }),
     success: ThreadStartResult,
     dependencies,

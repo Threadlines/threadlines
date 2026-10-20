@@ -55,6 +55,7 @@ import {
   RoomAgentRequestOutcome,
   RoomAgentInvite,
   ThreadMessageOrigin,
+  ThreadRemoteOrigin,
   RoomReviewInput,
   TrimmedNonEmptyString,
 } from "@threadlines/contracts";
@@ -148,6 +149,7 @@ type ThreadLineageRow = Pick<
   | "handedBackTurnId"
   | "archivedWithParentAt"
   | "childRequests"
+  | "remoteOrigin"
 >;
 
 /** Child threads: lineage and family as the decider and the thread detail read them. */
@@ -160,6 +162,7 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   handedBackTurnId: row.handedBackTurnId ?? null,
   archivedWithParentAt: row.archivedWithParentAt ?? null,
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+  ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
 });
 
 /**
@@ -177,6 +180,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     handedBackTurnId: row.handedBackTurnId ?? null,
     awaitedChildThreadCount: awaitedChildRequestCount(childRequests),
     pendingChildApproval: hasPendingChildApproval(childRequests),
+    ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
   };
 };
 
@@ -228,6 +232,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     childRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
     ),
+    remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -782,6 +787,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -839,6 +845,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -898,6 +905,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1656,6 +1664,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
+          remote_origin_json AS "remoteOrigin",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",

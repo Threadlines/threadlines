@@ -15,6 +15,9 @@ import {
   type ChildRequestStatus,
   type OrchestrationChildRequest,
   type OrchestrationChildRequestState,
+  type RemoteChildCancel,
+  type RemoteChildRequest,
+  type RemoteChildThread,
   type RoomAgentRef,
   type ThreadId,
   type ThreadParticipantId,
@@ -234,6 +237,32 @@ export const notesFor = (
 ): ReadonlyArray<ChildRequestNote> =>
   state.pendingNotes.filter((note) => sameAgent(note.recipient, recipient));
 
+const sameRemoteRequest = (
+  left: RemoteChildRequest | undefined,
+  right: RemoteChildRequest,
+): boolean =>
+  left !== undefined &&
+  left.environmentId === right.environmentId &&
+  left.label === right.label &&
+  left.threadId === right.threadId &&
+  left.status === right.status &&
+  left.cancelRequested === right.cancelRequested;
+
+const sameRemoteChild = (left: RemoteChildThread, right: RemoteChildThread): boolean =>
+  left.label === right.label &&
+  left.title === right.title &&
+  left.handle === right.handle &&
+  left.attachmentEpoch === right.attachmentEpoch &&
+  left.cachedStatus === right.cachedStatus &&
+  left.updatedAt === right.updatedAt;
+
+/** A parent's record of its child on a linked computer, if it has one. */
+export const remoteChildOf = (
+  state: OrchestrationChildRequestState,
+  threadId: ThreadId,
+): RemoteChildThread | undefined =>
+  (state.remoteChildren ?? []).find((entry) => entry.threadId === threadId);
+
 /**
  * How each child-request event changes a thread's state. The server's
  * projector and the web store both apply events through these, so they never
@@ -260,11 +289,14 @@ export const childRequestStateOn = {
       readonly requestId: ChildRequestId;
       readonly status: ChildRequestStatus;
       readonly candidateTurnId?: TurnId | undefined;
+      readonly remote?: RemoteChildRequest | undefined;
     },
   ): OrchestrationChildRequestState => {
     const changes = (entry: OrchestrationChildRequest) =>
       entry.requestId === update.requestId &&
-      (entry.status !== update.status || entry.candidateTurnId !== update.candidateTurnId);
+      (entry.status !== update.status ||
+        entry.candidateTurnId !== update.candidateTurnId ||
+        (update.remote !== undefined && !sameRemoteRequest(entry.remote, update.remote)));
     return state.open.some(changes)
       ? {
           ...state,
@@ -277,6 +309,7 @@ export const childRequestStateOn = {
               ...(update.candidateTurnId !== undefined
                 ? { candidateTurnId: update.candidateTurnId }
                 : {}),
+              ...(update.remote !== undefined ? { remote: update.remote } : {}),
             };
           }),
         }
@@ -301,6 +334,49 @@ export const childRequestStateOn = {
         : state.pendingNotes,
     };
   },
+  /** A cancel or stop owed to a linked computer, kept until it confirms. */
+  remoteCancelQueued: (
+    state: OrchestrationChildRequestState,
+    cancel: RemoteChildCancel,
+  ): OrchestrationChildRequestState => {
+    const cancels = state.remoteCancels ?? [];
+    return cancels.some((entry) => entry.requestId === cancel.requestId)
+      ? state
+      : { ...state, remoteCancels: [...cancels, cancel] };
+  },
+  /** A child on a linked computer, new or changed; kept after its requests settle. */
+  remoteChildUpdated: (
+    state: OrchestrationChildRequestState,
+    child: RemoteChildThread,
+  ): OrchestrationChildRequestState => {
+    const children = state.remoteChildren ?? [];
+    const index = children.findIndex(
+      (entry) => entry.environmentId === child.environmentId && entry.threadId === child.threadId,
+    );
+    if (index >= 0 && sameRemoteChild(children[index]!, child)) {
+      return state;
+    }
+    return {
+      ...state,
+      remoteChildren:
+        index >= 0
+          ? children.map((entry, at) => (at === index ? child : entry))
+          : [...children, child],
+    };
+  },
+  /** Cancels a linked computer confirmed leave the outbox. */
+  remoteCancelsDelivered: (
+    state: OrchestrationChildRequestState,
+    requestIds: ReadonlyArray<ChildRequestId>,
+  ): OrchestrationChildRequestState =>
+    (state.remoteCancels ?? []).some((entry) => requestIds.includes(entry.requestId))
+      ? {
+          ...state,
+          remoteCancels: (state.remoteCancels ?? []).filter(
+            (entry) => !requestIds.includes(entry.requestId),
+          ),
+        }
+      : state,
   notesDelivered: (
     state: OrchestrationChildRequestState,
     requestIds: ReadonlyArray<ChildRequestId>,

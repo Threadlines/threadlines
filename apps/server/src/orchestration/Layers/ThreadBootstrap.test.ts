@@ -47,8 +47,7 @@ const launch = (patch: Partial<ChildThreadLaunch> = {}): ChildThreadLaunch => ({
 });
 
 const input = (patch: Partial<ChildBootstrapInput> = {}): ChildBootstrapInput => ({
-  parentThreadId: PARENT,
-  parentTurnId: TurnId.make("parent-turn"),
+  lineage: { kind: "local", parentThreadId: PARENT, parentTurnId: TurnId.make("parent-turn") },
   projectId: ProjectId.make("project-1"),
   requestId: REQUEST,
   childThreadId: CHILD,

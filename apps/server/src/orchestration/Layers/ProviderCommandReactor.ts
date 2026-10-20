@@ -39,7 +39,7 @@ import {
 } from "@threadlines/contracts";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { notesFor } from "@threadlines/shared/childThreads";
+import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   hasAgentRecords,
@@ -124,6 +124,7 @@ import { checkoutPresence } from "../../vcs/CheckoutPresence.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
+import { isStaleRemoteReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 import { SideAnswerStartError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
@@ -838,6 +839,10 @@ const make = Effect.gen(function* () {
     if (origin === undefined || origin.kind !== "report") {
       return false;
     }
+    // A child on a linked computer isn't here: the parent's record of it decides.
+    if (origin.environmentId !== undefined) {
+      return isStaleRemoteReport(parent, origin);
+    }
     const child = yield* resolveThread(origin.threadId);
     return (
       origin.deliveryEpoch !== parent.childRequests.deliveryEpoch ||
@@ -1013,10 +1018,13 @@ const make = Effect.gen(function* () {
     const toolSettings = yield* serverSettingsService.getSettings.pipe(
       Effect.orElseSucceed(() => undefined),
     );
+    // A thread another computer's agent started here gets none of them: it
+    // must not reach other threads here (docs/design/fleet.md, "Fence").
     const roomToolsWanted =
-      hasAgentRecords(thread) ||
-      agentInvitesMode(toolSettings) !== "off" ||
-      agentThreadsMode(toolSettings) !== "off";
+      (thread.remoteOrigin ?? null) === null &&
+      (hasAgentRecords(thread) ||
+        agentInvitesMode(toolSettings) !== "off" ||
+        agentThreadsMode(toolSettings) !== "off");
 
     const desiredRuntimeMode = early?.runtimeMode ?? thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
@@ -1576,11 +1584,27 @@ const make = Effect.gen(function* () {
   ) {
     const lines: string[] = [];
     if (fromThread !== undefined) {
-      const other = yield* resolveThread(fromThread.threadId);
-      const otherTitle = other?.title ?? "another thread";
+      // A thread on a linked computer isn't here: its title comes from what
+      // this thread keeps about it (where it was started, or its child record).
+      const remoteOrigin = thread.remoteOrigin ?? null;
+      const remoteChild =
+        fromThread.environmentId !== undefined
+          ? remoteChildOf(thread.childRequests, fromThread.threadId)
+          : undefined;
+      const other =
+        fromThread.environmentId === undefined
+          ? yield* resolveThread(fromThread.threadId)
+          : undefined;
+      const otherTitle =
+        other?.title ??
+        (remoteOrigin !== null && remoteOrigin.threadId === fromThread.threadId
+          ? `${remoteOrigin.threadTitle}" on "${remoteOrigin.environmentLabel}`
+          : undefined) ??
+        remoteChild?.title ??
+        "another thread";
       if (fromThread.kind === "request") {
         lines.push(
-          thread.attachedToParent
+          thread.attachedToParent || fromThread.environmentId !== undefined
             ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs.`
             : `Another agent started this thread from the thread "${otherTitle}". Nothing you write goes back to it automatically.`,
         );

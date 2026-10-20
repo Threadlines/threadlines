@@ -88,6 +88,12 @@ import { DictationLive } from "./dictation/DictationService.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
+import {
+  RelayDeviceRepository,
+  type RelayDeviceRepositoryShape,
+} from "./relay/RelayDeviceRepository.ts";
+import { ComputerLinks, type ComputerLinksShape } from "./links/ComputerLinks.ts";
+import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
   CheckpointDiffQuery,
@@ -509,6 +515,9 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     threadSearch?: Partial<ThreadSearchShape>;
     relayHost?: Partial<RelayHostShape>;
+    relayDeviceRepository?: Partial<RelayDeviceRepositoryShape>;
+    computerLinks?: Partial<ComputerLinksShape>;
+    linkRequests?: Partial<LinkRequestsShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
     checkpointRevert?: Partial<CheckpointRevertShape>;
     browserTraceCollector?: Partial<BrowserTraceCollectorShape>;
@@ -802,7 +811,24 @@ const buildAppUnderTest = (options?: {
             admitDirect: () => null,
             acceptDirect: () => Effect.succeed(null),
             directRoutes: () => Effect.succeed([]),
+            isRevokedDevice: () => Effect.succeed(false),
             ...options?.layers?.relayHost,
+          }),
+          Layer.mock(RelayDeviceRepository)({
+            getDevice: () => Effect.succeed(Option.none()),
+            getDeviceBySession: () => Effect.succeed(Option.none()),
+            listDevices: Effect.succeed([]),
+            ...options?.layers?.relayDeviceRepository,
+          }),
+          Layer.mock(ComputerLinks)({
+            snapshot: Effect.succeed({ outbound: [], inbound: [], pending: [] }),
+            changes: Stream.make({ outbound: [], inbound: [], pending: [] }),
+            ...options?.layers?.computerLinks,
+          }),
+          Layer.mock(LinkRequests)({
+            pending: Effect.succeed([]),
+            pendingChanges: Stream.empty,
+            ...options?.layers?.linkRequests,
           }),
           Layer.mock(ThreadSearch)({
             search: () => Effect.succeed({ matches: [], truncated: false }),

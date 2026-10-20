@@ -5,6 +5,17 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import { AuthAccessStreamEvent } from "./auth.ts";
 import {
+  ComputerLinkError,
+  ComputerLinkInvite,
+  ComputerLinksSnapshot,
+  InboundComputerLink,
+  LinksAcceptInput,
+  LinksRemoveInput,
+  LinksRespondRequestInput,
+  LinksSetAccessInput,
+  OutboundComputerLink,
+} from "./links.ts";
+import {
   RelayAccessError,
   RelayAccessSnapshot,
   RelayCancelInviteInput,
@@ -553,6 +564,15 @@ export const WS_METHODS = {
   relayRespondToJoinRequest: "relay.respondToJoinRequest",
   relaySubmitJoin: "relay.submitJoin",
   relayDirectRoutes: "relay.directRoutes",
+
+  // Computer links (docs/design/fleet.md). Owner and client sessions alike.
+  linksList: "links.list",
+  linksSubscribe: "links.subscribe",
+  linksCreateInvite: "links.createInvite",
+  linksAccept: "links.accept",
+  linksSetAccess: "links.setAccess",
+  linksRemove: "links.remove",
+  linksRespondRequest: "links.respondRequest",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1704,6 +1724,49 @@ export const WsRelaySubmitJoinRpc = Rpc.make(WS_METHODS.relaySubmitJoin, {
   error: RelayAccessError,
 });
 
+export const WsLinksListRpc = Rpc.make(WS_METHODS.linksList, {
+  payload: Schema.Struct({}),
+  success: ComputerLinksSnapshot,
+  error: ComputerLinkError,
+});
+
+/** Outbound links with their state, inbound links with access, and requests waiting here. */
+export const WsLinksSubscribeRpc = Rpc.make(WS_METHODS.linksSubscribe, {
+  payload: Schema.Struct({}),
+  success: ComputerLinksSnapshot,
+  error: ComputerLinkError,
+  stream: true,
+});
+
+/** Owner or client: a remote client is how one click links two computers. */
+export const WsLinksCreateInviteRpc = Rpc.make(WS_METHODS.linksCreateInvite, {
+  payload: Schema.Struct({}),
+  success: ComputerLinkInvite,
+  error: ComputerLinkError,
+});
+
+export const WsLinksAcceptRpc = Rpc.make(WS_METHODS.linksAccept, {
+  payload: LinksAcceptInput,
+  success: OutboundComputerLink,
+  error: ComputerLinkError,
+});
+
+export const WsLinksSetAccessRpc = Rpc.make(WS_METHODS.linksSetAccess, {
+  payload: LinksSetAccessInput,
+  success: InboundComputerLink,
+  error: ComputerLinkError,
+});
+
+export const WsLinksRemoveRpc = Rpc.make(WS_METHODS.linksRemove, {
+  payload: LinksRemoveInput,
+  error: ComputerLinkError,
+});
+
+export const WsLinksRespondRequestRpc = Rpc.make(WS_METHODS.linksRespondRequest, {
+  payload: LinksRespondRequestInput,
+  error: ComputerLinkError,
+});
+
 /** Empty for anyone but a "Connect a device" device. */
 export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
   payload: Schema.Struct({}),
@@ -1871,6 +1934,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsRelayRespondToJoinRequestRpc,
   WsRelaySubmitJoinRpc,
   WsRelayDirectRoutesRpc,
+  WsLinksListRpc,
+  WsLinksSubscribeRpc,
+  WsLinksCreateInviteRpc,
+  WsLinksAcceptRpc,
+  WsLinksSetAccessRpc,
+  WsLinksRemoveRpc,
+  WsLinksRespondRequestRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,
