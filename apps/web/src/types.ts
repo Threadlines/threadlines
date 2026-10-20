@@ -1,6 +1,7 @@
 import { DEFAULT_NEW_THREAD_RUNTIME_MODE } from "@threadlines/contracts";
 import type {
   OrchestrationAgentPage,
+  OrchestrationCheckBack,
   OrchestrationCommandRequest,
   OrchestrationCommandRun,
   PullRequestMergeMethod,
@@ -243,6 +244,8 @@ export interface Thread {
   effectiveCwd: string | null;
   /** Long-horizon provider goal attached to this thread (Codex goal mode). */
   goal: OrchestrationThreadGoal | null;
+  /** Times the thread's agents set themselves to come back, soonest first. */
+  checkBacks?: ReadonlyArray<OrchestrationCheckBack>;
   /** Projected Codex realtime voice-session state. */
   voiceActive?: boolean;
   /**
@@ -332,6 +335,8 @@ export interface ThreadShell {
   effectiveCwd: string | null;
   /** See Thread.goal. */
   goal: OrchestrationThreadGoal | null;
+  /** See Thread.checkBacks. */
+  checkBacks?: ReadonlyArray<OrchestrationCheckBack>;
   /** See Thread.voiceActive. */
   voiceActive?: boolean;
   /** See Thread.diffStatBaselineTurnCount. */
@@ -404,6 +409,8 @@ export interface SidebarThreadSummary {
   pendingChildApproval?: boolean;
   /** Messages queued behind the running turn; a child with any is not finished. */
   queuedFollowUpCount?: number;
+  /** See Thread.checkBacks. */
+  checkBacks?: ReadonlyArray<OrchestrationCheckBack>;
 }
 
 export interface ThreadSession {

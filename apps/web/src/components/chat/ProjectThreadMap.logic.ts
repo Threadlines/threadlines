@@ -36,6 +36,8 @@ const STATUS_PRESENTATION: Readonly<
   Answering: { tone: "blue", group: "working", rank: 2 },
   Waiting: { tone: "cyan", group: "working", rank: 2 },
   Completed: { tone: "emerald", group: "finished", rank: 3 },
+  // Settled, and an agent will come back by itself: a wait, after a result.
+  "Checking back": { tone: "cyan", group: "working", rank: 3 },
 };
 
 /** More lanes than this and the drawing stops reading as a glance. */

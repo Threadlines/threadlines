@@ -10,6 +10,7 @@ import {
   IsoDateTime,
   ModelSelection,
   NonNegativeInt,
+  OrchestrationCheckBack,
   OrchestrationThreadGoal,
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
@@ -52,6 +53,9 @@ export const ProjectionThread = Schema.Struct({
    */
   effectiveCwdSource: Schema.optional(Schema.NullOr(ThreadEffectiveCwdSource)),
   goal: Schema.NullOr(OrchestrationThreadGoal),
+  /** See OrchestrationThread.checkBacks. Optional so rows written before
+   *  migration 074 decode; absent or null means none. */
+  checkBacks: Schema.optional(Schema.NullOr(Schema.Array(OrchestrationCheckBack))),
   voiceActive: Schema.optional(NonNegativeInt),
   /**
    * Turn count the thread's cumulative diff rollup starts after. See

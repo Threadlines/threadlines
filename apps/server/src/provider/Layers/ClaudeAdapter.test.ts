@@ -1800,6 +1800,140 @@ describe("ClaudeAdapterLive", () => {
     },
   );
 
+  it.effect(
+    "reports Claude's check-backs, marks the turn one starts, and ends them with the session",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        type Hook = (
+          input: unknown,
+          toolUseId: string | undefined,
+          options: unknown,
+        ) => Promise<unknown>;
+        const hooks = harness.getLastCreateQueryInput()?.options.hooks as unknown as Record<
+          string,
+          ReadonlyArray<{ readonly hooks: ReadonlyArray<Hook> }>
+        >;
+        const runHook = (event: string, input: unknown) =>
+          Effect.promise(() => hooks[event]![0]!.hooks[0]!(input, undefined, {}));
+        const nextEvent = (type: string) =>
+          Stream.filter(adapter.streamEvents, (event) => event.type === type).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.map((events) => events[0]),
+            Effect.forkChild,
+          );
+
+        // Claude sets the job in a turn of this session.
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "Watch the deploy",
+          attachments: [],
+        });
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-check-back",
+          uuid: "cron-create-tool",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "toolu_cron",
+              name: "CronCreate",
+              input: { cron: "*/5 * * * *", prompt: "Look at the deploy", recurring: true },
+            },
+          },
+        } as unknown as SDKMessage);
+        const created = yield* nextEvent("item.completed");
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-check-back",
+          uuid: "cron-create-result",
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "toolu_cron", content: "Scheduled." }],
+          },
+          tool_use_result: {
+            id: "job-1",
+            humanSchedule: "every 5 minutes",
+            recurring: true,
+            durable: false,
+          },
+        } as unknown as SDKMessage);
+        yield* Fiber.join(created);
+        const turnDone = yield* nextEvent("turn.completed");
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-session-check-back",
+          uuid: "cron-create-turn-done",
+        } as unknown as SDKMessage);
+        yield* Fiber.join(turnDone);
+
+        const reported = yield* nextEvent("session.check-backs.updated");
+        yield* runHook("Stop", {
+          hook_event_name: "Stop",
+          session_crons: [
+            { id: "job-1", schedule: "*/5 * * * *", recurring: true, prompt: "Look at the deploy" },
+          ],
+        });
+        const update = yield* Fiber.join(reported);
+        assert.equal(update?.type, "session.check-backs.updated");
+        if (update?.type !== "session.check-backs.updated") return;
+        assert.deepEqual(
+          update.payload.checkBacks.map((checkBack) => [checkBack.id, checkBack.recurring]),
+          [["job-1", true]],
+        );
+
+        // The job fires: Claude submits its prompt, then the turn it starts streams.
+        const turnStarted = yield* nextEvent("turn.started");
+        yield* runHook("UserPromptSubmit", {
+          hook_event_name: "UserPromptSubmit",
+          prompt: "Look at the deploy",
+        });
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-check-back",
+          uuid: "stream-check-back-1",
+          parent_tool_use_id: null,
+          event: { type: "message_start", message: {} },
+        } as unknown as SDKMessage);
+        const started = yield* Fiber.join(turnStarted);
+        assert.equal(
+          started?.type === "turn.started" ? started.payload.trigger?.checkBackId : null,
+          "job-1",
+        );
+
+        const ended = yield* nextEvent("session.check-backs.updated");
+        yield* adapter.stopSession(session.threadId);
+        const final = yield* Fiber.join(ended);
+        assert.deepEqual(
+          final?.type === "session.check-backs.updated"
+            ? [
+                final.payload.checkBacks.length,
+                final.payload.ended?.map((checkBack) => checkBack.id),
+              ]
+            : null,
+          [0, ["job-1"]],
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("reads what a running command has printed, by the tool call that started it", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

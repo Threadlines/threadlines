@@ -3,6 +3,7 @@ import {
   ProjectId,
   ThreadId,
   ThreadParticipantId,
+  type OrchestrationCheckBack,
   TurnId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -77,6 +78,7 @@ function makeReadModel(
       readonly lastError: string | null;
       readonly updatedAt: string;
     } | null;
+    readonly checkBacks?: ReadonlyArray<OrchestrationCheckBack>;
   }>,
 ) {
   const now = "2026-01-01T00:00:00.000Z";
@@ -132,6 +134,7 @@ function makeReadModel(
       latestTurn: null,
       messages: [],
       session: thread.session,
+      ...(thread.checkBacks ? { checkBacks: thread.checkBacks } : {}),
       activities: [],
       proposedPlans: [],
       checkpoints: [],
@@ -732,6 +735,109 @@ describe("ProviderSessionReaper", () => {
       repository.getByThreadId({ threadId: backgroundThreadId }),
     );
     expect(Option.isSome(remaining)).toBe(true);
+  });
+
+  it("keeps an idle agent that set a check-back, and clears ones whose runtime died with the server", async () => {
+    const waitingThreadId = ThreadId.make("thread-reaper-check-back");
+    const orphanThreadId = ThreadId.make("thread-reaper-check-back-orphan");
+    const idleThreadId = ThreadId.make("thread-reaper-check-back-plain-idle");
+    const now = "2026-01-01T00:00:00.000Z";
+    const checkBack = (id: string, scheduledFor: string): OrchestrationCheckBack => ({
+      id,
+      participantId: null,
+      scheduledFor,
+      exact: true,
+      recurring: false,
+      durable: false,
+    });
+    const harness = await createHarness({
+      // Only the waiting thread's Claude is still running.
+      activeProviderSessions: [
+        makeProviderSession({
+          threadId: waitingThreadId,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          status: "ready",
+        }),
+      ],
+      readModel: makeReadModel([
+        {
+          id: waitingThreadId,
+          session: {
+            threadId: waitingThreadId,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          // Due well after the sweep: stopping the runtime would cancel it.
+          checkBacks: [checkBack("wake-1", "2999-01-01T00:00:00.000Z")],
+        },
+        {
+          id: orphanThreadId,
+          session: null,
+          checkBacks: [checkBack("wake-2", "2999-01-01T00:00:00.000Z")],
+        },
+        {
+          id: idleThreadId,
+          session: {
+            threadId: idleThreadId,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+    for (const threadId of [waitingThreadId, orphanThreadId, idleThreadId]) {
+      await runtime!.runPromise(
+        repository.upsert({
+          threadId,
+          providerName: "claudeAgent",
+          providerInstanceId: null,
+          adapterKey: "claudeAgent",
+          runtimeMode: "full-access",
+          status: "running",
+          lastSeenAt: "2026-04-14T00:00:00.000Z",
+          resumeCursor: { opaque: `resume-${threadId}` },
+          runtimePayload: null,
+        }),
+      );
+    }
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    // The orphan's runtime is gone: its check-back is cleared, with a note.
+    await waitFor(() =>
+      harness.dispatch.mock.calls.some(([command]) => command.type === "thread.check-backs.set"),
+    );
+    await Effect.runPromise(drainFibers);
+    const commands = harness.dispatch.mock.calls.map(([command]) => command);
+    expect(
+      commands
+        .filter((command) => command.type === "thread.check-backs.set")
+        .map((command) => [command.threadId, command.checkBacks]),
+    ).toEqual([[orphanThreadId, []]]);
+    expect(
+      commands.some(
+        (command) =>
+          command.type === "thread.activity.append" &&
+          command.threadId === orphanThreadId &&
+          command.activity.kind === "check-back.ended",
+      ),
+    ).toBe(true);
+    // The sweep reaps the plain idle runtime and keeps the waiting agent's
+    // for its check-back.
+    await waitFor(() => harness.stoppedThreadIds.has(idleThreadId));
+    expect(harness.stoppedThreadIds.has(waitingThreadId)).toBe(false);
   });
 
   it("reaps sessions with pending background tasks once the grace cap elapses", async () => {

@@ -66,7 +66,9 @@ import {
   type RuntimeSessionExitKind,
   type ServerProviderModel,
   type SubagentMetadataUpdatedPayload,
+  type RuntimeCheckBack,
   type RuntimeContentStreamKind,
+  type TurnTrigger,
   RuntimeItemId,
   type RuntimeMode,
   RuntimeRequestId,
@@ -173,6 +175,15 @@ import {
   isClaudeGoalCommandResult,
   sameClaudeGoalState,
 } from "../Drivers/ClaudeGoals.ts";
+import {
+  claudeCheckBackTrigger,
+  claudeCheckBacksFromSessionCrons,
+  makeClaudeCheckBackState,
+  recordClaudeScheduleTool,
+  type ClaudeCheckBackState,
+  type ClaudeSessionCron,
+} from "../Drivers/ClaudeCheckBacks.ts";
+import { sameCheckBacks } from "@threadlines/shared/checkBacks";
 import { claudeSdkExecutable, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { mcpElicitationPrompt, mcpElicitationResponse } from "../mcpElicitation.ts";
 import {
@@ -592,6 +603,11 @@ interface ClaudeSessionContext {
    *  Consumed when the matching tool_result is emitted. */
   readonly fileChangeStatsByToolUseId: Map<string, FileChangeStat>;
   readonly tasks: Map<string, ClaudeTaskSnapshot>;
+  /** Times Claude set itself to come back (see ClaudeCheckBacks.ts). */
+  readonly checkBacks: ClaudeCheckBackState;
+  /** What started the turn Claude is about to begin by itself, learned from
+   *  the prompt it submitted before the turn's first output. */
+  pendingTurnTrigger: TurnTrigger | undefined;
   /** Shell commands of in-flight Bash tool calls, keyed by tool_use id. A
    *  `task_started` names the tool that launched it but not what it runs, so
    *  the command has to be remembered from the tool call itself. Bounded FIFO. */
@@ -4658,10 +4674,30 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
    * rather than on the first whole message, keeps the thread from reading as
    * finished while Claude thinks, and lets that output stream live.
    */
+  /** The session's check-backs, whole, plus ones that ended with it. */
+  const emitCheckBacksUpdated = Effect.fnUntraced(function* (
+    context: ClaudeSessionContext,
+    checkBacks: ReadonlyArray<RuntimeCheckBack>,
+    ended?: ReadonlyArray<RuntimeCheckBack>,
+  ) {
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "session.check-backs.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      payload: { checkBacks, ...(ended && ended.length > 0 ? { ended } : {}) },
+      providerRefs: nativeProviderRefs(context),
+    });
+  });
+
   const ensureSyntheticTurn = Effect.fnUntraced(function* (context: ClaudeSessionContext) {
     if (context.turnState) {
       return;
     }
+    const trigger = context.pendingTurnTrigger;
+    context.pendingTurnTrigger = undefined;
     const turnId = TurnId.make(yield* randomUUIDv4);
     const startedAt = yield* nowIso;
     context.turnState = {
@@ -4688,7 +4724,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       createdAt: turnStartedStamp.createdAt,
       threadId: context.session.threadId,
       turnId,
-      payload: {},
+      payload: trigger ? { trigger } : {},
       providerRefs: {
         ...nativeProviderRefs(context),
         providerTurnId: turnId,
@@ -5719,6 +5755,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       const [index, tool] = toolEntry;
+      // A check-back's exact time, reason and job id are only in the
+      // scheduling tool's own result (one tool_result per such message).
+      if (
+        (tool.toolName === "ScheduleWakeup" || tool.toolName === "CronCreate") &&
+        toolResults.length === 1 &&
+        !toolResult.isError
+      ) {
+        recordClaudeScheduleTool(context.checkBacks, {
+          toolName: tool.toolName,
+          input: tool.input,
+          result: (message as { readonly tool_use_result?: unknown }).tool_use_result,
+        });
+      }
       if (tool.itemType === "collab_agent_tool_call") {
         // Background agents settle after this tool_result; keep the launch so
         // a later task notification can complete the item with the real result.
@@ -7705,6 +7754,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       );
     }
 
+    // Check-backs fire inside the CLI process this closes: only durable ones,
+    // saved to the project, outlive it.
+    if (context.checkBacks.current.length > 0) {
+      const ended = context.checkBacks.current.filter((checkBack) => !checkBack.durable);
+      const kept = context.checkBacks.current.filter((checkBack) => checkBack.durable);
+      context.checkBacks.current = [];
+      yield* emitCheckBacksUpdated(context, kept, ended);
+    }
+
     yield* Queue.shutdown(context.promptQueue);
 
     const streamFiber = context.streamFiber;
@@ -8057,6 +8115,65 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ),
         );
       };
+
+      // Claude reports its whole check-back list as each turn stops; a CLI
+      // without the field reports none.
+      const reportCheckBacks: HookCallback = (hookInput) =>
+        runPromise(
+          Effect.gen(function* () {
+            const context = yield* Ref.get(contextRef);
+            const sessionCrons = (hookInput as { session_crons?: unknown }).session_crons;
+            if (!context || context.stopped || !Array.isArray(sessionCrons)) return {};
+            const checkBacks = claudeCheckBacksFromSessionCrons(
+              context.checkBacks,
+              sessionCrons.flatMap((cron) => {
+                const entry = cron as Partial<ClaudeSessionCron>;
+                return typeof entry.id === "string" &&
+                  typeof entry.schedule === "string" &&
+                  typeof entry.prompt === "string"
+                  ? [
+                      {
+                        id: entry.id,
+                        schedule: entry.schedule,
+                        recurring: entry.recurring === true,
+                        prompt: entry.prompt,
+                      },
+                    ]
+                  : [];
+              }),
+              Date.now(),
+              nonEmptyString(claudeEnvironment.TZ),
+            );
+            if (!sameCheckBacks(context.checkBacks.current, checkBacks)) {
+              context.checkBacks.current = checkBacks;
+              yield* emitCheckBacksUpdated(context, checkBacks);
+            }
+            return {};
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logDebug("claude.hook.check-backs", { cause }).pipe(Effect.as({})),
+            ),
+          ),
+        );
+
+      // Claude submits a fired check-back's prompt before the turn it starts
+      // streams anything. Only a prompt with no Threadlines turn around it
+      // can be one.
+      const noticeCheckBackFire: HookCallback = (hookInput) =>
+        runPromise(
+          Effect.gen(function* () {
+            const context = yield* Ref.get(contextRef);
+            const prompt = (hookInput as { prompt?: unknown }).prompt;
+            if (!context || context.turnState || typeof prompt !== "string") return {};
+            context.pendingTurnTrigger = claudeCheckBackTrigger(
+              context.checkBacks,
+              prompt,
+              nonEmptyString((hookInput as { source?: unknown }).source),
+              Date.now(),
+            );
+            return {};
+          }),
+        );
 
       // A session that started with artifacts on keeps the tool for its
       // whole life; this is what makes turning the setting off take effect
@@ -8762,6 +8879,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             },
             { matcher: CLAUDE_ARTIFACT_TOOL_NAME, hooks: [reportPublishedArtifact] },
           ],
+          Stop: [{ hooks: [reportCheckBacks] }],
+          UserPromptSubmit: [{ hooks: [noticeCheckBackFire] }],
           ...(artifacts
             ? {
                 PreToolUse: [
@@ -8895,6 +9014,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         subagentToolUseOwners: new Map(),
         fileChangeStatsByToolUseId,
         tasks: new Map(),
+        checkBacks: makeClaudeCheckBackState(),
+        pendingTurnTrigger: undefined,
         bashCommandsByToolUseId: new Map(),
         codexExecRuns: new Map(),
         claimedCodexExecRolloutPaths: new Set(),

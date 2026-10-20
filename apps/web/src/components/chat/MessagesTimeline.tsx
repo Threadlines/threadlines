@@ -4,6 +4,7 @@ import {
   type MessageId,
   type OrchestrationAgentRequest,
   type OrchestrationAwaitedBackgroundTask,
+  type OrchestrationCheckBack,
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   type RoomAgentRequestId,
@@ -91,6 +92,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  Clock3Icon,
   CopyIcon,
   FileTextIcon,
   GitForkIcon,
@@ -159,7 +161,9 @@ import {
   TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME,
   TranscriptHighlightContextCard,
 } from "./TranscriptHighlightContextCard";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
+import { describeCheckBack, formatCheckBackTime, nextCheckBack } from "./checkBacks";
+import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
@@ -269,6 +273,8 @@ interface TimelineRowSharedState {
   onContinueInNewThread?: (messageId: MessageId) => void;
   /** Stops a side answer; absent where side answers cannot be asked. */
   onStopSideAnswer?: ((sideTurnId: SideTurnId) => void) | undefined;
+  /** Cancels an agent's check-backs (ChatView.cancelCheckBack). */
+  onCancelCheckBack?: ((checkBack: OrchestrationCheckBack) => void) | undefined;
   /** Opens or closes a side answer's one-line status to watch it written. */
   onToggleSideAnswer: (sideTurnId: SideTurnId) => void;
   /** Scrolls to a message: a side answer posted below, or its question. */
@@ -751,6 +757,9 @@ interface MessagesTimelineProps {
   /** What that work is, when the server described it. Keep it referentially
    *  stable: it feeds the rows memo. */
   awaitedTasks?: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | null | undefined;
+  /** Times the thread's agents set themselves to come back (Thread.checkBacks). */
+  checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
+  onCancelCheckBack?: ((checkBack: OrchestrationCheckBack) => void) | undefined;
   activeStatusLabel?: string | undefined;
   activeTurnInProgress: boolean;
   activeTurnId?: TurnId | null;
@@ -845,6 +854,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
   isWaitingOnBackgroundTasks = false,
   awaitedTasks = null,
+  checkBacks,
+  onCancelCheckBack,
   activeStatusLabel,
   activeTurnInProgress,
   activeTurnId,
@@ -941,6 +952,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       liveAgentTrackerKeys: parseLiveAgentTrackerSignature(liveAgentKeysSignature),
       isWaitingOnBackgroundTasks,
       awaitedTasks,
+      checkBacks,
       activeStatusLabel,
       activeTurnInProgress,
       activeTurnId: activeTurnId ?? null,
@@ -963,6 +975,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       liveAgentKeysSignature,
       isWaitingOnBackgroundTasks,
       awaitedTasks,
+      checkBacks,
       activeStatusLabel,
       activeTurnInProgress,
       activeTurnId,
@@ -1914,6 +1927,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenAgentsPanel,
       workflowRunActions,
       onOpenThread,
+      onCancelCheckBack,
       threadStartCallsByTurn,
       anchorOwnsLiveAgents,
     }),
@@ -1958,6 +1972,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenAgentsPanel,
       workflowRunActions,
       onOpenThread,
+      onCancelCheckBack,
       threadStartCallsByTurn,
       anchorOwnsLiveAgents,
     ],
@@ -2574,6 +2589,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
       {row.kind === "workflow-run" ? <WorkflowRunTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
+      {row.kind === "check-back" ? <CheckBackTimelineRow row={row} /> : null}
       {row.kind === "side-status" ? <SideStatusTimelineRow row={row} /> : null}
     </div>
   );
@@ -3973,6 +3989,75 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
           <LiveAgentRoster roster={liveAgentRoster} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * When the thread's agents will come back by themselves (checkBacks.ts): the
+ * soonest, how long until then and why, with the rest on hover. Cancel stops
+ * that agent's runtime, the only way to drop a check-back, so it ends every
+ * check-back that agent set; one saved to the project outlives the runtime
+ * and has no Cancel.
+ */
+function CheckBackTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "check-back" }> }) {
+  const { roomAgents, onCancelCheckBack } = use(TimelineRowCtx);
+  const nowMs = useRelativeTimeTick(30_000);
+  const soonest = nextCheckBack(row.checkBacks);
+  if (soonest === null) return null;
+  const { label, when } = describeCheckBack(soonest, nowMs);
+  // In a room, the line says which agent will come back.
+  const agentName = roomAgents?.get(roomAgentKey(soonest.participantId))?.name ?? null;
+  const others = row.checkBacks.filter((checkBack) => checkBack !== soonest);
+  return (
+    <div className="py-1" data-check-back-row="true">
+      <p className="flex min-w-0 items-center gap-1.5 pl-1 text-xs leading-4 text-muted-foreground">
+        <Clock3Icon aria-hidden className="size-3 shrink-0" />
+        <span className="min-w-0 truncate" data-check-back-label="true">
+          {agentName ? `${agentName}: ${label}` : label}
+        </span>
+        <span className="shrink-0 font-mono text-[11px] tabular-nums">· {when}</span>
+        {others.length > 0 ? (
+          <TooltipWrapper
+            tooltip={
+              <div className="flex flex-col gap-0.5">
+                {others.map((checkBack) => (
+                  <span key={`${checkBack.participantId ?? "own"}:${checkBack.id}`}>
+                    {formatCheckBackTime(checkBack.scheduledFor, nowMs)}
+                    {checkBack.description ? `: ${checkBack.description}` : ""}
+                  </span>
+                ))}
+              </div>
+            }
+          >
+            <span className="shrink-0 underline decoration-dotted underline-offset-[3px]">
+              and {others.length} more
+            </span>
+          </TooltipWrapper>
+        ) : null}
+        {onCancelCheckBack && !soonest.durable ? (
+          <TooltipWrapper tooltip="Stops this agent's session, which ends every check-back it set. It starts again when you send a message.">
+            <button
+              type="button"
+              className="ms-1 shrink-0 rounded px-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              data-check-back-cancel="true"
+              onClick={() => onCancelCheckBack(soonest)}
+            >
+              Cancel
+            </button>
+          </TooltipWrapper>
+        ) : null}
+      </p>
+      {soonest.description ? (
+        <p className="truncate pl-[19px] text-[11px] leading-4 text-muted-foreground">
+          {soonest.description}
+        </p>
+      ) : null}
+      {soonest.durable ? (
+        <p className="truncate pl-[19px] text-[11px] leading-4 text-muted-foreground">
+          Saved to this project, so it outlives this chat's session.
+        </p>
+      ) : null}
     </div>
   );
 }

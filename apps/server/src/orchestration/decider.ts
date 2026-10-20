@@ -3225,6 +3225,68 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.check-backs.set": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {},
+        }),
+        type: "thread.check-backs-set",
+        payload: {
+          threadId: command.threadId,
+          participantId: command.participantId,
+          // Stamped with their agent, whatever the runtime sent.
+          checkBacks: command.checkBacks.map((checkBack) => ({
+            ...checkBack,
+            participantId: command.participantId,
+          })),
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.check-back.cancel": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // Cancelling stops the agent's runtime, so it is only accepted while
+      // that agent has a check-back it could cancel.
+      const cancellable = (thread.checkBacks ?? []).some(
+        (checkBack) => checkBack.participantId === command.participantId && !checkBack.durable,
+      );
+      if (!cancellable) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' has no check-back this agent can cancel.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.check-back-cancel-requested",
+        payload: {
+          threadId: command.threadId,
+          participantId: command.participantId,
+          stopBackgroundWork: command.stopBackgroundWork,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.goal.state.set": {
       yield* requireThread({
         readModel,

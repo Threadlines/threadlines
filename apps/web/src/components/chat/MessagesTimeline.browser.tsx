@@ -488,6 +488,55 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("says when the agent will check back, and cancels from the line", async () => {
+    const cancelled: string[] = [];
+    const scheduledFor = new Date(Date.now() + 14 * 60_000 + 20_000).toISOString();
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking={false}
+        checkBacks={[
+          {
+            id: "wake-1",
+            participantId: null,
+            scheduledFor,
+            exact: true,
+            recurring: false,
+            description: "Waiting for CI on PR #502",
+            durable: false,
+          },
+        ]}
+        onCancelCheckBack={(checkBack) => cancelled.push(checkBack.id)}
+        timelineEntries={[
+          {
+            id: "entry-reply",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-reply",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "Checked PR #502",
+              tone: "tool",
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("Waiting for CI on PR #502")).toBeVisible();
+      const label = document.querySelector<HTMLElement>("[data-check-back-label='true']");
+      expect(label?.textContent).toMatch(/^Checks back at /u);
+      expect(document.querySelector("[data-check-back-row='true']")?.textContent).toContain(
+        "in 14m",
+      );
+      await page.getByRole("button", { name: "Cancel" }).click();
+      expect(cancelled).toEqual(["wake-1"]);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("shows how long a long check took, from the provider's stamps", async () => {
     const screen = await renderTimeline(
       <MessagesTimeline

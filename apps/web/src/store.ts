@@ -1,3 +1,4 @@
+import { replaceAgentCheckBacks, sameCheckBacks } from "@threadlines/shared/checkBacks";
 import { sameAwaitedBackgroundTasks } from "@threadlines/shared/awaitedBackgroundTasks";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type {
@@ -24,6 +25,7 @@ import type {
   OrchestrationThreadShell,
   OrchestrationWorkflowRun,
   OrchestrationThreadActivity,
+  OrchestrationCheckBack,
   OrchestrationThreadGoal,
   ProjectId,
   ScopedProjectRef,
@@ -501,6 +503,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     worktreePath: thread.worktreePath,
     effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     goal: thread.goal,
+    ...(thread.checkBacks && thread.checkBacks.length > 0 ? { checkBacks: thread.checkBacks } : {}),
     voiceActive: thread.voiceActive ?? false,
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
@@ -550,6 +553,7 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     goal: thread.goal,
+    ...(thread.checkBacks && thread.checkBacks.length > 0 ? { checkBacks: thread.checkBacks } : {}),
     voiceActive: thread.voiceActive ?? false,
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
   };
@@ -579,6 +583,7 @@ function mapThreadShell(
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
     hasBlockingUserInput: thread.hasBlockingUserInput ?? thread.hasPendingUserInput,
+    ...(thread.checkBacks && thread.checkBacks.length > 0 ? { checkBacks: thread.checkBacks } : {}),
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     cumulativeDiffStat: thread.cumulativeDiffStat,
     linkedPullRequests: thread.linkedPullRequests ?? [],
@@ -629,6 +634,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     worktreePath: thread.worktreePath,
     effectiveCwd: effectiveCwdOf(thread).effectiveCwd,
     goal: thread.goal,
+    ...(thread.checkBacks && thread.checkBacks.length > 0 ? { checkBacks: thread.checkBacks } : {}),
     voiceActive: thread.voiceActive ?? false,
     diffStatBaselineTurnCount: thread.diffStatBaselineTurnCount ?? 0,
   };
@@ -701,6 +707,7 @@ function toSidebarThreadSummary(
     hasBlockingUserInput: hasActivityEvidence
       ? pendingUserInputs.some(isBlockingUserInput)
       : (previous?.hasBlockingUserInput ?? previous?.hasPendingUserInput ?? false),
+    ...(thread.checkBacks && thread.checkBacks.length > 0 ? { checkBacks: thread.checkBacks } : {}),
     hasActionableProposedPlan: hasProposedPlanEvidence
       ? hasActionableProposedPlan(latestProposedPlan)
       : (previous?.hasActionableProposedPlan ?? false),
@@ -896,6 +903,7 @@ function sidebarThreadSummariesEqual(
     (left.attachedToParent ?? false) === (right.attachedToParent ?? false) &&
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
+    checkBackListsEqual(left.checkBacks, right.checkBacks) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0)
   );
@@ -954,7 +962,22 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.effectiveCwd === right.effectiveCwd &&
     left.voiceActive === right.voiceActive &&
     left.diffStatBaselineTurnCount === right.diffStatBaselineTurnCount &&
-    threadGoalsEqual(left.goal, right.goal)
+    threadGoalsEqual(left.goal, right.goal) &&
+    checkBackListsEqual(left.checkBacks, right.checkBacks)
+  );
+}
+
+function checkBackListsEqual(
+  left: ReadonlyArray<OrchestrationCheckBack> | undefined,
+  right: ReadonlyArray<OrchestrationCheckBack> | undefined,
+): boolean {
+  const leftList = left ?? [];
+  const rightList = right ?? [];
+  return (
+    sameCheckBacks(leftList, rightList) &&
+    leftList.every(
+      (checkBack, index) => checkBack.participantId === rightList[index]?.participantId,
+    )
   );
 }
 
@@ -2278,6 +2301,13 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         goal: event.payload.goal,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.check-backs-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        checkBacks: replaceAgentCheckBacks(thread.checkBacks ?? [], event.payload),
         updatedAt: event.payload.updatedAt,
       }));
 

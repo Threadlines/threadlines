@@ -79,6 +79,7 @@ export type ActivityIcon =
   | "tool"
   | "image"
   | "agent"
+  | "clock"
   | "question"
   | "thinking"
   | "info"
@@ -744,12 +745,41 @@ function searchDraft(detail: string | undefined): StepDraft {
   };
 }
 
+/** Claude's own scheduling tools: how an agent sets a check-back. Setting
+ *  or cancelling one stays in view; looking at the list folds into the
+ *  tallies. */
+const CHECK_BACK_TOOL_WORDING: Readonly<
+  Record<string, { past: string; live: string; routine: boolean }>
+> = {
+  ScheduleWakeup: { past: "Set a check-back", live: "Setting a check-back", routine: false },
+  CronCreate: { past: "Scheduled a check-back", live: "Scheduling a check-back", routine: false },
+  CronDelete: { past: "Cancelled a check-back", live: "Cancelling a check-back", routine: false },
+  CronList: {
+    past: "Looked at its check-backs",
+    live: "Looking at its check-backs",
+    routine: true,
+  },
+};
+
 /** A tool call the provider named but we have no wording for. */
 function genericToolDraft(
   title: string,
   detail: string | undefined,
   options: StepWordingOptions = {},
 ): StepDraft {
+  // Claude's generic tool calls name the tool first in their detail.
+  const checkBackWording =
+    CHECK_BACK_TOOL_WORDING[/^([\w.-]+)/u.exec(detail?.trim() ?? "")?.[1] ?? title];
+  if (checkBackWording) {
+    return {
+      routine: checkBackWording.routine,
+      ...(checkBackWording.routine ? { tallies: [{ tally: "tool" as const }] } : {}),
+      icon: "clock",
+      label: checkBackWording.past,
+      liveLabel: checkBackWording.live,
+      detail: detail ? { call: detail } : {},
+    };
+  }
   const named = /^([\w.-]+):\s*(.*)$/su.exec(detail?.trim() ?? "");
   // A raw MCP id (`mcp__server__tool`, `threadlines_room-room_ask`) is never
   // shown as is.
@@ -1125,6 +1155,11 @@ function entryDraft(entry: WorkLogEntry, options: ActivityStepOptions, failed: b
       genericToolDraft(toolTitleText(entry.toolTitle ?? label), entry.detail, options),
       outcome,
     );
+  }
+
+  // A check-back the agent set came due, was skipped or ended.
+  if (entry.activityKind?.startsWith("check-back.")) {
+    return { routine: false, icon: "clock", label: truncate(label, 120) };
   }
 
   return {

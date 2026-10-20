@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 
-import { CommandId, type OrchestrationSession, type ThreadId } from "@threadlines/contracts";
+import {
+  CommandId,
+  EventId,
+  type OrchestrationCheckBack,
+  type OrchestrationSession,
+  type ThreadId,
+  type ThreadParticipantId,
+} from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -30,6 +37,38 @@ import { ProviderService } from "../Services/ProviderService.ts";
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_BACKGROUND_TASK_GRACE_MS = 4 * 60 * 60 * 1000;
+/** How long past a check-back's time its runtime is kept for it. Claude
+ *  states a wake-up's exact time but may run a cron job up to 30 minutes
+ *  late (its scheduler spreads jobs out). */
+const CHECK_BACK_EXACT_GRACE_MS = 5 * 60 * 1000;
+const CHECK_BACK_SCHEDULE_GRACE_MS = 35 * 60 * 1000;
+/** Claude's repeating jobs expire after 7 days; an idle runtime is not kept
+ *  for one longer than that. */
+const RECURRING_CHECK_BACK_IDLE_LIMIT_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The check-backs an agent's runtime keeps alive: ones that die with it. */
+const runtimeCheckBacks = (
+  thread: { readonly checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined } | undefined,
+  participantId: ThreadParticipantId | null,
+) =>
+  (thread?.checkBacks ?? []).filter(
+    (checkBack) => checkBack.participantId === participantId && !checkBack.durable,
+  );
+
+/** Whether an idle runtime still owes a check-back, so reaping it would
+ *  cancel a promise the agent made. */
+const holdsForCheckBack = (
+  checkBacks: ReadonlyArray<OrchestrationCheckBack>,
+  nowMs: number,
+  idleDurationMs: number,
+) =>
+  checkBacks.some((checkBack) => {
+    if (checkBack.recurring) return idleDurationMs < RECURRING_CHECK_BACK_IDLE_LIMIT_MS;
+    const due =
+      Date.parse(checkBack.scheduledFor) +
+      (checkBack.exact ? CHECK_BACK_EXACT_GRACE_MS : CHECK_BACK_SCHEDULE_GRACE_MS);
+    return Number.isFinite(due) && nowMs < due;
+  });
 
 type ThreadShellWithSession = {
   readonly session?: OrchestrationSession | null;
@@ -166,6 +205,59 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         return true;
       });
 
+    /**
+     * An agent's check-backs whose runtime is gone (the server stopped with
+     * it) can't fire: they are cleared with a note in the chat. Durable ones
+     * outlive the runtime and stay.
+     */
+    const dropOrphanedCheckBacks = (input: {
+      readonly binding: ProviderRuntimeBindingWithMetadata;
+      readonly thread: NonNullable<Effect.Success<ReturnType<typeof resolveBindingThread>>>;
+      readonly nowIso: string;
+    }) =>
+      Effect.gen(function* () {
+        const participantId = parseParticipantSessionKey(input.binding.threadId).participantId;
+        const lost = runtimeCheckBacks(input.thread, participantId);
+        if (lost.length === 0) return;
+        const threadId = sessionKeyThreadId(input.binding.threadId);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.check-backs.set",
+          commandId: CommandId.make(
+            `provider-session-reaper:check-backs:${input.binding.threadId}:${randomUUID()}`,
+          ),
+          threadId,
+          participantId,
+          checkBacks: (input.thread.checkBacks ?? []).filter(
+            (checkBack) => checkBack.participantId === participantId && checkBack.durable,
+          ),
+          createdAt: input.nowIso,
+        });
+        for (const checkBack of lost) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(
+              `provider-session-reaper:check-back-ended:${input.binding.threadId}:${randomUUID()}`,
+            ),
+            threadId,
+            activity: {
+              id: EventId.make(randomUUID()),
+              tone: "info",
+              kind: "check-back.ended",
+              summary: "Check-back cancelled",
+              payload: {
+                scheduledFor: checkBack.scheduledFor,
+                recurring: checkBack.recurring,
+                ...(checkBack.description ? { description: checkBack.description } : {}),
+              },
+              turnId: null,
+              participantId,
+              createdAt: input.nowIso,
+            },
+            createdAt: input.nowIso,
+          });
+        }
+      }).pipe(Effect.ignoreCause({ log: true }));
+
     const reconcileStartup = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
       const activeProviderThreadIds = toLiveProviderThreadIds(yield* listProviderSessions);
@@ -175,6 +267,13 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
       for (const binding of bindings) {
         const thread = yield* resolveBindingThread(binding);
+        if (
+          thread !== undefined &&
+          activeProviderThreadIds !== null &&
+          !activeProviderThreadIds.has(binding.threadId)
+        ) {
+          yield* dropOrphanedCheckBacks({ binding, thread, nowIso });
+        }
         const session = thread?.session ?? null;
         if (!session || session.status === "stopped") {
           continue;
@@ -322,6 +421,21 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
               backgroundTaskGraceMs,
             },
           );
+        }
+
+        // A check-back the agent set fires inside this runtime; stopping it
+        // would cancel the agent's promise to come back.
+        const heldCheckBacks = runtimeCheckBacks(
+          thread,
+          parseParticipantSessionKey(binding.threadId).participantId,
+        );
+        if (holdsForCheckBack(heldCheckBacks, now, idleDurationMs)) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-pending-check-back", {
+            threadId: binding.threadId,
+            checkBackCount: heldCheckBacks.length,
+            idleDurationMs,
+          });
+          continue;
         }
 
         const reaped = yield* pauseActiveThreadGoalForStop({

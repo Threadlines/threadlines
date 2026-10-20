@@ -2,6 +2,7 @@ import {
   ArchiveIcon,
   CheckIcon,
   ChevronRightIcon,
+  Clock3Icon,
   CloudIcon,
   CornerDownRightIcon,
   GitForkIcon,
@@ -28,6 +29,7 @@ import {
 import { selectThreadTerminalState, useTerminalStateStore } from "../../terminalStateStore";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { formatCheckBackCountdownShort } from "../chat/checkBacks";
 import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../timestampFormat";
 import { getPickerModelName } from "../chat/providerIconUtils";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
@@ -397,15 +399,18 @@ function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatu
         ? (thread.sideTurn?.startedAt ?? null)
         : null;
   const isLive = isInFlight || isWaiting || isAnswering;
+  // An agent will come back: a countdown to when.
+  const checkBackAt = status?.label === "Checking back" ? (status.checkBackAt ?? null) : null;
   return {
     statusWord,
+    checkBackAt,
     isAnswering,
     isLive,
     liveWord: isAnswering
       ? "answering"
       : (waitWord ?? (status?.label === "Starting" ? "starting" : "working")),
     liveClockStartedAt,
-    hasStatusLabel: statusWord !== null || isLive,
+    hasStatusLabel: statusWord !== null || isLive || checkBackAt !== null,
   };
 }
 
@@ -419,6 +424,17 @@ function ThreadJumpLabel({ label }: { label: string }) {
 }
 
 /** The live half of a status slot: its word, then the clock. */
+/** "◷ 14m": how long until an agent comes back by itself. */
+function RowCheckBackStatus({ at }: { at: string }) {
+  const nowMs = useRelativeTimeTick(30_000);
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1" data-row-check-back="true">
+      <Clock3Icon aria-hidden className="size-3" />
+      {formatCheckBackCountdownShort(at, nowMs)}
+    </span>
+  );
+}
+
 function RowLiveStatus({ word, clockStartedAt }: { word: string; clockStartedAt: string | null }) {
   return (
     <>
@@ -454,7 +470,7 @@ export function ThreadStatusText({
   restingClassName?: string;
   testId?: string | undefined;
 }) {
-  const { statusWord, isLive, liveWord, liveClockStartedAt, hasStatusLabel } =
+  const { statusWord, checkBackAt, isLive, liveWord, liveClockStartedAt, hasStatusLabel } =
     resolveRowStatusParts(thread, status);
   return (
     <span
@@ -466,6 +482,8 @@ export function ThreadStatusText({
     >
       {statusWord !== null ? (
         statusWord
+      ) : checkBackAt !== null ? (
+        <RowCheckBackStatus at={checkBackAt} />
       ) : isLive ? (
         <RowLiveStatus word={liveWord} clockStartedAt={liveClockStartedAt} />
       ) : (
@@ -699,8 +717,15 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isPinned = thread.pinnedAt !== null;
   const isRenaming = renamingThreadKey === threadKey;
-  const { statusWord, isAnswering, isLive, liveWord, liveClockStartedAt, hasStatusLabel } =
-    resolveRowStatusParts(thread, status);
+  const {
+    statusWord,
+    checkBackAt,
+    isAnswering,
+    isLive,
+    liveWord,
+    liveClockStartedAt,
+    hasStatusLabel,
+  } = resolveRowStatusParts(thread, status);
   // A completion nobody has looked at yet keeps the title bright until the
   // thread is opened.
   const isUnseen = status?.label === "Completed";
@@ -901,6 +926,8 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     <ThreadJumpLabel label={jumpLabel} />
                   ) : statusWord !== null ? (
                     statusWord
+                  ) : checkBackAt !== null ? (
+                    <RowCheckBackStatus at={checkBackAt} />
                   ) : isLive ? (
                     <>
                       {namesRoomAgent && roomAgentSelection ? (

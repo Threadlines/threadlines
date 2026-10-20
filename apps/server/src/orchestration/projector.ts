@@ -23,6 +23,7 @@ import * as Schema from "effect/Schema";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
 import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
+import { replaceAgentCheckBacks } from "@threadlines/shared/checkBacks";
 import {
   agentRequestStateOn,
   withInviteChoice,
@@ -92,6 +93,7 @@ import {
   ThreadRealtimeStateSetPayload,
   ThreadEffectiveCwdSetPayload,
   ThreadGoalStateSetPayload,
+  ThreadCheckBacksSetPayload,
   ThreadFollowUpSubmittedPayload,
   ThreadTurnStartRequestedPayload,
   ThreadFollowUpAcceptedPayload,
@@ -1332,6 +1334,27 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             ...effectiveCwdOf(payload),
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.check-backs-set":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadCheckBacksSetPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            checkBacks: replaceAgentCheckBacks(thread.checkBacks ?? [], payload),
             updatedAt: event.occurredAt,
           }),
         };
