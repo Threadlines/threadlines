@@ -380,6 +380,11 @@ const make = Effect.gen(function* () {
   const hasRelayWork = Effect.gen(function* () {
     if (invite || [...requests.values()].some((request) => request.state === "pending"))
       return true;
+    // A computer-link invite is never the open code, but its claim still
+    // arrives over the control socket.
+    for (const inviteId of localInvites.keys()) {
+      if (liveInvite(inviteId) !== null) return true;
+    }
     const devices = yield* repo.listDevices;
     return devices.some((device) => device.state !== "revoked");
   });
