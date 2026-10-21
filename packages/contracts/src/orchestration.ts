@@ -594,6 +594,12 @@ export const ThreadRemoteOrigin = Schema.Struct({
   /** The asking computer's device id on this server (its link). */
   linkDeviceId: TrimmedNonEmptyString,
   environmentId: EnvironmentId,
+  /**
+   * `environmentId` is the computer the link was made for (pinned by the
+   * invite this server made), not only what the asking computer said. False
+   * or missing: unconfirmed.
+   */
+  environmentPinned: Schema.optional(Schema.Boolean),
   environmentLabel: TrimmedNonEmptyString,
   threadId: ThreadId,
   threadTitle: TrimmedNonEmptyString,
