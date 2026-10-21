@@ -745,19 +745,115 @@ function searchDraft(detail: string | undefined): StepDraft {
   };
 }
 
-/** Claude's own scheduling tools: how an agent sets a check-back. Setting
- *  or cancelling one stays in view; looking at the list folds into the
- *  tallies. */
-const CHECK_BACK_TOOL_WORDING: Readonly<
-  Record<string, { past: string; live: string; routine: boolean }>
-> = {
-  ScheduleWakeup: { past: "Set a check-back", live: "Setting a check-back", routine: false },
-  CronCreate: { past: "Scheduled a check-back", live: "Scheduling a check-back", routine: false },
-  CronDelete: { past: "Cancelled a check-back", live: "Cancelling a check-back", routine: false },
+interface NamedToolWording {
+  readonly past: string;
+  readonly live: string;
+  /** Folds into the group's summary sentence rather than standing on its own. */
+  readonly routine: boolean;
+  readonly icon: ActivityIcon;
+  /** How a routine one counts in the summary sentence (default: a tool). */
+  readonly tally?: ActivityTally;
+}
+
+/**
+ * Claude's own tools that reach the chat as a bare name ("TaskStop:
+ * task_id=…", or just the name in a subagent's transcript), worded the way
+ * a person would say what the agent did. Setting or cancelling a check-back,
+ * messaging an agent and notifying you stay in view; the rest is housekeeping.
+ */
+const CLAUDE_TOOL_WORDING: Readonly<Record<string, NamedToolWording>> = {
+  ScheduleWakeup: {
+    past: "Set a check-back",
+    live: "Setting a check-back",
+    routine: false,
+    icon: "clock",
+  },
+  CronCreate: {
+    past: "Scheduled a check-back",
+    live: "Scheduling a check-back",
+    routine: false,
+    icon: "clock",
+  },
+  CronDelete: {
+    past: "Cancelled a check-back",
+    live: "Cancelling a check-back",
+    routine: false,
+    icon: "clock",
+  },
   CronList: {
     past: "Looked at its check-backs",
     live: "Looking at its check-backs",
     routine: true,
+    icon: "clock",
+  },
+  TaskStop: {
+    past: "Stopped a background task",
+    live: "Stopping a background task",
+    routine: true,
+    icon: "command",
+  },
+  Monitor: {
+    past: "Started watching a command's output",
+    live: "Starting to watch a command's output",
+    routine: true,
+    icon: "command",
+  },
+  SendMessage: {
+    past: "Sent a message to an agent",
+    live: "Sending a message to an agent",
+    routine: false,
+    icon: "agent",
+  },
+  TaskList: {
+    past: "Looked at the task list",
+    live: "Looking at the task list",
+    routine: true,
+    icon: "tool",
+    tally: "plan",
+  },
+  TaskGet: {
+    past: "Looked at the task list",
+    live: "Looking at the task list",
+    routine: true,
+    icon: "tool",
+    tally: "plan",
+  },
+  PushNotification: {
+    past: "Sent you a notification",
+    live: "Sending you a notification",
+    routine: false,
+    icon: "info",
+  },
+  LSP: {
+    past: "Looked up code with the language server",
+    live: "Looking up code with the language server",
+    routine: true,
+    icon: "search",
+    tally: "search",
+  },
+  ListMcpResourcesTool: {
+    past: "Listed what its tool servers offer",
+    live: "Listing what its tool servers offer",
+    routine: true,
+    icon: "list",
+  },
+  ReadMcpResourceTool: {
+    past: "Read from a tool server",
+    live: "Reading from a tool server",
+    routine: true,
+    icon: "read",
+  },
+  ReadMcpResourceDirTool: {
+    past: "Read from a tool server",
+    live: "Reading from a tool server",
+    routine: true,
+    icon: "read",
+  },
+  WaitForMcpServers: {
+    past: "Waited for its tool servers to start",
+    live: "Waiting for its tool servers to start",
+    routine: true,
+    icon: "tool",
   },
 };
 
@@ -767,16 +863,18 @@ function genericToolDraft(
   detail: string | undefined,
   options: StepWordingOptions = {},
 ): StepDraft {
-  // Claude's generic tool calls name the tool first in their detail.
-  const checkBackWording =
-    CHECK_BACK_TOOL_WORDING[/^([\w.-]+)/u.exec(detail?.trim() ?? "")?.[1] ?? title];
-  if (checkBackWording) {
+  // Claude's generic tool calls name the tool first in their detail; a
+  // subagent's transcript gives just the name.
+  const wording =
+    CLAUDE_TOOL_WORDING[/^([\w.-]+)/u.exec(detail?.trim() ?? "")?.[1] ?? ""] ??
+    CLAUDE_TOOL_WORDING[title];
+  if (wording) {
     return {
-      routine: checkBackWording.routine,
-      ...(checkBackWording.routine ? { tallies: [{ tally: "tool" as const }] } : {}),
-      icon: "clock",
-      label: checkBackWording.past,
-      liveLabel: checkBackWording.live,
+      routine: wording.routine,
+      ...(wording.routine ? { tallies: [{ tally: wording.tally ?? "tool" }] } : {}),
+      icon: wording.icon,
+      label: wording.past,
+      liveLabel: wording.live,
       detail: detail ? { call: detail } : {},
     };
   }
@@ -839,6 +937,9 @@ function dynamicToolDraft(entry: WorkLogEntry, options: ActivityStepOptions): St
         liveLabel: "Loading tools",
         detail: entry.detail ? { call: entry.detail } : {},
       };
+    // TaskList and TaskGet, which Claude titles "Tasks".
+    case "tasks":
+      return genericToolDraft("TaskList", entry.detail, options);
     case "update tasks":
       return {
         routine: true,

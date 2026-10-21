@@ -230,7 +230,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.mcpCalls.push(request);
     return {
       subtype: "success",
-      response: { content: '{"count":4}', structuredContent: { count: 4 } },
+      response: {
+        content: [{ type: "text", text: "Counter at 4" }],
+        structuredContent: { count: 4 },
+      },
     };
   };
 
@@ -2031,9 +2034,16 @@ describe("ClaudeAdapterLive", () => {
           tool: "bump",
           arguments: {},
         });
+        // Its result is for the app, not Claude: the tool's own content blocks.
         assert.deepEqual(harness.query.mcpCalls, [
-          { subtype: "mcp_call", tool: "mcp__probe_apps__bump", arguments: {} },
+          {
+            subtype: "mcp_call",
+            tool: "mcp__probe_apps__bump",
+            arguments: {},
+            result_not_for_model: true,
+          },
         ]);
+        assert.deepEqual(result.content, [{ type: "text", text: "Counter at 4" }]);
         assert.deepEqual(result.structuredContent, { count: 4 });
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
