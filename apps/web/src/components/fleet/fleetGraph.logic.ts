@@ -40,6 +40,8 @@ export interface FleetGraphLayoutInput {
   readonly centerProviderCount: number;
   /** Agents around each other computer, in the order they are drawn. */
   readonly otherProviderCounts: readonly number[];
+  /** Lines between two other computers (links, work), by their drawn order. */
+  readonly otherLines?: ReadonlyArray<readonly [number, number]>;
 }
 
 export interface FleetGraphLayout {
@@ -391,7 +393,14 @@ export function layoutFleetGraph(input: FleetGraphLayoutInput): FleetGraphLayout
     width,
     height,
     footprints: [center, ...others].map(computerFootprint),
-    lines: others.map((position) => lineBetween(center, position)),
+    lines: [
+      ...others.map((position) => lineBetween(center, position)),
+      ...(input.otherLines ?? []).flatMap(([from, to]) =>
+        others[from] !== undefined && others[to] !== undefined
+          ? [lineBetween(others[from], others[to])]
+          : [],
+      ),
+    ],
   };
   const centerProviderCount = Math.min(input.centerProviderCount, FLEET_GRAPH_MAX_PROVIDERS);
   const centerProviders = placeProviders(

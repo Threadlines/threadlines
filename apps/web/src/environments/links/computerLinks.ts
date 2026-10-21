@@ -234,3 +234,83 @@ export async function removeComputerLinkHalf(
 ): Promise<LinksRemoveResult> {
   return requireClient(holder.environmentId, holder.label).remove(input);
 }
+
+/** One direction of a Link: null `error` when it worked. */
+export interface ComputerLinkDirectionResult {
+  readonly asker: ComputerLinkTarget;
+  readonly worker: ComputerLinkTarget;
+  readonly error: string | null;
+}
+
+/**
+ * Links the given directions at once; each reports its own result, so a
+ * failed one can be retried on its own.
+ */
+export async function linkComputerDirections(
+  directions: ReadonlyArray<{
+    readonly asker: ComputerLinkTarget;
+    readonly worker: ComputerLinkTarget;
+  }>,
+): Promise<ComputerLinkDirectionResult[]> {
+  const results = await Promise.allSettled(directions.map((direction) => linkComputer(direction)));
+  return directions.map((direction, index) => {
+    const result = results[index]!;
+    return {
+      ...direction,
+      error:
+        result.status === "fulfilled"
+          ? null
+          : describeComputerLinkFailure(result.reason, "The link couldn't be made."),
+    };
+  });
+}
+
+/** A half an unlink removes: on `holder`, for one direction of the pair. */
+export interface ComputerUnlinkStep<D extends string> {
+  readonly holder: ComputerLinkTarget;
+  readonly direction: D;
+  readonly input: LinksRemoveInput;
+}
+
+/** How one direction came out: removed, waiting for the other computer, or failed. */
+export interface ComputerUnlinkResult {
+  readonly failed: string | null;
+  /** A computer's half that waits for the other one, by the asking computer's word. */
+  readonly pending: boolean;
+}
+
+/**
+ * Removes the halves in order (inbound ones first). An outbound half is told
+ * its other half is gone only if this run removed it or it was already gone:
+ * if that removal failed, its computer asks the other one itself.
+ */
+export async function runComputerUnlink<D extends string>(
+  steps: ReadonlyArray<ComputerUnlinkStep<D>>,
+): Promise<Map<D, ComputerUnlinkResult>> {
+  const results = new Map<D, ComputerUnlinkResult>();
+  const inboundFailed = new Set<D>();
+  const record = (direction: D, change: Partial<ComputerUnlinkResult>) => {
+    const current = results.get(direction) ?? { failed: null, pending: false };
+    results.set(direction, {
+      failed: change.failed ?? current.failed,
+      pending: change.pending ?? current.pending,
+    });
+  };
+  for (const step of steps) {
+    let input = step.input;
+    if (input.direction === "outbound" && inboundFailed.has(step.direction)) {
+      const { otherHalfRemoved: _dropped, ...rest } = input;
+      input = rest;
+    }
+    try {
+      const result = await removeComputerLinkHalf(step.holder, input);
+      record(step.direction, { pending: result.otherComputer === "pending" });
+    } catch (error) {
+      if (input.direction === "inbound") inboundFailed.add(step.direction);
+      record(step.direction, {
+        failed: describeComputerLinkFailure(error, `${step.holder.label} couldn't remove it.`),
+      });
+    }
+  }
+  return results;
+}

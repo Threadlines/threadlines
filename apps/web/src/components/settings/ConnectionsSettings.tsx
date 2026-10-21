@@ -1,33 +1,36 @@
 import {
   ChevronDownIcon,
   ChevronRightIcon,
-  ChevronsLeftRightEllipsisIcon,
   LaptopIcon,
   MonitorIcon,
   QrCodeIcon,
-  RefreshCwIcon,
   SmartphoneIcon,
-  TerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type AdvertisedEndpoint,
-  type DesktopDiscoveredSshHost,
-  type DesktopSshEnvironmentTarget,
   type DesktopServerExposureState,
-  type EnvironmentId,
+  type InboundComputerLink,
   RELAY_DEVICE_SESSION_SUBJECT as RELAY_DEVICE_SUBJECT,
 } from "@threadlines/contracts";
 
+import {
+  describeComputerLinkFailure,
+  removeComputerLinkHalf,
+  useComputerLinksStore,
+} from "../../environments/links/computerLinks";
 import { useAuthAccess, usePrimarySessionAccess } from "../../hooks/useAuthAccess";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { isClipboardCopySupported } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatExpiresInLabel } from "../../timestampFormat";
+import { COMPUTER_LINK_ACCESS_LABELS } from "../fleet/fleetLinks.logic";
 import { ConnectDeviceDialog } from "./connections/ConnectDeviceDialog";
-import { JoinComputerDialog } from "./connections/JoinComputerDialog";
+import { ConnectionStatusDot, formatAccessTimestamp } from "./connections/ConnectionStatusDot";
+import { openConnectComputerDialog } from "./connections/JoinComputerDialog";
 import { useRelayAccess } from "./connections/useRelayAccess";
 import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
 import {
@@ -49,7 +52,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "../ui/dialog";
-import { ScrollArea } from "../ui/scroll-area";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -65,7 +67,6 @@ import { Spinner } from "../ui/spinner";
 import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
 import { Group, GroupSeparator } from "../ui/group";
 import {
@@ -78,8 +79,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { Textarea } from "../ui/textarea";
-import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "../../pairingUrl";
-import { readHostedPairingRequest } from "../../hostedPairing";
+import { setPairingTokenOnUrl } from "../../pairingUrl";
 import {
   createServerPairingCredential,
   revokeOtherServerClientSessions,
@@ -89,244 +89,12 @@ import {
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
 } from "~/environments/primary";
-import {
-  type SavedEnvironmentRecord,
-  type SavedEnvironmentRuntimeState,
-  useSavedEnvironmentRegistryStore,
-  useSavedEnvironmentRuntimeStore,
-  addSavedEnvironment,
-  cancelPendingRelayJoin,
-  connectDesktopSshEnvironment,
-  RelayJoinError,
-  type SubmitCodeJoinViaServer,
-  disconnectSavedEnvironmentByUser,
-  getPrimaryEnvironmentConnection,
-  reconnectSavedEnvironment,
-  removeSavedEnvironment,
-} from "~/environments/runtime";
+import { useSavedEnvironmentRegistryStore } from "~/environments/runtime";
 import { useUiStateStore } from "~/uiStateStore";
 import { resolveServerConfigVersionMismatch } from "~/versionSkew";
 import { useServerConfig } from "~/rpc/serverState";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
-
-const accessTimestampFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-
-function formatAccessTimestamp(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-  return accessTimestampFormatter.format(parsed);
-}
-
-type ConnectionStatusDotProps = {
-  tooltipText?: string | null;
-  dotClassName: string;
-  pingClassName?: string | null;
-};
-
-function ConnectionStatusDot({
-  tooltipText,
-  dotClassName,
-  pingClassName,
-}: ConnectionStatusDotProps) {
-  const dotContent = (
-    <>
-      {pingClassName ? (
-        <span
-          className={cn(
-            "absolute inline-flex h-full w-full animate-status-ping rounded-full",
-            pingClassName,
-          )}
-        />
-      ) : null}
-      <span className={cn("relative inline-flex size-2 rounded-full", dotClassName)} />
-    </>
-  );
-
-  if (!tooltipText) {
-    return (
-      <span className="relative flex size-3 shrink-0 items-center justify-center">
-        {dotContent}
-      </span>
-    );
-  }
-
-  const dot = (
-    <button
-      type="button"
-      title={tooltipText}
-      aria-label={tooltipText}
-      className="relative flex size-3 shrink-0 cursor-help items-center justify-center rounded-full outline-hidden"
-    >
-      {dotContent}
-    </button>
-  );
-
-  return (
-    <Tooltip>
-      <TooltipTrigger render={dot} />
-      <TooltipPopup side="top" className="max-w-80 whitespace-pre-wrap leading-tight">
-        {tooltipText}
-      </TooltipPopup>
-    </Tooltip>
-  );
-}
-
-function getSavedBackendStatusTooltip(
-  runtime: SavedEnvironmentRuntimeState | null,
-  record: SavedEnvironmentRecord,
-  nowMs: number,
-) {
-  const connectionState = runtime?.connectionState ?? "disconnected";
-
-  if (connectionState === "connected") {
-    const connectedAt = runtime?.connectedAt ?? record.lastConnectedAt;
-    return connectedAt ? `Connected for ${formatElapsedDurationLabel(connectedAt, nowMs)}` : null;
-  }
-
-  if (connectionState === "connecting") {
-    return null;
-  }
-
-  if (connectionState === "error") {
-    return runtime?.lastError ?? "An unknown connection error occurred.";
-  }
-
-  return record.lastConnectedAt
-    ? `Last connected at ${formatAccessTimestamp(record.lastConnectedAt)}`
-    : "Not connected yet.";
-}
-
-function formatDesktopSshTarget(target: NonNullable<SavedEnvironmentRecord["desktopSsh"]>): string {
-  const authority = target.username ? `${target.username}@${target.hostname}` : target.hostname;
-  return target.port ? `${authority}:${target.port}` : authority;
-}
-
-function parseManualDesktopSshTarget(input: {
-  readonly host: string;
-  readonly username: string;
-  readonly port: string;
-}): DesktopSshEnvironmentTarget {
-  const rawHost = input.host.trim();
-  if (rawHost.length === 0) {
-    throw new Error("Enter the computer name or SSH host.");
-  }
-
-  let hostname = rawHost;
-  let username = input.username.trim() || null;
-  let port: number | null = null;
-
-  const atIndex = hostname.lastIndexOf("@");
-  if (atIndex > 0) {
-    const inlineUsername = hostname.slice(0, atIndex).trim();
-    hostname = hostname.slice(atIndex + 1).trim();
-    if (!username && inlineUsername.length > 0) {
-      username = inlineUsername;
-    }
-  }
-
-  const bracketedHostMatch = /^\[([^\]]+)\](?::(\d+))?$/u.exec(hostname);
-  if (bracketedHostMatch) {
-    hostname = bracketedHostMatch[1]!.trim();
-    if (bracketedHostMatch[2]) {
-      port = Number.parseInt(bracketedHostMatch[2], 10);
-    }
-  } else {
-    const colonSegments = hostname.split(":");
-    if (colonSegments.length === 2 && /^\d+$/u.test(colonSegments[1] ?? "")) {
-      hostname = colonSegments[0]!.trim();
-      port = Number.parseInt(colonSegments[1]!, 10);
-    }
-  }
-
-  const rawPort = input.port.trim();
-  if (rawPort.length > 0) {
-    port = Number.parseInt(rawPort, 10);
-  }
-
-  if (hostname.length === 0) {
-    throw new Error("Enter the computer name or SSH host.");
-  }
-
-  if (port !== null && (!Number.isInteger(port) || port <= 0 || port > 65_535)) {
-    throw new Error("SSH port must be between 1 and 65535.");
-  }
-
-  return {
-    alias: hostname,
-    hostname,
-    username,
-    port,
-  };
-}
-
-function parsePairingUrlFields(
-  input: string,
-): { readonly host: string; readonly pairingCode: string } | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-
-  try {
-    const urlLikeInput =
-      /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//u.test(trimmed) || trimmed.startsWith("//")
-        ? trimmed
-        : `https://${trimmed}`;
-    const url = new URL(urlLikeInput, window.location.origin);
-    const hostedPairingRequest = readHostedPairingRequest(url);
-    if (hostedPairingRequest?.kind === "direct") {
-      return {
-        host: hostedPairingRequest.host,
-        pairingCode: hostedPairingRequest.token,
-      };
-    }
-    if (hostedPairingRequest?.kind === "relay") {
-      return null;
-    }
-
-    const pairingCode = getPairingTokenFromUrl(url);
-    if (!pairingCode) return null;
-    return {
-      host: url.origin,
-      pairingCode,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function parseRemotePairingFields(input: { readonly host: string; readonly pairingCode: string }): {
-  readonly host: string;
-  readonly pairingCode: string;
-} {
-  const parsedPairingUrl = parsePairingUrlFields(input.host);
-  if (parsedPairingUrl) return parsedPairingUrl;
-
-  const host = input.host.trim();
-  const pairingCode = input.pairingCode.trim();
-  if (!host) {
-    throw new Error("Enter the address for the other computer.");
-  }
-  if (!pairingCode) {
-    throw new Error("Enter a pairing code.");
-  }
-  return { host, pairingCode };
-}
-
-function formatDesktopSshConnectionError(error: unknown): string {
-  const fallback = "Could not connect to that computer.";
-  const rawMessage = error instanceof Error ? error.message : fallback;
-  const withoutIpcPrefix = rawMessage.replace(
-    /^Error invoking remote method 'desktop:ensure-ssh-environment':\s*/u,
-    "",
-  );
-  const withoutTaggedErrorPrefix = withoutIpcPrefix.replace(/^Ssh[A-Za-z]+Error:\s*/u, "");
-  return withoutTaggedErrorPrefix.trim() || fallback;
-}
 
 /** A row directly in a settings group: the group's inset divider and row padding. */
 const ITEM_ROW_CLASSNAME = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-3");
@@ -909,6 +677,89 @@ const DeviceAccessRow = memo(function DeviceAccessRow({
   );
 });
 
+/**
+ * Another computer linked to this one (a `peer` session), joined to its
+ * inbound link by session id, never by name: two computers can share one.
+ * Joined, it says what its agents may do here and offers Manage in Fleet;
+ * Remove access removes the link and stops the threads it started here, as
+ * Unlink does. A peer session with no link to match reads "Linked computer"
+ * and only offers Remove access.
+ */
+function LinkedComputerAccessRow({
+  clientSession,
+  link,
+  removing,
+  onRemove,
+}: {
+  readonly clientSession: ServerClientSessionRecord;
+  readonly link: InboundComputerLink | null;
+  readonly removing: boolean;
+  readonly onRemove: () => void;
+}) {
+  const nowMs = useRelativeTimeTick(30_000);
+  const navigate = useNavigate();
+  const lastConnectedAt = clientSession.lastConnectedAt;
+  const statusText = clientSession.connected
+    ? "Connected now"
+    : lastConnectedAt
+      ? `Last connected ${formatElapsedDurationLabel(lastConnectedAt, nowMs)} ago`
+      : "Not connected yet";
+  const meta = [
+    link === null
+      ? "Linked computer"
+      : `Linked computer · its agents: ${COMPUTER_LINK_ACCESS_LABELS[link.access]}`,
+    statusText,
+  ].join(" · ");
+  return (
+    <div
+      className={ITEM_ROW_CLASSNAME}
+      data-testid={`linked-computer-row-${clientSession.sessionId}`}
+    >
+      <div className={ITEM_ROW_INNER_CLASSNAME}>
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex min-h-5 items-center gap-1.5">
+            <ConnectionStatusDot
+              tooltipText={
+                lastConnectedAt ? `Last connected ${formatAccessTimestamp(lastConnectedAt)}` : null
+              }
+              dotClassName={clientSession.connected ? "bg-success" : "bg-muted-foreground/30"}
+            />
+            <LaptopIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+            <h3 className="truncate text-[13px] font-semibold text-foreground">
+              {link?.label ?? clientSession.client.label ?? "Linked computer"}
+            </h3>
+          </div>
+          <p className="text-xs text-muted-foreground">{meta}</p>
+        </div>
+        <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+          {link !== null ? (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() =>
+                void (link.environmentId !== null
+                  ? navigate({
+                      to: "/fleet/$environmentId",
+                      params: { environmentId: link.environmentId },
+                    })
+                  : navigate({
+                      to: "/fleet/device/$deviceId",
+                      params: { deviceId: link.deviceId },
+                    }))
+              }
+            >
+              Manage in Fleet
+            </Button>
+          ) : null}
+          <Button size="xs" variant="destructive-outline" disabled={removing} onClick={onRemove}>
+            {removing ? "Removing..." : "Remove access"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConnectedDevicesSkeleton({ presentation }: { presentation: AccessSectionPresentation }) {
   return (
     <div
@@ -1066,263 +917,27 @@ function NetworkAccessDescription({
   );
 }
 
-type SavedBackendListRowProps = {
-  environmentId: EnvironmentId;
-  reconnectingEnvironmentId: EnvironmentId | null;
-  disconnectingEnvironmentId: EnvironmentId | null;
-  removingEnvironmentId: EnvironmentId | null;
-  onConnect: (environmentId: EnvironmentId) => void;
-  onDisconnect: (environmentId: EnvironmentId) => void;
-  onRemove: (environmentId: EnvironmentId) => void;
-  /** Opens "Connect to a computer" for a computer that removed this one. */
-  onConnectAgain: () => void;
-};
-
-/**
- * One computer this device uses. Computers joined with a code that the host
- * hasn't allowed yet say so (with the number to match) and offer Cancel; the
- * rest show live state, the last problem in plain words, and Disconnect,
- * Stop trying (while the app waits for one that did not answer) or Connect,
- * plus Forget. Forget only removes it from this list.
- */
-function SavedBackendListRow({
-  environmentId,
-  reconnectingEnvironmentId,
-  disconnectingEnvironmentId,
-  removingEnvironmentId,
-  onConnect,
-  onDisconnect,
-  onRemove,
-  onConnectAgain,
-}: SavedBackendListRowProps) {
-  const nowMs = useRelativeTimeTick(30_000);
-  const record = useSavedEnvironmentRegistryStore((state) => state.byId[environmentId] ?? null);
-  const runtime = useSavedEnvironmentRuntimeStore((state) => state.byId[environmentId] ?? null);
-
-  if (!record) {
-    return null;
-  }
-
-  const relayLink = record.relay && "version" in record.relay ? record.relay : null;
-  const pending = relayLink?.pendingRequest ?? null;
-  const connectionState = runtime?.connectionState ?? "disconnected";
-  const isConnected = connectionState === "connected";
-  const isConnecting =
-    connectionState === "connecting" || reconnectingEnvironmentId === environmentId;
-  const isDisconnecting = disconnectingEnvironmentId === environmentId;
-  // Checking in the background until it answers: the user can call that off.
-  const isWaitingToReconnect =
-    !isConnected && !isConnecting && runtime?.waitingToReconnect === true;
-  const canDisconnect = isConnected || isWaitingToReconnect;
-  const displayLabel = runtime?.descriptor?.label ?? record.label;
-  const versionMismatch = resolveServerConfigVersionMismatch(runtime?.serverConfig);
-  // A code-joined computer that removed this one needs a new code, not a retry.
-  const needsNewCode = relayLink !== null && !pending && runtime?.authState === "requires-auth";
-
-  const dotClassName = pending
-    ? "bg-amber-400"
-    : connectionState === "connected"
-      ? "bg-success"
-      : connectionState === "connecting"
-        ? "bg-warning"
-        : connectionState === "error" || runtime?.authState === "requires-auth"
-          ? "bg-destructive"
-          : "bg-muted-foreground/40";
-
-  const description = pending
-    ? pending.matchNumber
-      ? `Waiting for ${displayLabel} to allow this computer. Check it shows ${pending.matchNumber}.`
-      : `Waiting for ${displayLabel} to allow this computer.`
-    : isConnected
-      ? [
-          record.desktopSsh ? `SSH ${formatDesktopSshTarget(record.desktopSsh)}` : null,
-          record.relay && !relayLink ? "Old phone link" : null,
-          "Connected now",
-          relayLink && runtime?.route === "direct"
-            ? "On your network"
-            : relayLink && runtime?.route === "relay"
-              ? "Through the relay"
-              : null,
-        ]
-          .filter(Boolean)
-          .join(" · ")
-      : isConnecting
-        ? "Connecting"
-        : (runtime?.lastError ??
-          (record.lastConnectedAt
-            ? `Last connected ${formatElapsedDurationLabel(record.lastConnectedAt, nowMs)} ago`
-            : "Not connected yet"));
-
-  return (
-    <div className={ITEM_ROW_CLASSNAME}>
-      <div className={ITEM_ROW_INNER_CLASSNAME}>
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex min-h-5 items-center gap-1.5">
-            <ConnectionStatusDot
-              tooltipText={getSavedBackendStatusTooltip(runtime, record, nowMs)}
-              dotClassName={dotClassName}
-              pingClassName={isConnecting && !pending ? "bg-warning/60 duration-2000" : null}
-            />
-            <LaptopIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-            <h3 className="truncate text-[13px] font-semibold text-foreground">{displayLabel}</h3>
-          </div>
-          <p className="text-xs text-muted-foreground">{description}</p>
-          {versionMismatch ? (
-            <p className="flex items-center gap-1 text-xs text-warning">
-              <TriangleAlertIcon className="size-3.5 shrink-0" />
-              It runs Threadlines {versionMismatch.serverVersion} and this computer runs{" "}
-              {versionMismatch.clientVersion}. Update both if things act up.
-            </p>
-          ) : null}
-        </div>
-        <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-          {pending ? (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => void cancelPendingRelayJoin(environmentId)}
-            >
-              Cancel
-            </Button>
-          ) : (
-            <>
-              {needsNewCode ? (
-                <Button size="xs" variant="outline" onClick={onConnectAgain}>
-                  Connect again
-                </Button>
-              ) : (
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={canDisconnect ? isDisconnecting : isConnecting}
-                  onClick={() =>
-                    void (canDisconnect ? onDisconnect(environmentId) : onConnect(environmentId))
-                  }
-                >
-                  {isConnected
-                    ? isDisconnecting
-                      ? "Disconnecting…"
-                      : "Disconnect"
-                    : isWaitingToReconnect
-                      ? isDisconnecting
-                        ? "Stopping…"
-                        : "Stop trying"
-                      : isConnecting
-                        ? "Connecting…"
-                        : "Connect"}
-                </Button>
-              )}
-              <Button
-                size="xs"
-                variant="destructive-outline"
-                disabled={removingEnvironmentId === environmentId}
-                onClick={() => void onRemove(environmentId)}
-              >
-                {removingEnvironmentId === environmentId ? "Forgetting…" : "Forget"}
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface DesktopSshHostRowProps {
-  target: DesktopDiscoveredSshHost;
-  connectingHostAlias: string | null;
-  onConnect: (target: DesktopDiscoveredSshHost) => void;
-}
-
-const DesktopSshHostRow = memo(function DesktopSshHostRow({
-  target,
-  connectingHostAlias,
-  onConnect,
-}: DesktopSshHostRowProps) {
-  const address = formatDesktopSshTarget(target);
-  const showAddress = address !== target.alias;
-  const buttonLabel = connectingHostAlias === target.alias ? "Adding..." : "Add";
-
-  return (
-    <div className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-3")}>
-      <div className={ITEM_ROW_INNER_CLASSNAME}>
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate text-sm font-medium text-foreground">{target.alias}</h3>
-          {showAddress ? <p className="truncate text-xs text-muted-foreground">{address}</p> : null}
-        </div>
-        <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={connectingHostAlias === target.alias}
-            onClick={() => onConnect(target)}
-          >
-            {connectingHostAlias === target.alias ? (
-              <RefreshCwIcon className="size-3 animate-spin" />
-            ) : null}
-            {buttonLabel}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-});
-
 /**
  * Settings › Connections. Organized by direction so it's always clear which
  * computer is which:
  * - This computer: its name.
- * - Devices using this computer: "Connect a device" (code + QR through the
- *   relay) and every device with access, each with Remove access.
- * - Computers you use from here: "Connect to a computer" (type a code) and the
- *   saved computers, with older ways (address + pairing code, SSH) tucked in.
+ * - Devices that can use this computer: "Connect a device" (code + QR
+ *   through the relay) and every device with access, each with Remove access.
+ *   Linked computers are joined to their links by session id.
+ * - Computers you use from here: how many, with Open Fleet and "Connect to a
+ *   computer" (Fleet manages them, docs/design/fleet.md R4.4).
  * - Connection options: Same network, Tailscale, one-time network links.
  * The hosted app (`surface="phone"`) only has the middle-but-one section.
  */
 export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "phone" }) {
   const isPhoneSurface = surface === "phone";
+  const navigate = useNavigate();
   const desktopBridge = window.desktopBridge;
   const { role: currentSessionRole, authPolicy: currentAuthPolicy } =
     usePrimarySessionAccess(!isPhoneSurface);
-  const savedEnvironmentsById = useSavedEnvironmentRegistryStore((state) => state.byId);
-  const savedEnvironmentIds = useMemo(
-    () =>
-      Object.values(savedEnvironmentsById)
-        .toSorted((left, right) => left.label.localeCompare(right.label))
-        .map((record) => record.environmentId),
-    [savedEnvironmentsById],
+  const savedComputerCount = useSavedEnvironmentRegistryStore(
+    (state) => Object.keys(state.byId).length,
   );
-  const savedDesktopSshEnvironmentsByAlias = useMemo(
-    () =>
-      Object.values(savedEnvironmentsById).reduce<Record<string, SavedEnvironmentRecord>>(
-        (accumulator, record) => {
-          if (record.desktopSsh?.alias) {
-            accumulator[record.desktopSsh.alias] = record;
-          }
-          return accumulator;
-        },
-        {},
-      ),
-    [savedEnvironmentsById],
-  );
-  const savedDesktopSshEnvironmentKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const record of Object.values(savedEnvironmentsById)) {
-      const target = record.desktopSsh;
-      if (!target) continue;
-      keys.add(target.alias);
-      keys.add(formatDesktopSshTarget(target));
-    }
-    return keys;
-  }, [savedEnvironmentsById]);
-  const [discoveredSshHosts, setDiscoveredSshHosts] = useState<
-    ReadonlyArray<DesktopDiscoveredSshHost>
-  >([]);
-  const [hasLoadedDiscoveredSshHosts, setHasLoadedDiscoveredSshHosts] = useState(false);
-  const [isLoadingDiscoveredSshHosts, setIsLoadingDiscoveredSshHosts] = useState(false);
-  const [discoveredSshHostsError, setDiscoveredSshHostsError] = useState<string | null>(null);
-  const [connectingSshHostAlias, setConnectingSshHostAlias] = useState<string | null>(null);
-
   const [storedServerExposureState, setDesktopServerExposureState] =
     useState<DesktopServerExposureState | null>(null);
   const [storedAdvertisedEndpoints, setDesktopAdvertisedEndpoints] = useState<
@@ -1348,37 +963,11 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
   const [isRevokingOtherDesktopClients, setIsRevokingOtherDesktopClients] = useState(false);
   const [confirmRemoveAllOpen, setConfirmRemoveAllOpen] = useState(false);
   const [connectDeviceOpen, setConnectDeviceOpen] = useState(false);
-  const [joinComputerOpen, setJoinComputerOpen] = useState(false);
   const [connectionOptionsOpen, setConnectionOptionsOpen] = useState(false);
   const [directLinkDialogOpen, setDirectLinkDialogOpen] = useState(false);
   const [directLinkLabel, setDirectLinkLabel] = useState("");
   const [isCreatingDirectLink, setIsCreatingDirectLink] = useState(false);
   const [retiredPhoneLinkNotice, setRetiredPhoneLinkNotice] = useState(false);
-  const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh">("remote");
-  const [savedBackendHost, setSavedBackendHost] = useState("");
-  const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
-  const [savedBackendSshHost, setSavedBackendSshHost] = useState("");
-  const [savedBackendSshUsername, setSavedBackendSshUsername] = useState("");
-  const [savedBackendSshPort, setSavedBackendSshPort] = useState("");
-  const [savedBackendError, setSavedBackendError] = useState<string | null>(null);
-  const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
-  const unsavedDiscoveredSshHosts = useMemo(
-    () =>
-      discoveredSshHosts.filter((target) => {
-        const address = formatDesktopSshTarget(target);
-        return (
-          !savedDesktopSshEnvironmentKeys.has(target.alias) &&
-          !savedDesktopSshEnvironmentKeys.has(address)
-        );
-      }),
-    [discoveredSshHosts, savedDesktopSshEnvironmentKeys],
-  );
-  const [reconnectingSavedEnvironmentId, setReconnectingSavedEnvironmentId] =
-    useState<EnvironmentId | null>(null);
-  const [disconnectingSavedEnvironmentId, setDisconnectingSavedEnvironmentId] =
-    useState<EnvironmentId | null>(null);
-  const [removingSavedEnvironmentId, setRemovingSavedEnvironmentId] =
-    useState<EnvironmentId | null>(null);
   const [isUpdatingDesktopServerExposure, setIsUpdatingDesktopServerExposure] = useState(false);
   const [isDesktopServerExposureDialogOpen, setIsDesktopServerExposureDialogOpen] = useState(false);
   const [isUpdatingTailscaleServe, setIsUpdatingTailscaleServe] = useState(false);
@@ -1603,6 +1192,47 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     [],
   );
 
+  // Linked computers among the devices: their inbound links, by session.
+  const thisComputerLinks = useComputerLinksStore((state) =>
+    thisEnvironmentId === null ? null : (state.byEnvironmentId[thisEnvironmentId] ?? null),
+  );
+  const inboundLinkBySession = useMemo(() => {
+    const bySession = new Map<string, InboundComputerLink>();
+    for (const link of thisComputerLinks?.snapshot.inbound ?? []) {
+      if (link.sessionId !== null) bySession.set(link.sessionId, link);
+    }
+    return bySession;
+  }, [thisComputerLinks]);
+
+  // Removing a linked computer's access is removing its link here, which also
+  // stops the threads it started here (as Unlink does).
+  const handleRemoveLinkedComputer = useCallback(
+    async (sessionId: ServerClientSessionRecord["sessionId"], link: InboundComputerLink) => {
+      if (thisEnvironmentId === null) return;
+      setRevokingDesktopClientSessionId(sessionId);
+      setDesktopAccessManagementError(null);
+      try {
+        await removeComputerLinkHalf(
+          { environmentId: thisEnvironmentId, label: thisComputerLabel },
+          { direction: "inbound", deviceId: link.deviceId, stopRunning: true },
+        );
+      } catch (error) {
+        const message = describeComputerLinkFailure(error, "Failed to remove access.");
+        setDesktopAccessManagementError(message);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not remove access",
+            description: message,
+          }),
+        );
+      } finally {
+        setRevokingDesktopClientSessionId(null);
+      }
+    },
+    [thisComputerLabel, thisEnvironmentId],
+  );
+
   const handleRevokeOtherDesktopClients = useCallback(async () => {
     setIsRevokingOtherDesktopClients(true);
     setDesktopAccessManagementError(null);
@@ -1646,184 +1276,6 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
       setIsCreatingDirectLink(false);
     }
   }, [directLinkLabel]);
-
-  const handleAddSavedBackend = useCallback(async () => {
-    setIsAddingSavedBackend(true);
-    setSavedBackendError(null);
-    try {
-      if (savedBackendMode === "ssh") {
-        const target = parseManualDesktopSshTarget({
-          host: savedBackendSshHost,
-          username: savedBackendSshUsername,
-          port: savedBackendSshPort,
-        });
-        const record = await connectDesktopSshEnvironment(target, { label: "" });
-        toastManager.add({
-          type: "success",
-          title: "Computer connected",
-          description: `${record.label} is ready through SSH.`,
-        });
-      } else {
-        const remotePairingInput = parseRemotePairingFields({
-          host: savedBackendHost,
-          pairingCode: savedBackendPairingCode,
-        });
-        const record = await addSavedEnvironment({ label: "", ...remotePairingInput });
-        toastManager.add({
-          type: "success",
-          title: "Computer saved",
-          description: `${record.label} will reconnect when Threadlines starts.`,
-        });
-      }
-      setSavedBackendHost("");
-      setSavedBackendPairingCode("");
-      setSavedBackendSshHost("");
-      setSavedBackendSshUsername("");
-      setSavedBackendSshPort("");
-      setJoinComputerOpen(false);
-    } catch (error) {
-      setSavedBackendError(
-        savedBackendMode === "ssh"
-          ? formatDesktopSshConnectionError(error)
-          : error instanceof Error
-            ? error.message
-            : "Failed to add computer.",
-      );
-    } finally {
-      setIsAddingSavedBackend(false);
-    }
-  }, [
-    savedBackendHost,
-    savedBackendMode,
-    savedBackendPairingCode,
-    savedBackendSshHost,
-    savedBackendSshPort,
-    savedBackendSshUsername,
-  ]);
-
-  const runSavedBackendAction = useCallback(
-    async (
-      environmentId: EnvironmentId,
-      action: (environmentId: EnvironmentId) => Promise<void>,
-      setBusy: (environmentId: EnvironmentId | null) => void,
-      failure: { readonly title: string; readonly fallback: string },
-    ) => {
-      setBusy(environmentId);
-      try {
-        await action(environmentId);
-      } catch (error) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: failure.title,
-            description: error instanceof Error ? error.message : failure.fallback,
-          }),
-        );
-      } finally {
-        setBusy(null);
-      }
-    },
-    [],
-  );
-  const handleConnectSavedBackend = useCallback(
-    (environmentId: EnvironmentId) =>
-      void runSavedBackendAction(
-        environmentId,
-        reconnectSavedEnvironment,
-        setReconnectingSavedEnvironmentId,
-        { title: "Could not connect", fallback: "Failed to connect." },
-      ),
-    [runSavedBackendAction],
-  );
-  const handleDisconnectSavedBackend = useCallback(
-    (environmentId: EnvironmentId) =>
-      void runSavedBackendAction(
-        environmentId,
-        disconnectSavedEnvironmentByUser,
-        setDisconnectingSavedEnvironmentId,
-        { title: "Could not disconnect", fallback: "Failed to disconnect." },
-      ),
-    [runSavedBackendAction],
-  );
-  const handleRemoveSavedBackend = useCallback(
-    (environmentId: EnvironmentId) =>
-      void runSavedBackendAction(
-        environmentId,
-        removeSavedEnvironment,
-        setRemovingSavedEnvironmentId,
-        { title: "Could not forget that computer", fallback: "Failed to forget it." },
-      ),
-    [runSavedBackendAction],
-  );
-
-  const loadDiscoveredSshHosts = useCallback(async () => {
-    if (!desktopBridge) {
-      setDiscoveredSshHosts([]);
-      setHasLoadedDiscoveredSshHosts(false);
-      setDiscoveredSshHostsError(null);
-      return;
-    }
-
-    setIsLoadingDiscoveredSshHosts(true);
-    setDiscoveredSshHostsError(null);
-    try {
-      const hosts = await desktopBridge.discoverSshHosts();
-      setDiscoveredSshHosts(hosts);
-      setHasLoadedDiscoveredSshHosts(true);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to find SSH computers.";
-      setDiscoveredSshHostsError(message);
-      setHasLoadedDiscoveredSshHosts(true);
-    } finally {
-      setIsLoadingDiscoveredSshHosts(false);
-    }
-  }, [desktopBridge]);
-
-  const handleConnectSshHost = useCallback(
-    async (target: DesktopSshEnvironmentTarget, label?: string) => {
-      setConnectingSshHostAlias(target.alias);
-      setSavedBackendError(null);
-      try {
-        const record = await connectDesktopSshEnvironment(
-          target,
-          label === undefined ? undefined : { label },
-        );
-        setSavedBackendSshHost("");
-        setSavedBackendSshUsername("");
-        setSavedBackendSshPort("");
-        setJoinComputerOpen(false);
-        toastManager.add({
-          type: "success",
-          title: savedDesktopSshEnvironmentsByAlias[target.alias]
-            ? "Computer reconnected"
-            : "Computer connected",
-          description: `${record.label} is ready through SSH.`,
-        });
-      } catch (error) {
-        setSavedBackendError(formatDesktopSshConnectionError(error));
-      } finally {
-        setConnectingSshHostAlias(null);
-      }
-    },
-    [savedDesktopSshEnvironmentsByAlias],
-  );
-
-  useEffect(() => {
-    if (!desktopBridge || !joinComputerOpen || savedBackendMode !== "ssh") {
-      return;
-    }
-    if (hasLoadedDiscoveredSshHosts || isLoadingDiscoveredSshHosts) {
-      return;
-    }
-    void loadDiscoveredSshHosts();
-  }, [
-    desktopBridge,
-    hasLoadedDiscoveredSshHosts,
-    isLoadingDiscoveredSshHosts,
-    joinComputerOpen,
-    loadDiscoveredSshHosts,
-    savedBackendMode,
-  ]);
 
   // How this computer is reachable, for its owner on the desktop app. The
   // devices with access come live from `useAuthAccess` above.
@@ -1917,223 +1369,6 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     },
     [setDefaultAdvertisedEndpointKey],
   );
-  const handleSavedBackendHostChange = useCallback((value: string) => {
-    const parsedPairingUrl = parsePairingUrlFields(value);
-    if (parsedPairingUrl) {
-      setSavedBackendHost(parsedPairingUrl.host);
-      setSavedBackendPairingCode(parsedPairingUrl.pairingCode);
-      return;
-    }
-    setSavedBackendHost(value);
-  }, []);
-
-  // Code joins go through this computer's own server, which describes itself
-  // to the relay; the hosted app (phone surface) talks to the relay directly.
-  const submitCodeJoinViaServer = useMemo<SubmitCodeJoinViaServer | null>(
-    () =>
-      isPhoneSurface
-        ? null
-        : async (input) => {
-            try {
-              return await getPrimaryEnvironmentConnection().client.relay.submitJoin(input);
-            } catch (error) {
-              const detail =
-                error && typeof error === "object" && "detail" in error
-                  ? String(error.detail)
-                  : error instanceof Error
-                    ? error.message
-                    : "That didn't work.";
-              const code =
-                error &&
-                typeof error === "object" &&
-                "code" in error &&
-                typeof error.code === "string"
-                  ? error.code
-                  : null;
-              throw new RelayJoinError(detail, code);
-            }
-          },
-    [isPhoneSurface],
-  );
-
-  const renderConnectionModeCard = (input: {
-    readonly mode: "remote" | "ssh";
-    readonly title: string;
-    readonly description: string;
-    readonly icon?: ReactNode;
-  }) => {
-    const selected = savedBackendMode === input.mode;
-    return (
-      <button
-        type="button"
-        aria-pressed={selected}
-        className={cn(
-          "group flex items-start gap-3 rounded-lg border p-3 text-left",
-          selected ? "border-primary/50 bg-primary/5" : "border-border/60 hover:bg-muted/40",
-        )}
-        disabled={isAddingSavedBackend}
-        onClick={() => {
-          setSavedBackendMode(input.mode);
-          setSavedBackendError(null);
-        }}
-      >
-        {input.icon ? (
-          <span
-            className={cn(
-              "mt-0.5 shrink-0",
-              selected ? "text-primary-readable" : "text-muted-foreground",
-            )}
-          >
-            {input.icon}
-          </span>
-        ) : null}
-        <span className="min-w-0">
-          <span className="block text-sm font-medium text-foreground">{input.title}</span>
-          <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
-            {input.description}
-          </span>
-        </span>
-      </button>
-    );
-  };
-
-  const renderRemoteFields = () => (
-    <div className="space-y-3">
-      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-foreground">Computer address</span>
-          <Input
-            value={savedBackendHost}
-            onChange={(event) => handleSavedBackendHostChange(event.target.value)}
-            placeholder="Paste a link or address"
-            disabled={isAddingSavedBackend}
-            spellCheck={false}
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-foreground">Pairing code</span>
-          <Input
-            value={savedBackendPairingCode}
-            onChange={(event) => setSavedBackendPairingCode(event.target.value)}
-            placeholder="PAIRCODE"
-            disabled={isAddingSavedBackend}
-            spellCheck={false}
-          />
-        </label>
-      </div>
-      <p className="text-[11px] text-muted-foreground">
-        For a one-time link from Connection options on the other computer. Pasting the whole link
-        fills in the code.
-      </p>
-    </div>
-  );
-
-  const renderSshFields = () => (
-    <div className="space-y-3">
-      <label className="block">
-        <span className="mb-1.5 block text-xs font-medium text-foreground">
-          Computer name or SSH host
-        </span>
-        <Input
-          value={savedBackendSshHost}
-          onChange={(event) => setSavedBackendSshHost(event.target.value)}
-          placeholder="Search saved hosts or type devbox"
-          disabled={isAddingSavedBackend}
-          spellCheck={false}
-        />
-      </label>
-      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_7rem]">
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-foreground">User name</span>
-          <Input
-            value={savedBackendSshUsername}
-            onChange={(event) => setSavedBackendSshUsername(event.target.value)}
-            placeholder="root"
-            disabled={isAddingSavedBackend}
-            spellCheck={false}
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-foreground">Port</span>
-          <Input
-            value={savedBackendSshPort}
-            onChange={(event) => setSavedBackendSshPort(event.target.value)}
-            placeholder="22"
-            inputMode="numeric"
-            disabled={isAddingSavedBackend}
-            spellCheck={false}
-          />
-        </label>
-      </div>
-      {unsavedDiscoveredSshHosts.length > 0 || isLoadingDiscoveredSshHosts ? (
-        <div className="border-t border-group-divider pt-2">
-          <div className="flex items-center justify-between gap-3 py-1">
-            <p className="text-xs text-muted-foreground">From your SSH config and known hosts</p>
-            <Button
-              size="xs"
-              variant="ghost"
-              disabled={isLoadingDiscoveredSshHosts}
-              onClick={() => void loadDiscoveredSshHosts()}
-            >
-              <RefreshCwIcon
-                className={cn("size-3", isLoadingDiscoveredSshHosts && "animate-spin")}
-              />
-              Refresh
-            </Button>
-          </div>
-          <ScrollArea scrollFade className="max-h-48">
-            <div>
-              {unsavedDiscoveredSshHosts.map((target) => (
-                <DesktopSshHostRow
-                  key={`${target.alias}:${target.hostname}:${target.port ?? ""}`}
-                  target={target}
-                  connectingHostAlias={connectingSshHostAlias}
-                  onConnect={(nextTarget) => void handleConnectSshHost(nextTarget)}
-                />
-              ))}
-            </div>
-          </ScrollArea>
-        </div>
-      ) : null}
-    </div>
-  );
-
-  const otherWaysToConnect = (
-    <div className="space-y-3">
-      <div className={cn("grid gap-2", desktopBridge && !isPhoneSurface && "sm:grid-cols-2")}>
-        {renderConnectionModeCard({
-          mode: "remote",
-          title: "Address and pairing code",
-          description: "A one-time link for the same network or Tailscale.",
-          icon: <ChevronsLeftRightEllipsisIcon aria-hidden className="size-4" />,
-        })}
-        {desktopBridge && !isPhoneSurface
-          ? renderConnectionModeCard({
-              mode: "ssh",
-              title: "SSH",
-              description: "For computers you already reach with SSH keys.",
-              icon: <TerminalIcon aria-hidden className="size-4" />,
-            })
-          : null}
-      </div>
-      {savedBackendMode === "ssh" && desktopBridge ? renderSshFields() : renderRemoteFields()}
-      {savedBackendError || discoveredSshHostsError ? (
-        <p className="text-xs text-destructive-foreground">
-          {savedBackendError ?? discoveredSshHostsError}
-        </p>
-      ) : null}
-      <Button
-        size="sm"
-        variant="outline"
-        className="w-full"
-        disabled={isAddingSavedBackend}
-        onClick={() => void handleAddSavedBackend()}
-      >
-        {isAddingSavedBackend ? "Adding..." : "Add this computer"}
-      </Button>
-    </div>
-  );
-
   const renderNetworkAccessToggle = () => (
     <Switch
       checked={desktopServerExposureState?.mode === "network-accessible"}
@@ -2160,7 +1395,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
 
   const devicesSection = (
     <SettingsSection
-      title="Devices using this computer"
+      title="Devices that can use this computer"
       headerAction={
         otherDeviceCount >= 2 ? (
           <Button
@@ -2208,14 +1443,32 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
       {isLoadingDesktopAccessManagement && visibleDeviceSessions.length === 0 ? (
         <ConnectedDevicesSkeleton presentation="current" />
       ) : null}
-      {visibleDeviceSessions.map((clientSession) => (
-        <DeviceAccessRow
-          key={clientSession.sessionId}
-          clientSession={clientSession}
-          revokingClientSessionId={revokingDesktopClientSessionId}
-          onRevokeSession={handleRevokeDesktopClientSession}
-        />
-      ))}
+      {visibleDeviceSessions.map((clientSession) => {
+        if (clientSession.role !== "peer") {
+          return (
+            <DeviceAccessRow
+              key={clientSession.sessionId}
+              clientSession={clientSession}
+              revokingClientSessionId={revokingDesktopClientSessionId}
+              onRevokeSession={handleRevokeDesktopClientSession}
+            />
+          );
+        }
+        const link = inboundLinkBySession.get(clientSession.sessionId) ?? null;
+        return (
+          <LinkedComputerAccessRow
+            key={clientSession.sessionId}
+            clientSession={clientSession}
+            link={link}
+            removing={revokingDesktopClientSessionId === clientSession.sessionId}
+            onRemove={() =>
+              void (link === null
+                ? handleRevokeDesktopClientSession(clientSession.sessionId)
+                : handleRemoveLinkedComputer(clientSession.sessionId, link))
+            }
+          />
+        );
+      })}
       {visibleDesktopPairingLinks.map((pairingLink) => (
         <PairingLinkListRow
           key={pairingLink.id}
@@ -2230,35 +1483,32 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     </SettingsSection>
   );
 
+  // The computers this app uses live in Fleet now (docs/design/fleet.md, R4.4):
+  // here is only how many, and the two ways there.
   const computersSection = (
     <SettingsSection title="Computers you use from here">
       <SettingsRow
-        title="Connect to a computer"
-        description={
-          isPhoneSurface
-            ? "Scan the QR code on the computer that has your projects, or type its code here."
-            : "Type the code from the computer that has your projects."
+        data-testid="connections-computers-summary"
+        title={
+          savedComputerCount === 0
+            ? "No computers yet"
+            : savedComputerCount === 1
+              ? "1 computer"
+              : `${savedComputerCount} computers`
         }
+        description="See what they're doing and manage them in Fleet."
         control={
-          <Button size="xs" variant="outline" onClick={() => setJoinComputerOpen(true)}>
-            <LaptopIcon className="size-3.5" />
-            {isPhoneSurface ? "Type a code" : "Connect to a computer"}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="xs" variant="outline" onClick={() => void navigate({ to: "/fleet" })}>
+              Open Fleet
+            </Button>
+            <Button size="xs" variant="outline" onClick={openConnectComputerDialog}>
+              <LaptopIcon className="size-3.5" />
+              Connect to a computer
+            </Button>
+          </div>
         }
       />
-      {savedEnvironmentIds.map((environmentId) => (
-        <SavedBackendListRow
-          key={environmentId}
-          environmentId={environmentId}
-          reconnectingEnvironmentId={reconnectingSavedEnvironmentId}
-          disconnectingEnvironmentId={disconnectingSavedEnvironmentId}
-          removingEnvironmentId={removingSavedEnvironmentId}
-          onConnect={handleConnectSavedBackend}
-          onDisconnect={handleDisconnectSavedBackend}
-          onRemove={handleRemoveSavedBackend}
-          onConnectAgain={() => setJoinComputerOpen(true)}
-        />
-      ))}
     </SettingsSection>
   );
 
@@ -2420,7 +1670,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
       {isPhoneSurface ? null : canManageLocalBackend ? (
         devicesSection
       ) : (
-        <SettingsSection title="Devices using this computer">
+        <SettingsSection title="Devices that can use this computer">
           <SettingsRow
             title="Owner only"
             description="Only the computer's owner can connect devices or remove their access."
@@ -2440,21 +1690,6 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
           relayAccess={relayAccess}
         />
       ) : null}
-      <JoinComputerDialog
-        open={joinComputerOpen}
-        onOpenChange={(open) => {
-          setJoinComputerOpen(open);
-          if (!open) setSavedBackendError(null);
-        }}
-        viaServer={submitCodeJoinViaServer}
-        replaceExisting={removeSavedEnvironment}
-        selfEnvironmentId={thisEnvironmentId}
-        otherWays={otherWaysToConnect}
-        otherWaysSummary={
-          desktopBridge && !isPhoneSurface ? "Address and code, SSH" : "Address and code"
-        }
-      />
-
       <AlertDialog open={confirmRemoveAllOpen} onOpenChange={setConfirmRemoveAllOpen}>
         <AlertDialogPopup>
           <AlertDialogHeader>
@@ -2490,8 +1725,8 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
           <DialogHeader>
             <DialogTitle>One-time link for this network</DialogTitle>
             <DialogDescription>
-              The link shows up under Devices using this computer. Open it on the other device, or
-              paste it there under Connect to a computer › Other ways to connect.
+              The link shows up under Devices that can use this computer. Open it on the other
+              device, or paste it there under Connect to a computer › Other ways to connect.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>

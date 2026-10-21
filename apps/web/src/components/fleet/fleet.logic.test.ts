@@ -59,6 +59,7 @@ function thread(
     provider: { instanceId: CLAUDE, driverKind: "claudeAgent" },
     modelSelection: null,
     startedByTitle: null,
+    startedByComputer: null,
     ...overrides,
   };
 }

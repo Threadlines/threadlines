@@ -36,9 +36,15 @@ export interface FleetComputerInput {
   readonly id: string;
   /** Null for a linked device: it runs no threads of its own. */
   readonly environmentId: EnvironmentId | null;
-  /** This computer (the center), another computer, or a device linked to this one. */
-  readonly kind: "this" | "computer" | "device";
+  /**
+   * This computer (the center), a computer this app connects to, a computer
+   * linked to one of those that this app doesn't connect to (`linked`: its
+   * threads are out of sight), or a phone or tablet using this one.
+   */
+  readonly kind: "this" | "computer" | "linked" | "device";
   readonly label: string;
+  /** `linked` only: a computer it is linked with, for "Linked with Mac". */
+  readonly linkedWith?: string | null;
   readonly glyph: FleetGlyph;
   readonly connection: FleetConnection;
   readonly route: FleetRoute;
@@ -62,8 +68,10 @@ export interface FleetThreadInput {
     readonly driverKind: string;
   } | null;
   readonly modelSelection: ModelSelection | null;
-  /** The title of the thread whose agent started this one, on the same computer. */
+  /** The title of the thread whose agent started this one. */
   readonly startedByTitle: string | null;
+  /** Where that thread runs, when it is another computer ("Started by … on Mac"). */
+  readonly startedByComputer: string | null;
 }
 
 /** An agent with live threads on one computer. */
@@ -322,6 +330,10 @@ export function describeComputerLocation(computer: FleetComputerInput, nowMs: nu
         ? "This computer · Reconnecting"
         : "This computer · Offline";
   }
+  if (computer.kind === "linked") {
+    // This app doesn't connect to it: what is known is its link.
+    return computer.linkedWith ? `Linked with ${computer.linkedWith}` : "Linked";
+  }
   switch (computer.connection) {
     case "reconnecting":
       return "Reconnecting";
@@ -375,7 +387,10 @@ export function describeQuietComputers(
   computers: readonly FleetComputer[],
   nowMs: number,
 ): string | null {
-  const quiet = computers.filter((computer) => computer.threads.length === 0);
+  // A linked computer this app doesn't connect to isn't quiet: its work is out of sight.
+  const quiet = computers.filter(
+    (computer) => computer.threads.length === 0 && computer.kind !== "linked",
+  );
   const idle = quiet
     .filter((computer) => computer.connection === "connected")
     .map((computer) => computer.label);
@@ -405,7 +420,10 @@ export type FleetLineState = "working" | "needs-you" | "connected" | "reconnecti
  * A line carries motion while anything at its end runs, even when something
  * else there waits on the user: the node's ring and badge say that part.
  */
-function lineWork(counts: { readonly working: number; readonly needsYou: number }): FleetLineState {
+export function lineWork(counts: {
+  readonly working: number;
+  readonly needsYou: number;
+}): FleetLineState {
   return counts.working > 0 ? "working" : counts.needsYou > 0 ? "needs-you" : "connected";
 }
 
