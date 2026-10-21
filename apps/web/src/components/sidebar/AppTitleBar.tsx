@@ -1,8 +1,10 @@
 import { ArrowLeftIcon, ArrowRightIcon, PanelLeftCloseIcon, PanelLeftIcon } from "lucide-react";
+import { type CSSProperties, useCallback, useState } from "react";
 
 import { useAppHistory } from "../../appHistory";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { useServerKeybindings } from "../../rpc/serverState";
+import { cn } from "../../lib/utils";
 import { useSidebar } from "../ui/sidebar";
 import { AppWordmark } from "./AppWordmark";
 import { ChromeIconButton, ChromeTooltip } from "./ChromeIconButton";
@@ -11,19 +13,63 @@ import { useRouteShortcutContext, useSelectedDestination } from "./NavigationRai
 import { NAVIGATION_DESTINATION_LABELS } from "./navigationRail.logic";
 
 /**
- * The window's title row on a wide screen, part of the frame with the rail:
- * past the macOS traffic lights (or from the left edge elsewhere, with the
- * window controls at the right), the list toggle, back and forward, then the
- * app's name. Nothing in it moves when the list hides; it moves the window.
- * On a page with no list (Pull Requests, Usage) the toggle stays, disabled.
+ * Where the open page's slot starts, from the title row's left edge: over the
+ * page's content column (past the rail, the work panel's hairline, the list
+ * while it shows, and a header's own 20px padding), and never nearer the
+ * buttons on its left than 12px. It moves with the list's slide, on the same
+ * curve, because both are CSS.
  */
-export function AppTitleBar() {
+const SLOT_START =
+  "max(12px, calc(var(--app-rail-width) + 1px + var(--titlebar-list-width) + 20px - var(--titlebar-cluster-end)))";
+
+/**
+ * The window's title row on a wide screen, part of the frame with the rail:
+ * past the macOS traffic lights (or from the left edge elsewhere), the list
+ * toggle, back and forward, then the app's name. Nothing there moves when the
+ * list hides. On a page with no list (Pull Requests, Usage) the toggle stays,
+ * disabled.
+ *
+ * The rest of the row belongs to the open page (TitleBarContent): a thread's
+ * header, Settings' Restore defaults. It ends clear of the window controls
+ * (12px from the edge on macOS, past the Windows and Linux buttons). Empty
+ * space anywhere in the row moves the window; its controls never do.
+ */
+export function AppTitleBar({
+  slotRef,
+}: {
+  /** Receives the open page's slot, for TitleBarContent's portal. */
+  readonly slotRef: (element: HTMLElement | null) => void;
+}) {
   const { open, toggleSidebar, isMobile } = useSidebar();
   const keybindings = useServerKeybindings();
   const history = useAppHistory();
   const selected = useSelectedDestination();
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   const shortcutOptions = { platform, context: useRouteShortcutContext() };
+  const [clusterEnd, setClusterEnd] = useState(0);
+  // Off until the slot first stands where it belongs, so opening the window
+  // does not slide it in from the left.
+  const [slotSlides, setSlotSlides] = useState(false);
+  // Where the frame's own buttons end, measured as they mount (before the
+  // first paint) and whenever their width changes; the list's slide moves
+  // the slot by CSS alone.
+  const measureCluster = useCallback((cluster: HTMLDivElement | null) => {
+    const row = cluster?.parentElement;
+    if (!cluster || !row) return;
+    const measure = () => {
+      setClusterEnd(
+        Math.round(cluster.getBoundingClientRect().right - row.getBoundingClientRect().left),
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(cluster);
+    const frame = window.requestAnimationFrame(() => setSlotSlides(true));
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
+  }, []);
   if (isMobile) return null;
   const hasList = destinationHasList(selected);
   const pageLabel = NAVIGATION_DESTINATION_LABELS[selected];
@@ -32,64 +78,82 @@ export function AppTitleBar() {
   return (
     <div
       data-testid="app-titlebar"
-      className="drag-region flex h-(--app-titlebar-height) shrink-0 items-center gap-0.5 bg-frame ps-(--app-titlebar-leading) pe-(--workspace-native-controls-inset)"
+      className="drag-region flex h-(--app-titlebar-height) shrink-0 items-center bg-frame ps-(--app-titlebar-leading) pe-(--workspace-controls-right)"
+      style={
+        {
+          "--titlebar-list-width": open ? "var(--sidebar-width)" : "0px",
+          "--titlebar-cluster-end": `${clusterEnd}px`,
+        } as CSSProperties
+      }
     >
-      <ChromeIconButton
-        size="titlebar"
-        side="bottom"
-        label={hasList ? toggleLabel : "Sidebar"}
-        testId="titlebar-sidebar-toggle"
-        disabled={!hasList}
-        tooltip={
-          <ChromeTooltip
-            label={hasList ? toggleLabel : "Sidebar"}
-            shortcut={
-              hasList
-                ? shortcutLabelForCommand(keybindings, "sidebar.toggle", shortcutOptions)
-                : null
-            }
-            detail={hasList ? null : `${pageLabel} has no list.`}
-          />
-        }
-        onClick={toggleSidebar}
-      >
-        {open ? <PanelLeftCloseIcon aria-hidden="true" /> : <PanelLeftIcon aria-hidden="true" />}
-      </ChromeIconButton>
-      <ChromeIconButton
-        size="titlebar"
-        side="bottom"
-        label="Back"
-        testId="titlebar-back"
-        disabled={!history.canGoBack}
-        tooltip={
-          <ChromeTooltip
-            label="Back"
-            shortcut={shortcutLabelForCommand(keybindings, "navigate.back", shortcutOptions)}
-          />
-        }
-        onClick={history.back}
-      >
-        <ArrowLeftIcon aria-hidden="true" />
-      </ChromeIconButton>
-      <ChromeIconButton
-        size="titlebar"
-        side="bottom"
-        label="Forward"
-        testId="titlebar-forward"
-        disabled={!history.canGoForward}
-        tooltip={
-          <ChromeTooltip
-            label="Forward"
-            shortcut={shortcutLabelForCommand(keybindings, "navigate.forward", shortcutOptions)}
-          />
-        }
-        onClick={history.forward}
-      >
-        <ArrowRightIcon aria-hidden="true" />
-      </ChromeIconButton>
-      <div className="ms-1.5 flex min-w-0">
-        <AppWordmark />
+      <div ref={measureCluster} className="flex shrink-0 items-center gap-0.5">
+        <ChromeIconButton
+          size="titlebar"
+          side="bottom"
+          label={hasList ? toggleLabel : "Sidebar"}
+          testId="titlebar-sidebar-toggle"
+          disabled={!hasList}
+          tooltip={
+            <ChromeTooltip
+              label={hasList ? toggleLabel : "Sidebar"}
+              shortcut={
+                hasList
+                  ? shortcutLabelForCommand(keybindings, "sidebar.toggle", shortcutOptions)
+                  : null
+              }
+              detail={hasList ? null : `${pageLabel} has no list.`}
+            />
+          }
+          onClick={toggleSidebar}
+        >
+          {open ? <PanelLeftCloseIcon aria-hidden="true" /> : <PanelLeftIcon aria-hidden="true" />}
+        </ChromeIconButton>
+        <ChromeIconButton
+          size="titlebar"
+          side="bottom"
+          label="Back"
+          testId="titlebar-back"
+          disabled={!history.canGoBack}
+          tooltip={
+            <ChromeTooltip
+              label="Back"
+              shortcut={shortcutLabelForCommand(keybindings, "navigate.back", shortcutOptions)}
+            />
+          }
+          onClick={history.back}
+        >
+          <ArrowLeftIcon aria-hidden="true" />
+        </ChromeIconButton>
+        <ChromeIconButton
+          size="titlebar"
+          side="bottom"
+          label="Forward"
+          testId="titlebar-forward"
+          disabled={!history.canGoForward}
+          tooltip={
+            <ChromeTooltip
+              label="Forward"
+              shortcut={shortcutLabelForCommand(keybindings, "navigate.forward", shortcutOptions)}
+            />
+          }
+          onClick={history.forward}
+        >
+          <ArrowRightIcon aria-hidden="true" />
+        </ChromeIconButton>
+        <div className="ms-1.5 flex min-w-0">
+          <AppWordmark />
+        </div>
       </div>
+      <div
+        ref={slotRef}
+        data-testid="titlebar-slot"
+        className={cn(
+          "flex h-full min-w-0 flex-1 items-center",
+          slotSlides &&
+            "transition-[margin] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none [[data-sidebar-resizing]_&]:transition-none",
+        )}
+        style={{ marginInlineStart: SLOT_START }}
+      />
     </div>
   );
 }

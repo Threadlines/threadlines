@@ -6,6 +6,7 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
+  useState,
 } from "react";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
@@ -23,6 +24,7 @@ import { buildThreadRouteParams } from "../threadRoutes";
 import { useUiStateStore } from "../uiStateStore";
 import ThreadSidebar from "./Sidebar";
 import { AppTitleBar } from "./sidebar/AppTitleBar";
+import { TitleBarSlotContext } from "./sidebar/titleBarSlot";
 import { destinationHasList } from "./sidebar/destinationLists";
 import {
   NAVIGATION_RAIL_WIDTH_PX,
@@ -211,6 +213,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const hasList = destinationHasList(selectedDestination);
   const panelRef = useRef<HTMLDivElement>(null);
   usePageCrossFade(panelRef, selectedDestination);
+  // The title row's slot for the open page; null without a title row.
+  const [titleBarSlot, setTitleBarSlot] = useState<HTMLElement | null>(null);
   const setListOpen = useCallback(
     (open: boolean) => {
       if (hasList) setSidebarListOpen(open);
@@ -251,7 +255,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       style={sidebarStyle}
     >
       <AppShellCommands hasList={hasList} />
-      <AppTitleBar />
+      <AppTitleBar slotRef={setTitleBarSlot} />
       <div className="flex min-h-0 flex-1">
         <NavigationRail />
         <div
@@ -282,7 +286,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             {/* The drag handle on the pane's edge; it resizes while open. */}
             <SidebarRail />
           </Sidebar>
-          {children}
+          <TitleBarSlotContext value={titleBarSlot}>{children}</TitleBarSlotContext>
         </div>
       </div>
     </SidebarProvider>

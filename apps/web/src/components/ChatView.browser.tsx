@@ -3295,9 +3295,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // Hiding the list moves no button in the frame; only the page's edge moves.
       expect(frameButtons.map(placeOf)).toEqual(placesBefore);
       await vi.waitFor(() => {
-        const header = document.querySelector('header[data-find-region="chat"]')!;
+        const thread = document.querySelector('[data-slot="sidebar-inset"]')!;
         expect(
-          Math.abs(header.getBoundingClientRect().left - panel.getBoundingClientRect().left),
+          Math.abs(thread.getBoundingClientRect().left - panel.getBoundingClientRect().left),
         ).toBeLessThanOrEqual(1);
       });
 
@@ -3454,6 +3454,131 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Forward should return to Usage.",
       );
       await expect.element(forward).toHaveAttribute("aria-disabled", "true");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("puts the thread's header in the title row over the content column, moving with the list", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-titlebar-slot" as MessageId,
+        targetText: "titlebar slot",
+      }),
+    });
+
+    try {
+      const titleRow = document.querySelector<HTMLElement>('[data-testid="app-titlebar"]')!;
+      const slot = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="titlebar-slot"]'),
+        "Unable to find the title row's page slot.",
+      );
+      const cluster = document.querySelector('[data-testid="app-wordmark"]')!.parentElement!
+        .parentElement!;
+      const thread = () => document.querySelector('[data-slot="sidebar-inset"]')!;
+      // The whole header went up: its title and its panel toggles are in the
+      // row, and no header row is left in the panel.
+      await expect
+        .element(page.getByTestId("titlebar-slot").getByRole("button", { name: "Toggle panel" }))
+        .toBeVisible();
+      expect(titleRow.querySelector("h2")?.textContent).toBe("Browser test thread");
+      expect(document.querySelector('header[data-find-region="chat"]')).toBeNull();
+      // Its controls are buttons in a window drag region, never dragging it.
+      const panelToggle = slot.querySelector<HTMLElement>('button[aria-label="Toggle panel"]')!;
+      expect(getComputedStyle(slot).getPropertyValue("-webkit-app-region")).toBe("drag");
+      expect(getComputedStyle(panelToggle).getPropertyValue("-webkit-app-region")).toBe("no-drag");
+
+      // List open: the slot starts where the thread's own content would,
+      // past the list and a header's 20px padding.
+      await vi.waitFor(() => {
+        expect(
+          Math.abs(
+            slot.getBoundingClientRect().left - (thread().getBoundingClientRect().left + 20),
+          ),
+        ).toBeLessThanOrEqual(1);
+      });
+
+      // List hidden: the content column starts under the title row's own
+      // buttons, so the slot starts just past them instead.
+      useUiStateStore.getState().setSidebarListOpen(false);
+      await vi.waitFor(() => {
+        expect(
+          Math.abs(
+            slot.getBoundingClientRect().left - (cluster.getBoundingClientRect().right + 12),
+          ),
+        ).toBeLessThanOrEqual(1);
+      });
+      expect(thread().getBoundingClientRect().left + 20).toBeLessThan(
+        cluster.getBoundingClientRect().right + 12,
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the title row's page controls clear of the Windows window controls", async () => {
+    const root = document.documentElement;
+    root.classList.add("electron", "wco");
+    // What env(titlebar-area-*) reports with 138px of window controls.
+    root.style.setProperty("--workspace-controls-right", "150px");
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-titlebar-wco" as MessageId,
+        targetText: "titlebar wco",
+      }),
+    });
+
+    try {
+      const controlsStart = window.innerWidth - 150;
+      const slotControlsEnd = () =>
+        Math.max(
+          ...Array.from(
+            document.querySelectorAll('[data-testid="titlebar-slot"] button'),
+            (button) => button.getBoundingClientRect().right,
+          ),
+        );
+      await expect
+        .element(page.getByTestId("titlebar-slot").getByRole("button", { name: "Toggle panel" }))
+        .toBeVisible();
+      expect(
+        document.querySelector('[data-testid="titlebar-slot"]')!.getBoundingClientRect().right,
+      ).toBeLessThanOrEqual(controlsStart + 0.5);
+      expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
+
+      // A full page's controls go up there too, as clear of them.
+      await mounted.router.navigate({ to: "/settings/general" });
+      await expect
+        .element(
+          page.getByTestId("titlebar-slot").getByRole("button", { name: /Restore defaults/ }),
+        )
+        .toBeInTheDocument();
+      expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
+    } finally {
+      await mounted.cleanup();
+      root.style.removeProperty("--workspace-controls-right");
+      root.classList.remove("electron", "wco");
+    }
+  });
+
+  it("keeps the thread's own header in a window too narrow for the title row", async () => {
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, name: "narrow", width: 720 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-titlebar-narrow" as MessageId,
+        targetText: "titlebar narrow",
+      }),
+    });
+
+    try {
+      const header = await waitForElement(
+        () => document.querySelector<HTMLElement>('header[data-find-region="chat"]'),
+        "The thread should keep its own header without a title row.",
+      );
+      expect(document.querySelector('[data-testid="app-titlebar"]')).toBeNull();
+      expect(header.querySelector('[data-sidebar="trigger"]')).not.toBeNull();
+      expect(header.querySelector("h2")?.textContent).toBe("Browser test thread");
     } finally {
       await mounted.cleanup();
     }
