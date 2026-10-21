@@ -764,12 +764,26 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         cachedStatus: "idle",
         updatedAt: "2026-10-21T00:00:02.000Z",
       };
+      const startedChild = {
+        ...remoteChild,
+        threadId: ThreadId.make("remote-thread"),
+        title: "Thread started",
+        cachedStatus: "working",
+      };
       const childRequests = yield* encodeChildRequests({
         ...EMPTY_CHILD_REQUEST_STATE,
         open: [
           // Waiting for Mac mini's user: no thread there yet.
           request("waiting", {
             remote: { ...macMini, threadId: null, status: "awaiting_approval" },
+          }),
+          // Also waiting, with the id its thread will have: still a start.
+          request("reserved", {
+            remote: {
+              ...macMini,
+              threadId: ThreadId.make("reserved-thread"),
+              status: "awaiting_approval",
+            },
           }),
           // Mac mini made its thread: it reads as a remote child, not a start.
           request("started", {
@@ -785,7 +799,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           ),
           request("local", {}),
         ],
-        remoteChildren: [remoteChild],
+        remoteChildren: [remoteChild, startedChild],
       });
 
       yield* sql`
@@ -819,10 +833,18 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           status: "awaiting_approval",
           createdAt: "2026-10-21T00:00:01.000Z",
         },
+        {
+          requestId: ChildRequestId.make("reserved"),
+          environmentId: macMini.environmentId,
+          label: "Mac mini",
+          title: "Thread reserved",
+          status: "awaiting_approval",
+          createdAt: "2026-10-21T00:00:01.000Z",
+        },
       ];
       const shell = yield* snapshotQuery.getShellSnapshot();
       const parent = shell.threads.find((thread) => thread.id === ThreadId.make("thread-parent"));
-      assert.deepEqual(parent?.remoteChildren, [remoteChild]);
+      assert.deepEqual(parent?.remoteChildren, [remoteChild, startedChild]);
       assert.deepEqual(parent?.remoteChildStarts, expectedStarts);
       // A thread with none carries neither.
       const plain = shell.threads.find((thread) => thread.id === ThreadId.make("thread-plain"));
@@ -833,7 +855,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const one = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-parent"));
       assert.equal(one._tag, "Some");
       if (one._tag === "Some") {
-        assert.deepEqual(one.value.remoteChildren, [remoteChild]);
+        assert.deepEqual(one.value.remoteChildren, [remoteChild, startedChild]);
         assert.deepEqual(one.value.remoteChildStarts, expectedStarts);
       }
     }),
