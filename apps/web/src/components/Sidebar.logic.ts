@@ -1219,6 +1219,14 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       ? remote
       : remote.filter((child) => !entryByKey.has(child.threadKey));
   };
+  // A wrapped parent whose children on a computer this app can't see still
+  // work or need the user stays live: those children have no row of their
+  // own to stand on, unlike its children here.
+  const wrapped = (entry: E): boolean =>
+    entry.isDone &&
+    !remoteChildrenOf(entry).some(
+      (child) => isChildThreadNeedingYou(child) || isChildThreadWorking(child),
+    );
   const childrenByParentKey = new Map<string, E[]>();
   for (const entry of input.entries) {
     const parent = parentOf(entry);
@@ -1244,7 +1252,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
     const parent = parentOf(entry);
     if (parent === null) {
       if (!input.inScope(entry)) continue;
-      (entry.isDone ? doneHeads : liveHeads).push(entry);
+      (wrapped(entry) ? doneHeads : liveHeads).push(entry);
       continue;
     }
     if (!input.inScope(parent)) {
@@ -1256,7 +1264,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       continue;
     }
     // In a live family, or inside its wrapped parent: not a row of its own.
-    if (!parent.isDone || entry.isDone) continue;
+    if (!wrapped(parent) || entry.isDone) continue;
     liveHeads.push(entry);
     wrappedParentByKey.set(entry.threadKey, parent);
   }

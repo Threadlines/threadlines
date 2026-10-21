@@ -1862,6 +1862,32 @@ describe("families across computers", () => {
     const [seen] = sections([parent], { computersWithThreads: [mac, windows] }).live;
     expect(seen!.remoteChildren.map((child) => child.title)).toEqual(["Write the changelog"]);
   });
+
+  it("keeps a wrapped parent live while a child the app can't see still works or needs the user", () => {
+    const recorded = (cachedStatus: string) => ({
+      environmentId: windows,
+      label: "Windows PC",
+      threadId: ThreadId.make("flaky-test"),
+      handle: "Codex",
+      title: "Fix the flaky test",
+      attachmentEpoch: 0,
+      cachedStatus,
+      updatedAt: "2026-10-21T09:05:00.000Z",
+    });
+    const wrappedParent = (cachedStatus: string): Entry => ({
+      ...entry(mac, "release", { remoteChildren: [recorded(cachedStatus)] }),
+      isDone: true,
+    });
+    const busy = sections([wrappedParent("needs the user")], { computersWithThreads: [mac] });
+    expect(busy.done).toEqual([]);
+    expect(busy.live.map((row) => row.shownRemoteChildren.map((child) => child.title))).toEqual([
+      ["Fix the flaky test"],
+    ]);
+    // Once that child is quiet, the parent wraps as usual.
+    const quiet = sections([wrappedParent("idle")], { computersWithThreads: [mac] });
+    expect(quiet.live).toEqual([]);
+    expect(quiet.done).toHaveLength(1);
+  });
 });
 
 describe("thread attention", () => {
