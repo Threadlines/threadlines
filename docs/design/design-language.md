@@ -42,7 +42,7 @@ The elevation ladder in `index.css` (deepest to highest; dark / light):
 | `--popover`               | 0.312 | white | menus, popovers, dialogs, toasts (with a shadow) |
 
 - **A frame, and one work panel inside it.** The title row (window controls,
-  the list toggle, back, forward, the app's name) and the navigation rail
+  the app's name, the list toggle, back, forward) and the navigation rail
   under it form one L-shaped frame in `--frame` that wraps the window's
   top-left. Everything you work in sits in one panel beside the rail: the
   page's list and the page share the canvas, split by a `--border` hairline,
@@ -53,8 +53,8 @@ The elevation ladder in `index.css` (deepest to highest; dark / light):
   near-white canvas. Muted text on the frame keeps 4.5:1 in both (5.4:1 dark,
   5.2:1 light).
 - **The title row's right part belongs to the open page**, the way Mail,
-  Notes and Finder put their toolbars in the title bar. After the frame's own
-  buttons and the app's name, a page puts its header there
+  Notes and Finder put their toolbars in the title bar. After the app's name
+  and the frame's own buttons, a page puts its header there
   (`TitleBarContent`): a thread's project, title and actions, Settings'
   Restore defaults. It starts over the page's content column (past the list
   while it shows, plus a header's 20px), never nearer the frame's buttons
@@ -64,7 +64,9 @@ The elevation ladder in `index.css` (deepest to highest; dark / light):
   Usage) leave it empty. The work panel then has no header row at all on a
   wide screen; a window too narrow for the title row, and a phone, keep the
   page's own header with the sidebar trigger. Empty space in the row moves
-  the window; its controls never do.
+  the window; its controls never do. The app's name leads the row, before
+  the buttons, so it never reads as the first step of the page's
+  project / title path.
 - **The work panel is continuous.** The list, the page and the docked side
   panels (diff, source control, browser, tasks) sit edge to edge inside it,
   joined by one `--border` line. No floating rounded panes, no gaps between
