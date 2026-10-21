@@ -691,7 +691,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         assert.isTrue(
           (child?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId),
         );
-        assert.equal(yield* service.queuedMessage({ threadId, messageId }), "taken-back");
+        assert.equal(yield* service.messageVerdict({ threadId, messageId }), "taken-back");
       }),
   );
 
@@ -845,7 +845,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         yield* Effect.flip(dying.cancel(link(), ChildRequestId.make("send-1")));
         // Its clean-up didn't land, yet its message may not run.
         assert.isTrue(yield* isQueued);
-        assert.equal(yield* dying.queuedMessage({ threadId, messageId }), "taken-back");
+        assert.equal(yield* dying.messageVerdict({ threadId, messageId }), "taken-back");
 
         const restarted = yield* computer.boot({ snapshots: reads });
         yield* restarted.startReactor();
@@ -861,57 +861,84 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
   );
 
   it.effect(
-    "a restart's settling that fails is tried again, and leaves work begun after the restart alone",
+    "restart recovery judges each request by its own turn, not by other work on its thread",
     () =>
       Effect.gen(function* () {
         const computer = yield* makeComputer();
         yield* computer.addLink(DEVICE, "allowed");
-        // Two starts whose first turns were running when the process stopped.
-        yield* startedChild(computer, "request-1");
-        const { threadId: second } = yield* startedChild(computer, "request-2");
-        let unreadable = true;
-        const restarted = yield* computer.boot({
-          turns: {
-            listByThreadId: (input) =>
-              unreadable
-                ? Effect.fail(
-                    new PersistenceSqlError({ operation: "listByThreadId", detail: "busy" }),
-                  )
-                : computer.turns.listByThreadId(input),
-          },
+        // A start whose first turn was running when the process stopped, and
+        // a send to the same thread, delivered and still waiting there.
+        const { service, threadId } = yield* startedChild(computer, "request-1");
+        yield* service.send(link(), {
+          requestId: ChildRequestId.make("send-1"),
+          threadId,
+          text: "Add the security fixes too.",
         });
-        yield* restarted.startReactor();
-        assert.equal((yield* computer.request("request-1")).status, "queued");
-        // Since the restart, the second thread was given a new turn: live work.
+        const restarted = yield* computer.boot();
+        // Since the restart the waiting send was started: live work, on the
+        // same thread as the cut-off start.
         yield* computer.engine.dispatch({
-          type: "thread.turn.start",
-          commandId: CommandId.make("live-turn"),
-          threadId: second,
-          message: {
-            messageId: MessageId.make("live-message"),
-            role: "user",
-            text: "Keep going.",
-            attachments: [],
-          },
-          runtimeMode: "auto",
-          interactionMode: "default",
+          type: "thread.follow-up.send-queued",
+          commandId: CommandId.make("provider-sends-it"),
+          threadId,
+          messageId: linkMessageId(DEVICE, "send-1"),
           createdAt: AT,
         });
-        unreadable = false;
-        yield* TestClock.adjust(Duration.seconds(2));
-        yield* eventually(
-          Effect.map(computer.request("request-1"), (row) => row.status === "failed"),
-          "the cut-off turn is reported",
-        );
-        yield* wallClockSleep(100);
-        assert.include(
-          (yield* computer.request("request-1")).reportText ?? "",
-          "interrupted by a restart on Mac mini",
-        );
-        const live = yield* computer.request("request-2");
-        assert.isNull(live.reportId);
-        assert.notEqual(live.status, "failed");
+        yield* restarted.startReactor();
+
+        const start = yield* computer.request("request-1");
+        assert.equal(start.status, "failed");
+        assert.include(start.reportText ?? "", "interrupted by a restart on Mac mini");
+        const send = yield* computer.request("send-1");
+        assert.isNull(send.reportId);
       }),
+  );
+
+  it.effect("restart recovery classifies nothing until it knows where this process started", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed");
+      yield* startedChild(computer, "request-1");
+      let unreadable = true;
+      const restarted = yield* computer.boot({
+        snapshots: {
+          getSnapshotSequence: () =>
+            unreadable
+              ? Effect.fail(
+                  new PersistenceSqlError({ operation: "getSnapshotSequence", detail: "busy" }),
+                )
+              : computer.snapshots.getSnapshotSequence(),
+        },
+      });
+      yield* restarted.startReactor();
+      yield* TestClock.adjust(Duration.seconds(2));
+      yield* wallClockSleep(100);
+      // Still unknown: nothing was judged.
+      assert.equal((yield* computer.request("request-1")).status, "queued");
+      unreadable = false;
+      yield* TestClock.adjust(Duration.seconds(4));
+      yield* eventually(
+        Effect.map(computer.request("request-1"), (row) => row.status === "failed"),
+        "the cut-off turn is reported",
+      );
+    }),
+  );
+
+  it.effect("a start cancelled after its first turn was asked for is taken back at the gate", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed");
+      const { service, threadId } = yield* startedChild(computer, "request-1");
+      const firstMessage = linkMessageId(DEVICE, "request-1");
+      assert.equal(yield* service.messageVerdict({ threadId, messageId: firstMessage }), "run");
+      yield* service.cancel(link(), ChildRequestId.make("request-1"));
+      // The provider reactor asks right before the turn goes (its own test
+      // covers that side): this one never reaches the provider.
+      assert.equal(
+        yield* service.messageVerdict({ threadId, messageId: firstMessage }),
+        "taken-back",
+      );
+    }),
   );
 
   it.effect("a restart's settling whose write fails is tried again until it is written", () =>

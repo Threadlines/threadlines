@@ -66,6 +66,7 @@ import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { readThreadPage, summarizeThread, threadStatusWord } from "../mcp/threadToolHandlers.ts";
@@ -122,8 +123,12 @@ const QUIET_GRACE = Duration.seconds(15);
 const STOP_GRACE = Duration.seconds(5);
 const GIT_TIMEOUT_MS = 60_000;
 const DELIVERED_RETENTION_MS = 7 * 24 * 60 * 60_000;
-/** How many of a thread's events restart recovery reads at a time. */
-const TURN_EVENTS_PAGE = 500;
+/** Ends that mean a request never runs: its turn is taken back if it hasn't started. */
+const TAKEN_BACK_STATUSES: ReadonlySet<PeerRequestStatus> = new Set([
+  "cancelled",
+  "denied",
+  "expired",
+]);
 
 export interface LinkRequestsShape {
   readonly start: (link: PeerLink, input: PeerStartInput) => Effect.Effect<PeerStartResult>;
@@ -162,7 +167,7 @@ export interface LinkRequestsShape {
   readonly dropLink: (deviceId: string) => Effect.Effect<void>;
   readonly onTurnEnd: RemoteRequestTurnEndsShape["onTurnEnd"];
   /** See RemoteRequestGate. */
-  readonly queuedMessage: RemoteRequestGateShape["queuedMessage"];
+  readonly messageVerdict: RemoteRequestGateShape["messageVerdict"];
   /** Start reacting to thread events and settle what the previous process left. */
   readonly startReactor: () => Effect.Effect<void, never, Scope.Scope>;
 }
@@ -212,21 +217,38 @@ const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver;
   const environment = yield* ServerEnvironment;
   const ownLabel = (yield* environment.getDescriptor).label;
+  const sql = yield* SqlClient.SqlClient;
+  const readStartupSequence = Effect.suspend(() => snapshots.getSnapshotSequence()).pipe(
+    Effect.map((read) => read.snapshotSequence),
+  );
   /**
    * The last event before this process could start any work, read while the
    * server is still being built (before any reactor runs): a turn asked for
-   * after it is this process's own, live work. Unreadable: none counts as
-   * live, as before this existed.
+   * after it is this process's own, live work. Null while unread: restart
+   * recovery then classifies nothing until it has read it.
    */
-  const startupSequence = yield* snapshots.getSnapshotSequence().pipe(
-    Effect.map((read) => read.snapshotSequence),
+  let startupSequence: number | null = yield* readStartupSequence.pipe(
     Effect.retry(Schedule.recurs(3)),
     Effect.catch((error) =>
       Effect.logWarning("link requests could not read where this process started", {
         detail: String(error),
-      }).pipe(Effect.as(Number.MAX_SAFE_INTEGER)),
+      }).pipe(Effect.as(null)),
     ),
   );
+  /**
+   * Orchestration events from the moment this was built, so every turn this
+   * process asks for is seen (startReactor consumes them).
+   */
+  const domainEvents = yield* engine.subscribeDomainEvents;
+  /**
+   * Message ids of linked computers' turns this process saw asked for: live
+   * work, whatever the boundary.
+   */
+  const turnsStartedHere = new Set<string>();
+  /** Whether those turn starts are being recorded yet. */
+  let liveTurnsTracked = false;
+  /** Requests restart recovery hasn't settled yet: the live session rules leave them to it. */
+  const recovering = new Set<string>();
 
   const watchHub = yield* PubSub.unbounded<{
     readonly deviceId: string;
@@ -1267,6 +1289,7 @@ const make = Effect.gen(function* () {
         .get(row.linkDeviceId, row.requestId)
         .pipe(Effect.orElseSucceed(Option.none));
       if (thread === undefined || Option.isNone(current)) return;
+      if (recovering.has(requestKey(row.linkDeviceId, row.requestId))) return;
       const request = deliveryRequest(current.value);
       if (current.value.status !== "awaiting_background" || !isQuietCandidate(thread, request)) {
         return;
@@ -1282,6 +1305,7 @@ const make = Effect.gen(function* () {
       if (thread === undefined || (status !== "stopped" && status !== "error")) return;
       for (const row of yield* openRowsForThread(thread)) {
         if (row.status !== "running" && row.status !== "awaiting_background") continue;
+        if (recovering.has(requestKey(row.linkDeviceId, row.requestId))) continue;
         yield* status === "stopped"
           ? settle(
               row,
@@ -1358,6 +1382,7 @@ const make = Effect.gen(function* () {
             yield* publishThreadStatus(event.payload.threadId);
             return;
           }
+          turnsStartedHere.add(event.payload.messageId);
           const thread = yield* readThread(event.payload.threadId);
           const deviceId = thread?.remoteOrigin?.linkDeviceId;
           if (deviceId === undefined) return;
@@ -1424,47 +1449,50 @@ const make = Effect.gen(function* () {
     );
 
   /**
-   * The turns asked for in a thread, read from its events (a pending start
-   * included): their messages, and whether any was asked for after
-   * `startupSequence`, which makes it this process's own, live work.
+   * The turns asked for in a thread, straight from its turn-start events (a
+   * pending start included): each message id with the sequence it was last
+   * asked for at. One indexed query per thread.
    */
-  const turnStartsOf = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const messageIds = new Set<string>();
-      let sinceStartup = false;
-      let after = 0;
-      while (true) {
-        const batch = yield* engine
-          .readThreadEvents({
-            threadId,
-            fromSequenceExclusive: after,
-            toSequenceInclusive: Number.MAX_SAFE_INTEGER,
-            limit: TURN_EVENTS_PAGE,
-          })
-          .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the thread's turns.`)));
-        for (const event of batch) {
-          if (event.type !== "thread.turn-start-requested") continue;
-          messageIds.add(event.payload.messageId);
-          if (event.sequence > startupSequence) sinceStartup = true;
+  const readTurnStarts = (threadId: ThreadId) =>
+    sql<{ readonly messageId: string | null; readonly sequence: number }>`
+      SELECT json_extract(payload_json, '$.messageId') AS "messageId", sequence AS "sequence"
+      FROM orchestration_events
+      WHERE aggregate_kind = 'thread'
+        AND event_type = 'thread.turn-start-requested'
+        AND stream_id = ${threadId}
+      ORDER BY sequence
+    `.pipe(
+      Effect.map((rows) => {
+        const starts = new Map<string, number>();
+        for (const row of rows) {
+          if (row.messageId !== null) starts.set(row.messageId, Number(row.sequence));
         }
-        const last = batch.at(-1);
-        if (batch.length < TURN_EVENTS_PAGE || last === undefined) {
-          return { messageIds, sinceStartup };
-        }
-        after = last.sequence;
-      }
-    });
+        return starts;
+      }),
+      Effect.mapError(() => peerError(`${ownLabel} couldn't read the thread's turns.`)),
+    );
 
   /**
    * One request the previous process left open, read afresh (a retry may
-   * come much later). A request this process recorded, or a thread with a
-   * turn asked for since startup (by event sequence, not by clock: a send
-   * delivered again keeps its first timestamp), is live work, which the
-   * live path answers; it is never taken for work the restart cut off.
-   * Fails when a read or a write fails, so the caller tries again; a
-   * request that had already ended is simply done.
+   * come much later), classified by its own message (a start's first
+   * message, or a send): asked for as a turn since this process started is
+   * live work, which the live path answers; asked for before and never
+   * finished was cut off by the restart; never asked for and no longer
+   * waiting was taken back. A request this process recorded is live too.
+   * Fails when a read or a write fails, so the caller tries again; a request
+   * that had already ended is simply done.
    */
-  const reconcileAfterRestart = (found: LinkRequestRow) =>
+  const reconcileAfterRestart = (
+    found: LinkRequestRow,
+    pass: {
+      readonly boundary: number;
+      /** A thread's turn starts, shared within the pass; `fresh` reads them again. */
+      readonly turnStarts: (
+        threadId: ThreadId,
+        fresh?: boolean,
+      ) => Effect.Effect<Map<string, number>, PeerRpcError>;
+    },
+  ) =>
     Effect.gen(function* () {
       const latest = yield* readRequest(found.linkDeviceId, found.requestId);
       if (Option.isNone(latest) || isTerminalLinkRequest(latest.value)) return;
@@ -1501,30 +1529,42 @@ const make = Effect.gen(function* () {
         });
         return;
       }
+      const messageId = row.messageId;
       // Its message still waits in the thread: it runs the normal way.
       if (
-        row.messageId !== null &&
-        (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === row.messageId)
+        messageId !== null &&
+        (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId)
       ) {
-        return;
-      }
-      const starts = yield* turnStartsOf(thread.id);
-      // The thread has worked since this process started: that is live work.
-      if (starts.sinceStartup) return;
-      if (
-        row.status === "queued" &&
-        row.turnId === null &&
-        (row.messageId === null || !starts.messageIds.has(row.messageId))
-      ) {
-        // Delivered, then neither waiting nor started: it was taken back.
-        yield* settleOrFail(
-          row,
-          "cancelled",
-          `Your message to '${thread.title}' never ran on ${ownLabel}.`,
-        );
         return;
       }
       const request = deliveryRequest(row);
+      if (row.status !== "awaiting_background") {
+        // Not among the starts read so far: read them again, after the thread
+        // was read (a message leaves the queue in the same write that asks
+        // for its turn), before concluding it never started.
+        let startedAt =
+          messageId === null ? undefined : (yield* pass.turnStarts(thread.id)).get(messageId);
+        if (messageId !== null && startedAt === undefined) {
+          startedAt = (yield* pass.turnStarts(thread.id, true)).get(messageId);
+        }
+        // Its own turn was asked for by this process: live work.
+        if (
+          messageId !== null &&
+          (turnsStartedHere.has(messageId) ||
+            (startedAt !== undefined && startedAt > pass.boundary))
+        ) {
+          return;
+        }
+        if (startedAt === undefined && row.status === "queued" && row.turnId === null) {
+          // Delivered, then neither waiting nor ever started: it was taken back.
+          yield* settleOrFail(
+            row,
+            "cancelled",
+            `Your message to '${thread.title}' never ran on ${ownLabel}.`,
+          );
+          return;
+        }
+      }
       const childTurns = yield* turns
         .listByThreadId({ threadId: thread.id })
         .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the thread's turns.`)));
@@ -1556,12 +1596,25 @@ const make = Effect.gen(function* () {
    * again: a setup not yet past its first turn resumes (one whose turn was
    * already committed is past it); a send recorded but never delivered is
    * delivered; an answer that durably finished is delivered; a turn the
-   * restart cut off is reported as interrupted. Requests it couldn't settle
-   * (a read or a write failed) stay for the next pass; true once none is left.
+   * restart cut off is reported as interrupted. Nothing is classified while
+   * the startup boundary is unknown. Requests it couldn't settle (a read or
+   * a write failed) stay for the next pass; true once none is left.
    */
   const makeRecovery = () => {
     let left: ReadonlyArray<LinkRequestRow> | null = null;
     return Effect.gen(function* () {
+      if (startupSequence === null) {
+        // Read late, the boundary may come after this process's first turns;
+        // those are known all the same, from the turn starts it saw.
+        if (!liveTurnsTracked) return false;
+        const late = yield* readStartupSequence.pipe(Effect.option);
+        if (Option.isNone(late)) {
+          yield* Effect.logWarning("link requests could not read where this process started");
+          return false;
+        }
+        startupSequence = late.value;
+      }
+      const boundary = startupSequence;
       if (left === null) {
         const listed = yield* ledger.listOpen.pipe(Effect.option);
         if (Option.isNone(listed)) {
@@ -1569,17 +1622,31 @@ const make = Effect.gen(function* () {
           return false;
         }
         left = listed.value;
+        for (const row of left) recovering.add(requestKey(row.linkDeviceId, row.requestId));
       }
+      // Each thread's turn starts are read once per pass.
+      const startsByThread = new Map<ThreadId, Map<string, number>>();
+      const turnStarts = (threadId: ThreadId, fresh = false) =>
+        Effect.gen(function* () {
+          const cached = startsByThread.get(threadId);
+          if (cached !== undefined && !fresh) return cached;
+          const starts = yield* readTurnStarts(threadId);
+          startsByThread.set(threadId, starts);
+          return starts;
+        });
       const unfinished: Array<LinkRequestRow> = [];
       for (const row of left) {
-        yield* reconcileAfterRestart(row).pipe(
+        const settled = yield* reconcileAfterRestart(row, { boundary, turnStarts }).pipe(
+          Effect.as(true),
           Effect.catch((error) =>
             Effect.logWarning("link requests could not settle a request after a restart", {
               requestId: row.requestId,
               detail: error.detail,
-            }).pipe(Effect.andThen(Effect.sync(() => unfinished.push(row)))),
+            }).pipe(Effect.as(false)),
           ),
         );
+        if (settled) recovering.delete(requestKey(row.linkDeviceId, row.requestId));
+        else unfinished.push(row);
       }
       left = unfinished;
       return unfinished.length === 0;
@@ -1637,14 +1704,16 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * The verdict on a queued message a linked computer's agent sent: one
-   * whose request already ended (a cancel) never runs.
+   * The verdict on a turn a linked computer's request asked for (by the
+   * message id reserved for it): one whose request ended without running
+   * (cancelled, refused, expired) never runs. Other ends don't stop it: a
+   * start that reports nothing back is settled as soon as it is set up.
    */
-  const queuedMessage: LinkRequestsShape["queuedMessage"] = ({ threadId, messageId }) =>
+  const messageVerdict: LinkRequestsShape["messageVerdict"] = ({ threadId, messageId }) =>
     ledger.listByThread(threadId).pipe(
       Effect.map((rows) => {
         const row = rows.find((entry) => entry.messageId === messageId);
-        return row !== undefined && isTerminalLinkRequest(row)
+        return row !== undefined && TAKEN_BACK_STATUSES.has(row.status)
           ? ("taken-back" as const)
           : ("run" as const);
       }),
@@ -1668,12 +1737,13 @@ const make = Effect.gen(function* () {
 
   const startReactor: LinkRequestsShape["startReactor"] = () =>
     Effect.gen(function* () {
-      const events = yield* engine.subscribeDomainEvents;
       // A cancel's message is taken back first; one that fails is tried
       // again until it lands, and the queued-send gate holds it meanwhile.
       yield* untilDone(finishCleanups);
-      yield* untilDone(makeRecovery());
-      yield* Effect.forkScoped(Stream.runForEach(events, onEvent));
+      const recovery = makeRecovery();
+      yield* untilDone(recovery);
+      yield* Effect.forkScoped(Stream.runForEach(domainEvents, onEvent));
+      liveTurnsTracked = true;
       yield* expireWaiting.pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("link requests could not expire requests", { cause }),
@@ -1697,7 +1767,7 @@ const make = Effect.gen(function* () {
     pendingChanges: Stream.fromPubSub(pendingHub),
     dropLink,
     onTurnEnd,
-    queuedMessage,
+    messageVerdict,
     startReactor,
   });
 });
@@ -1718,6 +1788,6 @@ export const RemoteRequestGateLive = Layer.effect(
   RemoteRequestGate,
   Effect.gen(function* () {
     const service = yield* LinkRequests;
-    return RemoteRequestGate.of({ queuedMessage: service.queuedMessage });
+    return RemoteRequestGate.of({ messageVerdict: service.messageVerdict });
   }),
 );
