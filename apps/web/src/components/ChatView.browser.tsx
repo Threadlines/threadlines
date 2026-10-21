@@ -951,7 +951,6 @@ const SIDEBAR_TOGGLE_KEYBINDING = {
 
 const FLEET_REMOTE_ENVIRONMENT_ID = EnvironmentId.make("environment-windows");
 const FLEET_OFFLINE_ENVIRONMENT_ID = EnvironmentId.make("environment-mac-mini");
-const FLEET_RECONNECTING_ENVIRONMENT_ID = EnvironmentId.make("environment-linux");
 
 /**
  * Saves computers the way Settings › Connections does, then sets what the
@@ -3289,6 +3288,48 @@ describe("ChatView timeline estimator parity (full app)", () => {
         expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
       });
       expect(document.querySelector('[data-testid="rail-new-thread"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("counts the pull requests waiting on the user on the rail", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-pull-requests" as MessageId,
+        targetText: "rail pull requests",
+      }),
+      configureFixture: withPullRequestFixture,
+      resolveRpc: (body) => {
+        const response = resolvePullRequestRpc(body);
+        if (body._tag !== WS_METHODS.pullRequestsList || response === undefined) return response;
+        const listing = response as { readonly entries: ReadonlyArray<object> };
+        return {
+          ...listing,
+          entries: listing.entries.flatMap((entry) => [
+            // A review asked of the user waits on them; their own quiet pull request does not.
+            {
+              ...entry,
+              number: PULL_REQUEST_NUMBER + 1,
+              headBranch: "feature/review-me",
+              author: { login: "teammate", isBot: false, avatarUrl: null },
+              viewerIsAuthor: false,
+              viewerReviewRequested: true,
+            },
+            entry,
+          ]),
+        };
+      },
+    });
+
+    try {
+      await expect
+        .element(page.getByTestId("rail-pull-requests").getByTestId("rail-needs-you-badge"))
+        .toHaveTextContent("1");
+      await expect
+        .element(page.getByTestId("rail-pull-requests"))
+        .toHaveAccessibleName(/1 needs you/);
     } finally {
       await mounted.cleanup();
     }
@@ -7945,6 +7986,137 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(
         document.querySelector('[data-testid="rail-threads"]')?.getAttribute("aria-current"),
       ).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("steps between general chats with the next and previous shortcuts, and dots an unread one on the rail", async () => {
+    // Same timestamps, so the chats page and the shortcuts order them c, b, a.
+    const chatA = "thread-chat-traverse-a" as ThreadId;
+    const chatB = "thread-chat-traverse-b" as ThreadId;
+    const chatC = "thread-chat-traverse-c" as ThreadId;
+    const base = [chatA, chatB, chatC].reduce(
+      addThreadToSnapshot,
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-chat-traversal" as MessageId,
+        targetText: "chat traversal",
+      }),
+    );
+    const traversalKeybinding = (command: "thread.next" | "thread.previous", key: string) =>
+      ({
+        command,
+        shortcut: {
+          key,
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: true,
+          altKey: false,
+          modKey: true,
+        },
+        whenAst: { type: "not", node: { type: "identifier", name: "terminalFocus" } },
+      }) as const;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${chatB}`,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: base.threads.map((thread) =>
+          thread.id === chatA || thread.id === chatB || thread.id === chatC
+            ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID }
+            : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            traversalKeybinding("thread.next", "]"),
+            traversalKeybinding("thread.previous", "["),
+          ],
+        };
+      },
+    });
+    const useMetaForMod = isMacPlatform(navigator.platform);
+    const press = (direction: "next" | "previous") =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: direction === "next" ? "}" : "{",
+          code: direction === "next" ? "BracketRight" : "BracketLeft",
+          shiftKey: true,
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+    try {
+      await waitForServerConfigToApply();
+      // An answer finishes on a chat that is not open, after the app loaded.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, chatC, "working", {
+        session: null,
+        latestTurn: {
+          turnId: "turn-chat-traverse-c" as TurnId,
+          state: "completed",
+          requestedAt: NOW_ISO,
+          startedAt: NOW_ISO,
+          completedAt: new Date(Date.now() + 60_000).toISOString(),
+          assistantMessageId: null,
+        },
+      });
+      const chatsButton = page.getByTestId("rail-chats");
+      // An unread answer is a blue dot, not a count: nothing waits on the user.
+      await expect.element(chatsButton.getByTestId("rail-unread-dot")).toBeVisible();
+      expect(
+        document.querySelector('[data-testid="rail-chats"] [data-testid="rail-needs-you-badge"]'),
+      ).toBeNull();
+      expect(
+        document.querySelector('[data-testid="rail-threads"] [data-testid="rail-unread-dot"]'),
+      ).toBeNull();
+
+      // From a chat, the shortcuts walk the chats, never into the inbox.
+      press("next");
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${chatA}`),
+        "Next should open the older chat.",
+      );
+      await waitForLayout();
+      press("next");
+      press("previous");
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${chatB}`),
+        "Next past the last chat stays put; previous steps back.",
+      );
+      await waitForLayout();
+      press("previous");
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${chatC}`),
+        "Previous should open the newer chat.",
+      );
+      // Opening it reads the answer: the dot goes.
+      await vi.waitFor(() => {
+        expect(
+          document.querySelector('[data-testid="rail-chats"] [data-testid="rail-unread-dot"]'),
+        ).toBeNull();
+      });
     } finally {
       await mounted.cleanup();
     }

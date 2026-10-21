@@ -9,6 +9,7 @@ import { resolveShortcutCommand } from "../keybindings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { useServerKeybindings } from "../rpc/serverState";
+import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { useUiStateStore } from "../uiStateStore";
 import ThreadSidebar from "./Sidebar";
@@ -40,7 +41,7 @@ function AppShellCommands() {
   const navigate = useNavigate();
   const { toggleSidebar } = useSidebar();
   const keybindings = useServerKeybindings();
-  const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
+  const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread, routeThreadRef } =
     useHandleNewThread();
   useRememberThreadsView();
 
@@ -48,8 +49,16 @@ function AppShellCommands() {
     const onWindowKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) return;
       if (useCommandPaletteStore.getState().open) return;
+      // Read when the key lands, like the sidebar's own shortcuts: a rule
+      // the user scoped to an open terminal must see the terminal as it is.
+      const terminalOpen = routeThreadRef
+        ? selectThreadTerminalState(
+            useTerminalStateStore.getState().terminalStateByThreadKey,
+            routeThreadRef,
+          ).terminalOpen
+        : false;
       const command = resolveShortcutCommand(event, keybindings, {
-        context: { terminalFocus: isTerminalFocused(), terminalOpen: false },
+        context: { terminalFocus: isTerminalFocused(), terminalOpen },
       });
       if (command === "sidebar.toggle") {
         event.preventDefault();
@@ -67,7 +76,7 @@ function AppShellCommands() {
     return () => {
       window.removeEventListener("keydown", onWindowKeyDown);
     };
-  }, [keybindings, navigate, toggleSidebar]);
+  }, [keybindings, navigate, routeThreadRef, toggleSidebar]);
 
   useEffect(() => {
     const onMenuAction = window.desktopBridge?.onMenuAction;

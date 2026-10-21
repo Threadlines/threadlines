@@ -17,7 +17,7 @@ import { isElectron } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
-import { toSortableTimestamp } from "../lib/threadSort";
+import { sortThreads, toSortableTimestamp } from "../lib/threadSort";
 import {
   markThreadDoneByKey,
   markThreadUnreadByKey,
@@ -1250,6 +1250,24 @@ export default function Sidebar() {
     ],
     [liveSections, renderedDoneEntries],
   );
+  // The general chats in the General Chats page's order. They never join the
+  // inbox, so while one is open previous/next walk these instead: chat to
+  // chat, the way the page lists them.
+  const generalChatThreadKeys = useMemo(
+    () =>
+      sortThreads(
+        sidebarThreads.filter(
+          (thread) =>
+            thread.archivedAt === null &&
+            generalChatProjectKeys.has(resolveThreadProjectKey(thread)),
+        ),
+      ).map((thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
+    [generalChatProjectKeys, resolveThreadProjectKey, sidebarThreads],
+  );
+  const traversalThreadKeys =
+    routeThreadKey !== null && generalChatThreadKeys.includes(routeThreadKey)
+      ? generalChatThreadKeys
+      : orderedThreadKeys;
 
   const navigateToThread = useCallback(
     (threadRef: ScopedThreadRef) => {
@@ -1899,7 +1917,7 @@ export default function Sidebar() {
       const traversalDirection = threadTraversalDirectionFromCommand(command);
       if (traversalDirection !== null) {
         const targetThreadKey = resolveAdjacentThreadId({
-          threadIds: orderedThreadKeys,
+          threadIds: traversalThreadKeys,
           currentThreadId: routeThreadKey,
           direction: traversalDirection,
         });
@@ -1945,11 +1963,11 @@ export default function Sidebar() {
     getCurrentSidebarShortcutContext,
     keybindings,
     navigateToThread,
-    orderedThreadKeys,
     platform,
     routeThreadKey,
     sidebarThreadByKey,
     threadJumpThreadKeys,
+    traversalThreadKeys,
   ]);
 
   useEffect(() => {
@@ -2092,6 +2110,9 @@ export default function Sidebar() {
                                     ? entry.projectLabel
                                     : null
                                 }
+                                // Under a project group's header the project's
+                                // mark is said once, there.
+                                showProjectMark={sidebarGrouping !== "project"}
                                 isActive={routeThreadKey === entry.threadKey}
                                 jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
                                 canMarkDone={entry.canMarkDone}

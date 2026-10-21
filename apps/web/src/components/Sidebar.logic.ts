@@ -1069,6 +1069,17 @@ export function resolveThreadAttention(
   return IN_FLIGHT.has(status.label) ? "working" : null;
 }
 
+const UNREAD_RESULTS: ReadonlySet<ThreadStatusPill["label"]> = new Set(["Completed", "Plan Ready"]);
+
+/**
+ * A result the user has not looked at yet: a finished turn they have not
+ * seen, or a plan waiting to be read. Neither needs the user the way an
+ * approval does, so it is said apart from the needs-you count.
+ */
+export function isUnreadResultStatus(status: ThreadStatusPill | null): boolean {
+  return status !== null && UNREAD_RESULTS.has(status.label);
+}
+
 /** How many threads need the user and how many are working. */
 export interface ThreadAttentionCounts {
   readonly needsYou: number;

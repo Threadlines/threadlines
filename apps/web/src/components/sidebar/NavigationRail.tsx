@@ -41,12 +41,15 @@ import {
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../../store";
-import { resolveThreadRouteTarget } from "../../threadRoutes";
+import { selectThreadTerminalState, useTerminalStateStore } from "../../terminalStateStore";
+import { resolveThreadRouteRef, resolveThreadRouteTarget } from "../../threadRoutes";
 import { countNeedsYou } from "../pull-requests/pullRequests.logic";
 import {
   countThreadAttention,
+  isUnreadResultStatus,
   resolveSeenThreadStatus,
   resolveThreadAttention,
+  THREAD_STATUS_DOT_CLASSES,
   type ThreadAttention,
   type ThreadAttentionCounts,
 } from "../Sidebar.logic";
@@ -91,6 +94,12 @@ export interface NavigationDestination {
   readonly selected: boolean;
   /** Threads waiting on the user: an amber count on the icon. */
   readonly needsYou: number;
+  /**
+   * General chats only: a result nobody has looked at yet (a finished turn, a
+   * ready plan). A blue dot beside the count, since chats have no list here
+   * to show it.
+   */
+  readonly unread: boolean;
   /** Threads at work: a blue dot and count under the icon, while `showWorking`. */
   readonly working: number;
   readonly showWorking: boolean;
@@ -141,6 +150,27 @@ function useOpenThreadIsGeneralChat(): boolean {
 }
 
 /**
+ * The shortcut context the main view is in, for the labels the rail shows:
+ * whether the open thread's terminal is showing, as the shortcut handlers
+ * read it. Focus is never in a terminal while the pointer is on the rail.
+ */
+function useRouteShortcutContext(): {
+  readonly terminalFocus: boolean;
+  readonly terminalOpen: boolean;
+} {
+  const routeThreadRef = useParams({
+    strict: false,
+    select: (params) => resolveThreadRouteRef(params),
+  });
+  const terminalOpen = useTerminalStateStore((state) =>
+    routeThreadRef
+      ? selectThreadTerminalState(state.terminalStateByThreadKey, routeThreadRef).terminalOpen
+      : false,
+  );
+  return useMemo(() => ({ terminalFocus: false, terminalOpen }), [terminalOpen]);
+}
+
+/**
  * Remembers the thread view the user is on, for the Threads button. Mounted
  * once, with the app shell.
  */
@@ -165,6 +195,8 @@ export function useRememberThreadsView(): void {
 function useDestinationAttention(): {
   readonly threads: ThreadAttentionCounts;
   readonly chats: ThreadAttentionCounts;
+  /** Whether any general chat holds a result nobody has seen. */
+  readonly chatsUnread: boolean;
 } {
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
@@ -177,6 +209,7 @@ function useDestinationAttention(): {
     );
     const threadAttention: Array<ThreadAttention | null> = [];
     const chatAttention: Array<ThreadAttention | null> = [];
+    let chatsUnread = false;
     for (const thread of threads) {
       if (thread.archivedAt !== null) continue;
       const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
@@ -189,10 +222,12 @@ function useDestinationAttention(): {
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
       (isGeneralChat ? chatAttention : threadAttention).push(attention);
+      if (isGeneralChat && isUnreadResultStatus(status)) chatsUnread = true;
     }
     return {
       threads: countThreadAttention(threadAttention),
       chats: countThreadAttention(chatAttention),
+      chatsUnread,
     };
   }, [projects, seenSources, threads]);
 }
@@ -237,10 +272,11 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
   const usageTokens = usageToday.data?.merged.totalTokens ?? null;
   const pullRequestsNeedingYou = countNeedsYou(openPullRequests.entries);
   const hasPullRequests = openPullRequests.environments.length > 0;
+  const shortcutContext = useRouteShortcutContext();
 
   const destinations = useMemo(() => {
     const platform = typeof navigator === "undefined" ? "" : navigator.platform;
-    const shortcutOptions = { platform, context: { terminalFocus: false, terminalOpen: false } };
+    const shortcutOptions = { platform, context: shortcutContext };
     const workingEverywhere = attention.threads.working + attention.chats.working;
     return NAVIGATION_DESTINATION_ORDER.flatMap((id): NavigationDestination[] => {
       // A destination that would only ever say "unsupported" is not offered.
@@ -253,7 +289,8 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           label: DESTINATION_LABELS[id],
           icon: DESTINATION_ICONS[id],
           selected: selected === id,
-          needsYou: counts?.needsYou ?? 0,
+          needsYou: id === "pull-requests" ? pullRequestsNeedingYou : (counts?.needsYou ?? 0),
+          unread: id === "chats" && attention.chatsUnread,
           working: counts?.working ?? 0,
           // General chats have no list beside the rail, so their work always shows.
           showWorking: id === "chats" || (id === "threads" && !options.listOpen),
@@ -265,6 +302,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
               ? joinDetails(
                   describeNeedsYou(counts?.needsYou ?? 0),
                   describeWorking(counts?.working ?? 0),
+                  id === "chats" && attention.chatsUnread ? "unread" : null,
                 )
               : id === "fleet"
                 ? describeWorking(workingEverywhere)
@@ -283,6 +321,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     options.listOpen,
     pullRequestsNeedingYou,
     selected,
+    shortcutContext,
     usageTokens,
   ]);
 
@@ -326,16 +365,38 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
   return { destinations, select };
 }
 
-/** The amber count of threads waiting on the user, on an icon's corner. */
-function NeedsYouBadge({ count }: { readonly count: number }) {
-  if (count === 0) return null;
+/**
+ * An icon's corner: the amber count of what waits on the user, and beside it
+ * a blue dot for a result nobody has seen. Dark text on the amber, which
+ * white could not read against.
+ */
+function CornerMarks({
+  needsYou,
+  unread,
+}: {
+  readonly needsYou: number;
+  readonly unread: boolean;
+}) {
+  if (needsYou === 0 && !unread) return null;
   return (
     <span
       aria-hidden="true"
-      data-testid="rail-needs-you-badge"
-      className="pointer-events-none absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 font-mono text-[10px] leading-none font-semibold text-white tabular-nums"
+      className="pointer-events-none absolute -top-1 -right-1 flex items-center gap-0.5"
     >
-      {count > 99 ? "99+" : count}
+      {unread ? (
+        <span
+          data-testid="rail-unread-dot"
+          className={cn("size-2 rounded-full", THREAD_STATUS_DOT_CLASSES.blue)}
+        />
+      ) : null}
+      {needsYou > 0 ? (
+        <span
+          data-testid="rail-needs-you-badge"
+          className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 font-mono text-[10px] leading-none font-semibold text-amber-950 tabular-nums"
+        >
+          {needsYou > 99 ? "99+" : needsYou}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -427,10 +488,18 @@ function DestinationButton({
 }) {
   const Icon = destination.icon;
   const working = destination.showWorking ? destination.working : 0;
+  // The corner marks are drawn for the eye; the name says them for a reader.
+  const label = [
+    destination.label,
+    destination.needsYou > 0 ? describeNeedsYou(destination.needsYou) : null,
+    destination.unread ? "unread" : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(", ");
   return (
     <div className="flex flex-col items-center">
       <RailIconButton
-        label={destination.label}
+        label={label}
         tooltip={<DestinationTooltip destination={destination} />}
         selected={destination.selected}
         side={side}
@@ -438,7 +507,7 @@ function DestinationButton({
         onClick={() => onSelect(destination.id)}
       >
         <Icon aria-hidden="true" />
-        <NeedsYouBadge count={destination.needsYou} />
+        <CornerMarks needsYou={destination.needsYou} unread={destination.unread} />
       </RailIconButton>
       {working > 0 ? (
         <span
@@ -468,7 +537,7 @@ export function NavigationRail() {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
-  const shortcutOptions = { platform, context: { terminalFocus: false, terminalOpen: false } };
+  const shortcutOptions = { platform, context: useRouteShortcutContext() };
   const toggleShortcut = shortcutLabelForCommand(keybindings, "sidebar.toggle", shortcutOptions);
   const newThreadShortcut =
     shortcutLabelForCommand(keybindings, "chat.newLocal", shortcutOptions) ??
