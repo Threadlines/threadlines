@@ -12,7 +12,6 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   ProjectScript,
-  type RemoteChildStart,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationLatestTurn,
@@ -72,6 +71,7 @@ import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import {
   awaitedChildRequestCount,
   hasPendingChildApproval,
+  remoteChildStartsOf,
 } from "@threadlines/shared/childThreads";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 import {
@@ -165,31 +165,6 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
   ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
 });
-
-/**
- * A parent's starts on linked computers with no thread there yet (still
- * sending, or waiting for that computer's user), as its family shows them.
- */
-const remoteChildStartsOf = (
-  childRequests: OrchestrationChildRequestState,
-): ReadonlyArray<RemoteChildStart> =>
-  childRequests.open.flatMap((request) =>
-    request.kind === "start" &&
-    request.remote !== undefined &&
-    request.remote.threadId === null &&
-    request.launch !== undefined
-      ? [
-          {
-            requestId: request.requestId,
-            environmentId: request.remote.environmentId,
-            label: request.remote.label,
-            title: request.launch.title,
-            status: request.remote.status,
-            createdAt: request.createdAt,
-          },
-        ]
-      : [],
-  );
 
 /**
  * Child threads as the sidebar reads them: lineage, and on a parent the
