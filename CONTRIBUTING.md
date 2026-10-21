@@ -1,91 +1,119 @@
 # Contributing
 
-## Welcome
+Threadlines has mostly been built by one person, me. I'd like that to change.
+If you use it and something bugs you, or you want a feature it doesn't have,
+I'd love your help. Bug fixes, new features, docs and testing all count.
 
-Thanks for considering a contribution to Threadlines. The project is early and
-its direction is intentionally focused, but thoughtful bug reports, fixes, and
-small improvements are welcome.
+## Ways to help
 
-Open an issue first for non-trivial changes. Small, concrete bug fixes,
-reliability fixes, performance improvements, and maintenance work are much easier
-to review than broad feature PRs.
+- **Build a feature.** New features are welcome. If it's more than a small
+  change, open an issue first so we can agree on the approach before you put
+  in the time.
+- **Catch up with Codex and Claude.** When Codex or Claude ships something new
+  in their own apps and Threadlines doesn't have it yet, that's one of the most
+  useful things you can work on.
+- **Fix bugs.** Anything you've hit yourself is fair game. You don't need to ask
+  first for a fix.
+- **Make it faster or sturdier.** Slow screens, stuck spinners, sessions that
+  don't recover after a restart or a dropped connection.
+- **Platform fixes.** Bugs that only show up on Windows or Linux are easy to
+  miss. Fixes and test reports from those machines help a lot.
+- **More agents.** Threadlines runs several coding agents, plus community
+  agents from the ACP registry that nobody has tested. Trying one and reporting
+  what works and what breaks is a real contribution.
+  [docs/providers/community-agents.md](docs/providers/community-agents.md) has
+  the details.
+- **Docs.** If something here or in the README confused you, fix it for the
+  next person.
+- **Report bugs and ideas.** A clear bug report with steps to reproduce is often
+  half the fix.
 
-PRs are automatically labeled with a `vouch:*` trust status and a `size:*` diff size based on changed lines.
+If you're not sure where to start, look for issues labeled `good first issue`
+or `help wanted`, or open an issue saying what you'd like to work on and I'll
+help you find a starting point.
 
-If you are an external contributor, expect `vouch:unvouched` until we explicitly add you to [.github/VOUCHED.td](.github/VOUCHED.td).
+## Using a coding agent
 
-By contributing to Threadlines, you agree that your contribution is licensed
-under the repository's MIT license.
+Go for it. Most of Threadlines is written by directing agents, usually from
+inside Threadlines. [AGENTS.md](AGENTS.md) is written for them, so point your
+agent at it. It covers where the code lives, the checks to run and the house
+style.
 
-## Contributions That Fit Best
+You're still responsible for what you send. Run the checks, read the diff
+yourself, and be ready to answer questions about it.
 
-Small, focused bug fixes.
+## What I'm likely to push back on
 
-Small reliability fixes.
+Most things are open for discussion. A few are hard sells:
 
-Small performance improvements.
+- Rewriting core architecture without a concrete problem it solves. The
+  event-sourced orchestration core, the per-provider drivers and the Effect
+  stack are settled.
+- Features that only work with one agent when they could work with all of
+  them. Switching agents without losing your work is a big part of the point.
+- UI that doesn't follow the design language in
+  [docs/design/design-language.md](docs/design/design-language.md). Read it
+  before changing anything users will see.
+- One PR that mixes unrelated changes. Split them so each can be reviewed and
+  reverted on its own.
 
-Tightly scoped maintenance work that clearly improves the project without changing its direction.
+If I turn down a proposal, I'll explain why and leave the context in the issue.
 
-## Changes To Discuss First
+## Opening a PR
 
-Large or cross-cutting PRs.
+- Say what changed and why. The PR template has two short sections for this.
+- Big features are fine as one PR when the pieces belong together. If it's
+  huge, I may ask to split it so it's easier to review and test.
+- For visual changes, a before and after screenshot or a short clip helps.
+  Welcome, not required.
+- Make sure the checks below pass.
 
-New product features that have not been discussed in an issue.
+On your first PR, GitHub waits for me to approve it before the automated
+checks run. That's a standard GitHub safety step, so don't worry if the checks
+sit there for a bit.
 
-Broad rewrites without a concrete reliability or maintainability benefit.
+I review everything myself, so a reply can take a few days. A nudge on the PR
+after a week is fine.
 
-Changes that substantially expand the supported product scope.
+## Development setup
 
-Large or unrelated changes will usually be asked to split into smaller PRs so
-they can be reviewed and tested safely.
+You'll need Node.js 22.22.2+, 24.15+ or 26+. Odd-numbered releases aren't
+supported. You'll also need [Vite+](https://viteplus.dev/guide/), which
+provides the `vp` command used for every repo task.
 
-## Opening A PR
+```bash
+vp install --frozen-lockfile
+vp run dev
+```
 
-Keep it small.
+`vp run dev` keeps its data in `~/.threadlines/dev`, apart from the threads in
+your installed Threadlines app.
 
-Explain exactly what changed.
+### Checks
 
-Explain exactly why the change should exist.
+Before a change is done, `vp fmt`, `vp lint` and `vp run typecheck` must all
+pass. Run the tests that cover the code you changed, for example
+`vp run --cache '@threadlines/server#test' <filename substring>`. Web UI changes
+also need `vp run --cache '@threadlines/web#test:browser'`, which CI runs
+separately. Save `vp run test`, the full suite, for broad changes. Never run
+`bun test`.
 
-Do not mix unrelated fixes together.
+### On Windows
 
-For a visual change, before/after screenshots or a short clip help review.
-They're welcome, not required.
+- Clone outside folders that OneDrive syncs, which by default includes Desktop
+  and Documents. Syncing `node_modules`, `.git` and build output makes
+  installs, builds and watch mode much slower.
+- A handful of test files fail on Windows no matter what you change: the
+  git-revert checkpoint tests, the terminal PATH tests, the symlink tests and
+  the oxlint plugin tests, which spawn a POSIX-only shim. Make sure your own
+  change's tests pass and leave those alone unless your PR is about fixing
+  them.
 
-Clear context helps us review and respond quickly.
+## The fine print
 
-## Issues First
-
-If you are thinking about a non-trivial change, open an issue first.
-
-That gives everyone a chance to check direction and scope before you spend time
-on a larger patch.
-
-## Review Expectations
-
-Maintainers may ask for a smaller scope, a different implementation, or more
-tests before merging. If a proposal does not fit the current direction, we will
-explain that as clearly as we can and preserve the useful context in its issue.
-
-## Development Notes
-
-Node.js 22.22.2+, 24.15+, or 26+ is required. Odd-numbered Node releases are
-not supported.
-
-Before considering a change done, all of `vp fmt`, `vp lint`, and
-`vp run typecheck` must pass. Run the tests that cover the code you changed,
-for example `vp run --cache '@threadlines/server#test' <filename substring>`.
-Web UI changes also need `vp run --cache '@threadlines/web#test:browser'`.
-Reserve `vp run test` (the full suite) for broad changes. Never run `bun test`.
-
-On Windows:
-
-- Clone outside OneDrive-synced folders (Desktop/Documents by default).
-  Syncing `node_modules`, `.git`, and build output makes installs, builds,
-  and watch mode noticeably slower.
-- A handful of test files currently fail on Windows regardless of your
-  changes (git-revert checkpoint tests, terminal PATH tests, symlink
-  tests, and the oxlint plugin tests, which spawn a POSIX-only bin shim).
-  Verify your change's own test files pass; do not chase these unless your
-  PR is about fixing them.
+By contributing, you agree that your contribution is licensed under the
+repository's [MIT license](LICENSE). Please follow the
+[code of conduct](CODE_OF_CONDUCT.md). Report security problems privately as
+described in [SECURITY.md](SECURITY.md), not in a public issue. Don't commit
+secrets or private data. [SECURITY_GUARDRAILS.md](SECURITY_GUARDRAILS.md) has
+the list.

@@ -181,7 +181,8 @@ mise install
 vp install
 ```
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.
+Help is welcome, from bug reports to new features. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for setup and how review works.
 
 ## Support development
 
