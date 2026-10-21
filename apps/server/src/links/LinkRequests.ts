@@ -121,7 +121,10 @@ const DELIVERED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
 export interface LinkRequestsShape {
   readonly start: (link: PeerLink, input: PeerStartInput) => Effect.Effect<PeerStartResult>;
-  readonly send: (link: PeerLink, input: PeerSendInput) => Effect.Effect<PeerSendResult>;
+  readonly send: (
+    link: PeerLink,
+    input: PeerSendInput,
+  ) => Effect.Effect<PeerSendResult, PeerRpcError>;
   /**
    * Takes a request back (and with `stopThread` stops the thread it runs
    * in); fails unless both are durably done, so the asking computer retries.
@@ -138,7 +141,7 @@ export interface LinkRequestsShape {
   readonly readThread: (
     link: PeerLink,
     input: PeerThreadReadInput,
-  ) => Effect.Effect<AgentThreadReadResult>;
+  ) => Effect.Effect<AgentThreadReadResult, PeerRpcError>;
   readonly listThreads: (link: PeerLink) => Effect.Effect<PeerThreadListResult>;
   /** Open requests' status and unacked reports, `synced`, then live changes. */
   readonly watch: (link: PeerLink) => Stream.Stream<PeerWatchEvent>;
@@ -292,14 +295,32 @@ const make = Effect.gen(function* () {
 
   const peerError = (detail: string) => new PeerRpcError({ detail });
 
-  const readThread = (threadId: ThreadId) =>
+  /**
+   * A thread here, or undefined when there is none; a read that fails
+   * fails, so a cancel or a stop never mistakes it for a thread that's gone.
+   */
+  const readThreadOrFail = (threadId: ThreadId) =>
     snapshots.getThreadDetailById(threadId).pipe(
       Effect.map(Option.getOrUndefined),
-      Effect.orElseSucceed(() => undefined),
+      Effect.mapError(() => peerError(`${ownLabel} couldn't read that thread.`)),
     );
 
+  const readThread = (threadId: ThreadId) =>
+    readThreadOrFail(threadId).pipe(Effect.orElseSucceed(() => undefined));
+
+  const readRequest = (deviceId: string, requestId: ChildRequestId) =>
+    ledger
+      .get(deviceId, requestId)
+      .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the request.`)));
+
+  /**
+   * The engine runs a command once it is queued, even if whoever queued it
+   * goes away; so the wait can't be interrupted, and work holding a
+   * request's lock keeps it until its command has really landed.
+   */
   const dispatch = (command: OrchestrationCommand, what: string) =>
     engine.dispatch(command).pipe(
+      Effect.uninterruptible,
       Effect.as(true),
       Effect.catch((error) =>
         Effect.logInfo(`link requests could not ${what}`, { detail: String(error) }).pipe(
@@ -681,6 +702,10 @@ const make = Effect.gen(function* () {
         .get(link.deviceId, input.requestId)
         .pipe(Effect.orElseSucceed(Option.none));
       if (Option.isSome(existing)) {
+        // A first call cut off before its setup began: this one begins it.
+        if (existing.value.status === "received") {
+          yield* bootstrapRequest(link.deviceId, input.requestId).pipe(Effect.forkDetach);
+        }
         return startAnswer(existing.value);
       }
       const now = yield* nowIso;
@@ -740,9 +765,9 @@ const make = Effect.gen(function* () {
   // Sending, cancelling, stopping
   // ---------------------------------------------------------------------------
 
-  /** A thread this link started, or undefined. */
+  /** A thread this link started, or undefined; fails when it can't be read. */
   const linkThread = (link: PeerLink, threadId: ThreadId) =>
-    readThread(threadId).pipe(
+    readThreadOrFail(threadId).pipe(
       Effect.map((thread) =>
         thread !== undefined &&
         thread.deletedAt === null &&
@@ -767,14 +792,14 @@ const make = Effect.gen(function* () {
    */
   const deliverSend = (deviceId: string, requestId: ChildRequestId) =>
     Effect.gen(function* () {
-      const found = yield* ledger.get(deviceId, requestId).pipe(Effect.orElseSucceed(Option.none));
+      const found = yield* readRequest(deviceId, requestId);
       if (Option.isNone(found)) {
         return { status: "refused", reason: "That message wasn't recorded." } as const;
       }
       const row = found.value;
       if (row.status !== "received" || row.payload?.kind !== "send") return sendAnswer(row);
       const input = row.payload.input;
-      const thread = row.threadId === null ? undefined : yield* readThread(row.threadId);
+      const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
       const origin = thread?.remoteOrigin ?? null;
       if (thread === undefined || origin === null || row.messageId === null) {
         const reason = `That thread is gone from ${ownLabel}.`;
@@ -808,6 +833,23 @@ const make = Effect.gen(function* () {
       return { status: "queued" } as const;
     });
 
+  /**
+   * A recorded send not delivered yet (its first call was cut off, or the
+   * process stopped): delivered now, unless its link no longer lets it in.
+   * Call under the request's lock.
+   */
+  const resumeSend = (row: LinkRequestRow) =>
+    Effect.gen(function* () {
+      const authority = yield* linkAuthority(row.linkDeviceId);
+      if (!authority.ok) {
+        yield* settle(row, authority.outcome, authority.text);
+        return authority.outcome === "cancelled"
+          ? ({ status: "cancelled" } as const)
+          : ({ status: "refused", reason: authority.text } as const);
+      }
+      return yield* deliverSend(row.linkDeviceId, row.requestId);
+    });
+
   const send: LinkRequestsShape["send"] = (link, input) =>
     withRequestLock(
       link.deviceId,
@@ -818,6 +860,12 @@ const make = Effect.gen(function* () {
           .get(link.deviceId, input.requestId)
           .pipe(Effect.orElseSucceed(Option.none));
         if (Option.isSome(existing)) {
+          // A first call cut off before it delivered: this one delivers it.
+          if (existing.value.status === "received" && existing.value.payload?.kind === "send") {
+            const answer = yield* resumeSend(existing.value);
+            yield* publishRow(link.deviceId, input.requestId);
+            return answer;
+          }
           return sendAnswer(existing.value);
         }
         const thread = yield* linkThread(link, input.threadId);
@@ -893,24 +941,23 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * What a cancelled request left in its thread: its message, if it still
-   * waits there, is taken back; with `stopThread` the thread is stopped if
-   * it is still working. Runs under the request's lock, after any setup or
-   * delivery in flight, and again on every retry of the cancel.
+   * What a cancel still owes the request's thread (the ledger's `cleanup`,
+   * written with the cancel): its message, if it still waits there, is taken
+   * back; with `stop` the thread is stopped if it is still working. Then it
+   * is marked done. Runs under the request's lock, after any setup or
+   * delivery in flight; again on every retry of the cancel, and at startup
+   * for one the previous process didn't finish.
    */
-  const cleanUpCancelled = (deviceId: string, requestId: ChildRequestId, stopThread: boolean) =>
+  const cleanUpCancel = (deviceId: string, requestId: ChildRequestId) =>
     Effect.gen(function* () {
-      const found = yield* ledger
-        .get(deviceId, requestId)
-        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the request.`)));
-      if (Option.isNone(found) || found.value.payload === null || found.value.threadId === null) {
-        return;
-      }
+      const found = yield* readRequest(deviceId, requestId);
+      if (Option.isNone(found) || found.value.cleanup === null) return;
       const row = found.value;
-      const thread = yield* readThread(found.value.threadId);
-      if (thread === undefined) return;
+      const cleanup = found.value.cleanup;
+      const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
       const messageId = row.messageId;
       if (
+        thread !== undefined &&
         row.status === "cancelled" &&
         messageId !== null &&
         (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId)
@@ -926,16 +973,20 @@ const make = Effect.gen(function* () {
           "take back the cancelled message",
         );
       }
-      if (stopThread) {
-        const current = yield* readThread(thread.id);
+      if (thread !== undefined && cleanup === "stop") {
+        const current = yield* readThreadOrFail(thread.id);
         if (current !== undefined) yield* stopIfWorking(deviceId, current);
       }
+      yield* ledger
+        .finishCleanup({ linkDeviceId: deviceId, requestId, cleanup })
+        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't record the cancel.`)));
     });
 
   /**
-   * Ends a request `cancelled` (a tombstone when it hasn't arrived yet)
-   * first, so work in flight stops at its next check, then cleans up after
-   * it. Answered only once both are durable.
+   * Ends a request `cancelled` (a tombstone when it hasn't arrived yet),
+   * recording in the same write what its thread is still owed, so work in
+   * flight stops at its next check and a restart finishes the clean-up; then
+   * cleans up. Answered only once both are durable.
    */
   const cancelRequest = (
     deviceId: string,
@@ -945,13 +996,10 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const result = yield* ledger
-        .cancel({ linkDeviceId: deviceId, requestId, text, now: yield* nowIso })
+        .cancel({ linkDeviceId: deviceId, requestId, text, stopThread, now: yield* nowIso })
         .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't record the cancel.`)));
       if (result.cancelled) yield* publishRow(deviceId, requestId);
-      yield* withRequestLock(
-        deviceId,
-        requestId,
-      )(cleanUpCancelled(deviceId, requestId, stopThread));
+      yield* withRequestLock(deviceId, requestId)(cleanUpCancel(deviceId, requestId));
       return {
         status: result.row.status === "cancelled" ? "cancelled" : "already_settled",
       } as const;
@@ -1338,7 +1386,21 @@ const make = Effect.gen(function* () {
   const settleFromPreviousProcess = Effect.gen(function* () {
     const open = yield* ledger.listOpen.pipe(Effect.orElseSucceed(() => []));
     for (const found of open) {
-      if (found.status === "awaiting_approval") continue;
+      yield* reconcileAfterRestart(found).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("link requests could not settle a request after a restart", {
+            requestId: found.requestId,
+            detail: error.detail,
+          }),
+        ),
+      );
+    }
+  });
+
+  /** One request the previous process left open; a read that fails leaves it for later. */
+  const reconcileAfterRestart = (found: LinkRequestRow) =>
+    Effect.gen(function* () {
+      if (found.status === "awaiting_approval") return;
       if (found.status === "received" && found.kind === "start") {
         const turnReceipt = yield* engine
           .getCommandReceipt(
@@ -1347,45 +1409,35 @@ const make = Effect.gen(function* () {
           .pipe(Effect.orElseSucceed(() => Option.none()));
         if (Option.isNone(turnReceipt) || turnReceipt.value.status !== "accepted") {
           yield* bootstrapRequest(found.linkDeviceId, found.requestId).pipe(Effect.forkDetach);
-          continue;
+          return;
         }
         // Its first turn was committed before the restart: past setup.
         yield* progress(found, { status: "running", from: ["received"] });
       }
       if (found.status === "received" && found.kind === "send") {
-        const authority = yield* linkAuthority(found.linkDeviceId);
-        if (!authority.ok) {
-          yield* settle(found, authority.outcome, authority.text);
-          continue;
-        }
-        yield* withRequestLock(
-          found.linkDeviceId,
-          found.requestId,
-        )(deliverSend(found.linkDeviceId, found.requestId));
+        yield* withRequestLock(found.linkDeviceId, found.requestId)(resumeSend(found));
       }
-      const reread = yield* ledger
-        .get(found.linkDeviceId, found.requestId)
-        .pipe(Effect.orElseSucceed(Option.none));
-      if (Option.isNone(reread) || isTerminalLinkRequest(reread.value)) continue;
+      const reread = yield* readRequest(found.linkDeviceId, found.requestId);
+      if (Option.isNone(reread) || isTerminalLinkRequest(reread.value)) return;
       const row = reread.value;
-      const thread = row.threadId === null ? undefined : yield* readThread(row.threadId);
+      const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
       if (thread === undefined) {
         yield* settle(row, "failed", `That thread is gone from ${ownLabel}.`, {
           error: "The thread is gone.",
         });
-        continue;
+        return;
       }
       // Its message still waits in the thread: it runs the normal way.
       if (
         row.messageId !== null &&
         (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === row.messageId)
       ) {
-        continue;
+        return;
       }
       const request = deliveryRequest(row);
       const childTurns = yield* turns
         .listByThreadId({ threadId: thread.id })
-        .pipe(Effect.orElseSucceed(() => []));
+        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the thread's turns.`)));
       if (
         row.status === "queued" &&
         row.turnId === null &&
@@ -1397,7 +1449,7 @@ const make = Effect.gen(function* () {
           "cancelled",
           `Your message to '${thread.title}' never ran on ${ownLabel}.`,
         );
-        continue;
+        return;
       }
       const finishedTurnId = finishedTurnAfterRestart(childTurns, {
         ...request,
@@ -1420,6 +1472,29 @@ const make = Effect.gen(function* () {
             }
           : {},
       );
+    });
+
+  /** Cancels whose clean-up the previous process didn't finish, finished before anything else. */
+  const finishCleanups = Effect.gen(function* () {
+    const owed = yield* ledger.listCleanup.pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("link requests could not list unfinished cancels", {
+          detail: String(error),
+        }).pipe(Effect.as([])),
+      ),
+    );
+    for (const row of owed) {
+      yield* withRequestLock(
+        row.linkDeviceId,
+        row.requestId,
+      )(cleanUpCancel(row.linkDeviceId, row.requestId)).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("link requests could not finish a cancel's clean-up", {
+            requestId: row.requestId,
+            detail: error.detail,
+          }),
+        ),
+      );
     }
   });
 
@@ -1441,6 +1516,8 @@ const make = Effect.gen(function* () {
   const startReactor: LinkRequestsShape["startReactor"] = () =>
     Effect.gen(function* () {
       const events = yield* engine.subscribeDomainEvents;
+      // A cancel's message is taken back before anything could send it.
+      yield* finishCleanups;
       yield* settleFromPreviousProcess.pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("link requests could not settle the previous process's requests", {

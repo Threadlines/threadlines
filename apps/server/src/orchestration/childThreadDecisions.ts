@@ -713,7 +713,9 @@ export function decideChildRequestSettle(
  * there) is delivered like a local child's, unless Stop or a wrap moved the
  * epoch, the parent stopped that child since (its attachment epoch moved),
  * the parent is archived, or the asking agent left. Nothing is written on
- * the child, which isn't here.
+ * the child, which isn't here. The thread the report names there
+ * (`remoteChild`) is recorded in the same decision, so a request never
+ * settles without it.
  */
 function decideRemoteRequestSettle(
   parent: OrchestrationThread,
@@ -725,6 +727,27 @@ function decideRemoteRequestSettle(
   const reply = command.reply;
   const remote = request.remote!;
   const remoteChild = remoteChildOf(parent.childRequests, request.childThreadId);
+  const named = command.remoteChild;
+  const childRecorded: ReadonlyArray<PlannedEvent> =
+    named !== undefined && named.environmentId === remote.environmentId
+      ? [
+          {
+            ...baseFor(parent.id),
+            type: "thread.remote-child-updated",
+            payload: {
+              threadId: parent.id,
+              child: {
+                ...named,
+                attachmentEpoch: Math.max(
+                  named.attachmentEpoch,
+                  remoteChildOf(parent.childRequests, named.threadId)?.attachmentEpoch ?? 0,
+                ),
+              },
+              updatedAt: command.createdAt,
+            },
+          },
+        ]
+      : [];
   if (
     reply === undefined ||
     request.deliveryEpoch !== parent.childRequests.deliveryEpoch ||
@@ -732,7 +755,7 @@ function decideRemoteRequestSettle(
     !isPresent(parent, request.from) ||
     parent.messages.some((message) => message.id === reply.messageId)
   ) {
-    return [settled];
+    return [...childRecorded, settled];
   }
   const fromThread = {
     threadId: request.childThreadId,
@@ -744,6 +767,7 @@ function decideRemoteRequestSettle(
   };
   const participantId = request.from.participantId;
   return [
+    ...childRecorded,
     settled,
     {
       ...baseFor(parent.id),

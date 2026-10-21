@@ -22,9 +22,11 @@ import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../config.ts";
@@ -35,8 +37,15 @@ import { OrchestrationEngineLive } from "../orchestration/Layers/OrchestrationEn
 import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { ThreadBootstrapLive } from "../orchestration/Layers/ThreadBootstrap.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../orchestration/Services/OrchestrationEngine.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionSnapshotQueryShape,
+} from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { PersistenceSqlError } from "../persistence/Errors.ts";
 import {
   ThreadBootstrap,
   type ThreadBootstrapShape,
@@ -45,7 +54,10 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionThreadRepositoryLive } from "../persistence/Layers/ProjectionThreads.ts";
 import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  makeSqlitePersistenceLive,
+  SqlitePersistenceMemory,
+} from "../persistence/Layers/Sqlite.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
@@ -56,7 +68,7 @@ import {
 import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
-import { linkBootstrapKey, linkMessageId, linkThreadId } from "./linkIds.ts";
+import { linkBootstrapKey, linkCommandId, linkMessageId, linkThreadId } from "./linkIds.ts";
 import {
   LinkRequestRepository,
   LinkRequestRepositoryError,
@@ -134,155 +146,167 @@ const replay = (watch: Stream.Stream<PeerWatchEvent>) =>
 /**
  * The child's computer: the real orchestration engine, projections, thread
  * setup and ledger on one database. `boot` starts a LinkRequests process on
- * it; booting another one later is a restart, and `patch` swaps parts of a
- * process to stop it at a chosen point (a crash) or hold it there.
+ * it; booting another one later is a restart of that process, and `patch`
+ * swaps parts of it to stop it at a chosen point (a crash) or hold it there.
+ * With `dbPath` the database is a file: a second computer made on it, after
+ * the first one's scope closed, is a whole new server process.
  */
-const makeComputer = Effect.gen(function* () {
-  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "link-requests-project-"));
-  const orchestration = OrchestrationEngineLive.pipe(
-    Layer.provide(OrchestrationProjectionPipelineLive),
-    Layer.provide(OrchestrationEventStoreLive),
-    Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-  );
-  const bootstrapLayer = ThreadBootstrapLive.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(GitWorkflowService)({}),
-        Layer.mock(VcsStatusBroadcaster)({}),
-        Layer.mock(ProjectSetupScriptRunner)({}),
+const makeComputer = (options: { readonly dbPath?: string } = {}) =>
+  Effect.gen(function* () {
+    const scope = yield* Effect.scope;
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "link-requests-project-"));
+    const orchestration = OrchestrationEngineLive.pipe(
+      Layer.provide(OrchestrationProjectionPipelineLive),
+      Layer.provide(OrchestrationEventStoreLive),
+      Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+    );
+    const bootstrapLayer = ThreadBootstrapLive.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(GitWorkflowService)({}),
+          Layer.mock(VcsStatusBroadcaster)({}),
+          Layer.mock(ProjectSetupScriptRunner)({}),
+        ),
       ),
-    ),
-  );
-  const base = Layer.mergeAll(
-    bootstrapLayer,
-    LinkRequestRepositoryLive,
-    RelayDeviceRepositoryLive,
-    ProjectionTurnRepositoryLive,
-    ProjectionThreadRepositoryLive,
-  ).pipe(
-    Layer.provideMerge(orchestration),
-    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
-    Layer.provideMerge(
-      Layer.mock(RepositoryIdentityResolver)({
-        resolve: () =>
-          Effect.succeed({
-            canonicalKey: PROJECT_KEY,
-            locator: { source: "git-remote", remoteName: "origin", remoteUrl: "x" },
-          }),
-      }),
-    ),
-    Layer.provideMerge(SqlitePersistenceMemory),
-    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "link-requests-test-" })),
-  );
-  const context = yield* Layer.build(base);
-  const engine = Context.get(context, OrchestrationEngineService);
-  const snapshots = Context.get(context, ProjectionSnapshotQuery);
-  const ledger = Context.get(context, LinkRequestRepository);
-  const devices = Context.get(context, RelayDeviceRepository);
-  const realBootstrap = Context.get(context, ThreadBootstrap);
+    );
+    const base = Layer.mergeAll(
+      bootstrapLayer,
+      LinkRequestRepositoryLive,
+      RelayDeviceRepositoryLive,
+      ProjectionTurnRepositoryLive,
+      ProjectionThreadRepositoryLive,
+    ).pipe(
+      Layer.provideMerge(orchestration),
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provideMerge(
+        Layer.mock(RepositoryIdentityResolver)({
+          resolve: () =>
+            Effect.succeed({
+              canonicalKey: PROJECT_KEY,
+              locator: { source: "git-remote", remoteName: "origin", remoteUrl: "x" },
+            }),
+        }),
+      ),
+      Layer.provideMerge(
+        options.dbPath === undefined
+          ? SqlitePersistenceMemory
+          : makeSqlitePersistenceLive(options.dbPath),
+      ),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "link-requests-test-" })),
+    );
+    const context = yield* Layer.buildWithScope(base, scope);
+    const engine = Context.get(context, OrchestrationEngineService);
+    const snapshots = Context.get(context, ProjectionSnapshotQuery);
+    const ledger = Context.get(context, LinkRequestRepository);
+    const devices = Context.get(context, RelayDeviceRepository);
+    const realBootstrap = Context.get(context, ThreadBootstrap);
 
-  yield* engine.dispatch({
-    type: "project.create",
-    commandId: CommandId.make("project-create"),
-    projectId: PROJECT,
-    title: "threadlines",
-    workspaceRoot,
-    defaultModelSelection: null,
-    createdAt: AT,
+    yield* engine.dispatch({
+      type: "project.create",
+      commandId: CommandId.make("project-create"),
+      projectId: PROJECT,
+      title: "threadlines",
+      workspaceRoot,
+      defaultModelSelection: null,
+      createdAt: AT,
+    });
+
+    /** A linked computer's device row here, as pairing leaves it. */
+    const addLink = (
+      deviceId: string,
+      access: "off" | "ask" | "allowed",
+      state: "active" | "revoked" = "active",
+    ) =>
+      Effect.gen(function* () {
+        yield* devices.insertApproving({
+          deviceId,
+          requestId: `pairing-${deviceId}`,
+          relayOrigin: "http://relay.test",
+          label: "Windows PC",
+          kind: "computer",
+          platform: null,
+          devicePublicKey: "key",
+          grant: "peer",
+          now: AT,
+        });
+        yield* devices.transition({ deviceId, from: ["approving"], to: "active", now: AT });
+        yield* devices.setLinkSettings({ deviceId, access, maxRuntimeMode: "auto", now: AT });
+        if (state === "revoked") {
+          yield* devices.transition({ deviceId, from: ["active"], to: "revoked", now: AT });
+        }
+      });
+
+    const boot = (
+      patch: {
+        readonly ledger?: Partial<LinkRequestRepositoryShape>;
+        readonly bootstrap?: Partial<ThreadBootstrapShape>;
+        readonly engine?: Partial<OrchestrationEngineShape>;
+        readonly snapshots?: Partial<ProjectionSnapshotQueryShape>;
+      } = {},
+    ) =>
+      Effect.gen(function* () {
+        const layer = LinkRequestsLive.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(LinkRequestRepository, { ...ledger, ...patch.ledger }),
+              Layer.succeed(ThreadBootstrap, { ...realBootstrap, ...patch.bootstrap }),
+              Layer.succeed(OrchestrationEngineService, { ...engine, ...patch.engine }),
+              Layer.succeed(ProjectionSnapshotQuery, { ...snapshots, ...patch.snapshots }),
+              Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([PROVIDER]) }),
+              Layer.mock(GitVcsDriver)({
+                execute: () =>
+                  Effect.succeed({
+                    exitCode: 1 as never,
+                    stdout: "",
+                    stderr: "",
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                  }),
+              }),
+              Layer.mock(ServerEnvironment)({
+                getDescriptor: Effect.succeed({
+                  environmentId: EnvironmentId.make("env-mac-mini"),
+                  label: "Mac mini",
+                  platform: { os: "darwin", arch: "arm64" },
+                  serverVersion: "0.0.0",
+                  capabilities: { repositoryIdentity: true },
+                }),
+              }),
+              ServerSettingsService.layerTest(),
+            ),
+          ),
+          Layer.provide(Layer.succeedContext(context)),
+        );
+        return Context.get(yield* Layer.buildWithScope(layer, scope), LinkRequests);
+      });
+
+    const thread = (threadId: ThreadId) =>
+      snapshots.getThreadDetailById(threadId).pipe(Effect.map(Option.getOrUndefined));
+    const request = (requestId: string) =>
+      ledger.get(DEVICE, ChildRequestId.make(requestId)).pipe(Effect.map(Option.getOrThrow));
+    const firstTurnCommitted = (requestId: string) =>
+      engine
+        .getCommandReceipt(
+          childRequestCommandId(linkBootstrapKey(DEVICE, ChildRequestId.make(requestId)), "turn"),
+        )
+        .pipe(Effect.map(Option.isSome));
+    const events = engine.readEvents(0).pipe(Stream.runCollect);
+
+    return {
+      engine,
+      ledger,
+      devices,
+      bootstrap: realBootstrap,
+      addLink,
+      boot,
+      thread,
+      request,
+      firstTurnCommitted,
+      events,
+    };
   });
 
-  /** A linked computer's device row here, as pairing leaves it. */
-  const addLink = (
-    deviceId: string,
-    access: "off" | "ask" | "allowed",
-    state: "active" | "revoked" = "active",
-  ) =>
-    Effect.gen(function* () {
-      yield* devices.insertApproving({
-        deviceId,
-        requestId: `pairing-${deviceId}`,
-        relayOrigin: "http://relay.test",
-        label: "Windows PC",
-        kind: "computer",
-        platform: null,
-        devicePublicKey: "key",
-        grant: "peer",
-        now: AT,
-      });
-      yield* devices.transition({ deviceId, from: ["approving"], to: "active", now: AT });
-      yield* devices.setLinkSettings({ deviceId, access, maxRuntimeMode: "auto", now: AT });
-      if (state === "revoked") {
-        yield* devices.transition({ deviceId, from: ["active"], to: "revoked", now: AT });
-      }
-    });
-
-  const boot = (
-    patch: {
-      readonly ledger?: Partial<LinkRequestRepositoryShape>;
-      readonly bootstrap?: Partial<ThreadBootstrapShape>;
-    } = {},
-  ) =>
-    Effect.gen(function* () {
-      const layer = LinkRequestsLive.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.succeed(LinkRequestRepository, { ...ledger, ...patch.ledger }),
-            Layer.succeed(ThreadBootstrap, { ...realBootstrap, ...patch.bootstrap }),
-            Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([PROVIDER]) }),
-            Layer.mock(GitVcsDriver)({
-              execute: () =>
-                Effect.succeed({
-                  exitCode: 1 as never,
-                  stdout: "",
-                  stderr: "",
-                  stdoutTruncated: false,
-                  stderrTruncated: false,
-                }),
-            }),
-            Layer.mock(ServerEnvironment)({
-              getDescriptor: Effect.succeed({
-                environmentId: EnvironmentId.make("env-mac-mini"),
-                label: "Mac mini",
-                platform: { os: "darwin", arch: "arm64" },
-                serverVersion: "0.0.0",
-                capabilities: { repositoryIdentity: true },
-              }),
-            }),
-            ServerSettingsService.layerTest(),
-          ),
-        ),
-        Layer.provide(Layer.succeedContext(context)),
-      );
-      return Context.get(yield* Layer.build(layer), LinkRequests);
-    });
-
-  const thread = (threadId: ThreadId) =>
-    snapshots.getThreadDetailById(threadId).pipe(Effect.map(Option.getOrUndefined));
-  const request = (requestId: string) =>
-    ledger.get(DEVICE, ChildRequestId.make(requestId)).pipe(Effect.map(Option.getOrThrow));
-  const firstTurnCommitted = (requestId: string) =>
-    engine
-      .getCommandReceipt(
-        childRequestCommandId(linkBootstrapKey(DEVICE, ChildRequestId.make(requestId)), "turn"),
-      )
-      .pipe(Effect.map(Option.isSome));
-  const events = engine.readEvents(0).pipe(Stream.runCollect);
-
-  return {
-    engine,
-    ledger,
-    devices,
-    bootstrap: realBootstrap,
-    addLink,
-    boot,
-    thread,
-    request,
-    firstTurnCommitted,
-    events,
-  };
-});
-
-type Computer = Effect.Success<typeof makeComputer>;
+type Computer = Effect.Success<ReturnType<typeof makeComputer>>;
 
 /** A start from an allowed link, set up: its thread exists and its first turn was asked for. */
 const startedChild = (computer: Computer, requestId: string) =>
@@ -303,7 +327,7 @@ const stopRequestedFor = (events: ReadonlyArray<OrchestrationEvent>, threadId: T
 it.layer(NodeServices.layer)("LinkRequests", (it) => {
   it.effect("records a start once: a retry gets the same thread and starts nothing more", () =>
     Effect.gen(function* () {
-      const computer = yield* makeComputer;
+      const computer = yield* makeComputer();
       yield* computer.addLink(DEVICE, "allowed");
       let setups = 0;
       const service = yield* computer.boot({
@@ -333,7 +357,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
 
   it.effect("refuses a start that comes after its cancel, and a late Allow finds nothing", () =>
     Effect.gen(function* () {
-      const computer = yield* makeComputer;
+      const computer = yield* makeComputer();
       yield* computer.addLink(DEVICE, "ask");
       const service = yield* computer.boot();
       // The cancel overtook its start.
@@ -365,7 +389,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
     "a start from a link that is off never runs, even if the process dies right after",
     () =>
       Effect.gen(function* () {
-        const computer = yield* makeComputer;
+        const computer = yield* makeComputer();
         yield* computer.addLink(DEVICE, "off");
         // Dies after recording it: nothing written after the insert lands.
         const dying = yield* computer.boot({
@@ -404,7 +428,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
     "a recorded start whose link was turned off or removed before its setup resumed is ended, not run",
     () =>
       Effect.gen(function* () {
-        const computer = yield* makeComputer;
+        const computer = yield* makeComputer();
         const removed = "device-removed";
         yield* computer.addLink(DEVICE, "allowed");
         yield* computer.addLink(removed, "allowed");
@@ -443,7 +467,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
     "a cancel with stopThread stops the thread its start runs in, though the asker never heard its id",
     () =>
       Effect.gen(function* () {
-        const computer = yield* makeComputer;
+        const computer = yield* makeComputer();
         yield* computer.addLink(DEVICE, "allowed");
         const { service, threadId } = yield* startedChild(computer, "request-1");
         // Its agent is at work.
@@ -475,7 +499,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
 
   it.effect("a send cancelled while it is being delivered never reaches its thread", () =>
     Effect.gen(function* () {
-      const computer = yield* makeComputer;
+      const computer = yield* makeComputer();
       yield* computer.addLink(DEVICE, "allowed");
       const { threadId } = yield* startedChild(computer, "request-1");
       // Held right after the send is recorded, before it is delivered.
@@ -526,7 +550,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
 
   it.effect("a send recorded just before the process died is delivered after the restart", () =>
     Effect.gen(function* () {
-      const computer = yield* makeComputer;
+      const computer = yield* makeComputer();
       yield* computer.addLink(DEVICE, "allowed");
       const { threadId } = yield* startedChild(computer, "request-1");
       // Dies (hangs forever) right after recording the send.
@@ -571,7 +595,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
     "a first turn committed just before the process died is reported after the restart, not left open",
     () =>
       Effect.gen(function* () {
-        const computer = yield* makeComputer;
+        const computer = yield* makeComputer();
         yield* computer.addLink(DEVICE, "allowed");
         // Dies right after its first turn is committed: the ledger never hears.
         const dying = yield* computer.boot({
@@ -600,9 +624,191 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
       }),
   );
 
+  it.effect(
+    "a send cut off after its command was queued keeps the request until it lands, so a cancel takes it back",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const { threadId } = yield* startedChild(computer, "request-1");
+        // The engine takes the command at once and runs it later, whoever waits.
+        const taken = yield* Deferred.make<void>();
+        const land = yield* Deferred.make<void>();
+        const service = yield* computer.boot({
+          engine: {
+            dispatch: (command) =>
+              command.type !== "thread.remote-request.queue"
+                ? computer.engine.dispatch(command)
+                : Effect.gen(function* () {
+                    const running = yield* Effect.forkDetach(
+                      Deferred.await(land).pipe(Effect.andThen(computer.engine.dispatch(command))),
+                    );
+                    yield* Deferred.succeed(taken, undefined);
+                    return yield* Fiber.join(running);
+                  }),
+          },
+        });
+        const sending = yield* Effect.forkChild(
+          service.send(link(), {
+            requestId: ChildRequestId.make("send-1"),
+            threadId,
+            text: "Add the security fixes too.",
+          }),
+        );
+        yield* Deferred.await(taken);
+        // The asking computer went away mid-call, then took the send back.
+        const interrupting = yield* Effect.forkChild(Fiber.interrupt(sending));
+        const cancelling = yield* Effect.forkChild(
+          service.cancel(link(), ChildRequestId.make("send-1")),
+        );
+        yield* wallClockSleep(50);
+        yield* Deferred.succeed(land, undefined);
+        yield* Fiber.join(interrupting);
+        const cancelled = yield* Fiber.join(cancelling);
+        // The command landed (it was queued before the call was cut off).
+        yield* eventually(
+          Effect.map(
+            computer.engine.getCommandReceipt(
+              linkCommandId(DEVICE, ChildRequestId.make("send-1"), "queue"),
+            ),
+            Option.isSome,
+          ),
+          "the queued command lands",
+        );
+
+        assert.equal(cancelled.status, "cancelled");
+        const messageId = linkMessageId(DEVICE, "send-1");
+        const child = yield* computer.thread(threadId);
+        assert.isFalse(
+          (child?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId),
+        );
+      }),
+  );
+
+  it.effect("a send retried after its first call was cut off is delivered, not only answered", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed");
+      const { threadId } = yield* startedChild(computer, "request-1");
+      // The first call is cut off right after it recorded the send.
+      const recorded = yield* Deferred.make<void>();
+      let cutOff = true;
+      const service = yield* computer.boot({
+        ledger: {
+          insert: (input) =>
+            computer.ledger
+              .insert(input)
+              .pipe(
+                Effect.tap(() =>
+                  input.payload.kind === "send" && cutOff
+                    ? Deferred.succeed(recorded, undefined).pipe(Effect.andThen(Effect.never))
+                    : Effect.void,
+                ),
+              ),
+        },
+      });
+      const sendInput = {
+        requestId: ChildRequestId.make("send-1"),
+        threadId,
+        text: "Add the security fixes too.",
+      };
+      const first = yield* Effect.forkChild(service.send(link(), sendInput));
+      yield* Deferred.await(recorded);
+      yield* Fiber.interrupt(first);
+      cutOff = false;
+
+      const retried = yield* service.send(link(), sendInput);
+      assert.equal(retried.status, "queued");
+      const messageId = linkMessageId(DEVICE, "send-1");
+      const child = yield* computer.thread(threadId);
+      assert.isTrue(
+        (child?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId),
+      );
+      assert.equal((yield* computer.request("send-1")).status, "queued");
+    }),
+  );
+
+  it.effect(
+    "a cancel recorded just before the server died is cleaned up when it starts again",
+    () =>
+      Effect.gen(function* () {
+        const dbPath = path.join(
+          fs.mkdtempSync(path.join(os.tmpdir(), "link-requests-db-")),
+          "state.sqlite",
+        );
+        const firstRun = yield* Scope.make();
+        const first = yield* makeComputer({ dbPath }).pipe(Scope.provide(firstRun));
+        yield* first.addLink(DEVICE, "allowed");
+        const { service, threadId } = yield* startedChild(first, "request-1");
+        const sent = yield* service.send(link(), {
+          requestId: ChildRequestId.make("send-1"),
+          threadId,
+          text: "Add the security fixes too.",
+        });
+        assert.equal(sent.status, "queued");
+        const messageId = linkMessageId(DEVICE, "send-1");
+
+        // The cancel is recorded, then the server dies before it takes the message back.
+        const reading = yield* Deferred.make<void>();
+        const dying = yield* first.boot({
+          snapshots: {
+            getThreadDetailById: () =>
+              Deferred.succeed(reading, undefined).pipe(Effect.andThen(Effect.never)),
+          },
+        });
+        const cancelling = yield* Effect.forkChild(
+          dying.cancel(link(), ChildRequestId.make("send-1")),
+        );
+        yield* Deferred.await(reading);
+        yield* Fiber.interrupt(cancelling);
+        assert.equal((yield* first.request("send-1")).status, "cancelled");
+        yield* Scope.close(firstRun, Exit.void);
+
+        // A new server process on the same database.
+        const second = yield* makeComputer({ dbPath });
+        assert.isTrue(
+          ((yield* second.thread(threadId))?.queuedFollowUps ?? []).some(
+            (queued) => queued.messageId === messageId,
+          ),
+        );
+        const restarted = yield* second.boot();
+        yield* restarted.startReactor();
+        assert.isFalse(
+          ((yield* second.thread(threadId))?.queuedFollowUps ?? []).some(
+            (queued) => queued.messageId === messageId,
+          ),
+        );
+        assert.isNull((yield* second.request("send-1")).cleanup);
+      }),
+  );
+
+  it.effect("a cancel or stop whose thread can't be read fails, so the asker tries again", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed");
+      const { threadId } = yield* startedChild(computer, "request-1");
+      const unreadable = yield* computer.boot({
+        snapshots: {
+          getThreadDetailById: () =>
+            Effect.fail(
+              new PersistenceSqlError({ operation: "getThreadDetailById", detail: "busy" }),
+            ),
+        },
+      });
+      const cancel = yield* Effect.flip(
+        unreadable.cancel(link(), ChildRequestId.make("request-1"), { stopThread: true }),
+      );
+      assert.equal(cancel._tag, "PeerRpcError");
+      // Still owed: a retry, or a restart, finishes it.
+      assert.equal((yield* computer.request("request-1")).cleanup, "stop");
+      const stop = yield* Effect.flip(unreadable.stopThread(link(), threadId));
+      assert.equal(stop._tag, "PeerRpcError");
+    }),
+  );
+
   it.effect("answers a send with the turn its own message started, not another", () =>
     Effect.gen(function* () {
-      const computer = yield* makeComputer;
+      const computer = yield* makeComputer();
       yield* computer.addLink(DEVICE, "allowed");
       const { service, threadId } = yield* startedChild(computer, "request-1");
       const sent = yield* service.send(link(), {

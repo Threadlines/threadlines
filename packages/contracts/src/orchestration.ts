@@ -3564,6 +3564,11 @@ const ThreadChildRequestSettleCommand = Schema.Struct({
   ),
   note: Schema.optional(TrimmedNonEmptyString),
   error: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * A request to a linked computer: the thread its report names there,
+   * recorded in the same decision that settles the request.
+   */
+  remoteChild: Schema.optional(RemoteChildThread),
   createdAt: IsoDateTime,
 });
 

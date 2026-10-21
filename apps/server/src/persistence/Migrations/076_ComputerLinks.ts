@@ -18,6 +18,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  *   computer's agent asked for, with its whole payload and the ids reserved
  *   for it, so each stage resumes after a crash. Inserting the row is the
  *   dedupe; a cancel that arrives first leaves a `cancelled` tombstone.
+ *   `cleanup` is what a cancel still owes the thread (take its message back,
+ *   or that and stop the thread), written with the cancel and cleared once
+ *   done, so a restart in between finishes it.
  * - `projection_threads.remote_origin_json`: see ThreadRemoteOrigin.
  *
  * New tables and nullable or defaulted columns only; no row is rewritten.
@@ -96,11 +99,18 @@ export default Effect.gen(function* () {
       report_error TEXT,
       settled_at TEXT,
       delivered_at TEXT,
+      cleanup TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (link_device_id, request_id)
     )
   `;
+  const requestColumns = yield* sql<{
+    readonly name: string;
+  }>`SELECT name FROM pragma_table_info('link_requests')`;
+  if (!requestColumns.some((entry) => entry.name === "cleanup")) {
+    yield* sql`ALTER TABLE link_requests ADD COLUMN cleanup TEXT`;
+  }
   yield* sql`
     CREATE INDEX IF NOT EXISTS idx_link_requests_thread
     ON link_requests(thread_id)

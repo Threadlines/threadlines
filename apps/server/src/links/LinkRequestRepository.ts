@@ -25,8 +25,14 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
  * arrived and the ids reserved for it. Inserting the row is the dedupe; a
  * cancel that arrives first leaves a `cancelled` tombstone, so a late start
  * or send is refused. A request's end (its status and its report) is written
- * in one statement, and its report is offered on the watch until acked.
+ * in one statement, and its report is offered on the watch until acked. A
+ * cancel also records what it still owes the thread (`cleanup`) in the same
+ * transaction, cleared once that is done, so a restart finishes it.
  */
+
+/** What a cancel still owes the request's thread: take its message back, or that and stop it. */
+export const LinkRequestCleanup = Schema.Literals(["unqueue", "stop"]);
+export type LinkRequestCleanup = typeof LinkRequestCleanup.Type;
 
 export const LinkRequestPayload = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("start"), input: PeerStartInput }),
@@ -55,6 +61,8 @@ export const LinkRequestRow = Schema.Struct({
   settledAt: Schema.NullOr(IsoDateTime),
   /** When the asking computer acked the report. */
   deliveredAt: Schema.NullOr(IsoDateTime),
+  /** What a cancel still owes the thread; null when nothing. */
+  cleanup: Schema.NullOr(LinkRequestCleanup),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -148,18 +156,30 @@ export interface LinkRequestRepositoryShape {
   }) => Effect.Effect<boolean, LinkRequestRepositoryError>;
   /**
    * A cancel: ends the request `cancelled`, or, when it hasn't arrived yet,
-   * leaves a tombstone so it is refused when it does. Returns the row as it
-   * stands, and whether this call ended it.
+   * leaves a tombstone so it is refused when it does; in the same
+   * transaction it records what is still owed the thread (`cleanup`: its
+   * message taken back, and with `stopThread` the thread stopped, even when
+   * the request had already ended). Returns the row as it stands, and
+   * whether this call ended it.
    */
   readonly cancel: (input: {
     readonly linkDeviceId: string;
     readonly requestId: ChildRequestId;
     readonly text: string;
+    readonly stopThread: boolean;
     readonly now: string;
   }) => Effect.Effect<
     { readonly row: LinkRequestRow; readonly cancelled: boolean },
     LinkRequestRepositoryError
   >;
+  /** Requests whose cancel still owes their thread something, oldest first. */
+  readonly listCleanup: Effect.Effect<ReadonlyArray<LinkRequestRow>, LinkRequestRepositoryError>;
+  /** A cancel's clean-up is done; unless a later cancel asked for more meanwhile. */
+  readonly finishCleanup: (input: {
+    readonly linkDeviceId: string;
+    readonly requestId: ChildRequestId;
+    readonly cleanup: LinkRequestCleanup;
+  }) => Effect.Effect<void, LinkRequestRepositoryError>;
   /** The asking computer recorded the report. */
   readonly markDelivered: (input: {
     readonly linkDeviceId: string;
@@ -202,6 +222,7 @@ const make = Effect.gen(function* () {
       report_error AS "reportError",
       settled_at AS "settledAt",
       delivered_at AS "deliveredAt",
+      cleanup AS "cleanup",
       created_at AS "createdAt",
       updated_at AS "updatedAt"
     FROM link_requests
@@ -346,11 +367,34 @@ const make = Effect.gen(function* () {
         turnId: null,
         now: input.now,
       });
+      // What the thread is still owed: a cancelled request's message taken
+      // back, and with stopThread the thread stopped (whatever the request's end).
+      yield* sql`
+        UPDATE link_requests SET cleanup = CASE
+          WHEN ${input.stopThread ? 1 : 0} = 1 OR cleanup = 'stop' THEN 'stop'
+          ELSE 'unqueue'
+        END
+        WHERE link_device_id = ${input.linkDeviceId} AND request_id = ${input.requestId}
+          AND payload_json IS NOT NULL AND thread_id IS NOT NULL
+          AND (status = 'cancelled' OR ${input.stopThread ? 1 : 0} = 1)
+      `;
       const row = Option.getOrThrow(
         yield* findOne({ linkDeviceId: input.linkDeviceId, requestId: input.requestId }),
       );
       return { row, cancelled };
-    }).pipe(wrap("cancel"));
+    }).pipe(sql.withTransaction, wrap("cancel"));
+
+  const listCleanup: LinkRequestRepositoryShape["listCleanup"] = findMany(
+    `cleanup IS NOT NULL`,
+    [],
+  ).pipe(wrap("listCleanup"));
+
+  const finishCleanup: LinkRequestRepositoryShape["finishCleanup"] = (input) =>
+    sql`
+      UPDATE link_requests SET cleanup = NULL
+      WHERE link_device_id = ${input.linkDeviceId} AND request_id = ${input.requestId}
+        AND cleanup = ${input.cleanup}
+    `.pipe(Effect.asVoid, wrap("finishCleanup"));
 
   const markDelivered: LinkRequestRepositoryShape["markDelivered"] = (input) =>
     sql`
@@ -375,6 +419,8 @@ const make = Effect.gen(function* () {
     progress,
     settle,
     cancel,
+    listCleanup,
+    finishCleanup,
     markDelivered,
     prune,
   });

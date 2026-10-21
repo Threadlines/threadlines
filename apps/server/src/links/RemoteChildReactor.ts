@@ -24,7 +24,9 @@
  *
  * Parents are read from their stored rows, archived and deleted ones too:
  * archiving or deleting a parent is exactly when cancels are owed. A deleted
- * parent's own requests are owed nothing more.
+ * parent's own requests are owed nothing more. A read that fails is never
+ * taken for "not here": a report is acked only once it is recorded, or once
+ * reads that worked show nothing is open for it.
  */
 import {
   type ChildRequestOutcome,
@@ -33,17 +35,20 @@ import {
   type EnvironmentId,
   type OrchestrationChildRequest,
   type OrchestrationCommand,
+  type OrchestrationEvent,
   type OrchestrationThread,
   type PeerRequestOutcome,
   type PeerRequestStatus,
   type PeerWatchEvent,
   type RemoteChildCancel,
+  type RemoteChildThread,
   type ThreadId,
   TurnId,
 } from "@threadlines/contracts";
 import { remoteChildOf } from "@threadlines/shared/childThreads";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -119,6 +124,11 @@ const parentStatus = (status: PeerRequestStatus): OrchestrationChildRequest["sta
         ? "queued"
         : null;
 
+/** A report couldn't be recorded here; it isn't acked, and the watch replays it. */
+class ReportNotRecordedError extends Data.TaggedError("ReportNotRecordedError")<{
+  readonly requestId: string;
+}> {}
+
 const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const threadRows = yield* ProjectionThreadRepository;
@@ -156,7 +166,7 @@ const make = Effect.gen(function* () {
     parents.add(parentId);
   };
 
-  /** A parent as stored, archived and deleted ones included. */
+  /** A parent as stored, archived and deleted ones included; undefined only when there is none. */
   const readParent = (threadId: ThreadId) =>
     threadRows.getById({ threadId }).pipe(
       Effect.map((found): Parent | undefined =>
@@ -170,7 +180,6 @@ const make = Effect.gen(function* () {
               deletedAt: found.value.deletedAt,
             },
       ),
-      Effect.orElseSucceed(() => undefined),
     );
 
   const dispatch = (command: OrchestrationCommand, what: string) =>
@@ -208,6 +217,12 @@ const make = Effect.gen(function* () {
       return parents;
     });
 
+  /**
+   * The open request a computer's status or report is about: among the
+   * tracked parents, then any stored parent whose requests mention it (one
+   * not tracked, its startup scan having failed). Undefined only when the
+   * reads worked and it is open nowhere; a read that fails fails.
+   */
   const findRequest = (environmentId: string, requestId: string) =>
     Effect.gen(function* () {
       for (const parent of yield* parentsOwing(environmentId)) {
@@ -215,6 +230,21 @@ const make = Effect.gen(function* () {
           (entry) => entry.requestId === requestId,
         );
         if (request !== undefined) return { parent, request };
+      }
+      const mentioning = yield* sql<{ readonly threadId: string }>`
+        SELECT thread_id AS "threadId" FROM projection_threads
+        WHERE child_requests LIKE ${`%"requestId":"${requestId}"%`}
+      `;
+      for (const row of mentioning) {
+        const parent = yield* readParent(row.threadId as ThreadId);
+        const request =
+          parent === undefined
+            ? undefined
+            : openRemote(parent, environmentId).find((entry) => entry.requestId === requestId);
+        if (parent !== undefined && request !== undefined) {
+          track(environmentId, parent.id);
+          return { parent, request };
+        }
       }
       return undefined;
     });
@@ -236,6 +266,8 @@ const make = Effect.gen(function* () {
       readonly text: string | undefined;
       readonly turnId?: string | null;
       readonly error?: string | undefined;
+      /** The thread there the report named, recorded in the same write. */
+      readonly child?: RemoteChildThread;
     },
   ) =>
     Effect.gen(function* () {
@@ -261,11 +293,34 @@ const make = Effect.gen(function* () {
           ...(settlement.error !== undefined && settlement.error.trim().length > 0
             ? { error: settlement.error }
             : {}),
+          ...(settlement.child !== undefined ? { remoteChild: settlement.child } : {}),
           createdAt: yield* nowIso,
         },
         "settle a request to a linked computer",
       );
     });
+
+  /** The parent's record of a child there, as it stands now. */
+  const childRecord = (
+    parent: Parent,
+    request: OrchestrationChildRequest,
+    threadId: ThreadId,
+    cachedStatus: string,
+    updatedAt: string,
+  ): RemoteChildThread => {
+    const remote = request.remote!;
+    const existing = remoteChildOf(parent.childRequests, threadId);
+    return {
+      environmentId: remote.environmentId,
+      label: remote.label,
+      threadId,
+      handle: existing?.handle ?? agentName(parent, request),
+      title: existing?.title ?? request.launch?.title ?? "A thread",
+      attachmentEpoch: existing?.attachmentEpoch ?? 0,
+      cachedStatus,
+      updatedAt,
+    };
+  };
 
   /** Keeps the parent's record of a child there, created once its thread exists. */
   const recordChild = (
@@ -275,26 +330,16 @@ const make = Effect.gen(function* () {
     cachedStatus: string,
   ) =>
     Effect.gen(function* () {
-      const remote = request.remote!;
       const existing = remoteChildOf(parent.childRequests, threadId);
       if (existing !== undefined && existing.cachedStatus === cachedStatus) return;
       yield* dispatch(
         {
           type: "thread.remote-child.update",
           commandId: CommandId.make(
-            `server:remote-child:${remote.environmentId}:${threadId}:${request.requestId}:${cachedStatus}`,
+            `server:remote-child:${request.remote!.environmentId}:${threadId}:${request.requestId}:${cachedStatus}`,
           ),
           threadId: parent.id,
-          child: {
-            environmentId: remote.environmentId,
-            label: remote.label,
-            threadId,
-            handle: existing?.handle ?? agentName(parent, request),
-            title: existing?.title ?? request.launch?.title ?? "A thread",
-            attachmentEpoch: existing?.attachmentEpoch ?? 0,
-            cachedStatus,
-            updatedAt: yield* nowIso,
-          },
+          child: childRecord(parent, request, threadId, cachedStatus, yield* nowIso),
           createdAt: yield* nowIso,
         },
         "record a child on a linked computer",
@@ -412,20 +457,8 @@ const make = Effect.gen(function* () {
         }
         case "report": {
           const found = yield* findRequest(environmentId, event.requestId);
-          let recorded = found === undefined;
           if (found !== undefined) {
             const { parent, request } = found;
-            // A report names its thread only when that thread exists there,
-            // even when this computer never heard the start was accepted
-            // (it was offline while that computer's user allowed it).
-            if (event.threadId !== null) {
-              yield* recordChild(
-                parent,
-                request,
-                event.threadId,
-                event.outcome === "answered" ? "idle" : "failed",
-              );
-            }
             const silent =
               (event.outcome === "answered" && request.launch?.reportBack === false) ||
               event.text.trim().length === 0;
@@ -434,13 +467,27 @@ const make = Effect.gen(function* () {
               text: silent ? undefined : event.text,
               turnId: event.turnId,
               error: event.error,
+              // A report names its thread only when that thread exists there,
+              // even when this computer never heard the start was accepted
+              // (it was offline while that computer's user allowed it).
+              ...(event.threadId !== null
+                ? {
+                    child: childRecord(
+                      parent,
+                      request,
+                      event.threadId,
+                      event.outcome === "answered" ? "idle" : "failed",
+                      yield* nowIso,
+                    ),
+                  }
+                : {}),
             });
             // Refused means it was settled meanwhile (Stop, a wrap): recorded.
-            recorded = result.ok || result.refused;
+            if (!result.ok && !result.refused) {
+              return yield* new ReportNotRecordedError({ requestId: event.requestId });
+            }
           }
-          if (recorded) {
-            yield* ackReport(environmentId, event.reportId);
-          }
+          yield* ackReport(environmentId, event.reportId);
           return;
         }
       }
@@ -734,7 +781,7 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  /** Whether a computer's watch still has anything to wait for. */
+  /** Whether a computer's watch still has anything to wait for; fails when that can't be read. */
   const needsWatch = (environmentId: string) =>
     Effect.map(
       parentsOwing(environmentId),
@@ -746,7 +793,7 @@ const make = Effect.gen(function* () {
         ),
     );
 
-  const ensureWatch = (environmentId: string): Effect.Effect<void> =>
+  const ensureWatch = (environmentId: string) =>
     Effect.gen(function* () {
       if (watching.has(environmentId)) return;
       if (!(yield* needsWatch(environmentId))) return;
@@ -756,7 +803,8 @@ const make = Effect.gen(function* () {
         let quietSince: number | null = null;
         while (true) {
           yield* Effect.sleep(WATCH_CHECK_EVERY);
-          if (yield* needsWatch(environmentId)) {
+          // A read that fails keeps it open.
+          if (yield* needsWatch(environmentId).pipe(Effect.orElseSucceed(() => true))) {
             quietSince = null;
           } else if (quietSince === null) {
             quietSince = Date.now();
@@ -771,7 +819,14 @@ const make = Effect.gen(function* () {
           Stream.mapEffect((event) => onWatchEvent(environmentId, event)),
           Stream.interruptWhen(settledDown),
           Stream.runDrain,
-          Effect.catch((error) => handleUnavailable(environmentId, error)),
+          Effect.catch((error) =>
+            Effect.gen(function* () {
+              // Something wasn't recorded here: the next watch replays all
+              // that computer still holds.
+              drained.delete(environmentId);
+              yield* handleUnavailable(environmentId, error);
+            }),
+          ),
           Effect.catchCause((cause) =>
             Effect.logWarning("remote child reactor watch ended", {
               environmentId,
@@ -785,7 +840,15 @@ const make = Effect.gen(function* () {
 
   const pump = (environmentId: string) =>
     Effect.gen(function* () {
-      yield* pumpCancels(environmentId).pipe(Effect.forkDetach);
+      yield* pumpCancels(environmentId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("remote child reactor could not send owed cancels", {
+            environmentId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+        Effect.forkDetach,
+      );
       yield* retryAcks(environmentId);
       yield* pumpRequests(environmentId);
       yield* ensureWatch(environmentId);
@@ -802,13 +865,14 @@ const make = Effect.gen(function* () {
    * Parents with remote work at startup: open remote requests, or owed
    * cancels (archived and deleted parents included).
    */
+  let loaded = false;
   const loadOwing = Effect.gen(function* () {
     const rows = yield* sql<{ readonly threadId: string }>`
       SELECT thread_id AS "threadId" FROM projection_threads
       WHERE child_requests IS NOT NULL
         AND ((deleted_at IS NULL AND child_requests LIKE '%"remote":{%')
           OR child_requests LIKE '%"remoteCancels":[{%')
-    `.pipe(Effect.orElseSucceed(() => []));
+    `;
     for (const row of rows) {
       const parent = yield* readParent(row.threadId as ThreadId);
       if (parent === undefined) continue;
@@ -819,7 +883,61 @@ const make = Effect.gen(function* () {
         track(cancel.environmentId, parent.id);
       }
     }
-  });
+    loaded = true;
+  }).pipe(
+    // Tried again with the retries below until it works.
+    Effect.catchCause((cause) =>
+      Effect.logWarning("remote child reactor could not load owed work", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+  );
+
+  /** What one orchestration event means for owed work; a failure is logged, never fatal. */
+  const onEvent = (event: OrchestrationEvent) =>
+    Effect.gen(function* () {
+      if (
+        event.type === "thread.child-request-submitted" &&
+        event.payload.request.remote !== undefined
+      ) {
+        const environmentId = event.payload.request.remote.environmentId;
+        track(environmentId, event.payload.threadId);
+        yield* pump(environmentId).pipe(Effect.forkDetach);
+        return;
+      }
+      if (event.type === "thread.child-request-updated" && event.payload.status === "starting") {
+        const parent = yield* readParent(event.payload.threadId);
+        const request = parent?.childRequests.open.find(
+          (entry) => entry.requestId === event.payload.requestId,
+        );
+        if (request?.remote !== undefined) {
+          yield* pump(request.remote.environmentId).pipe(Effect.forkDetach);
+        }
+        return;
+      }
+      if (event.type === "thread.remote-cancel-queued") {
+        const environmentId = event.payload.cancel.environmentId;
+        track(environmentId, event.payload.threadId);
+        yield* pumpCancels(environmentId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("remote child reactor could not send owed cancels", {
+              environmentId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+          Effect.forkDetach,
+        );
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("remote child reactor could not handle an event", {
+              eventType: event.type,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
 
   const start: RemoteChildReactorShape["start"] = () =>
     Effect.gen(function* () {
@@ -835,45 +953,12 @@ const make = Effect.gen(function* () {
         if (all.some((link) => link.remoteEnvironmentId === environmentId)) continue;
         yield* pump(environmentId).pipe(Effect.forkDetach);
       }
-      yield* Effect.forkScoped(
-        Stream.runForEach(events, (event) => {
-          if (
-            event.type === "thread.child-request-submitted" &&
-            event.payload.request.remote !== undefined
-          ) {
-            const environmentId = event.payload.request.remote.environmentId;
-            track(environmentId, event.payload.threadId);
-            return pump(environmentId).pipe(Effect.forkDetach, Effect.asVoid);
-          }
-          if (
-            event.type === "thread.child-request-updated" &&
-            event.payload.status === "starting"
-          ) {
-            return Effect.gen(function* () {
-              const parent = yield* readParent(event.payload.threadId);
-              const request = parent?.childRequests.open.find(
-                (entry) => entry.requestId === event.payload.requestId,
-              );
-              if (request?.remote !== undefined) {
-                yield* pump(request.remote.environmentId).pipe(Effect.forkDetach);
-              }
-            });
-          }
-          if (event.type === "thread.remote-cancel-queued") {
-            const environmentId = event.payload.cancel.environmentId;
-            track(environmentId, event.payload.threadId);
-            return pumpCancels(environmentId).pipe(
-              Effect.catchCause(() => Effect.void),
-              Effect.forkDetach,
-              Effect.asVoid,
-            );
-          }
-          return Effect.void;
-        }),
-      );
+      yield* Effect.forkScoped(Stream.runForEach(events, onEvent));
       // Owed work is retried while a computer can't be reached, and so is
-      // the first drain of a computer that was offline at startup.
+      // the first drain of a computer that was offline at startup (and the
+      // startup scan, until it works).
       yield* Effect.gen(function* () {
+        if (!loaded) yield* loadOwing;
         const environments = new Set([...parentsByEnvironment.keys(), ...pendingAcks.keys()]);
         for (const link of yield* links.list.pipe(Effect.orElseSucceed(() => []))) {
           if (link.state !== "revoked" && !drained.has(link.remoteEnvironmentId)) {

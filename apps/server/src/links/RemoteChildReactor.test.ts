@@ -31,13 +31,20 @@ import { childReportMessageId } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineLive } from "../orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionThreadRepositoryLive } from "../persistence/Layers/ProjectionThreads.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
+import { PersistenceSqlError } from "../persistence/Errors.ts";
+import {
+  ProjectionThreadRepository,
+  type ProjectionThreadRepositoryShape,
+} from "../persistence/Services/ProjectionThreads.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import {
   ComputerLinkClient,
@@ -215,7 +222,14 @@ const makeComputer = Effect.gen(function* () {
 
   const calls: Array<{ readonly method: string; readonly payload: unknown }> = [];
 
-  const boot = (linked: LinkedComputer = {}) =>
+  /** Starts a reactor; `patch` swaps parts of its process to make them fail. */
+  const boot = (
+    linked: LinkedComputer = {},
+    patch: {
+      readonly threadRows?: Partial<ProjectionThreadRepositoryShape>;
+      readonly engine?: Partial<OrchestrationEngineShape>;
+    } = {},
+  ) =>
     Effect.gen(function* () {
       const answer =
         <A>(method: string, reply: () => Effect.Effect<A, ComputerLinkUnavailableError>) =>
@@ -243,6 +257,8 @@ const makeComputer = Effect.gen(function* () {
       const layer = RemoteChildReactorLive.pipe(
         Layer.provide(
           Layer.mergeAll(
+            Layer.succeed(ProjectionThreadRepository, { ...threadRows, ...patch.threadRows }),
+            Layer.succeed(OrchestrationEngineService, { ...engine, ...patch.engine }),
             Layer.mock(ComputerLinkClient)({
               withPeer: (_environmentId, use) => use(peer) as never,
               peerStream: (_environmentId, use) => use(peer) as never,
@@ -460,5 +476,56 @@ it.layer(NodeServices.layer)("RemoteChildReactor", (it) => {
           stopThread: true,
         });
       }),
+  );
+  it.effect("a report whose parent can't be read is not acked, so it is offered again", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* computer.askForThread;
+      yield* computer.recordRemote("starting", { status: "awaiting_approval", threadId: null });
+      yield* computer.boot(
+        { watch: [report({}), { type: "synced" }] },
+        {
+          threadRows: {
+            getById: () =>
+              Effect.fail(new PersistenceSqlError({ operation: "getById", detail: "busy" })),
+          },
+        },
+      );
+      yield* wallClockSleep(200);
+      assert.deepEqual(computer.callsTo("peer.report.ack"), []);
+      assert.equal((yield* computer.stored).childRequests?.open.length, 1);
+    }),
+  );
+
+  it.effect("records the child a report names in the same write that settles the request", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* computer.askForThread;
+      yield* computer.recordRemote("running", { status: "accepted", threadId: REMOTE_CHILD });
+      // A separate write recording the child would fail.
+      yield* computer.boot(
+        { watch: [report({}), { type: "synced" }] },
+        {
+          engine: {
+            dispatch: (command) =>
+              command.type === "thread.remote-child.update"
+                ? Effect.fail(
+                    new PersistenceSqlError({ operation: "dispatch", detail: "disk full" }),
+                  )
+                : computer.engine.dispatch(command),
+          },
+        },
+      );
+      yield* eventually(
+        Effect.sync(() => computer.callsTo("peer.report.ack").length > 0),
+        "the report is acked",
+      );
+      const parent = yield* computer.stored;
+      assert.deepEqual(parent.childRequests?.open ?? [], []);
+      assert.deepInclude(parent.childRequests?.remoteChildren?.[0], {
+        threadId: REMOTE_CHILD,
+        cachedStatus: "idle",
+      });
+    }),
   );
 });
