@@ -161,6 +161,10 @@ interface SubagentPatch extends SubagentProviderFields {
   readonly liveEventSequence?: number | undefined;
   /** Task id of the notification a replayed agent result was built from. */
   readonly notificationTaskId?: string | null;
+  /** False when the patch relays something the agent said rather than where
+   *  its run stands, so a status that is not final cannot revive a settled
+   *  agent. */
+  readonly canReopen?: boolean;
 }
 
 function metadataPatch(activity: OrchestrationThreadActivity): SubagentPatch | null {
@@ -217,10 +221,12 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
   const payload = record(activity.payload);
   if (text(payload?.itemType) !== "collab_agent_tool_call") return [];
   const data = record(payload?.data);
+  const nativeItem = record(data?.item);
   // Claude's Agent/Task tool rows carry no nested item; the shared shaper
   // reconstructs the same collab item the Codex driver emits natively.
+  const claudeToolRow = nativeItem === null;
   const item =
-    record(data?.item) ??
+    nativeItem ??
     (payload
       ? claudeSubagentActivityItem({
           activityId: activity.id,
@@ -273,7 +279,11 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
       agentThreadId: id.startsWith("pending:") ? null : id,
       parentAgentThreadId: text(item.parentAgentThreadId),
       spawnCallId,
-      transcriptAgentId: id.startsWith("pending:") ? null : id,
+      // A Claude tool row names the agent by its spawn call, but Claude names
+      // the agent's transcript (and its later runs) by the task id, which only
+      // the task stream carries. Overwriting that link with the call id would
+      // leave a resumed agent's run matching no row.
+      transcriptAgentId: claudeToolRow || id.startsWith("pending:") ? null : id,
       turnId: activity.turnId,
       agentPath,
       parentAgentPath: parentPath(agentPath),
@@ -300,6 +310,12 @@ function collabPatches(activity: OrchestrationThreadActivity): SubagentPatch[] {
         ? { liveEventSequence: activity.eventSequence }
         : {}),
       notificationTaskId,
+      // A forwarded message says the agent spoke, not that it runs: Claude
+      // keeps forwarding an agent's messages under its spawn call after the
+      // run settles (its last words, an API error among them, can land a beat
+      // after the task completes). Only the task stream can say a settled
+      // agent runs again (reopenResumedAgentRun).
+      ...(claudeToolRow && text(data?.subagentLiveText) ? { canReopen: false } : {}),
     };
   });
 }
@@ -311,6 +327,24 @@ function patchForActivity(activity: OrchestrationThreadActivity): SubagentPatch[
 
 function mergeValue<T>(incoming: T | null | undefined, current: T | null): T | null {
   return incoming ?? current;
+}
+
+/** The patch's status wins, except that a patch which cannot reopen leaves a
+ *  settled row settled when its own status is not final. */
+function mergedStatus(
+  current: OrchestrationSubagent | undefined,
+  patch: SubagentPatch,
+): OrchestrationSubagentStatus {
+  if (patch.status === undefined) return current?.status ?? "starting";
+  if (
+    patch.canReopen === false &&
+    current !== undefined &&
+    isSettledStatus(current.status) &&
+    !isSettledStatus(patch.status)
+  ) {
+    return current.status;
+  }
+  return patch.status;
 }
 
 function mergeSubagent(
@@ -351,7 +385,7 @@ function mergeSubagent(
     nickname: mergeValue(patch.nickname, current?.nickname ?? null),
     role: mergeValue(patch.role, current?.role ?? null),
     objective: mergeValue(patch.objective, current?.objective ?? null),
-    status: patch.status ?? current?.status ?? "starting",
+    status: mergedStatus(current, patch),
     requestedModel: mergeValue(patch.requestedModel, current?.requestedModel ?? null),
     resolvedModel: mergeValue(patch.resolvedModel, current?.resolvedModel ?? null),
     reasoningEffort: mergeValue(patch.reasoningEffort, current?.reasoningEffort ?? null),
