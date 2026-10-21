@@ -414,6 +414,12 @@ export interface SidebarThreadSummary {
   awaitedChildThreadCount?: number;
   /** See ThreadShell.pendingChildApproval. */
   pendingChildApproval?: boolean;
+  /**
+   * The thread's agent asked to create or change a scheduled task and a card
+   * waits for the user's answer (from that computer's scheduled tasks feed,
+   * not the shell; see setScheduleApprovalThreads).
+   */
+  pendingScheduleApproval?: boolean;
   /** Messages queued behind the running turn; a child with any is not finished. */
   queuedFollowUpCount?: number;
   /** See Thread.checkBacks. */

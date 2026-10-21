@@ -25,6 +25,7 @@ import {
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
+import { resolveThreadStatusPill } from "./components/Sidebar.logic";
 import { deriveSubagentActivityState, deriveTimelineEntries } from "./session-logic";
 
 import {
@@ -46,6 +47,7 @@ import {
   selectRunningSidebarThreadsByLocation,
   selectThreadDetailLoaded,
   markThreadDetailUnloaded,
+  setScheduleApprovalThreads,
   syncServerThreadDetail,
   type AppState,
   type EnvironmentState,
@@ -1170,6 +1172,37 @@ describe("incremental orchestration updates", () => {
       localEnvironmentStateOf(next).sidebarThreadSummaryById[ThreadId.make("thread-1")]
         ?.cumulativeDiffStat,
     ).toEqual({ additions: 15, deletions: 5 });
+  });
+
+  it("marks a row whose agent's scheduled-task change waits for the user, through rewrites", () => {
+    const threadId = ThreadId.make("thread-1");
+    const statusOf = (state: AppState) => {
+      const summary = localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+      return summary === undefined
+        ? null
+        : (resolveThreadStatusPill({ thread: summary })?.label ?? null);
+    };
+    // Marked before its row is built: the row it gets carries the mark.
+    const marked = setScheduleApprovalThreads(makeState(makeThread()), localEnvironmentId, [
+      threadId,
+    ]);
+    const renamed = applyOrchestrationEvent(
+      marked,
+      makeEvent("thread.meta-updated", {
+        threadId,
+        title: "Updated title",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(statusOf(renamed)).toBe("Pending Approval");
+
+    // Answered: the row the user sees loses it.
+    const answered = setScheduleApprovalThreads(renamed, localEnvironmentId, []);
+    expect(
+      localEnvironmentStateOf(answered).sidebarThreadSummaryById[threadId]?.pendingScheduleApproval,
+    ).toBe(false);
+    expect(statusOf(answered)).toBe(null);
   });
 
   it("leaves the sidebar diff stat null until a turn reports a file", () => {

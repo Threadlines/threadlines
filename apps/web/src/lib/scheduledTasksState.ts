@@ -20,6 +20,7 @@ import { create } from "zustand";
 
 import { scheduledTaskEnvironmentsOf } from "../components/scheduled/scheduled.logic";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
+import { useStore } from "../store";
 import {
   readEnvironmentConnection,
   subscribeEnvironmentConnections,
@@ -77,11 +78,36 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set) => ({
 }));
 
 /**
+ * Marks the thread rows whose agent's scheduled-task change waits for the
+ * user (setScheduleApprovalThreads), on every computer the thread store
+ * knows: again whenever either side changes, so a computer whose threads
+ * arrive after its tasks still gets its marks, and one that stops being
+ * followed loses them.
+ */
+function useScheduleApprovalRows() {
+  const byEnvironment = useScheduledTasksStore((state) => state.byEnvironment);
+  const threadEnvironmentKey = useStore((state) =>
+    Object.keys(state.environmentStateById).join("\0"),
+  );
+  useEffect(() => {
+    if (threadEnvironmentKey === "") return;
+    const store = useStore.getState();
+    for (const environmentId of threadEnvironmentKey.split("\0") as EnvironmentId[]) {
+      store.setScheduleApprovalThreads(
+        environmentId,
+        (byEnvironment[environmentId]?.requests ?? []).map((request) => request.threadId),
+      );
+    }
+  }, [byEnvironment, threadEnvironmentKey]);
+}
+
+/**
  * Keeps one subscription to each supporting computer's tasks, and takes a
  * new one only for a computer whose connection was replaced (a reconnect
  * with a new session). Mount once.
  */
 export function ScheduledTasksSync() {
+  useScheduleApprovalRows();
   const environments = useScheduledTaskEnvironments();
   const environmentKey = environments.map((environment) => environment.environmentId).join("\0");
 
