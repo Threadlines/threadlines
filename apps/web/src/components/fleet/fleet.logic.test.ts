@@ -1,4 +1,9 @@
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
+import {
+  EnvironmentId,
+  type ExecutionEnvironmentDescriptor,
+  ProviderInstanceId,
+  ThreadId,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -12,6 +17,7 @@ import {
   linkedDeviceInputs,
   primaryConnectionFrom,
   resolveConnectionLineState,
+  savedComputerInput,
   resolveProviderLineState,
 } from "./fleet.logic";
 
@@ -154,6 +160,55 @@ describe("buildFleetModel", () => {
     expect(describeComputerLocation(down.center, NOW_MS)).toBe("This computer · Reconnecting");
     expect(resolveProviderLineState(down.center, down.center.providers[0]!)).toBe("offline");
     expect(primaryConnectionFrom("error")).toBe("offline");
+  });
+});
+
+describe("savedComputerInput", () => {
+  function savedComputer(environmentId: EnvironmentId, label: string, connected: boolean) {
+    return savedComputerInput(
+      {
+        environmentId,
+        label,
+        wsBaseUrl: `wss://${environmentId}.test/ws`,
+        httpBaseUrl: `https://${environmentId}.test`,
+        createdAt: "2026-10-01T00:00:00.000Z",
+        lastConnectedAt: "2026-10-20T10:00:00.000Z",
+      },
+      {
+        connectionState: connected ? "connected" : "disconnected",
+        authState: "authenticated",
+        lastError: null,
+        lastErrorAt: null,
+        role: "owner",
+        // Both report the same system name.
+        descriptor: {
+          label: "Denys's MacBook Pro",
+          platform: { os: "darwin", arch: "arm64" },
+        } as ExecutionEnvironmentDescriptor,
+        serverConfig: null,
+        connectedAt: null,
+        disconnectedAt: connected ? null : "2026-10-20T10:00:00.000Z",
+        route: connected ? "direct" : null,
+        waitingToReconnect: false,
+        disconnectedByUser: false,
+      },
+    );
+  }
+
+  it("names a computer as the user saved it, everywhere the page says it", () => {
+    const model = buildFleetModel({
+      center: computer({ id: MACBOOK, label: "MacBook Pro", kind: "this", route: null }),
+      others: [
+        savedComputer(WINDOWS, "Test PC", true),
+        savedComputer(MAC_MINI, "Studio Mac", false),
+      ],
+      threads: [thread("tests", WINDOWS, { attention: "working", sessionLive: true })],
+    });
+    expect(model.others.map((other) => other.label)).toEqual(["Studio Mac", "Test PC"]);
+    expect(describeFleetSummary(model)).toBe("1 working, on 1 computer. Studio Mac is offline.");
+    expect(describeQuietComputers(model.others, NOW_MS)).toBe("Studio Mac was last seen 2h ago.");
+    // With no name saved, the one it reports stands in.
+    expect(savedComputer(WINDOWS, "  ", true).label).toBe("Denys's MacBook Pro");
   });
 });
 

@@ -6,11 +6,16 @@
  */
 import type {
   EnvironmentId,
+  ExecutionEnvironmentDescriptor,
   ModelSelection,
   ProviderInstanceId,
   ThreadId,
 } from "@threadlines/contracts";
 
+import type {
+  SavedEnvironmentRecord,
+  SavedEnvironmentRuntimeState,
+} from "../../environments/runtime";
 import { formatElapsedDurationLabel } from "../../timestampFormat";
 import type { ThreadAttention, ThreadStatusPill } from "../Sidebar.logic";
 
@@ -113,6 +118,54 @@ function deviceLabel(session: LinkedDeviceSession): string {
     ([session.client.os, session.client.browser].filter(Boolean).join(" · ") ||
       (session.client.deviceType === "tablet" ? "Tablet" : "Phone"))
   );
+}
+
+/** A computer's glyph, from the system it says it runs. */
+export function glyphForPlatform(descriptor: ExecutionEnvironmentDescriptor | null): FleetGlyph {
+  switch (descriptor?.platform.os) {
+    case "darwin":
+      return "laptop";
+    case "linux":
+      return "server";
+    default:
+      return "monitor";
+  }
+}
+
+/**
+ * A computer saved under Settings › Connections, with its live connection.
+ * It goes by the name the user gave it there, as everywhere else in the app:
+ * two computers can share a system name ("Denys's MacBook Pro"). The name it
+ * reports for itself stands in only when the record has none.
+ */
+export function savedComputerInput(
+  record: SavedEnvironmentRecord,
+  runtime: SavedEnvironmentRuntimeState | undefined,
+): FleetComputerInput {
+  const connectionState = runtime?.connectionState ?? "disconnected";
+  const connection: FleetConnection =
+    connectionState === "connected"
+      ? "connected"
+      : connectionState === "connecting" || runtime?.waitingToReconnect === true
+        ? "reconnecting"
+        : "offline";
+  return {
+    id: record.environmentId,
+    environmentId: record.environmentId,
+    kind: "computer",
+    label: record.label.trim() || runtime?.descriptor?.label || "Computer",
+    glyph: glyphForPlatform(runtime?.descriptor ?? null),
+    connection,
+    route:
+      runtime?.route === "direct"
+        ? "network"
+        : runtime?.route === "relay"
+          ? "relay"
+          : record.desktopSsh
+            ? "ssh"
+            : null,
+    lastSeenAt: runtime?.disconnectedAt ?? record.lastConnectedAt,
+  };
 }
 
 /**

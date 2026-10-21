@@ -4,11 +4,7 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@threadlines/client-runtime";
-import {
-  type ExecutionEnvironmentDescriptor,
-  type ModelSelection,
-  RELAY_DEVICE_SESSION_SUBJECT,
-} from "@threadlines/contracts";
+import { type ModelSelection, RELAY_DEVICE_SESSION_SUBJECT } from "@threadlines/contracts";
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -17,8 +13,6 @@ import {
   usePrimaryEnvironmentId,
 } from "../../environments/primary";
 import {
-  type SavedEnvironmentRecord,
-  type SavedEnvironmentRuntimeState,
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../../environments/runtime";
@@ -37,54 +31,13 @@ import { resolveSeenThreadStatus, resolveThreadAttention } from "../Sidebar.logi
 import {
   buildFleetModel,
   type FleetComputerInput,
-  type FleetConnection,
-  type FleetGlyph,
   type FleetModel,
   type FleetThreadInput,
+  glyphForPlatform,
   linkedDeviceInputs,
   primaryConnectionFrom,
+  savedComputerInput,
 } from "./fleet.logic";
-
-function glyphForPlatform(descriptor: ExecutionEnvironmentDescriptor | null): FleetGlyph {
-  switch (descriptor?.platform.os) {
-    case "darwin":
-      return "laptop";
-    case "linux":
-      return "server";
-    default:
-      return "monitor";
-  }
-}
-
-function savedComputerInput(
-  record: SavedEnvironmentRecord,
-  runtime: SavedEnvironmentRuntimeState | undefined,
-): FleetComputerInput {
-  const connectionState = runtime?.connectionState ?? "disconnected";
-  const connection: FleetConnection =
-    connectionState === "connected"
-      ? "connected"
-      : connectionState === "connecting" || runtime?.waitingToReconnect === true
-        ? "reconnecting"
-        : "offline";
-  return {
-    id: record.environmentId,
-    environmentId: record.environmentId,
-    kind: "computer",
-    label: runtime?.descriptor?.label ?? record.label,
-    glyph: glyphForPlatform(runtime?.descriptor ?? null),
-    connection,
-    route:
-      runtime?.route === "direct"
-        ? "network"
-        : runtime?.route === "relay"
-          ? "relay"
-          : record.desktopSsh
-            ? "ssh"
-            : null,
-    lastSeenAt: runtime?.disconnectedAt ?? record.lastConnectedAt,
-  };
-}
 
 /** Every thread's model, by scoped thread key; references are stable, so a shallow compare holds. */
 function selectThreadModelSelections(state: AppState): Record<string, ModelSelection> {
