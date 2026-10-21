@@ -1,7 +1,13 @@
 import {
   CheckpointRef,
+  ChildRequestBatchId,
+  ChildRequestId,
+  EnvironmentId,
   EventId,
   MessageId,
+  type OrchestrationChildRequest,
+  OrchestrationChildRequestState,
+  type RemoteChildStart,
   ProjectId,
   ThreadId,
   TurnId,
@@ -15,6 +21,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -29,6 +36,9 @@ const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
+const encodeChildRequests = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationChildRequestState),
+);
 
 const projectionSnapshotLayer = it.layer(
   OrchestrationProjectionSnapshotQueryLive.pipe(
@@ -694,6 +704,138 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         [ThreadId.make("thread-archived")],
       );
       assert.equal(archivedShellSnapshot.threads[0]?.archivedAt, "2026-04-06T00:00:06.000Z");
+    }),
+  );
+
+  it.effect("gives a parent's shell its children on linked computers, started or not", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        )
+        VALUES (
+          'project-remote', 'Remote', '/tmp/remote', NULL, '[]',
+          '2026-10-21T00:00:00.000Z', '2026-10-21T00:00:00.000Z', NULL
+        )
+      `;
+
+      const macMini = { environmentId: EnvironmentId.make("env-mac-mini"), label: "Mac mini" };
+      const request = (
+        id: string,
+        patch: Partial<OrchestrationChildRequest>,
+      ): OrchestrationChildRequest => ({
+        requestId: ChildRequestId.make(id),
+        batchId: ChildRequestBatchId.make("batch-1"),
+        kind: "start",
+        from: { participantId: null },
+        callerTurnId: asTurnId("parent-turn"),
+        deliveryEpoch: 0,
+        status: "starting",
+        childThreadId: ThreadId.make(`child-${id}`),
+        childMessageId: asMessageId(`child-message-${id}`),
+        launch: {
+          title: `Thread ${id}`,
+          prompt: "Do the work.",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+          runtimeMode: "auto",
+          interactionMode: "default",
+          reportBack: true,
+          runSetup: true,
+          workspace: { kind: "remote", projectKey: "github.com/x/y", checkout: "worktree" },
+          target: macMini,
+        },
+        createdAt: "2026-10-21T00:00:01.000Z",
+        ...patch,
+      });
+      const withoutLaunch = ({ launch: _launch, ...rest }: OrchestrationChildRequest) => rest;
+      const remoteChild = {
+        ...macMini,
+        threadId: ThreadId.make("remote-thread-done"),
+        handle: "Codex",
+        title: "Earlier thread",
+        attachmentEpoch: 0,
+        cachedStatus: "idle",
+        updatedAt: "2026-10-21T00:00:02.000Z",
+      };
+      const childRequests = yield* encodeChildRequests({
+        ...EMPTY_CHILD_REQUEST_STATE,
+        open: [
+          // Waiting for Mac mini's user: no thread there yet.
+          request("waiting", {
+            remote: { ...macMini, threadId: null, status: "awaiting_approval" },
+          }),
+          // Mac mini made its thread: it reads as a remote child, not a start.
+          request("started", {
+            status: "running",
+            remote: { ...macMini, threadId: ThreadId.make("remote-thread"), status: "accepted" },
+          }),
+          // A message to a thread there, and a child on this computer.
+          withoutLaunch(
+            request("send", {
+              kind: "send",
+              remote: { ...macMini, threadId: ThreadId.make("remote-thread"), status: "sending" },
+            }),
+          ),
+          request("local", {}),
+        ],
+        remoteChildren: [remoteChild],
+      });
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, latest_turn_id, latest_user_message_at, pending_approval_count,
+          pending_user_input_count, has_actionable_proposed_plan, child_requests, created_at,
+          updated_at, archived_at, deleted_at
+        )
+        VALUES
+          (
+            'thread-parent', 'project-remote', 'Parent',
+            '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+            NULL, NULL, NULL, NULL, 0, 0, 0, ${childRequests},
+            '2026-10-21T00:00:01.000Z', '2026-10-21T00:00:01.000Z', NULL, NULL
+          ),
+          (
+            'thread-plain', 'project-remote', 'Plain',
+            '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+            NULL, NULL, NULL, NULL, 0, 0, 0, NULL,
+            '2026-10-21T00:00:02.000Z', '2026-10-21T00:00:02.000Z', NULL, NULL
+          )
+      `;
+
+      const expectedStarts: ReadonlyArray<RemoteChildStart> = [
+        {
+          requestId: ChildRequestId.make("waiting"),
+          environmentId: macMini.environmentId,
+          label: "Mac mini",
+          title: "Thread waiting",
+          status: "awaiting_approval",
+          createdAt: "2026-10-21T00:00:01.000Z",
+        },
+      ];
+      const shell = yield* snapshotQuery.getShellSnapshot();
+      const parent = shell.threads.find((thread) => thread.id === ThreadId.make("thread-parent"));
+      assert.deepEqual(parent?.remoteChildren, [remoteChild]);
+      assert.deepEqual(parent?.remoteChildStarts, expectedStarts);
+      // A thread with none carries neither.
+      const plain = shell.threads.find((thread) => thread.id === ThreadId.make("thread-plain"));
+      assert.isFalse(plain !== undefined && "remoteChildren" in plain);
+      assert.isFalse(plain !== undefined && "remoteChildStarts" in plain);
+
+      // The single-thread read the live shell stream uses agrees.
+      const one = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-parent"));
+      assert.equal(one._tag, "Some");
+      if (one._tag === "Some") {
+        assert.deepEqual(one.value.remoteChildren, [remoteChild]);
+        assert.deepEqual(one.value.remoteChildStarts, expectedStarts);
+      }
     }),
   );
 

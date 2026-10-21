@@ -12,6 +12,7 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   ProjectScript,
+  type RemoteChildStart,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationLatestTurn,
@@ -166,12 +167,40 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
 });
 
 /**
+ * A parent's starts on linked computers with no thread there yet (still
+ * sending, or waiting for that computer's user), as its family shows them.
+ */
+const remoteChildStartsOf = (
+  childRequests: OrchestrationChildRequestState,
+): ReadonlyArray<RemoteChildStart> =>
+  childRequests.open.flatMap((request) =>
+    request.kind === "start" &&
+    request.remote !== undefined &&
+    request.remote.threadId === null &&
+    request.launch !== undefined
+      ? [
+          {
+            requestId: request.requestId,
+            environmentId: request.remote.environmentId,
+            label: request.remote.label,
+            title: request.launch.title,
+            status: request.remote.status,
+            createdAt: request.createdAt,
+          },
+        ]
+      : [],
+  );
+
+/**
  * Child threads as the sidebar reads them: lineage, and on a parent the
- * answers still owed and whether threads wait for the user's yes, without
- * shipping the open requests to every row.
+ * answers still owed, whether threads wait for the user's yes, and its
+ * children on linked computers (so its family shows them even where the app
+ * can't reach that computer), without shipping the open requests to every row.
  */
 const shellLineageFields = (row: ThreadLineageRow) => {
   const childRequests = row.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
+  const remoteChildren = childRequests.remoteChildren ?? [];
+  const remoteChildStarts = remoteChildStartsOf(childRequests);
   return {
     parentThreadId: row.parentThreadId ?? null,
     parentTurnId: row.parentTurnId ?? null,
@@ -181,6 +210,8 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     awaitedChildThreadCount: awaitedChildRequestCount(childRequests),
     pendingChildApproval: hasPendingChildApproval(childRequests),
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+    ...(remoteChildren.length > 0 ? { remoteChildren } : {}),
+    ...(remoteChildStarts.length > 0 ? { remoteChildStarts } : {}),
   };
 };
 

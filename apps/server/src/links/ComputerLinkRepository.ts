@@ -35,6 +35,13 @@ export const ComputerLinkRow = Schema.Struct({
 });
 export type ComputerLinkRow = typeof ComputerLinkRow.Type;
 
+/**
+ * Whether a link may carry work: not removed by the other computer
+ * (`revoked`), and not being unlinked by this one (`unlinking`).
+ */
+export const isUsableLink = (row: Pick<ComputerLinkRow, "state">) =>
+  row.state === "active" || row.state === "failed";
+
 const ComputerLinkDbRow = Schema.Struct({
   ...ComputerLinkRow.fields,
   directRoutes: Schema.fromJsonString(Schema.Array(Schema.String)),
@@ -50,11 +57,19 @@ export interface ComputerLinkRepositoryShape {
   readonly get: (
     linkId: ComputerLinkId,
   ) => Effect.Effect<Option.Option<ComputerLinkRow>, ComputerLinkRepositoryError>;
-  /** The newest link to that computer that isn't revoked, if any. */
+  /**
+   * The newest link to that computer that isn't revoked, if any. An
+   * `unlinking` one is returned, so its users hear why it can't be used.
+   */
   readonly getByEnvironment: (
     environmentId: EnvironmentId,
   ) => Effect.Effect<Option.Option<ComputerLinkRow>, ComputerLinkRepositoryError>;
   readonly insert: (row: ComputerLinkRow) => Effect.Effect<void, ComputerLinkRepositoryError>;
+  /**
+   * Changes what is given. With `onlyFrom`, nothing changes unless the link's
+   * state is one of those when it is written (an `unlinking` or `revoked`
+   * link never turns back into a usable one by a late write).
+   */
   readonly update: (input: {
     readonly linkId: ComputerLinkId;
     readonly state?: ComputerLinkRow["state"];
@@ -63,6 +78,7 @@ export interface ComputerLinkRepositoryShape {
     readonly directRoutes?: ReadonlyArray<string>;
     readonly lastConnectedAt?: string;
     readonly lastError?: string | null;
+    readonly onlyFrom?: ReadonlyArray<ComputerLinkRow["state"]>;
   }) => Effect.Effect<void, ComputerLinkRepositoryError>;
   readonly remove: (linkId: ComputerLinkId) => Effect.Effect<void, ComputerLinkRepositoryError>;
 }
@@ -158,10 +174,13 @@ const make = Effect.gen(function* () {
       if (input.lastConnectedAt !== undefined) set("last_connected_at", input.lastConnectedAt);
       if (input.lastError !== undefined) set("last_error", input.lastError);
       if (sets.length === 0) return;
-      yield* sql.unsafe(`UPDATE computer_links SET ${sets.join(", ")} WHERE link_id = ?`, [
-        ...values,
-        input.linkId,
-      ]);
+      const onlyFrom = input.onlyFrom ?? [];
+      const stateCheck =
+        onlyFrom.length > 0 ? ` AND state IN (${onlyFrom.map(() => "?").join(", ")})` : "";
+      yield* sql.unsafe(
+        `UPDATE computer_links SET ${sets.join(", ")} WHERE link_id = ?${stateCheck}`,
+        [...values, input.linkId, ...onlyFrom],
+      );
     }).pipe(wrap("update"));
 
   const remove: ComputerLinkRepositoryShape["remove"] = (linkId) =>

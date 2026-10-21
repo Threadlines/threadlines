@@ -177,6 +177,12 @@ export const ListProjectionThreadsByProjectInput = Schema.Struct({
 });
 export type ListProjectionThreadsByProjectInput = typeof ListProjectionThreadsByProjectInput.Type;
 
+export const ListProjectionThreadsByRemoteLinkInput = Schema.Struct({
+  linkDeviceId: Schema.String,
+});
+export type ListProjectionThreadsByRemoteLinkInput =
+  typeof ListProjectionThreadsByRemoteLinkInput.Type;
+
 /**
  * ProjectionThreadRepositoryShape - Service API for projected thread records.
  */
@@ -203,6 +209,14 @@ export interface ProjectionThreadRepositoryShape {
   readonly listByProjectId: (
     input: ListProjectionThreadsByProjectInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThread>, ProjectionRepositoryError>;
+
+  /**
+   * Ids of the threads a linked computer's link started here
+   * (`remoteOrigin.linkDeviceId`), archived ones included, deleted ones not.
+   */
+  readonly listIdsByRemoteLink: (
+    input: ListProjectionThreadsByRemoteLinkInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
 
   /**
    * Soft-delete a projected thread row by id.
