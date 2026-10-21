@@ -1,5 +1,5 @@
 // Before every other import (see the module).
-import "./process/commandLookupStartup.ts";
+import "./process/startupEnvironment.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
