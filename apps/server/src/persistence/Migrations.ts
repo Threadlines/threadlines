@@ -94,6 +94,7 @@ import Migration0072 from "./Migrations/072_ProjectionThreadCommands.ts";
 import Migration0073 from "./Migrations/073_ProjectionWorkflowRuns.ts";
 import Migration0074 from "./Migrations/074_ProjectionThreadsCheckBacks.ts";
 import Migration0075 from "./Migrations/075_McpAppCalls.ts";
+import Migration0076 from "./Migrations/076_ProjectionThreadsDismissedPullRequests.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -181,6 +182,7 @@ export const migrationEntries = [
   [73, "ProjectionWorkflowRuns", Migration0073],
   [74, "ProjectionThreadsCheckBacks", Migration0074],
   [75, "McpAppCalls", Migration0075],
+  [76, "ProjectionThreadsDismissedPullRequests", Migration0076],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

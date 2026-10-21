@@ -1,4 +1,5 @@
 import { replaceAgentCheckBacks, sameCheckBacks } from "@threadlines/shared/checkBacks";
+import { applyPullRequestDismissed } from "@threadlines/shared/pullRequestDismissals";
 import { sameAwaitedBackgroundTasks } from "@threadlines/shared/awaitedBackgroundTasks";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type {
@@ -486,6 +487,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
@@ -539,6 +541,7 @@ function mapThreadShell(
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
@@ -621,6 +624,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
@@ -798,6 +802,25 @@ function threadDiffStatsEqual(
   return left.additions === right.additions && left.deletions === right.deletions;
 }
 
+/** Absent when none, so a thread with none carries no field. */
+function dismissedPullRequestsField(
+  dismissed: readonly number[] | undefined,
+): Pick<ThreadShell, "dismissedPullRequests"> {
+  return dismissed && dismissed.length > 0 ? { dismissedPullRequests: dismissed } : {};
+}
+
+function dismissedPullRequestsEqual(
+  left: readonly number[] | undefined,
+  right: readonly number[] | undefined,
+): boolean {
+  const leftList = left ?? [];
+  const rightList = right ?? [];
+  return (
+    leftList.length === rightList.length &&
+    leftList.every((number, index) => number === rightList[index])
+  );
+}
+
 function linkedPullRequestsEqual(
   left: SidebarThreadSummary["linkedPullRequests"],
   right: SidebarThreadSummary["linkedPullRequests"],
@@ -943,6 +966,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.pullRequestAutoFix === right.pullRequestAutoFix &&
     left.pullRequestAutoMerge === right.pullRequestAutoMerge &&
     linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
+    dismissedPullRequestsEqual(left.dismissedPullRequests, right.dismissedPullRequests) &&
     queuedFollowUpsEqual(left.queuedFollowUps, right.queuedFollowUps) &&
     participantsEqual(left.participants, right.participants) &&
     sideTurnsEqual(left.sideTurn, right.sideTurn) &&
@@ -2225,6 +2249,16 @@ function applyEnvironmentOrchestrationEvent(
               ],
             },
       );
+
+    // Closing a row is not work on the thread: `updatedAt` stays.
+    case "thread.pull-request-dismissed":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const dismissedPullRequests = applyPullRequestDismissed(
+          thread.dismissedPullRequests,
+          event.payload,
+        );
+        return dismissedPullRequests === null ? thread : { ...thread, dismissedPullRequests };
+      });
 
     case "thread.follow-up-queued":
       return updateThreadState(state, event.payload.threadId, (thread) => ({

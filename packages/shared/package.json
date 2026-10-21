@@ -235,6 +235,10 @@
       "types": "./src/pullRequestAutoMerge.ts",
       "import": "./src/pullRequestAutoMerge.ts"
     },
+    "./pullRequestDismissals": {
+      "types": "./src/pullRequestDismissals.ts",
+      "import": "./src/pullRequestDismissals.ts"
+    },
     "./pullRequestPolling": {
       "types": "./src/pullRequestPolling.ts",
       "import": "./src/pullRequestPolling.ts"

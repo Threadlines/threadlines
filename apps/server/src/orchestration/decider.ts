@@ -1103,6 +1103,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // Archived threads included: a closed row is the user's word about what
+    // they see, wherever the thread is filed.
+    case "thread.pull-request.dismiss": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pull-request-dismissed",
+        payload: {
+          threadId: command.threadId,
+          number: command.number,
+          dismissed: command.dismissed,
+        },
+      };
+    }
+
     case "thread.done-override.set": {
       const thread = yield* requireThread({
         readModel,

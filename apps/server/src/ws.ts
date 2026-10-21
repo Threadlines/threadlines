@@ -216,7 +216,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.child-deliveries-cancelled"
       | "thread.child-requests-reset"
       | "thread.handed-back"
-      | "thread.parent-attachment-set";
+      | "thread.parent-attachment-set"
+      | "thread.pull-request-dismissed";
   }
 > {
   return (
@@ -237,6 +238,10 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.child-requests-reset" ||
     event.type === "thread.handed-back" ||
     event.type === "thread.parent-attachment-set" ||
+    // Which pull request rows are closed lives on the shell, but a detail
+    // snapshot writes the shell too: one read before a close and delivered
+    // after it would undo the close, so the change follows the snapshot here.
+    event.type === "thread.pull-request-dismissed" ||
     event.type === "thread.message-sent" ||
     event.type === "thread.follow-up-submitted" ||
     event.type === "thread.follow-up-accepted" ||

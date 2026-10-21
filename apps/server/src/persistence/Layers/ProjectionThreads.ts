@@ -25,6 +25,7 @@ import {
   OrchestrationSideTurn,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  PositiveInt,
 } from "@threadlines/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
@@ -35,6 +36,9 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
       Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationCheckBack))),
     ),
     linkedPullRequests: Schema.fromJsonString(Schema.Array(OrchestrationThreadLinkedPullRequest)),
+    dismissedPullRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(PositiveInt))),
+    ),
     queuedFollowUps: Schema.fromJsonString(Schema.Array(OrchestrationQueuedFollowUp)),
     participants: Schema.fromJsonString(Schema.Array(OrchestrationThreadParticipant)),
     sideTurn: Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn)),
@@ -78,6 +82,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_auto_fix,
           pull_request_auto_merge,
           linked_pull_requests,
+          dismissed_pull_requests,
           queued_follow_ups,
           participants,
           side_turn,
@@ -126,6 +131,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.pullRequestAutoFix ?? 0},
           ${row.pullRequestAutoMerge ?? null},
           ${JSON.stringify(row.linkedPullRequests ?? [])},
+          ${
+            row.dismissedPullRequests && row.dismissedPullRequests.length > 0
+              ? JSON.stringify(row.dismissedPullRequests)
+              : null
+          },
           ${JSON.stringify(row.queuedFollowUps ?? [])},
           ${JSON.stringify(row.participants ?? [])},
           ${row.sideTurn ? JSON.stringify(row.sideTurn) : null},
@@ -174,6 +184,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_auto_fix = excluded.pull_request_auto_fix,
           pull_request_auto_merge = excluded.pull_request_auto_merge,
           linked_pull_requests = excluded.linked_pull_requests,
+          dismissed_pull_requests = excluded.dismissed_pull_requests,
           queued_follow_ups = excluded.queued_follow_ups,
           participants = excluded.participants,
           side_turn = excluded.side_turn,
@@ -229,6 +240,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_auto_fix AS "pullRequestAutoFix",
           pull_request_auto_merge AS "pullRequestAutoMerge",
           linked_pull_requests AS "linkedPullRequests",
+          dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",
@@ -286,6 +298,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_auto_fix AS "pullRequestAutoFix",
           pull_request_auto_merge AS "pullRequestAutoMerge",
           linked_pull_requests AS "linkedPullRequests",
+          dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",

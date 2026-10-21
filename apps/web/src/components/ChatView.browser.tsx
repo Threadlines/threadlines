@@ -116,6 +116,7 @@ import {
   measureComposerFooterReserve,
 } from "./composerFooterLayout";
 import { resetRightPanelTabsForTests } from "../rightPanelTabs";
+import { __resetComposerPullRequestDismissalsForTests } from "../lib/composerPullRequestDismissals";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { dismissFirstRunSetup } from "./setup/firstRunGate";
 import { useTerminalStateStore } from "../terminalStateStore";
@@ -2877,6 +2878,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
     resetRightPanelTabsForTests();
+    __resetComposerPullRequestDismissalsForTests();
     Reflect.deleteProperty(window, "desktopBridge");
     useComposerDraftStore.setState({
       draftsByThreadKey: {},
@@ -3473,6 +3475,61 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "The pull request row did not leave the composer.",
       );
       expect(document.querySelector("[data-composer-notice-severity]")).toBeTruthy();
+      // The thread keeps the word, so the row stays closed after a restart.
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            (request as { type?: string }).type === "thread.pull-request.dismiss" &&
+            (request as { number?: number }).number === PULL_REQUEST_NUMBER &&
+            (request as { dismissed?: boolean }).dismissed === true,
+        ),
+      ).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a row the thread closed off the composer, and the Pull request tab brings it back", async () => {
+    const built = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-pull-request-closed-row" as MessageId,
+      targetText: "pull request closed row",
+    });
+    // As a restarted app finds it: the row was closed in an earlier session.
+    const snapshot: OrchestrationReadModel = {
+      ...built,
+      threads: built.threads.map((thread, threadIndex) =>
+        threadIndex === 0 ? { ...thread, dismissedPullRequests: [PULL_REQUEST_NUMBER] } : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot,
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}?pullRequest=1`,
+      configureFixture: withPullRequestFixture,
+      resolveRpc: resolvePullRequestRpc,
+    });
+
+    try {
+      const showButton = page.getByRole("button", { name: "Show above message box" });
+      await expect.element(showButton).toBeVisible();
+      expect(document.querySelector('[data-composer-pull-request-row="true"]')).toBeNull();
+
+      await showButton.click();
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-composer-pull-request-row="true"]'),
+        "The pull request row did not come back above the composer.",
+      );
+      await expect.element(showButton).not.toBeInTheDocument();
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            (request as { type?: string }).type === "thread.pull-request.dismiss" &&
+            (request as { number?: number }).number === PULL_REQUEST_NUMBER &&
+            (request as { dismissed?: boolean }).dismissed === false,
+        ),
+      ).toBe(true);
     } finally {
       await mounted.cleanup();
     }
