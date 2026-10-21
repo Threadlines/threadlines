@@ -1520,11 +1520,21 @@ describe("text selection popover with the real virtual list", () => {
       expect(selectionPopover()).not.toBeNull();
       const readingPosition = list.scrollTop;
 
-      // Far enough away that the list drops the message's row.
-      list.scrollTop = 0;
-      await vi.waitFor(() => {
-        expect(document.querySelector('[data-transcript-message-id="message-51"]')).toBeNull();
-      });
+      // Far enough away that the list drops the message's row. One jump can
+      // be served from slots the list has spare, so climb a step at a time:
+      // the rows brought in on the way outnumber the slots, and the list
+      // reuses the farthest row's slot first.
+      for (let step = 0; step < 100 && list.scrollTop > 0; step += 1) {
+        list.scrollTop = Math.max(0, list.scrollTop - 200);
+        await nextFrame();
+        await nextFrame();
+      }
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-transcript-message-id="message-51"]')).toBeNull();
+        },
+        { timeout: 5_000 },
+      );
       const listRect = list.getBoundingClientRect();
       const pinned = selectionPopover()!.getBoundingClientRect();
       expect(isShown(selectionPopover())).toBe(true);
@@ -1533,15 +1543,18 @@ describe("text selection popover with the real virtual list", () => {
 
       // Back again, the highlight finds the word in the redrawn row.
       list.scrollTop = readingPosition;
-      await vi.waitFor(() => {
-        const word = wordRect("message-51", "pelican")!;
-        const highlightRect = document.querySelector<HTMLElement>(".transcript-note-highlight")!;
-        expect(isShown(highlightRect)).toBe(true);
-        const highlight = highlightRect.getBoundingClientRect();
-        expect(Math.abs(highlight.left - word.left)).toBeLessThanOrEqual(1);
-        expect(highlight.top).toBeLessThanOrEqual(word.top + 1);
-        expect(highlight.bottom).toBeGreaterThanOrEqual(word.bottom - 1);
-      });
+      await vi.waitFor(
+        () => {
+          const word = wordRect("message-51", "pelican")!;
+          const highlightRect = document.querySelector<HTMLElement>(".transcript-note-highlight")!;
+          expect(isShown(highlightRect)).toBe(true);
+          const highlight = highlightRect.getBoundingClientRect();
+          expect(Math.abs(highlight.left - word.left)).toBeLessThanOrEqual(1);
+          expect(highlight.top).toBeLessThanOrEqual(word.top + 1);
+          expect(highlight.bottom).toBeGreaterThanOrEqual(word.bottom - 1);
+        },
+        { timeout: 5_000 },
+      );
 
       await page.getByRole("button", { name: "Add", exact: true }).click();
       expect(onAddTranscriptHighlightContext).toHaveBeenCalledWith({
