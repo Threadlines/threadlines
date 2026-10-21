@@ -382,6 +382,16 @@ export interface WsRpcClient {
     readonly submitJoin: RpcUnaryMethod<typeof WS_METHODS.relaySubmitJoin>;
     readonly directRoutes: RpcUnaryNoArgMethod<typeof WS_METHODS.relayDirectRoutes>;
   };
+  /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
+  readonly scheduledTasks: {
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.scheduledTasksSubscribe>;
+    readonly listRuns: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksListRuns>;
+    readonly create: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksCreate>;
+    readonly update: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksUpdate>;
+    readonly remove: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksDelete>;
+    readonly runNow: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksRunNow>;
+    readonly respondRequest: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksRespondRequest>;
+  };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
     readonly warmUpTurn: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.warmUpTurn>;
@@ -1038,6 +1048,25 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       submitJoin: (input) =>
         transport.request((client) => client[WS_METHODS.relaySubmitJoin](input)),
       directRoutes: () => transport.request((client) => client[WS_METHODS.relayDirectRoutes]({})),
+    },
+    scheduledTasks: {
+      subscribe: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.scheduledTasksSubscribe]({}), listener, {
+          ...options,
+          tag: WS_METHODS.scheduledTasksSubscribe,
+        }),
+      listRuns: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksListRuns](input)),
+      create: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksCreate](input)),
+      update: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksUpdate](input)),
+      remove: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksDelete](input)),
+      runNow: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksRunNow](input)),
+      respondRequest: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksRespondRequest](input)),
     },
     orchestration: {
       // Commands are deduped server-side by commandId receipts, so re-sending

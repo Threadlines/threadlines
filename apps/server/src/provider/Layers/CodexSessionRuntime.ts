@@ -18,6 +18,7 @@ import {
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { ROOM_MCP_SERVER_NAME, roomToolsFor } from "../../mcp/roomToolAccess.ts";
+import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import {
   type CodexBorrowedSignIn,
   type CodexSideAnswerHomeError,
@@ -233,6 +234,10 @@ export interface CodexSessionRuntimeOptions {
    * for a working runtime, the read tools its kind allows for a side one.
    */
   readonly roomTools?: boolean;
+  /** With `roomTools`: a scheduled run's thread (ProviderSessionStartInput.scheduledRunTools). */
+  readonly scheduledRunTools?: boolean;
+  /** With `roomTools`: agents may change scheduled tasks (ProviderSessionStartInput.scheduleTools). */
+  readonly scheduleTools?: boolean;
   /** Attach the page tools (ProviderSessionStartInput.agentPages). Never for a side runtime. */
   readonly agentPages?: boolean;
   /** Attach `ask_user_to_run` (ProviderSessionStartInput.commandRequests). Never for a side runtime. */
@@ -654,6 +659,8 @@ function buildCodexCollaborationMode(input: {
   readonly agentPageAssetsDir?: string;
   /** The session has `ask_user_to_run`. */
   readonly commandRequests?: boolean;
+  /** The thread's own runtime has the room tools, schedule tools among them. */
+  readonly scheduleTools?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -681,6 +688,9 @@ function buildCodexCollaborationMode(input: {
             ]
           : []),
         ...(input.commandRequests ? [buildCommandRequestInstructions({})] : []),
+        ...(input.scheduleTools
+          ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
+          : []),
         FILE_LINK_INSTRUCTIONS,
         ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n"),
@@ -705,6 +715,8 @@ export function buildTurnStartParams(input: {
   readonly agentPageAssetsDir?: string;
   /** The session has `ask_user_to_run`. */
   readonly commandRequests?: boolean;
+  /** The thread's own runtime has the room tools, schedule tools among them. */
+  readonly scheduleTools?: boolean;
   /** A side answer: every turn is read-only with no approvals. */
   readonly lockdown?: boolean;
 }): Effect.Effect<
@@ -737,6 +749,7 @@ export function buildTurnStartParams(input: {
       ? { agentPageAssetsDir: input.agentPageAssetsDir }
       : {}),
     ...(input.commandRequests ? { commandRequests: true } : {}),
+    ...(input.scheduleTools && !input.lockdown ? { scheduleTools: true } : {}),
   });
 
   return decodeCodexTurnStartParams({
@@ -1963,6 +1976,7 @@ export const makeCodexSessionRuntime = (
             pages: agentPages,
             commands: commandRequests,
             ...(lockdown !== undefined ? { sideKind: lockdown.kind } : {}),
+            scheduledRun: options.scheduledRunTools === true,
           })
         : undefined;
     if (credential !== undefined) {
@@ -2877,6 +2891,9 @@ export const makeCodexSessionRuntime = (
             ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
             ...(agentPageAssetsDir !== undefined ? { agentPageAssetsDir } : {}),
             ...(commandRequests ? { commandRequests: true } : {}),
+            ...(roomTools && options.scheduleTools === true && lockdown === undefined
+              ? { scheduleTools: true }
+              : {}),
             ...(lockdown !== undefined ? { lockdown: true } : {}),
           });
           const rawResponse = yield* withCodexRequestTimeout(

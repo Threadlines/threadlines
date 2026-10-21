@@ -135,6 +135,10 @@
       "types": "./src/cronSchedule.ts",
       "import": "./src/cronSchedule.ts"
     },
+    "./scheduledTasks": {
+      "types": "./src/scheduledTasks.ts",
+      "import": "./src/scheduledTasks.ts"
+    },
     "./Net": {
       "types": "./src/Net.ts",
       "import": "./src/Net.ts"

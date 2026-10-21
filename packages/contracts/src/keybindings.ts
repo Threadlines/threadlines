@@ -61,6 +61,7 @@ const STATIC_KEYBINDING_COMMANDS = [
   "editor.openFavorite",
   "sidebar.toggle",
   "navigate.fleet",
+  "navigate.scheduled",
   "navigate.back",
   "navigate.forward",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,

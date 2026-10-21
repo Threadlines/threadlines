@@ -16,6 +16,19 @@ import {
   OutboundComputerLink,
 } from "./links.ts";
 import {
+  ScheduledRun,
+  ScheduledTask,
+  ScheduledTaskCreateInput,
+  ScheduledTaskDeleteInput,
+  ScheduledTaskError,
+  ScheduledTaskListRunsInput,
+  ScheduledTaskListRunsResult,
+  ScheduledTaskRespondRequestInput,
+  ScheduledTaskRunNowInput,
+  ScheduledTasksSnapshot,
+  ScheduledTaskUpdateInput,
+} from "./scheduledTasks.ts";
+import {
   RelayAccessError,
   RelayAccessSnapshot,
   RelayCancelInviteInput,
@@ -573,6 +586,15 @@ export const WS_METHODS = {
   linksSetAccess: "links.setAccess",
   linksRemove: "links.remove",
   linksRespondRequest: "links.respondRequest",
+
+  // Scheduled tasks (docs/design/fleet.md, Part 6). Owner and client sessions alike.
+  scheduledTasksSubscribe: "scheduledTasks.subscribe",
+  scheduledTasksListRuns: "scheduledTasks.listRuns",
+  scheduledTasksCreate: "scheduledTasks.create",
+  scheduledTasksUpdate: "scheduledTasks.update",
+  scheduledTasksDelete: "scheduledTasks.delete",
+  scheduledTasksRunNow: "scheduledTasks.runNow",
+  scheduledTasksRespondRequest: "scheduledTasks.respondRequest",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1767,6 +1789,50 @@ export const WsLinksRespondRequestRpc = Rpc.make(WS_METHODS.linksRespondRequest,
   error: ComputerLinkError,
 });
 
+/** This computer's scheduled tasks, each with its last run; again on every change. */
+export const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
+  payload: Schema.Struct({}),
+  success: ScheduledTasksSnapshot,
+  error: ScheduledTaskError,
+  stream: true,
+});
+
+export const WsScheduledTasksListRunsRpc = Rpc.make(WS_METHODS.scheduledTasksListRuns, {
+  payload: ScheduledTaskListRunsInput,
+  success: ScheduledTaskListRunsResult,
+  error: ScheduledTaskError,
+});
+
+export const WsScheduledTasksCreateRpc = Rpc.make(WS_METHODS.scheduledTasksCreate, {
+  payload: ScheduledTaskCreateInput,
+  success: ScheduledTask,
+  error: ScheduledTaskError,
+});
+
+export const WsScheduledTasksUpdateRpc = Rpc.make(WS_METHODS.scheduledTasksUpdate, {
+  payload: ScheduledTaskUpdateInput,
+  success: ScheduledTask,
+  error: ScheduledTaskError,
+});
+
+export const WsScheduledTasksDeleteRpc = Rpc.make(WS_METHODS.scheduledTasksDelete, {
+  payload: ScheduledTaskDeleteInput,
+  error: ScheduledTaskError,
+});
+
+/** Starts a run now, under the same rules as a scheduled one: it may come back skipped. */
+export const WsScheduledTasksRunNowRpc = Rpc.make(WS_METHODS.scheduledTasksRunNow, {
+  payload: ScheduledTaskRunNowInput,
+  success: ScheduledRun,
+  error: ScheduledTaskError,
+});
+
+/** Allows or denies an agent's change to the tasks (Agents can start threads: Ask first). */
+export const WsScheduledTasksRespondRequestRpc = Rpc.make(WS_METHODS.scheduledTasksRespondRequest, {
+  payload: ScheduledTaskRespondRequestInput,
+  error: ScheduledTaskError,
+});
+
 /** Empty for anyone but a "Connect a device" device. */
 export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
   payload: Schema.Struct({}),
@@ -1941,6 +2007,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsLinksSetAccessRpc,
   WsLinksRemoveRpc,
   WsLinksRespondRequestRpc,
+  WsScheduledTasksSubscribeRpc,
+  WsScheduledTasksListRunsRpc,
+  WsScheduledTasksCreateRpc,
+  WsScheduledTasksUpdateRpc,
+  WsScheduledTasksDeleteRpc,
+  WsScheduledTasksRunNowRpc,
+  WsScheduledTasksRespondRequestRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,

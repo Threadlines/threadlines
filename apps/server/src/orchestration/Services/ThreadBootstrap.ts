@@ -9,7 +9,8 @@
  *   the steps before it; a retry of the same command joins the run in flight
  *   or is answered from the receipt.
  * - `startChild` sets up a thread an agent started (child threads,
- *   docs/design/child-threads.md). It runs as stages, each checked against
+ *   docs/design/child-threads.md), or a scheduled task's run
+ *   (docs/design/fleet.md, Part 6). It runs as stages, each checked against
  *   durable state before it acts and each with ids derived from the request,
  *   so a run cut off anywhere (a crash, a restart) is resumed by running it
  *   again and never makes a second thread, worktree or turn.
@@ -27,6 +28,7 @@ import type {
   ThreadId,
   ThreadMessageOrigin,
   ThreadRemoteOrigin,
+  ThreadScheduledRun,
   TurnId,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
@@ -60,8 +62,9 @@ export class ChildBootstrapError extends Schema.TaggedError<ChildBootstrapError>
 
 /**
  * Where a child comes from: a thread on this computer (it joins that family,
- * or starts separated when it reports nothing back), or a thread on a linked
- * computer (docs/design/fleet.md), recorded as its remote origin.
+ * or starts separated when it reports nothing back), a thread on a linked
+ * computer (docs/design/fleet.md), recorded as its remote origin, or a
+ * scheduled task's run, recorded as such and in no family.
  */
 export type ChildBootstrapLineage =
   | {
@@ -70,7 +73,8 @@ export type ChildBootstrapLineage =
       /** The parent's turn whose agent started it. */
       readonly parentTurnId: TurnId;
     }
-  | { readonly kind: "remote"; readonly remoteOrigin: ThreadRemoteOrigin };
+  | { readonly kind: "remote"; readonly remoteOrigin: ThreadRemoteOrigin }
+  | { readonly kind: "scheduled"; readonly scheduledRun: ThreadScheduledRun };
 
 /** Everything a child's setup needs, all of it saved with its request. */
 export interface ChildBootstrapInput {
@@ -81,8 +85,8 @@ export interface ChildBootstrapInput {
   /** The first message's id: the turn it starts answers the request. */
   readonly childMessageId: MessageId;
   readonly launch: ChildThreadLaunch;
-  /** The first message's origin, `kind: "request"`. */
-  readonly fromThread: ThreadMessageOrigin;
+  /** The first message's origin, `kind: "request"`; none for a scheduled run. */
+  readonly fromThread?: ThreadMessageOrigin | undefined;
   /** When the request was made; the child is created with this stamp. */
   readonly createdAt: IsoDateTime;
   /**

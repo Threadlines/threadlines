@@ -43,6 +43,12 @@ import {
   toastManager,
 } from "../components/ui/toast";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
+import {
+  countActiveScheduledTasks,
+  countWorkingScheduledRuns,
+  ScheduledTasksSync,
+  useScheduledTasksStore,
+} from "../lib/scheduledTasksState";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { refreshSourceControlDiscoveryAfterReconnect } from "../lib/sourceControlDiscoveryState";
@@ -195,6 +201,7 @@ function RootRouteView() {
         <EnvironmentConnectionManagerBootstrap />
         <AppShellIdlePreloads />
         <DesktopTaskbarStatusSync />
+        {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
         {isElectron ? <BrowserProfileReconciler /> : null}
         {isElectron ? <BrowserHostLayer /> : null}
         <SshPasswordPromptDialog />
@@ -273,6 +280,19 @@ function DesktopTaskbarStatusSync() {
   // Quitting stops only this computer's threads, so the desktop app is told
   // how many of the running ones are local.
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  // And this computer's active schedules: they keep it awake when the user
+  // asked for that, and quitting stops them.
+  const activeScheduledTaskCount = useScheduledTasksStore((state) =>
+    primaryEnvironmentId === null
+      ? 0
+      : countActiveScheduledTasks(state.byEnvironment[primaryEnvironmentId]),
+  );
+  // Its scheduled runs at work keep it awake too, a one-time task's included.
+  const workingScheduledRunCount = useScheduledTasksStore((state) =>
+    primaryEnvironmentId === null
+      ? 0
+      : countWorkingScheduledRuns(state.byEnvironment[primaryEnvironmentId]),
+  );
   const hadRunningThreadRef = useRef(false);
   const completionShownRef = useRef(false);
   const completionSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -282,11 +302,16 @@ function DesktopTaskbarStatusSync() {
   const unseenCompletedThreadsRef = useRef(new Map<string, DesktopTaskbarThreadSummary>());
   const lastStatusKeyRef = useRef<string | null>(null);
 
-  const setTaskbarStatus = useEffectEvent((input: DesktopTaskbarStatusInput) => {
+  const setTaskbarStatus = useEffectEvent((status: DesktopTaskbarStatusInput) => {
     const bridge = window.desktopBridge;
     if (!bridge?.setTaskbarStatus) {
       return;
     }
+    const input: DesktopTaskbarStatusInput = {
+      ...status,
+      activeScheduledTaskCount,
+      workingScheduledRunCount,
+    };
 
     const threadsKey = (input.threads ?? [])
       .map(
@@ -294,7 +319,7 @@ function DesktopTaskbarStatusSync() {
           `${taskbarThreadKey(thread)}:${thread.state}:${thread.waitingOn ?? ""}:${thread.title}`,
       )
       .join("|");
-    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.localRunningThreadCount ?? ""}:${input.completedThreadCount ?? ""}:${threadsKey}`;
+    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.localRunningThreadCount ?? ""}:${input.completedThreadCount ?? ""}:${input.activeScheduledTaskCount ?? ""}:${input.workingScheduledRunCount ?? ""}:${threadsKey}`;
     if (lastStatusKeyRef.current === statusKey) {
       return;
     }
@@ -401,7 +426,12 @@ function DesktopTaskbarStatusSync() {
 
   useEffect(() => {
     syncTaskbarStatus();
-  }, [primaryEnvironmentId, runningThreadsSignature]);
+  }, [
+    activeScheduledTaskCount,
+    primaryEnvironmentId,
+    runningThreadsSignature,
+    workingScheduledRunCount,
+  ]);
 
   useEffect(() => {
     const handleFocus = () => {

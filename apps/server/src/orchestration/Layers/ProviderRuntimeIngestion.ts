@@ -68,6 +68,7 @@ import {
 import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { childDeliveryForTurnEnd } from "../childThreadDelivery.ts";
 import { RemoteRequestTurnEnds } from "../Services/RemoteRequestTurnEnds.ts";
+import { ScheduledRunTurnEnds } from "../Services/ScheduledRunTurnEnds.ts";
 import {
   carriedBackgroundTasks,
   NO_BACKGROUND_TASKS,
@@ -1249,6 +1250,8 @@ const make = Effect.gen(function* () {
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   // Computer links, when this server has them: see RemoteRequestTurnEnds.
   const remoteRequestTurnEnds = yield* Effect.serviceOption(RemoteRequestTurnEnds);
+  // Scheduled tasks, when this server has them: see ScheduledRunTurnEnds.
+  const scheduledRunTurnEnds = yield* Effect.serviceOption(ScheduledRunTurnEnds);
   const serverSettingsService = yield* ServerSettingsService;
   const agentPages = yield* AgentPages;
   const mcpApps = yield* McpApps;
@@ -4001,21 +4004,39 @@ const make = Effect.gen(function* () {
             event.type === "turn.completed"
               ? normalizeRuntimeTurnState(event.payload.state)
               : "interrupted";
+          const turnOutcome =
+            endedState === "completed"
+              ? ("completed" as const)
+              : endedState === "failed"
+                ? ("failed" as const)
+                : ("interrupted" as const);
+          const turnError =
+            event.type === "turn.completed" && endedState === "failed"
+              ? (event.payload.errorMessage ?? thread.session?.lastError ?? undefined)
+              : undefined;
           yield* routeChildReport({
             threadId: thread.id,
             turnId,
-            outcome:
-              endedState === "completed"
-                ? "completed"
-                : endedState === "failed"
-                  ? "failed"
-                  : "interrupted",
-            error:
-              event.type === "turn.completed" && endedState === "failed"
-                ? (event.payload.errorMessage ?? thread.session?.lastError ?? undefined)
-                : undefined,
+            outcome: turnOutcome,
+            error: turnError,
             createdAt: now,
           });
+          // And a scheduled task's run that this turn's message started.
+          if (Option.isSome(scheduledRunTurnEnds)) {
+            const endedTurn = yield* projectionTurnRepository
+              .getByTurnId({ threadId: thread.id, turnId })
+              .pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.orElseSucceed(() => undefined),
+              );
+            yield* scheduledRunTurnEnds.value.onTurnEnd({
+              threadId: thread.id,
+              turnId,
+              outcome: turnOutcome,
+              error: turnError,
+              pendingMessageId: endedTurn?.pendingMessageId ?? null,
+            });
+          }
 
           yield* finalizeBufferedProposedPlan({
             event,

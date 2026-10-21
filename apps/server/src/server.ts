@@ -32,6 +32,12 @@ import {
 import { peerRpcRouteLayer } from "./links/peerRoute.ts";
 import { RemoteChildReactorLive } from "./links/RemoteChildReactor.ts";
 import { ComputerLinkReactorsLive } from "./links/ComputerLinkReactors.ts";
+import { ScheduledTaskRepositoryLive } from "./scheduled/ScheduledTaskRepository.ts";
+import {
+  ScheduledRunTurnEndsLive,
+  ScheduledTaskNotesLive,
+  ScheduledTasksLive,
+} from "./scheduled/ScheduledTasks.ts";
 import * as ChildEnvironment from "./process/childEnvironment.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
@@ -262,12 +268,27 @@ const ComputerLinksLayerLive = Layer.mergeAll(ComputerLinkReactorsLive, Computer
   Layer.provide(ServerSecretStoreLive),
 );
 
+// Scheduled tasks (docs/design/fleet.md, Part 6): this computer's tasks and
+// the scheduler that starts their runs, started with the other reactors;
+// runtime ingestion hands every turn's end to it (ScheduledRunTurnEnds), and
+// the provider command reactor reads agents' answers from it
+// (ScheduledTaskNotes).
+const ScheduledTasksLayerLive = Layer.mergeAll(
+  ScheduledRunTurnEndsLive,
+  ScheduledTaskNotesLive,
+).pipe(
+  Layer.provideMerge(ScheduledTasksLive),
+  Layer.provideMerge(ScheduledTaskRepositoryLive),
+  Layer.provide(ProjectionTurnRepositoryLive),
+);
+
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
   // Both reactors above take these (optionally), so they come after them.
   Layer.provideMerge(Layer.mergeAll(RemoteRequestTurnEndsLive, RemoteRequestGateLive)),
+  Layer.provideMerge(ScheduledTasksLayerLive),
   Layer.provideMerge(ComputerLinksLayerLive),
   Layer.provideMerge(ChildThreadReactorLive),
   Layer.provideMerge(CheckpointReactorLive),

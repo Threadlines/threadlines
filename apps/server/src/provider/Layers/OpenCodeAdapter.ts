@@ -78,6 +78,7 @@ import {
 } from "../../mcp/McpHttpServer.ts";
 import { buildAgentPageInstructions } from "../../mcp/pageTools.ts";
 import { buildCommandRequestInstructions } from "../../mcp/commandTools.ts";
+import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
@@ -243,6 +244,8 @@ interface SessionContext {
   readonly scope: Scope.Closeable;
   readonly toolKey: string;
   readonly roomTools: boolean;
+  /** With `roomTools`: agents may change scheduled tasks; its instructions say so. */
+  readonly scheduleTools: boolean;
   /** The page tools' image folder, when the session has them. */
   readonly agentPageAssetsDir: string | undefined;
   /** The session has `ask_user_to_run`. */
@@ -2002,6 +2005,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               }),
             ]
           : []),
+        ...(ctx.scheduleTools
+          ? [buildScheduleInstructions({ toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_` })]
+          : []),
         FILE_LINK_INSTRUCTIONS,
         ...(managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n");
@@ -2241,6 +2247,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             scope,
             toolKey: openCodeThreadToolKey(input.threadId),
             roomTools,
+            scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests: input.commandRequests === true,
             runtimeMode: input.runtimeMode,
@@ -2282,6 +2289,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             room: roomTools,
             pages: agentPageAssetsDir !== undefined,
             commands: input.commandRequests === true,
+            scheduledRun: input.scheduledRunTools === true,
           });
           yield* Scope.addFinalizer(
             scope,

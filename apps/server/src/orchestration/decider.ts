@@ -9,8 +9,10 @@ import {
   type OrchestrationThread,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
+  type TurnId,
   type ThreadParticipantId,
 } from "@threadlines/contracts";
+import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
@@ -329,6 +331,31 @@ function childStopEvents(
 }
 
 /**
+ * Whether a turn and the message that started it are still the last thing
+ * in the thread: its latest turn (it may still be finishing), no other turn
+ * running or starting, nothing queued behind it, and no message written to
+ * the thread after it. The messages are the source of truth for work
+ * accepted but not begun: a turn start the decider accepted leaves the
+ * latest turn and the session as they were until the provider takes it, but
+ * its message is already in the thread, after the run's.
+ */
+function isQuietAfterTurn(
+  thread: OrchestrationThread,
+  run: { readonly turnId: TurnId; readonly messageId: MessageId },
+): boolean {
+  const session = thread.session;
+  const activeTurnId = session?.activeTurnId ?? null;
+  const lastUserMessage = thread.messages.findLast((message) => message.role === "user");
+  return (
+    thread.latestTurn?.turnId === run.turnId &&
+    (activeTurnId === null || activeTurnId === run.turnId) &&
+    session?.status !== "starting" &&
+    (thread.queuedFollowUps ?? []).length === 0 &&
+    lastUserMessage?.id === run.messageId
+  );
+}
+
+/**
  * A message for the agent at work: steers into its turn when it can, else waits
  * in the queue for its agent, like a message the user typed while it worked.
  */
@@ -391,6 +418,9 @@ function decideFollowUpSubmit(
                 : {}),
               ...(addressedAgentId !== null ? { participantId: addressedAgentId } : {}),
               ...(command.composer !== undefined ? { composer: command.composer } : {}),
+              ...(command.scheduledTaskId !== undefined
+                ? { scheduledTaskId: command.scheduledTaskId }
+                : {}),
               runtimeMode: command.runtimeMode ?? targetThread.runtimeMode,
               interactionMode: command.interactionMode ?? targetThread.interactionMode,
               createdAt: command.createdAt,
@@ -618,6 +648,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "A thread is started either by a thread here or by one on a linked computer.",
         });
       }
+      // Nor does a scheduled task's run: the scheduler starts it on its own.
+      if (
+        command.scheduledRun !== undefined &&
+        (parentThreadId !== undefined || command.remoteOrigin !== undefined)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A scheduled run's thread is started by its schedule alone.",
+        });
+      }
       // A thread set up as a room before its first message starts with its
       // agents: all of them are checked before any is recorded.
       const startingAgents = command.participants ?? [];
@@ -668,6 +708,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               }
             : {}),
           ...(command.remoteOrigin !== undefined ? { remoteOrigin: command.remoteOrigin } : {}),
+          ...(command.scheduledRun !== undefined ? { scheduledRun: command.scheduledRun } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -1132,6 +1173,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // A quiet scheduled run wraps its thread only while its turn is still
+      // the last thing there: newer work keeps the thread in front of the user.
+      if (
+        command.whileQuietAfter !== undefined &&
+        !isQuietAfterTurn(thread, command.whileQuietAfter)
+      ) {
+        return [];
+      }
       const occurredAt = yield* nowIso;
       // Child threads: a wrapped parent is not woken by a late answer.
       const wrapEvents =
@@ -1161,7 +1210,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           at: command.at,
         },
       };
-      return wrapEvents.length === 0 ? overrideEvent : [...wrapEvents, overrideEvent];
+      const seenEvents: ReadonlyArray<PlannedOrchestrationEvent> =
+        command.whileQuietAfter !== undefined
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.seen-set",
+                payload: { threadId: command.threadId, at: command.at },
+              },
+            ]
+          : [];
+      return wrapEvents.length === 0 && seenEvents.length === 0
+        ? overrideEvent
+        : [...wrapEvents, overrideEvent, ...seenEvents];
     }
 
     case "thread.seen.set": {
@@ -2677,8 +2743,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // with the thread's current ones, so a message queued before the user
       // narrowed access cannot widen it back. The message is stamped now, not
       // when it was queued, so it lands after the answer it waited for.
-      const runtimeMode = agentQueued ? targetThread.runtimeMode : queued.runtimeMode;
-      const interactionMode = agentQueued ? targetThread.interactionMode : queued.interactionMode;
+      // A scheduled run's message may lower the thread's access but never
+      // raise it (the user may have lowered it while the message waited), and
+      // keeps the thread's own interaction mode, which no task chooses.
+      const scheduledQueued = queued.scheduledTaskId !== undefined;
+      const runtimeMode = agentQueued
+        ? targetThread.runtimeMode
+        : scheduledQueued
+          ? saferRuntimeMode(queued.runtimeMode, targetThread.runtimeMode)
+          : queued.runtimeMode;
+      const interactionMode =
+        agentQueued || scheduledQueued ? targetThread.interactionMode : queued.interactionMode;
       const turnEvents = yield* decideCommandSequence({
         readModel,
         commands: [

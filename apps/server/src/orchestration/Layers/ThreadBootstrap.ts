@@ -483,7 +483,9 @@ const make = Effect.gen(function* () {
                 parentTurnId: input.lineage.parentTurnId,
                 attachedToParent: launch.reportBack,
               }
-            : { remoteOrigin: input.lineage.remoteOrigin }),
+            : input.lineage.kind === "remote"
+              ? { remoteOrigin: input.lineage.remoteOrigin }
+              : { scheduledRun: input.lineage.scheduledRun }),
           createdAt: input.createdAt,
         })
         .pipe(Effect.mapError(stageError("create")));
@@ -684,7 +686,7 @@ const make = Effect.gen(function* () {
         modelSelection: launch.modelSelection,
         runtimeMode: launch.runtimeMode,
         interactionMode: launch.interactionMode,
-        fromThread: input.fromThread,
+        ...(input.fromThread !== undefined ? { fromThread: input.fromThread } : {}),
         createdAt: yield* nowIso,
       });
     }).pipe(Effect.mapError(stageError("turn")));

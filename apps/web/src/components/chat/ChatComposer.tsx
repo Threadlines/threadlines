@@ -133,6 +133,8 @@ import { useAgentWarmUp } from "../../hooks/useAgentWarmUp";
 import { getThreadInFlightStatus } from "../../lib/threadSort";
 import { ComposerAgentInvitePanel } from "./ComposerAgentInvitePanel";
 import { ComposerChildThreadsPanel } from "./ComposerChildThreadsPanel";
+import { ComposerScheduleRequestPanel } from "./ComposerScheduleRequestPanel";
+import { useScheduledTaskRequestsForThread } from "../../lib/scheduledTasksState";
 import { pendingChildThreads } from "../../childThreads";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
@@ -1230,6 +1232,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         : null,
     [activeThread, providerInstanceEntries],
   );
+  // A change to the scheduled tasks the agent asked for, waiting for the
+  // user's yes ("Ask me first"): the child-thread card's schedule kind.
+  const pendingScheduleRequest = useScheduledTaskRequestsForThread(
+    routeThreadRef.environmentId,
+    routeThreadRef.threadId,
+  )[0];
   // The agents "@" offers in a room, first in the menu above files. Picking
   // one sends the message to it, like the agent picker.
   const roomMentionAgents = useMemo(() => {
@@ -3714,6 +3722,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   key={pendingChildThreadStarts.batchId}
                   threadRef={routeThreadRef}
                   request={pendingChildThreadStarts}
+                />
+              </div>
+            ) : pendingScheduleRequest !== undefined ? (
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
+                <ComposerScheduleRequestPanel
+                  key={pendingScheduleRequest.requestId}
+                  threadRef={routeThreadRef}
+                  request={pendingScheduleRequest}
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (

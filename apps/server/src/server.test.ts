@@ -93,6 +93,7 @@ import {
   type RelayDeviceRepositoryShape,
 } from "./relay/RelayDeviceRepository.ts";
 import { ComputerLinks, type ComputerLinksShape } from "./links/ComputerLinks.ts";
+import { ScheduledTasks, type ScheduledTasksShape } from "./scheduled/ScheduledTasks.ts";
 import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
@@ -517,6 +518,7 @@ const buildAppUnderTest = (options?: {
     relayHost?: Partial<RelayHostShape>;
     relayDeviceRepository?: Partial<RelayDeviceRepositoryShape>;
     computerLinks?: Partial<ComputerLinksShape>;
+    scheduledTasks?: Partial<ScheduledTasksShape>;
     linkRequests?: Partial<LinkRequestsShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
     checkpointRevert?: Partial<CheckpointRevertShape>;
@@ -824,6 +826,11 @@ const buildAppUnderTest = (options?: {
             snapshot: Effect.succeed({ outbound: [], inbound: [], pending: [] }),
             changes: Stream.make({ outbound: [], inbound: [], pending: [] }),
             ...options?.layers?.computerLinks,
+          }),
+          Layer.mock(ScheduledTasks)({
+            snapshot: Effect.succeed({ tasks: [], requests: [], timeZone: "UTC" }),
+            changes: Stream.make({ tasks: [], requests: [], timeZone: "UTC" }),
+            ...options?.layers?.scheduledTasks,
           }),
           Layer.mock(LinkRequests)({
             pending: Effect.succeed([]),

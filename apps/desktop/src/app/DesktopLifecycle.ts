@@ -127,6 +127,14 @@ function describeRunningSessionsForNativeQuit(count: number, windowOpen: boolean
     : `${count} agent sessions are still running.`;
 }
 
+/** What quitting does to this computer's scheduled tasks, or null when it has none. */
+function describeScheduledTasksForNativeQuit(count: number): string | null {
+  if (!Number.isFinite(count) || count <= 0) return null;
+  return count === 1
+    ? "A scheduled task won't run until you open Threadlines again."
+    : `${count} scheduled tasks won't run until you open Threadlines again.`;
+}
+
 export const confirmQuitWithRunningAgentSessions = Effect.fn(
   "desktop.lifecycle.confirmQuitWithRunningAgentSessions",
 )(function* (): Effect.fn.Return<
@@ -144,36 +152,53 @@ export const confirmQuitWithRunningAgentSessions = Effect.fn(
 
   // Only this computer's work: quitting leaves threads on other computers
   // running, so they are no reason to ask.
-  const runningThreadCount = yield* Ref.get(state.localRunningThreadCount);
-  if (!Number.isFinite(runningThreadCount) || runningThreadCount <= 0) return true;
+  const reportedRunning = yield* Ref.get(state.localRunningThreadCount);
+  const runningThreadCount =
+    Number.isFinite(reportedRunning) && reportedRunning > 0 ? reportedRunning : 0;
+  // Scheduled tasks stop running while the app is closed. That alone asks
+  // only where the user chose to keep the app running in the background
+  // (Windows and Linux): there quitting is a deliberate stop; elsewhere the
+  // question would come at every quit.
+  const activeScheduledTaskCount = yield* Ref.get(state.activeScheduledTaskCount);
+  const schedulesAsk = (yield* Ref.get(state.runInBackground)) && activeScheduledTaskCount > 0;
+  if (runningThreadCount <= 0 && !schedulesAsk) return true;
 
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
-  return yield* desktopWindow.requestQuitConfirmation(runningThreadCount).pipe(
-    Effect.catch((error) =>
-      Effect.gen(function* () {
-        yield* logLifecycleInfo("asking to quit with a native dialog", {
-          reason: String(error.cause),
-        });
-        const electronDialog = yield* ElectronDialog.ElectronDialog;
-        const electronApp = yield* ElectronApp.ElectronApp;
-        // A quit from the Dock or the menu bar leaves the app in the back,
-        // where a dialog with no window would open unseen.
-        yield* electronApp.focus;
-        const message = describeRunningSessionsForNativeQuit(runningThreadCount, error.windowOpen);
-        const result = yield* electronDialog.showMessageBox({
-          type: "warning",
-          title: "Quit Threadlines?",
-          message,
-          detail: QUIT_STOPS_LOCAL_WORK_DETAIL,
-          buttons: ["Keep Running", "Quit Anyway"],
-          defaultId: 0,
-          cancelId: 0,
-          noLink: true,
-        });
-        return result.response === 1;
-      }),
-    ),
-  );
+  return yield* desktopWindow
+    .requestQuitConfirmation(runningThreadCount, activeScheduledTaskCount)
+    .pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          yield* logLifecycleInfo("asking to quit with a native dialog", {
+            reason: String(error.cause),
+          });
+          const electronDialog = yield* ElectronDialog.ElectronDialog;
+          const electronApp = yield* ElectronApp.ElectronApp;
+          // A quit from the Dock or the menu bar leaves the app in the back,
+          // where a dialog with no window would open unseen.
+          yield* electronApp.focus;
+          const message = [
+            runningThreadCount > 0
+              ? describeRunningSessionsForNativeQuit(runningThreadCount, error.windowOpen)
+              : null,
+            describeScheduledTasksForNativeQuit(activeScheduledTaskCount),
+          ]
+            .filter((line) => line !== null)
+            .join(" ");
+          const result = yield* electronDialog.showMessageBox({
+            type: "warning",
+            title: "Quit Threadlines?",
+            message,
+            detail: QUIT_STOPS_LOCAL_WORK_DETAIL,
+            buttons: ["Keep Running", "Quit Anyway"],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+          });
+          return result.response === 1;
+        }),
+      ),
+    );
 });
 
 /**

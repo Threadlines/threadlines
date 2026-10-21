@@ -33,5 +33,6 @@ export * from "./dictation.ts";
 export * from "./filesystem.ts";
 export * from "./usage.ts";
 export * from "./links.ts";
+export * from "./scheduledTasks.ts";
 export * from "./peerRpc.ts";
 export * from "./rpc.ts";

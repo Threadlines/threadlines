@@ -56,6 +56,7 @@ import {
   RoomAgentInvite,
   ThreadMessageOrigin,
   ThreadRemoteOrigin,
+  ThreadScheduledRun,
   RoomReviewInput,
   TrimmedNonEmptyString,
 } from "@threadlines/contracts";
@@ -150,6 +151,7 @@ type ThreadLineageRow = Pick<
   | "archivedWithParentAt"
   | "childRequests"
   | "remoteOrigin"
+  | "scheduledRun"
 >;
 
 /** Child threads: lineage and family as the decider and the thread detail read them. */
@@ -163,6 +165,7 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   archivedWithParentAt: row.archivedWithParentAt ?? null,
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
   ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+  ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
 });
 
 /**
@@ -181,6 +184,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     awaitedChildThreadCount: awaitedChildRequestCount(childRequests),
     pendingChildApproval: hasPendingChildApproval(childRequests),
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+    ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
   };
 };
 
@@ -233,6 +237,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
       Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
     ),
     remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
+    scheduledRun: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun))),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -788,6 +793,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -846,6 +852,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -906,6 +913,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1665,6 +1673,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",

@@ -21,6 +21,11 @@ export interface AcpToolCallState {
   readonly toolCallId: string;
   readonly kind?: string;
   readonly title?: string;
+  /**
+   * The agent named the call itself (not a generic "Terminal"): an update
+   * that names nothing (ACP sends unchanged fields at will) keeps the name.
+   */
+  readonly named?: true;
   readonly status?: "pending" | "inProgress" | "completed" | "failed";
   readonly command?: string;
   readonly detail?: string;
@@ -463,6 +468,7 @@ function makeToolCallState(
     toolCallId,
     ...(kind ? { kind } : {}),
     ...(presentation?.summary ? { title: presentation.summary } : {}),
+    ...(normalizedTitle !== undefined ? { named: true as const } : {}),
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
     ...(presentation?.detail ? { detail: presentation.detail } : {}),
@@ -519,7 +525,13 @@ export function mergeToolCallState(
 ): AcpToolCallState {
   const nextKind = typeof next.data.kind === "string" ? next.data.kind : undefined;
   const kind = nextKind ?? previous?.kind;
-  const title = next.title ?? previous?.title;
+  // A title made up for an update that named nothing never replaces the
+  // agent's own name for the call.
+  const title =
+    previous?.named === true && next.named !== true
+      ? previous.title
+      : (next.title ?? previous?.title);
+  const named = previous?.named === true || next.named === true;
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
   const detail = next.detail ?? previous?.detail;
@@ -527,6 +539,7 @@ export function mergeToolCallState(
     toolCallId: next.toolCallId,
     ...(kind ? { kind } : {}),
     ...(title ? { title } : {}),
+    ...(named ? { named: true as const } : {}),
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
     ...(detail ? { detail } : {}),

@@ -26,6 +26,7 @@ import {
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
   ThreadRemoteOrigin,
+  ThreadScheduledRun,
 } from "@threadlines/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
@@ -42,6 +43,7 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     agentRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationAgentRequestState)),
     childRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
     remoteOrigin: Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin)),
+    scheduledRun: Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun)),
     roomContext: Schema.fromJsonString(
       Schema.Record(Schema.String, OrchestrationRoomContextCursor),
     ),
@@ -96,6 +98,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           archived_with_parent_at,
           child_requests,
           remote_origin_json,
+          scheduled_run_json,
           done_override,
           done_override_at,
           last_seen_at,
@@ -145,6 +148,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.archivedWithParentAt ?? null},
           ${row.childRequests ? JSON.stringify(row.childRequests) : null},
           ${row.remoteOrigin ? JSON.stringify(row.remoteOrigin) : null},
+          ${row.scheduledRun ? JSON.stringify(row.scheduledRun) : null},
           ${row.doneOverride ?? null},
           ${row.doneOverrideAt ?? null},
           ${row.lastSeenAt ?? null},
@@ -194,6 +198,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           archived_with_parent_at = excluded.archived_with_parent_at,
           child_requests = excluded.child_requests,
           remote_origin_json = excluded.remote_origin_json,
+          scheduled_run_json = excluded.scheduled_run_json,
           done_override = excluded.done_override,
           done_override_at = excluded.done_override_at,
           last_seen_at = excluded.last_seen_at,
@@ -250,6 +255,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -308,6 +314,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          scheduled_run_json AS "scheduledRun",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",

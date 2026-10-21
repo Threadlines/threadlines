@@ -234,6 +234,15 @@ describe("DesktopApplicationMenu", () => {
         DesktopWindow.OPEN_FLEET_MENU_ACTION,
       );
 
+      const scheduled = yield* configureMenu("linux");
+      const scheduledItems = submenuItems(scheduled.template, (item) => item.label === "Go", "Go");
+      assert.isUndefined(findMenuItem(scheduledItems, "Scheduled").accelerator);
+      clickMenuItem(scheduledItems, "Scheduled");
+      assert.equal(
+        yield* Deferred.await(scheduled.selectedAction),
+        DesktopWindow.OPEN_SCHEDULED_MENU_ACTION,
+      );
+
       const back = yield* configureMenu("darwin");
       const backItems = submenuItems(back.template, (item) => item.label === "Go", "Go");
       assert.isUndefined(findMenuItem(backItems, "Back").accelerator);

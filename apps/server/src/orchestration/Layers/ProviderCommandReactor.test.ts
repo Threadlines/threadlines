@@ -11,6 +11,7 @@ import {
   ModelSelection,
   type OrchestrationCommand,
   type OrchestrationSession,
+  type OrchestrationThread,
   type OrchestrationWarmUpTurnInput,
   type OrchestrationWorkflowRunPatch,
   ProviderRuntimeEvent,
@@ -20,6 +21,7 @@ import {
   ProviderInstanceId,
   RoomAgentRequestId,
   RuntimeTaskId,
+  ScheduledTaskId,
   SideTurnId,
   type ThreadContextSeed,
   ThreadForkSeedOutcomeActivityKind,
@@ -89,6 +91,10 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { RemoteRequestGate, type RemoteRequestGateShape } from "../Services/RemoteRequestGate.ts";
+import {
+  ScheduledTaskNotes,
+  type ScheduledTaskNotesShape,
+} from "../Services/ScheduledTaskNotes.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -205,6 +211,8 @@ describe("ProviderCommandReactor", () => {
     readonly removedInstanceIds?: ReadonlyArray<string>;
     /** Computer links' check on a linked computer's queued messages. */
     readonly remoteRequestGate?: RemoteRequestGateShape;
+    /** Scheduled tasks' answers for agents. */
+    readonly scheduledTaskNotes?: ScheduledTaskNotesShape;
     /** The reactor's reads of a thread fail while this says so. */
     readonly failThreadRead?: (threadId: ThreadId) => boolean;
   }) {
@@ -564,6 +572,11 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(
         input?.remoteRequestGate !== undefined
           ? Layer.succeed(RemoteRequestGate, input.remoteRequestGate)
+          : Layer.empty,
+      ),
+      Layer.provideMerge(
+        input?.scheduledTaskNotes !== undefined
+          ? Layer.succeed(ScheduledTaskNotes, input.scheduledTaskNotes)
           : Layer.empty,
       ),
       // No checkpoint reactor here to report captures done: hand over at once.
@@ -1006,6 +1019,51 @@ describe("ProviderCommandReactor", () => {
     await harness.warmUp(warmUpInput);
     await harness.drain();
     expect(harness.startEarlySession).not.toHaveBeenCalled();
+  });
+
+  it("tells the agent the user's answer to its scheduled task with its next turn, once", async () => {
+    let pending = [
+      {
+        requestId: "request-1",
+        text: 'The user allowed your scheduled task "Morning review": it\'s on the Scheduled page (id task-1).',
+      },
+    ];
+    const delivered: Array<ReadonlyArray<string>> = [];
+    const harness = await createHarness({
+      scheduledTaskNotes: {
+        pendingFor: (threadId, participantId) =>
+          Effect.succeed(
+            threadId === ThreadId.make("thread-1") && participantId === null ? pending : [],
+          ),
+        delivered: (requestIds) =>
+          Effect.sync(() => {
+            delivered.push(requestIds);
+            pending = [];
+          }),
+      },
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-schedule-answer"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-schedule-answer"),
+          role: "user",
+          text: "Anything else?",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const sent = harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string } | undefined;
+    expect(sent?.input).toContain('The user allowed your scheduled task "Morning review"');
+    expect(sent?.input?.endsWith("Anything else?")).toBe(true);
+    await waitFor(() => delivered.length === 1);
+    expect(delivered).toEqual([["request-1"]]);
   });
 
   it("hands the thread's history to a session that could not reopen its conversation", async () => {
@@ -2336,6 +2394,80 @@ describe("ProviderCommandReactor", () => {
     await startTurn("again");
     await waitFor(() => harness.sendTurn.mock.calls.length === 3);
     expect(harness.startSession.mock.calls.length).toBe(2);
+  });
+
+  it("gives a scheduled run's thread its tools on its own, and a linked computer's thread none", async () => {
+    // Agents may neither invite nor start threads.
+    const harness = await createHarness({
+      serverSettings: { agentInvites: "off", agentThreads: "off" },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const createAndStart = async (
+      id: string,
+      origin:
+        | { readonly scheduledRun: NonNullable<OrchestrationThread["scheduledRun"]> }
+        | { readonly remoteOrigin: NonNullable<OrchestrationThread["remoteOrigin"]> },
+    ) => {
+      const threadId = ThreadId.make(id);
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`cmd-create-${id}`),
+        threadId,
+        projectId: asProjectId("project-1"),
+        title: "Morning review",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        ...origin,
+        createdAt: now,
+      });
+      await dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-turn-${id}`),
+        threadId,
+        message: {
+          messageId: asMessageId(`message-${id}`),
+          role: "user",
+          text: "go",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      });
+    };
+
+    await createAndStart("scheduled-run-thread", {
+      scheduledRun: {
+        taskId: ScheduledTaskId.make("task-1"),
+        taskName: "Morning review",
+        slotUtc: "2026-01-01T09:00:00.000Z",
+      },
+    });
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      roomTools: true,
+      scheduledRunTools: true,
+    });
+
+    // The fence holds whatever the settings say.
+    await harness.updateServerSettings({ agentInvites: "ask", agentThreads: "auto" });
+    await createAndStart("linked-computer-thread", {
+      remoteOrigin: {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      },
+    });
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("roomTools");
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("scheduledRunTools");
   });
 
   it("picks up the room tools at the next turn, never in the middle of one", async () => {

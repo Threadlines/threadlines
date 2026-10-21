@@ -26,6 +26,7 @@ import {
   ProviderItemId,
   RoomAgentRequestId,
   RuntimeTaskId,
+  ScheduledTaskId,
   ThreadId,
   SideTurnId,
   ThreadParticipantId,
@@ -599,6 +600,19 @@ export const ThreadRemoteOrigin = Schema.Struct({
   threadTitle: TrimmedNonEmptyString,
 });
 export type ThreadRemoteOrigin = typeof ThreadRemoteOrigin.Type;
+
+/**
+ * A thread a scheduled task's run started (docs/design/fleet.md, Part 6):
+ * "Scheduled · <task>" on its inbox row. Set once, at creation, and only by
+ * the server's scheduler. `taskName` is the name when the run started; the
+ * task may be renamed or deleted since.
+ */
+export const ThreadScheduledRun = Schema.Struct({
+  taskId: ScheduledTaskId,
+  taskName: TrimmedNonEmptyString,
+  slotUtc: IsoDateTime,
+});
+export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
 
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
@@ -1398,6 +1412,12 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
   fromThread: Schema.optional(ThreadMessageOrigin),
   /** See MessageComposer: kept so the message is written with it when sent. */
   composer: Schema.optional(MessageComposer),
+  /**
+   * Queued by a scheduled task's run (docs/design/fleet.md, Part 6). When it
+   * starts its turn it may lower the thread's access but never raise it, and
+   * it runs in the thread's own interaction mode.
+   */
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
@@ -1898,6 +1918,8 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /** See OrchestrationThreadShell.scheduledRun. */
+  scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /** Child threads this thread started: open requests, limits and notes. */
   childRequests: OrchestrationChildRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_CHILD_REQUEST_STATE)),
@@ -2087,6 +2109,11 @@ export const OrchestrationThreadShell = Schema.Struct({
    */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
   /**
+   * Started by a scheduled task's run (ThreadScheduledRun): "Scheduled ·
+   * <task>". Absent or null: not a run thread.
+   */
+  scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
+  /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
    * weighs this stamp against real work activity, so filing a thread must not
@@ -2272,6 +2299,8 @@ const ThreadCreateLineageFields = {
   attachedToParent: Schema.optional(Schema.Boolean),
   /** Started over a computer link: see ThreadRemoteOrigin. Only the link handler sets it. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
+  /** Started by a scheduled run: see ThreadScheduledRun. Only the scheduler sets it. */
+  scheduledRun: Schema.optional(ThreadScheduledRun),
 };
 // The normalizer refuses these on commands that arrive from a client.
 
@@ -2420,6 +2449,14 @@ const ThreadDoneOverrideSetCommand = Schema.Struct({
   threadId: ThreadId,
   state: ThreadDoneOverrideState,
   at: IsoDateTime,
+  /**
+   * Server only (a scheduled run with nothing to report): wrap only while
+   * the run's turn is still the thread's latest, nothing else runs, starts
+   * or waits, and the run's message is still the last one written to the
+   * thread; and mark the thread seen as of `at` in the same step. Any newer
+   * work leaves the thread as it is.
+   */
+  whileQuietAfter: Schema.optional(Schema.Struct({ turnId: TurnId, messageId: MessageId })),
 });
 
 /**
@@ -2615,6 +2652,8 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionMode),
   /** See MessageComposer (server only: set from the client route). */
   composer: Schema.optional(MessageComposer),
+  /** Server only: a scheduled task's run (see OrchestrationQueuedFollowUp). */
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
   createdAt: IsoDateTime,
 });
 
@@ -3763,6 +3802,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   attachedToParent: Schema.optional(Schema.Boolean),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
+  /** See OrchestrationThreadShell.scheduledRun. */
+  scheduledRun: Schema.optional(ThreadScheduledRun),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

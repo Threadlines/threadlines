@@ -95,6 +95,8 @@ describe("DesktopSettings", () => {
       tailscaleServePort: 443,
       updateChannel: "nightly",
       updateChannelConfiguredByUser: false,
+      keepAwakeForScheduledTasks: false,
+      runInBackground: false,
     } satisfies DesktopSettingsValue);
   });
 
@@ -116,6 +118,8 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 8443,
           updateChannel: "latest",
           updateChannelConfiguredByUser: true,
+          keepAwakeForScheduledTasks: false,
+          runInBackground: false,
         } satisfies DesktopSettingsValue);
 
         const exposure = yield* settings.setServerExposureMode("local-only");
@@ -133,6 +137,16 @@ describe("DesktopSettings", () => {
         assert.isTrue(updateChannel.changed);
         assert.equal(updateChannel.settings.updateChannel, "nightly");
         assert.equal(updateChannel.settings.updateChannelConfiguredByUser, true);
+
+        // Background running is saved, and survives a restart.
+        const background = yield* settings.setBackgroundOptions({
+          keepAwakeForScheduledTasks: true,
+          runInBackground: true,
+        });
+        assert.isTrue(background.changed);
+        const reloaded = yield* settings.load;
+        assert.isTrue(reloaded.keepAwakeForScheduledTasks);
+        assert.isTrue(reloaded.runInBackground);
       }),
     ),
   );
@@ -195,6 +209,8 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 8443,
           updateChannel: "latest",
           updateChannelConfiguredByUser: false,
+          keepAwakeForScheduledTasks: false,
+          runInBackground: false,
         } satisfies DesktopSettingsValue);
       }),
     ),
@@ -234,6 +250,8 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 443,
           updateChannel: "nightly",
           updateChannelConfiguredByUser: false,
+          keepAwakeForScheduledTasks: false,
+          runInBackground: false,
         } satisfies DesktopSettingsValue);
       }),
       { appVersion: "0.0.17-nightly.20260415.1" },
@@ -256,6 +274,8 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 443,
           updateChannel: "latest",
           updateChannelConfiguredByUser: true,
+          keepAwakeForScheduledTasks: false,
+          runInBackground: false,
         } satisfies DesktopSettingsValue);
       }),
       { appVersion: "0.0.17-nightly.20260415.1" },
@@ -277,6 +297,8 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 443,
           updateChannel: "latest",
           updateChannelConfiguredByUser: false,
+          keepAwakeForScheduledTasks: false,
+          runInBackground: false,
         } satisfies DesktopSettingsValue);
       }),
     ),

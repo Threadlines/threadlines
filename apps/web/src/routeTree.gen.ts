@@ -18,6 +18,7 @@ import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as ChatChatsRouteImport } from './routes/_chat.chats'
 import { Route as ChatFleetRouteImport } from './routes/_chat.fleet'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
+import { Route as ChatScheduledRouteImport } from './routes/_chat.scheduled'
 import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as SettingsIndexRouteImport } from './routes/settings.index'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
@@ -75,6 +76,11 @@ const ChatFleetRoute = ChatFleetRouteImport.update({
 const ChatPullRequestsRoute = ChatPullRequestsRouteImport.update({
   id: '/pull-requests',
   path: '/pull-requests',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatScheduledRoute = ChatScheduledRouteImport.update({
+  id: '/scheduled',
+  path: '/scheduled',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatUsageRoute = ChatUsageRouteImport.update({
@@ -158,6 +164,7 @@ export interface FileRoutesByFullPath {
   '/chats': typeof ChatChatsRoute
   '/fleet': typeof ChatFleetRoute
   '/pull-requests': typeof ChatPullRequestsRoute
+  '/scheduled': typeof ChatScheduledRoute
   '/usage': typeof ChatUsageRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
@@ -180,6 +187,7 @@ export interface FileRoutesByTo {
   '/chats': typeof ChatChatsRoute
   '/fleet': typeof ChatFleetRoute
   '/pull-requests': typeof ChatPullRequestsRoute
+  '/scheduled': typeof ChatScheduledRoute
   '/usage': typeof ChatUsageRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
@@ -206,6 +214,7 @@ export interface FileRoutesById {
   '/_chat/chats': typeof ChatChatsRoute
   '/_chat/fleet': typeof ChatFleetRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
+  '/_chat/scheduled': typeof ChatScheduledRoute
   '/_chat/usage': typeof ChatUsageRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
@@ -233,6 +242,7 @@ export interface FileRouteTypes {
     | '/chats'
     | '/fleet'
     | '/pull-requests'
+    | '/scheduled'
     | '/usage'
     | '/settings/archived'
     | '/settings/connections'
@@ -255,6 +265,7 @@ export interface FileRouteTypes {
     | '/chats'
     | '/fleet'
     | '/pull-requests'
+    | '/scheduled'
     | '/usage'
     | '/settings/archived'
     | '/settings/connections'
@@ -280,6 +291,7 @@ export interface FileRouteTypes {
     | '/_chat/chats'
     | '/_chat/fleet'
     | '/_chat/pull-requests'
+    | '/_chat/scheduled'
     | '/_chat/usage'
     | '/settings/archived'
     | '/settings/connections'
@@ -368,6 +380,13 @@ declare module '@tanstack/react-router' {
       path: '/pull-requests'
       fullPath: '/pull-requests'
       preLoaderRoute: typeof ChatPullRequestsRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/scheduled': {
+      id: '/_chat/scheduled'
+      path: '/scheduled'
+      fullPath: '/scheduled'
+      preLoaderRoute: typeof ChatScheduledRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/usage': {
@@ -475,6 +494,7 @@ interface ChatRouteChildren {
   ChatChatsRoute: typeof ChatChatsRoute
   ChatFleetRoute: typeof ChatFleetRoute
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
+  ChatScheduledRoute: typeof ChatScheduledRoute
   ChatUsageRoute: typeof ChatUsageRoute
   ChatIndexRoute: typeof ChatIndexRoute
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
@@ -485,6 +505,7 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatChatsRoute: ChatChatsRoute,
   ChatFleetRoute: ChatFleetRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
+  ChatScheduledRoute: ChatScheduledRoute,
   ChatUsageRoute: ChatUsageRoute,
   ChatIndexRoute: ChatIndexRoute,
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,

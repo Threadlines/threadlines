@@ -28,3 +28,11 @@ export function effectiveRuntimeMode<Mode extends RuntimeMode>(
   }
   return "approval-required";
 }
+
+/** Whether `mode` lets an agent do more than `ceiling` does. */
+export const exceedsRuntimeMode = (mode: RuntimeMode, ceiling: RuntimeMode): boolean =>
+  RUNTIME_MODES.indexOf(mode) > RUNTIME_MODES.indexOf(ceiling);
+
+/** The safer of two levels: never more access than either allows. */
+export const saferRuntimeMode = (left: RuntimeMode, right: RuntimeMode): RuntimeMode =>
+  exceedsRuntimeMode(left, right) ? right : left;

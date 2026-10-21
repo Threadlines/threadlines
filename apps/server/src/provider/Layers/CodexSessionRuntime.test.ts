@@ -352,6 +352,23 @@ describe("buildTurnStartParams", () => {
     ]);
   });
 
+  it("points the thread's own agent at Threadlines' scheduled tasks, never a side answer", () => {
+    const instructionsOf = (input: { readonly lockdown?: boolean }) =>
+      Effect.runSync(
+        buildTurnStartParams({
+          threadId: "provider-thread-1",
+          runtimeMode: "full-access",
+          prompt: "Every weekday at 9, review yesterday's commits",
+          interactionMode: "default",
+          scheduleTools: true,
+          ...input,
+        }),
+      ).collaborationMode?.settings.developer_instructions ?? "";
+
+    assert.ok(instructionsOf({}).includes("`mcp__threadlines_room__schedule_create`"));
+    assert.ok(!instructionsOf({ lockdown: true }).includes("<threadlines_schedules>"));
+  });
+
   it("omits collaboration mode when interaction mode is absent", () => {
     const params = Effect.runSync(
       buildTurnStartParams({

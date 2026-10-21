@@ -9,6 +9,7 @@ import { formatTokensCompact } from "@threadlines/shared/usageFormat";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import {
+  CalendarClockIcon,
   ChartColumnIcon,
   GitPullRequestIcon,
   InboxIcon,
@@ -29,6 +30,11 @@ import {
 } from "../../lib/pullRequestsReactQuery";
 import { useThreadSeenSources } from "../../lib/threadInboxSync";
 import { usageTodayQueryOptions, useUsageEnvironmentTargets } from "../../lib/usageReactQuery";
+import {
+  describeActiveScheduledTasks,
+  useScheduledTaskEnvironments,
+  useScheduledTasksStore,
+} from "../../lib/scheduledTasksState";
 import { isElectron } from "../../env";
 import { cn, isMacPlatform } from "../../lib/utils";
 import { shortcutLabelForCommand } from "../../keybindings";
@@ -70,12 +76,14 @@ const DESTINATION_ICONS: Record<NavigationDestinationId, LucideIcon> = {
   chats: MessagesSquareIcon,
   "pull-requests": GitPullRequestIcon,
   fleet: WaypointsIcon,
+  scheduled: CalendarClockIcon,
   usage: ChartColumnIcon,
   settings: SettingsIcon,
 };
 
 const DESTINATION_SHORTCUTS: Partial<Record<NavigationDestinationId, KeybindingCommand>> = {
   fleet: "navigate.fleet",
+  scheduled: "navigate.scheduled",
 };
 
 /** One place the rail (or the phone's row of icons) can take the user. */
@@ -266,6 +274,11 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
   const usageTokens = usageToday.data?.merged.totalTokens ?? null;
   const pullRequestsNeedingYou = countNeedsYou(openPullRequests.entries);
   const hasPullRequests = openPullRequests.environments.length > 0;
+  const scheduledEnvironments = useScheduledTaskEnvironments();
+  const hasScheduledTasks = scheduledEnvironments.length > 0;
+  const scheduledSummary = useScheduledTasksStore((state) =>
+    describeActiveScheduledTasks(state.byEnvironment),
+  );
   const shortcutContext = useRouteShortcutContext();
 
   const destinations = useMemo(() => {
@@ -275,6 +288,8 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     return NAVIGATION_DESTINATION_ORDER.flatMap((id): NavigationDestination[] => {
       // A destination that would only ever say "unsupported" is not offered.
       if (id === "pull-requests" && !hasPullRequests) return [];
+      // Hidden until a connected computer's server runs scheduled tasks.
+      if (id === "scheduled" && !hasScheduledTasks) return [];
       const command = DESTINATION_SHORTCUTS[id];
       const counts = id === "threads" ? attention.threads : id === "chats" ? attention.chats : null;
       return [
@@ -305,20 +320,24 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
                 )
               : id === "fleet"
                 ? describeWorking(workingEverywhere)
-                : id === "pull-requests"
-                  ? describeNeedsYou(pullRequestsNeedingYou)
-                  : id === "usage" && usageTokens !== null
-                    ? `${formatTokensCompact(usageTokens)} today`
-                    : null,
+                : id === "scheduled"
+                  ? scheduledSummary
+                  : id === "pull-requests"
+                    ? describeNeedsYou(pullRequestsNeedingYou)
+                    : id === "usage" && usageTokens !== null
+                      ? `${formatTokensCompact(usageTokens)} today`
+                      : null,
         },
       ];
     });
   }, [
     attention,
     hasPullRequests,
+    hasScheduledTasks,
     keybindings,
     options.listOpen,
     pullRequestsNeedingYou,
+    scheduledSummary,
     selected,
     shortcutContext,
     usageTokens,
@@ -349,6 +368,9 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           return;
         case "fleet":
           void navigate({ to: "/fleet" });
+          return;
+        case "scheduled":
+          void navigate({ to: "/scheduled" });
           return;
         case "usage":
           void navigate({ to: "/usage" });

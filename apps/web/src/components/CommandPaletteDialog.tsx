@@ -45,6 +45,8 @@ import {
   SquarePenIcon,
   UsersRoundIcon,
   WaypointsIcon,
+  CalendarClockIcon,
+  CalendarPlusIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -108,6 +110,7 @@ import {
   usePullRequestLists,
 } from "../lib/pullRequestsReactQuery";
 import { useGitStatus } from "../lib/gitStatusState";
+import { useScheduledTaskEnvironments } from "../lib/scheduledTasksState";
 import { resolveThreadPullRequest, threadViewBranch } from "./pull-requests/pullRequests.logic";
 import { focusRightPanelTab, pullRequestTabSearchParams } from "../rightPanelTabs";
 import {
@@ -471,6 +474,7 @@ export function OpenCommandPaletteDialog() {
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
   const pullRequestEnvironments = usePullRequestEnvironments();
+  const scheduledTaskEnvironments = useScheduledTaskEnvironments();
   // The active thread's pull request, so the palette can offer its tab. Both
   // reads are the sidebar's: the same refcounted git status and the same open
   // listing key, and neither runs on a thread with no branch to match.
@@ -1625,6 +1629,32 @@ export function OpenCommandPaletteDialog() {
       await navigate({ to: "/fleet" });
     },
   });
+
+  // Only where a connected computer runs scheduled tasks, like the rail's button.
+  if (scheduledTaskEnvironments.length > 0) {
+    actionItems.push({
+      kind: "action",
+      value: "action:scheduled",
+      searchTerms: ["scheduled", "schedule", "tasks", "automations", "cron", "recurring", "daily"],
+      title: "Open Scheduled",
+      description: "Tasks agents start at set times",
+      icon: <CalendarClockIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "navigate.scheduled",
+      run: async () => {
+        await navigate({ to: "/scheduled" });
+      },
+    });
+    actionItems.push({
+      kind: "action",
+      value: "action:new-scheduled-task",
+      searchTerms: ["new scheduled task", "schedule", "automation", "cron", "recurring"],
+      title: "New scheduled task",
+      icon: <CalendarPlusIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/scheduled", search: { view: "new" } });
+      },
+    });
+  }
 
   // The thread list beside the rail; a phone shows it as a sheet instead.
   if (!isMobile) {

@@ -159,10 +159,10 @@ import { ROOM_TOOL_CALL_TIMEOUT } from "../../mcp/roomToolTimeouts.ts";
 import {
   claudeRoomToolId,
   ROOM_MCP_SERVER_NAME,
-  ROOM_TOOL_NAMES,
   roomSideKindOf,
   roomToolsFor,
 } from "../../mcp/roomToolAccess.ts";
+import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import {
   applyClaudeGoalRecord,
   CLAUDE_GOAL_CLEAR_ARGS,
@@ -8849,6 +8849,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               pages: agentPages,
               commands: commandRequests,
               sideKind,
+              scheduledRun: input.scheduledRunTools === true,
             })
           : undefined;
       const revokeCredential =
@@ -8924,6 +8925,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(credential !== undefined && commandRequests
               ? [buildCommandRequestInstructions({})]
               : []),
+            ...(roomServer !== undefined && input.scheduleTools === true
+              ? [
+                  buildScheduleInstructions({
+                    toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__`,
+                    claude: true,
+                  }),
+                ]
+              : []),
             FILE_LINK_INSTRUCTIONS,
             ...(runsInManagedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
           ].join("\n\n"),
@@ -8942,7 +8951,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           "TaskUpdate",
           "TaskList",
           MARK_LONG_RUNNING_TOOL_ID,
-          ...(roomServer !== undefined ? ROOM_TOOL_NAMES.map(claudeRoomToolId) : []),
+          // A scheduled run's thread also has scheduled_run_finish.
+          ...(roomServer !== undefined
+            ? roomToolsFor(undefined, { scheduledRun: input.scheduledRunTools === true }).map(
+                claudeRoomToolId,
+              )
+            : []),
           // A page shows only in the caller's own thread; nothing to approve.
           ...(credential !== undefined && agentPages ? CLAUDE_PAGE_TOOL_IDS : []),
           // Asking the user to run a command only shows a card; they decide.
@@ -9021,7 +9035,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               forkSessionId: newSessionId,
             },
             roomServer !== undefined
-              ? { server: roomServer, toolIds: roomToolsFor(sideKind).map(claudeRoomToolId) }
+              ? {
+                  server: roomServer,
+                  toolIds: roomToolsFor(sideKind, {
+                    scheduledRun: input.scheduledRunTools === true,
+                  }).map(claudeRoomToolId),
+                }
               : undefined,
           )
         : normalQueryOptions;

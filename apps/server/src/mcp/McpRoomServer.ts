@@ -12,8 +12,9 @@
  * reaches this endpoint only if it carries room tools, and each handler still
  * checks that its caller may use that tool.
  *
- * The thread tools (child threads, threadTools.ts) are served here too: they
- * need the same caller identity and the same per-runtime grant.
+ * The thread tools (child threads, threadTools.ts) and the schedule tools
+ * (scheduleTools.ts) are served here too: they need the same caller identity
+ * and the same per-runtime grant.
  */
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import type { ThreadId } from "@threadlines/contracts";
@@ -22,18 +23,20 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpServer, Toolkit } from "effect/unstable/ai";
-import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/unstable/http";
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { SCHEDULE_TOOL_NAMES } from "./roomToolAccess.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { ComputerLinkClient } from "../links/ComputerLinkClient.ts";
 import { ComputerLinkRepository } from "../links/ComputerLinkRepository.ts";
 import { makeThreadToolLinks } from "../links/threadToolLinks.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
+import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
 import {
   MCP_ROOM_ROUTE_PATH,
   normalizeMcpHttpResponse,
@@ -44,14 +47,67 @@ import { mcpSessionRegistry } from "./McpSessionRegistry.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { makeRoomToolHandlers } from "./roomToolHandlers.ts";
 import { McpRoomInvocation, RoomToolkit } from "./roomTools.ts";
+import { makeScheduleToolHandlers } from "./scheduleToolHandlers.ts";
+import { ScheduleToolkit } from "./scheduleTools.ts";
 import { makeThreadToolHandlers } from "./threadToolHandlers.ts";
 import { ThreadToolkit } from "./threadTools.ts";
 
 /** Every tool the endpoint serves. */
-const RoomEndpointToolkit = Toolkit.merge(RoomToolkit, ThreadToolkit);
+const RoomEndpointToolkit = Toolkit.merge(RoomToolkit, ThreadToolkit, ScheduleToolkit);
 
-const authenticate = Effect.succeed(
-  Effect.fn("McpRoomServer.authenticate")(function* (
+const jsonDecoder = new TextDecoder();
+const jsonEncoder = new TextEncoder();
+
+/**
+ * A `tools/list` answer cut down to the tools the credential may call. The
+ * toolkit is one for the whole endpoint, so without this every runtime would
+ * see every tool, including a side runtime's forbidden ones and a scheduled
+ * run's own `scheduled_run_finish`; each handler still refuses a caller it
+ * doesn't serve. Anything that isn't a JSON body with a tool list passes as is.
+ */
+export function listOnlyGrantedTools(
+  response: HttpServerResponse.HttpServerResponse,
+  granted: ReadonlySet<string>,
+): HttpServerResponse.HttpServerResponse {
+  const body = response.body;
+  if (body._tag !== "Uint8Array" || !body.contentType.includes("json")) return response;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonDecoder.decode(body.body));
+  } catch {
+    return response;
+  }
+  let changed = false;
+  const narrow = (message: unknown): unknown => {
+    if (typeof message !== "object" || message === null || !("result" in message)) {
+      return message;
+    }
+    const result = message.result;
+    if (typeof result !== "object" || result === null || !("tools" in result)) return message;
+    if (!Array.isArray(result.tools)) return message;
+    const tools = result.tools.filter(
+      (tool: unknown) =>
+        typeof tool === "object" &&
+        tool !== null &&
+        "name" in tool &&
+        typeof tool.name === "string" &&
+        granted.has(tool.name),
+    );
+    if (tools.length === result.tools.length) return message;
+    changed = true;
+    return { ...message, result: { ...result, tools } };
+  };
+  const narrowed = Array.isArray(parsed) ? parsed.map(narrow) : narrow(parsed);
+  if (!changed) return response;
+  return HttpServerResponse.setBody(
+    response,
+    HttpBody.uint8Array(jsonEncoder.encode(JSON.stringify(narrowed)), body.contentType),
+  );
+}
+
+const authenticate = Effect.gen(function* () {
+  const settings = yield* ServerSettingsService;
+  return Effect.fn("McpRoomServer.authenticate")(function* (
     handler: Effect.Effect<
       HttpServerResponse.HttpServerResponse,
       Types.unhandled,
@@ -63,12 +119,26 @@ const authenticate = Effect.succeed(
     if (scope === null || scope.roomTools.size === 0) {
       return unauthorizedMcpResponse;
     }
+    // The schedule tools follow "Agents can start threads", read live: off,
+    // they aren't listed (and their handlers refuse a call anyway).
+    const mode = yield* settings.getSettings.pipe(
+      Effect.map(agentThreadsMode),
+      Effect.orElseSucceed(() => "off" as const),
+    );
+    const listed: ReadonlySet<string> =
+      mode === "off"
+        ? new Set(
+            [...scope.roomTools].filter(
+              (tool) => !(SCHEDULE_TOOL_NAMES as ReadonlyArray<string>).includes(tool),
+            ),
+          )
+        : scope.roomTools;
     return yield* handler.pipe(
       Effect.provideService(McpRoomInvocation, scope),
-      Effect.map(normalizeMcpHttpResponse),
+      Effect.map((response) => listOnlyGrantedTools(normalizeMcpHttpResponse(response), listed)),
     );
-  }),
-);
+  });
+});
 
 const AuthenticationLive = HttpRouter.middleware<{
   provides: McpRoomInvocation;
@@ -143,6 +213,8 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       git,
       requests,
     });
+    // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
+    const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
     const threadHandlers = makeThreadToolHandlers({
       engine,
       readThread,
@@ -167,6 +239,19 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       git,
       requests,
       ...(links !== undefined ? { links } : {}),
+      ...(Option.isSome(scheduledTasks)
+        ? { scheduleAnswerWaiting: scheduledTasks.value.waitingThreadIds }
+        : {}),
+    });
+    const scheduleHandlers = makeScheduleToolHandlers({
+      scheduledTasks: Option.getOrUndefined(scheduledTasks),
+      readThread,
+      threadsMode: settings.getSettings.pipe(
+        Effect.map(agentThreadsMode),
+        Effect.orElseSucceed(() => "off" as const),
+      ),
+      providers: providers.getProviders,
+      localTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
     const caller = Effect.service(McpRoomInvocation);
     return {
@@ -192,6 +277,14 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         Effect.flatMap(caller, (scope) => threadHandlers.thread_send(scope, input)),
       thread_stop: (input) =>
         Effect.flatMap(caller, (scope) => threadHandlers.thread_stop(scope, input)),
+      schedule_list: (input) =>
+        Effect.flatMap(caller, (scope) => scheduleHandlers.schedule_list(scope, input)),
+      schedule_create: (input) =>
+        Effect.flatMap(caller, (scope) => scheduleHandlers.schedule_create(scope, input)),
+      schedule_update: (input) =>
+        Effect.flatMap(caller, (scope) => scheduleHandlers.schedule_update(scope, input)),
+      scheduled_run_finish: (input) =>
+        Effect.flatMap(caller, (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
     };
   }),
 );

@@ -73,6 +73,9 @@ export const ChildRequestBatchId = makeEntityId("ChildRequestBatchId");
 export type ChildRequestBatchId = typeof ChildRequestBatchId.Type;
 export const AuthSessionId = makeEntityId("AuthSessionId");
 export type AuthSessionId = typeof AuthSessionId.Type;
+/** A scheduled task on one computer (docs/design/fleet.md, Part 6). */
+export const ScheduledTaskId = makeEntityId("ScheduledTaskId");
+export type ScheduledTaskId = typeof ScheduledTaskId.Type;
 
 export const ProviderItemId = makeEntityId("ProviderItemId");
 export type ProviderItemId = typeof ProviderItemId.Type;

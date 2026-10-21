@@ -14,6 +14,7 @@ describe("resolveSelectedDestination", () => {
     expect(selected("/chats")).toBe("chats");
     expect(selected("/pull-requests")).toBe("pull-requests");
     expect(selected("/fleet")).toBe("fleet");
+    expect(selected("/scheduled")).toBe("scheduled");
     expect(selected("/usage")).toBe("usage");
     expect(selected("/settings/threads")).toBe("settings");
     // A thread whose id merely starts like a page is still a thread.

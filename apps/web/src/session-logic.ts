@@ -3421,7 +3421,7 @@ function toDerivedWorkLogEntry(
       }
     }
   }
-  if (itemType === "mcp_tool_call") {
+  if (itemType === "mcp_tool_call" || itemType === "dynamic_tool_call") {
     const toolResult = extractMcpToolResultText(payload);
     if (toolResult) {
       entry.toolResult = toolResult;
@@ -4509,13 +4509,21 @@ function mcpContentText(content: unknown): string | null {
 /**
  * What an MCP tool call answered (see WorkLogEntry.toolResult). Codex keeps
  * the call's result on its item (`data.item.result`, structured content
- * first); Claude passes the `tool_result` block (`data.result`).
+ * first); Claude passes the `tool_result` block (`data.result`); an ACP
+ * agent its raw output (`data.rawOutput`), else its content blocks
+ * (`data.content`, each `{type: "content", content: {type: "text"}}`).
  */
 function extractMcpToolResultText(payload: Record<string, unknown> | null): string | null {
   const data = asRecord(payload?.data);
   const result = asRecord(asRecord(data?.item)?.result) ?? asRecord(data?.result);
   if (!result) {
-    return null;
+    const rawOutput = data?.rawOutput;
+    if (rawOutput !== undefined && rawOutput !== null) {
+      return typeof rawOutput === "string" ? asTrimmedString(rawOutput) : JSON.stringify(rawOutput);
+    }
+    return Array.isArray(data?.content)
+      ? mcpContentText(data.content.map((block) => asRecord(block)?.content))
+      : null;
   }
   const structured = result.structuredContent;
   if (structured !== undefined && structured !== null) {

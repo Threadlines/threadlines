@@ -37,7 +37,7 @@ import {
   isProviderDriverKind,
   ProviderDriverKind,
 } from "@threadlines/contracts";
-import type { ThreadId, TurnId } from "@threadlines/contracts";
+import type { ThreadId, ThreadScheduledRun, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
@@ -183,6 +183,12 @@ export interface EnvironmentState {
   // the active thread visible while shell projection catches up.
   // ---------------------------------------------------------------------------
   sidebarThreadSummaryById: Record<ThreadId, SidebarThreadSummary>;
+  /**
+   * Threads whose agent's scheduled-task change waits for the user, from this
+   * computer's scheduled tasks feed (setScheduleApprovalThreads). Every
+   * summary written here carries it as `pendingScheduleApproval`.
+   */
+  scheduleApprovalThreadIds?: Record<ThreadId, true>;
 
   bootstrapComplete: boolean;
 }
@@ -342,9 +348,15 @@ function threadLineage(thread: {
   readonly attachedToParent?: boolean | undefined;
   readonly handedBackAt?: string | null | undefined;
   readonly handedBackTurnId?: TurnId | null | undefined;
+  readonly scheduledRun?: ThreadScheduledRun | null | undefined;
 }): Pick<
   ThreadShell,
-  "parentThreadId" | "parentTurnId" | "attachedToParent" | "handedBackAt" | "handedBackTurnId"
+  | "parentThreadId"
+  | "parentTurnId"
+  | "attachedToParent"
+  | "handedBackAt"
+  | "handedBackTurnId"
+  | "scheduledRun"
 > {
   return {
     parentThreadId: thread.parentThreadId ?? null,
@@ -352,6 +364,7 @@ function threadLineage(thread: {
     attachedToParent: thread.attachedToParent ?? false,
     handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
+    scheduledRun: thread.scheduledRun ?? null,
   };
 }
 
@@ -387,6 +400,7 @@ function sidebarLineage(
     | "awaitedChildThreadCount"
     | "pendingChildApproval"
     | "queuedFollowUps"
+    | "scheduledRun"
   >,
 ): Pick<
   SidebarThreadSummary,
@@ -397,8 +411,10 @@ function sidebarLineage(
   | "awaitedChildThreadCount"
   | "pendingChildApproval"
   | "queuedFollowUpCount"
+  | "scheduledRun"
 > {
   return {
+    scheduledRun: thread.scheduledRun ?? null,
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
     attachedToParent: thread.attachedToParent ?? false,
@@ -857,6 +873,17 @@ function participantsEqual(
   );
 }
 
+/** The summary with whether a scheduled-task card waits for the user in its thread. */
+function withScheduleApproval(
+  state: EnvironmentState,
+  summary: SidebarThreadSummary,
+): SidebarThreadSummary {
+  const pending = state.scheduleApprovalThreadIds?.[summary.id] === true;
+  return (summary.pendingScheduleApproval ?? false) === pending
+    ? summary
+    : { ...summary, pendingScheduleApproval: pending };
+}
+
 function sidebarThreadSummariesEqual(
   left: SidebarThreadSummary | undefined,
   right: SidebarThreadSummary,
@@ -905,8 +932,21 @@ function sidebarThreadSummariesEqual(
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     checkBackListsEqual(left.checkBacks, right.checkBacks) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
-    (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0)
+    (left.pendingScheduleApproval ?? false) === (right.pendingScheduleApproval ?? false) &&
+    (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
+    scheduledRunsEqual(left.scheduledRun, right.scheduledRun)
   );
+}
+
+function scheduledRunsEqual(
+  left: ThreadScheduledRun | null | undefined,
+  right: ThreadScheduledRun | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.taskId === b.taskId && a.taskName === b.taskName && a.slotUtc === b.slotUtc;
 }
 
 function sideTurnsEqual(
@@ -954,6 +994,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
+    scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1154,9 +1195,9 @@ function writeThreadState(
 ): EnvironmentState {
   const nextShell = toThreadShell(nextThread);
   const nextTurnState = toThreadTurnState(nextThread);
-  const nextSummary = toSidebarThreadSummary(
-    nextThread,
-    state.sidebarThreadSummaryById[nextThread.id],
+  const nextSummary = withScheduleApproval(
+    state,
+    toSidebarThreadSummary(nextThread, state.sidebarThreadSummaryById[nextThread.id]),
   );
   const previousShell = state.threadShellById[nextThread.id];
   const previousTurnState = state.threadTurnStateById[nextThread.id];
@@ -1419,17 +1460,15 @@ function writeThreadShellState(
     };
   }
 
+  const nextSummary = withScheduleApproval(state, nextThread.summary);
   if (
-    !sidebarThreadSummariesEqual(
-      state.sidebarThreadSummaryById[nextThread.shell.id],
-      nextThread.summary,
-    )
+    !sidebarThreadSummariesEqual(state.sidebarThreadSummaryById[nextThread.shell.id], nextSummary)
   ) {
     nextState = {
       ...nextState,
       sidebarThreadSummaryById: {
         ...nextState.sidebarThreadSummaryById,
-        [nextThread.shell.id]: nextThread.summary,
+        [nextThread.shell.id]: nextSummary,
       },
     };
   }
@@ -2112,6 +2151,7 @@ function applyEnvironmentOrchestrationEvent(
           handedBackTurnId: null,
           archivedWithParentAt: null,
           childRequests: EMPTY_CHILD_REQUEST_STATE,
+          scheduledRun: event.payload.scheduledRun ?? null,
         },
         environmentId,
       );
@@ -3516,6 +3556,44 @@ export function restoreThreadCheckout(
   return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
 }
 
+/**
+ * The threads on one computer whose agent's scheduled-task change waits for
+ * the user, from that computer's waiting requests (ScheduledTasksSync). Their
+ * rows need the user like any other approval: Pending Approval in the
+ * sidebar and inbox, and in every count of what needs the user.
+ */
+export function setScheduleApprovalThreads(
+  state: AppState,
+  environmentId: EnvironmentId,
+  threadIds: Iterable<ThreadId>,
+): AppState {
+  const environmentState = state.environmentStateById[environmentId];
+  // Nothing of this computer is here yet: its shell writes read the next call.
+  if (environmentState === undefined) return state;
+  const next: Record<ThreadId, true> = {};
+  for (const threadId of threadIds) next[threadId] = true;
+  const previous = environmentState.scheduleApprovalThreadIds ?? {};
+  const changed = new Set([...Object.keys(previous), ...Object.keys(next)] as ThreadId[]);
+  for (const threadId of changed) {
+    if (previous[threadId] === next[threadId]) changed.delete(threadId);
+  }
+  if (changed.size === 0) return state;
+  const nextEnvironmentState: EnvironmentState = {
+    ...environmentState,
+    scheduleApprovalThreadIds: next,
+  };
+  const summaries = { ...environmentState.sidebarThreadSummaryById };
+  for (const threadId of changed) {
+    const summary = summaries[threadId];
+    if (summary !== undefined)
+      summaries[threadId] = withScheduleApproval(nextEnvironmentState, summary);
+  }
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    sidebarThreadSummaryById: summaries,
+  });
+}
+
 interface AppStore extends AppState {
   setActiveEnvironmentId: (environmentId: EnvironmentId) => void;
   removeEnvironmentState: (environmentId: EnvironmentId) => void;
@@ -3532,6 +3610,7 @@ interface AppStore extends AppState {
   ) => void;
   applyShellEvent: (event: OrchestrationShellStreamEvent, environmentId: EnvironmentId) => void;
   setError: (threadId: ThreadId, error: string | null) => void;
+  setScheduleApprovalThreads: (environmentId: EnvironmentId, threadIds: Iterable<ThreadId>) => void;
   setThreadBranch: (
     threadRef: ScopedThreadRef,
     branch: string | null,
@@ -3576,6 +3655,8 @@ export const useStore = create<AppStore>((set) => ({
     }
   },
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
+  setScheduleApprovalThreads: (environmentId, threadIds) =>
+    set((state) => setScheduleApprovalThreads(state, environmentId, threadIds)),
   setThreadBranch: (threadRef, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadRef, branch, worktreePath)),
   selectThreadCheckout: (threadRef, branch, worktreePath) =>

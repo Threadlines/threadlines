@@ -8,9 +8,11 @@
  * also refused the others at the endpoint, so a runtime that ignores its list
  * still cannot reach them.
  *
- * The thread tools (child threads, docs/design/child-threads.md) ride on the
- * same endpoint and are main-runtime only: a side runtime answers one
- * question read-only and never starts or steers other threads.
+ * The thread tools (child threads, docs/design/child-threads.md) and the
+ * schedule tools (docs/design/fleet.md, Part 6) ride on the same endpoint and
+ * are main-runtime only: a side runtime answers one question read-only and
+ * never starts or steers other threads. `scheduled_run_finish` goes only to
+ * the runtime of a thread a scheduled run started.
  */
 
 /** The room endpoint's name, as each provider namespaces its tools. */
@@ -26,6 +28,12 @@ export const THREAD_TOOL_NAMES = [
   "thread_stop",
 ] as const;
 
+/** Tools for listing, creating and editing this computer's scheduled tasks. */
+export const SCHEDULE_TOOL_NAMES = ["schedule_list", "schedule_create", "schedule_update"] as const;
+
+/** A scheduled run's own tool: whether its run had anything to report. */
+export const SCHEDULED_RUN_TOOL_NAME = "scheduled_run_finish";
+
 export const ROOM_TOOL_NAMES = [
   "room_agents",
   "room_ask",
@@ -36,22 +44,29 @@ export const ROOM_TOOL_NAMES = [
   "room_available_agents",
   "room_invite",
   ...THREAD_TOOL_NAMES,
+  ...SCHEDULE_TOOL_NAMES,
 ] as const;
-export type RoomToolName = (typeof ROOM_TOOL_NAMES)[number];
+export type RoomToolName = (typeof ROOM_TOOL_NAMES)[number] | typeof SCHEDULED_RUN_TOOL_NAME;
 
 /** What kind of side runtime a credential belongs to. */
 export type RoomSideKind = "ask" | "review";
 
 /**
  * The room tools one runtime may use. A main runtime gets every tool (the
- * decider still decides who may make a request); an answerer reads the room
- * and the checkout; an independent reviewer reads only the checkout, never
- * the conversation.
+ * decider still decides who may make a request), and `scheduled_run_finish`
+ * too when its thread is a scheduled run's; an answerer reads the room and
+ * the checkout; an independent reviewer reads only the checkout, never the
+ * conversation.
  */
-export function roomToolsFor(side: RoomSideKind | undefined): ReadonlyArray<RoomToolName> {
+export function roomToolsFor(
+  side: RoomSideKind | undefined,
+  options?: { readonly scheduledRun?: boolean | undefined },
+): ReadonlyArray<RoomToolName> {
   switch (side) {
     case undefined:
-      return ROOM_TOOL_NAMES;
+      return options?.scheduledRun === true
+        ? [...ROOM_TOOL_NAMES, SCHEDULED_RUN_TOOL_NAME]
+        : ROOM_TOOL_NAMES;
     case "ask":
       return ["room_history", "room_diff"];
     case "review":

@@ -12,21 +12,40 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import { describeAgentWorkElsewhere, describeRunningAgentSessions } from "./agentSessionCopy";
+import {
+  describeAgentWorkElsewhere,
+  describeRunningAgentSessions,
+  describeStoppedScheduledTasks,
+} from "./agentSessionCopy";
 import { useRunningAgentWork } from "./useRunningAgentWork";
 
 /**
- * The count is the one the app asked with: threads on this computer, the only
- * work quitting stops. Work on other computers is named so nobody keeps the
- * app open for threads that run fine without it.
+ * The counts are the ones the app asked with: threads on this computer, the
+ * only work quitting stops, and this computer's scheduled tasks, which don't
+ * run while it is closed. Work on other computers is named so nobody keeps
+ * the app open for threads that run fine without it.
  */
-function QuitConfirmationDescription({ runningThreadCount }: { runningThreadCount: number }) {
+function QuitConfirmationDescription({
+  runningThreadCount,
+  activeScheduledTaskCount,
+}: {
+  runningThreadCount: number;
+  activeScheduledTaskCount: number;
+}) {
   const { remoteMachineLabels } = useRunningAgentWork();
   const elsewhere = describeAgentWorkElsewhere(remoteMachineLabels);
+  const schedules = describeStoppedScheduledTasks(activeScheduledTaskCount);
   return (
     <AlertDialogDescription>
-      {describeRunningAgentSessions(runningThreadCount, elsewhere !== null)} Quitting now will stop{" "}
-      {runningThreadCount === 1 ? "it" : "them"} and the local Threadlines server.
+      {runningThreadCount > 0 ? (
+        <>
+          {describeRunningAgentSessions(runningThreadCount, elsewhere !== null)} Quitting now will
+          stop {runningThreadCount === 1 ? "it" : "them"} and the local Threadlines server.
+        </>
+      ) : (
+        "Quitting now will stop the local Threadlines server."
+      )}
+      {schedules ? ` ${schedules}` : null}
       {elsewhere ? ` ${elsewhere}` : null}
     </AlertDialogDescription>
   );
@@ -69,7 +88,10 @@ export function QuitConfirmationDialog() {
             Quit Threadlines?
           </AlertDialogTitle>
           {shownRequest ? (
-            <QuitConfirmationDescription runningThreadCount={shownRequest.runningThreadCount} />
+            <QuitConfirmationDescription
+              runningThreadCount={shownRequest.runningThreadCount}
+              activeScheduledTaskCount={shownRequest.activeScheduledTaskCount ?? 0}
+            />
           ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>

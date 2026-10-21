@@ -116,6 +116,11 @@ export interface ThreadToolDeps {
   readonly requests: RoomRequestRegistry;
   /** Linked computers (docs/design/fleet.md); absent on a server without links. */
   readonly links?: ThreadToolLinks;
+  /**
+   * Threads whose agent's scheduled-task change waits for the user
+   * (docs/design/fleet.md, Part 6); absent on a server without scheduled tasks.
+   */
+  readonly scheduleAnswerWaiting?: Effect.Effect<ReadonlySet<ThreadId>>;
 }
 
 /** A computer this one links to, as the thread tools see it. */
@@ -193,7 +198,7 @@ const ruleOutcome = (refusal: ChildRequestRefusal) => ({
 });
 
 /** The calling agent's model: in a room, the agent's own, not the thread's. */
-const callerModelSelection = (
+export const callerModelSelection = (
   thread: OrchestrationThread,
   participantId: McpInvocationScope["participantId"],
 ): ModelSelection =>
@@ -215,8 +220,17 @@ export const modelLabel = (selection: ModelSelection, providers: ReadonlyArray<S
  * its last turn ended. `wrapped` is only the user's explicit Mark done; the
  * sidebar's automatic filing rules live in the client.
  */
-export function threadStatusWord(thread: OrchestrationThreadShell): ThreadStatusWord {
-  if (thread.hasPendingApprovals || thread.hasPendingUserInput || thread.pendingChildApproval) {
+export function threadStatusWord(
+  thread: OrchestrationThreadShell,
+  /** A card in it asks the user about its agent's scheduled-task change. */
+  scheduleAnswerWaiting = false,
+): ThreadStatusWord {
+  if (
+    thread.hasPendingApprovals ||
+    thread.hasPendingUserInput ||
+    thread.pendingChildApproval ||
+    scheduleAnswerWaiting
+  ) {
     return "needs the user";
   }
   const session = thread.session;
@@ -294,13 +308,15 @@ export const summarizeThread = (
     readonly caller?: Pick<OrchestrationThread, "id">;
     readonly providers: ReadonlyArray<ServerProvider>;
     readonly titleOf: (threadId: ThreadId) => string | undefined;
+    /** Threads a scheduled-task card waits in (ThreadToolDeps.scheduleAnswerWaiting). */
+    readonly scheduleAnswerWaiting?: ReadonlySet<ThreadId>;
   },
 ): ThreadSummary => {
   const remoteOrigin = thread.remoteOrigin ?? null;
   return {
     threadId: thread.id,
     title: thread.title,
-    status: threadStatusWord(thread),
+    status: threadStatusWord(thread, input.scheduleAnswerWaiting?.has(thread.id) ?? false),
     branch: thread.branch,
     model: modelLabel(thread.modelSelection, input.providers),
     attached: (thread.parentThreadId !== null && thread.attachedToParent) || remoteOrigin !== null,
@@ -485,6 +501,8 @@ const agentSelection = (
 const isLaunch = Schema.is(ChildThreadLaunch);
 
 export function makeThreadToolHandlers(deps: ThreadToolDeps) {
+  const waitingOnScheduleAnswers: Effect.Effect<ReadonlySet<ThreadId>> =
+    deps.scheduleAnswerWaiting ?? Effect.succeed(new Set());
   type Gate =
     | {
         readonly refusal: {
@@ -1279,6 +1297,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               computer: remoteLabel(thread, child.environmentId),
             }))
           : [];
+      const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;
       return {
         outcome: "ok",
         threads: [
@@ -1287,6 +1306,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               caller: thread,
               providers,
               titleOf: (threadId) => titles.get(threadId),
+              scheduleAnswerWaiting,
             }),
           ),
           ...remote,
@@ -1369,6 +1389,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         { discard: true },
       );
       const shell = yield* deps.readThreadShell(target.id);
+      const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;
       return {
         outcome: "ok",
         ...(shell !== undefined
@@ -1377,6 +1398,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                 caller,
                 providers,
                 titleOf: (threadId) => titles.get(threadId),
+                scheduleAnswerWaiting,
               }),
             }
           : {}),
