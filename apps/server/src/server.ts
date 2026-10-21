@@ -18,6 +18,7 @@ import { scheduleServerCompileCacheFlush } from "./compileCache.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import { relayDirectRouteLayer } from "./relay/directRoute.ts";
+import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionThreads.ts";
 import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
 import { ComputerLinkClientLive } from "./links/ComputerLinkClient.ts";
 import { ComputerLinkRepositoryLive } from "./links/ComputerLinkRepository.ts";
@@ -253,7 +254,7 @@ const ComputerLinksLayerLive = Layer.mergeAll(ComputerLinkReactorsLive, Computer
   Layer.provideMerge(LinkRequestsLive),
   Layer.provideMerge(ComputerLinkClientLive),
   Layer.provideMerge(Layer.mergeAll(ComputerLinkRepositoryLive, LinkRequestRepositoryLive)),
-  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadRepositoryLive)),
   Layer.provide(ServerSecretStoreLive),
 );
 

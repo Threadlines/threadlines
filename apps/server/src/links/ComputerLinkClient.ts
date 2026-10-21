@@ -22,11 +22,7 @@ import {
   RELAY_WEBSOCKET_PROTOCOL,
 } from "@threadlines/contracts";
 import { relayDeviceSocketUrl } from "@threadlines/shared/relayJoin";
-import {
-  SECURE_CLOSE_CODE_NO_ROUTE,
-  SECURE_OPEN_TIMEOUT_MS,
-  type SecureRoute,
-} from "@threadlines/shared/relaySecureSocket";
+import { SECURE_OPEN_TIMEOUT_MS, type SecureRoute } from "@threadlines/shared/relaySecureSocket";
 import type { StoredKeyPair } from "@threadlines/shared/relaySecure";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -59,6 +55,8 @@ export type PeerClient = RpcClient.RpcClient<PeerRpcs, RpcClientError.RpcClientE
 export const LINK_IDLE_CLOSE_MS = 2 * 60_000;
 /** How long a computer's description (agents, projects) is reused before asking again. */
 export const LINK_DESCRIBE_TTL_MS = 5 * 60_000;
+/** How often a link that keeps failing asks its direct routes whether it was removed. */
+export const LINK_REVOKED_PROBE_EVERY_MS = 30_000;
 const IDLE_SWEEP_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -241,18 +239,29 @@ const make = Effect.gen(function* () {
       return false;
     });
 
+  /** When each link's direct routes were last asked whether it was removed. */
+  const lastProbeAt = new Map<string, number>();
+
+  /**
+   * The relay passes a removal on as its close code. A direct route can't
+   * (it refuses before the upgrade), and when the relay is down too the
+   * channel only reports the relay's failure; so any connection that ended
+   * badly asks the direct routes, at most once per LINK_REVOKED_PROBE_EVERY_MS.
+   */
   const onSocketClose = (row: ComputerLinkRow, code: number) => {
     if (code === RELAY_CLOSE_CODE_ACCESS_REMOVED) {
       runFork(markRevoked(row));
       return;
     }
-    if (code === SECURE_CLOSE_CODE_NO_ROUTE) {
-      runFork(
-        directRoutesSayRevoked(row).pipe(
-          Effect.flatMap((revoked) => (revoked ? markRevoked(row) : Effect.void)),
-        ),
-      );
-    }
+    if (code === 1000 || row.directRoutes.length === 0) return;
+    const now = Date.now();
+    if (now - (lastProbeAt.get(row.linkId) ?? 0) < LINK_REVOKED_PROBE_EVERY_MS) return;
+    lastProbeAt.set(row.linkId, now);
+    runFork(
+      directRoutesSayRevoked(row).pipe(
+        Effect.flatMap((revoked) => (revoked ? markRevoked(row) : Effect.void)),
+      ),
+    );
   };
 
   const openConnection = (row: ComputerLinkRow) =>

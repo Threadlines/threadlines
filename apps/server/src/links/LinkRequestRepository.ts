@@ -87,7 +87,11 @@ export class LinkRequestRepositoryError extends Data.TaggedError("LinkRequestRep
 }> {}
 
 export interface LinkRequestRepositoryShape {
-  /** Inserts the request unless its (link, request id) exists; returns the stored row. */
+  /**
+   * Inserts the request unless its (link, request id) exists; returns the
+   * stored row. With `settled`, it is inserted already ended with that
+   * report (a refusal), so no restart can find it open.
+   */
   readonly insert: (input: {
     readonly linkDeviceId: string;
     readonly requestId: ChildRequestId;
@@ -95,6 +99,10 @@ export interface LinkRequestRepositoryShape {
     readonly payload: LinkRequestPayload;
     readonly threadId: ThreadId | null;
     readonly messageId: MessageId | null;
+    readonly settled?: {
+      readonly outcome: PeerRequestOutcome;
+      readonly text: string;
+    };
     readonly now: string;
   }) => Effect.Effect<LinkRequestRow, LinkRequestRepositoryError>;
   readonly get: (
@@ -110,11 +118,15 @@ export interface LinkRequestRepositoryShape {
   readonly listForWatch: (
     linkDeviceId: string,
   ) => Effect.Effect<ReadonlyArray<LinkRequestRow>, LinkRequestRepositoryError>;
-  /** Moves an open request on; false when it already ended. */
+  /**
+   * Moves an open request on; false when it already ended, or, with `from`,
+   * when it is no longer in one of those statuses.
+   */
   readonly progress: (input: {
     readonly linkDeviceId: string;
     readonly requestId: ChildRequestId;
     readonly status: PeerRequestStatus;
+    readonly from?: ReadonlyArray<PeerRequestStatus>;
     readonly threadId?: ThreadId;
     readonly messageId?: MessageId;
     readonly turnId?: TurnId | null;
@@ -218,13 +230,17 @@ const make = Effect.gen(function* () {
   const insert: LinkRequestRepositoryShape["insert"] = (input) =>
     Effect.gen(function* () {
       const payload = yield* encodePayload(input.payload);
+      const settled = input.settled ?? null;
       yield* sql`
         INSERT INTO link_requests (
           link_device_id, request_id, kind, thread_id, message_id, status, payload_json,
-          created_at, updated_at
+          report_id, report_outcome, report_text, settled_at, created_at, updated_at
         ) VALUES (
           ${input.linkDeviceId}, ${input.requestId}, ${input.payload.kind}, ${input.threadId},
-          ${input.messageId}, ${input.status}, ${payload}, ${input.now}, ${input.now}
+          ${input.messageId}, ${settled?.outcome ?? input.status}, ${payload},
+          ${settled === null ? null : linkReportId(input.requestId)}, ${settled?.outcome ?? null},
+          ${settled?.text ?? null}, ${settled === null ? null : input.now}, ${input.now},
+          ${input.now}
         )
         ON CONFLICT(link_device_id, request_id) DO NOTHING
       `;
@@ -248,6 +264,9 @@ const make = Effect.gen(function* () {
 
   const progress: LinkRequestRepositoryShape["progress"] = (input) =>
     Effect.gen(function* () {
+      const from = input.from ?? [];
+      const fromClause =
+        input.from === undefined ? "" : ` AND status IN (${from.map(() => "?").join(", ")})`;
       const rows = yield* sql.unsafe<{ readonly requestId: string }>(
         `UPDATE link_requests SET
            status = ?,
@@ -256,7 +275,7 @@ const make = Effect.gen(function* () {
            turn_id = CASE WHEN ? THEN ? ELSE turn_id END,
            candidate_turn_id = CASE WHEN ? THEN ? ELSE candidate_turn_id END,
            updated_at = ?
-         WHERE link_device_id = ? AND request_id = ? AND status NOT IN ${terminal}
+         WHERE link_device_id = ? AND request_id = ? AND status NOT IN ${terminal}${fromClause}
          RETURNING request_id AS "requestId"`,
         [
           input.status,
@@ -269,6 +288,7 @@ const make = Effect.gen(function* () {
           input.now,
           input.linkDeviceId,
           input.requestId,
+          ...from,
         ],
       );
       return rows.length > 0;

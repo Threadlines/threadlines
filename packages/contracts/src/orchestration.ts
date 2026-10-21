@@ -1685,7 +1685,9 @@ export type RemoteChildThread = typeof RemoteChildThread.Type;
  * request (`cancelRequest`, Stop, a wrap, thread_stop), stop a child's
  * session there (`stopThread`), or both. Recorded in the same decision that
  * gave up on the request, removed once that computer confirmed it. A stop
- * with no request to cancel is keyed by a `stop:` id.
+ * with no request to cancel is keyed by a `stop:` id. With both, that
+ * computer finds the thread from the request, so the stop holds even when
+ * `threadId` is still null here (the start's answer never arrived).
  */
 export const RemoteChildCancel = Schema.Struct({
   requestId: ChildRequestId,

@@ -12,17 +12,24 @@
  *    never behind a start in flight; recording a cancel already removed the
  *    request's unsent start or send, since the decision that cancels it
  *    settles it.
- * 2. The watch. While any request there is open, or a cancel is owed, or
+ * 2. The watch. While any request there is open, or an ack failed, or
  *    since startup it hasn't replayed what it held, `peer.watch` stays open.
- *    Status changes update the request; a report settles it with the answer
- *    (written into the parent like a local child's) and is then acked. A
- *    report whose request already settled here is acked too.
+ *    Status changes update the request; a report records the child it names
+ *    and settles the request with the answer (written into the parent like a
+ *    local child's), then is acked. A report whose request already settled
+ *    here is acked too. An ack that fails is retried until it lands; the
+ *    other computer keeps the report until then, and replays it.
  * 3. Restart: the outbox is the parent's durable state, so a restart finds
  *    it again; every linked computer is watched once to drain what it held.
+ *
+ * Parents are read from their stored rows, archived and deleted ones too:
+ * archiving or deleting a parent is exactly when cancels are owed. A deleted
+ * parent's own requests are owed nothing more.
  */
 import {
   type ChildRequestOutcome,
   CommandId,
+  EMPTY_CHILD_REQUEST_STATE,
   type EnvironmentId,
   type OrchestrationChildRequest,
   type OrchestrationCommand,
@@ -51,7 +58,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { childReportMessageId } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { ComputerLinkClient, type ComputerLinkUnavailableError } from "./ComputerLinkClient.ts";
 import { ComputerLinkRepository } from "./ComputerLinkRepository.ts";
 
@@ -72,6 +79,19 @@ export class RemoteChildReactor extends Context.Service<
 >()("threadlines/links/RemoteChildReactor") {}
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/** What the reactor needs of a parent, read from its stored row. */
+type Parent = Pick<OrchestrationThread, "id" | "title" | "participants" | "childRequests"> & {
+  readonly deletedAt: string | null;
+};
+
+/** A parent's open requests to one computer; a deleted parent's are owed nothing. */
+const openRemote = (parent: Parent, environmentId: string) =>
+  parent.deletedAt !== null
+    ? []
+    : parent.childRequests.open.filter(
+        (request) => request.remote?.environmentId === environmentId,
+      );
 
 const settleCommandId = (requestId: string) =>
   CommandId.make(`server:child-request:${requestId}:settle`);
@@ -101,7 +121,7 @@ const parentStatus = (status: PeerRequestStatus): OrchestrationChildRequest["sta
 
 const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
-  const snapshots = yield* ProjectionSnapshotQuery;
+  const threadRows = yield* ProjectionThreadRepository;
   const client = yield* ComputerLinkClient;
   const links = yield* ComputerLinkRepository;
   const environment = yield* ServerEnvironment;
@@ -115,6 +135,8 @@ const make = Effect.gen(function* () {
   const watching = new Set<string>();
   /** Computers whose watch has replayed what they held since this process started. */
   const drained = new Set<string>();
+  /** Reports recorded here whose ack hasn't reached their computer yet. */
+  const pendingAcks = new Map<string, Set<string>>();
 
   const laneOf = (lanes: Map<string, Semaphore.Semaphore>, environmentId: string) => {
     let lane = lanes.get(environmentId);
@@ -134,9 +156,20 @@ const make = Effect.gen(function* () {
     parents.add(parentId);
   };
 
-  const readThread = (threadId: ThreadId) =>
-    snapshots.getThreadDetailById(threadId).pipe(
-      Effect.map(Option.getOrUndefined),
+  /** A parent as stored, archived and deleted ones included. */
+  const readParent = (threadId: ThreadId) =>
+    threadRows.getById({ threadId }).pipe(
+      Effect.map((found): Parent | undefined =>
+        Option.isNone(found)
+          ? undefined
+          : {
+              id: found.value.threadId,
+              title: found.value.title,
+              participants: found.value.participants ?? [],
+              childRequests: found.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+              deletedAt: found.value.deletedAt,
+            },
+      ),
       Effect.orElseSucceed(() => undefined),
     );
 
@@ -160,14 +193,12 @@ const make = Effect.gen(function* () {
   const parentsOwing = (environmentId: string) =>
     Effect.gen(function* () {
       const ids = [...(parentsByEnvironment.get(environmentId) ?? [])];
-      const parents: Array<OrchestrationThread> = [];
+      const parents: Array<Parent> = [];
       for (const id of ids) {
-        const parent = yield* readThread(id);
+        const parent = yield* readParent(id);
         const owes =
           parent !== undefined &&
-          (parent.childRequests.open.some(
-            (request) => request.remote?.environmentId === environmentId,
-          ) ||
+          (openRemote(parent, environmentId).length > 0 ||
             (parent.childRequests.remoteCancels ?? []).some(
               (cancel) => cancel.environmentId === environmentId,
             ));
@@ -180,8 +211,8 @@ const make = Effect.gen(function* () {
   const findRequest = (environmentId: string, requestId: string) =>
     Effect.gen(function* () {
       for (const parent of yield* parentsOwing(environmentId)) {
-        const request = parent.childRequests.open.find(
-          (entry) => entry.requestId === requestId && entry.remote?.environmentId === environmentId,
+        const request = openRemote(parent, environmentId).find(
+          (entry) => entry.requestId === requestId,
         );
         if (request !== undefined) return { parent, request };
       }
@@ -192,13 +223,13 @@ const make = Effect.gen(function* () {
   // Recording what the other computer said
   // ---------------------------------------------------------------------------
 
-  const agentName = (parent: OrchestrationThread, request: OrchestrationChildRequest) =>
+  const agentName = (parent: Parent, request: OrchestrationChildRequest) =>
     (request.from.participantId !== null
       ? parent.participants.find((entry) => entry.id === request.from.participantId)?.handle
       : undefined) ?? "Agent";
 
   const settleRequest = (
-    parent: OrchestrationThread,
+    parent: Parent,
     request: OrchestrationChildRequest,
     settlement: {
       readonly outcome: ChildRequestOutcome;
@@ -238,7 +269,7 @@ const make = Effect.gen(function* () {
 
   /** Keeps the parent's record of a child there, created once its thread exists. */
   const recordChild = (
-    parent: OrchestrationThread,
+    parent: Parent,
     request: OrchestrationChildRequest,
     threadId: ThreadId,
     cachedStatus: string,
@@ -271,7 +302,7 @@ const make = Effect.gen(function* () {
     });
 
   const updateRequest = (
-    parent: OrchestrationThread,
+    parent: Parent,
     request: OrchestrationChildRequest,
     patch: {
       readonly status?: OrchestrationChildRequest["status"];
@@ -384,8 +415,10 @@ const make = Effect.gen(function* () {
           let recorded = found === undefined;
           if (found !== undefined) {
             const { parent, request } = found;
-            // Only a thread that exists there is remembered.
-            if (event.threadId !== null && request.remote?.status === "accepted") {
+            // A report names its thread only when that thread exists there,
+            // even when this computer never heard the start was accepted
+            // (it was offline while that computer's user allowed it).
+            if (event.threadId !== null) {
               yield* recordChild(
                 parent,
                 request,
@@ -406,14 +439,43 @@ const make = Effect.gen(function* () {
             recorded = result.ok || result.refused;
           }
           if (recorded) {
-            yield* client
-              .withPeer(environmentId as EnvironmentId, (peer) =>
-                peer["peer.report.ack"]({ reportId: event.reportId }),
-              )
-              .pipe(Effect.ignore);
+            yield* ackReport(environmentId, event.reportId);
           }
           return;
         }
+      }
+    });
+
+  /**
+   * Acks a recorded report; one that doesn't land is kept, and the watch
+   * stays open, until a later try does.
+   */
+  const ackReport = (environmentId: string, reportId: string) =>
+    client
+      .withPeer(environmentId as EnvironmentId, (peer) => peer["peer.report.ack"]({ reportId }))
+      .pipe(
+        Effect.matchEffect({
+          onSuccess: () =>
+            Effect.sync(() => {
+              pendingAcks.get(environmentId)?.delete(reportId);
+            }),
+          onFailure: () =>
+            Effect.sync(() => {
+              let owed = pendingAcks.get(environmentId);
+              if (owed === undefined) {
+                owed = new Set();
+                pendingAcks.set(environmentId, owed);
+              }
+              owed.add(reportId);
+            }),
+        }),
+      );
+
+  const retryAcks = (environmentId: string) =>
+    Effect.gen(function* () {
+      // A Set may lose the entry being visited: an ack that lands removes it.
+      for (const reportId of pendingAcks.get(environmentId) ?? []) {
+        yield* ackReport(environmentId, reportId);
       }
     });
 
@@ -424,9 +486,10 @@ const make = Effect.gen(function* () {
   /** The link was removed (here or there): nothing owed to it can be done. */
   const abandon = (environmentId: string, error: ComputerLinkUnavailableError) =>
     Effect.gen(function* () {
+      pendingAcks.delete(environmentId);
       for (const parent of yield* parentsOwing(environmentId)) {
-        for (const request of parent.childRequests.open) {
-          if (request.remote?.environmentId !== environmentId) continue;
+        for (const request of openRemote(parent, environmentId)) {
+          if (request.remote === undefined) continue;
           yield* settleRequest(parent, request, {
             outcome: "failed",
             text: `'${request.launch?.title ?? remoteChildOf(parent.childRequests, request.childThreadId)?.title ?? "A thread"}' on ${request.remote.label} can't be reached: ${error.detail}`,
@@ -476,11 +539,7 @@ const make = Effect.gen(function* () {
       }
     });
 
-  const sendRequest = (
-    environmentId: string,
-    parent: OrchestrationThread,
-    request: OrchestrationChildRequest,
-  ) =>
+  const sendRequest = (environmentId: string, parent: Parent, request: OrchestrationChildRequest) =>
     Effect.gen(function* () {
       const remote = request.remote!;
       if (request.kind === "send") {
@@ -561,11 +620,7 @@ const make = Effect.gen(function* () {
       }
     });
 
-  const sendSend = (
-    environmentId: string,
-    parent: OrchestrationThread,
-    request: OrchestrationChildRequest,
-  ) =>
+  const sendSend = (environmentId: string, parent: Parent, request: OrchestrationChildRequest) =>
     Effect.gen(function* () {
       const remote = request.remote!;
       const text = request.text;
@@ -610,12 +665,10 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const owed = (yield* parentsOwing(environmentId))
           .flatMap((parent) =>
-            parent.childRequests.open
+            openRemote(parent, environmentId)
               .filter(
                 (request) =>
-                  request.remote?.environmentId === environmentId &&
-                  request.remote.status === "sending" &&
-                  request.status !== "awaiting_user",
+                  request.remote?.status === "sending" && request.status !== "awaiting_user",
               )
               .map((request) => ({ parent, request })),
           )
@@ -626,9 +679,13 @@ const make = Effect.gen(function* () {
           );
         for (const { parent, request } of owed) {
           // Read again: a cancel may have settled it while the one before went out.
-          const current = (yield* readThread(parent.id))?.childRequests.open.find(
-            (entry) => entry.requestId === request.requestId,
-          );
+          const reread = yield* readParent(parent.id);
+          const current =
+            reread === undefined
+              ? undefined
+              : openRemote(reread, environmentId).find(
+                  (entry) => entry.requestId === request.requestId,
+                );
           if (current === undefined || current.remote?.status !== "sending") continue;
           const sent = yield* sendRequest(environmentId, parent, current).pipe(
             Effect.catch((error) => handleUnavailable(environmentId, error).pipe(Effect.as(false))),
@@ -649,12 +706,16 @@ const make = Effect.gen(function* () {
           );
           for (const cancel of cancels) {
             const done = yield* Effect.gen(function* () {
+              // With the request, that computer finds and stops its thread
+              // itself: this one may never have heard the thread's id.
               if (cancel.cancelRequest) {
                 yield* client.withPeer(environmentId as EnvironmentId, (peer) =>
-                  peer["peer.request.cancel"]({ requestId: cancel.requestId }),
+                  peer["peer.request.cancel"]({
+                    requestId: cancel.requestId,
+                    ...(cancel.stopThread ? { stopThread: true } : {}),
+                  }),
                 );
-              }
-              if (cancel.stopThread && cancel.threadId !== null) {
+              } else if (cancel.stopThread && cancel.threadId !== null) {
                 const threadId = cancel.threadId;
                 yield* client.withPeer(environmentId as EnvironmentId, (peer) =>
                   peer["peer.thread.stop"]({ threadId }),
@@ -679,12 +740,9 @@ const make = Effect.gen(function* () {
       parentsOwing(environmentId),
       (parents) =>
         !drained.has(environmentId) ||
+        (pendingAcks.get(environmentId)?.size ?? 0) > 0 ||
         parents.some((parent) =>
-          parent.childRequests.open.some(
-            (request) =>
-              request.remote?.environmentId === environmentId &&
-              request.remote.status !== "sending",
-          ),
+          openRemote(parent, environmentId).some((request) => request.remote?.status !== "sending"),
         ),
     );
 
@@ -728,6 +786,7 @@ const make = Effect.gen(function* () {
   const pump = (environmentId: string) =>
     Effect.gen(function* () {
       yield* pumpCancels(environmentId).pipe(Effect.forkDetach);
+      yield* retryAcks(environmentId);
       yield* pumpRequests(environmentId);
       yield* ensureWatch(environmentId);
     }).pipe(
@@ -739,18 +798,21 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /** Parents with remote work at startup: open remote requests or owed cancels. */
+  /**
+   * Parents with remote work at startup: open remote requests, or owed
+   * cancels (archived and deleted parents included).
+   */
   const loadOwing = Effect.gen(function* () {
     const rows = yield* sql<{ readonly threadId: string }>`
       SELECT thread_id AS "threadId" FROM projection_threads
-      WHERE deleted_at IS NULL
-        AND child_requests IS NOT NULL
-        AND (child_requests LIKE '%"remote":{%' OR child_requests LIKE '%"remoteCancels":[{%')
+      WHERE child_requests IS NOT NULL
+        AND ((deleted_at IS NULL AND child_requests LIKE '%"remote":{%')
+          OR child_requests LIKE '%"remoteCancels":[{%')
     `.pipe(Effect.orElseSucceed(() => []));
     for (const row of rows) {
-      const parent = yield* readThread(row.threadId as ThreadId);
+      const parent = yield* readParent(row.threadId as ThreadId);
       if (parent === undefined) continue;
-      for (const request of parent.childRequests.open) {
+      for (const request of parent.deletedAt === null ? parent.childRequests.open : []) {
         if (request.remote !== undefined) track(request.remote.environmentId, parent.id);
       }
       for (const cancel of parent.childRequests.remoteCancels ?? []) {
@@ -788,7 +850,7 @@ const make = Effect.gen(function* () {
             event.payload.status === "starting"
           ) {
             return Effect.gen(function* () {
-              const parent = yield* readThread(event.payload.threadId);
+              const parent = yield* readParent(event.payload.threadId);
               const request = parent?.childRequests.open.find(
                 (entry) => entry.requestId === event.payload.requestId,
               );
@@ -812,7 +874,7 @@ const make = Effect.gen(function* () {
       // Owed work is retried while a computer can't be reached, and so is
       // the first drain of a computer that was offline at startup.
       yield* Effect.gen(function* () {
-        const environments = new Set(parentsByEnvironment.keys());
+        const environments = new Set([...parentsByEnvironment.keys(), ...pendingAcks.keys()]);
         for (const link of yield* links.list.pipe(Effect.orElseSucceed(() => []))) {
           if (link.state !== "revoked" && !drained.has(link.remoteEnvironmentId)) {
             environments.add(link.remoteEnvironmentId);

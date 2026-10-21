@@ -237,6 +237,8 @@ const titleOf = (
  * What a linked computer must still hear about requests given up on here
  * (Stop, a wrap, thread_stop, a participant leaving): each is cancelled
  * there, and with `stopThread` the child's session there is stopped too.
+ * The stop holds even when this computer never heard the child's id (the
+ * start's answer was lost): that computer finds the thread from the request.
  * Requests it never got (still waiting for this computer's user) need
  * nothing.
  */
@@ -264,7 +266,7 @@ export function remoteCancelEvents(
             environmentId: remote.environmentId,
             threadId,
             cancelRequest: true,
-            stopThread: stopThread && threadId !== null,
+            stopThread,
             createdAt,
           },
           createdAt,

@@ -200,7 +200,16 @@ export const PeerSendResult = Schema.Struct({
 });
 export type PeerSendResult = typeof PeerSendResult.Type;
 
-export const PeerCancelInput = Schema.Struct({ requestId: ChildRequestId });
+/**
+ * Take a request back. With `stopThread`, the thread it started (or the one
+ * a send went to) is stopped too if it is still working: the asking computer
+ * may never have heard that thread's id, so this computer finds it from the
+ * request. Answered only once both are durably done.
+ */
+export const PeerCancelInput = Schema.Struct({
+  requestId: ChildRequestId,
+  stopThread: Schema.optional(Schema.Boolean),
+});
 export type PeerCancelInput = typeof PeerCancelInput.Type;
 
 export const PeerCancelResult = Schema.Struct({
@@ -280,6 +289,7 @@ export const PeerWatchEvent = Schema.Union([
     type: Schema.Literal("report"),
     reportId: TrimmedNonEmptyString,
     requestId: ChildRequestId,
+    /** The thread the request ran in, only when that thread exists there. */
     threadId: Schema.NullOr(ThreadId),
     outcome: PeerRequestOutcome,
     /** The answer, or what went wrong, for the asking agent. */

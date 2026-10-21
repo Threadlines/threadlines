@@ -146,7 +146,11 @@ const makePeerRpcLayer = (input: {
           guarded(Effect.flatMap(currentLink, (link) => linkRequests.send(link, payload))),
         "peer.request.cancel": (payload) =>
           guarded(
-            Effect.flatMap(currentLink, (link) => linkRequests.cancel(link, payload.requestId)),
+            Effect.flatMap(currentLink, (link) =>
+              linkRequests.cancel(link, payload.requestId, {
+                stopThread: payload.stopThread === true,
+              }),
+            ),
           ),
         "peer.thread.stop": (payload) =>
           guarded(
