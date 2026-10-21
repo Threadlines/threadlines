@@ -288,7 +288,12 @@ a switch's off track and a field's edge must stay visible against the group
 
 ## Exceptions kept on purpose
 
-- The thread sidebar keeps today's inbox design exactly.
+- The thread sidebar keeps today's inbox design exactly. The navigation rail
+  at the window's left edge is part of the sidebar: plain toolbar buttons on
+  `--app-chrome-background` with a hairline on its right, the selected
+  destination a soft `--sidebar-accent` fill, and status color only in its
+  counts (amber needs you, a blue dot for work). Hiding the sidebar hides the
+  thread list and keeps the rail.
 - Menus, popovers, hover cards and toasts keep their shadows (they float).
 - The sign-in, error and connection screens keep their centered floating
   card: on an otherwise empty window it is a dialog.

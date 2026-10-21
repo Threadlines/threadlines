@@ -463,6 +463,11 @@ export class WsTransport {
     return this.lastHeartbeatPongAt > 0 && Date.now() - this.lastHeartbeatPongAt <= maxAgeMs;
   }
 
+  /** Whether this socket is the app's own connection (see `reportsAppConnection`). */
+  get reportsAppConnection(): boolean {
+    return this.lifecycleHandlers?.reportsAppConnection !== false;
+  }
+
   async dispose() {
     if (this.disposed) {
       return;

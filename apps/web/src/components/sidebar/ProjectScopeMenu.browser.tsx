@@ -38,6 +38,8 @@ async function renderMenu(
         onEnvironmentScopeChange={onEnvironmentScopeChange}
         roomsOnly={null}
         onRoomsOnlyChange={vi.fn()}
+        grouping="none"
+        onGroupingChange={vi.fn()}
         onAddProject={vi.fn()}
         onNewThread={vi.fn()}
         newThreadShortcutLabel={null}
@@ -119,6 +121,34 @@ describe("ProjectScopeMenu", () => {
       expect(onRoomsOnlyChange).toHaveBeenLastCalledWith(false);
     } finally {
       await filteredMounted.unmount();
+    }
+  });
+
+  it("groups by project, and by computer only once there are two", async () => {
+    const onGroupingChange = vi.fn();
+    const { mounted } = await renderMenu({ grouping: "none", onGroupingChange });
+    try {
+      await page.getByTestId("inbox-scope-trigger").click();
+      await expect.element(page.getByText("Group", { exact: true })).toBeVisible();
+      await page.getByTestId("inbox-grouping-computer").click();
+      expect(onGroupingChange).toHaveBeenCalledWith("computer");
+    } finally {
+      await mounted.unmount();
+    }
+
+    const { mounted: oneMachine } = await renderMenu({
+      environmentOptions: [TWO_MACHINES[0]!],
+      grouping: "project",
+      onGroupingChange,
+    });
+    try {
+      await page.getByTestId("inbox-scope-trigger").click();
+      await expect.element(page.getByTestId("inbox-grouping-project")).toBeVisible();
+      expect(document.querySelector("[data-testid='inbox-grouping-computer']")).toBeNull();
+      await page.getByTestId("inbox-grouping-none").click();
+      expect(onGroupingChange).toHaveBeenLastCalledWith("none");
+    } finally {
+      await oneMachine.unmount();
     }
   });
 });

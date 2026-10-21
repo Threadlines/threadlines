@@ -462,7 +462,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
   return {
     dispose: () => transport.dispose(),
     reconnect: async () => {
-      resetWsReconnectBackoff();
+      // Another computer's reconnect leaves this computer's backoff alone.
+      if (transport.reportsAppConnection !== false) resetWsReconnectBackoff();
       await transport.reconnect();
     },
     isHeartbeatFresh: () => transport.isHeartbeatFresh(),

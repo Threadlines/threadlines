@@ -27,10 +27,27 @@
 }
 
 [data-slot="sidebar-wrapper"] {
-  --workspace-titlebar-content-left: calc(
-    var(--workspace-controls-left) + var(--workspace-titlebar-control-size) +
-      var(--workspace-titlebar-control-gap)
+  /* Where a page's top bar starts its content while the thread list is
+     hidden: clear of whatever window controls reach past the rail (the macOS
+     traffic lights), and never tighter than a top bar's own padding. The
+     sidebar toggle lives in the rail, so nothing else needs the room. */
+  --workspace-titlebar-content-left: max(
+    1.25rem,
+    calc(var(--workspace-controls-left) - var(--sidebar-rail-width))
   );
+  /* The same clearance for the thread list's header row, which starts where
+     the rail ends. */
+  --sidebar-list-header-left: max(
+    0.75rem,
+    calc(var(--workspace-controls-left) - var(--sidebar-rail-width))
+  );
+  /* The rail's buttons start below a strip the window controls own (macOS
+     draws its traffic lights over the rail); elsewhere they start at the top. */
+  --sidebar-rail-top-inset: 0px;
+}
+
+html.electron.mac:not([data-marketing-capture]) [data-slot="sidebar-wrapper"] {
+  --sidebar-rail-top-inset: var(--workspace-topbar-height);
 }
 
 .wco {

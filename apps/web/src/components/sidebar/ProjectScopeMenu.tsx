@@ -4,6 +4,7 @@ import {
   EllipsisIcon,
   FolderIcon,
   FolderPlusIcon,
+  ListIcon,
   MessageSquareIcon,
   MonitorIcon,
   MonitorSmartphoneIcon,
@@ -14,6 +15,7 @@ import React, { memo, useCallback, useState } from "react";
 import type {
   ContextMenuItem,
   EnvironmentId,
+  SidebarGrouping,
   SidebarProjectGroupingMode,
 } from "@threadlines/contracts";
 import { scopeProjectRef } from "@threadlines/client-runtime";
@@ -111,6 +113,9 @@ export interface ProjectScopeMenuProps {
   /** Whether the list shows only rooms. Null while Rooms is off: no filter is offered. */
   roomsOnly: boolean | null;
   onRoomsOnlyChange: (roomsOnly: boolean) => void;
+  /** How the live list is grouped. By computer is offered only once there are two. */
+  grouping: SidebarGrouping;
+  onGroupingChange: (grouping: SidebarGrouping) => void;
   onAddProject: () => void;
   onNewThread: () => void;
   newThreadShortcutLabel: string | null;
@@ -139,6 +144,8 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
     onEnvironmentScopeChange,
     roomsOnly,
     onRoomsOnlyChange,
+    grouping,
+    onGroupingChange,
     onAddProject,
     onNewThread,
     newThreadShortcutLabel,
@@ -698,6 +705,45 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                 </MenuItem>
               </MenuGroup>
             ) : null}
+            <MenuGroup>
+              <MenuSeparator />
+              <MenuGroupLabel>Group</MenuGroupLabel>
+              <MenuItem
+                data-testid="inbox-grouping-none"
+                className={cn(SCOPE_ITEM_CLASS_NAME, grouping === "none" && SCOPE_ITEM_SELECTED)}
+                onClick={() => {
+                  onGroupingChange("none");
+                }}
+              >
+                <ListIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                <span className="min-w-0 flex-1 truncate">Don&apos;t group</span>
+              </MenuItem>
+              <MenuItem
+                data-testid="inbox-grouping-project"
+                className={cn(SCOPE_ITEM_CLASS_NAME, grouping === "project" && SCOPE_ITEM_SELECTED)}
+                onClick={() => {
+                  onGroupingChange("project");
+                }}
+              >
+                <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                <span className="min-w-0 flex-1 truncate">By project</span>
+              </MenuItem>
+              {showEnvironmentScope ? (
+                <MenuItem
+                  data-testid="inbox-grouping-computer"
+                  className={cn(
+                    SCOPE_ITEM_CLASS_NAME,
+                    grouping === "computer" && SCOPE_ITEM_SELECTED,
+                  )}
+                  onClick={() => {
+                    onGroupingChange("computer");
+                  }}
+                >
+                  <MonitorSmartphoneIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                  <span className="min-w-0 flex-1 truncate">By computer</span>
+                </MenuItem>
+              ) : null}
+            </MenuGroup>
             <MenuSeparator />
             <MenuItem onClick={onAddProject}>
               <FolderPlusIcon />

@@ -25,8 +25,6 @@ import {
 } from "~/hooks/useLocalStorage";
 import * as Schema from "effect/Schema";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
-const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "16rem";
 // Runtime CSS string: tailwind functions like --spacing() don't exist here,
 // so the 12px edge inset is spelled out as a plain length.
@@ -108,26 +106,19 @@ function SidebarProvider({
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
 
-  // This is the internal state of the sidebar.
-  // We use openProp and setOpenProp for control from outside the component.
+  // This is the internal state of the sidebar. A caller that keeps the state
+  // somewhere lasting (the app's thread list remembers it across launches)
+  // passes `open` and `onOpenChange` instead.
   const [_open, _setOpen] = React.useState(defaultOpen);
   const open = openProp ?? _open;
   const setOpen = React.useCallback(
-    async (value: boolean | ((value: boolean) => boolean)) => {
+    (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value;
       if (setOpenProp) {
         setOpenProp(openState);
       } else {
         _setOpen(openState);
       }
-
-      // This sets the cookie to keep the sidebar state.
-      await cookieStore.set({
-        expires: Date.now() + SIDEBAR_COOKIE_MAX_AGE * 1000,
-        name: SIDEBAR_COOKIE_NAME,
-        path: "/",
-        value: String(openState),
-      });
     },
     [setOpenProp, open],
   );
@@ -167,6 +158,9 @@ function SidebarProvider({
           {
             "--sidebar-width": SIDEBAR_WIDTH,
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
+            // What stands left of a left sidebar (the app's navigation rail):
+            // its fixed pane starts past it, and slides away beneath it.
+            "--sidebar-rail-width": "0px",
             ...style,
           } as React.CSSProperties
         }
@@ -301,7 +295,7 @@ function Sidebar({
             "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
             animateLayout && "transition-[left,right,width] duration-200 ease-linear",
             side === "left"
-              ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
+              ? "left-(--sidebar-rail-width) group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-rail-width)-var(--sidebar-width))]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
             // Adjust the padding for floating and inset variants.
             variant === "floating" || variant === "inset"

@@ -28,20 +28,23 @@ import {
   ArrowLeftIcon,
   ArrowUpIcon,
   BotIcon,
+  ChartColumnIcon,
   CornerLeftUpIcon,
   FileTextIcon,
   FolderIcon,
   FolderPlusIcon,
-  GaugeIcon,
   GitPullRequestIcon,
   HomeIcon,
   LinkIcon,
   MessageSquareIcon,
   MessagesSquareIcon,
+  PanelLeftCloseIcon,
+  PanelLeftIcon,
   SearchIcon,
   SettingsIcon,
   SquarePenIcon,
   UsersRoundIcon,
+  WaypointsIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -66,7 +69,9 @@ import {
   requireEnvironmentConnection,
 } from "../environments/runtime";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
+import { useUiStateStore } from "../uiStateStore";
 import { useRoomsEnabled } from "../hooks/useRoomsEnabled";
 import { readLocalApi } from "../localApi";
 import { closeRightPanelSearchParams } from "../diffRouteSearch";
@@ -446,6 +451,8 @@ export function OpenCommandPaletteDialog() {
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const keybindings = useServerKeybindings();
   const isHomeRoute = useLocation({ select: (location) => location.pathname === "/" });
+  const isMobile = useIsMobile();
+  const sidebarListOpen = useUiStateStore((state) => state.sidebarListOpen);
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
   const [browseGeneration, setBrowseGeneration] = useState(0);
@@ -1595,7 +1602,50 @@ export function OpenCommandPaletteDialog() {
     });
   }
 
-  // Registered only where the sidebar row is: an action that lands on
+  actionItems.push({
+    kind: "action",
+    value: "action:general-chats",
+    searchTerms: ["general chats", "chats", "conversations", "no project"],
+    title: "Open general chats",
+    icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/chats" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:fleet",
+    searchTerms: ["fleet", "computers", "machines", "devices", "phone", "graph", "running"],
+    title: "Open Fleet",
+    description: "Your computers and what runs on them",
+    icon: <WaypointsIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "navigate.fleet",
+    run: async () => {
+      await navigate({ to: "/fleet" });
+    },
+  });
+
+  // The thread list beside the rail; a phone shows it as a sheet instead.
+  if (!isMobile) {
+    actionItems.push({
+      kind: "action",
+      value: "action:toggle-sidebar",
+      searchTerms: ["sidebar", "thread list", "hide", "show", "toggle", "rail"],
+      title: sidebarListOpen ? "Hide sidebar" : "Show sidebar",
+      icon: sidebarListOpen ? (
+        <PanelLeftCloseIcon className={ITEM_ICON_CLASS} />
+      ) : (
+        <PanelLeftIcon className={ITEM_ICON_CLASS} />
+      ),
+      shortcutCommand: "sidebar.toggle",
+      run: async () => {
+        useUiStateStore.getState().toggleSidebarListOpen();
+      },
+    });
+  }
+
+  // Registered only where the rail's button is: an action that lands on
   // "unsupported" is worse than one the palette never offers.
   if (pullRequestEnvironments.length > 0) {
     actionItems.push({
@@ -1682,7 +1732,7 @@ export function OpenCommandPaletteDialog() {
     value: "action:usage",
     searchTerms: ["usage", "tokens", "cost", "spend", "spending", "price", "billing"],
     title: "Open usage",
-    icon: <GaugeIcon className={ITEM_ICON_CLASS} />,
+    icon: <ChartColumnIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/usage" });
     },
