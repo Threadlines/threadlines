@@ -2,10 +2,11 @@
  * Opening a link from the transcript in the thread's own browser.
  *
  * A link in what an agent wrote is nearly always about the work in front of
- * you -- the dev server it just started, the docs page it just cited -- so the
- * plain click keeps it in the thread rather than throwing it at another app.
- * Modified clicks still go outside, because that is what a modifier means
- * everywhere else.
+ * you -- the dev server it just started, the docs page it just cited -- so by
+ * default the plain click keeps it in the thread rather than throwing it at
+ * another app. Settings › General › Open links in can send it to the
+ * computer's own browser instead; Cmd or Ctrl on the click always goes to the
+ * other place, so neither is ever more than a modifier away.
  *
  * The same rule as the address bar applies: going somewhere yourself is
  * approval, so the site is recorded for the project without a prompt.
@@ -15,7 +16,7 @@
  * page follows.
  */
 
-import type { ProjectId, ScopedThreadRef } from "@threadlines/contracts";
+import type { LinkOpenTarget, ProjectId, ScopedThreadRef } from "@threadlines/contracts";
 import { isBrowserHostAllowed } from "@threadlines/shared/preview";
 
 import {
@@ -27,6 +28,8 @@ import {
   useBrowserPanelStore,
 } from "../../browserPanelStore";
 import { useComposerDraftStore } from "../../composerDraftStore";
+import { isElectron } from "../../env";
+import { getClientSettings } from "../../hooks/useSettings";
 import { selectEnvironmentState, useStore } from "../../store";
 import {
   approveBrowserHostForProject,
@@ -57,8 +60,8 @@ function hasNonWebScheme(rawUrl: string): boolean {
 }
 
 /**
- * Whether this click means "somewhere else": a modifier or any button but the
- * primary one keeps the anchor's own `target="_blank"` behaviour.
+ * Whether this is a plain click: the primary button, no modifier. Anything
+ * else means "somewhere else" (see `webLinkClickTarget`).
  */
 export function isPlainPrimaryClick(event: {
   readonly button?: number;
@@ -74,6 +77,54 @@ export function isPlainPrimaryClick(event: {
     !event.shiftKey &&
     !event.altKey
   );
+}
+
+/**
+ * Where a plain click on a web link opens on this computer (Settings ›
+ * General › Open links in). Read when the click happens, for the same reason
+ * as `resolveThreadProject`.
+ */
+export function readLinkOpenTarget(): LinkOpenTarget {
+  return getClientSettings().openLinksIn;
+}
+
+/**
+ * Where a click on a web link should go, or null when the click is the
+ * anchor's own business (shift, alt, any button but the primary one), which
+ * leaves it to the external browser as it always has. The plain click goes
+ * where the user chose; Cmd or Ctrl sends it to the other place.
+ */
+export function webLinkClickTarget(
+  event: {
+    readonly button?: number;
+    readonly metaKey: boolean;
+    readonly ctrlKey: boolean;
+    readonly shiftKey: boolean;
+    readonly altKey: boolean;
+  },
+  preference: LinkOpenTarget,
+): LinkOpenTarget | null {
+  if ((event.button ?? 0) !== 0 || event.shiftKey || event.altKey) {
+    return null;
+  }
+  if (event.metaKey || event.ctrlKey) {
+    return preference === "browser-panel" ? "external" : "browser-panel";
+  }
+  return preference;
+}
+
+/**
+ * Whether a link in this thread can open in its browser panel at all: only in
+ * the desktop app, and only once the thread's project is known and is not a
+ * General Chat, which has no panel. A right-click menu asks this before
+ * offering the panel, so it never lists a choice that does nothing.
+ */
+export function canOpenInBrowserPanel(threadRef: ScopedThreadRef | null): boolean {
+  if (!isElectron || threadRef === null) {
+    return false;
+  }
+  const project = resolveThreadProject(threadRef);
+  return project !== null && project.kind !== "general-chat";
 }
 
 /**
