@@ -197,6 +197,26 @@ export interface LinkRequestRepositoryShape {
   readonly prune: (input: {
     readonly deliveredBefore: string;
   }) => Effect.Effect<void, LinkRequestRepositoryError>;
+  /**
+   * An unlink owes stops: everything its link started must stop. Kept until
+   * cleared, whatever happens in between (a failed stop, a restart). Each
+   * call (a retry that fell short, too) makes a new generation, returned.
+   */
+  readonly oweStops: (input: {
+    readonly linkDeviceId: string;
+    readonly error?: string;
+    readonly now: string;
+  }) => Effect.Effect<number, LinkRequestRepositoryError>;
+  /** Links whose unlink still owes stops, with their generation, oldest first. */
+  readonly listStopsOwed: Effect.Effect<
+    ReadonlyArray<{ readonly linkDeviceId: string; readonly generation: number }>,
+    LinkRequestRepositoryError
+  >;
+  /** Nothing more is owed, unless a newer generation was recorded since `generation`. */
+  readonly clearStopsOwed: (input: {
+    readonly linkDeviceId: string;
+    readonly generation: number;
+  }) => Effect.Effect<void, LinkRequestRepositoryError>;
 }
 
 export class LinkRequestRepository extends Context.Service<
@@ -423,7 +443,40 @@ const make = Effect.gen(function* () {
         OR link_device_id NOT IN (SELECT device_id FROM relay_devices)
     `.pipe(Effect.asVoid, wrap("prune"));
 
+  const oweStops: LinkRequestRepositoryShape["oweStops"] = (input) =>
+    sql<{ readonly generation: number }>`
+      INSERT INTO link_stops_owed (link_device_id, generation, created_at, last_error)
+      VALUES (${input.linkDeviceId}, 0, ${input.now}, ${input.error?.slice(0, 300) ?? null})
+      ON CONFLICT(link_device_id) DO UPDATE SET
+        generation = generation + 1,
+        last_error = COALESCE(excluded.last_error, last_error)
+      RETURNING generation AS "generation"
+    `.pipe(
+      Effect.map((rows) => rows[0]?.generation ?? 0),
+      wrap("oweStops"),
+    );
+
+  const listStopsOwed: LinkRequestRepositoryShape["listStopsOwed"] = sql<{
+    readonly linkDeviceId: string;
+    readonly generation: number;
+  }>`
+    SELECT link_device_id AS "linkDeviceId", generation AS "generation" FROM link_stops_owed
+    ORDER BY created_at, link_device_id
+  `.pipe(
+    Effect.map((rows) => rows.map((row) => ({ ...row }))),
+    wrap("listStopsOwed"),
+  );
+
+  const clearStopsOwed: LinkRequestRepositoryShape["clearStopsOwed"] = (input) =>
+    sql`
+      DELETE FROM link_stops_owed
+      WHERE link_device_id = ${input.linkDeviceId} AND generation = ${input.generation}
+    `.pipe(Effect.asVoid, wrap("clearStopsOwed"));
+
   return LinkRequestRepository.of({
+    oweStops,
+    listStopsOwed,
+    clearStopsOwed,
     insert,
     get,
     listOpen,
