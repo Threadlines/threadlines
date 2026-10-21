@@ -302,6 +302,8 @@ interface SessionContext {
   readonly scope: Scope.Closeable;
   readonly runtimeMode: RuntimeMode;
   readonly roomTools: boolean;
+  /** With `roomTools`: agents may change scheduled tasks; its instructions say so. */
+  readonly scheduleTools: boolean;
   readonly agentPageAssetsDir: string | undefined;
   readonly commandRequests: boolean;
   readonly managedWorktree: boolean;
@@ -1784,7 +1786,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           : []),
         // Muse's own names for outside tools are not ours to guess; the bare name is unambiguous.
         ...(ctx.commandRequests ? [buildCommandRequestInstructions({ toolPrefix: "" })] : []),
-        ...(ctx.roomTools ? [buildScheduleInstructions({ toolPrefix: "" })] : []),
+        ...(ctx.scheduleTools ? [buildScheduleInstructions({ toolPrefix: "" })] : []),
         FILE_LINK_INSTRUCTIONS,
         ...(ctx.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n");
@@ -2220,6 +2222,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             scope,
             runtimeMode: input.runtimeMode,
             roomTools,
+            scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests,
             managedWorktree,

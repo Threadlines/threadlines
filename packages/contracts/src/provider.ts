@@ -180,6 +180,11 @@ export const ProviderSessionStartInput = Schema.Struct({
    */
   scheduledRunTools: Schema.optional(Schema.Boolean),
   /**
+   * With `roomTools`: agents may change scheduled tasks ("Agents can start
+   * threads" isn't off), so the main runtime's instructions point it at them.
+   */
+  scheduleTools: Schema.optional(Schema.Boolean),
+  /**
    * Attach the page tools endpoint (`threadlines_pages`): `show_page` and
    * `preview_page`, docs/agent-pages.md. Never for a locked-down side
    * runtime.

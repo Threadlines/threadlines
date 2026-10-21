@@ -9639,6 +9639,7 @@ describe("ClaudeAdapterLive", () => {
           provider: ProviderDriverKind.make("claudeAgent"),
           runtimeMode: "full-access",
           roomTools: true,
+          scheduleTools: true,
         });
         assert.equal(session.roomTools, true);
         const options = harness.getLastCreateQueryInput()!.options;
@@ -9670,7 +9671,9 @@ describe("ClaudeAdapterLive", () => {
         yield* adapter.stopSession(THREAD_ID);
         assert.equal(yield* mcpSessionRegistry.resolve(token), null);
 
-        // A scheduled run's agent finishes its run without a permission prompt.
+        // A scheduled run's agent finishes its run without a permission
+        // prompt, and with agents' schedule changes turned off it hears
+        // nothing about schedule tools it can't see.
         yield* adapter.startSession({
           threadId: THREAD_ID,
           provider: ProviderDriverKind.make("claudeAgent"),
@@ -9678,10 +9681,12 @@ describe("ClaudeAdapterLive", () => {
           roomTools: true,
           scheduledRunTools: true,
         });
+        const runOptions = harness.getLastCreateQueryInput()!.options;
         assert.include(
-          harness.getLastCreateQueryInput()!.options.allowedTools ?? [],
+          runOptions.allowedTools ?? [],
           "mcp__threadlines_room__scheduled_run_finish",
         );
+        assert.notInclude(appendOf(runOptions), "<threadlines_schedules>");
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),

@@ -474,7 +474,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
     const instructionsFor = (input: {
       readonly agentPageAssetsDir: string | undefined;
       readonly commandRequests: boolean;
-      readonly roomTools: boolean;
+      readonly scheduleTools: boolean;
       readonly managedWorktree: boolean;
     }) =>
       [
@@ -485,7 +485,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
         ...(input.commandRequests
           ? [buildCommandRequestInstructions({ toolPrefix: `mcp__${COMMANDS_MCP_SERVER_NAME}__` })]
           : []),
-        ...(input.roomTools
+        ...(input.scheduleTools
           ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
           : []),
         FILE_LINK_INSTRUCTIONS,
@@ -1706,7 +1706,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
           const instructions = instructionsFor({
             agentPageAssetsDir,
             commandRequests,
-            roomTools,
+            scheduleTools: roomTools && input.scheduleTools === true,
             managedWorktree,
           });
           const instructionsPath = NodePath.join(

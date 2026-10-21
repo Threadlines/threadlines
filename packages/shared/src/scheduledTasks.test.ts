@@ -69,6 +69,23 @@ describe("upcomingSlots", () => {
         "2026-10-31T12:00:00Z",
       ),
     ).toEqual(["2026-11-01T05:30:00.000Z", "2026-11-02T06:30:00.000Z", "2026-11-03T06:30:00.000Z"]);
+    // Asked during the repeated hour, after its first 01:30 passed: the next
+    // run is tomorrow's, never the one already gone.
+    expect(
+      slots(
+        { kind: "daily", time: { hour: 1, minute: 30 } },
+        "America/New_York",
+        "2026-11-01T06:05:00Z",
+        2,
+      ),
+    ).toEqual(["2026-11-02T06:30:00.000Z", "2026-11-03T06:30:00.000Z"]);
+    expect(
+      cadenceSaveRefusal(
+        { kind: "custom", cron: "30 1 * * *" },
+        "America/New_York",
+        at("2026-11-01T06:05:00Z"),
+      ),
+    ).toBe(null);
   });
 });
 

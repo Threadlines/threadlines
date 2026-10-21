@@ -1213,6 +1213,9 @@ const make = Effect.gen(function* () {
       ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
       ...(roomToolsWanted ? { roomTools: true } : {}),
       ...(roomToolsWanted && scheduledRunTools ? { scheduledRunTools: true } : {}),
+      ...(roomToolsWanted && agentThreadsMode(toolSettings) !== "off"
+        ? { scheduleTools: true }
+        : {}),
       ...(toolSettings?.enableAgentPages !== false ? { agentPages: true } : {}),
       ...(toolSettings?.enableAgentPages !== false && toolSettings?.enableClaudeArtifacts === true
         ? { artifacts: true }

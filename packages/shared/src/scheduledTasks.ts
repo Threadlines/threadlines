@@ -132,10 +132,21 @@ export interface CadenceSchedule {
   readonly next: (after: Date) => Result.Result<Date | null, string>;
 }
 
+/** Steps `Cron.next` takes past an answer that isn't after its input. */
+const CRON_NEXT_RETRIES = 4;
+
 const cronSchedule = (cron: Cron.Cron): CadenceSchedule => ({
   next: (after) => {
     try {
-      return Result.succeed(Cron.next(cron, after));
+      // Asked during a repeated hour (clocks falling back), `Cron.next` can
+      // answer the earlier instant of that hour's wall time, which already
+      // passed: step on from it until the answer is after `after`.
+      let candidate = Cron.next(cron, after);
+      for (let step = 0; candidate.getTime() <= after.getTime(); step += 1) {
+        if (step >= CRON_NEXT_RETRIES) return Result.fail("This schedule never runs.");
+        candidate = Cron.next(cron, candidate);
+      }
+      return Result.succeed(candidate);
     } catch {
       return Result.fail("This schedule never runs.");
     }

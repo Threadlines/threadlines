@@ -8925,7 +8925,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(credential !== undefined && commandRequests
               ? [buildCommandRequestInstructions({})]
               : []),
-            ...(roomServer !== undefined
+            ...(roomServer !== undefined && input.scheduleTools === true
               ? [
                   buildScheduleInstructions({
                     toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__`,

@@ -151,23 +151,25 @@ const ROOM_THREAD = {
 };
 
 /** The room server's dependencies: only the thread read is reached here. */
-const RoomServerStubs = Layer.mergeAll(
-  Layer.succeed(OrchestrationEngineService, {
-    readEvents: () => Effect.die("not used by this test") as never,
-    dispatch: unused,
-    getCommandReceipt: unused,
-    streamDomainEvents: Effect.die("not used by this test") as never,
-    subscribeDomainEvents: unused(),
-  } as never),
-  Layer.succeed(ProjectionSnapshotQuery, {
-    getThreadDetailById: () => Effect.succeed(Option.some(ROOM_THREAD)),
-  } as never),
-  Layer.succeed(ProviderRegistry, { getProviders: Effect.succeed([]) } as never),
-  Layer.succeed(ProviderService, { listSessions: () => Effect.succeed([]) } as never),
-  Layer.succeed(GitVcsDriver, {} as never),
-  ServerSettingsService.layerTest(),
-  PreviewAutomationBroker.layer,
-);
+const roomServerStubs = (settings?: Parameters<typeof ServerSettingsService.layerTest>[0]) =>
+  Layer.mergeAll(
+    Layer.succeed(OrchestrationEngineService, {
+      readEvents: () => Effect.die("not used by this test") as never,
+      dispatch: unused,
+      getCommandReceipt: unused,
+      streamDomainEvents: Effect.die("not used by this test") as never,
+      subscribeDomainEvents: unused(),
+    } as never),
+    Layer.succeed(ProjectionSnapshotQuery, {
+      getThreadDetailById: () => Effect.succeed(Option.some(ROOM_THREAD)),
+    } as never),
+    Layer.succeed(ProviderRegistry, { getProviders: Effect.succeed([]) } as never),
+    Layer.succeed(ProviderService, { listSessions: () => Effect.succeed([]) } as never),
+    Layer.succeed(GitVcsDriver, {} as never),
+    ServerSettingsService.layerTest(settings),
+    PreviewAutomationBroker.layer,
+  );
+const RoomServerStubs = roomServerStubs();
 
 /** Serve `routes` on a loopback port for the rest of the enclosing scope. */
 const serve = <A, E>(routes: Layer.Layer<A, E, HttpRouter.HttpRouter>) =>
@@ -351,6 +353,32 @@ describe("MCP endpoints", () => {
             participantSessionKey(THREAD, AGENT),
             browserOnly.generation,
           );
+          yield* mcpSessionRegistry.revoke(RUN_THREAD, scheduledRun.generation);
+        }),
+      ).pipe(onLoopback),
+    );
+  });
+
+  it("lists no schedule tools while agents may not start threads, but a run keeps its own", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = yield* serve(
+            McpRoomServer.layer.pipe(Layer.provide(roomServerStubs({ agentThreads: "off" }))),
+          );
+          const scheduledRun = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: RUN_THREAD,
+            browser: true,
+            room: true,
+            scheduledRun: true,
+          });
+          const listed = yield* Effect.promise(() =>
+            listTools(`${base}/mcp/room`, scheduledRun.token),
+          );
+          const tools = "tools" in listed ? listed.tools : [];
+          expect(tools).toContain("scheduled_run_finish");
+          expect(tools).toContain("room_agents");
+          expect(tools.filter((name) => name.startsWith("schedule_"))).toEqual([]);
           yield* mcpSessionRegistry.revoke(RUN_THREAD, scheduledRun.generation);
         }),
       ).pipe(onLoopback),

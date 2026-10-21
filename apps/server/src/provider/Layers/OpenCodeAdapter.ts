@@ -244,6 +244,8 @@ interface SessionContext {
   readonly scope: Scope.Closeable;
   readonly toolKey: string;
   readonly roomTools: boolean;
+  /** With `roomTools`: agents may change scheduled tasks; its instructions say so. */
+  readonly scheduleTools: boolean;
   /** The page tools' image folder, when the session has them. */
   readonly agentPageAssetsDir: string | undefined;
   /** The session has `ask_user_to_run`. */
@@ -2003,7 +2005,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               }),
             ]
           : []),
-        ...(ctx.roomTools
+        ...(ctx.scheduleTools
           ? [buildScheduleInstructions({ toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_` })]
           : []),
         FILE_LINK_INSTRUCTIONS,
@@ -2245,6 +2247,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             scope,
             toolKey: openCodeThreadToolKey(input.threadId),
             roomTools,
+            scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests: input.commandRequests === true,
             runtimeMode: input.runtimeMode,

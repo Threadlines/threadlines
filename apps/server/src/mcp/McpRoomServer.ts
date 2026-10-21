@@ -30,6 +30,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { SCHEDULE_TOOL_NAMES } from "./roomToolAccess.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { ComputerLinkClient } from "../links/ComputerLinkClient.ts";
 import { ComputerLinkRepository } from "../links/ComputerLinkRepository.ts";
@@ -104,8 +105,9 @@ export function listOnlyGrantedTools(
   );
 }
 
-const authenticate = Effect.succeed(
-  Effect.fn("McpRoomServer.authenticate")(function* (
+const authenticate = Effect.gen(function* () {
+  const settings = yield* ServerSettingsService;
+  return Effect.fn("McpRoomServer.authenticate")(function* (
     handler: Effect.Effect<
       HttpServerResponse.HttpServerResponse,
       Types.unhandled,
@@ -117,14 +119,26 @@ const authenticate = Effect.succeed(
     if (scope === null || scope.roomTools.size === 0) {
       return unauthorizedMcpResponse;
     }
+    // The schedule tools follow "Agents can start threads", read live: off,
+    // they aren't listed (and their handlers refuse a call anyway).
+    const mode = yield* settings.getSettings.pipe(
+      Effect.map(agentThreadsMode),
+      Effect.orElseSucceed(() => "off" as const),
+    );
+    const listed: ReadonlySet<string> =
+      mode === "off"
+        ? new Set(
+            [...scope.roomTools].filter(
+              (tool) => !(SCHEDULE_TOOL_NAMES as ReadonlyArray<string>).includes(tool),
+            ),
+          )
+        : scope.roomTools;
     return yield* handler.pipe(
       Effect.provideService(McpRoomInvocation, scope),
-      Effect.map((response) =>
-        listOnlyGrantedTools(normalizeMcpHttpResponse(response), scope.roomTools),
-      ),
+      Effect.map((response) => listOnlyGrantedTools(normalizeMcpHttpResponse(response), listed)),
     );
-  }),
-);
+  });
+});
 
 const AuthenticationLive = HttpRouter.middleware<{
   provides: McpRoomInvocation;

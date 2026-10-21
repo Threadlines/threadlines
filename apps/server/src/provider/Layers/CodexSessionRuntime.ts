@@ -236,6 +236,8 @@ export interface CodexSessionRuntimeOptions {
   readonly roomTools?: boolean;
   /** With `roomTools`: a scheduled run's thread (ProviderSessionStartInput.scheduledRunTools). */
   readonly scheduledRunTools?: boolean;
+  /** With `roomTools`: agents may change scheduled tasks (ProviderSessionStartInput.scheduleTools). */
+  readonly scheduleTools?: boolean;
   /** Attach the page tools (ProviderSessionStartInput.agentPages). Never for a side runtime. */
   readonly agentPages?: boolean;
   /** Attach `ask_user_to_run` (ProviderSessionStartInput.commandRequests). Never for a side runtime. */
@@ -2889,7 +2891,9 @@ export const makeCodexSessionRuntime = (
             ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
             ...(agentPageAssetsDir !== undefined ? { agentPageAssetsDir } : {}),
             ...(commandRequests ? { commandRequests: true } : {}),
-            ...(roomTools && lockdown === undefined ? { scheduleTools: true } : {}),
+            ...(roomTools && options.scheduleTools === true && lockdown === undefined
+              ? { scheduleTools: true }
+              : {}),
             ...(lockdown !== undefined ? { lockdown: true } : {}),
           });
           const rawResponse = yield* withCodexRequestTimeout(
