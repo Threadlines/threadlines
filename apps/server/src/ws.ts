@@ -583,7 +583,11 @@ const makeWsRpcLayer = (currentSession: {
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers,
-          availableEditors: ExternalLauncher.resolveAvailableEditors(),
+          availableEditors: ExternalLauncher.resolveAvailableEditors(
+            process.platform,
+            process.env,
+            ExternalLauncher.macApplicationDirs(),
+          ),
           observability: {
             logsDirectoryPath: config.logsDir,
             localTracingEnabled: true,

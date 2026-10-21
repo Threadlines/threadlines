@@ -506,6 +506,7 @@ function fileLinkChip(
     filePath: meta.filePath,
     kind: documentContext.fileLinkKindByPath.get(meta.filePath) ?? "file",
     isInWorkspace: Boolean(cwd && isPathWithinCwd(meta.filePath, cwd)),
+    workspaceRoot: cwd,
     line: meta.line,
     label: buildFileLinkLabel(meta, documentContext.fileLinkParentSuffixByPath.get(meta.filePath)),
     theme: documentContext.resolvedTheme,
@@ -899,6 +900,8 @@ interface MarkdownFileLinkProps {
   filePath: string;
   kind: MarkdownFileLinkKind;
   isInWorkspace: boolean;
+  /** The thread's folder, so a file opened in an editor shows inside it. */
+  workspaceRoot: string | undefined;
   line?: number | undefined;
   label: string;
   theme: "light" | "dark";
@@ -933,6 +936,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   filePath,
   kind,
   isInWorkspace,
+  workspaceRoot,
   line,
   label,
   theme,
@@ -966,7 +970,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       return;
     }
 
-    void openInPreferredEditor(api, targetPath).catch((error) => {
+    void openInPreferredEditor(api, targetPath, workspaceRoot).catch((error) => {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -975,7 +979,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }),
       );
     });
-  }, [entryLabel, targetPath]);
+  }, [entryLabel, targetPath, workspaceRoot]);
 
   const handleRevealInFileManager = useCallback(() => {
     const api = readLocalApi();
@@ -1166,6 +1170,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.filePath === next.filePath &&
     previous.kind === next.kind &&
     previous.isInWorkspace === next.isInWorkspace &&
+    previous.workspaceRoot === next.workspaceRoot &&
     previous.line === next.line &&
     previous.label === next.label &&
     previous.theme === next.theme &&

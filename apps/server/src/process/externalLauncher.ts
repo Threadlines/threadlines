@@ -13,6 +13,7 @@ import {
   type LaunchEditorInput,
 } from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { areFilesystemPathsEqual, isFilesystemPathWithin } from "@threadlines/shared/path";
 import {
   isCommandAvailable,
   makeCommandPathResolver,
@@ -20,6 +21,7 @@ import {
   type CommandPathResolver,
 } from "@threadlines/shared/shell";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
+import { pathToFileURL } from "node:url";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -42,6 +44,44 @@ interface EditorLaunch {
   readonly args: ReadonlyArray<string>;
   readonly shell?: boolean;
   readonly windowsHide?: boolean;
+  /**
+   * Launched instead when this command fails. A launch with a fallback is a
+   * quick request rather than an app: it runs attached, and the fallback
+   * starts only when it is missing or exits with an error within
+   * {@link ATTACHED_LAUNCH_WAIT}.
+   */
+  readonly fallback?: EditorLaunch;
+}
+
+/**
+ * How long a request with a fallback is waited on. One still running then is
+ * left to finish on its own and counts as answered: a file manager slow to
+ * start may still show the file, and falling back would open a second window.
+ */
+const ATTACHED_LAUNCH_WAIT = "5 seconds";
+
+/**
+ * Asks the desktop's file manager to show a file with it selected, over the
+ * freedesktop FileManager1 D-Bus interface (Nautilus, Dolphin, Nemo, Caja and
+ * others answer it). `--print-reply` makes dbus-send fail when nothing does.
+ */
+function resolveShowItemsArgs(filePath: string): ReadonlyArray<string> {
+  // dbus-send splits array values on commas, so a comma in the name is
+  // percent-encoded like the rest of the URI.
+  const fileUri = pathToFileURL(filePath).href.replaceAll(",", "%2C");
+  // The reply timeout outlasts ATTACHED_LAUNCH_WAIT, so a slow answer is
+  // never mistaken for a failure.
+  return [
+    "--session",
+    "--print-reply",
+    "--reply-timeout=20000",
+    "--dest=org.freedesktop.FileManager1",
+    "--type=method_call",
+    "/org/freedesktop/FileManager1",
+    "org.freedesktop.FileManager1.ShowItems",
+    `array:string:${fileUri}`,
+    "string:",
+  ];
 }
 
 interface ProcessLaunch {
@@ -113,12 +153,75 @@ function resolveCommandEditorArgs(
   }
 }
 
+/**
+ * Every command editor takes a folder ahead of a file: VS Code and its forks
+ * open the file in the window already showing that folder (or a new window
+ * for it), Zed opens both as one workspace, and JetBrains IDEs open the
+ * project before the file so it lands there rather than in LightEdit.
+ */
 function resolveEditorArgs(
   editor: (typeof EDITORS)[number],
   target: string,
+  folder: Option.Option<string>,
 ): ReadonlyArray<string> {
   const baseArgs = "baseArgs" in editor ? editor.baseArgs : [];
-  return [...baseArgs, ...resolveCommandEditorArgs(editor, target)];
+  return [...baseArgs, ...Option.toArray(folder), ...resolveCommandEditorArgs(editor, target)];
+}
+
+function isStrictlyWithin(path: string, root: string): boolean {
+  return isFilesystemPathWithin(path, root) && !areFilesystemPathsEqual(path, root);
+}
+
+/**
+ * The folder to open a file target in: the given workspace root, when the
+ * target is a file (or not created yet) strictly inside it and the root is a
+ * folder that exists. Folder targets open on their own, as before. Paths are
+ * compared resolved (so `root/../other` is outside) and, failing that, with
+ * symlinks followed (so `/tmp/p/a.ts` is inside `/private/tmp/p`).
+ */
+function resolveTargetFolder(
+  target: string,
+  workspaceRoot: string | undefined,
+): Effect.Effect<Option.Option<string>, never, FileSystem.FileSystem | Path.Path> {
+  return Effect.gen(function* () {
+    if (workspaceRoot === undefined) return Option.none();
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const targetPath = path.resolve(stripTargetPosition(target));
+    const rootPath = path.resolve(workspaceRoot);
+    if ((yield* statTargetType(rootPath)) !== "directory") return Option.none();
+    if ((yield* statTargetType(targetPath)) === "directory") return Option.none();
+    if (!isStrictlyWithin(targetPath, rootPath)) {
+      const realPath = (value: string) =>
+        fileSystem.realPath(value).pipe(Effect.orElseSucceed(() => value));
+      if (!isStrictlyWithin(yield* realPath(targetPath), yield* realPath(rootPath))) {
+        return Option.none();
+      }
+    }
+    return Option.some(rootPath);
+  });
+}
+
+/**
+ * The folders macOS apps are installed in. Pass them to the editor lookups
+ * below so an editor whose command is not on PATH is still found in its app.
+ */
+export function macApplicationDirs(env: NodeJS.ProcessEnv = process.env): ReadonlyArray<string> {
+  return ["/Applications", ...(env.HOME ? [`${env.HOME.replace(/\/+$/, "")}/Applications`] : [])];
+}
+
+/** An editor's commands, then on macOS the same tools inside its app. */
+function editorCommandCandidates(
+  editor: (typeof EDITORS)[number],
+  platform: NodeJS.Platform,
+  applicationDirs: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  const commands = editor.commands ?? [fileManagerCommandForPlatform(platform)];
+  if (platform !== "darwin" || !("macAppCommands" in editor)) return commands;
+  return [
+    ...commands,
+    ...applicationDirs.flatMap((dir) => editor.macAppCommands.map((app) => `${dir}/${app}`)),
+  ];
 }
 
 function resolveAvailableCommand(
@@ -278,16 +381,21 @@ const resolveFileManagerLaunch = Effect.fn("resolveFileManagerLaunch")(function*
 
   // File targets reveal in the file manager (matching Windows' `/select`)
   // instead of launching the default application for the file type: `open -R`
-  // on macOS, the containing directory on Linux (xdg-open has no reveal flag).
+  // on macOS; on Linux the file manager is asked over D-Bus to select it, and
+  // the containing directory opens when none answers (xdg-open cannot select).
   const targetType = yield* statTargetType(openTarget);
   if (targetType === "file" && platform === "darwin") {
     return { command: "open", args: ["-R", openTarget] };
   }
   const path = yield* Path.Path;
-  return {
+  const openFolder = {
     command: fileManagerCommandForPlatform(platform),
     args: [targetType === "file" ? path.dirname(openTarget) : openTarget],
   };
+  if (targetType === "file" && makeCommandPathResolver({ platform, env })("dbus-send") !== null) {
+    return { command: "dbus-send", args: resolveShowItemsArgs(openTarget), fallback: openFolder };
+  }
+  return openFolder;
 });
 
 export function resolveBrowserLaunch(
@@ -318,9 +426,15 @@ export function resolveBrowserLaunch(
   };
 }
 
+/**
+ * The editors installed on this machine. `applicationDirs` are where to look
+ * for macOS apps (see {@link macApplicationDirs}); left empty, only PATH is
+ * searched.
+ */
 export function resolveAvailableEditors(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
+  applicationDirs: ReadonlyArray<string> = [],
 ): ReadonlyArray<EditorId> {
   // Runs on every server config load; one resolver lists each PATH directory
   // once for the whole editor list.
@@ -328,7 +442,7 @@ export function resolveAvailableEditors(
   const available: EditorId[] = [];
 
   for (const editor of EDITORS) {
-    const commands = editor.commands ?? [fileManagerCommandForPlatform(platform)];
+    const commands = editorCommandCandidates(editor, platform, applicationDirs);
     if (Option.isSome(resolveAvailableCommand(commands, resolveCommand))) {
       available.push(editor.id);
     }
@@ -369,6 +483,7 @@ export const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
   input: LaunchEditorInput,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
+  applicationDirs: ReadonlyArray<string> = [],
 ): Effect.fn.Return<EditorLaunch, ExternalLauncherError, FileSystem.FileSystem | Path.Path> {
   yield* Effect.annotateCurrentSpan({
     "externalLauncher.editor": input.editor,
@@ -382,12 +497,16 @@ export const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
 
   if (editorDef.commands) {
     const command = Option.getOrElse(
-      resolveAvailableCommand(editorDef.commands, makeCommandPathResolver({ platform, env })),
+      resolveAvailableCommand(
+        editorCommandCandidates(editorDef, platform, applicationDirs),
+        makeCommandPathResolver({ platform, env }),
+      ),
       () => editorDef.commands[0],
     );
+    const folder = yield* resolveTargetFolder(input.cwd, input.workspaceRoot);
     return {
       command,
-      args: resolveEditorArgs(editorDef, input.cwd),
+      args: resolveEditorArgs(editorDef, input.cwd, folder),
     };
   }
 
@@ -423,9 +542,59 @@ export const launchBrowser = Effect.fn("externalLauncher.launchBrowser")(functio
   return yield* launchAndUnref(resolveBrowserLaunch(target), "Browser auto-open failed");
 });
 
+/**
+ * Quotes one argument for a command line cmd.exe passes on to the editor.
+ * Trailing backslashes are doubled so the editor's own parser does not read
+ * `\"` as an escaped quote: a folder like `C:\` must not swallow what follows.
+ */
+export function quoteWindowsShellArg(arg: string): string {
+  return `"${arg.replace(/(\\+)$/, "$1$1")}"`;
+}
+
+/**
+ * Runs a quick request: false when it is missing, cannot start, or exits with
+ * an error within {@link ATTACHED_LAUNCH_WAIT}; true when it succeeds or is
+ * still running then (it is let go, not killed).
+ */
+const runAttached = Effect.fn("externalLauncher.runAttached")(function* (
+  launch: EditorLaunch,
+): Effect.fn.Return<boolean, never, ChildProcessSpawner.ChildProcessSpawner> {
+  if (!isCommandAvailable(launch.command)) return false;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const command = ChildProcess.make(
+    launch.command,
+    launch.args,
+    hideWindowsConsole({
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      forceKillAfter: "1 second",
+    }),
+  );
+  return yield* spawner.spawn(command).pipe(
+    Effect.flatMap((handle) =>
+      handle.exitCode.pipe(
+        Effect.timeoutOption(ATTACHED_LAUNCH_WAIT),
+        Effect.flatMap((exited) =>
+          Option.match(exited, {
+            onSome: (exitCode) => Effect.succeed(exitCode === 0),
+            onNone: () => Effect.as(handle.unref, true),
+          }),
+        ),
+      ),
+    ),
+    Effect.scoped,
+    Effect.orElseSucceed(() => false),
+  );
+});
+
 export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(function* (
   launch: EditorLaunch,
 ): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
+  if (launch.fallback !== undefined) {
+    if (yield* runAttached(launch)) return;
+    return yield* launchEditorProcess(launch.fallback);
+  }
   if (!isCommandAvailable(launch.command)) {
     return yield* new ExternalLauncherError({
       message: `Editor command not found: ${launch.command}`,
@@ -441,7 +610,7 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
   yield* launchAndUnref(
     {
       command: isWin32 && shell ? `"${command}"` : command,
-      args: isWin32 && shell ? launch.args.map((arg) => `"${arg}"`) : [...launch.args],
+      args: isWin32 && shell ? launch.args.map(quoteWindowsShellArg) : [...launch.args],
       options: {
         detached: true,
         shell,
@@ -468,7 +637,7 @@ const make = Effect.gen(function* () {
       ),
     launchEditor: (input) =>
       Effect.flatMap(
-        resolveEditorLaunch(input).pipe(
+        resolveEditorLaunch(input, process.platform, process.env, macApplicationDirs()).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
         ),

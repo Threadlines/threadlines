@@ -902,7 +902,7 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
       const api = readLocalApi();
       if (!api) return;
       const targetPath = activeCwd ? resolvePathLinkTarget(filePath, activeCwd) : filePath;
-      void openInPreferredEditor(api, targetPath).catch((error) => {
+      void openInPreferredEditor(api, targetPath, activeCwd).catch((error) => {
         console.warn("Failed to open diff file in editor.", error);
       });
     },

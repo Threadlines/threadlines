@@ -1428,7 +1428,12 @@ export interface LocalApi {
     confirm: (message: string) => Promise<boolean>;
   };
   shell: {
-    openInEditor: (cwd: string, editor: EditorId) => Promise<void>;
+    /**
+     * Opens `target` (a folder, or a file with an optional `:line[:column]`)
+     * in `editor`. Pass the project folder a file belongs to as
+     * `workspaceRoot` so the editor shows it inside that project.
+     */
+    openInEditor: (target: string, editor: EditorId, workspaceRoot?: string) => Promise<void>;
     openExternal: (url: string) => Promise<void>;
   };
   contextMenu: {

@@ -3421,7 +3421,9 @@ export function SourceControlPanel({
       if (!api || !cwd) {
         return;
       }
-      void openInPreferredEditor(api, resolvePathLinkTarget(filePath, cwd)).catch(() => undefined);
+      void openInPreferredEditor(api, resolvePathLinkTarget(filePath, cwd), cwd).catch(
+        () => undefined,
+      );
     },
     [cwd],
   );

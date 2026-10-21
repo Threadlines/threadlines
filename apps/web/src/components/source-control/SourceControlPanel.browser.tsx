@@ -1640,7 +1640,11 @@ describe("SourceControlPanel changes", () => {
         );
       });
       await vi.waitFor(() => {
-        expect(openInEditor).toHaveBeenCalledWith("/repo/project/src/new.ts", "cursor");
+        expect(openInEditor).toHaveBeenCalledWith(
+          "/repo/project/src/new.ts",
+          "cursor",
+          "/repo/project",
+        );
       });
     } finally {
       await mounted.cleanup();
