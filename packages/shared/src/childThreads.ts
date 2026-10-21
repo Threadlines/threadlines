@@ -245,8 +245,7 @@ const sameRemoteRequest = (
   left.environmentId === right.environmentId &&
   left.label === right.label &&
   left.threadId === right.threadId &&
-  left.status === right.status &&
-  left.cancelRequested === right.cancelRequested;
+  left.status === right.status;
 
 const sameRemoteChild = (left: RemoteChildThread, right: RemoteChildThread): boolean =>
   left.label === right.label &&

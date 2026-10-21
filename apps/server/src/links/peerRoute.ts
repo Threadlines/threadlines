@@ -14,6 +14,7 @@ import {
   type PeerCaller,
 } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -102,7 +103,7 @@ const makePeerRpcLayer = (input: {
             .touchLink({
               deviceId: link.deviceId,
               environmentId: caller.environmentId,
-              now: new Date().toISOString(),
+              now: DateTime.formatIso(yield* DateTime.now),
             })
             .pipe(Effect.ignore);
           const descriptor = yield* environment.getDescriptor;

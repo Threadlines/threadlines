@@ -210,7 +210,7 @@ export const ThreadStartTool = drivesThreads(
 export const ThreadListTool = readsThreads(
   Tool.make("thread_list", {
     description:
-      'Threads you started (`scope: "mine"`, the default), including ones the user made their own, or this project\'s open threads (`"project"`, most recently active first, at most 30). Each has its id, title, status (working, needs the user, waiting, failed, idle, wrapped), branch, model, whether its replies come back to the thread that started it, and who started it.',
+      'Threads you started (`scope: "mine"`, the default), including ones the user made their own and ones on linked computers (with `computer` set, status as last heard), or this project\'s open threads (`"project"`, most recently active first, at most 30). Each has its id, title, status (working, needs the user, waiting, failed, idle, wrapped), branch, model, whether its replies come back to the thread that started it, and who started it.',
     parameters: Schema.Struct({
       scope: Schema.optional(Schema.Literals(["mine", "project"])),
     }),
@@ -222,7 +222,7 @@ export const ThreadListTool = readsThreads(
 export const ThreadReadTool = readsThreads(
   Tool.make("thread_read", {
     description:
-      "Read another thread in this project: its status and its recent messages, oldest first, each labelled with who wrote it (the user, an agent, or a request or report between threads). Messages are clipped at 4,000 characters. Pass the result's `next` as `after` later to read only newer messages. `limit` defaults to 20.",
+      "Read another thread in this project, or one you started on a linked computer: its status and its recent messages, oldest first, each labelled with who wrote it (the user, an agent, or a request or report between threads). Messages are clipped at 4,000 characters. Pass the result's `next` as `after` later to read only newer messages. `limit` defaults to 20.",
     parameters: Schema.Struct({
       threadId: ThreadIdParameter,
       after: Schema.optional(Schema.Number),

@@ -364,7 +364,6 @@ export function decideChildStart(
                 label: child.launch.target.label,
                 threadId: null,
                 status: "sending" as const,
-                cancelRequested: false,
               },
             }
           : {}),
@@ -561,7 +560,6 @@ function decideRemoteChildSend(
             label: remoteLabelOf(parent, remoteChild.environmentId),
             threadId: remoteChild.threadId,
             status: "sending",
-            cancelRequested: false,
           },
           createdAt: command.createdAt,
         },

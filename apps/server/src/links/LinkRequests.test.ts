@@ -204,7 +204,7 @@ const makeWorld = Effect.gen(function* () {
         Layer.mock(GitVcsDriver)({
           execute: () =>
             Effect.succeed({
-              exitCode: 1,
+              exitCode: 1 as never,
               stdout: "",
               stderr: "",
               stdoutTruncated: false,

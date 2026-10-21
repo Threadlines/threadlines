@@ -89,7 +89,6 @@ export default Effect.gen(function* () {
       candidate_turn_id TEXT,
       status TEXT NOT NULL,
       payload_json TEXT,
-      reason TEXT,
       report_id TEXT,
       report_outcome TEXT,
       report_text TEXT,

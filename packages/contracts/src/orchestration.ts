@@ -1639,8 +1639,9 @@ export type ChildThreadLaunch = typeof ChildThreadLaunch.Type;
  * A request whose child is on a linked computer: how far that computer has
  * it. `sending` until it recorded the request (the outbox resends it until
  * then), `accepted` once it did, `awaiting_approval` while its user decides
- * (its link is set to ask first). `cancelRequested`: Stop or a wrap asked it
- * to drop the request.
+ * (its link is set to ask first). Stop or a wrap settles the request here at
+ * once; the cancel that computer is still owed waits in
+ * OrchestrationChildRequestState.remoteCancels.
  */
 export const RemoteChildRequestStatus = Schema.Literals([
   "sending",
@@ -1655,7 +1656,6 @@ export const RemoteChildRequest = Schema.Struct({
   /** The thread on that computer, once it said so (a send names it from the start). */
   threadId: Schema.NullOr(ThreadId),
   status: RemoteChildRequestStatus,
-  cancelRequested: Schema.Boolean,
 });
 export type RemoteChildRequest = typeof RemoteChildRequest.Type;
 

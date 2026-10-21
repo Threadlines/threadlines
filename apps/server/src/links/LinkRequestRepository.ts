@@ -47,7 +47,6 @@ export const LinkRequestRow = Schema.Struct({
   status: PeerRequestStatus,
   /** Null for a tombstone (a cancel that came before its request). */
   payload: Schema.NullOr(LinkRequestPayload),
-  reason: Schema.NullOr(Schema.String),
   reportId: Schema.NullOr(Schema.String),
   reportOutcome: Schema.NullOr(PeerRequestOutcome),
   reportText: Schema.NullOr(Schema.String),
@@ -184,7 +183,6 @@ const make = Effect.gen(function* () {
       candidate_turn_id AS "candidateTurnId",
       status AS "status",
       payload_json AS "payload",
-      reason AS "reason",
       report_id AS "reportId",
       report_outcome AS "reportOutcome",
       report_text AS "reportText",

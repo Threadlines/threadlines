@@ -24,6 +24,7 @@ import {
   type ComputerLinkAccess,
   ComputerLinkError,
   type ComputerLinkPendingRequest,
+  DEFAULT_NEW_THREAD_RUNTIME_MODE,
   type LinksRespondRequestInput,
   type MessageId,
   type ModelSelection,
@@ -140,8 +141,11 @@ export class LinkRequests extends Context.Service<LinkRequests, LinkRequestsShap
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-/** The most access a linked computer's thread gets, until its link is set otherwise. */
-export const DEFAULT_LINK_MAX_RUNTIME_MODE: RuntimeMode = "auto";
+/**
+ * The most access a linked computer's thread gets, until its link is set
+ * otherwise: what a new thread here starts with.
+ */
+export const DEFAULT_LINK_MAX_RUNTIME_MODE: RuntimeMode = DEFAULT_NEW_THREAD_RUNTIME_MODE;
 
 const toOutcome = (outcome: ChildRequestOutcome): PeerRequestOutcome =>
   outcome === "declined" ? "denied" : outcome;
@@ -412,8 +416,9 @@ const make = Effect.gen(function* () {
       case "denied":
       case "expired":
         return { status: "refused", reason: row.reportText ?? `${ownLabel} didn't allow it.` };
+      // A start that failed before any turn ran never started.
       case "failed":
-        return row.turnId === null && row.reportTurnId === null && row.threadId === null
+        return row.turnId === null && row.reportTurnId === null
           ? { status: "refused", reason: row.reportText ?? "It couldn't be started." }
           : { status: "started", ...(row.threadId ? { threadId: row.threadId } : {}) };
       default:

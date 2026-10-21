@@ -59,6 +59,7 @@ import { ComputerLinkRepository } from "./ComputerLinkRepository.ts";
 const RETRY_EVERY = Duration.seconds(15);
 /** How long a watch with nothing left to wait for stays open. */
 const WATCH_LINGER_MS = 10_000;
+const WATCH_CHECK_EVERY = Duration.seconds(5);
 
 export interface RemoteChildReactorShape {
   /** Start reacting, after reloading what the previous process left owed. */
@@ -692,20 +693,25 @@ const make = Effect.gen(function* () {
       if (watching.has(environmentId)) return;
       if (!(yield* needsWatch(environmentId))) return;
       watching.add(environmentId);
-      let quietSince: number | null = null;
+      // Ends the watch once nothing has been owed for a while, events or not.
+      const settledDown = Effect.gen(function* () {
+        let quietSince: number | null = null;
+        while (true) {
+          yield* Effect.sleep(WATCH_CHECK_EVERY);
+          if (yield* needsWatch(environmentId)) {
+            quietSince = null;
+          } else if (quietSince === null) {
+            quietSince = Date.now();
+          } else if (Date.now() - quietSince >= WATCH_LINGER_MS) {
+            return;
+          }
+        }
+      });
       yield* client
         .peerStream(environmentId as EnvironmentId, (peer) => peer["peer.watch"]({}))
         .pipe(
-          Stream.mapEffect((event) =>
-            onWatchEvent(environmentId, event).pipe(
-              Effect.andThen(needsWatch(environmentId)),
-              Effect.map((needed) => {
-                quietSince = needed ? null : (quietSince ?? Date.now());
-                return quietSince === null || Date.now() - quietSince < WATCH_LINGER_MS;
-              }),
-            ),
-          ),
-          Stream.takeWhile((keep) => keep),
+          Stream.mapEffect((event) => onWatchEvent(environmentId, event)),
+          Stream.interruptWhen(settledDown),
           Stream.runDrain,
           Effect.catch((error) => handleUnavailable(environmentId, error)),
           Effect.catchCause((cause) =>
@@ -803,9 +809,16 @@ const make = Effect.gen(function* () {
           return Effect.void;
         }),
       );
-      // Owed work is retried while a computer can't be reached.
+      // Owed work is retried while a computer can't be reached, and so is
+      // the first drain of a computer that was offline at startup.
       yield* Effect.gen(function* () {
-        for (const environmentId of parentsByEnvironment.keys()) {
+        const environments = new Set(parentsByEnvironment.keys());
+        for (const link of yield* links.list.pipe(Effect.orElseSucceed(() => []))) {
+          if (link.state !== "revoked" && !drained.has(link.remoteEnvironmentId)) {
+            environments.add(link.remoteEnvironmentId);
+          }
+        }
+        for (const environmentId of environments) {
           yield* pump(environmentId);
         }
       }).pipe(Effect.repeat(Schedule.spaced(RETRY_EVERY)), Effect.forkScoped);

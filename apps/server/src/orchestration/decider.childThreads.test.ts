@@ -781,7 +781,6 @@ const remoteTarget = {
   label: "Mac mini",
   threadId: REMOTE_CHILD,
   status: "accepted" as const,
-  cancelRequested: false,
 };
 
 /** A parent whose child on a linked computer has started and is working. */

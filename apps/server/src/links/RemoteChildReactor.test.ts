@@ -75,7 +75,6 @@ const remoteRequest = (
     label: "Mac mini",
     threadId: REMOTE_CHILD,
     status: "accepted",
-    cancelRequested: false,
   },
   createdAt: AT,
   ...patch,
@@ -186,8 +185,9 @@ const makeWorld = (input: {
               Effect.sync(() => (threadId === PARENT ? Option.some(parent) : Option.none())),
           }),
           Layer.mock(ComputerLinkClient)({
-            withPeer: (_environmentId, use) => use(peer),
-            peerStream: (_environmentId, use) => use(peer),
+            withPeer: (_environmentId, use) => use(peer).pipe(Effect.orDie),
+            peerStream: (_environmentId, use) => use(peer).pipe(Stream.orDie),
+            cachedDescribe: () => null,
           }),
           Layer.mock(ComputerLinkRepository)({
             list: Effect.succeed([LINK]),
@@ -355,7 +355,6 @@ it.layer(NodeServices.layer)("RemoteChildReactor", (it) => {
                 label: "Mac mini",
                 threadId: null,
                 status: "sending",
-                cancelRequested: false,
               },
               launch: {
                 title: "Write the changelog",
@@ -390,7 +389,6 @@ it.layer(NodeServices.layer)("RemoteChildReactor", (it) => {
             label: "Mac mini",
             threadId: REMOTE_CHILD,
             status: "accepted",
-            cancelRequested: false,
           },
         },
       );
