@@ -40,7 +40,8 @@
     "build:bundle": "vp pack",
     "start": "node dist/bin.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vp exec vp test run"
+    "test": "vp exec vp test run",
+    "test:shard-weights": "node scripts/update-test-shard-weights.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "catalog:",

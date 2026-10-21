@@ -26,8 +26,16 @@ type CheckRunEvaluation = {
   pending: string[];
 };
 
+// The CI jobs themselves rather than their "Format, Lint, Typecheck, Test,
+// Build" gate: the gate runs even when its workflow run is cancelled and
+// reports that as a failure, while a cancelled job reports "cancelled", which
+// yields to the merge queue's verdict on the same commit. Keep the server
+// shards in step with the `server_test` matrix in .github/workflows/ci.yml.
 const DEFAULT_REQUIRED_CHECKS = [
-  "Format, Lint, Typecheck, Test, Build",
+  "Checks and Build",
+  "Server Test (1/3)",
+  "Server Test (2/3)",
+  "Server Test (3/3)",
   "Browser Test",
   "Release Smoke",
 ];
