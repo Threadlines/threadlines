@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import {
+  AuthSessionId,
   ChildRequestId,
   EnvironmentId,
   IsoDateTime,
@@ -19,8 +20,13 @@ import { RelayHostId, RelayInviteId } from "./relay.ts";
 export const ComputerLinkId = TrimmedNonEmptyString.pipe(Schema.brand("ComputerLinkId"));
 export type ComputerLinkId = typeof ComputerLinkId.Type;
 
-/** An outbound link's standing: `revoked` once the other computer removed it. */
-export const ComputerLinkState = Schema.Literals(["active", "revoked", "failed"]);
+/**
+ * An outbound link's standing: `revoked` once the other computer removed it;
+ * `unlinking` once this computer removed it while the other one couldn't be
+ * reached. Nothing new goes over an unlinking link, and the other computer is
+ * told when it is next reached; then the link is gone.
+ */
+export const ComputerLinkState = Schema.Literals(["active", "revoked", "failed", "unlinking"]);
 export type ComputerLinkState = typeof ComputerLinkState.Type;
 
 /** Whether this server is connected to the other computer right now. */
@@ -64,6 +70,12 @@ export const InboundComputerLink = Schema.Struct({
   environmentId: Schema.NullOr(EnvironmentId),
   label: TrimmedNonEmptyString,
   platform: Schema.NullOr(TrimmedNonEmptyString),
+  /**
+   * Its session here, as Settings › Connections lists it among the devices
+   * with access: the stable way to tell which device row is this link (two
+   * computers can share a name). Null while it is still being approved.
+   */
+  sessionId: Schema.NullOr(AuthSessionId),
   access: ComputerLinkAccess,
   /** The most access a thread it starts here gets. */
   maxRuntimeMode: RuntimeMode,
@@ -137,11 +149,43 @@ export const LinksSetAccessInput = Schema.Struct({
 });
 export type LinksSetAccessInput = typeof LinksSetAccessInput.Type;
 
+/**
+ * Removes one half of a link: the asking computer's link (outbound) or the
+ * working computer's access for it (inbound). Unlinking two computers removes
+ * every half the app can reach, each on the computer that holds it
+ * (docs/design/fleet.md, Rev 4 "Unlink"). Removing an outbound link is always
+ * an unlink: the other computer, when told, stops what this one's link started
+ * there and forgets its own link back to this one.
+ */
 export const LinksRemoveInput = Schema.Union([
-  Schema.Struct({ direction: Schema.Literal("outbound"), linkId: ComputerLinkId }),
-  Schema.Struct({ direction: Schema.Literal("inbound"), deviceId: TrimmedNonEmptyString }),
+  Schema.Struct({
+    direction: Schema.Literal("outbound"),
+    linkId: ComputerLinkId,
+    /**
+     * The app already removed the other computer's halves, so there is
+     * nothing to tell it.
+     */
+    otherHalfRemoved: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    direction: Schema.Literal("inbound"),
+    deviceId: TrimmedNonEmptyString,
+    /** Also stop the threads this link started here that are still running. */
+    stopRunning: Schema.optional(Schema.Boolean),
+  }),
 ]);
 export type LinksRemoveInput = typeof LinksRemoveInput.Type;
+
+/**
+ * Whether the other computer has done its half. `pending`: it couldn't be
+ * reached, so this computer keeps the link as `unlinking` and finishes when it
+ * next reaches it. A half that wasn't confirmed is never reported done.
+ * `not_asked`: an inbound removal, which is this computer's alone.
+ */
+export const LinksRemoveResult = Schema.Struct({
+  otherComputer: Schema.Literals(["confirmed", "pending", "not_asked"]),
+});
+export type LinksRemoveResult = typeof LinksRemoveResult.Type;
 
 export const LinksRespondRequestInput = Schema.Struct({
   deviceId: TrimmedNonEmptyString,

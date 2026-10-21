@@ -387,8 +387,20 @@ export const PeerReportAckRpc = Rpc.make(PEER_METHODS.reportAck, {
   error: PeerRpcError,
 });
 
+/**
+ * The asking computer removed its link. `stopRunning`: the threads it started
+ * here that still run are stopped too. `reverse`: an unlink of both
+ * directions, so this computer also forgets its own link back to the asking
+ * one (whose access there goes in the same unlink). Older callers send neither.
+ */
+export const PeerUnlinkInput = Schema.Struct({
+  stopRunning: Schema.optional(Schema.Boolean),
+  reverse: Schema.optional(Schema.Boolean),
+});
+export type PeerUnlinkInput = typeof PeerUnlinkInput.Type;
+
 export const PeerUnlinkRpc = Rpc.make(PEER_METHODS.unlink, {
-  payload: Schema.Struct({}),
+  payload: PeerUnlinkInput,
   error: PeerRpcError,
 });
 

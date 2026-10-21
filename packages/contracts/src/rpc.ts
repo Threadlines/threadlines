@@ -11,6 +11,7 @@ import {
   InboundComputerLink,
   LinksAcceptInput,
   LinksRemoveInput,
+  LinksRemoveResult,
   LinksRespondRequestInput,
   LinksSetAccessInput,
   OutboundComputerLink,
@@ -1759,6 +1760,7 @@ export const WsLinksSetAccessRpc = Rpc.make(WS_METHODS.linksSetAccess, {
 
 export const WsLinksRemoveRpc = Rpc.make(WS_METHODS.linksRemove, {
   payload: LinksRemoveInput,
+  success: LinksRemoveResult,
   error: ComputerLinkError,
 });
 

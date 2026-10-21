@@ -1681,6 +1681,22 @@ export const RemoteChildThread = Schema.Struct({
 export type RemoteChildThread = typeof RemoteChildThread.Type;
 
 /**
+ * A start a parent asked of a linked computer that has no thread there yet
+ * (sending, or waiting for that computer's user to allow it), as the sidebar
+ * shows it in the parent's family.
+ */
+export const RemoteChildStart = Schema.Struct({
+  requestId: ChildRequestId,
+  environmentId: EnvironmentId,
+  /** The computer's name, as last known. */
+  label: TrimmedNonEmptyString,
+  title: TrimmedNonEmptyString,
+  status: RemoteChildRequestStatus,
+  createdAt: IsoDateTime,
+});
+export type RemoteChildStart = typeof RemoteChildStart.Type;
+
+/**
  * Something still owed to a linked computer, in the parent's outbox: drop a
  * request (`cancelRequest`, Stop, a wrap, thread_stop), stop a child's
  * session there (`stopThread`), or both. Recorded in the same decision that
@@ -2086,6 +2102,14 @@ export const OrchestrationThreadShell = Schema.Struct({
    * by <thread> on <computer>". Absent or null: started here.
    */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /**
+   * On a parent: its children on linked computers with their last known
+   * status (OrchestrationChildRequestState.remoteChildren), so its family
+   * shows them even where the app can't reach that computer. Absent: none.
+   */
+  remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
+  /** On a parent: starts asked of linked computers with no thread there yet. Absent: none. */
+  remoteChildStarts: Schema.optional(Schema.Array(RemoteChildStart)),
   /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
