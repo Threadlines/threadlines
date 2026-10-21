@@ -63,6 +63,12 @@ export const LinkRequestRow = Schema.Struct({
   deliveredAt: Schema.NullOr(IsoDateTime),
   /** What a cancel still owes the thread; null when nothing. */
   cleanup: Schema.NullOr(LinkRequestCleanup),
+  /**
+   * When the asking computer took the request back. Set by every cancel,
+   * whatever the status (a start that reports nothing back is already
+   * `answered` before its turn runs): its turn must not run any more.
+   */
+  revokedAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -159,8 +165,9 @@ export interface LinkRequestRepositoryShape {
    * leaves a tombstone so it is refused when it does; in the same
    * transaction it records what is still owed the thread (`cleanup`: its
    * message taken back, and with `stopThread` the thread stopped, even when
-   * the request had already ended). Returns the row as it stands, and
-   * whether this call ended it.
+   * the request had already ended) and marks it revoked (`revokedAt`, also
+   * whatever its status). Returns the row as it stands, and whether this
+   * call ended it.
    */
   readonly cancel: (input: {
     readonly linkDeviceId: string;
@@ -223,6 +230,7 @@ const make = Effect.gen(function* () {
       settled_at AS "settledAt",
       delivered_at AS "deliveredAt",
       cleanup AS "cleanup",
+      revoked_at AS "revokedAt",
       created_at AS "createdAt",
       updated_at AS "updatedAt"
     FROM link_requests
@@ -377,6 +385,11 @@ const make = Effect.gen(function* () {
         WHERE link_device_id = ${input.linkDeviceId} AND request_id = ${input.requestId}
           AND payload_json IS NOT NULL AND thread_id IS NOT NULL
           AND (status = 'cancelled' OR ${input.stopThread ? 1 : 0} = 1)
+      `;
+      // Its turn must not run any more, whatever the request's end says.
+      yield* sql`
+        UPDATE link_requests SET revoked_at = COALESCE(revoked_at, ${input.now})
+        WHERE link_device_id = ${input.linkDeviceId} AND request_id = ${input.requestId}
       `;
       const row = Option.getOrThrow(
         yield* findOne({ linkDeviceId: input.linkDeviceId, requestId: input.requestId }),

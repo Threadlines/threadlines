@@ -3898,6 +3898,52 @@ describe("ProviderCommandReactor", () => {
       expect(thread?.session?.status).not.toBe("starting");
     });
 
+    it("checks a linked computer's turn again right before sending it, after its session started", async () => {
+      // Allowed when the turn was asked for; taken back while the provider
+      // was still starting.
+      const verdicts: Array<"run" | "taken-back"> = ["run", "taken-back"];
+      const harness = await createHarness({
+        remoteRequestGate: {
+          messageVerdict: () => Effect.sync(() => verdicts.shift() ?? "taken-back"),
+        },
+      });
+      const remoteThread = await createRemoteThread(harness, "remote-thread-late-cancel");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-remote-late-cancel"),
+          threadId: remoteThread,
+          message: {
+            messageId: asMessageId("remote-late-cancel-message"),
+            role: "user",
+            text: "Write the changelog.",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          fromThread: {
+            threadId: ThreadId.make("windows-parent"),
+            requestId: ChildRequestId.make("request-late-cancel"),
+            kind: "request",
+            environmentId: EnvironmentId.make("env-windows"),
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      await waitFor(async () => {
+        const thread = (await harness.readModel()).threads.find(
+          (entry) => entry.id === remoteThread,
+        );
+        return (
+          thread?.session?.lastError ===
+          "The other computer took this request back before it started."
+        );
+      });
+      await harness.drain();
+      expect(harness.startSession).toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    });
+
     it("keeps one retry per thread: a newer unknown replaces the older one", async () => {
       const first = asMessageId("remote-overlap-first");
       const second = asMessageId("remote-overlap-second");

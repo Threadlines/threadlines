@@ -20,7 +20,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  *   dedupe; a cancel that arrives first leaves a `cancelled` tombstone.
  *   `cleanup` is what a cancel still owes the thread (take its message back,
  *   or that and stop the thread), written with the cancel and cleared once
- *   done, so a restart in between finishes it.
+ *   done, so a restart in between finishes it. `revoked_at` is set by every
+ *   cancel, whatever the request's status: its turn must not run any more.
  * - `projection_threads.remote_origin_json`: see ThreadRemoteOrigin.
  *
  * New tables and nullable or defaulted columns only; no row is rewritten.
@@ -100,6 +101,7 @@ export default Effect.gen(function* () {
       settled_at TEXT,
       delivered_at TEXT,
       cleanup TEXT,
+      revoked_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (link_device_id, request_id)

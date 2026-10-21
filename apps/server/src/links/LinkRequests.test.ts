@@ -924,6 +924,33 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
     }),
   );
 
+  it.effect(
+    "a start that reports nothing back, settled as soon as it is set up, is still taken back by a cancel",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const service = yield* computer.boot();
+        yield* service.start(link(), { ...startInput("request-1"), reportBack: false });
+        yield* eventually(
+          Effect.map(computer.request("request-1"), (row) => row.status === "answered"),
+          "it is settled once set up",
+        );
+        const threadId = linkThreadId(DEVICE, "request-1");
+        const firstMessage = linkMessageId(DEVICE, "request-1");
+        assert.equal(yield* service.messageVerdict({ threadId, messageId: firstMessage }), "run");
+        // Taken back while its provider is still starting: the report stays
+        // as it was, but the turn must not run.
+        const cancelled = yield* service.cancel(link(), ChildRequestId.make("request-1"));
+        assert.equal(cancelled.status, "already_settled");
+        assert.equal((yield* computer.request("request-1")).status, "answered");
+        assert.equal(
+          yield* service.messageVerdict({ threadId, messageId: firstMessage }),
+          "taken-back",
+        );
+      }),
+  );
+
   it.effect("a start cancelled after its first turn was asked for is taken back at the gate", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer();

@@ -1451,15 +1451,17 @@ const make = Effect.gen(function* () {
   /**
    * The turns asked for in a thread, straight from its turn-start events (a
    * pending start included): each message id with the sequence it was last
-   * asked for at. One indexed query per thread.
+   * asked for at. One query per thread, served by the events table's
+   * (aggregate_kind, stream_id, sequence) index; the event type is filtered
+   * within the thread's own events.
    */
   const readTurnStarts = (threadId: ThreadId) =>
     sql<{ readonly messageId: string | null; readonly sequence: number }>`
       SELECT json_extract(payload_json, '$.messageId') AS "messageId", sequence AS "sequence"
       FROM orchestration_events
       WHERE aggregate_kind = 'thread'
-        AND event_type = 'thread.turn-start-requested'
         AND stream_id = ${threadId}
+        AND event_type = 'thread.turn-start-requested'
       ORDER BY sequence
     `.pipe(
       Effect.map((rows) => {
@@ -1705,15 +1707,17 @@ const make = Effect.gen(function* () {
 
   /**
    * The verdict on a turn a linked computer's request asked for (by the
-   * message id reserved for it): one whose request ended without running
-   * (cancelled, refused, expired) never runs. Other ends don't stop it: a
-   * start that reports nothing back is settled as soon as it is set up.
+   * message id reserved for it): it never runs once the asking computer took
+   * the request back (`revokedAt`, set by every cancel whatever the status:
+   * a start that reports nothing back is already settled `answered` before
+   * its turn runs), or once the request ended without running (refused,
+   * expired).
    */
   const messageVerdict: LinkRequestsShape["messageVerdict"] = ({ threadId, messageId }) =>
     ledger.listByThread(threadId).pipe(
       Effect.map((rows) => {
         const row = rows.find((entry) => entry.messageId === messageId);
-        return row !== undefined && TAKEN_BACK_STATUSES.has(row.status)
+        return row !== undefined && (row.revokedAt !== null || TAKEN_BACK_STATUSES.has(row.status))
           ? ("taken-back" as const)
           : ("run" as const);
       }),
