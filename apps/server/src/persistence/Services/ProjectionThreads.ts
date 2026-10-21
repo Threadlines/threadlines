@@ -17,6 +17,7 @@ import {
   OrchestrationThreadParticipant,
   OrchestrationRoomContextCursor,
   OrchestrationSideTurn,
+  PositiveInt,
   ProjectId,
   RoomAgentRole,
   ProviderInteractionMode,
@@ -86,6 +87,12 @@ export const ProjectionThread = Schema.Struct({
    * before migration 054 decode; absent reads as none.
    */
   linkedPullRequests: Schema.optional(Schema.Array(OrchestrationThreadLinkedPullRequest)),
+  /**
+   * Pull requests whose row the user closed above the composer; see
+   * `OrchestrationThreadShell.dismissedPullRequests`. Optional so rows written
+   * before migration 076 decode; absent or null means none.
+   */
+  dismissedPullRequests: Schema.optional(Schema.NullOr(Schema.Array(PositiveInt))),
   /**
    * Messages waiting for the running turn to finish; see
    * `OrchestrationThreadShell.queuedFollowUps`. Optional so rows written before

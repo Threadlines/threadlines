@@ -51,10 +51,10 @@ import {
   type ComposerPullRequest,
 } from "../components/chat/ComposerPullRequestRow";
 import {
-  composerPullRequestDismissalKey as composerPullRequestDismissalKeyFor,
-  dismissComposerPullRequest,
-  useDismissedComposerPullRequests,
-} from "../components/chat/composerPullRequestDismissals";
+  isComposerPullRequestDismissed,
+  setComposerPullRequestDismissed,
+  useComposerPullRequestDismissalHolds,
+} from "../lib/composerPullRequestDismissals";
 import {
   leadThreadPullRequest,
   resolveLinkedThreadPullRequests,
@@ -656,8 +656,22 @@ function ChatThreadRouteView() {
     [openPullRequestTab, threadPullRequests],
   );
   // Closing a row is per pull request: a thread that moves on to another one
-  // gets a row back for it.
-  const dismissedComposerPullRequests = useDismissedComposerPullRequests();
+  // gets a row back for it. The thread keeps the closed ones, and the Pull
+  // request tab brings one back.
+  const composerPullRequestDismissalHolds = useComposerPullRequestDismissalHolds();
+  const threadDismissedPullRequests = serverThread?.dismissedPullRequests;
+  const pullRequestTabTargetNumber = pullRequestTabTarget?.reference.number ?? null;
+  const showPullRequestTabRowAboveComposer =
+    threadRef &&
+    pullRequestTabTargetNumber !== null &&
+    isComposerPullRequestDismissed({
+      holds: composerPullRequestDismissalHolds,
+      threadRef,
+      pullRequestNumber: pullRequestTabTargetNumber,
+      serverDismissed: threadDismissedPullRequests,
+    })
+      ? () => setComposerPullRequestDismissed(threadRef, pullRequestTabTargetNumber, false)
+      : undefined;
   const activeProjectTitle = activeProject?.name ?? null;
   // The app setting is the default; a thread that has said otherwise wins.
   const wrapUpOnSettledDefault = useSettings(
@@ -687,12 +701,14 @@ function ChatThreadRouteView() {
       return NO_COMPOSER_PULL_REQUESTS;
     }
     const rows = threadPullRequests.flatMap(({ pullRequest, reference, own }) => {
-      const dismissalKey = composerPullRequestDismissalKeyFor({
-        threadKey: currentThreadKey,
-        repository: reference.repository,
-        number: reference.number,
-      });
-      if (dismissedComposerPullRequests.has(dismissalKey)) {
+      if (
+        isComposerPullRequestDismissed({
+          holds: composerPullRequestDismissalHolds,
+          threadRef,
+          pullRequestNumber: reference.number,
+          serverDismissed: threadDismissedPullRequests,
+        })
+      ) {
         return [];
       }
       // A pull request linked from another branch keeps its own switch after
@@ -711,7 +727,7 @@ function ChatThreadRouteView() {
             : null,
         projectTitle: activeProjectTitle,
         onOpen: () => openPullRequestTab(reference.number),
-        onDismiss: () => dismissComposerPullRequest(dismissalKey),
+        onDismiss: () => setComposerPullRequestDismissed(threadRef, reference.number, true),
         autoFix: own
           ? {
               checked: threadPullRequestAutoFix,
@@ -743,11 +759,12 @@ function ChatThreadRouteView() {
     return rows.length === 0 ? NO_COMPOSER_PULL_REQUESTS : rows;
   }, [
     activeProjectTitle,
+    composerPullRequestDismissalHolds,
     currentThreadKey,
-    dismissedComposerPullRequests,
     openPullRequestTab,
     threadAgentWorking,
     threadCheckoutBranch,
+    threadDismissedPullRequests,
     threadLinkedPullRequests,
     threadPullRequestAutoFix,
     threadPullRequestAutoMerge,
@@ -884,6 +901,7 @@ function ChatThreadRouteView() {
                 numbers={threadPullRequests.map(({ reference }) => reference.number)}
                 selected={pullRequestTabTarget.reference.number}
                 onSelect={openPullRequestTab}
+                onShowAboveComposer={showPullRequestTabRowAboveComposer}
               />
               <div className="flex min-h-0 flex-1 flex-col">
                 <LazyPullRequestDetailPanel

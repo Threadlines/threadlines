@@ -1,4 +1,8 @@
-import type { PullRequestMergeMethod, ScopedThreadRef } from "@threadlines/contracts";
+import type {
+  DispatchResult,
+  PullRequestMergeMethod,
+  ScopedThreadRef,
+} from "@threadlines/contracts";
 
 import { readEnvironmentApi } from "../environmentApi";
 import { newCommandId } from "./utils";
@@ -48,5 +52,29 @@ export async function setThreadPullRequestAutoMerge(
     threadId: threadRef.threadId,
     ...(pullRequestNumber === null ? {} : { pullRequestNumber }),
     autoMerge: mergeMethod,
+  });
+}
+
+/**
+ * Close a pull request's row above this thread's composer, or bring it back.
+ * The thread holds the answer, so it stands after a restart and on every
+ * device. Resolves to the sequence the server gave the write; rejects when the
+ * environment is not connected. `composerPullRequestDismissals` is the caller.
+ */
+export async function setThreadPullRequestDismissed(
+  threadRef: ScopedThreadRef,
+  pullRequestNumber: number,
+  dismissed: boolean,
+): Promise<DispatchResult> {
+  const api = readEnvironmentApi(threadRef.environmentId);
+  if (!api) {
+    throw new Error(`Environment ${threadRef.environmentId} is not connected.`);
+  }
+  return api.orchestration.dispatchCommand({
+    type: "thread.pull-request.dismiss",
+    commandId: newCommandId(),
+    threadId: threadRef.threadId,
+    number: pullRequestNumber,
+    dismissed,
   });
 }
