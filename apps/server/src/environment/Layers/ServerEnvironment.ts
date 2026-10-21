@@ -91,6 +91,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       browserScreenshotTypes: true,
       commandRuns: true,
       computerLinks: true,
+      scheduledTasks: true,
     },
   };
 

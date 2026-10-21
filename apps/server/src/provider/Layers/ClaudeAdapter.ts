@@ -8849,6 +8849,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               pages: agentPages,
               commands: commandRequests,
               sideKind,
+              scheduledRun: input.scheduledRunTools === true,
             })
           : undefined;
       const revokeCredential =
@@ -9021,7 +9022,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               forkSessionId: newSessionId,
             },
             roomServer !== undefined
-              ? { server: roomServer, toolIds: roomToolsFor(sideKind).map(claudeRoomToolId) }
+              ? {
+                  server: roomServer,
+                  toolIds: roomToolsFor(sideKind, {
+                    scheduledRun: input.scheduledRunTools === true,
+                  }).map(claudeRoomToolId),
+                }
               : undefined,
           )
         : normalQueryOptions;

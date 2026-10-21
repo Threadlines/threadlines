@@ -1130,6 +1130,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 room: roomToolsRequested,
                 pages: agentPagesRequested,
                 commands: commandRequestsRequested,
+                scheduledRun: input.scheduledRunTools === true,
               })
             : undefined;
           if (credential !== undefined) {

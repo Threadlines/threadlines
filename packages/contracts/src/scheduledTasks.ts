@@ -141,8 +141,30 @@ export const ScheduledTask = Schema.Struct({
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
+/**
+ * A change an agent asked to make to this computer's scheduled tasks, waiting
+ * for the user ("Agents can start threads" set to ask first). Shown as a card
+ * in the asking thread, with Allow and Deny.
+ */
+export const ScheduledTaskRequest = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+  /** The thread whose agent asked. */
+  threadId: ThreadId,
+  action: Schema.Literals(["create", "update"]),
+  /** The task an update changes. */
+  taskId: Schema.NullOr(ScheduledTaskId),
+  /** The task's name, as the change leaves it. */
+  name: TrimmedNonEmptyString,
+  /** What it asks for, one plain line each ("Weekdays at 9:00", "Pause it"). */
+  details: Schema.Array(Schema.String),
+  createdAt: IsoDateTime,
+});
+export type ScheduledTaskRequest = typeof ScheduledTaskRequest.Type;
+
 export const ScheduledTasksSnapshot = Schema.Struct({
   tasks: Schema.Array(ScheduledTask),
+  /** Agents' changes waiting for the user. */
+  requests: Schema.Array(ScheduledTaskRequest),
 });
 export type ScheduledTasksSnapshot = typeof ScheduledTasksSnapshot.Type;
 
@@ -175,6 +197,13 @@ export type ScheduledTaskDeleteInput = typeof ScheduledTaskDeleteInput.Type;
 
 export const ScheduledTaskRunNowInput = Schema.Struct({ id: ScheduledTaskId });
 export type ScheduledTaskRunNowInput = typeof ScheduledTaskRunNowInput.Type;
+
+/** The user allows or denies an agent's change (ScheduledTaskRequest). */
+export const ScheduledTaskRespondRequestInput = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+  allow: Schema.Boolean,
+});
+export type ScheduledTaskRespondRequestInput = typeof ScheduledTaskRespondRequestInput.Type;
 
 /** A task's runs, newest first; `before` (a slot) pages back. */
 export const ScheduledTaskListRunsInput = Schema.Struct({

@@ -23,6 +23,7 @@ import {
   ScheduledTaskError,
   ScheduledTaskListRunsInput,
   ScheduledTaskListRunsResult,
+  ScheduledTaskRespondRequestInput,
   ScheduledTaskRunNowInput,
   ScheduledTasksSnapshot,
   ScheduledTaskUpdateInput,
@@ -593,6 +594,7 @@ export const WS_METHODS = {
   scheduledTasksUpdate: "scheduledTasks.update",
   scheduledTasksDelete: "scheduledTasks.delete",
   scheduledTasksRunNow: "scheduledTasks.runNow",
+  scheduledTasksRespondRequest: "scheduledTasks.respondRequest",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1825,6 +1827,12 @@ export const WsScheduledTasksRunNowRpc = Rpc.make(WS_METHODS.scheduledTasksRunNo
   error: ScheduledTaskError,
 });
 
+/** Allows or denies an agent's change to the tasks (Agents can start threads: Ask first). */
+export const WsScheduledTasksRespondRequestRpc = Rpc.make(WS_METHODS.scheduledTasksRespondRequest, {
+  payload: ScheduledTaskRespondRequestInput,
+  error: ScheduledTaskError,
+});
+
 /** Empty for anyone but a "Connect a device" device. */
 export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
   payload: Schema.Struct({}),
@@ -2005,6 +2013,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksUpdateRpc,
   WsScheduledTasksDeleteRpc,
   WsScheduledTasksRunNowRpc,
+  WsScheduledTasksRespondRequestRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,

@@ -63,6 +63,8 @@ describe("normalizeMcpHttpResponse", () => {
 const THREAD = ThreadId.make("0f8f5a52-4d0e-4c1b-9d56-1e7c1f9b7a01");
 const AGENT = ThreadParticipantId.make("6f1c9a3e-2b7d-4a55-8e0f-9c3d2b1a0e44");
 const SIDE_TURN = SideTurnId.make("b2c4d6e8-1a3b-4c5d-8e9f-0a1b2c3d4e5f");
+/** A thread a scheduled task's run started. */
+const RUN_THREAD = ThreadId.make("3c1d9e27-5a40-4f8b-9b1e-6d2a7c4e8f10");
 
 describe("McpSessionRegistry", () => {
   it("gives simultaneous provider runtimes separate agent identities", async () => {
@@ -280,10 +282,19 @@ describe("MCP endpoints", () => {
             browser: true,
             room: false,
           });
+          const scheduledRun = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: RUN_THREAD,
+            browser: true,
+            room: true,
+            scheduledRun: true,
+          });
 
           const result = yield* Effect.promise(async () => ({
             browser: await listTools(`${base}/mcp`, main.token),
             room: await listTools(`${base}/mcp/room`, main.token),
+            // Each credential lists only the room tools it may call.
+            scheduledRunRoom: await listTools(`${base}/mcp/room`, scheduledRun.token),
+            reviewerRoom: await listTools(`${base}/mcp/room`, reviewer.token),
             reviewerOnBrowser: await openSession(`${base}/mcp`, reviewer.token),
             // The screenshot is registered by hand, outside the toolkit; the
             // refusal comes before any tool is looked at.
@@ -309,6 +320,12 @@ describe("MCP endpoints", () => {
           expect("tools" in result.room ? result.room.tools : []).toEqual(
             [...ROOM_TOOL_NAMES].toSorted(),
           );
+          expect("tools" in result.scheduledRunRoom ? result.scheduledRunRoom.tools : []).toEqual(
+            [...ROOM_TOOL_NAMES, "scheduled_run_finish"].toSorted(),
+          );
+          expect("tools" in result.reviewerRoom ? result.reviewerRoom.tools : []).toEqual([
+            "room_diff",
+          ]);
           expect(result.reviewerOnBrowser.status).toBe(401);
           expect(result.reviewerScreenshot).toBe(401);
           expect(result.reviewerOnRoom.status).toBe(200);
@@ -334,6 +351,7 @@ describe("MCP endpoints", () => {
             participantSessionKey(THREAD, AGENT),
             browserOnly.generation,
           );
+          yield* mcpSessionRegistry.revoke(RUN_THREAD, scheduledRun.generation);
         }),
       ).pipe(onLoopback),
     );

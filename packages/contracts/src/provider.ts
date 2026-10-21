@@ -175,6 +175,11 @@ export const ProviderSessionStartInput = Schema.Struct({
    */
   roomTools: Schema.optional(Schema.Boolean),
   /**
+   * With `roomTools`: the thread is a scheduled run's, so its main runtime
+   * also gets `scheduled_run_finish` (docs/design/fleet.md, Part 6).
+   */
+  scheduledRunTools: Schema.optional(Schema.Boolean),
+  /**
    * Attach the page tools endpoint (`threadlines_pages`): `show_page` and
    * `preview_page`, docs/agent-pages.md. Never for a locked-down side
    * runtime.

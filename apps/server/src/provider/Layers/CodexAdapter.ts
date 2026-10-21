@@ -3270,6 +3270,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               }),
           ...(input.resumePolicy === "required" ? { resumeRequired: true } : {}),
           ...(input.roomTools === true ? { roomTools: true } : {}),
+          ...(input.roomTools === true && input.scheduledRunTools === true
+            ? { scheduledRunTools: true }
+            : {}),
           ...(input.agentPages === true && sideAnswer === undefined ? { agentPages: true } : {}),
           ...(input.commandRequests === true && sideAnswer === undefined
             ? { commandRequests: true }

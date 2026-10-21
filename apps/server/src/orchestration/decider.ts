@@ -618,6 +618,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "A thread is started either by a thread here or by one on a linked computer.",
         });
       }
+      // Nor does a scheduled task's run: the scheduler starts it on its own.
+      if (
+        command.scheduledRun !== undefined &&
+        (parentThreadId !== undefined || command.remoteOrigin !== undefined)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A scheduled run's thread is started by its schedule alone.",
+        });
+      }
       // A thread set up as a room before its first message starts with its
       // agents: all of them are checked before any is recorded.
       const startingAgents = command.participants ?? [];
@@ -668,6 +678,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               }
             : {}),
           ...(command.remoteOrigin !== undefined ? { remoteOrigin: command.remoteOrigin } : {}),
+          ...(command.scheduledRun !== undefined ? { scheduledRun: command.scheduledRun } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },

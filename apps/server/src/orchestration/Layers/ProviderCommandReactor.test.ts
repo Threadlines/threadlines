@@ -11,6 +11,7 @@ import {
   ModelSelection,
   type OrchestrationCommand,
   type OrchestrationSession,
+  type OrchestrationThread,
   type OrchestrationWarmUpTurnInput,
   type OrchestrationWorkflowRunPatch,
   ProviderRuntimeEvent,
@@ -20,6 +21,7 @@ import {
   ProviderInstanceId,
   RoomAgentRequestId,
   RuntimeTaskId,
+  ScheduledTaskId,
   SideTurnId,
   type ThreadContextSeed,
   ThreadForkSeedOutcomeActivityKind,
@@ -2336,6 +2338,80 @@ describe("ProviderCommandReactor", () => {
     await startTurn("again");
     await waitFor(() => harness.sendTurn.mock.calls.length === 3);
     expect(harness.startSession.mock.calls.length).toBe(2);
+  });
+
+  it("gives a scheduled run's thread its tools on its own, and a linked computer's thread none", async () => {
+    // Agents may neither invite nor start threads.
+    const harness = await createHarness({
+      serverSettings: { agentInvites: "off", agentThreads: "off" },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const createAndStart = async (
+      id: string,
+      origin:
+        | { readonly scheduledRun: NonNullable<OrchestrationThread["scheduledRun"]> }
+        | { readonly remoteOrigin: NonNullable<OrchestrationThread["remoteOrigin"]> },
+    ) => {
+      const threadId = ThreadId.make(id);
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`cmd-create-${id}`),
+        threadId,
+        projectId: asProjectId("project-1"),
+        title: "Morning review",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        ...origin,
+        createdAt: now,
+      });
+      await dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-turn-${id}`),
+        threadId,
+        message: {
+          messageId: asMessageId(`message-${id}`),
+          role: "user",
+          text: "go",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      });
+    };
+
+    await createAndStart("scheduled-run-thread", {
+      scheduledRun: {
+        taskId: ScheduledTaskId.make("task-1"),
+        taskName: "Morning review",
+        slotUtc: "2026-01-01T09:00:00.000Z",
+      },
+    });
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      roomTools: true,
+      scheduledRunTools: true,
+    });
+
+    // The fence holds whatever the settings say.
+    await harness.updateServerSettings({ agentInvites: "ask", agentThreads: "auto" });
+    await createAndStart("linked-computer-thread", {
+      remoteOrigin: {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      },
+    });
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("roomTools");
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("scheduledRunTools");
   });
 
   it("picks up the room tools at the next turn, never in the middle of one", async () => {

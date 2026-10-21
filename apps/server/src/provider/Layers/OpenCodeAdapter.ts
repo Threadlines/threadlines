@@ -2282,6 +2282,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             room: roomTools,
             pages: agentPageAssetsDir !== undefined,
             commands: input.commandRequests === true,
+            scheduledRun: input.scheduledRunTools === true,
           });
           yield* Scope.addFinalizer(
             scope,

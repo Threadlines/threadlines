@@ -379,6 +379,7 @@ export function projectEvent(
             parentTurnId: payload.parentTurnId ?? null,
             attachedToParent: payload.attachedToParent ?? false,
             ...(payload.remoteOrigin !== undefined ? { remoteOrigin: payload.remoteOrigin } : {}),
+            ...(payload.scheduledRun !== undefined ? { scheduledRun: payload.scheduledRun } : {}),
             voiceActive: false,
             latestTurn: null,
             createdAt: payload.createdAt,

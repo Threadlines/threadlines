@@ -573,6 +573,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             parentTurnId: event.payload.parentTurnId ?? null,
             attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
             remoteOrigin: event.payload.remoteOrigin ?? null,
+            scheduledRun: event.payload.scheduledRun ?? null,
             effectiveCwd: null,
             effectiveCwdSource: null,
             goal: null,

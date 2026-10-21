@@ -233,6 +233,8 @@ export interface CodexSessionRuntimeOptions {
    * for a working runtime, the read tools its kind allows for a side one.
    */
   readonly roomTools?: boolean;
+  /** With `roomTools`: a scheduled run's thread (ProviderSessionStartInput.scheduledRunTools). */
+  readonly scheduledRunTools?: boolean;
   /** Attach the page tools (ProviderSessionStartInput.agentPages). Never for a side runtime. */
   readonly agentPages?: boolean;
   /** Attach `ask_user_to_run` (ProviderSessionStartInput.commandRequests). Never for a side runtime. */
@@ -1963,6 +1965,7 @@ export const makeCodexSessionRuntime = (
             pages: agentPages,
             commands: commandRequests,
             ...(lockdown !== undefined ? { sideKind: lockdown.kind } : {}),
+            scheduledRun: options.scheduledRunTools === true,
           })
         : undefined;
     if (credential !== undefined) {

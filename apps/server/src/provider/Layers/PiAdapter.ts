@@ -1689,6 +1689,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
             room: roomTools,
             pages: agentPageAssetsDir !== undefined,
             commands: commandRequests,
+            scheduledRun: input.scheduledRunTools === true,
           });
           yield* Scope.addFinalizer(
             scope,

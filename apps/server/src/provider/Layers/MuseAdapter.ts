@@ -2187,6 +2187,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             room: roomTools,
             pages: agentPageAssetsDir !== undefined,
             commands: commandRequests,
+            scheduledRun: input.scheduledRunTools === true,
           });
           yield* Scope.addFinalizer(
             scope,
