@@ -3484,6 +3484,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .toBeVisible();
       expect(titleRow.querySelector("h2")?.textContent).toBe("Browser test thread");
       expect(document.querySelector('header[data-find-region="chat"]')).toBeNull();
+      // The app's name leads the row and the frame's buttons stand between
+      // it and the header, so it never reads as the first step of the
+      // header's project / title path.
+      const right = (testId: string) =>
+        document.querySelector(`[data-testid="${testId}"]`)!.getBoundingClientRect().right;
+      expect(right("app-wordmark")).toBeLessThan(right("titlebar-sidebar-toggle"));
+      expect(right("titlebar-forward")).toBeLessThan(slot.getBoundingClientRect().left);
       // Its controls are buttons in a window drag region, never dragging it.
       const panelToggle = slot.querySelector<HTMLElement>('button[aria-label="Toggle panel"]')!;
       expect(getComputedStyle(slot).getPropertyValue("-webkit-app-region")).toBe("drag");
