@@ -207,10 +207,20 @@ export interface LinkRequestRepositoryShape {
     readonly linkDeviceId: string;
     readonly error?: string;
     readonly now: string;
-  }) => Effect.Effect<number, LinkRequestRepositoryError>;
-  /** Links whose unlink still owes a pass, with their generation, oldest first. */
+  }) => Effect.Effect<
+    { readonly generation: number; readonly since: string },
+    LinkRequestRepositoryError
+  >;
+  /**
+   * Links whose unlink still owes a pass, with their generation and since
+   * when (the first time it was owed), oldest first.
+   */
   readonly listDrainsOwed: Effect.Effect<
-    ReadonlyArray<{ readonly linkDeviceId: string; readonly generation: number }>,
+    ReadonlyArray<{
+      readonly linkDeviceId: string;
+      readonly generation: number;
+      readonly since: string;
+    }>,
     LinkRequestRepositoryError
   >;
   /** The pass is done, unless a newer generation was recorded since `generation`. */
@@ -466,23 +476,31 @@ const make = Effect.gen(function* () {
     `.pipe(Effect.asVoid, wrap("prune"));
 
   const oweDrain: LinkRequestRepositoryShape["oweDrain"] = (input) =>
-    sql<{ readonly generation: number }>`
+    sql<{ readonly generation: number; readonly since: string }>`
       INSERT INTO link_drains_owed (link_device_id, generation, created_at, last_error)
       VALUES (${input.linkDeviceId}, 0, ${input.now}, ${input.error?.slice(0, 300) ?? null})
       ON CONFLICT(link_device_id) DO UPDATE SET
         generation = generation + 1,
         last_error = COALESCE(excluded.last_error, last_error)
-      RETURNING generation AS "generation"
+      RETURNING generation AS "generation", created_at AS "since"
     `.pipe(
-      Effect.map((rows) => rows[0]?.generation ?? 0),
+      Effect.map((rows) => ({
+        generation: rows[0]?.generation ?? 0,
+        since: rows[0]?.since ?? input.now,
+      })),
       wrap("oweDrain"),
     );
 
   const listDrainsOwed: LinkRequestRepositoryShape["listDrainsOwed"] = sql<{
     readonly linkDeviceId: string;
     readonly generation: number;
+    readonly since: string;
   }>`
-    SELECT link_device_id AS "linkDeviceId", generation AS "generation" FROM link_drains_owed
+    SELECT
+      link_device_id AS "linkDeviceId",
+      generation AS "generation",
+      created_at AS "since"
+    FROM link_drains_owed
     ORDER BY created_at, link_device_id
   `.pipe(
     Effect.map((rows) => rows.map((row) => ({ ...row }))),

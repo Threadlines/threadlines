@@ -46,6 +46,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
 import { SessionCredentialService } from "../auth/Services/SessionCredentialService.ts";
@@ -69,6 +70,8 @@ import { LinkRequests, PEER_LINK_REMOVED, type PeerLink, peerLinkOf } from "./Li
 
 const APPROVAL_WAIT_MS = 30_000;
 const APPROVAL_POLL_MS = 500;
+/** The most a link can take to be made: a claim, its approval, one connection. */
+const ACCEPT_TIMEOUT = Duration.minutes(2);
 /** How often links still unlinking tell the other computer again. */
 export const UNLINK_RETRY_EVERY = Duration.seconds(60);
 /** How long a refused connection takes to mark its link revoked. */
@@ -153,6 +156,7 @@ const make = Effect.gen(function* () {
   const sessions = yield* SessionCredentialService;
   const environment = yield* ServerEnvironment;
   const linkRequests = yield* LinkRequests;
+  const sql = yield* SqlClient.SqlClient;
   const descriptor = yield* environment.getDescriptor;
   const changed = yield* PubSub.sliding<void>(1);
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -442,7 +446,14 @@ const make = Effect.gen(function* () {
           return yield* linkError(`${invite.label} was unlinked while the link was being made.`);
         }
         return outboundOf(saved.value, yield* client.currentStatuses);
-      }),
+      }).pipe(
+        // The relay calls don't time out on their own: a stalled one mustn't
+        // hold up this computer's other changes to its links there.
+        Effect.timeoutOrElse({
+          duration: ACCEPT_TIMEOUT,
+          orElse: () => Effect.fail(linkError("Linking took too long. Try again.")),
+        }),
+      ),
     );
 
   const inboundRow = (deviceId: string) =>
@@ -459,6 +470,11 @@ const make = Effect.gen(function* () {
     inboundLock(input.deviceId)(
       Effect.gen(function* () {
         yield* inboundRow(input.deviceId);
+        // An unlink under way finishes; nothing turns its link back on.
+        const unlinking = (yield* linkRequests.drainsOwed).some(
+          (owed) => owed.linkDeviceId === input.deviceId,
+        );
+        if (unlinking) return yield* linkError("That link is being unlinked.");
         yield* devices
           .setLinkSettings({
             deviceId: input.deviceId,
@@ -546,49 +562,112 @@ const make = Effect.gen(function* () {
 
   /**
    * Ends another computer's link to this one. With `stopRunning` (an
-   * unlink) its access is turned off first, so nothing new starts or runs,
-   * and the pass it owes is recorded durably; then what it started is
-   * cancelled and stopped, and only then does its session end. A pass after
-   * that settles what is owed: when it falls short, it is tried again until
-   * it gets through, and each stop is asked for again until its thread is
-   * seen stopped (LinkRequests.oweDrain). When the first pass
-   * falls short it fails and the link stays, so the unlink is tried again
-   * rather than reported done.
+   * unlink) its access goes off and the pass it owes is recorded in one
+   * write, so nothing new starts or runs from then on and a restart finds
+   * it; then what it started is cancelled and stopped (each thread owes its
+   * stop until it is seen stopped), and only then does its session end. A
+   * pass after that settles the owed pass. Until then (the first pass or
+   * ending the session failed, or the process stopped) the unlink fails and
+   * is finished later on its own (finishOwedUnlinks), as well as by the
+   * caller trying again; the link stays off meanwhile.
    */
   const removeInbound = (link: {
     readonly deviceId: string;
     readonly sessionId: AuthSessionId | null;
     readonly stopRunning: boolean;
+  }) => inboundLock(link.deviceId)(endInbound(link));
+
+  /** removeInbound, for a caller already holding the link's lock. */
+  const endInbound = (link: {
+    readonly deviceId: string;
+    readonly sessionId: AuthSessionId | null;
+    readonly stopRunning: boolean;
   }) =>
-    inboundLock(link.deviceId)(
-      Effect.gen(function* () {
-        if (link.stopRunning) {
-          yield* devices
-            .setLinkSettings({ deviceId: link.deviceId, access: "off", now: yield* nowIso })
-            .pipe(Effect.mapError(() => linkError("The link couldn't be turned off.")));
+    Effect.gen(function* () {
+      const owed = link.stopRunning
+        ? yield* Effect.gen(function* () {
+            yield* devices
+              .setLinkSettings({ deviceId: link.deviceId, access: "off", now: yield* nowIso })
+              .pipe(Effect.mapError(() => linkError("The link couldn't be turned off.")));
+            return yield* linkRequests.oweDrain(link.deviceId);
+          }).pipe(
+            sql.withTransaction,
+            Effect.mapError((error) =>
+              error._tag === "ComputerLinkError"
+                ? error
+                : linkError("The link couldn't be turned off."),
+            ),
+          )
+        : null;
+      const turnsBefore = owed === null ? {} : { turnsBefore: owed.since };
+      yield* linkRequests.dropLink(link.deviceId, {
+        stopRunning: link.stopRunning,
+        ...turnsBefore,
+      });
+      // Revoking the session takes it off the relay and closes its connection.
+      if (link.sessionId !== null) {
+        yield* sessions
+          .revoke(link.sessionId)
+          .pipe(
+            Effect.mapError(() => linkError("The link's session couldn't be ended. Try again.")),
+          );
+      }
+      if (owed !== null) {
+        const last = yield* linkRequests
+          .dropLink(link.deviceId, { stopRunning: true, ...turnsBefore })
+          .pipe(Effect.result);
+        if (last._tag === "Success") {
+          yield* linkRequests.drainDone(link.deviceId, owed.generation);
+        } else {
+          yield* Effect.logWarning("links.unlink.pass-owed", { detail: last.failure.detail });
+          yield* linkRequests.oweDrain(link.deviceId, last.failure.detail).pipe(Effect.ignore);
         }
-        // Off before it is owed: an owed link that is on again is one whose
-        // unlink was given up.
-        const owed = link.stopRunning ? yield* linkRequests.oweDrain(link.deviceId) : null;
-        yield* linkRequests.dropLink(link.deviceId, { stopRunning: link.stopRunning });
-        // Revoking the session takes it off the relay and closes its connection.
-        if (link.sessionId !== null) {
-          yield* sessions.revoke(link.sessionId).pipe(Effect.ignore);
-        }
-        if (owed !== null) {
-          const last = yield* linkRequests
-            .dropLink(link.deviceId, { stopRunning: true })
-            .pipe(Effect.result);
-          if (last._tag === "Success") {
-            yield* linkRequests.drainDone(link.deviceId, owed);
-          } else {
-            yield* Effect.logWarning("links.unlink.pass-owed", { detail: last.failure.detail });
-            yield* linkRequests.oweDrain(link.deviceId, last.failure.detail).pipe(Effect.ignore);
+      }
+      yield* notify;
+    });
+
+  /**
+   * Unlinks that still owe a pass: one cut off before it ended the link's
+   * session (the process stopped, or a step failed) is finished; for one
+   * whose link is already gone, the pass is tried again.
+   */
+  const finishOwedUnlinks = Effect.gen(function* () {
+    for (const owed of yield* linkRequests.drainsOwed) {
+      yield* inboundLock(owed.linkDeviceId)(
+        Effect.gen(function* () {
+          const device = Option.getOrNull(yield* devices.getDevice(owed.linkDeviceId));
+          if (device !== null && isInboundLink(device)) {
+            yield* endInbound({
+              deviceId: device.deviceId,
+              sessionId: device.sessionId,
+              stopRunning: true,
+            });
+            yield* Effect.logInfo("links.unlink.finished-later", { deviceId: device.deviceId });
+            return;
           }
-        }
-        yield* notify;
-      }),
-    );
+          const pass = yield* linkRequests
+            .dropLink(owed.linkDeviceId, { stopRunning: true, turnsBefore: owed.since })
+            .pipe(Effect.result);
+          if (pass._tag === "Success") {
+            yield* linkRequests.drainDone(owed.linkDeviceId, owed.generation);
+          } else {
+            yield* linkRequests
+              .oweDrain(owed.linkDeviceId, pass.failure.detail)
+              .pipe(Effect.ignore);
+          }
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("links.unlink.finish-later-failed", {
+                  deviceId: owed.linkDeviceId,
+                  cause: Cause.pretty(cause),
+                }),
+          ),
+        ),
+      );
+    }
+  });
 
   const remove: ComputerLinksShape["remove"] = (input) =>
     Effect.gen(function* () {
@@ -729,6 +808,17 @@ const make = Effect.gen(function* () {
       Cause.hasInterruptsOnly(cause)
         ? Effect.failCause(cause)
         : Effect.logWarning("links.unlink.retry-failed", { cause: Cause.pretty(cause) }),
+    ),
+    Effect.repeat(Schedule.spaced(UNLINK_RETRY_EVERY)),
+    Effect.forkScoped,
+  );
+
+  // Inbound unlinks cut off part way: finished at startup and every minute.
+  yield* finishOwedUnlinks.pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause)
+        : Effect.logWarning("links.unlink.finish-later-failed", { cause: Cause.pretty(cause) }),
     ),
     Effect.repeat(Schedule.spaced(UNLINK_RETRY_EVERY)),
     Effect.forkScoped,

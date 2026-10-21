@@ -435,6 +435,12 @@ export interface FleetUnlinkStep {
   /** Which direction of the pair it belongs to. */
   readonly direction: "outward" | "inward";
   readonly input: LinksRemoveInput;
+  /**
+   * An outbound removal that tells the other computer (now, or when it next
+   * can): its "confirmed" means that computer heard the unlink. Not one whose
+   * other half is gone, nor one the other computer already removed.
+   */
+  readonly tells: boolean;
 }
 
 export interface FleetUnlinkPlan {
@@ -459,21 +465,20 @@ export interface FleetUnlinkPlan {
 /**
  * Whether an outbound link's other half is gone by the time it is removed,
  * so there's nothing to tell: this unlink removes it first, or the worker
- * (as it says now) has no such half. With an older server that doesn't say
- * which half is its own, any half this unlink removes, or a current word
- * from the worker, counts.
+ * (as it says now) has no such half left. Unsure means it is told.
  */
 function otherHalfGone(outbound: OutboundComputerLink, direction: FleetDirection): boolean {
-  const { worker, allInbound } = direction;
+  const { asker, worker, allInbound } = direction;
   if (!worker.reachable) return false;
-  if (outbound.remoteDeviceId === undefined) {
-    return allInbound.length > 0 || worker.links?.live === true;
-  }
-  if (allInbound.some((link) => link.deviceId === outbound.remoteDeviceId)) return true;
-  return (
-    worker.links?.live === true &&
-    !worker.links.snapshot.inbound.some((link) => link.deviceId === outbound.remoteDeviceId)
-  );
+  const removing = new Set(allInbound.map((link) => link.deviceId));
+  if (outbound.remoteDeviceId !== undefined && removing.has(outbound.remoteDeviceId)) return true;
+  if (worker.links?.live !== true) return false;
+  const left = worker.links.snapshot.inbound.filter((link) => !removing.has(link.deviceId));
+  return outbound.remoteDeviceId !== undefined
+    ? !left.some((link) => link.deviceId === outbound.remoteDeviceId)
+    : // An older server doesn't say which half is its own: any other half
+      // naming the asker might be, so it is told.
+      !left.some((link) => link.environmentId === asker.environmentId);
 }
 
 /**
@@ -499,6 +504,7 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
           holder: worker,
           direction: name,
           input: { direction: "inbound", deviceId: inbound.deviceId, stopRunning: true },
+          tells: false,
         });
       } else {
         finishLater.set(worker.environmentId, worker);
@@ -508,7 +514,8 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
       if (asker.reachable) {
         const otherHalfRemoved = otherHalfGone(outbound, direction);
         // A link the other computer already removed is just forgotten here.
-        if (!otherHalfRemoved && outbound.state !== "revoked") toldLater.add(worker.environmentId);
+        const tells = !otherHalfRemoved && outbound.state !== "revoked";
+        if (tells) toldLater.add(worker.environmentId);
         outboundSteps.push({
           holder: asker,
           direction: name,
@@ -517,6 +524,7 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
             linkId: outbound.linkId,
             ...(otherHalfRemoved ? { otherHalfRemoved: true } : {}),
           },
+          tells,
         });
       } else {
         finishLater.set(asker.environmentId, asker);
@@ -579,10 +587,7 @@ export function resolveFleetUnlinkOutcomes(
   const confirmedBy = (name: "outward" | "inward") =>
     resultsOf(name).some(
       (result) =>
-        result.step.input.direction === "outbound" &&
-        result.error === null &&
-        result.otherComputer === "confirmed" &&
-        result.step.input.otherHalfRemoved !== true,
+        result.step.tells && result.error === null && result.otherComputer === "confirmed",
     );
   return (
     [

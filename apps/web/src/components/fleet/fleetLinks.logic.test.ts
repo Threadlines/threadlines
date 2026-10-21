@@ -502,9 +502,21 @@ describe("planFleetUnlink", () => {
         links: { live: false, snapshot: snapshot({ outbound: [outbound(MAC, "Mac")] }) },
       }),
     );
-    expect(planFleetUnlink(removedThere).keepItsSide.map((computer) => computer.label)).toEqual([
-      "Windows PC",
-    ]);
+    const removedPlan = planFleetUnlink(removedThere);
+    expect(removedPlan.keepItsSide.map((computer) => computer.label)).toEqual(["Windows PC"]);
+    // Forgetting it answers "confirmed" without telling Windows PC anything.
+    const removedOutcomes = resolveFleetUnlinkOutcomes(
+      removedThere,
+      removedPlan,
+      removedPlan.steps.map((step) => ({
+        step,
+        error: null,
+        otherComputer: step.input.direction === "outbound" ? ("confirmed" as const) : "not_asked",
+      })),
+    );
+    expect(
+      removedOutcomes.find(({ direction }) => direction.asker.label === "Windows PC")?.outcome,
+    ).toEqual({ kind: "leftover", holder: "Windows PC" });
   });
 
   it("tells the other computer unless its own half of that very link is gone", () => {
@@ -528,6 +540,21 @@ describe("planFleetUnlink", () => {
     expect(outboundStep(pairWith([], true))).toHaveProperty("otherHalfRemoved", true);
     // Windows PC hasn't said yet: Mac tells it.
     expect(outboundStep(pairWith([], false))).not.toHaveProperty("otherHalfRemoved");
+
+    // An older Mac doesn't say which half is its own, and Windows PC lists
+    // one naming Mac that nothing confirms: Mac tells it rather than guess.
+    const older = resolveFleetPair(
+      reach(MAC, "Mac", {
+        links: { live: true, snapshot: snapshot({ outbound: [outbound(WINDOWS, "Windows PC")] }) },
+      }),
+      reach(WINDOWS, "Windows PC", {
+        links: {
+          live: true,
+          snapshot: snapshot({ inbound: [inbound(MAC, "Mac", { environmentPinned: false })] }),
+        },
+      }),
+    );
+    expect(outboundStep(older)).not.toHaveProperty("otherHalfRemoved");
   });
 });
 

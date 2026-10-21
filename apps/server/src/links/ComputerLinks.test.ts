@@ -225,8 +225,11 @@ const makeComputer = Effect.gen(function* () {
       oweDrain: (deviceId) =>
         Effect.sync(() => {
           owed.add(deviceId);
-          return 0;
+          return { generation: 0, since: AT };
         }),
+      drainsOwed: Effect.sync(() =>
+        [...owed].map((linkDeviceId) => ({ linkDeviceId, generation: 0, since: AT })),
+      ),
       drainDone: (deviceId) => Effect.sync(() => void owed.delete(deviceId)),
     }),
   );
@@ -353,15 +356,19 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
         computer.answers.set(windows.linkId, "unlinks");
         computer.answers.set(linux.linkId, "already_removed");
         yield* TestClock.adjust(UNLINK_RETRY_EVERY);
+        // Each goes with its keys (the keys go a moment after the row).
         yield* eventually(
           Effect.map(
-            Effect.all([computer.hasLink(windows.linkId), computer.hasLink(linux.linkId)]),
-            ([a, b]) => !a && !b,
+            Effect.all([
+              computer.hasLink(windows.linkId),
+              computer.hasLink(linux.linkId),
+              computer.hasKeys(windows.linkId),
+              computer.hasKeys(linux.linkId),
+            ]),
+            (left) => left.every((has) => !has),
           ),
           "both unlinks finish",
         );
-        assert.isFalse(yield* computer.hasKeys(windows.linkId));
-        assert.isFalse(yield* computer.hasKeys(linux.linkId));
         assert.deepEqual((yield* links.snapshot).outbound, []);
         // Every try asked for the whole unlink: stop its work there, and
         // forget that computer's own link back.
@@ -561,7 +568,7 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
   );
 
   it.effect(
-    "a settings change waits for an unlink in progress, never turning the link back on mid-way",
+    "a settings change waits for an unlink under way, and can't turn its link back on after",
     () =>
       Effect.gen(function* () {
         const computer = yield* makeComputer;
@@ -571,13 +578,17 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
           environmentId: EnvironmentId.make("env-windows"),
         });
         const release = yield* Deferred.make<void>();
-        computer.dropPlan.push({ wait: release });
+        // The first pass is slow; the one after the session ends falls short.
+        computer.dropPlan.push(
+          { wait: release },
+          { fail: "Mac couldn't stop everything the link started. Try again." },
+        );
         const unlinking = yield* Effect.forkChild(
           links.remove({ direction: "inbound", deviceId: "device-windows", stopRunning: true }),
         );
         yield* wallClockSleep(20);
         const changing = yield* Effect.forkChild(
-          links.setAccess({ deviceId: "device-windows", access: "allowed" }),
+          Effect.flip(links.setAccess({ deviceId: "device-windows", access: "allowed" })),
         );
         yield* wallClockSleep(50);
         // The unlink turned it off and is stopping what it started: it stays off.
@@ -585,8 +596,40 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
         assert.equal(during.linkAccess, "off");
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(unlinking);
-        yield* Fiber.join(changing).pipe(Effect.ignore);
+        // The unlink still owes a pass: the link isn't turned back on.
+        const refused = yield* Fiber.join(changing);
+        assert.equal(refused.detail, "That link is being unlinked.");
+        const after = Option.getOrThrow(yield* computer.devices.getDevice("device-windows"));
+        assert.equal(after.linkAccess, "off");
+        assert.isTrue(computer.owed.has("device-windows"));
       }),
+  );
+
+  it.effect("an unlink cut off before it ended the link's session is finished on its own", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      const session = yield* computer.addInboundLink({
+        deviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+      });
+      // The previous process turned the link off and owed its pass, then stopped.
+      yield* computer.devices.setLinkSettings({
+        deviceId: "device-windows",
+        access: "off",
+        now: AT,
+      });
+      computer.owed.add("device-windows");
+      yield* computer.boot;
+      yield* eventually(
+        Effect.sync(() => computer.revoked.length === 1 && computer.owed.size === 0),
+        "the unlink finishes",
+      );
+      assert.deepEqual(computer.revoked, [session]);
+      assert.deepEqual(computer.dropped, [
+        { deviceId: "device-windows", stopRunning: true },
+        { deviceId: "device-windows", stopRunning: true },
+      ]);
+    }),
   );
 
   it.effect(

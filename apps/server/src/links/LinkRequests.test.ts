@@ -1150,12 +1150,12 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
   );
 
   it.effect(
-    "an unlink's stops are asked for until each thread is seen stopped, across a restart; a link on again owes no pass",
+    "an unlink's stops are asked for until each thread is seen stopped, across a restart, and never its user's later turn",
     () =>
       Effect.gen(function* () {
         const computer = yield* makeComputer();
         yield* computer.addLink(DEVICE, "allowed");
-        yield* computer.addLink("device-back", "allowed");
+        yield* computer.addLink("device-later", "allowed");
         const service = yield* computer.boot();
         const session = (threadId: ThreadId, status: "running" | "stopped", turn: string) =>
           computer.engine.dispatch({
@@ -1203,35 +1203,26 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
               ).length,
           );
         const unlinked = yield* working(DEVICE, "request-1");
-        const kept = yield* working("device-back", "request-2");
-        // An unlink turned its link off, owed a pass and ended the session;
-        // the process stopped before the pass. Another unlink was given up:
-        // its link is on again.
-        yield* computer.devices.setLinkSettings({ deviceId: DEVICE, access: "off", now: AT });
-        yield* computer.ledger.oweDrain({ linkDeviceId: DEVICE, now: AT });
-        yield* computer.ledger.oweDrain({ linkDeviceId: "device-back", now: AT });
-        yield* computer.devices.transition({
-          deviceId: DEVICE,
-          from: ["active"],
-          to: "revoked",
-          now: AT,
+        const later = yield* working("device-later", "request-2");
+        // An unlink's pass: its link went off after the thread's turn was asked for.
+        yield* service.dropLink(DEVICE, { stopRunning: true, turnsBefore: AT });
+        // Another link went off before its thread's turn was asked for: that
+        // turn is its user's, and the unlink leaves it alone.
+        yield* service.dropLink("device-later", {
+          stopRunning: true,
+          turnsBefore: "1969-12-31T23:59:59.000Z",
         });
-
-        const restarted = yield* computer.boot();
-        yield* restarted.startReactor();
-        yield* eventually(
-          Effect.map(computer.ledger.listDrainsOwed, (owed) => owed.length === 0),
-          "the owed passes are settled",
-        );
         assert.equal(yield* stopsFor(unlinked), 1);
-        assert.equal(yield* stopsFor(kept), 0);
+        assert.equal(yield* stopsFor(later), 0);
         // Asking isn't stopping: the thread owes its stop until it is seen stopped.
         assert.deepEqual(
           (yield* computer.ledger.listThreadStopsOwed).map((owed) => owed.threadId),
           [unlinked],
         );
-        // The stop didn't take: a minute later it is asked for again.
-        yield* TestClock.adjust(OWED_STOPS_RETRY_EVERY);
+
+        // The process restarts, and the stop never took: it is asked for again.
+        const restarted = yield* computer.boot();
+        yield* restarted.startReactor();
         yield* eventually(
           Effect.map(stopsFor(unlinked), (count) => count === 2),
           "the stop is asked for again",
