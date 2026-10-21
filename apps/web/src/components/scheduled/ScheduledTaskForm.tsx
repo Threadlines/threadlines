@@ -22,6 +22,7 @@ import {
 } from "../../providerInstances";
 import { deriveAccessLevel, runtimeModeConfig } from "../../runtimeModeOptions";
 import {
+  selectEnvironmentState,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
   useStore,
@@ -422,7 +423,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
           label="Each run"
           hint={
             form.target === "thread"
-              ? "Goes to that thread as a message, for its own agent, with its access."
+              ? "Goes to that thread as a message, run with the agent and access below, never more access than the thread has then."
               : undefined
           }
           problem={shownProblems.thread}
@@ -439,8 +440,18 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             <Select
               value={form.threadId ?? ""}
               onValueChange={(value) => {
-                // Another thread: its runs are for that thread's own agent.
-                if (value) update({ threadId: value as ThreadId, threadParticipantId: null });
+                if (!value || form.environmentId === null) return;
+                // Another thread: its runs are for that thread's own agent, and
+                // start from its model and access.
+                const shell = selectEnvironmentState(useStore.getState(), form.environmentId)
+                  .threadShellById[value as ThreadId];
+                update({
+                  threadId: value as ThreadId,
+                  threadParticipantId: null,
+                  ...(shell !== undefined
+                    ? { modelSelection: shell.modelSelection, runtimeMode: shell.runtimeMode }
+                    : {}),
+                });
               }}
             >
               <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Thread">
@@ -486,64 +497,62 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
         ) : null}
       </SettingsSection>
 
-      {form.target === "thread" ? null : (
-        <SettingsSection title="Agent">
-          <FieldRow label="Model" problem={shownProblems.agent}>
-            {form.modelSelection && instanceEntries.length > 0 ? (
-              <ModelSelectionControl
-                selection={form.modelSelection}
-                settings={settings}
-                serverProviders={providers}
-                instanceEntries={instanceEntries}
-                onSelectionChange={(selection) => update({ modelSelection: selection })}
-              />
-            ) : (
-              <span className="text-[12.5px] text-muted-foreground">
-                No agent is ready on this computer.
-              </span>
-            )}
-          </FieldRow>
-          <FieldRow
-            label="Access"
-            hint={
-              access?.options.find((option) => option.mode === access.shown)?.description ??
-              "What the agent may do without asking."
-            }
+      <SettingsSection title="Agent">
+        <FieldRow label="Model" problem={shownProblems.agent}>
+          {form.modelSelection && instanceEntries.length > 0 ? (
+            <ModelSelectionControl
+              selection={form.modelSelection}
+              settings={settings}
+              serverProviders={providers}
+              instanceEntries={instanceEntries}
+              onSelectionChange={(selection) => update({ modelSelection: selection })}
+            />
+          ) : (
+            <span className="text-[12.5px] text-muted-foreground">
+              No agent is ready on this computer.
+            </span>
+          )}
+        </FieldRow>
+        <FieldRow
+          label="Access"
+          hint={
+            access?.options.find((option) => option.mode === access.shown)?.description ??
+            "What the agent may do without asking."
+          }
+        >
+          <Select
+            value={form.runtimeMode}
+            onValueChange={(value) => {
+              if (value) update({ runtimeMode: value as RuntimeMode });
+            }}
           >
-            <Select
-              value={form.runtimeMode}
-              onValueChange={(value) => {
-                if (value) update({ runtimeMode: value as RuntimeMode });
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Access">
-                <SelectValue>
-                  {access?.options.find((option) => option.mode === form.runtimeMode)?.label ??
-                    runtimeModeConfig[form.runtimeMode].label}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {(
-                  access?.options ??
-                  RUNTIME_MODES.map((mode) => ({
-                    mode,
-                    label: runtimeModeConfig[mode].label,
-                    disabled: false,
-                  }))
-                ).map((option) => (
-                  <SelectItem
-                    key={option.mode}
-                    value={option.mode}
-                    disabled={option.disabled === true}
-                  >
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          </FieldRow>
-        </SettingsSection>
-      )}
+            <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Access">
+              <SelectValue>
+                {access?.options.find((option) => option.mode === form.runtimeMode)?.label ??
+                  runtimeModeConfig[form.runtimeMode].label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {(
+                access?.options ??
+                RUNTIME_MODES.map((mode) => ({
+                  mode,
+                  label: runtimeModeConfig[mode].label,
+                  disabled: false,
+                }))
+              ).map((option) => (
+                <SelectItem
+                  key={option.mode}
+                  value={option.mode}
+                  disabled={option.disabled === true}
+                >
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </FieldRow>
+      </SettingsSection>
 
       <SettingsSection title="Schedule">
         <FieldRow

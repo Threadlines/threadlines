@@ -12,6 +12,7 @@
  * `baseFor`. The rules for who may ask live in `@threadlines/shared/childThreads`,
  * shared with the room MCP server.
  */
+import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
   ChildRequestBatchId,
   ChildRequestId,
@@ -61,20 +62,13 @@ export type ChildThreadDecision = ReadonlyArray<PlannedEvent> | { readonly refus
 
 const refuse = (refusal: string) => ({ refusal });
 
-const RUNTIME_MODE_RANK: Record<RuntimeMode, number> = {
-  "approval-required": 0,
-  "auto-accept-edits": 1,
-  auto: 2,
-  "full-access": 3,
-};
-
 /** Whether `child` asks for no more than `ceiling` allows. Plan is narrower than default. */
 export function withinModeCeiling(
   child: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
   ceiling: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
 ): boolean {
   return (
-    RUNTIME_MODE_RANK[child.runtimeMode] <= RUNTIME_MODE_RANK[ceiling.runtimeMode] &&
+    !exceedsRuntimeMode(child.runtimeMode, ceiling.runtimeMode) &&
     (ceiling.interactionMode !== "plan" || child.interactionMode === "plan")
   );
 }
@@ -95,10 +89,7 @@ export function clampLaunchToCeiling<
 ): Launch {
   return {
     ...launch,
-    runtimeMode:
-      RUNTIME_MODE_RANK[launch.runtimeMode] <= RUNTIME_MODE_RANK[ceiling.runtimeMode]
-        ? launch.runtimeMode
-        : ceiling.runtimeMode,
+    runtimeMode: saferRuntimeMode(launch.runtimeMode, ceiling.runtimeMode),
     interactionMode: ceiling.interactionMode === "plan" ? "plan" : launch.interactionMode,
   };
 }

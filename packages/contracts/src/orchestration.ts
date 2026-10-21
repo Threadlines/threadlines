@@ -2443,6 +2443,13 @@ const ThreadDoneOverrideSetCommand = Schema.Struct({
   threadId: ThreadId,
   state: ThreadDoneOverrideState,
   at: IsoDateTime,
+  /**
+   * Server only (a scheduled run with nothing to report): wrap only while
+   * this turn is still the thread's latest, nothing runs and nothing waits
+   * behind it, and mark the thread seen as of `at` in the same step. Any
+   * newer work leaves the thread as it is.
+   */
+  whileLatestTurnId: Schema.optional(TurnId),
 });
 
 /**

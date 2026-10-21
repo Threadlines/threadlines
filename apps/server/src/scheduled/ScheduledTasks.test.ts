@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -539,6 +540,50 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       }),
   );
 
+  it.effect("a quiet run never wraps a thread that has newer work in it", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+      const run = yield* service.runNow({ id: task.id });
+      const threadId = scheduledRunThreadId(task.id, run.slotUtc);
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+        "the run started",
+      );
+      const turnId = TurnId.make("run-turn");
+      yield* computer.turnRuns(threadId, turnId);
+      yield* service.recordFinish({ threadId, turnId, nothingToReport: true, summary: null });
+      // The user wrote to the thread before the run's end was handled.
+      yield* computer.engine.dispatch({
+        type: "thread.follow-up.submit",
+        commandId: CommandId.make("user-follow-up"),
+        threadId,
+        turnId,
+        message: {
+          messageId: MessageId.make("user-message"),
+          role: "user",
+          text: "Also check the release branch.",
+          attachments: [],
+        },
+        delivery: "queue",
+        createdAt: "2026-10-20T08:00:30.000Z",
+      });
+      yield* service.onTurnEnd({
+        threadId,
+        turnId,
+        outcome: "completed",
+        error: undefined,
+        pendingMessageId: scheduledRunMessageId(task.id, run.slotUtc),
+      });
+      assert.equal((yield* computer.runs(task.id))[0]?.status, "nothing_to_report");
+      const thread = (yield* computer.thread(threadId))!;
+      assert.notEqual(thread.doneOverride?.state, "done");
+      assert.isNull(thread.lastSeenAt);
+    }),
+  );
+
   it.effect("a run that continues a thread queues its message there and never wraps it", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;
@@ -564,11 +609,14 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       });
 
       yield* setClock("2026-10-20T08:05:00.000Z");
+      // Saved with less access than the thread has: each run keeps to it.
       const follow = yield* service.create(
         draft({
           name: "Follow-up",
           cadence: { kind: "manual" },
           target: { kind: "thread", threadId: target },
+          runtimeMode: "approval-required",
+          modelSelection: { instanceId: CODEX, model: "gpt-6-astra" },
         }),
       );
       const run = yield* service.runNow({ id: follow.id });
@@ -582,10 +630,10 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
         "the follow-up was sent",
       );
       const thread = (yield* computer.thread(target))!;
-      assert.isTrue(
-        thread.messages.some((message) => message.id === messageId) ||
-          (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId),
-      );
+      const queued = (thread.queuedFollowUps ?? []).find((entry) => entry.messageId === messageId);
+      assert.equal(queued?.runtimeMode, "approval-required");
+      assert.deepEqual(queued?.modelSelection, { instanceId: CODEX, model: "gpt-6-astra" });
+      assert.equal(queued?.interactionMode, "default");
       // The tool's word is taken only from a thread a run started for itself.
       const turnId = TurnId.make("follow-turn");
       assert.equal(
@@ -862,6 +910,29 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
         const paused = yield* tools.schedule_update(scope, { id: created!.id, paused: true });
         assert.equal(paused.outcome, "updated");
         assert.equal(paused.task?.status, "paused");
+
+        // A task with more access than this agent's: it may pause it, but
+        // any other change waits for the user even with agents on auto.
+        const stronger = yield* service.create(
+          draft({ name: "Deploy check", runtimeMode: "full-access", cadence: { kind: "manual" } }),
+        );
+        const rewrite = yield* tools.schedule_update(scope, {
+          id: stronger.id,
+          prompt: "Delete the release branch.",
+        });
+        assert.equal(rewrite.outcome, "asked_user");
+        assert.equal((yield* service.getTask(stronger.id))?.prompt, stronger.prompt);
+        const asking = (yield* service.snapshot).requests.find(
+          (request) => request.requestId === rewrite.requestId,
+        );
+        assert.include(
+          asking?.details ?? [],
+          "This task runs with more access than the agent asking to change it.",
+        );
+        assert.equal(
+          (yield* tools.schedule_update(scope, { id: stronger.id, paused: true })).outcome,
+          "updated",
+        );
 
         mode = "off";
         assert.equal((yield* tools.schedule_list(scope, {})).outcome, "off");

@@ -9,6 +9,7 @@ import {
   type OrchestrationThread,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
+  type TurnId,
   type ThreadParticipantId,
 } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
@@ -326,6 +327,20 @@ function childStopEvents(
       createdAt,
     ),
   ];
+}
+
+/**
+ * Whether `turnId` is still the last thing in the thread: its latest turn
+ * (it may still be finishing), no other turn running, and nothing queued
+ * behind it.
+ */
+function isQuietAfterTurn(thread: OrchestrationThread, turnId: TurnId): boolean {
+  const activeTurnId = thread.session?.activeTurnId ?? null;
+  return (
+    thread.latestTurn?.turnId === turnId &&
+    (activeTurnId === null || activeTurnId === turnId) &&
+    (thread.queuedFollowUps ?? []).length === 0
+  );
 }
 
 /**
@@ -1143,6 +1158,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // A quiet scheduled run wraps its thread only while its turn is still
+      // the last thing there: newer work keeps the thread in front of the user.
+      if (
+        command.whileLatestTurnId !== undefined &&
+        !isQuietAfterTurn(thread, command.whileLatestTurnId)
+      ) {
+        return [];
+      }
       const occurredAt = yield* nowIso;
       // Child threads: a wrapped parent is not woken by a late answer.
       const wrapEvents =
@@ -1172,7 +1195,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           at: command.at,
         },
       };
-      return wrapEvents.length === 0 ? overrideEvent : [...wrapEvents, overrideEvent];
+      const seenEvents: ReadonlyArray<PlannedOrchestrationEvent> =
+        command.whileLatestTurnId !== undefined
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.seen-set",
+                payload: { threadId: command.threadId, at: command.at },
+              },
+            ]
+          : [];
+      return wrapEvents.length === 0 && seenEvents.length === 0
+        ? overrideEvent
+        : [...wrapEvents, overrideEvent, ...seenEvents];
     }
 
     case "thread.seen.set": {

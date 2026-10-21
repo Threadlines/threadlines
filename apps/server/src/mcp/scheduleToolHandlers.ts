@@ -178,20 +178,23 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
         tool,
         JSON.stringify(input),
       );
-      // Read again right before it is recorded: a setting turned off since wins.
-      const mode = yield* deps.threadsMode;
-      if (mode === "off") return { outcome: "off" as const, detail: SCHEDULES_OFF };
       const proposed = yield* gated.service
         .propose({
           requestId,
           threadId: scope.threadId,
           participantId: scope.participantId,
-          mode,
+          // Read live by the service right before it writes: a setting
+          // changed while the change was being checked wins.
+          mode: deps.threadsMode,
+          callerRuntimeMode: gated.thread.runtimeMode,
           change,
         })
         .pipe(Effect.result);
       if (Result.isFailure(proposed)) {
         return { outcome: "refused" as const, detail: proposed.failure.detail };
+      }
+      if (proposed.success.outcome === "off") {
+        return { outcome: "off" as const, detail: SCHEDULES_OFF };
       }
       if (proposed.success.outcome === "asked_user") {
         return {

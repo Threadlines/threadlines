@@ -24,10 +24,12 @@
  * Runs work while Threadlines is running on this computer; nothing wakes it.
  */
 import {
+  type AgentThreadsMode,
   type ChildThreadLaunch,
   type ChildThreadWorkspace,
   type OrchestrationEvent,
   type ProjectId,
+  type RuntimeMode,
   type ScheduledRun,
   ScheduledTaskError,
   type ScheduledTask,
@@ -45,6 +47,7 @@ import {
   type ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
+import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { agentThreadsMode } from "@threadlines/shared/serverSettings";
 import {
   cadenceSaveRefusal,
@@ -176,9 +179,16 @@ export interface ScheduledTasksShape {
     readonly threadId: ThreadId;
     /** The room agent asking; null for the thread's own. */
     readonly participantId: ThreadParticipantId | null;
-    readonly mode: "ask" | "auto";
+    /**
+     * "Agents can start threads", read live: after the change is checked
+     * and right before it is written, so a setting changed meanwhile wins.
+     */
+    readonly mode: Effect.Effect<AgentThreadsMode>;
+    /** The asking agent's own access: a task with more is the user's to change. */
+    readonly callerRuntimeMode: RuntimeMode;
     readonly change: ScheduledTaskChange;
   }) => Effect.Effect<
+    | { readonly outcome: "off" }
     | { readonly outcome: "applied"; readonly task: ScheduledTask }
     | {
         readonly outcome: "asked_user";
@@ -229,6 +239,16 @@ export class ScheduledTasks extends Context.Service<ScheduledTasks, ScheduledTas
 ) {}
 
 const taskError = (detail: string) => new ScheduledTaskError({ detail });
+
+/** Why an agent's change to a task waits for the user even when agents may act alone. */
+const ABOVE_CALLER_DETAIL = "This task runs with more access than the agent asking to change it.";
+
+/** An edit that only pauses the task. */
+const isPauseOnly = (input: ScheduledTaskUpdateInput): boolean =>
+  input.status === "paused" &&
+  Object.entries(input).every(
+    ([key, value]) => key === "id" || key === "status" || value === undefined,
+  );
 
 /** Tries at saving an edit over a task other writes keep moving. */
 const SAVE_ATTEMPTS = 3;
@@ -609,20 +629,39 @@ const make = Effect.gen(function* () {
   const propose: ScheduledTasksShape["propose"] = (input) =>
     Effect.gen(function* () {
       const now = yield* nowMillis;
+      const { change } = input;
+      if (
+        change.kind === "create" &&
+        exceedsRuntimeMode(change.draft.runtimeMode, input.callerRuntimeMode)
+      ) {
+        return yield* taskError("A task can't run with more access than the agent setting it up.");
+      }
       // Checked before anyone is asked: the user only sees changes that can be made.
       const preview =
-        input.change.kind === "create"
-          ? yield* prepareCreate(input.change.draft, now).pipe(
-              Effect.map((row) => ({ name: row.name, details: createDetails(row), taskId: null })),
+        change.kind === "create"
+          ? yield* prepareCreate(change.draft, now).pipe(
+              Effect.map((row) => ({
+                name: row.name,
+                details: createDetails(row),
+                taskId: null,
+                aboveCaller: false,
+              })),
             )
-          : yield* prepareUpdate(input.change.input, now).pipe(
+          : yield* prepareUpdate(change.input, now).pipe(
               Effect.map(({ current, row }) => ({
                 name: row.name,
                 details: updateDetails(current, row),
                 taskId: row.id,
+                // Pausing only takes work away; anything else on a task with
+                // more access than the agent asking is the user's call.
+                aboveCaller:
+                  exceedsRuntimeMode(current.runtimeMode, input.callerRuntimeMode) &&
+                  !isPauseOnly(change.input),
               })),
             );
-      if (input.mode === "auto") {
+      const mode = yield* input.mode;
+      if (mode === "off") return { outcome: "off" as const };
+      if (mode === "auto" && !preview.aboveCaller) {
         return {
           outcome: "applied" as const,
           task: yield* applyChange(input.requestId, input.change, input.threadId),
@@ -635,7 +674,13 @@ const make = Effect.gen(function* () {
           participantId: input.participantId,
           action: input.change.kind,
           taskId: preview.taskId,
-          payload: { change: input.change, name: preview.name, details: preview.details },
+          payload: {
+            change: input.change,
+            name: preview.name,
+            details: preview.aboveCaller
+              ? [...preview.details, ABOVE_CALLER_DETAIL]
+              : preview.details,
+          },
           createdAt: new Date(now).toISOString(),
         })
         .pipe(Effect.mapError(storageError("record the request")));
@@ -687,15 +732,6 @@ const make = Effect.gen(function* () {
           yield* notify;
         });
       if (!input.allow) return yield* decide("denied", null);
-      const mode = yield* settings.getSettings.pipe(
-        Effect.map(agentThreadsMode),
-        Effect.orElseSucceed(() => "off" as const),
-      );
-      if (mode === "off") {
-        const detail = "Agents can't change scheduled tasks while starting threads is turned off.";
-        yield* decide("denied", detail);
-        return yield* taskError(detail);
-      }
       // The answer and the change are one write, so they can never disagree:
       // an answer that came first (Not now, a day passing) leaves the tasks
       // as they were, and a change that can't be made is the answer.
@@ -705,6 +741,18 @@ const make = Effect.gen(function* () {
         if (Result.isFailure(prepared)) {
           yield* decide("failed", prepared.failure.detail);
           return yield* Effect.fail(prepared.failure);
+        }
+        // Read after the change was checked, right before it is written: a
+        // setting turned off meanwhile wins.
+        const mode = yield* settings.getSettings.pipe(
+          Effect.map(agentThreadsMode),
+          Effect.orElseSucceed(() => "off" as const),
+        );
+        if (mode === "off") {
+          const detail =
+            "Agents can't change scheduled tasks while starting threads is turned off.";
+          yield* decide("denied", detail);
+          return yield* taskError(detail);
         }
         const outcome = yield* repo
           .allowRequest({
@@ -1145,6 +1193,11 @@ const make = Effect.gen(function* () {
               TurnId.make(`scheduled-run:${scheduledRunKey(row.taskId, row.slotUtc)}`),
             message: { messageId, role: "user", text: launch.prompt, attachments: [] },
             delivery: "queue",
+            // The task's saved settings, never more access than the task
+            // has, nor than the thread has now (its user may have lowered it).
+            modelSelection: launch.modelSelection,
+            runtimeMode: saferRuntimeMode(launch.runtimeMode, thread.runtimeMode),
+            interactionMode: launch.interactionMode,
             // In a room, for the agent that set the task up.
             ...(launch.target.kind === "thread" && launch.target.participantId !== undefined
               ? { participantId: launch.target.participantId }
@@ -1271,9 +1324,14 @@ const make = Effect.gen(function* () {
       if (
         status === "nothing_to_report" &&
         run.launch?.target.kind === "new_thread" &&
-        run.threadId !== null
+        run.threadId !== null &&
+        end.turnId !== null &&
+        // A card waiting there needs the user; the thread stays in front.
+        !(yield* waitingThreadIds).has(run.threadId)
       ) {
         const threadId = run.threadId;
+        // Wrapped and seen in one step, only while the run's own turn is
+        // still the last thing in the thread.
         yield* engine
           .dispatch({
             type: "thread.done-override.set",
@@ -1281,16 +1339,9 @@ const make = Effect.gen(function* () {
             threadId,
             state: "done",
             at,
+            whileLatestTurnId: end.turnId,
           })
           .pipe(
-            Effect.andThen(
-              engine.dispatch({
-                type: "thread.seen.set",
-                commandId: scheduledRunCommandId(run.taskId, run.slotUtc, "seen"),
-                threadId,
-                at,
-              }),
-            ),
             Effect.catch((error) =>
               Effect.logInfo("a scheduled run could not wrap its thread", {
                 threadId,
