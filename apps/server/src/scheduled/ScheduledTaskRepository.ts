@@ -214,14 +214,16 @@ export interface ScheduledTaskRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<ScheduledRunRow>, ScheduledTaskRepositoryError>;
   /**
    * Claims a task's due slot: only while its next slot is still
-   * `expectedNextSlotUtc` (and it is active), moves it to `nextSlotUtc`,
-   * records the slots it missed as one skipped row, and records the run.
-   * None when the task moved on meanwhile (edited, paused, deleted).
+   * `expectedNextSlotUtc` (and it is active), moves it to `nextSlotUtc` (and
+   * to `done` when that was its last slot), records the slots it missed as
+   * one skipped row, and records the run. None when the task moved on
+   * meanwhile (edited, paused, deleted).
    */
   readonly claimSlot: (input: {
     readonly taskId: ScheduledTaskId;
     readonly expectedNextSlotUtc: string;
     readonly nextSlotUtc: string | null;
+    readonly done: boolean;
     readonly missed: { readonly slotUtc: string; readonly reason: string } | null;
     readonly run: ScheduledRunClaim | { readonly slotUtc: string; readonly skipReason: string };
     readonly now: string;
@@ -492,7 +494,10 @@ const make = Effect.gen(function* () {
   const claimSlot: ScheduledTaskRepositoryShape["claimSlot"] = (input) =>
     Effect.gen(function* () {
       const moved = yield* sql<{ readonly id: string }>`
-        UPDATE scheduled_tasks SET next_slot_utc = ${input.nextSlotUtc}, updated_at = ${input.now}
+        UPDATE scheduled_tasks SET
+          next_slot_utc = ${input.nextSlotUtc},
+          status = ${input.done ? "done" : "active"},
+          updated_at = ${input.now}
         WHERE task_id = ${input.taskId}
           AND status = 'active'
           AND next_slot_utc = ${input.expectedNextSlotUtc}

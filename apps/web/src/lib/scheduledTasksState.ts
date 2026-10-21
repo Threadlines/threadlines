@@ -159,10 +159,13 @@ export function useScheduledTaskRequestsForThread(
   );
 }
 
-/** Active tasks with a schedule (not manual) on this computer: what keeps it awake for them. */
+/**
+ * Active tasks that run again on their own on this computer (not manual,
+ * not a one-time task that ran): what keeps it awake for them.
+ */
 export function countActiveScheduledTasks(snapshot: ScheduledTasksSnapshot | undefined): number {
   return (snapshot?.tasks ?? []).filter(
-    (task) => task.status === "active" && task.cadence.kind !== "manual",
+    (task) => task.status === "active" && task.nextRunAt !== null,
   ).length;
 }
 

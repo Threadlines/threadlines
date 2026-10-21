@@ -295,20 +295,22 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
           >
             Edit
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy !== null}
-            data-testid="scheduled-toggle-active"
-            onClick={() => {
-              setBusy("active");
-              void setTaskActive(environment, task, task.status !== "active").finally(() =>
-                setBusy(null),
-              );
-            }}
-          >
-            {task.status === "active" ? "Pause" : "Resume"}
-          </Button>
+          {task.status === "done" ? null : (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy !== null}
+              data-testid="scheduled-toggle-active"
+              onClick={() => {
+                setBusy("active");
+                void setTaskActive(environment, task, task.status !== "active").finally(() =>
+                  setBusy(null),
+                );
+              }}
+            >
+              {task.status === "active" ? "Pause" : "Resume"}
+            </Button>
+          )}
           <Button
             size="sm"
             variant="destructive-outline"

@@ -72,6 +72,36 @@ describe("upcomingSlots", () => {
   });
 });
 
+describe("a one-time cadence", () => {
+  const once = (date: string, hour: number, minute = 0) =>
+    ({ kind: "once", date, time: { hour, minute } }) as const;
+
+  it("runs once, on its date at its wall time, and then has no more slots", () => {
+    expect(slots(once("2026-10-26", 9), "America/New_York", "2026-10-24T12:00:00Z")).toEqual([
+      "2026-10-26T13:00:00.000Z",
+    ]);
+    // A time the clocks skip that day runs right after the jump, as daily does.
+    expect(slots(once("2026-03-08", 2, 30), "America/New_York", "2026-03-01T00:00:00Z")).toEqual([
+      "2026-03-08T07:30:00.000Z",
+    ]);
+    const schedule = Result.getOrThrow(compileCadence(once("2026-10-26", 9), "UTC"))!;
+    expect(
+      Result.getOrThrow(dueSlots(schedule, at("2026-10-26T09:00:00Z"), at("2026-10-27T00:00:00Z"))),
+    ).toEqual({ latest: at("2026-10-26T09:00:00Z"), earlier: 0, firstEarlier: null });
+    expect(Result.getOrThrow(schedule.next(at("2026-10-26T09:00:00Z")))).toBe(null);
+  });
+
+  it("refuses a day that doesn't exist, a time already past, and one over a year away", () => {
+    const now = at("2026-10-24T12:00:00Z");
+    expect(cadenceSaveRefusal(once("2026-02-30", 9), "UTC", now)).toMatch(/isn't a date/);
+    expect(cadenceSaveRefusal(once("2027-02-29", 9), "UTC", now)).toMatch(/isn't a date/);
+    expect(cadenceSaveRefusal(once("2026-10-24", 11), "UTC", now)).toMatch(/already passed/);
+    expect(cadenceSaveRefusal(once("2028-01-01", 9), "UTC", now)).toMatch(/more than a year/);
+    expect(cadenceSaveRefusal(once("2026-10-24", 13), "UTC", now)).toBe(null);
+    expect(describeCadence(once("2026-10-26", 9, 5))).toBe("Once, Oct 26, 2026 at 9:05");
+  });
+});
+
 describe("compileCadence and cadenceSaveRefusal", () => {
   const now = at("2026-10-24T12:00:00Z");
 

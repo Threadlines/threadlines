@@ -302,6 +302,47 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
     }),
   );
 
+  it.effect("a one-time task runs once, is done, and runs again only when given a new time", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(
+        draft({ cadence: { kind: "once", date: "2026-10-21", time: { hour: 7, minute: 30 } } }),
+      );
+      assert.equal(task.nextRunAt, "2026-10-21T07:30:00.000Z");
+
+      yield* setClock("2026-10-21T07:30:05.000Z");
+      yield* service.tick;
+      yield* setClock("2026-10-22T07:30:05.000Z");
+      yield* service.tick;
+      assert.deepEqual(
+        (yield* computer.runs(task.id)).map((row) => row.slotUtc),
+        ["2026-10-21T07:30:00.000Z"],
+      );
+      const done = yield* service.getTask(task.id);
+      assert.equal(done?.status, "done");
+      assert.equal(done?.nextRunAt, null);
+
+      // A rename leaves it done; a new date makes it active again.
+      assert.equal((yield* service.update({ id: task.id, name: "Release check" })).status, "done");
+      const again = yield* service.update({
+        id: task.id,
+        cadence: { kind: "once", date: "2026-10-23", time: { hour: 7, minute: 30 } },
+      });
+      assert.equal(again.status, "active");
+      assert.equal(again.nextRunAt, "2026-10-23T07:30:00.000Z");
+      // A time already past can't be saved.
+      const past = yield* service
+        .update({
+          id: task.id,
+          cadence: { kind: "once", date: "2026-10-22", time: { hour: 7, minute: 0 } },
+        })
+        .pipe(Effect.flip);
+      assert.match(past.detail, /already passed/);
+    }),
+  );
+
   it.effect("skips a slot while the task's last run works, and past 3 working runs", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;

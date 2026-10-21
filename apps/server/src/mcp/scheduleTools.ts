@@ -51,6 +51,14 @@ export const ScheduleListResult = Schema.Struct({
   outcome: Schema.Literals(["ok", "off", "not_allowed", "refused"]),
   detail: Schema.optional(Schema.String),
   tasks: Schema.Array(AgentScheduledTask),
+  /** The time now on this computer, for working out "tomorrow at 8". */
+  now: Schema.optional(
+    Schema.Struct({
+      /** "2026-10-21 14:05, Wednesday", wall time in `timeZone`. */
+      localTime: Schema.String,
+      timeZone: Schema.String,
+    }),
+  ),
 });
 export type ScheduleListResult = typeof ScheduleListResult.Type;
 
@@ -87,7 +95,7 @@ export type ScheduledRunFinishResult = typeof ScheduledRunFinishResult.Type;
 
 const CadenceParameter = ScheduledTaskCadence.annotate({
   description:
-    'When it runs, in its time zone: {kind:"manual"} (only when someone starts it), {kind:"hourly", minute}, {kind:"daily", time:{hour, minute}}, {kind:"weekdays", time}, {kind:"weekly", weekday (0 Sunday to 6 Saturday), time}, or {kind:"custom", cron} with a 5-field cron expression (minute hour day-of-month month day-of-week).',
+    'When it runs, in its time zone: {kind:"once", date:"YYYY-MM-DD", time:{hour, minute}} (one time, for "tomorrow at 8am"; the task is done after; schedule_list says the date and time now), {kind:"manual"} (only when someone starts it), {kind:"hourly", minute}, {kind:"daily", time:{hour, minute}}, {kind:"weekdays", time}, {kind:"weekly", weekday (0 Sunday to 6 Saturday), time}, or {kind:"custom", cron} with a 5-field cron expression (minute hour day-of-month month day-of-week).',
 });
 
 const TimeZoneParameter = Schema.String.annotate({
@@ -102,7 +110,7 @@ const changesSchedules = <T extends Tool.Any>(tool: T): T =>
 
 export const ScheduleListTool = Tool.make("schedule_list", {
   description:
-    "This project's scheduled tasks on this computer: each one's id, name, schedule, status (active, paused, or error with why), next run, last run and its instructions. Scheduled tasks start threads at set times while Threadlines is running on this computer.",
+    "This project's scheduled tasks on this computer: each one's id, name, schedule, status (active, paused, done for a one-time task that ran, or error with why), next run, last run and its instructions, and the date and time now on this computer. Scheduled tasks start threads at set times while Threadlines is running on this computer.",
   parameters: Schema.Struct({}),
   success: ScheduleListResult,
   dependencies,

@@ -242,11 +242,13 @@ const createDetails = (row: ScheduledTaskRow): ReadonlyArray<string> => [
 const updateDetails = (current: ScheduledTaskRow, row: ScheduledTaskRow): ReadonlyArray<string> => {
   const lines: Array<string> = [];
   if (row.name !== current.name) lines.push(`Rename it from "${current.name}"`);
-  if (row.status !== current.status) {
+  // A done task made active again is rescheduled: its new schedule says so.
+  if (row.status !== current.status && current.status !== "done") {
     lines.push(row.status === "paused" ? "Pause it" : "Resume it");
   }
-  if (describeCadence(row.cadence) !== describeCadence(current.cadence)) {
-    lines.push(`Run it ${describeCadence(row.cadence).toLowerCase()}`);
+  const schedule = describeCadence(row.cadence);
+  if (schedule !== describeCadence(current.cadence)) {
+    lines.push(`Run it ${schedule.charAt(0).toLowerCase()}${schedule.slice(1)}`);
   }
   if (row.timeZone !== current.timeZone) lines.push(`Use the ${row.timeZone} time zone`);
   if (row.prompt !== current.prompt) {
@@ -484,8 +486,15 @@ const make = Effect.gen(function* () {
       const edited: ScheduledTaskRow = {
         ...current,
         ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
-        // A paused task stays paused through an edit; saving an errored one resumes it.
-        status: status ?? (current.status === "error" ? "active" : current.status),
+        // A paused task stays paused through an edit; saving an errored one
+        // resumes it, and so does giving a done one a new schedule.
+        status:
+          status ??
+          (current.status === "error" ||
+          (current.status === "done" &&
+            (fields.cadence !== undefined || fields.timeZone !== undefined))
+            ? "active"
+            : current.status),
         updatedAt: new Date(now).toISOString(),
       };
       const settingsChanged = Object.values(fields).some((value) => value !== undefined);
@@ -684,8 +693,8 @@ const make = Effect.gen(function* () {
         yield* failTask(task, compiled.failure);
         return null;
       }
-      const cron = compiled.success;
-      if (cron === null) {
+      const schedule = compiled.success;
+      if (schedule === null) {
         // Manual: nothing is due. A stale slot is cleared.
         yield* repo.setTaskSchedule({
           taskId: task.id,
@@ -696,15 +705,15 @@ const make = Effect.gen(function* () {
         });
         return null;
       }
-      const due = dueSlots(cron, new Date(task.nextSlotUtc), new Date(now));
+      const due = dueSlots(schedule, new Date(task.nextSlotUtc), new Date(now));
       if (Result.isFailure(due)) {
         yield* failTask(task, due.failure);
         return null;
       }
       if (due.success === null) return null;
       const { latest, earlier, firstEarlier } = due.success;
-      const after = nextSlotOf(cron, latest);
-      const nextSlotUtc = Result.isSuccess(after) ? after.success.toISOString() : null;
+      const after = nextSlotOf(schedule, latest);
+      const nextSlotUtc = Result.isSuccess(after) ? (after.success?.toISOString() ?? null) : null;
       const lateness = now - latest.getTime();
       const at = new Date(now).toISOString();
       const tooLate = lateness > SCHEDULED_TASK_CATCH_UP_WINDOW_MS;
@@ -712,6 +721,8 @@ const make = Effect.gen(function* () {
         taskId: task.id,
         expectedNextSlotUtc: task.nextSlotUtc,
         nextSlotUtc,
+        // A once task has had its one slot.
+        done: Result.isSuccess(after) && after.success === null,
         // Too late to catch up: every missed slot is one skipped row.
         missed:
           !tooLate && earlier > 0 && firstEarlier !== null

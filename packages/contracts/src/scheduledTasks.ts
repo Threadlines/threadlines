@@ -27,14 +27,24 @@ export const ScheduledTaskClock = Schema.Struct({
 });
 export type ScheduledTaskClock = typeof ScheduledTaskClock.Type;
 
+/** A calendar day in the task's time zone: "2026-10-22". */
+export const ScheduledTaskDate = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/));
+export type ScheduledTaskDate = typeof ScheduledTaskDate.Type;
+
 /**
  * When a task runs. Every kind but `manual` compiles to a 5-field cron
  * expression evaluated in the task's time zone (packages/shared
  * scheduledTasks.ts); `custom` is one, minute resolution only. `weekday` is
- * 0 (Sunday) to 6 (Saturday).
+ * 0 (Sunday) to 6 (Saturday). `once` runs one time, on `date` at `time`; the
+ * task is `done` after.
  */
 export const ScheduledTaskCadence = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("manual") }),
+  Schema.Struct({
+    kind: Schema.Literal("once"),
+    date: ScheduledTaskDate,
+    time: ScheduledTaskClock,
+  }),
   Schema.Struct({
     kind: Schema.Literal("hourly"),
     minute: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 59 })),
@@ -65,9 +75,10 @@ export type ScheduledTaskTarget = typeof ScheduledTaskTarget.Type;
 /**
  * `error`: the server couldn't work out the task's next run (its schedule
  * stopped making sense, say its cron); `error` names why. Saving it again
- * clears it.
+ * clears it. `done`: a `once` task whose time came; saving it with a new
+ * time makes it active again.
  */
-export const ScheduledTaskStatus = Schema.Literals(["active", "paused", "error"]);
+export const ScheduledTaskStatus = Schema.Literals(["active", "paused", "error", "done"]);
 export type ScheduledTaskStatus = typeof ScheduledTaskStatus.Type;
 
 /**

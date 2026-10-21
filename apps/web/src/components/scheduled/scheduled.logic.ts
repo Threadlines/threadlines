@@ -174,6 +174,19 @@ export function formatClock(clock: ScheduledTaskClock): string {
   }).format(Date.UTC(2000, 0, 1, clock.hour, clock.minute));
 }
 
+/** A one-time task's day in the viewer's locale: "Oct 22", with the year when it isn't this one. */
+export function formatCadenceDay(date: string, nowMs: number = Date.now()): string {
+  const [year, month, day] = date.split("-").map(Number);
+  if (year === undefined || month === undefined || day === undefined) return date;
+  const at = Date.UTC(year, month - 1, day, 12);
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(year === new Date(nowMs).getFullYear() ? {} : { year: "numeric" }),
+    timeZone: "UTC",
+  }).format(at);
+}
+
 /**
  * A task's schedule in a few words, naming its zone when it isn't the
  * viewer's ("Weekdays at 9:00 · Europe/Madrid").
@@ -182,7 +195,7 @@ export function describeTaskSchedule(
   task: Pick<ScheduledTask, "cadence" | "timeZone">,
   viewerZone: string = viewerTimeZone(),
 ): string {
-  const words = describeCadence(task.cadence, formatClock);
+  const words = describeCadence(task.cadence, formatClock, formatCadenceDay);
   return task.cadence.kind === "manual" || task.timeZone === viewerZone
     ? words
     : `${words} · ${task.timeZone}`;
@@ -230,6 +243,7 @@ export function formatWhen(iso: string, nowMs: number, timeZone: string = viewer
 export function describeNextRun(task: ScheduledTask, nowMs: number, timeZone?: string): string {
   if (task.status === "paused") return "Paused";
   if (task.status === "error") return "Stopped";
+  if (task.status === "done") return "Done";
   if (task.cadence.kind === "manual") return "Runs when you start it";
   if (task.nextRunAt === null) return "No next run";
   const when = formatWhen(task.nextRunAt, nowMs, timeZone);
@@ -244,6 +258,7 @@ export function describeNextRun(task: ScheduledTask, nowMs: number, timeZone?: s
 export type CadenceKind = ScheduledTaskCadence["kind"];
 
 export const CADENCE_KIND_LABELS: Record<CadenceKind, string> = {
+  once: "Once",
   manual: "Manual",
   hourly: "Hourly",
   daily: "Daily",
@@ -272,6 +287,8 @@ export interface ScheduledTaskForm {
   readonly modelSelection: ModelSelection | null;
   readonly runtimeMode: RuntimeMode;
   readonly cadenceKind: CadenceKind;
+  /** A one-time task's day, "2026-10-22". */
+  readonly date: string;
   readonly time: ScheduledTaskClock;
   readonly minute: number;
   readonly weekday: number;
@@ -279,6 +296,16 @@ export interface ScheduledTaskForm {
   readonly timeZone: string;
   readonly target: "new_thread" | "thread";
   readonly threadId: ThreadId | null;
+}
+
+/** The calendar day after `now` in `timeZone`, "2026-10-22". */
+export function tomorrowIn(timeZone: string, now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(now.getTime() + 24 * 60 * 60_000));
 }
 
 export function emptyTaskForm(input: {
@@ -289,6 +316,7 @@ export function emptyTaskForm(input: {
   readonly timeZone: string;
 }): ScheduledTaskForm {
   return {
+    date: tomorrowIn(input.timeZone),
     name: "",
     prompt: "",
     environmentId: input.environmentId,
@@ -323,9 +351,13 @@ export function taskForm(task: ScheduledTask, environmentId: EnvironmentId): Sch
     prompt: task.prompt,
     checkout: task.checkout,
     cadenceKind: cadence.kind,
-    ...(cadence.kind === "daily" || cadence.kind === "weekdays" || cadence.kind === "weekly"
+    ...(cadence.kind === "daily" ||
+    cadence.kind === "weekdays" ||
+    cadence.kind === "weekly" ||
+    cadence.kind === "once"
       ? { time: cadence.time }
       : {}),
+    ...(cadence.kind === "once" ? { date: cadence.date } : {}),
     ...(cadence.kind === "hourly" ? { minute: cadence.minute } : {}),
     ...(cadence.kind === "weekly" ? { weekday: cadence.weekday } : {}),
     ...(cadence.kind === "custom" ? { cron: cadence.cron } : {}),
@@ -336,6 +368,8 @@ export function taskForm(task: ScheduledTask, environmentId: EnvironmentId): Sch
 
 export function formCadence(form: ScheduledTaskForm): ScheduledTaskCadence {
   switch (form.cadenceKind) {
+    case "once":
+      return { kind: "once", date: form.date, time: form.time };
     case "manual":
       return { kind: "manual" };
     case "hourly":

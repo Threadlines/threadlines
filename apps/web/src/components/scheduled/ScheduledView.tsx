@@ -128,16 +128,21 @@ function TaskOverviewRow({
         </span>
         <ChevronRightIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
       </button>
-      <Switch
-        checked={task.status === "active"}
-        disabled={pending}
-        aria-label={task.status === "active" ? `Pause ${task.name}` : `Resume ${task.name}`}
-        data-testid={`scheduled-row-active-${task.id}`}
-        onCheckedChange={(checked) => {
-          setPending(true);
-          void setTaskActive(environment, task, Boolean(checked)).finally(() => setPending(false));
-        }}
-      />
+      {/* A one-time task that ran has nothing to pause; Edit gives it a new time. */}
+      {task.status === "done" ? null : (
+        <Switch
+          checked={task.status === "active"}
+          disabled={pending}
+          aria-label={task.status === "active" ? `Pause ${task.name}` : `Resume ${task.name}`}
+          data-testid={`scheduled-row-active-${task.id}`}
+          onCheckedChange={(checked) => {
+            setPending(true);
+            void setTaskActive(environment, task, Boolean(checked)).finally(() =>
+              setPending(false),
+            );
+          }}
+        />
+      )}
     </div>
   );
 }

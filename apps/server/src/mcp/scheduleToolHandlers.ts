@@ -17,6 +17,7 @@ import type {
 } from "@threadlines/contracts";
 import { ProviderInstanceId, ScheduledTaskId } from "@threadlines/contracts";
 import { describeCadence } from "@threadlines/shared/scheduledTasks";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 
@@ -54,6 +55,23 @@ const GONE = "This thread is gone.";
 const NOT_YOUR_TURN = "Scheduled tasks can only be changed during your own turn.";
 const ASKED_USER =
   "A card in this thread asks the user. The change is made when they allow it: tell the user it waits for their OK. You'll hear their answer at your next turn; don't ask again.";
+
+/** "2026-10-21 14:05, Wednesday": the wall time in `timeZone`. */
+const localTimeIn = (millis: number, timeZone: string): string => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    weekday: "long",
+  }).formatToParts(new Date(millis));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((entry) => entry.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}, ${part("weekday")}`;
+};
 
 /** A task as an agent reads it. */
 const forAgent = (task: ScheduledTask, callerThreadId: ThreadId): AgentScheduledTask => ({
@@ -143,9 +161,11 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
       if (Result.isFailure(tasks)) {
         return { outcome: "refused" as const, detail: tasks.failure.detail, tasks: [] };
       }
+      const now = yield* Clock.currentTimeMillis;
       return {
         outcome: "ok" as const,
         tasks: tasks.success.map((task) => forAgent(task, scope.threadId)),
+        now: { localTime: localTimeIn(now, deps.localTimeZone), timeZone: deps.localTimeZone },
       };
     });
 

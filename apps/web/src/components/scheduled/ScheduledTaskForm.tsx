@@ -53,6 +53,7 @@ import { type LocatedTask, taskRef, useScheduledNavigation } from "./useSchedule
 
 const CADENCE_KINDS: readonly CadenceKind[] = [
   "manual",
+  "once",
   "hourly",
   "daily",
   "weekdays",
@@ -543,7 +544,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
 
       <SettingsSection title="Schedule">
         <FieldRow
-          label="Repeats"
+          label="Runs"
           problem={form.cadenceKind === "custom" ? undefined : shownProblems.schedule}
         >
           <Select
@@ -552,7 +553,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
               if (value) update({ cadenceKind: value as CadenceKind });
             }}
           >
-            <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Repeats">
+            <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Runs">
               <SelectValue>{CADENCE_KIND_LABELS[form.cadenceKind]}</SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -603,9 +604,25 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
               </SelectPopup>
             </Select>
           ) : null}
+          {form.cadenceKind === "once" ? (
+            <Input
+              type="date"
+              size="sm"
+              className="w-40"
+              aria-label="Date"
+              value={form.date}
+              onChange={(event) => {
+                if (/^\d{4}-\d{2}-\d{2}$/u.test(event.target.value)) {
+                  update({ date: event.target.value });
+                }
+              }}
+              data-testid="scheduled-form-date"
+            />
+          ) : null}
           {form.cadenceKind === "daily" ||
           form.cadenceKind === "weekdays" ||
-          form.cadenceKind === "weekly"
+          form.cadenceKind === "weekly" ||
+          form.cadenceKind === "once"
             ? timeField
             : null}
         </FieldRow>
@@ -659,7 +676,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             data-testid="scheduled-form-preview"
           >
             <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-              Next runs, your time:{" "}
+              {form.cadenceKind === "once" ? "Your time:" : "Next runs, your time:"}{" "}
               {upcoming.map((slot) => formatWhen(slot.toISOString(), now.getTime())).join(", ")}
             </p>
           </div>

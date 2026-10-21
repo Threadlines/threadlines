@@ -5,7 +5,8 @@
  * scheduler and the client's form read the same rules from here.
  *
  * Every cadence but `manual` compiles to a 5-field cron expression (minute
- * resolution) evaluated with `effect/Cron` in the task's own time zone. Time
+ * resolution) evaluated with `effect/Cron` in the task's own time zone; a
+ * `once` cadence is the one instant that expression gives on its date. Time
  * zone changes follow Effect's compatible resolution: a wall time that doesn't
  * exist on a spring-forward day (02:30) runs at the same distance past the
  * jump (03:30), and a wall time the clocks pass twice on a fall-back day runs
@@ -45,11 +46,50 @@ const WEEKDAY_NAMES = [
   "Saturdays",
 ] as const;
 
-/** The 5-field cron expression a cadence runs on; null for `manual`. */
+const MONTH_NAMES = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+
+const DAY_MS = 24 * 60 * 60_000;
+
+/** A `once` cadence's date as numbers; null when it isn't a calendar day. */
+function dateParts(date: string): { year: number; month: number; day: number } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(date);
+  if (!match) return null;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return probe.getUTCFullYear() === year &&
+    probe.getUTCMonth() === month - 1 &&
+    probe.getUTCDate() === day
+    ? { year, month, day }
+    : null;
+}
+
+/**
+ * The 5-field cron expression a cadence runs on; null for `manual`. A `once`
+ * cadence's expression recurs every year; only its date's instance counts.
+ */
 export function cadenceCronExpression(cadence: ScheduledTaskCadence): string | null {
   switch (cadence.kind) {
     case "manual":
       return null;
+    case "once": {
+      const parts = dateParts(cadence.date);
+      return parts === null
+        ? null
+        : `${cadence.time.minute} ${cadence.time.hour} ${parts.day} ${parts.month} *`;
+    }
     case "hourly":
       return `${cadence.minute} * * * *`;
     case "daily":
@@ -69,19 +109,42 @@ export function isKnownTimeZone(timeZone: string): boolean {
 }
 
 /**
- * The cadence's cron schedule in `timeZone`; null for `manual`. Fails with
- * one plain sentence when the expression or the zone doesn't parse, or when
- * a custom expression has a seconds field.
+ * A cadence worked out in its time zone: its slots, the UTC instants it runs
+ * at, one after another.
+ */
+export interface CadenceSchedule {
+  /**
+   * The first slot strictly after `after`; null when it has no more (a
+   * `once` cadence past its time). Fails when a schedule stops making sense.
+   */
+  readonly next: (after: Date) => Result.Result<Date | null, string>;
+}
+
+const cronSchedule = (cron: Cron.Cron): CadenceSchedule => ({
+  next: (after) => {
+    try {
+      return Result.succeed(Cron.next(cron, after));
+    } catch {
+      return Result.fail("This schedule never runs.");
+    }
+  },
+});
+
+/**
+ * The cadence's schedule in `timeZone`; null for `manual`. Fails with one
+ * plain sentence when the expression, the date or the zone doesn't parse, or
+ * when a custom expression has a seconds field.
  */
 export function compileCadence(
   cadence: ScheduledTaskCadence,
   timeZone: string,
-): Result.Result<Cron.Cron | null, string> {
+): Result.Result<CadenceSchedule | null, string> {
   if (!isKnownTimeZone(timeZone)) {
     return Result.fail(`"${timeZone}" isn't a time zone this computer knows.`);
   }
-  const expression = cadenceCronExpression(cadence);
-  if (expression === null) return Result.succeed(null);
+  if (cadence.kind === "manual") return Result.succeed(null);
+  if (cadence.kind === "once") return compileOnce(cadence, timeZone);
+  const expression = cadenceCronExpression(cadence) ?? "";
   const fields = expression.split(/\s+/u).filter((field) => field.length > 0);
   if (fields.length !== 5) {
     return Result.fail(
@@ -89,22 +152,48 @@ export function compileCadence(
     );
   }
   return Cron.parse(expression, timeZone).pipe(
+    Result.map(cronSchedule),
     Result.mapError(() => `"${expression}" isn't a schedule Threadlines can read.`),
   );
 }
 
-/** The first slot strictly after `after`, or a reason when there is none. */
-export function nextSlotOf(cron: Cron.Cron, after: Date): Result.Result<Date, string> {
-  try {
-    return Result.succeed(Cron.next(cron, after));
-  } catch {
-    return Result.fail("This schedule never runs.");
+/**
+ * A `once` cadence: its yearly expression's instance on its own date, found
+ * from two days before (no zone is that far from UTC), so a time the clocks
+ * skip or repeat that day resolves as every other cadence's does.
+ */
+function compileOnce(
+  cadence: Extract<ScheduledTaskCadence, { readonly kind: "once" }>,
+  timeZone: string,
+): Result.Result<CadenceSchedule, string> {
+  const parts = dateParts(cadence.date);
+  const expression = cadenceCronExpression(cadence);
+  if (parts === null || expression === null) {
+    return Result.fail(`"${cadence.date}" isn't a date.`);
   }
+  const from = new Date(Date.UTC(parts.year, parts.month - 1, parts.day) - 2 * DAY_MS);
+  const instant = Cron.parse(expression, timeZone).pipe(
+    Result.mapError(() => `"${cadence.date}" isn't a date.`),
+    Result.flatMap((cron) => cronSchedule(cron).next(from)),
+    Result.flatMap((slot) =>
+      slot !== null && slot.getTime() - from.getTime() < 4 * DAY_MS
+        ? Result.succeed(slot)
+        : Result.fail(`"${cadence.date}" isn't a date.`),
+    ),
+  );
+  if (Result.isFailure(instant)) return Result.fail(instant.failure);
+  const at = instant.success;
+  return Result.succeed({
+    next: (after) => Result.succeed(at.getTime() > after.getTime() ? at : null),
+  });
 }
 
+/** The first slot strictly after `after`; null when the schedule has no more. */
+export const nextSlotOf = (schedule: CadenceSchedule, after: Date) => schedule.next(after);
+
 /**
- * The cadence's next slots after `after`: none for `manual`. Fails when the
- * schedule doesn't parse or never runs.
+ * The cadence's next slots after `after`, as many as it has up to `count`:
+ * none for `manual`. Fails when the schedule doesn't parse or never runs.
  */
 export function upcomingSlots(
   cadence: ScheduledTaskCadence,
@@ -114,15 +203,16 @@ export function upcomingSlots(
 ): Result.Result<ReadonlyArray<Date>, string> {
   const compiled = compileCadence(cadence, timeZone);
   if (Result.isFailure(compiled)) return Result.fail(compiled.failure);
-  const cron = compiled.success;
-  if (cron === null) return Result.succeed([]);
+  const schedule = compiled.success;
+  if (schedule === null) return Result.succeed([]);
   const slots: Array<Date> = [];
   let cursor = after;
   for (let index = 0; index < count; index += 1) {
-    const next = nextSlotOf(cron, cursor);
+    const next = schedule.next(cursor);
     if (Result.isFailure(next)) {
       return slots.length > 0 ? Result.succeed(slots) : Result.fail(next.failure);
     }
+    if (next.success === null) break;
     slots.push(next.success);
     cursor = next.success;
   }
@@ -140,10 +230,13 @@ export function cadenceSaveRefusal(
 ): string | null {
   const next = upcomingSlots(cadence, timeZone, now, 1);
   if (Result.isFailure(next)) return next.failure;
-  const first = next.success[0];
   if (cadence.kind === "manual") return null;
+  const first = next.success[0];
+  if (first === undefined && cadence.kind === "once") return "That time has already passed.";
   if (first === undefined || first.getTime() - now.getTime() > SCHEDULED_TASK_SAVE_HORIZON_MS) {
-    return "This schedule doesn't run within the next year.";
+    return cadence.kind === "once"
+      ? "That's more than a year away."
+      : "This schedule doesn't run within the next year.";
   }
   return null;
 }
@@ -155,7 +248,7 @@ export function cadenceSaveRefusal(
  * the walk jumps to the newest stretch, since only the latest runs.
  */
 export function dueSlots(
-  cron: Cron.Cron,
+  schedule: CadenceSchedule,
   from: Date,
   now: Date,
   limit = 20_000,
@@ -169,9 +262,9 @@ export function dueSlots(
   let firstEarlier: Date | null = null;
   let walked = 0;
   for (;;) {
-    const next = nextSlotOf(cron, latest);
+    const next = schedule.next(latest);
     if (Result.isFailure(next)) return Result.fail(next.failure);
-    if (next.success.getTime() > now.getTime()) break;
+    if (next.success === null || next.success.getTime() > now.getTime()) break;
     if (firstEarlier === null) firstEarlier = latest;
     earlier += 1;
     latest = next.success;
@@ -184,9 +277,9 @@ export function dueSlots(
         walked = 0;
         continue;
       }
-      const after = nextSlotOf(cron, resume);
+      const after = schedule.next(resume);
       if (Result.isFailure(after)) return Result.fail(after.failure);
-      if (after.success.getTime() > now.getTime()) break;
+      if (after.success === null || after.success.getTime() > now.getTime()) break;
       latest = after.success;
       earlier += 1;
       walked = 0;
@@ -199,14 +292,23 @@ export function dueSlots(
 export const formatClock24 = (clock: ScheduledTaskClock): string =>
   `${clock.hour}:${String(clock.minute).padStart(2, "0")}`;
 
+/** "Oct 22, 2026" for a `once` cadence's date; callers pass their own for the viewer's locale. */
+export const formatCadenceDate = (date: string): string => {
+  const parts = dateParts(date);
+  return parts === null ? date : `${MONTH_NAMES[parts.month - 1]} ${parts.day}, ${parts.year}`;
+};
+
 /** A cadence in a few words: "Weekdays at 9:00", "Every hour at :15", "Manual". */
 export function describeCadence(
   cadence: ScheduledTaskCadence,
   formatClock: (clock: ScheduledTaskClock) => string = formatClock24,
+  formatDate: (date: string) => string = formatCadenceDate,
 ): string {
   switch (cadence.kind) {
     case "manual":
       return "Manual";
+    case "once":
+      return `Once, ${formatDate(cadence.date)} at ${formatClock(cadence.time)}`;
     case "hourly":
       return cadence.minute === 0
         ? "Every hour"

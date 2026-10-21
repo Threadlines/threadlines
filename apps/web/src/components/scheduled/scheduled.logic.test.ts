@@ -122,6 +122,17 @@ describe("how a task reads", () => {
       describeNextRun(task({ nextRunAt: "2026-10-22T09:00:00.000Z" }), NOW.getTime(), "UTC"),
     ).toMatch(/^Next run tomorrow at 9:00/);
     expect(describeNextRun(task({ status: "paused" }), NOW.getTime(), "UTC")).toBe("Paused");
+    expect(
+      describeNextRun(
+        task({
+          status: "done",
+          nextRunAt: null,
+          cadence: { kind: "once", date: "2026-10-20", time: { hour: 9, minute: 0 } },
+        }),
+        NOW.getTime(),
+        "UTC",
+      ),
+    ).toBe("Done");
     expect(describeNextRun(task({ cadence: { kind: "manual" } }), NOW.getTime(), "UTC")).toBe(
       "Runs when you start it",
     );
@@ -156,6 +167,15 @@ describe("the task form", () => {
       target: { kind: "thread", threadId: "thread-7" },
     });
     expect(formProblems({ ...form(), name: "x", prompt: "y" }, NOW)).toEqual({});
+  });
+
+  it("keeps a one-time task's day and time, and refuses one already past", () => {
+    const once = { kind: "once", date: "2026-10-22", time: { hour: 8, minute: 30 } } as const;
+    const opened = taskForm(task({ cadence: once }), ENVIRONMENT);
+    expect(formDraft(opened)?.cadence).toEqual(once);
+    expect(
+      formProblems({ ...opened, date: "2026-10-21", time: { hour: 7, minute: 0 } }, NOW).schedule,
+    ).toMatch(/already passed/);
   });
 
   it("opens an existing task with its cadence's parts", () => {
