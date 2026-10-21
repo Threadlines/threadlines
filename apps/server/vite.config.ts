@@ -2,6 +2,7 @@ import "vite-plus/test/config";
 import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
+import { WeightedShardSequencer } from "./scripts/test-shard-sequencer.ts";
 
 const bundledPackagePrefixes = [
   // Muse Code's protocol client: ESM with no dependencies of its own.
@@ -64,7 +65,11 @@ export default mergeConfig(
       },
     },
     test: {
+      // The server suite exercises sqlite, git, temp worktrees, and orchestration
+      // runtimes heavily; running files in parallel brings load-sensitive flakes.
+      // CI splits it across `--shard` jobs instead.
       fileParallelism: false,
+      sequence: { sequencer: WeightedShardSequencer },
       hookTimeout: 120_000,
       testTimeout: 120_000,
     },
