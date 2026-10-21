@@ -364,6 +364,8 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
       const child = yield* computer.thread(linkThreadId(DEVICE, "request-1"));
       // The thread carries where it came from, so it gets no agent tools.
       assert.equal(child?.remoteOrigin?.linkDeviceId, DEVICE);
+      // Its link wasn't made for a named computer: who asked is unconfirmed.
+      assert.isFalse(child?.remoteOrigin?.environmentPinned);
       assert.equal(child?.remoteOrigin?.threadId, PARENT);
       // Never more access than the link allows.
       assert.equal(child?.runtimeMode, "auto");
@@ -399,9 +401,14 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         assert.equal(row.linkEnvironmentId, WINDOWS);
         assert.isTrue(row.linkEnvironmentPinned);
 
-        // Its own computer's start goes ahead.
+        // Its own computer's start goes ahead, and its thread says the
+        // computer that asked is confirmed.
         const own = yield* service.start(pinned, startInput("request-2"));
         assert.equal(own.status, "started");
+        yield* eventually(computer.firstTurnCommitted("request-2"), "its first turn is committed");
+        const child = yield* computer.thread(linkThreadId(DEVICE, "request-2"));
+        assert.equal(child?.remoteOrigin?.environmentId, WINDOWS);
+        assert.isTrue(child?.remoteOrigin?.environmentPinned);
 
         // A link whose invite named no computer keeps the first one it said
         // it was, unconfirmed, and refuses any other after that.

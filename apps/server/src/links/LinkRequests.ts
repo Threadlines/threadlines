@@ -325,7 +325,12 @@ const make = Effect.gen(function* () {
         (
           found,
         ):
-          | { readonly ok: true; readonly maxRuntimeMode: RuntimeMode }
+          | {
+              readonly ok: true;
+              readonly maxRuntimeMode: RuntimeMode;
+              /** The computer the link was made for, when pinned by its invite. */
+              readonly pinnedEnvironmentId: string | null;
+            }
           | { readonly ok: false; readonly outcome: PeerRequestOutcome; readonly text: string } => {
           if (
             Option.isNone(found) ||
@@ -344,6 +349,9 @@ const make = Effect.gen(function* () {
           return {
             ok: true,
             maxRuntimeMode: found.value.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE,
+            pinnedEnvironmentId: found.value.linkEnvironmentPinned
+              ? found.value.linkEnvironmentId
+              : null,
           };
         },
       ),
@@ -716,6 +724,7 @@ const make = Effect.gen(function* () {
           const remoteOrigin: ThreadRemoteOrigin = {
             linkDeviceId: deviceId,
             environmentId: input.parent.environmentId,
+            environmentPinned: authority.pinnedEnvironmentId === input.parent.environmentId,
             environmentLabel: input.parent.environmentLabel,
             threadId: input.parent.threadId,
             threadTitle: input.parent.threadTitle,
