@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
-import { SidebarOpenTrigger, useSidebar } from "./ui/sidebar";
+import { useIsMobile } from "../hooks/useMediaQuery";
+import { SidebarOpenTrigger } from "./ui/sidebar";
 import { HeaderEdgeFade } from "./HeaderEdgeFade";
 
 /**
@@ -37,7 +38,8 @@ export function PageTitlebar({
   /** Optional extra content, laid out after the label. */
   readonly children?: ReactNode;
 }) {
-  const { isMobile } = useSidebar();
+  // The same width test the sidebar uses to become a sheet.
+  const isMobile = useIsMobile();
   if (!isElectron) {
     if (mobile === "none") {
       return null;
