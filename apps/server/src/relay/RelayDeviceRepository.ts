@@ -147,8 +147,8 @@ export interface RelayDeviceRepositoryShape {
     readonly now: string;
   }) => Effect.Effect<void, RelayRepositoryError>;
   /**
-   * What a linked computer said about itself (ignored once its id is
-   * pinned), and when it last called.
+   * What a linked computer first said about itself (its id never changes
+   * once known, pinned or not), and when it last called.
    */
   readonly touchLink: (input: {
     readonly deviceId: string;
@@ -336,10 +336,7 @@ const make = Effect.gen(function* () {
   const touchLink: RelayDeviceRepositoryShape["touchLink"] = (input) =>
     sql`
       UPDATE relay_devices SET
-        link_environment_id = CASE
-          WHEN link_environment_pinned = 1 THEN link_environment_id
-          ELSE COALESCE(${input.environmentId ?? null}, link_environment_id)
-        END,
+        link_environment_id = COALESCE(link_environment_id, ${input.environmentId ?? null}),
         link_last_used_at = ${input.now}
       WHERE device_id = ${input.deviceId}
     `.pipe(Effect.asVoid, wrap("touchLink"));

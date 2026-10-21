@@ -126,11 +126,13 @@ export const PEER_LINK_REMOVED = "This link was removed.";
 
 /**
  * Why a linked computer can't go on as the computer it now says it is: its
- * link here was made for another one. Null when it may (an unpinned link
- * goes by what it says; that is recorded, and shown as unconfirmed).
+ * link here belongs to another one. A link's computer never changes once
+ * known: pinned by the invite made for it, or else (an invite that named no
+ * computer) the first one it said it was, which clients show as unconfirmed.
+ * Null when it may go on.
  */
 export const linkIdentityRefusal = (link: PeerLink, environmentId: string): string | null =>
-  link.environmentPinned && link.environmentId !== environmentId
+  link.environmentId !== null && link.environmentId !== environmentId
     ? "This link was made for a different computer."
     : null;
 
