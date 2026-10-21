@@ -252,6 +252,137 @@ export function describeNextRun(task: ScheduledTask, nowMs: number, timeZone?: s
 }
 
 // ---------------------------------------------------------------------------
+// An agent's schedule_create and schedule_update calls, in its chat
+// ---------------------------------------------------------------------------
+
+/** The schedule tools whose calls leave a record in the chat. */
+export type ScheduleChangeTool = "schedule_create" | "schedule_update";
+
+const SCHEDULE_CALL_OUTCOMES = new Set([
+  "created",
+  "updated",
+  "asked_user",
+  "off",
+  "not_allowed",
+  "refused",
+  "failed",
+] as const);
+type ScheduleCallOutcome = typeof SCHEDULE_CALL_OUTCOMES extends Set<infer T> ? T : never;
+
+/** What a schedule_create or schedule_update result said, as far as it survived. */
+export interface ScheduleCallResult {
+  readonly outcome: ScheduleCallOutcome | null;
+  /** The task it made or changed, or will once the user allows it. */
+  readonly taskId: ScheduledTaskId | null;
+  /** The card's request, when it asked the user. */
+  readonly requestId: string | null;
+  readonly name: string | null;
+}
+
+/**
+ * Reads a call's result (WorkLogEntry.toolResult) as text, so one a provider
+ * passed along as JSON inside a string reads the same, and one cut short
+ * still gives what survived.
+ */
+export function parseScheduleCallResult(output: string | undefined): ScheduleCallResult {
+  const text = (output ?? "").replaceAll('\\"', '"');
+  const field = (pattern: RegExp) => pattern.exec(text)?.[1] ?? null;
+  const outcome = field(/"outcome"\s*:\s*"([a-z_]+)"/u);
+  const taskId =
+    field(/"taskId"\s*:\s*"([^"]+)"/u) ?? field(/"task"\s*:\s*\{\s*"id"\s*:\s*"([^"]+)"/u);
+  return {
+    outcome:
+      outcome !== null && SCHEDULE_CALL_OUTCOMES.has(outcome as ScheduleCallOutcome)
+        ? (outcome as ScheduleCallOutcome)
+        : null,
+    taskId: taskId === null ? null : (taskId as ScheduledTaskId),
+    requestId: field(/"requestId"\s*:\s*"([^"]+)"/u),
+    name: field(/"name"\s*:\s*"([^"]+)"/u),
+  };
+}
+
+/** The line a call leaves in the chat; `open` when its task can be opened. */
+export interface ScheduleCallRecord {
+  readonly heading: string;
+  readonly outcome: string | null;
+  readonly open: ScheduledTaskId | null;
+}
+
+const SCHEDULE_REFUSAL_WORDS: Readonly<Record<string, string>> = {
+  off: "turned off in Settings",
+  not_allowed: "not allowed from this thread",
+  refused: "refused",
+  failed: "refused",
+};
+
+/**
+ * What one call's line says, live: the task as it is now on its computer,
+ * or the card still waiting for the user.
+ */
+export function describeScheduleCall(input: {
+  readonly tool: ScheduleChangeTool;
+  readonly result: ScheduleCallResult;
+  /** The task the result names, as its computer has it now. */
+  readonly task: ScheduledTask | null;
+  /** Whether the call's card still waits for the user. */
+  readonly waiting: boolean;
+  /**
+   * Whether this client follows the computer's tasks yet: until then (or
+   * for one that doesn't run them) the line says only what the call did.
+   */
+  readonly followed: boolean;
+  readonly nowMs: number;
+  readonly timeZone?: string;
+}): ScheduleCallRecord {
+  const { tool, result, task } = input;
+  const creating = tool === "schedule_create";
+  const refusal = result.outcome === null ? null : (SCHEDULE_REFUSAL_WORDS[result.outcome] ?? null);
+  if (refusal !== null) {
+    return {
+      heading: creating ? "Tried to schedule a task" : "Tried to change a scheduled task",
+      outcome: refusal,
+      open: null,
+    };
+  }
+  const name = task?.name ?? result.name;
+  const quoted = name === null ? null : `“${name}”`;
+  const done = creating
+    ? quoted === null
+      ? "Scheduled a task"
+      : `Scheduled ${quoted}`
+    : quoted === null
+      ? "Changed a scheduled task"
+      : `Changed ${quoted}`;
+  const asked = creating
+    ? quoted === null
+      ? "Asked to schedule a task"
+      : `Asked to schedule ${quoted}`
+    : quoted === null
+      ? "Asked to change a scheduled task"
+      : `Asked to change ${quoted}`;
+  const when =
+    task === null
+      ? null
+      : `${describeTaskSchedule(task, input.timeZone)} · ${describeNextRun(task, input.nowMs, input.timeZone)}`;
+  if (!input.followed) {
+    return { heading: result.outcome === "asked_user" ? asked : done, outcome: null, open: null };
+  }
+  if (result.outcome === "asked_user") {
+    if (input.waiting) return { heading: asked, outcome: "waiting for you", open: null };
+    // Answered: a new task that exists was allowed; one that doesn't wasn't.
+    if (creating) {
+      return task === null
+        ? { heading: asked, outcome: "not scheduled", open: null }
+        : { heading: done, outcome: when, open: task.id };
+    }
+    return { heading: asked, outcome: null, open: task?.id ?? null };
+  }
+  return task === null
+    ? { heading: done, outcome: result.outcome === null ? null : "deleted since", open: null }
+    : { heading: done, outcome: when, open: task.id };
+}
+
+// ---------------------------------------------------------------------------
 // The task form
 // ---------------------------------------------------------------------------
 

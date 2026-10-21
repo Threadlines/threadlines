@@ -207,7 +207,13 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
         return { outcome: "refused" as const, detail: proposed.failure.detail };
       }
       if (proposed.success.outcome === "asked_user") {
-        return { outcome: "asked_user" as const, detail: ASKED_USER };
+        return {
+          outcome: "asked_user" as const,
+          detail: ASKED_USER,
+          requestId: proposed.success.requestId,
+          taskId: proposed.success.taskId,
+          name: proposed.success.name,
+        };
       }
       return {
         outcome: tool === "schedule_create" ? ("created" as const) : ("updated" as const),

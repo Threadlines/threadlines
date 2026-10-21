@@ -4,11 +4,11 @@ import { useNavigate } from "@tanstack/react-router";
 import { ChevronLeftIcon } from "lucide-react";
 import { useState } from "react";
 
+import { useThreadTitle } from "../../childThreads";
 import { readEnvironmentConnection } from "../../environments/runtime";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { cn } from "../../lib/utils";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
-import { useStore } from "../../store";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { SETTINGS_GROUP_ROW_CLASS, SettingsSection } from "../settings/settingsLayout";
 import {
@@ -41,15 +41,6 @@ import {
 } from "./useScheduledPage";
 
 const RUN_PAGE = 30;
-
-/** A title the thread has on its computer, when this client knows it. */
-function useThreadTitle(environmentId: string, threadId: ThreadId | null): string | null {
-  return useStore((state) => {
-    if (threadId === null) return null;
-    const environment = state.environmentStateById[environmentId];
-    return environment?.threadShellById[threadId]?.title ?? null;
-  });
-}
 
 function RunRow({
   run,
@@ -198,6 +189,12 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
     environment.environmentId,
     task.target.kind === "thread" ? task.target.threadId : null,
   );
+  const originTitle = useThreadTitle(environment.environmentId, task.originThreadId);
+  const openThread = (threadId: ThreadId) =>
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: environment.environmentId, threadId },
+    });
   const [busy, setBusy] = useState<"run" | "active" | "delete" | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [archiveRunThreads, setArchiveRunThreads] = useState(false);
@@ -354,14 +351,7 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
                 type="button"
                 className="cursor-pointer text-primary-readable underline-offset-2 hover:underline focus-ring"
                 onClick={() => {
-                  if (task.target.kind !== "thread") return;
-                  void navigate({
-                    to: "/$environmentId/$threadId",
-                    params: {
-                      environmentId: environment.environmentId,
-                      threadId: task.target.threadId,
-                    },
-                  });
+                  if (task.target.kind === "thread") openThread(task.target.threadId);
                 }}
               >
                 {continuedTitle ?? "its thread"}
@@ -384,6 +374,25 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
         </DetailRow>
         <DetailRow label="Access">{runtimeModeConfig[task.runtimeMode].label}</DetailRow>
         <DetailRow label="Time zone">{task.timeZone}</DetailRow>
+        {task.originThreadId !== null ? (
+          <DetailRow label="Set up by">
+            {originTitle === null ? (
+              "An agent, in a thread that's archived or deleted"
+            ) : (
+              <span>
+                An agent in{" "}
+                <button
+                  type="button"
+                  className="cursor-pointer text-primary-readable underline-offset-2 hover:underline focus-ring"
+                  data-testid="scheduled-origin-thread"
+                  onClick={() => openThread(task.originThreadId!)}
+                >
+                  {originTitle}
+                </button>
+              </span>
+            )}
+          </DetailRow>
+        ) : null}
       </SettingsSection>
 
       <RunHistory located={located} />

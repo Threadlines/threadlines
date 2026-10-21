@@ -177,7 +177,13 @@ export interface ScheduledTasksShape {
     readonly change: ScheduledTaskChange;
   }) => Effect.Effect<
     | { readonly outcome: "applied"; readonly task: ScheduledTask }
-    | { readonly outcome: "asked_user"; readonly requestId: string },
+    | {
+        readonly outcome: "asked_user";
+        readonly requestId: string;
+        /** The task it makes or changes once the user allows it. */
+        readonly taskId: ScheduledTaskId;
+        readonly name: string;
+      },
     ScheduledTaskError
   >;
   /**
@@ -606,7 +612,12 @@ const make = Effect.gen(function* () {
         })
         .pipe(Effect.mapError(storageError("record the request")));
       yield* notify;
-      return { outcome: "asked_user" as const, requestId: input.requestId };
+      return {
+        outcome: "asked_user" as const,
+        requestId: input.requestId,
+        taskId: preview.taskId ?? requestTaskId(input.requestId),
+        name: preview.name,
+      };
     });
 
   const respondRequest: ScheduledTasksShape["respondRequest"] = (input) =>

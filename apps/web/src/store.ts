@@ -3578,15 +3578,15 @@ export function setScheduleApprovalThreads(
     if (previous[threadId] === next[threadId]) changed.delete(threadId);
   }
   if (changed.size === 0) return state;
-  let summaries = environmentState.sidebarThreadSummaryById;
   const nextEnvironmentState: EnvironmentState = {
     ...environmentState,
     scheduleApprovalThreadIds: next,
   };
+  const summaries = { ...environmentState.sidebarThreadSummaryById };
   for (const threadId of changed) {
     const summary = summaries[threadId];
-    if (summary === undefined) continue;
-    summaries = { ...summaries, [threadId]: withScheduleApproval(nextEnvironmentState, summary) };
+    if (summary !== undefined)
+      summaries[threadId] = withScheduleApproval(nextEnvironmentState, summary);
   }
   return commitEnvironmentState(state, environmentId, {
     ...nextEnvironmentState,

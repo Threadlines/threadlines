@@ -10,11 +10,13 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   describeNextRun,
+  describeScheduleCall,
   describeTaskSchedule,
   emptyTaskForm,
   formDraft,
   formProblems,
   formatWhen,
+  parseScheduleCallResult,
   parseScheduledSearch,
   scheduledTaskEnvironmentsOf,
   taskForm,
@@ -138,6 +140,54 @@ describe("how a task reads", () => {
       "Runs when you start it",
     );
     expect(formatWhen("2026-10-20T07:00:00.000Z", NOW.getTime(), "UTC")).toMatch(/^Yesterday at/);
+  });
+});
+
+describe("an agent's schedule calls in its chat", () => {
+  const record = (
+    output: string,
+    live: { task?: ScheduledTask | null; waiting?: boolean; followed?: boolean } = {},
+  ) =>
+    describeScheduleCall({
+      tool: "schedule_create",
+      result: parseScheduleCallResult(output),
+      task: live.task ?? null,
+      waiting: live.waiting ?? false,
+      followed: live.followed ?? true,
+      nowMs: NOW.getTime(),
+      timeZone: "UTC",
+    });
+  // As a provider passes it along: JSON inside a string.
+  const asked = JSON.stringify(
+    JSON.stringify({
+      outcome: "asked_user",
+      requestId: "request-1",
+      taskId: "task-1",
+      name: "Morning review",
+    }),
+  );
+
+  it("says the card waits, then how the user answered, from the task as it is now", () => {
+    expect(record(asked, { waiting: true })).toEqual({
+      heading: "Asked to schedule \u201cMorning review\u201d",
+      outcome: "waiting for you",
+      open: null,
+    });
+    const allowed = record(asked, { task: task() });
+    expect(allowed.heading).toBe("Scheduled \u201cMorning review\u201d");
+    expect(allowed.outcome).toMatch(/^Weekdays at 9:00.* · Next run today at 9:00/);
+    expect(allowed.open).toBe("task-1");
+    expect(record(asked).outcome).toBe("not scheduled");
+    // A computer whose tasks this client doesn't follow: only what the call did.
+    expect(record(asked, { followed: false }).outcome).toBe(null);
+  });
+
+  it("names a refusal in the user's words", () => {
+    expect(record('{"outcome":"off","detail":"Turned off."}')).toEqual({
+      heading: "Tried to schedule a task",
+      outcome: "turned off in Settings",
+      open: null,
+    });
   });
 });
 

@@ -90,6 +90,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   BotIcon,
+  CalendarClockIcon,
   CheckIcon,
   ChevronRightIcon,
   CircleAlertIcon,
@@ -136,6 +137,13 @@ import {
   type ThreadStartCall,
 } from "../../childThreads";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
+import {
+  describeScheduleCall,
+  parseScheduleCallResult,
+  type ScheduleChangeTool,
+} from "../scheduled/scheduled.logic";
+import { useScheduledNavigation } from "../scheduled/useScheduledPage";
+import { useScheduledTasksStore } from "../../lib/scheduledTasksState";
 import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
@@ -4320,10 +4328,15 @@ const WorkGroupSection = memo(function WorkGroupSection({
       }),
     [threadStartCallsByTurn, threadStartEntries],
   );
+  // Where the agent created or changed a scheduled task: its own record too.
+  const scheduleCallEntries = useMemo(
+    () => groupedEntries.filter(isSettledScheduleChangeEntry),
+    [groupedEntries],
+  );
   const steps = useMemo(
     () =>
       groupedEntries.flatMap((entry) => {
-        if (threadStartEntries.includes(entry)) return [];
+        if (threadStartEntries.includes(entry) || scheduleCallEntries.includes(entry)) return [];
         const step = activityStepFromWorkLogEntry(entry, {
           workspaceRoot,
           roomAgentNames,
@@ -4333,7 +4346,14 @@ const WorkGroupSection = memo(function WorkGroupSection({
         });
         return step ? [step] : [];
       }),
-    [groupedEntries, roomAgentNames, threadStartEntries, turnDiffSummaryByTurnId, workspaceRoot],
+    [
+      groupedEntries,
+      roomAgentNames,
+      scheduleCallEntries,
+      threadStartEntries,
+      turnDiffSummaryByTurnId,
+      workspaceRoot,
+    ],
   );
   const entriesById = useMemo(
     () => new Map(groupedEntries.map((entry) => [entry.id, entry] as const)),
@@ -4354,7 +4374,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
     !(isWorking && row.inActiveExchange);
   const hasSettledSteps = steps.some((step) => !step.running);
 
-  if (!hasSettledSteps && !showTracker && recordedThreadStartEntries.length === 0) {
+  if (
+    !hasSettledSteps &&
+    !showTracker &&
+    recordedThreadStartEntries.length === 0 &&
+    scheduleCallEntries.length === 0
+  ) {
     return null;
   }
 
@@ -4404,9 +4429,89 @@ const WorkGroupSection = memo(function WorkGroupSection({
       {recordedThreadStartEntries.map((entry) => (
         <StartedThreadsRecord key={entry.id} entry={entry} />
       ))}
+      {scheduleCallEntries.map((entry) => (
+        <ScheduleCallRecordLine key={entry.id} entry={entry} />
+      ))}
     </div>
   );
 });
+
+/** A finished `schedule_create` or `schedule_update` call: the steps leave it to its own record. */
+function isSettledScheduleChangeEntry(entry: TimelineWorkEntry): boolean {
+  if (entry.executionState === "running") return false;
+  const tool = threadlinesRoomToolOf(entry);
+  return tool === "schedule_create" || tool === "schedule_update";
+}
+
+/**
+ * Where the agent created or changed a scheduled task: one line with the task
+ * as it is now (its schedule and next run), or its card still waiting for the
+ * user. A click opens the task on the Scheduled page.
+ */
+function ScheduleCallRecordLine({ entry }: { entry: TimelineWorkEntry }) {
+  const { activeThreadEnvironmentId } = use(TimelineRowCtx);
+  const nowMs = useRelativeTimeTick(30_000);
+  const navigation = useScheduledNavigation();
+  const snapshot = useScheduledTasksStore(
+    (state) => state.byEnvironment[activeThreadEnvironmentId],
+  );
+  const result = useMemo(
+    () => parseScheduleCallResult(entry.toolResult ?? entry.outputPreview),
+    [entry.outputPreview, entry.toolResult],
+  );
+  const tool: ScheduleChangeTool =
+    threadlinesRoomToolOf(entry) === "schedule_update" ? "schedule_update" : "schedule_create";
+  const record = describeScheduleCall({
+    tool,
+    result,
+    task:
+      result.taskId === null
+        ? null
+        : (snapshot?.tasks.find((task) => task.id === result.taskId) ?? null),
+    waiting:
+      result.requestId !== null &&
+      (snapshot?.requests.some((request) => request.requestId === result.requestId) ?? false),
+    followed: snapshot !== undefined,
+    nowMs,
+  });
+  const line = (
+    <>
+      <CalendarClockIcon aria-hidden className="size-3 shrink-0 text-muted-foreground/60" />
+      <span className="max-w-[70%] min-w-0 shrink-0 truncate" data-schedule-call-heading>
+        {record.heading}
+      </span>
+      {record.outcome !== null ? (
+        <>
+          <span className="shrink-0 text-muted-foreground/50">·</span>
+          <span className="min-w-0 truncate text-muted-foreground" data-schedule-call-outcome>
+            {record.outcome}
+          </span>
+        </>
+      ) : null}
+    </>
+  );
+  const className = "flex min-w-0 items-center gap-[7px] text-xs leading-5 text-foreground/80";
+  const open = record.open;
+  return open === null ? (
+    <div className={className} data-schedule-call={entry.id}>
+      {line}
+    </div>
+  ) : (
+    <button
+      type="button"
+      className={cn(
+        className,
+        "w-full cursor-pointer text-left transition-colors hover:text-foreground",
+      )}
+      data-schedule-call={entry.id}
+      onClick={() =>
+        navigation.openTask({ environmentId: activeThreadEnvironmentId, taskId: open })
+      }
+    >
+      {line}
+    </button>
+  );
+}
 
 /** A finished `thread_start` call: the steps leave it to its own record. */
 function isSettledThreadStartEntry(entry: TimelineWorkEntry): boolean {

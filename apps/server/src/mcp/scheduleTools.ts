@@ -78,6 +78,10 @@ export const ScheduleChangeResult = Schema.Struct({
   ]),
   detail: Schema.optional(Schema.String),
   task: Schema.optional(AgentScheduledTask),
+  /** `asked_user`: the request the card answers, and the task it makes or changes. */
+  requestId: Schema.optional(Schema.String),
+  taskId: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
 });
 export type ScheduleChangeResult = typeof ScheduleChangeResult.Type;
 
