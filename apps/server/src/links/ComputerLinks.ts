@@ -3,6 +3,11 @@
  * "Links RPC for clients"). It makes this computer's single-use link invites,
  * accepts another computer's invite as that computer's `peer` device, lists
  * both directions with their live state, and changes or removes them.
+ *
+ * Removing an outbound link unlinks (Rev 4 "Unlink"): the other computer is
+ * told (`peer.unlink`), and only once it has its half done is the link
+ * deleted here. One it can't reach stays `unlinking`, unusable, and is told
+ * again at startup and every minute until it hears.
  */
 import {
   type ComputerLinkAccess,
@@ -13,9 +18,12 @@ import {
   EnvironmentId,
   type InboundComputerLink,
   type LinksRemoveInput,
+  type LinksRemoveResult,
   type LinksRespondRequestInput,
   type LinksSetAccessInput,
   type OutboundComputerLink,
+  type PeerRpcError,
+  type PeerUnlinkInput,
   type RelayAccessError,
 } from "@threadlines/contracts";
 import {
@@ -25,6 +33,7 @@ import {
   RelayInviteInvalidError,
   RelayRequestError,
 } from "@threadlines/shared/relayJoin";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -32,6 +41,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
@@ -44,13 +54,31 @@ import {
   ComputerLinkClient,
   computerLinkSecretName,
   type ComputerLinkLiveStatus,
+  type ComputerLinkUnavailableError,
 } from "./ComputerLinkClient.ts";
-import { ComputerLinkRepository, type ComputerLinkRow } from "./ComputerLinkRepository.ts";
-import { LinkRequests } from "./LinkRequests.ts";
-import { peerLinkOf } from "./peerRoute.ts";
+import {
+  ComputerLinkRepository,
+  type ComputerLinkRow,
+  isUsableLink,
+} from "./ComputerLinkRepository.ts";
+import { LinkRequests, PEER_LINK_REMOVED, peerLinkOf } from "./LinkRequests.ts";
 
 const APPROVAL_WAIT_MS = 30_000;
 const APPROVAL_POLL_MS = 500;
+/** How often links still unlinking tell the other computer again. */
+export const UNLINK_RETRY_EVERY = Duration.seconds(60);
+
+/**
+ * An unlink as the other computer hears it: it stops what this computer's
+ * link started there and forgets its own link back to this one.
+ */
+const UNLINK: PeerUnlinkInput = { stopRunning: true, reverse: true };
+
+/** Whether a failed peer.unlink means the link is already gone there. */
+const goneThere = (error: PeerRpcError | ComputerLinkUnavailableError) =>
+  error._tag === "ComputerLinkUnavailableError"
+    ? error.revoked
+    : error.detail === PEER_LINK_REMOVED;
 
 const PLATFORM_NAMES: Record<string, string> = {
   darwin: "macOS",
@@ -69,10 +97,17 @@ export interface ComputerLinksShape {
   readonly setAccess: (
     input: LinksSetAccessInput,
   ) => Effect.Effect<InboundComputerLink, ComputerLinkError>;
-  readonly remove: (input: LinksRemoveInput) => Effect.Effect<void, ComputerLinkError>;
+  /** See LinksRemoveResult: a half the other computer didn't confirm is never reported done. */
+  readonly remove: (input: LinksRemoveInput) => Effect.Effect<LinksRemoveResult, ComputerLinkError>;
   readonly respondRequest: (
     input: LinksRespondRequestInput,
   ) => Effect.Effect<void, ComputerLinkError>;
+  /**
+   * The other computer unlinked both directions (`peer.unlink` with
+   * `reverse`): this computer's own links to it are deleted, without telling
+   * it (its access here goes in the same unlink).
+   */
+  readonly forgetLinksTo: (environmentId: EnvironmentId) => Effect.Effect<void, ComputerLinkError>;
 }
 
 export class ComputerLinks extends Context.Service<ComputerLinks, ComputerLinksShape>()(
@@ -100,14 +135,17 @@ const make = Effect.gen(function* () {
     statuses: ReadonlyMap<string, ComputerLinkLiveStatus>,
   ): OutboundComputerLink => {
     const live = statuses.get(row.linkId);
+    // A revoked or unlinking link carries nothing, so it reads offline (an
+    // unlink's last call to the other computer isn't the link working).
+    const unusable = !isUsableLink(row);
     return {
       linkId: row.linkId,
       remoteEnvironmentId: row.remoteEnvironmentId,
       remoteLabel: row.remoteLabel,
       remotePlatform: row.remotePlatform,
       state: row.state,
-      connection: row.state === "revoked" ? "offline" : (live?.connection ?? "idle"),
-      route: live?.route ?? null,
+      connection: unusable ? "offline" : (live?.connection ?? "idle"),
+      route: unusable ? null : (live?.route ?? null),
       createdAt: row.createdAt,
       lastConnectedAt: row.lastConnectedAt,
       lastError: row.lastError,
@@ -122,6 +160,7 @@ const make = Effect.gen(function* () {
         row.linkEnvironmentId === null ? null : EnvironmentId.make(row.linkEnvironmentId),
       label: row.label,
       platform: row.platform,
+      sessionId: row.sessionId,
       access: link.access,
       maxRuntimeMode: link.maxRuntimeMode,
       createdAt: row.createdAt,
@@ -281,11 +320,15 @@ const make = Effect.gen(function* () {
         );
       }
       // Older links to that computer (removed there) give way to this one.
+      // One still unlinking is finished first, as far as it can be: what it
+      // started there stops, but the computers are being linked again, so
+      // that computer keeps its own link back.
       for (const old of yield* repo.list.pipe(Effect.orElseSucceed(() => []))) {
         if (old.remoteEnvironmentId !== invite.environmentId) continue;
-        yield* client.disconnect(old.linkId);
-        yield* repo.remove(old.linkId).pipe(Effect.ignore);
-        yield* secrets.remove(computerLinkSecretName(old.linkId)).pipe(Effect.ignore);
+        if (old.state === "unlinking") {
+          yield* client.unlinkPeer(old.linkId, { stopRunning: true }).pipe(Effect.ignore);
+        }
+        yield* client.forget(old.linkId).pipe(Effect.ignore);
       }
       const row: ComputerLinkRow = {
         linkId,
@@ -350,18 +393,22 @@ const make = Effect.gen(function* () {
       return inboundOf(yield* inboundRow(input.deviceId));
     });
 
-  const remove: ComputerLinksShape["remove"] = (input) =>
+  /** Tells the other computer about an unlink; true once its half is done (now or before). */
+  const tellUnlinked = (row: ComputerLinkRow) =>
+    client.unlinkPeer(row.linkId, UNLINK).pipe(
+      Effect.as(true),
+      Effect.catch((error) => Effect.succeed(goneThere(error))),
+    );
+
+  /** Deletes a link here, its other half done. */
+  const forgetLink = (linkId: ComputerLinkId) =>
+    client.forget(linkId).pipe(
+      Effect.mapError(() => linkError("The link couldn't be removed.")),
+      Effect.andThen(notify),
+    );
+
+  const removeOutbound = (input: Extract<LinksRemoveInput, { readonly direction: "outbound" }>) =>
     Effect.gen(function* () {
-      if (input.direction === "inbound") {
-        const row = yield* inboundRow(input.deviceId);
-        yield* linkRequests.dropLink(row.deviceId);
-        // Revoking the session takes it off the relay and closes its connection.
-        if (row.sessionId !== null) {
-          yield* sessions.revoke(row.sessionId).pipe(Effect.ignore);
-        }
-        yield* notify;
-        return;
-      }
       const row = yield* repo.get(input.linkId).pipe(
         Effect.mapError(() => linkError("This computer's links couldn't be read.")),
         Effect.flatMap((found) =>
@@ -370,22 +417,81 @@ const make = Effect.gen(function* () {
             : Effect.fail(linkError("That link is already gone.")),
         ),
       );
-      // Tell the other computer to drop this one's access there; best effort.
-      if (row.state !== "revoked") {
-        yield* client
-          .withPeer(row.remoteEnvironmentId, (peer) => peer["peer.unlink"]({}))
-          .pipe(Effect.timeout(Duration.seconds(5)), Effect.ignore);
+      // Nothing to tell when the app already removed the other halves, or
+      // the other computer removed this link first.
+      if (
+        input.otherHalfRemoved === true ||
+        row.state === "revoked" ||
+        (yield* tellUnlinked(row))
+      ) {
+        yield* forgetLink(row.linkId);
+        return { otherComputer: "confirmed" } as const;
+      }
+      // It couldn't be reached: the link is kept, unusable, until it hears.
+      yield* repo
+        .update({ linkId: row.linkId, state: "unlinking", onlyFrom: ["active", "failed"] })
+        .pipe(Effect.mapError(() => linkError("The link couldn't be removed.")));
+      const now = yield* repo
+        .get(row.linkId)
+        .pipe(Effect.mapError(() => linkError("This computer's links couldn't be read.")));
+      // Refused meanwhile (marked revoked as its connection closed): done there.
+      if (Option.isNone(now) || now.value.state === "revoked") {
+        yield* forgetLink(row.linkId);
+        return { otherComputer: "confirmed" } as const;
       }
       yield* client.disconnect(row.linkId);
-      yield* repo
-        .remove(row.linkId)
-        .pipe(Effect.mapError(() => linkError("The link couldn't be removed.")));
-      yield* secrets.remove(computerLinkSecretName(row.linkId)).pipe(Effect.ignore);
       yield* notify;
+      return { otherComputer: "pending" } as const;
+    });
+
+  const remove: ComputerLinksShape["remove"] = (input) =>
+    Effect.gen(function* () {
+      if (input.direction === "outbound") return yield* removeOutbound(input);
+      const row = yield* inboundRow(input.deviceId);
+      yield* linkRequests.dropLink(row.deviceId, { stopRunning: input.stopRunning === true });
+      // Revoking the session takes it off the relay and closes its connection.
+      if (row.sessionId !== null) {
+        yield* sessions.revoke(row.sessionId).pipe(Effect.ignore);
+      }
+      yield* notify;
+      return { otherComputer: "not_asked" } as const;
     });
 
   const respondRequest: ComputerLinksShape["respondRequest"] = (input) =>
     linkRequests.respond(input);
+
+  const forgetLinksTo: ComputerLinksShape["forgetLinksTo"] = (environmentId) =>
+    Effect.gen(function* () {
+      const rows = yield* repo.list.pipe(
+        Effect.mapError(() => linkError("This computer's links couldn't be read.")),
+      );
+      for (const row of rows) {
+        if (row.remoteEnvironmentId !== environmentId) continue;
+        yield* forgetLink(row.linkId);
+        yield* Effect.logInfo("links.unlinked-by-peer", { linkId: row.linkId });
+      }
+    });
+
+  // Links removed while the other computer couldn't be reached: it is told
+  // at startup and every minute, and the link goes once it has heard (or
+  // turns out to have dropped it already).
+  yield* Effect.gen(function* () {
+    for (const row of yield* repo.list) {
+      if (row.state !== "unlinking") continue;
+      if (yield* tellUnlinked(row)) {
+        yield* forgetLink(row.linkId);
+        yield* Effect.logInfo("links.unlink.finished", { linkId: row.linkId });
+      }
+    }
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause)
+        : Effect.logWarning("links.unlink.retry-failed", { cause: Cause.pretty(cause) }),
+    ),
+    Effect.repeat(Schedule.spaced(UNLINK_RETRY_EVERY)),
+    Effect.forkScoped,
+  );
 
   // A linked computer's session ended anywhere (Remove in the device list,
   // expiry): what it still had open here is cancelled.
@@ -412,6 +518,7 @@ const make = Effect.gen(function* () {
     setAccess,
     remove,
     respondRequest,
+    forgetLinksTo,
   });
 });
 

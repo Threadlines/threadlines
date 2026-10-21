@@ -10,6 +10,7 @@ import {
   DeleteProjectionThreadInput,
   GetProjectionThreadInput,
   ListProjectionThreadsByProjectInput,
+  ListProjectionThreadsByRemoteLinkInput,
   ProjectionThread,
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
@@ -25,6 +26,7 @@ import {
   OrchestrationSideTurn,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  ThreadId,
   ThreadRemoteOrigin,
 } from "@threadlines/contracts";
 
@@ -323,6 +325,20 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       `,
   });
 
+  const listThreadIdsByRemoteLink = SqlSchema.findAll({
+    Request: ListProjectionThreadsByRemoteLinkInput,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ linkDeviceId }) =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE remote_origin_json IS NOT NULL
+          AND json_extract(remote_origin_json, '$.linkDeviceId') = ${linkDeviceId}
+          AND deleted_at IS NULL
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
   const deleteProjectionThreadRow = SqlSchema.void({
     Request: DeleteProjectionThreadInput,
     execute: ({ threadId }) =>
@@ -347,6 +363,14 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.listByProjectId:query")),
     );
 
+  const listIdsByRemoteLink: ProjectionThreadRepositoryShape["listIdsByRemoteLink"] = (input) =>
+    listThreadIdsByRemoteLink(input).pipe(
+      Effect.map((rows) => rows.map((row) => row.threadId)),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadRepository.listIdsByRemoteLink:query"),
+      ),
+    );
+
   const deleteById: ProjectionThreadRepositoryShape["deleteById"] = (input) =>
     deleteProjectionThreadRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.deleteById:query")),
@@ -356,6 +380,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     upsert,
     getById,
     listByProjectId,
+    listIdsByRemoteLink,
     deleteById,
   } satisfies ProjectionThreadRepositoryShape;
 });

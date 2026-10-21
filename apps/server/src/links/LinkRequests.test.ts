@@ -509,6 +509,46 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
       }),
   );
 
+  it.effect(
+    "an unlink stops a thread the link started that is still at work after its request was answered; a plain removal leaves it",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const service = yield* computer.boot();
+        // Nothing comes back from it, so its request is answered once it is set up.
+        yield* service.start(link(), { ...startInput("request-1"), reportBack: false });
+        yield* eventually(
+          Effect.map(computer.request("request-1"), (row) => row.status === "answered"),
+          "it is answered once set up",
+        );
+        const threadId = linkThreadId(DEVICE, "request-1");
+        // Its agent is still at work.
+        yield* computer.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("child-session-running"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "auto",
+            activeTurnId: TurnId.make("child-turn-1"),
+            lastError: null,
+            updatedAt: AT,
+          },
+          createdAt: AT,
+        });
+
+        yield* service.dropLink(DEVICE);
+        assert.isFalse(stopRequestedFor(yield* computer.events, threadId));
+
+        yield* service.dropLink(DEVICE, { stopRunning: true });
+        assert.isTrue(stopRequestedFor(yield* computer.events, threadId));
+      }),
+  );
+
   it.effect("a send cancelled while it is being delivered never reaches its thread", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer();

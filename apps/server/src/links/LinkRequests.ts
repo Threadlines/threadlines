@@ -97,7 +97,7 @@ import { ProjectionThreadRepository } from "../persistence/Services/ProjectionTh
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
+import { RelayDeviceRepository, type RelayDeviceRow } from "../relay/RelayDeviceRepository.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { linkBootstrapKey, linkCommandId, linkMessageId, linkThreadId } from "./linkIds.ts";
@@ -115,6 +115,12 @@ export interface PeerLink {
   readonly access: ComputerLinkAccess;
   readonly maxRuntimeMode: RuntimeMode;
 }
+
+/**
+ * How `/peer` refuses a link that was removed here; the asking computer reads
+ * it as "already unlinked on this side".
+ */
+export const PEER_LINK_REMOVED = "This link was removed.";
 
 /** How long a start waits for this computer's user before it expires. */
 export const LINK_APPROVAL_TTL_MS = 24 * 60 * 60_000;
@@ -163,8 +169,15 @@ export interface LinkRequestsShape {
   readonly pending: Effect.Effect<ReadonlyArray<ComputerLinkPendingRequest>>;
   /** Fires when the waiting starts change. */
   readonly pendingChanges: Stream.Stream<void>;
-  /** An inbound link was removed: what it still had open is cancelled. */
-  readonly dropLink: (deviceId: string) => Effect.Effect<void>;
+  /**
+   * An inbound link was removed: what it still had open is cancelled. With
+   * `stopRunning` (an unlink), the requests' threads are stopped too, and so
+   * is every thread it started that still runs, its request answered or not.
+   */
+  readonly dropLink: (
+    deviceId: string,
+    options?: { readonly stopRunning?: boolean },
+  ) => Effect.Effect<void>;
   readonly onTurnEnd: RemoteRequestTurnEndsShape["onTurnEnd"];
   /** See RemoteRequestGate. */
   readonly messageVerdict: RemoteRequestGateShape["messageVerdict"];
@@ -183,6 +196,15 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
  * otherwise: what a new thread here starts with.
  */
 export const DEFAULT_LINK_MAX_RUNTIME_MODE: RuntimeMode = DEFAULT_NEW_THREAD_RUNTIME_MODE;
+
+/** A device row as the link it is: its access settings with their defaults. */
+export const peerLinkOf = (row: RelayDeviceRow): PeerLink => ({
+  deviceId: row.deviceId,
+  label: row.label,
+  environmentId: row.linkEnvironmentId,
+  access: row.linkAccess ?? "ask",
+  maxRuntimeMode: row.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE,
+});
 
 const toOutcome = (outcome: ChildRequestOutcome): PeerRequestOutcome =>
   outcome === "declined" ? "denied" : outcome;
@@ -1222,16 +1244,49 @@ const make = Effect.gen(function* () {
     return result;
   });
 
-  const dropLink: LinkRequestsShape["dropLink"] = (deviceId) =>
+  const dropLink: LinkRequestsShape["dropLink"] = (deviceId, options) =>
     Effect.gen(function* () {
+      const stopRunning = options?.stopRunning === true;
       const open = yield* ledger.listOpen.pipe(Effect.orElseSucceed(() => []));
       for (const row of open) {
         if (row.linkDeviceId !== deviceId) continue;
-        yield* cancelRequest(deviceId, row.requestId, `${ownLabel} removed the link.`, false).pipe(
+        yield* cancelRequest(
+          deviceId,
+          row.requestId,
+          `${ownLabel} removed the link.`,
+          stopRunning,
+        ).pipe(
           Effect.catch((error) =>
             Effect.logWarning("link requests could not cancel a removed link's request", {
               detail: error.detail,
             }),
+          ),
+        );
+      }
+      if (!stopRunning) return;
+      // Its threads whose requests already settled can still be at work
+      // (a follow-up, a background task): an unlink stops them too.
+      const threadIds = yield* threadRows.listIdsByRemoteLink({ linkDeviceId: deviceId }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("link requests could not list a removed link's threads", {
+            detail: String(error),
+          }).pipe(Effect.as([] as ReadonlyArray<ThreadId>)),
+        ),
+      );
+      for (const threadId of threadIds) {
+        yield* Effect.gen(function* () {
+          const thread = yield* readThreadOrFail(threadId);
+          if (thread === undefined || thread.deletedAt !== null) return;
+          if (thread.remoteOrigin?.linkDeviceId !== deviceId) return;
+          yield* stopIfWorking(deviceId, thread);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("link requests could not stop a removed link's thread", {
+                  threadId,
+                  cause: Cause.pretty(cause),
+                }),
           ),
         );
       }

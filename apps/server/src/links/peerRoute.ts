@@ -8,6 +8,7 @@
  */
 import {
   type AuthSessionId,
+  EnvironmentId,
   PeerRpcError,
   PeerRpcGroup,
   type PeerDescriptor,
@@ -32,20 +33,12 @@ import { listThreadAgents } from "../mcp/threadToolHandlers.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { RelayDeviceRepository, type RelayDeviceRow } from "../relay/RelayDeviceRepository.ts";
+import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import { RelayHost } from "../relay/RelayHost.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { isLoopbackHost } from "../startupAccess.ts";
-import { DEFAULT_LINK_MAX_RUNTIME_MODE, LinkRequests, type PeerLink } from "./LinkRequests.ts";
-
-/** A device row as the link it is: its access settings with their defaults. */
-export const peerLinkOf = (row: RelayDeviceRow): PeerLink => ({
-  deviceId: row.deviceId,
-  label: row.label,
-  environmentId: row.linkEnvironmentId,
-  access: row.linkAccess ?? "ask",
-  maxRuntimeMode: row.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE,
-});
+import { ComputerLinks } from "./ComputerLinks.ts";
+import { LinkRequests, PEER_LINK_REMOVED, peerLinkOf } from "./LinkRequests.ts";
 
 const PLATFORM_NAMES: Record<string, string> = {
   darwin: "macOS",
@@ -53,13 +46,15 @@ const PLATFORM_NAMES: Record<string, string> = {
   linux: "Linux",
 };
 
-const makePeerRpcLayer = (input: {
+/** PeerRpcGroup's handlers for one linked computer's session. */
+export const makePeerRpcLayer = (input: {
   readonly sessionId: AuthSessionId;
   readonly deviceId: string;
 }) =>
   PeerRpcGroup.toLayer(
     Effect.gen(function* () {
       const linkRequests = yield* LinkRequests;
+      const computerLinks = yield* ComputerLinks;
       const devices = yield* RelayDeviceRepository;
       const relayHost = yield* RelayHost;
       const sessions = yield* SessionCredentialService;
@@ -77,7 +72,7 @@ const makePeerRpcLayer = (input: {
         Effect.flatMap((row) =>
           Option.isSome(row) && row.value.state === "active" && row.value.grant === "peer"
             ? Effect.succeed(peerLinkOf(row.value))
-            : Effect.fail(failed("This link was removed.")),
+            : Effect.fail(failed(PEER_LINK_REMOVED)),
         ),
       );
 
@@ -164,13 +159,23 @@ const makePeerRpcLayer = (input: {
           Stream.unwrap(Effect.map(currentLink, (link) => linkRequests.watch(link))),
         "peer.report.ack": (payload) =>
           guarded(Effect.flatMap(currentLink, (link) => linkRequests.ack(link, payload.reportId))),
-        // The other computer removed its link: its session here ends, which
-        // also takes it off the relay and closes this connection.
-        "peer.unlink": () =>
+        // The other computer removed its link: what it still had open here is
+        // cancelled (with `stopRunning`, its running threads stop too); with
+        // `reverse` this computer's own link back to it goes as well. Then its
+        // session here ends, which also takes it off the relay and closes this
+        // connection. A failure leaves the session, so it asks again.
+        "peer.unlink": (payload) =>
           guarded(
             Effect.gen(function* () {
               const link = yield* currentLink;
-              yield* linkRequests.dropLink(link.deviceId);
+              yield* linkRequests.dropLink(link.deviceId, {
+                stopRunning: payload.stopRunning === true,
+              });
+              if (payload.reverse === true && link.environmentId !== null) {
+                yield* computerLinks
+                  .forgetLinksTo(EnvironmentId.make(link.environmentId))
+                  .pipe(Effect.mapError((error) => failed(error.detail)));
+              }
               yield* sessions.revoke(input.sessionId).pipe(Effect.ignore);
             }),
           ),
@@ -215,7 +220,7 @@ export const peerRpcRouteLayer = Layer.unwrap(
           device.value.state !== "active" ||
           device.value.grant !== "peer"
         ) {
-          return yield* new AuthError({ message: "This link was removed.", status: 401 });
+          return yield* new AuthError({ message: PEER_LINK_REMOVED, status: 401 });
         }
         const rpcEffect = yield* RpcServer.toHttpEffectWebsocket(PeerRpcGroup, {
           disableTracing: true,

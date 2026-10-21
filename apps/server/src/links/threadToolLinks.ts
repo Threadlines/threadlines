@@ -11,7 +11,7 @@ import * as Option from "effect/Option";
 import type { ThreadToolComputer, ThreadToolLinks } from "../mcp/threadToolHandlers.ts";
 import type { RepositoryIdentityResolverShape } from "../project/Services/RepositoryIdentityResolver.ts";
 import type { ComputerLinkClientShape } from "./ComputerLinkClient.ts";
-import type { ComputerLinkRepositoryShape } from "./ComputerLinkRepository.ts";
+import { type ComputerLinkRepositoryShape, isUsableLink } from "./ComputerLinkRepository.ts";
 
 /** How long thread_agents waits for a computer before listing it as last seen. */
 const DESCRIBE_WAIT = Duration.seconds(4);
@@ -30,7 +30,7 @@ export function makeThreadToolLinks(input: {
     computers: Effect.gen(function* () {
       const rows = yield* repo.list.pipe(Effect.orElseSucceed(() => []));
       return yield* Effect.forEach(
-        rows.filter((row) => row.state !== "revoked"),
+        rows.filter(isUsableLink),
         (row) =>
           client.describe(row.remoteEnvironmentId).pipe(
             Effect.timeout(DESCRIBE_WAIT),
