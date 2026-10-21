@@ -339,6 +339,58 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
+  it("keeps another computer's socket out of the app's own connection state", async () => {
+    const app = createTransport("ws://localhost:3020");
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    const appSocket = getSocket();
+    appSocket.open();
+    await waitFor(() => {
+      expect(getWsConnectionStatus().phase).toBe("connected");
+    });
+
+    const onClose = vi.fn();
+    const other = createTransport("ws://other-computer.test:3773", {
+      reportsAppConnection: false,
+      onClose,
+    });
+    await waitFor(() => {
+      expect(sockets).toHaveLength(2);
+    });
+    const otherSocket = getSocket();
+    otherSocket.open();
+    otherSocket.close(1006, "computer went to sleep");
+
+    // Its own handlers still hear it; this computer still reads connected.
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalled();
+    });
+    expect(getWsConnectionUiState(getWsConnectionStatus())).toBe("connected");
+    expect(getWsConnectionStatus().socketUrl).toBe("ws://localhost:3020/ws");
+
+    // And another computer coming back never hides this computer's own drop.
+    appSocket.close(1006, "server restarted");
+    await waitFor(() => {
+      expect(getWsConnectionUiState(getWsConnectionStatus())).toBe("reconnecting");
+    });
+    const otherRetry = () =>
+      sockets.findLast(
+        (socket) =>
+          socket.url.includes("other-computer.test") &&
+          socket.readyState === MockWebSocket.CONNECTING,
+      );
+    await waitFor(() => {
+      expect(otherRetry()).toBeDefined();
+    }, 3_000);
+    otherRetry()!.open();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(getWsConnectionUiState(getWsConnectionStatus())).toBe("reconnecting");
+
+    await other.dispose();
+    await app.dispose();
+  });
+
   it("fires onFirstMessage once per socket connection", async () => {
     const onFirstMessage = vi.fn();
     const transport = createTransport("ws://localhost:3020", { onFirstMessage });
