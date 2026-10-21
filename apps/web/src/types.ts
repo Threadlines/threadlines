@@ -29,6 +29,7 @@ import type {
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
+  ThreadScheduledRun,
   SideTurnId,
   ThreadParticipantId,
   ProjectId,
@@ -223,6 +224,8 @@ export interface Thread {
   /** When its last answer went back to its parent, and from which turn. */
   handedBackAt?: string | null;
   handedBackTurnId?: TurnId | null;
+  /** Started by a scheduled task's run: "Scheduled · <task>" on its inbox row. */
+  scheduledRun?: ThreadScheduledRun | null;
   /** On a parent: answers its threads still owe it. Absent means none. */
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
@@ -317,6 +320,8 @@ export interface ThreadShell {
   /** When its last answer went back to its parent, and from which turn. */
   handedBackAt?: string | null;
   handedBackTurnId?: TurnId | null;
+  /** Started by a scheduled task's run: "Scheduled · <task>" on its inbox row. */
+  scheduledRun?: ThreadScheduledRun | null;
   /** On a parent: answers its threads still owe it. Absent means none. */
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
@@ -401,6 +406,8 @@ export interface SidebarThreadSummary {
   parentTurnId?: TurnId | null;
   /** See ThreadShell.attachedToParent: nested under its parent in the inbox. */
   attachedToParent?: boolean;
+  /** See ThreadShell.scheduledRun. */
+  scheduledRun?: ThreadScheduledRun | null;
   /** See ThreadShell.handedBackTurnId: drives "wrap up finished child threads". */
   handedBackTurnId?: TurnId | null;
   /** See ThreadShell.awaitedChildThreadCount. */

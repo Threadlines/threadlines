@@ -37,7 +37,7 @@ import {
   isProviderDriverKind,
   ProviderDriverKind,
 } from "@threadlines/contracts";
-import type { ThreadId, TurnId } from "@threadlines/contracts";
+import type { ThreadId, ThreadScheduledRun, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@threadlines/shared/model";
 import { retainThreadActivities } from "@threadlines/shared/threadActivityRetention";
@@ -342,9 +342,15 @@ function threadLineage(thread: {
   readonly attachedToParent?: boolean | undefined;
   readonly handedBackAt?: string | null | undefined;
   readonly handedBackTurnId?: TurnId | null | undefined;
+  readonly scheduledRun?: ThreadScheduledRun | null | undefined;
 }): Pick<
   ThreadShell,
-  "parentThreadId" | "parentTurnId" | "attachedToParent" | "handedBackAt" | "handedBackTurnId"
+  | "parentThreadId"
+  | "parentTurnId"
+  | "attachedToParent"
+  | "handedBackAt"
+  | "handedBackTurnId"
+  | "scheduledRun"
 > {
   return {
     parentThreadId: thread.parentThreadId ?? null,
@@ -352,6 +358,7 @@ function threadLineage(thread: {
     attachedToParent: thread.attachedToParent ?? false,
     handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
+    scheduledRun: thread.scheduledRun ?? null,
   };
 }
 
@@ -387,6 +394,7 @@ function sidebarLineage(
     | "awaitedChildThreadCount"
     | "pendingChildApproval"
     | "queuedFollowUps"
+    | "scheduledRun"
   >,
 ): Pick<
   SidebarThreadSummary,
@@ -397,8 +405,10 @@ function sidebarLineage(
   | "awaitedChildThreadCount"
   | "pendingChildApproval"
   | "queuedFollowUpCount"
+  | "scheduledRun"
 > {
   return {
+    scheduledRun: thread.scheduledRun ?? null,
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
     attachedToParent: thread.attachedToParent ?? false,
@@ -905,8 +915,20 @@ function sidebarThreadSummariesEqual(
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     checkBackListsEqual(left.checkBacks, right.checkBacks) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
-    (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0)
+    (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
+    scheduledRunsEqual(left.scheduledRun, right.scheduledRun)
   );
+}
+
+function scheduledRunsEqual(
+  left: ThreadScheduledRun | null | undefined,
+  right: ThreadScheduledRun | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.taskId === b.taskId && a.taskName === b.taskName && a.slotUtc === b.slotUtc;
 }
 
 function sideTurnsEqual(
@@ -954,6 +976,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
+    scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -2112,6 +2135,7 @@ function applyEnvironmentOrchestrationEvent(
           handedBackTurnId: null,
           archivedWithParentAt: null,
           childRequests: EMPTY_CHILD_REQUEST_STATE,
+          scheduledRun: event.payload.scheduledRun ?? null,
         },
         environmentId,
       );

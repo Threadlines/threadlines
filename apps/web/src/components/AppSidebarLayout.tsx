@@ -87,6 +87,11 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
         event.stopPropagation();
         void navigate({ to: "/fleet" });
       }
+      if (command === "navigate.scheduled") {
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({ to: "/scheduled" });
+      }
     };
     window.addEventListener("keydown", onWindowKeyDown);
     return () => {
@@ -107,6 +112,9 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
           return;
         case "open-fleet":
           void navigate({ to: "/fleet" });
+          return;
+        case "open-scheduled":
+          void navigate({ to: "/scheduled" });
           return;
         case "open-general-chats":
           void navigate({ to: "/chats" });

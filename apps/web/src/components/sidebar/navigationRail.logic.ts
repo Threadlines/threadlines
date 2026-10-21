@@ -8,6 +8,7 @@ export type NavigationDestinationId =
   | "chats"
   | "pull-requests"
   | "fleet"
+  | "scheduled"
   | "usage"
   | "settings";
 
@@ -17,6 +18,7 @@ export const NAVIGATION_DESTINATION_LABELS: Record<NavigationDestinationId, stri
   chats: "General Chats",
   "pull-requests": "Pull Requests",
   fleet: "Fleet",
+  scheduled: "Scheduled",
   usage: "Usage",
   settings: "Settings",
 };
@@ -27,6 +29,7 @@ export const NAVIGATION_DESTINATION_ORDER: readonly NavigationDestinationId[] = 
   "chats",
   "pull-requests",
   "fleet",
+  "scheduled",
   "usage",
   "settings",
 ];
@@ -49,6 +52,7 @@ export function resolveSelectedDestination(input: {
   if (isUnder(pathname, "/chats")) return "chats";
   if (isUnder(pathname, "/pull-requests")) return "pull-requests";
   if (isUnder(pathname, "/fleet")) return "fleet";
+  if (isUnder(pathname, "/scheduled")) return "scheduled";
   if (isUnder(pathname, "/usage")) return "usage";
   return input.openThreadIsGeneralChat ? "chats" : "threads";
 }

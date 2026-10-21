@@ -639,10 +639,10 @@ function AgentThreadsRow() {
       title="Agents can start threads"
       description={
         mode === "auto"
-          ? "The thread's agent can start threads of its own, each in its own worktree, without asking you."
+          ? "The thread's agent can start threads of its own and change scheduled tasks, without asking you."
           : mode === "ask"
-            ? "The thread's agent can ask to start threads of its own, each in its own worktree, and you decide each time."
-            : "The thread's agent never starts threads of its own."
+            ? "The thread's agent can ask to start threads of its own or change scheduled tasks, and you decide each time."
+            : "The thread's agent never starts threads of its own or changes scheduled tasks."
       }
       resetAction={
         mode !== "ask" ? (

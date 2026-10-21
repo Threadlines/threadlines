@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 
 import { GeneralChatsList } from "../chats/GeneralChatsList";
 import { FleetComputersList } from "../fleet/FleetComputersList";
+import { ScheduledTasksList } from "../scheduled/ScheduledTasksList";
 import { SettingsDestinationList } from "../settings/SettingsSidebarNav";
 import type { NavigationDestinationId } from "./navigationRail.logic";
 
@@ -23,6 +24,7 @@ export const DESTINATION_LISTS: Record<NavigationDestinationId, DestinationList 
   chats: { body: GeneralChatsList },
   "pull-requests": null,
   fleet: { body: FleetComputersList },
+  scheduled: { body: ScheduledTasksList },
   usage: null,
   settings: { body: SettingsDestinationList, ownFooter: true },
 };

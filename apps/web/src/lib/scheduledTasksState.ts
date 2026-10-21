@@ -1,0 +1,226 @@
+/**
+ * Scheduled tasks across computers (docs/design/fleet.md, Part 6). Each
+ * computer's server keeps its own tasks; this follows every connected
+ * computer whose server has the `scheduledTasks` capability (an older
+ * Threadlines on another computer simply isn't listed) and keeps each one's
+ * latest snapshot. One subscription per computer, mounted once at the root
+ * (ScheduledTasksSync), feeds the Scheduled page, its list, the rail and the
+ * agents' approval cards.
+ */
+import type {
+  EnvironmentId,
+  ScheduledTask,
+  ScheduledTaskRequest,
+  ScheduledTasksSnapshot,
+  ThreadId,
+  ThreadScheduledRun,
+} from "@threadlines/contracts";
+import { useEffect, useMemo } from "react";
+import { create } from "zustand";
+
+import { resolveEnvironmentOptionLabel } from "../components/BranchToolbar.logic";
+import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
+import {
+  readEnvironmentConnection,
+  subscribeEnvironmentConnections,
+  useSavedEnvironmentRegistryStore,
+  useSavedEnvironmentRuntimeStore,
+} from "../environments/runtime";
+
+/** A computer whose server runs scheduled tasks. */
+export interface ScheduledTaskEnvironment {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly isPrimary: boolean;
+}
+
+/**
+ * This computer and every connected saved computer whose server reports the
+ * capability, this one first. An absent capability is a no.
+ */
+export function useScheduledTaskEnvironments(): readonly ScheduledTaskEnvironment[] {
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const primaryDescriptor = usePrimaryEnvironmentDescriptor();
+  const primarySupported = primaryDescriptor?.capabilities.scheduledTasks === true;
+  const primaryLabel = primaryDescriptor?.label ?? null;
+  const savedById = useSavedEnvironmentRegistryStore((state) => state.byId);
+  const runtimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+
+  return useMemo(() => {
+    const environments: ScheduledTaskEnvironment[] = [];
+    const seen = new Set<EnvironmentId>();
+    if (primaryEnvironmentId && primarySupported) {
+      seen.add(primaryEnvironmentId);
+      environments.push({
+        environmentId: primaryEnvironmentId,
+        isPrimary: true,
+        label: resolveEnvironmentOptionLabel({
+          isPrimary: true,
+          environmentId: primaryEnvironmentId,
+          runtimeLabel: primaryLabel,
+        }),
+      });
+    }
+    const others: ScheduledTaskEnvironment[] = [];
+    for (const environmentId of Object.keys(runtimeById) as EnvironmentId[]) {
+      if (seen.has(environmentId)) continue;
+      const runtime = runtimeById[environmentId];
+      if (!runtime || runtime.connectionState !== "connected") continue;
+      if (runtime.descriptor?.capabilities.scheduledTasks !== true) continue;
+      seen.add(environmentId);
+      others.push({
+        environmentId,
+        isPrimary: false,
+        label: resolveEnvironmentOptionLabel({
+          isPrimary: false,
+          environmentId,
+          runtimeLabel: runtime.descriptor.label,
+          savedLabel: savedById[environmentId]?.label ?? null,
+        }),
+      });
+    }
+    return [...environments, ...others.toSorted((a, b) => a.label.localeCompare(b.label))];
+  }, [primaryEnvironmentId, primaryLabel, primarySupported, runtimeById, savedById]);
+}
+
+interface ScheduledTasksState {
+  /** Each computer's latest snapshot; absent until its first one arrives. */
+  readonly byEnvironment: Readonly<Record<string, ScheduledTasksSnapshot>>;
+  readonly put: (environmentId: EnvironmentId, snapshot: ScheduledTasksSnapshot) => void;
+  /** Keeps only these computers' snapshots (one gone or no longer supported drops out). */
+  readonly keepOnly: (environmentIds: ReadonlySet<string>) => void;
+}
+
+export const useScheduledTasksStore = create<ScheduledTasksState>()((set) => ({
+  byEnvironment: {},
+  put: (environmentId, snapshot) =>
+    set((state) => ({ byEnvironment: { ...state.byEnvironment, [environmentId]: snapshot } })),
+  keepOnly: (environmentIds) =>
+    set((state) => {
+      const kept = Object.fromEntries(
+        Object.entries(state.byEnvironment).filter(([id]) => environmentIds.has(id)),
+      );
+      return Object.keys(kept).length === Object.keys(state.byEnvironment).length
+        ? state
+        : { byEnvironment: kept };
+    }),
+}));
+
+/**
+ * Keeps one subscription to each supporting computer's tasks, and takes a
+ * new one only for a computer whose connection was replaced (a reconnect
+ * with a new session). Mount once.
+ */
+export function ScheduledTasksSync() {
+  const environments = useScheduledTaskEnvironments();
+  const environmentKey = environments.map((environment) => environment.environmentId).join("\0");
+
+  useEffect(() => {
+    const ids = (environmentKey === "" ? [] : environmentKey.split("\0")) as EnvironmentId[];
+    useScheduledTasksStore.getState().keepOnly(new Set(ids));
+    const active = new Map<
+      EnvironmentId,
+      { readonly connection: object; readonly unsubscribe: () => void }
+    >();
+    const sync = () => {
+      for (const environmentId of ids) {
+        const connection = readEnvironmentConnection(environmentId);
+        const current = active.get(environmentId);
+        if (current?.connection === connection) continue;
+        current?.unsubscribe();
+        active.delete(environmentId);
+        if (!connection) continue;
+        active.set(environmentId, {
+          connection,
+          unsubscribe: connection.client.scheduledTasks.subscribe((snapshot) =>
+            useScheduledTasksStore.getState().put(environmentId, snapshot),
+          ),
+        });
+      }
+    };
+    sync();
+    const stopWatching = subscribeEnvironmentConnections(sync);
+    return () => {
+      stopWatching();
+      for (const entry of active.values()) entry.unsubscribe();
+    };
+  }, [environmentKey]);
+
+  return null;
+}
+
+/** One computer's tasks, as the Scheduled page groups them. */
+export interface ScheduledTaskGroup {
+  readonly environment: ScheduledTaskEnvironment;
+  /** Null until the computer's first snapshot arrives. */
+  readonly tasks: readonly ScheduledTask[] | null;
+}
+
+/** Every supporting computer with its tasks, this one first. */
+export function useScheduledTaskGroups(): readonly ScheduledTaskGroup[] {
+  const environments = useScheduledTaskEnvironments();
+  const byEnvironment = useScheduledTasksStore((state) => state.byEnvironment);
+  return useMemo(
+    () =>
+      environments.map((environment) => ({
+        environment,
+        tasks: byEnvironment[environment.environmentId]?.tasks ?? null,
+      })),
+    [byEnvironment, environments],
+  );
+}
+
+const NO_REQUESTS: readonly ScheduledTaskRequest[] = [];
+
+/** An agent's changes to the tasks waiting for the user, from one thread. */
+export function useScheduledTaskRequestsForThread(
+  environmentId: EnvironmentId | null,
+  threadId: ThreadId | null,
+): readonly ScheduledTaskRequest[] {
+  const requests = useScheduledTasksStore((state) =>
+    environmentId === null ? undefined : state.byEnvironment[environmentId]?.requests,
+  );
+  return useMemo(
+    () =>
+      requests === undefined || threadId === null
+        ? NO_REQUESTS
+        : requests.filter((request) => request.threadId === threadId),
+    [requests, threadId],
+  );
+}
+
+/** Active tasks with a schedule (not manual) on this computer: what keeps it awake for them. */
+export function countActiveScheduledTasks(snapshot: ScheduledTasksSnapshot | undefined): number {
+  return (snapshot?.tasks ?? []).filter(
+    (task) => task.status === "active" && task.cadence.kind !== "manual",
+  ).length;
+}
+
+/**
+ * A run thread's task name as it is now (the task may have been renamed
+ * since), or as it was when the run started when the task is gone or its
+ * computer isn't followed.
+ */
+export function useScheduledRunTaskName(
+  environmentId: EnvironmentId,
+  scheduledRun: ThreadScheduledRun | null | undefined,
+): string | null {
+  const current = useScheduledTasksStore((state) =>
+    scheduledRun == null
+      ? undefined
+      : state.byEnvironment[environmentId]?.tasks.find((task) => task.id === scheduledRun.taskId)
+          ?.name,
+  );
+  return scheduledRun == null ? null : (current ?? scheduledRun.taskName);
+}
+
+/** The rail's line for Scheduled: how many tasks are active, everywhere ("3 active"). */
+export function describeActiveScheduledTasks(
+  byEnvironment: Readonly<Record<string, ScheduledTasksSnapshot>>,
+): string | null {
+  let active = 0;
+  for (const snapshot of Object.values(byEnvironment)) {
+    active += snapshot.tasks.filter((task) => task.status === "active").length;
+  }
+  return active === 0 ? null : `${active} active`;
+}
