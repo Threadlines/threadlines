@@ -109,45 +109,39 @@ export function ScheduledTasksList() {
         }
       />
       <SidebarContent className="px-2 pb-3" data-testid="scheduled-tasks-list">
-        {empty ? (
-          <div className="flex flex-col gap-1 px-2 py-2">
-            <p className="text-[12.5px] text-muted-foreground">No scheduled tasks yet.</p>
-            <p className="text-[12px] text-muted-foreground">
-              Start an agent on a prompt at set times, on any of your computers.
-            </p>
-          </div>
-        ) : (
-          groups.map((group) =>
-            (group.tasks ?? []).length === 0 ? null : (
-              <section key={group.environment.environmentId} className="flex flex-col">
-                {grouped ? (
-                  <h3 className="truncate px-2 pt-2.5 pb-1 text-[11px] font-medium text-muted-foreground">
-                    {group.environment.label}
-                  </h3>
-                ) : null}
-                <ul className="flex flex-col gap-0.5">
-                  {(group.tasks ?? []).map((task) => (
-                    <TaskRow
-                      key={task.id}
-                      task={task}
-                      nowMs={nowMs}
-                      selected={
-                        search.environment === group.environment.environmentId &&
-                        search.task === task.id
-                      }
-                      onSelect={() =>
-                        navigation.openTask({
-                          environmentId: group.environment.environmentId,
-                          taskId: task.id,
-                        })
-                      }
-                    />
-                  ))}
-                </ul>
-              </section>
-            ),
-          )
-        )}
+        {/* With no tasks the page itself says so; the list stays quiet. */}
+        {empty
+          ? null
+          : groups.map((group) =>
+              (group.tasks ?? []).length === 0 ? null : (
+                <section key={group.environment.environmentId} className="flex flex-col">
+                  {grouped ? (
+                    <h3 className="truncate px-2 pt-2.5 pb-1 text-[11px] font-medium text-muted-foreground">
+                      {group.environment.label}
+                    </h3>
+                  ) : null}
+                  <ul className="flex flex-col gap-0.5">
+                    {(group.tasks ?? []).map((task) => (
+                      <TaskRow
+                        key={task.id}
+                        task={task}
+                        nowMs={nowMs}
+                        selected={
+                          search.environment === group.environment.environmentId &&
+                          search.task === task.id
+                        }
+                        onSelect={() =>
+                          navigation.openTask({
+                            environmentId: group.environment.environmentId,
+                            taskId: task.id,
+                          })
+                        }
+                      />
+                    ))}
+                  </ul>
+                </section>
+              ),
+            )}
       </SidebarContent>
     </>
   );

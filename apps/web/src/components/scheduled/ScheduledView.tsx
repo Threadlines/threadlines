@@ -16,6 +16,14 @@ import {
   SettingsPageHeader,
 } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "../ui/empty";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import {
@@ -171,22 +179,26 @@ function ScheduledOverview() {
     return (
       <>
         <SettingsPageHeader title="Scheduled" description={PAGE_DESCRIPTION} />
-        <SettingsGroup
-          className="mt-7 flex flex-col items-center gap-2 px-6 py-9 text-center"
+        <Empty
+          className="flex-none gap-4 px-0 py-14 md:px-0 md:py-16"
           data-testid="scheduled-empty"
         >
-          <CalendarClockIcon aria-hidden="true" className="size-5 text-muted-foreground" />
-          <p className="text-[13.5px] leading-[19px] font-medium text-foreground">
-            No scheduled tasks yet
-          </p>
-          <p className="max-w-[440px] text-[12.5px] leading-[18px] text-muted-foreground">
-            A morning review of yesterday&apos;s commits, a weekly dependency check: write the
-            prompt once and an agent starts on it at the times you pick.
-          </p>
-          <Button size="sm" className="mt-2" onClick={navigation.newTask}>
-            New task
-          </Button>
-        </SettingsGroup>
+          <EmptyHeader className="max-w-[440px]">
+            <EmptyMedia variant="icon" className="mb-3">
+              <CalendarClockIcon className="size-5" />
+            </EmptyMedia>
+            <EmptyTitle className="text-[15px] font-medium">No scheduled tasks yet</EmptyTitle>
+            <EmptyDescription className="text-[12.5px] leading-[18px]">
+              A morning review of yesterday&apos;s commits, a weekly dependency check: write the
+              prompt once and an agent starts on it at the times you pick.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button size="sm" onClick={navigation.newTask}>
+              New task
+            </Button>
+          </EmptyContent>
+        </Empty>
       </>
     );
   }

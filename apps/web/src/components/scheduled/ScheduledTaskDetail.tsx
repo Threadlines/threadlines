@@ -384,6 +384,10 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
         </DetailRow>
         <DetailRow label="Access">
           {accessLabel(environment.environmentId, task.modelSelection, task.runtimeMode)}
+          {/* A continuation never runs with more access than its thread has then. */}
+          {task.target.kind === "thread" ? (
+            <span className="text-muted-foreground"> · never more than the thread has</span>
+          ) : null}
         </DetailRow>
         <DetailRow label="Time zone">{task.timeZone}</DetailRow>
         {task.originThreadId !== null ? (
