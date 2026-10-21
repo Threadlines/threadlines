@@ -142,11 +142,13 @@ export const ScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   status: ScheduledTaskStatus,
   error: Schema.NullOr(Schema.String),
-  /** The next scheduled run; null for manual, paused and errored tasks. */
+  /** The next scheduled run; null for manual, paused, errored and done tasks. */
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastRun: Schema.NullOr(ScheduledRun),
   /** Runs not finished yet (launching, queued or started). */
   workingRuns: NonNegativeInt,
+  /** The thread whose agent set it up; null for a task a person made. */
+  originThreadId: Schema.NullOr(ThreadId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

@@ -5,8 +5,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * Scheduled tasks (docs/design/fleet.md, Part 6).
  *
  * - `scheduled_tasks`: each task's settings, its status and the next slot it
- *   runs at (`next_slot_utc`, a UTC instant; null for manual, paused and
- *   errored tasks).
+ *   runs at (`next_slot_utc`, a UTC instant; null for manual, paused,
+ *   errored and done tasks), and the thread whose agent set it up
+ *   (`origin_thread_id`, null for one a person made).
  * - `scheduled_runs`: one row per slot a task was due at, unique on
  *   `(task_id, slot_utc)` and inserted in the same transaction that advances
  *   the task's next slot, so a slot runs at most once. A run that launches
@@ -16,7 +17,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  *   `scheduled_run_finish`, applied when its turn ends.
  * - `scheduled_task_requests`: a change an agent asked to make to the tasks
  *   (create or update, with its whole payload), while it waits for the user
- *   and once answered.
+ *   and once answered. `participant_id` is the room agent that asked (null:
+ *   the thread's own); `noted_at` is when that agent was told the answer.
  * - `projection_threads.scheduled_run_json`: see ThreadScheduledRun.
  *
  * New tables and a nullable column only; no row is rewritten.
@@ -40,6 +42,7 @@ export default Effect.gen(function* () {
       status TEXT NOT NULL,
       error TEXT,
       next_slot_utc TEXT,
+      origin_thread_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
@@ -79,19 +82,26 @@ export default Effect.gen(function* () {
     CREATE TABLE IF NOT EXISTS scheduled_task_requests (
       request_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,
+      participant_id TEXT,
       action TEXT NOT NULL,
       task_id TEXT,
       payload_json TEXT NOT NULL,
       status TEXT NOT NULL,
       detail TEXT,
       created_at TEXT NOT NULL,
-      decided_at TEXT
+      decided_at TEXT,
+      noted_at TEXT
     )
   `;
   yield* sql`
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_requests_waiting
     ON scheduled_task_requests(created_at)
     WHERE status = 'waiting'
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_scheduled_task_requests_unnoted
+    ON scheduled_task_requests(thread_id)
+    WHERE status != 'waiting' AND noted_at IS NULL
   `;
 
   const threadColumns = yield* sql<{

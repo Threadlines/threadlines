@@ -16,6 +16,7 @@ import {
   ScheduledTaskTarget,
   ScheduledTaskUpdateInput,
   ThreadId,
+  ThreadParticipantId,
   TrimmedNonEmptyString,
   TurnId,
 } from "@threadlines/contracts";
@@ -52,8 +53,10 @@ export const ScheduledTaskRow = Schema.Struct({
   target: ScheduledTaskTarget,
   status: ScheduledTaskStatus,
   error: Schema.NullOr(Schema.String),
-  /** The next slot due, a UTC instant; null for manual, paused and errored tasks. */
+  /** The next slot due, a UTC instant; null for manual, paused, errored and done tasks. */
   nextSlotUtc: Schema.NullOr(IsoDateTime),
+  /** The thread whose agent set it up; null for a task a person made. Set once. */
+  originThreadId: Schema.NullOr(ThreadId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -140,6 +143,8 @@ export type ScheduledTaskRequestStatus = typeof ScheduledTaskRequestStatus.Type;
 export const ScheduledTaskRequestRow = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   threadId: ThreadId,
+  /** The room agent that asked; null for the thread's own. */
+  participantId: Schema.NullOr(ThreadParticipantId),
   action: Schema.Literals(["create", "update"]),
   taskId: Schema.NullOr(ScheduledTaskId),
   payload: ScheduledTaskRequestPayload,
@@ -147,6 +152,8 @@ export const ScheduledTaskRequestRow = Schema.Struct({
   detail: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,
   decidedAt: Schema.NullOr(IsoDateTime),
+  /** When the agent that asked was told the answer (at its next turn). */
+  notedAt: Schema.NullOr(IsoDateTime),
 });
 export type ScheduledTaskRequestRow = typeof ScheduledTaskRequestRow.Type;
 
@@ -289,8 +296,17 @@ export interface ScheduledTaskRepositoryShape {
   }) => Effect.Effect<boolean, ScheduledTaskRepositoryError>;
   /** Records an agent's change unless its id exists; returns the stored row. */
   readonly insertRequest: (
-    row: Omit<ScheduledTaskRequestRow, "status" | "detail" | "decidedAt">,
+    row: Omit<ScheduledTaskRequestRow, "status" | "detail" | "decidedAt" | "notedAt">,
   ) => Effect.Effect<ScheduledTaskRequestRow, ScheduledTaskRepositoryError>;
+  /** A thread's answered requests whose agent hasn't been told yet, oldest answer first. */
+  readonly listUnnotedRequests: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<ScheduledTaskRequestRow>, ScheduledTaskRepositoryError>;
+  /** Records that the agents that asked were told these answers. */
+  readonly markRequestsNoted: (input: {
+    readonly requestIds: ReadonlyArray<string>;
+    readonly now: string;
+  }) => Effect.Effect<void, ScheduledTaskRepositoryError>;
   readonly getRequest: (
     requestId: string,
   ) => Effect.Effect<Option.Option<ScheduledTaskRequestRow>, ScheduledTaskRepositoryError>;
@@ -337,6 +353,7 @@ const make = Effect.gen(function* () {
       status AS "status",
       error AS "error",
       next_slot_utc AS "nextSlotUtc",
+      origin_thread_id AS "originThreadId",
       created_at AS "createdAt",
       updated_at AS "updatedAt"
     FROM scheduled_tasks
@@ -407,10 +424,10 @@ const make = Effect.gen(function* () {
         `INSERT INTO scheduled_tasks (
            task_id, name, prompt, project_id, checkout, model_selection_json, runtime_mode,
            interaction_mode, cadence_json, time_zone, target_json, status, error, next_slot_utc,
-           created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           origin_thread_id, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(task_id) DO NOTHING`,
-        [row.id, ...taskValues(row), row.createdAt, row.updatedAt],
+        [row.id, ...taskValues(row), row.originThreadId, row.createdAt, row.updatedAt],
       )
       .pipe(Effect.asVoid, wrap("insertTask"));
 
@@ -625,13 +642,15 @@ const make = Effect.gen(function* () {
     SELECT
       request_id AS "requestId",
       thread_id AS "threadId",
+      participant_id AS "participantId",
       action AS "action",
       task_id AS "taskId",
       payload_json AS "payload",
       status AS "status",
       detail AS "detail",
       created_at AS "createdAt",
-      decided_at AS "decidedAt"
+      decided_at AS "decidedAt",
+      noted_at AS "notedAt"
     FROM scheduled_task_requests
   `;
   const findRequests = (where: string, params: ReadonlyArray<string>) =>
@@ -651,9 +670,9 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       yield* sql`
         INSERT INTO scheduled_task_requests (
-          request_id, thread_id, action, task_id, payload_json, status, created_at
+          request_id, thread_id, participant_id, action, task_id, payload_json, status, created_at
         ) VALUES (
-          ${row.requestId}, ${row.threadId}, ${row.action}, ${row.taskId},
+          ${row.requestId}, ${row.threadId}, ${row.participantId}, ${row.action}, ${row.taskId},
           ${encodeRequestPayload(row.payload)}, 'waiting', ${row.createdAt}
         )
         ON CONFLICT(request_id) DO NOTHING
@@ -666,6 +685,20 @@ const make = Effect.gen(function* () {
     "WHERE status = 'waiting' ORDER BY created_at",
     [],
   ).pipe(wrap("listWaitingRequests"));
+
+  const listUnnotedRequests: ScheduledTaskRepositoryShape["listUnnotedRequests"] = (threadId) =>
+    findRequests(
+      "WHERE thread_id = ? AND status != 'waiting' AND noted_at IS NULL ORDER BY decided_at, request_id",
+      [threadId],
+    ).pipe(wrap("listUnnotedRequests"));
+
+  const markRequestsNoted: ScheduledTaskRepositoryShape["markRequestsNoted"] = (input) =>
+    input.requestIds.length === 0
+      ? Effect.void
+      : sql`
+          UPDATE scheduled_task_requests SET noted_at = ${input.now}
+          WHERE noted_at IS NULL AND ${sql.in("request_id", input.requestIds)}
+        `.pipe(Effect.asVoid, wrap("markRequestsNoted"));
 
   const decideRequest: ScheduledTaskRepositoryShape["decideRequest"] = (input) =>
     sql<{ readonly requestId: string }>`
@@ -682,6 +715,8 @@ const make = Effect.gen(function* () {
     insertRequest,
     getRequest,
     listWaitingRequests,
+    listUnnotedRequests,
+    markRequestsNoted,
     decideRequest,
     listTasks,
     getTask,

@@ -42,6 +42,7 @@ import {
   type ScheduledTasksSnapshot,
   type ScheduledTaskUpdateInput,
   type ThreadId,
+  type ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import { agentThreadsMode } from "@threadlines/shared/serverSettings";
@@ -75,6 +76,10 @@ import {
   ScheduledRunTurnEnds,
   type ScheduledRunTurnEndsShape,
 } from "../orchestration/Services/ScheduledRunTurnEnds.ts";
+import {
+  ScheduledTaskNotes,
+  type ScheduledTaskNotesShape,
+} from "../orchestration/Services/ScheduledTaskNotes.ts";
 import { ThreadBootstrap } from "../orchestration/Services/ThreadBootstrap.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
@@ -166,6 +171,8 @@ export interface ScheduledTasksShape {
   readonly propose: (input: {
     readonly requestId: string;
     readonly threadId: ThreadId;
+    /** The room agent asking; null for the thread's own. */
+    readonly participantId: ThreadParticipantId | null;
     readonly mode: "ask" | "auto";
     readonly change: ScheduledTaskChange;
   }) => Effect.Effect<
@@ -173,6 +180,13 @@ export interface ScheduledTasksShape {
     | { readonly outcome: "asked_user"; readonly requestId: string },
     ScheduledTaskError
   >;
+  /**
+   * What the user answered to one agent's changes since its last turn: one
+   * line each, for that turn to carry (ScheduledTaskNotes).
+   */
+  readonly pendingNotes: ScheduledTaskNotesShape["pendingFor"];
+  /** Those answers went out with a turn the provider took. */
+  readonly notesDelivered: ScheduledTaskNotesShape["delivered"];
   /** The user allows or denies an agent's change. */
   readonly respondRequest: (
     input: ScheduledTaskRespondRequestInput,
@@ -282,6 +296,7 @@ const toTask = (
   nextRunAt: row.status === "active" ? row.nextSlotUtc : null,
   lastRun: summary?.last ? toRun(summary.last) : null,
   workingRuns: summary?.working ?? 0,
+  originThreadId: row.originThreadId,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
 });
@@ -457,16 +472,24 @@ const make = Effect.gen(function* () {
     });
   };
 
-  /** A new task from its settings, checked and scheduled from now; not saved. */
-  const prepareCreate = (input: ScheduledTaskCreateInput, now: number, id?: ScheduledTaskId) =>
+  /**
+   * A new task from its settings, checked and scheduled from now; not saved.
+   * `origin` is the thread whose agent set it up, if one did.
+   */
+  const prepareCreate = (
+    input: ScheduledTaskCreateInput,
+    now: number,
+    made?: { readonly id: ScheduledTaskId; readonly origin: ThreadId },
+  ) =>
     Effect.gen(function* () {
       const at = new Date(now).toISOString();
       const draft: ScheduledTaskRow = {
         ...input,
-        id: id ?? ScheduledTaskId.make(crypto.randomUUID()),
+        id: made?.id ?? ScheduledTaskId.make(crypto.randomUUID()),
         status: "active",
         error: null,
         nextSlotUtc: null,
+        originThreadId: made?.origin ?? null,
         createdAt: at,
         updatedAt: at,
       };
@@ -531,8 +554,8 @@ const make = Effect.gen(function* () {
   const requestTaskId = (requestId: string) =>
     ScheduledTaskId.make(derivedUuid("scheduled-task-request", requestId));
 
-  /** Saves an agent's change, checked again now. */
-  const applyChange = (requestId: string, change: ScheduledTaskChange) =>
+  /** Saves an agent's change (from a thread's agent), checked again now. */
+  const applyChange = (requestId: string, change: ScheduledTaskChange, origin: ThreadId) =>
     Effect.gen(function* () {
       const now = yield* nowMillis;
       if (change.kind === "create") {
@@ -541,7 +564,7 @@ const make = Effect.gen(function* () {
           .getTask(id)
           .pipe(Effect.mapError(storageError("read the task")));
         if (Option.isSome(existing)) return toTask(existing.value, undefined);
-        const row = yield* prepareCreate(change.draft, now, id);
+        const row = yield* prepareCreate(change.draft, now, { id, origin });
         yield* repo.insertTask(row).pipe(Effect.mapError(storageError("save the task")));
         yield* notify;
         return toTask(row, undefined);
@@ -568,13 +591,14 @@ const make = Effect.gen(function* () {
       if (input.mode === "auto") {
         return {
           outcome: "applied" as const,
-          task: yield* applyChange(input.requestId, input.change),
+          task: yield* applyChange(input.requestId, input.change, input.threadId),
         };
       }
       yield* repo
         .insertRequest({
           requestId: input.requestId,
           threadId: input.threadId,
+          participantId: input.participantId,
           action: input.change.kind,
           taskId: preview.taskId,
           payload: { change: input.change, name: preview.name, details: preview.details },
@@ -612,15 +636,65 @@ const make = Effect.gen(function* () {
         yield* decide("denied", detail);
         return yield* taskError(detail);
       }
-      const applied = yield* applyChange(request.requestId, request.payload.change).pipe(
-        Effect.result,
-      );
+      const applied = yield* applyChange(
+        request.requestId,
+        request.payload.change,
+        request.threadId,
+      ).pipe(Effect.result);
       if (Result.isFailure(applied)) {
         yield* decide("failed", applied.failure.detail);
         return yield* Effect.fail(applied.failure);
       }
       yield* decide("allowed", null);
     });
+
+  /** What one answered request tells the agent that asked. */
+  const noteFor = (request: ScheduledTaskRequestRow, tasks: ReadonlyArray<ScheduledTaskRow>) => {
+    const name = `"${request.payload.name}"`;
+    const subject =
+      request.action === "create" ? `your scheduled task ${name}` : `your change to ${name}`;
+    const detail = request.detail !== null ? ` ${request.detail}` : "";
+    switch (request.status) {
+      case "allowed": {
+        if (request.action === "update") return `The user allowed ${subject}.`;
+        const task = tasks.find((entry) => entry.id === requestTaskId(request.requestId));
+        const next =
+          task?.status === "active" && task.nextSlotUtc !== null
+            ? `, next run ${task.nextSlotUtc}`
+            : "";
+        return `The user allowed ${subject}: it's on the Scheduled page (id ${requestTaskId(request.requestId)})${next}.`;
+      }
+      case "denied":
+        return `The user said no to ${subject}.${detail}`;
+      case "expired":
+        return `Nobody answered about ${subject} within a day, so nothing changed.`;
+      case "failed":
+        return `The user allowed ${subject}, but it couldn't be saved.${detail}`;
+      case "waiting":
+        return null;
+    }
+  };
+
+  const pendingNotes: ScheduledTasksShape["pendingNotes"] = (threadId, participantId) =>
+    Effect.gen(function* () {
+      const requests = yield* repo.listUnnotedRequests(threadId);
+      const mine = requests.filter((request) => request.participantId === participantId);
+      if (mine.length === 0) return [];
+      const tasks = mine.some(
+        (request) => request.action === "create" && request.status === "allowed",
+      )
+        ? yield* repo.listTasks
+        : [];
+      return mine.flatMap((request) => {
+        const text = noteFor(request, tasks);
+        return text === null ? [] : [{ requestId: request.requestId, text }];
+      });
+    }).pipe(Effect.orElseSucceed(() => []));
+
+  const notesDelivered: ScheduledTasksShape["notesDelivered"] = (requestIds) =>
+    Effect.gen(function* () {
+      yield* repo.markRequestsNoted({ requestIds, now: yield* nowIso });
+    }).pipe(Effect.ignore);
 
   /** Agents' changes nobody answered within a day. */
   const expireRequests = Effect.gen(function* () {
@@ -1417,6 +1491,8 @@ const make = Effect.gen(function* () {
     remove,
     runNow,
     propose,
+    pendingNotes,
+    notesDelivered,
     respondRequest,
     getTask,
     recordFinish,
@@ -1427,6 +1503,18 @@ const make = Effect.gen(function* () {
 });
 
 export const ScheduledTasksLive = Layer.effect(ScheduledTasks, make);
+
+/** The provider command reactor's source of answers for agents: see ScheduledTaskNotes. */
+export const ScheduledTaskNotesLive = Layer.effect(
+  ScheduledTaskNotes,
+  Effect.gen(function* () {
+    const scheduledTasks = yield* ScheduledTasks;
+    return ScheduledTaskNotes.of({
+      pendingFor: scheduledTasks.pendingNotes,
+      delivered: scheduledTasks.notesDelivered,
+    });
+  }),
+);
 
 /** Runtime ingestion's hook for turns that end: see ScheduledRunTurnEnds. */
 export const ScheduledRunTurnEndsLive = Layer.effect(

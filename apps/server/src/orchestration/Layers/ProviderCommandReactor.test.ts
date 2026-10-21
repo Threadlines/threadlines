@@ -91,6 +91,10 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { RemoteRequestGate, type RemoteRequestGateShape } from "../Services/RemoteRequestGate.ts";
+import {
+  ScheduledTaskNotes,
+  type ScheduledTaskNotesShape,
+} from "../Services/ScheduledTaskNotes.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -207,6 +211,8 @@ describe("ProviderCommandReactor", () => {
     readonly removedInstanceIds?: ReadonlyArray<string>;
     /** Computer links' check on a linked computer's queued messages. */
     readonly remoteRequestGate?: RemoteRequestGateShape;
+    /** Scheduled tasks' answers for agents. */
+    readonly scheduledTaskNotes?: ScheduledTaskNotesShape;
     /** The reactor's reads of a thread fail while this says so. */
     readonly failThreadRead?: (threadId: ThreadId) => boolean;
   }) {
@@ -566,6 +572,11 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(
         input?.remoteRequestGate !== undefined
           ? Layer.succeed(RemoteRequestGate, input.remoteRequestGate)
+          : Layer.empty,
+      ),
+      Layer.provideMerge(
+        input?.scheduledTaskNotes !== undefined
+          ? Layer.succeed(ScheduledTaskNotes, input.scheduledTaskNotes)
           : Layer.empty,
       ),
       // No checkpoint reactor here to report captures done: hand over at once.
@@ -1008,6 +1019,51 @@ describe("ProviderCommandReactor", () => {
     await harness.warmUp(warmUpInput);
     await harness.drain();
     expect(harness.startEarlySession).not.toHaveBeenCalled();
+  });
+
+  it("tells the agent the user's answer to its scheduled task with its next turn, once", async () => {
+    let pending = [
+      {
+        requestId: "request-1",
+        text: 'The user allowed your scheduled task "Morning review": it\'s on the Scheduled page (id task-1).',
+      },
+    ];
+    const delivered: Array<ReadonlyArray<string>> = [];
+    const harness = await createHarness({
+      scheduledTaskNotes: {
+        pendingFor: (threadId, participantId) =>
+          Effect.succeed(
+            threadId === ThreadId.make("thread-1") && participantId === null ? pending : [],
+          ),
+        delivered: (requestIds) =>
+          Effect.sync(() => {
+            delivered.push(requestIds);
+            pending = [];
+          }),
+      },
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-schedule-answer"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-schedule-answer"),
+          role: "user",
+          text: "Anything else?",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const sent = harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string } | undefined;
+    expect(sent?.input).toContain('The user allowed your scheduled task "Morning review"');
+    expect(sent?.input?.endsWith("Anything else?")).toBe(true);
+    await waitFor(() => delivered.length === 1);
+    expect(delivered).toEqual([["request-1"]]);
   });
 
   it("hands the thread's history to a session that could not reopen its conversation", async () => {

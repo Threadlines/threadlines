@@ -195,7 +195,13 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
       const mode = yield* deps.threadsMode;
       if (mode === "off") return { outcome: "off" as const, detail: SCHEDULES_OFF };
       const proposed = yield* gated.service
-        .propose({ requestId, threadId: scope.threadId, mode, change })
+        .propose({
+          requestId,
+          threadId: scope.threadId,
+          participantId: scope.participantId,
+          mode,
+          change,
+        })
         .pipe(Effect.result);
       if (Result.isFailure(proposed)) {
         return { outcome: "refused" as const, detail: proposed.failure.detail };

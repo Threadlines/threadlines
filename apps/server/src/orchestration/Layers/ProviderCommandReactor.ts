@@ -112,6 +112,7 @@ import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/Projectio
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { RemoteRequestGate } from "../Services/RemoteRequestGate.ts";
+import { ScheduledTaskNotes } from "../Services/ScheduledTaskNotes.ts";
 import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
@@ -445,6 +446,8 @@ const make = Effect.gen(function* () {
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   // Computer links, when this server has them: see RemoteRequestGate.
   const remoteRequestGate = yield* Effect.serviceOption(RemoteRequestGate);
+  // Scheduled tasks, when this server has them: see ScheduledTaskNotes.
+  const scheduledTaskNotes = yield* Effect.serviceOption(ScheduledTaskNotes);
   /** The scope start() runs in: timers for held turns live there. */
   let reactorScope: Scope.Scope | undefined;
   const providerService = yield* ProviderService;
@@ -1653,6 +1656,33 @@ const make = Effect.gen(function* () {
     };
   });
 
+  /**
+   * Scheduled tasks: what the user answered to this agent's schedule_create
+   * and schedule_update calls since its last turn, carried once.
+   */
+  const scheduledTaskContext = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    participantId: ThreadParticipantId | null,
+  ) {
+    if (Option.isNone(scheduledTaskNotes)) {
+      return { text: undefined, delivered: Effect.void };
+    }
+    const notes = yield* scheduledTaskNotes.value.pendingFor(thread.id, participantId);
+    return {
+      text:
+        notes.length === 0
+          ? undefined
+          : [
+              "About the scheduled tasks you asked for, since your last turn:",
+              ...notes.map((note) => `- ${note.text}`),
+            ].join("\n"),
+      delivered:
+        notes.length === 0
+          ? Effect.void
+          : scheduledTaskNotes.value.delivered(notes.map((note) => note.requestId)),
+    };
+  });
+
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
@@ -1784,11 +1814,13 @@ const make = Effect.gen(function* () {
     // Child threads: who this message is from, and what this agent's threads
     // did since its last turn without waking it (notes are its alone).
     const childContext = yield* childThreadContext(thread, input.participantId, input.fromThread);
+    const scheduleContext = yield* scheduledTaskContext(thread, input.participantId);
     const providerContext = [
       resumeContextText,
       forkContextText,
       roomCatchUp?.note,
       childContext.text,
+      scheduleContext.text,
     ]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");
@@ -1916,8 +1948,12 @@ const make = Effect.gen(function* () {
           : Effect.sync(() => {
               owedSeed.claimed = false;
             }),
-      // Child threads: the notes this turn carries, cleared once it is taken.
-      childNotesDelivered: childContext.delivered(input.createdAt),
+      // Child threads' and scheduled tasks' notes this turn carries, cleared
+      // once it is taken.
+      notesDelivered: Effect.andThen(
+        childContext.delivered(input.createdAt),
+        scheduleContext.delivered,
+      ),
       // Recorded only once the provider has taken the turn.
       roomContext:
         roomCatchUp !== undefined && conversationId !== null
@@ -2497,7 +2533,7 @@ const make = Effect.gen(function* () {
         historyDebtClaimed,
         historyDebtPaid,
         historyDebtReturned,
-        childNotesDelivered,
+        notesDelivered,
       } = sendTurnRequest.value;
 
       // Stop pressed while this turn was being prepared waited behind it in
@@ -2540,7 +2576,7 @@ const make = Effect.gen(function* () {
             ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
             : Effect.void,
         ),
-        Effect.tap(() => childNotesDelivered),
+        Effect.tap(() => notesDelivered),
         // Replies and reports queued while the turn was starting go in now,
         // behind its own message (and its notes), in this thread's worker.
         Effect.tap(() =>

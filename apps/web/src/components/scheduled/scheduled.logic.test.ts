@@ -50,6 +50,7 @@ const task = (patch: Partial<ScheduledTask> = {}): ScheduledTask => ({
   nextRunAt: "2026-10-21T09:00:00.000Z",
   lastRun: null,
   workingRuns: 0,
+  originThreadId: null,
   createdAt: "2026-10-20T08:00:00.000Z",
   updatedAt: "2026-10-20T08:00:00.000Z",
   ...patch,

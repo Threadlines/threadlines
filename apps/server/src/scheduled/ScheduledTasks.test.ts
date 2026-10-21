@@ -13,6 +13,7 @@ import {
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
@@ -733,7 +734,20 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
         // The caller's own access and zone, never more.
         assert.equal(created?.runtimeMode, "auto");
         assert.equal(created?.timeZone, "Europe/Madrid");
+        // It knows the thread whose agent set it up.
+        assert.equal(created?.originThreadId, threadId);
         assert.deepEqual((yield* service.snapshot).requests, []);
+        // The agent hears the answer at its next turn, once, and no other agent does.
+        const notes = yield* service.pendingNotes(threadId, null);
+        assert.equal(notes.length, 1);
+        assert.include(notes[0]?.text ?? "", 'allowed your scheduled task "Dependency audit"');
+        assert.include(notes[0]?.text ?? "", created!.id);
+        assert.deepEqual(
+          yield* service.pendingNotes(threadId, ThreadParticipantId.make("room-agent")),
+          [],
+        );
+        yield* service.notesDelivered(notes.map((note) => note.requestId));
+        assert.deepEqual(yield* service.pendingNotes(threadId, null), []);
 
         mode = "auto";
         const paused = yield* tools.schedule_update(scope, { id: created!.id, paused: true });
