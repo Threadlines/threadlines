@@ -674,7 +674,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
         {form.cadenceKind !== "manual" ? (
           <FieldRow
             label="Time zone"
-            hint="Times use this zone wherever you are. When clocks skip ahead, a skipped time runs right after; when they fall back, a repeated time runs once."
+            hint="Times use this zone wherever you are. When clocks skip ahead, a skipped time runs right after. When they fall back, a set time runs once and hourly tasks still run every hour."
           >
             <Select
               value={form.timeZone}
