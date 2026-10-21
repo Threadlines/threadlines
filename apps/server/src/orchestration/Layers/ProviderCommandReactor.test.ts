@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  ChildRequestId,
   CommandRequestId,
   CommandRunId,
+  EnvironmentId,
   ModelSelection,
   type OrchestrationCommand,
   type OrchestrationSession,
@@ -85,6 +87,7 @@ import {
 } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { RemoteRequestGate, type RemoteRequestGateShape } from "../Services/RemoteRequestGate.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -199,6 +202,8 @@ describe("ProviderCommandReactor", () => {
     readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
     /** Instances that are no longer configured (an account was removed). */
     readonly removedInstanceIds?: ReadonlyArray<string>;
+    /** Computer links' check on a linked computer's queued messages. */
+    readonly remoteRequestGate?: RemoteRequestGateShape;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -553,6 +558,11 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderCommandReactorLive.pipe(
+      Layer.provideMerge(
+        input?.remoteRequestGate !== undefined
+          ? Layer.succeed(RemoteRequestGate, input.remoteRequestGate)
+          : Layer.empty,
+      ),
       // No checkpoint reactor here to report captures done: hand over at once.
       Layer.provideMerge(Layer.succeed(HandoverCaptureWait, Duration.zero)),
       Layer.provideMerge(orchestrationLayer),
@@ -3614,6 +3624,89 @@ describe("ProviderCommandReactor", () => {
         role: "user",
         text: "then write tests",
       });
+    });
+
+    it("takes back a linked computer's queued message whose request was cancelled, and sends the next", async () => {
+      const takenBack = asMessageId("remote-taken-back");
+      const kept = asMessageId("remote-kept");
+      const harness = await createHarness({
+        remoteRequestGate: {
+          queuedMessage: ({ messageId }) =>
+            Effect.succeed(messageId === takenBack ? "taken-back" : "run"),
+        },
+      });
+      const remoteThread = ThreadId.make("remote-thread");
+      const origin = {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      };
+      const dispatch = (command: OrchestrationCommand) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-remote-thread-create"),
+        threadId: remoteThread,
+        projectId: asProjectId("project-1"),
+        title: "Write the changelog",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        remoteOrigin: origin,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const setRemoteSession = (status: "running" | "ready", at: string) =>
+        dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-remote-session-${status}-${at}`),
+          threadId: remoteThread,
+          session: {
+            threadId: remoteThread,
+            status,
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: status === "running" ? turnId : null,
+            pendingBackgroundTaskCount: 0,
+            lastError: null,
+            updatedAt: at,
+          },
+          createdAt: at,
+        });
+      await setRemoteSession("running", "2026-01-01T00:00:01.000Z");
+      // The linked computer sent two; it took the first back, but the clean-up
+      // that would unqueue it hasn't landed.
+      for (const messageId of [takenBack, kept]) {
+        await dispatch({
+          type: "thread.remote-request.queue",
+          commandId: CommandId.make(`cmd-remote-queue-${messageId}`),
+          threadId: remoteThread,
+          messageId,
+          text: `message ${messageId}`,
+          fromThread: {
+            threadId: origin.threadId,
+            requestId: ChildRequestId.make(`request-${messageId}`),
+            kind: "request",
+            environmentId: origin.environmentId,
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+      }
+
+      await setRemoteSession("ready", "2026-01-01T00:00:03.000Z");
+
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.drain();
+      // Only the one still asked for ran; the other left the queue unsent.
+      expect(harness.sendTurn.mock.calls.map((call) => call[0])).toMatchObject([
+        { threadId: remoteThread, messageId: kept },
+      ]);
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === remoteThread);
+      expect(thread?.queuedFollowUps ?? []).toEqual([]);
     });
 
     it("keeps queued messages waiting after the turn is interrupted", async () => {

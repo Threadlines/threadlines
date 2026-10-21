@@ -12,7 +12,9 @@ import {
   EMPTY_CHILD_REQUEST_STATE,
 } from "@threadlines/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
@@ -999,6 +1001,69 @@ describe("OrchestrationEngine", () => {
       "thread.created",
     ]);
     await runtime.dispose();
+  });
+
+  it("answers commands still waiting when it stops, after the one in progress finishes", async () => {
+    // The first command's projection waits, so the second queues behind it.
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstRunning = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const waitingPipeline: OrchestrationProjectionPipelineShape = {
+      bootstrap: Effect.void,
+      projectEvent: (event) =>
+        event.commandId === CommandId.make("cmd-stop-first")
+          ? Effect.promise(async () => {
+              firstStarted();
+              await firstMayFinish;
+            })
+          : Effect.void,
+    };
+    const runtime = ManagedRuntime.make(
+      OrchestrationEngineLive.pipe(
+        Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provide(Layer.succeed(OrchestrationProjectionPipeline, waitingPipeline)),
+        Layer.provide(OrchestrationEventStoreLive),
+        Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provide(RepositoryIdentityResolverLive),
+        Layer.provide(SqlitePersistenceMemory),
+        Layer.provide(NodeServices.layer),
+      ),
+    );
+    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const projectCommand = (id: string) => ({
+      type: "project.create" as const,
+      commandId: CommandId.make(id),
+      projectId: asProjectId(id),
+      title: id,
+      workspaceRoot: `/tmp/${id}`,
+      defaultModelSelection: null,
+      createdAt: now(),
+    });
+
+    const first = Effect.runPromise(engine.dispatch(projectCommand("cmd-stop-first")));
+    await firstRunning;
+    // Its caller can't be interrupted: it must hear back either way.
+    const second = Effect.runPromiseExit(
+      Effect.uninterruptible(engine.dispatch(projectCommand("cmd-stop-second"))),
+    );
+    const disposed = runtime.dispose();
+    releaseFirst();
+
+    await expect(first).resolves.toMatchObject({ sequence: expect.any(Number) });
+    const secondExit = await second;
+    expect(Exit.isFailure(secondExit)).toBe(true);
+    expect(String(Exit.isFailure(secondExit) ? Cause.squash(secondExit.cause) : "")).toContain(
+      "did not run",
+    );
+    await disposed;
+    // Stopped: a new command is refused at once.
+    const late = await Effect.runPromiseExit(engine.dispatch(projectCommand("cmd-stop-late")));
+    expect(Exit.isFailure(late)).toBe(true);
   });
 
   it("rolls back all events for a multi-event command when projection fails mid-dispatch", async () => {

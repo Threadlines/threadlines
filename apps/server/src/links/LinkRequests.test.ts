@@ -23,11 +23,13 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Duration from "effect/Duration";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 
 import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
@@ -54,6 +56,11 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionThreadRepositoryLive } from "../persistence/Layers/ProjectionThreads.ts";
 import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
+import {
+  ProjectionTurnRepository,
+  type ProjectionTurnRepositoryShape,
+} from "../persistence/Services/ProjectionTurns.ts";
+import { OrchestrationProjectionPipeline } from "../orchestration/Services/ProjectionPipeline.ts";
 import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
@@ -200,6 +207,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
     const ledger = Context.get(context, LinkRequestRepository);
     const devices = Context.get(context, RelayDeviceRepository);
     const realBootstrap = Context.get(context, ThreadBootstrap);
+    const turnsRepo = Context.get(context, ProjectionTurnRepository);
 
     yield* engine.dispatch({
       type: "project.create",
@@ -242,6 +250,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
         readonly bootstrap?: Partial<ThreadBootstrapShape>;
         readonly engine?: Partial<OrchestrationEngineShape>;
         readonly snapshots?: Partial<ProjectionSnapshotQueryShape>;
+        readonly turns?: Partial<ProjectionTurnRepositoryShape>;
       } = {},
     ) =>
       Effect.gen(function* () {
@@ -252,6 +261,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
               Layer.succeed(ThreadBootstrap, { ...realBootstrap, ...patch.bootstrap }),
               Layer.succeed(OrchestrationEngineService, { ...engine, ...patch.engine }),
               Layer.succeed(ProjectionSnapshotQuery, { ...snapshots, ...patch.snapshots }),
+              Layer.succeed(ProjectionTurnRepository, { ...turnsRepo, ...patch.turns }),
               Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([PROVIDER]) }),
               Layer.mock(GitVcsDriver)({
                 execute: () =>
@@ -297,6 +307,9 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
       ledger,
       devices,
       bootstrap: realBootstrap,
+      snapshots,
+      turns: turnsRepo,
+      context,
       addLink,
       boot,
       thread,
@@ -804,6 +817,171 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
       const stop = yield* Effect.flip(unreadable.stopThread(link(), threadId));
       assert.equal(stop._tag, "PeerRpcError");
     }),
+  );
+
+  it.effect(
+    "a send whose command the stopping engine never ran fails, stays recorded, and lets go of its request",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const { threadId } = yield* startedChild(computer, "request-1");
+        // A second engine on the same database, busy with a command that waits.
+        const busy = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const engineRun = yield* Scope.make();
+        const stopping = Context.get(
+          yield* Layer.buildWithScope(
+            OrchestrationEngineLive.pipe(
+              Layer.provide(
+                Layer.succeed(OrchestrationProjectionPipeline, {
+                  bootstrap: Effect.void,
+                  projectEvent: (event) =>
+                    event.commandId === CommandId.make("busy")
+                      ? Deferred.succeed(busy, undefined).pipe(
+                          Effect.andThen(Deferred.await(release)),
+                        )
+                      : Effect.void,
+                }),
+              ),
+              Layer.provide(OrchestrationEventStoreLive),
+              Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+              Layer.provide(Layer.succeedContext(computer.context)),
+            ),
+            engineRun,
+          ),
+          OrchestrationEngineService,
+        );
+        const service = yield* computer.boot({ engine: stopping });
+        yield* Effect.forkChild(
+          stopping.dispatch({
+            type: "project.meta.update",
+            commandId: CommandId.make("busy"),
+            projectId: PROJECT,
+            title: "renamed",
+          }),
+        );
+        yield* Deferred.await(busy);
+        const sending = yield* Effect.forkChild(
+          service.send(link(), {
+            requestId: ChildRequestId.make("send-1"),
+            threadId,
+            text: "Add the security fixes too.",
+          }),
+        );
+        yield* wallClockSleep(50);
+        // The server stops while the send's command waits behind the busy one.
+        const closing = yield* Effect.forkChild(Scope.close(engineRun, Exit.void));
+        yield* wallClockSleep(20);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(closing);
+
+        const failed = yield* Effect.flip(Fiber.join(sending));
+        assert.include(failed.detail, "shutting down");
+        // Still recorded: the next start delivers it.
+        assert.equal((yield* computer.request("send-1")).status, "received");
+        // Its request isn't held: a cancel on the same process goes through.
+        const cancelled = yield* service.cancel(link(), ChildRequestId.make("send-1"));
+        assert.equal(cancelled.status, "cancelled");
+      }),
+  );
+
+  it.effect(
+    "a cancel's clean-up that fails at startup is tried again until it lands, and its message can't run meanwhile",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const { service, threadId } = yield* startedChild(computer, "request-1");
+        yield* service.send(link(), {
+          requestId: ChildRequestId.make("send-1"),
+          threadId,
+          text: "Add the security fixes too.",
+        });
+        const messageId = linkMessageId(DEVICE, "send-1");
+        const isQueued = Effect.map(computer.thread(threadId), (child) =>
+          (child?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId),
+        );
+        let unreadable = true;
+        const reads = {
+          getThreadDetailById: (id: ThreadId) =>
+            unreadable
+              ? Effect.fail(
+                  new PersistenceSqlError({ operation: "getThreadDetailById", detail: "busy" }),
+                )
+              : computer.snapshots.getThreadDetailById(id),
+        };
+        const dying = yield* computer.boot({ snapshots: reads });
+        yield* Effect.flip(dying.cancel(link(), ChildRequestId.make("send-1")));
+        // Its clean-up didn't land, yet its message may not run.
+        assert.isTrue(yield* isQueued);
+        assert.equal(yield* dying.queuedMessage({ threadId, messageId }), "taken-back");
+
+        const restarted = yield* computer.boot({ snapshots: reads });
+        yield* restarted.startReactor();
+        assert.isTrue(yield* isQueued);
+        unreadable = false;
+        yield* TestClock.adjust(Duration.seconds(2));
+        yield* eventually(
+          Effect.map(isQueued, (queued) => !queued),
+          "the message is taken back",
+        );
+        assert.isNull((yield* computer.request("send-1")).cleanup);
+      }),
+  );
+
+  it.effect(
+    "a restart's settling that fails is tried again, and leaves work begun after the restart alone",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        // Two starts whose first turns were running when the process stopped.
+        yield* startedChild(computer, "request-1");
+        const { threadId: second } = yield* startedChild(computer, "request-2");
+        let unreadable = true;
+        const restarted = yield* computer.boot({
+          turns: {
+            listByThreadId: (input) =>
+              unreadable
+                ? Effect.fail(
+                    new PersistenceSqlError({ operation: "listByThreadId", detail: "busy" }),
+                  )
+                : computer.turns.listByThreadId(input),
+          },
+        });
+        yield* restarted.startReactor();
+        assert.equal((yield* computer.request("request-1")).status, "queued");
+        // Since the restart, the second thread was given a new turn: live work.
+        yield* computer.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("live-turn"),
+          threadId: second,
+          message: {
+            messageId: MessageId.make("live-message"),
+            role: "user",
+            text: "Keep going.",
+            attachments: [],
+          },
+          runtimeMode: "auto",
+          interactionMode: "default",
+          createdAt: AT,
+        });
+        unreadable = false;
+        yield* TestClock.adjust(Duration.seconds(2));
+        yield* eventually(
+          Effect.map(computer.request("request-1"), (row) => row.status === "failed"),
+          "the cut-off turn is reported",
+        );
+        yield* wallClockSleep(100);
+        assert.include(
+          (yield* computer.request("request-1")).reportText ?? "",
+          "interrupted by a restart on Mac mini",
+        );
+        const live = yield* computer.request("request-2");
+        assert.isNull(live.reportId);
+        assert.notEqual(live.status, "failed");
+      }),
   );
 
   it.effect("answers a send with the turn its own message started, not another", () =>
