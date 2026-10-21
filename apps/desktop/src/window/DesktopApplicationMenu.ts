@@ -16,6 +16,8 @@ import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
 type GoMenuAction =
+  | typeof DesktopWindow.NAVIGATE_BACK_MENU_ACTION
+  | typeof DesktopWindow.NAVIGATE_FORWARD_MENU_ACTION
   | typeof DesktopWindow.OPEN_FLEET_MENU_ACTION
   | typeof DesktopWindow.OPEN_GENERAL_CHATS_MENU_ACTION
   | typeof DesktopWindow.OPEN_USAGE_MENU_ACTION;
@@ -261,6 +263,10 @@ const make = Effect.gen(function* () {
         // know. Settings is in the app menu (File on Windows and Linux).
         label: "Go",
         submenu: [
+          // Through the app's own history, like the title bar's arrows.
+          { label: "Back", click: goTo(DesktopWindow.NAVIGATE_BACK_MENU_ACTION) },
+          { label: "Forward", click: goTo(DesktopWindow.NAVIGATE_FORWARD_MENU_ACTION) },
+          { type: "separator" },
           { label: "General Chats", click: goTo(DesktopWindow.OPEN_GENERAL_CHATS_MENU_ACTION) },
           { label: "Fleet", click: goTo(DesktopWindow.OPEN_FLEET_MENU_ACTION) },
           { label: "Usage", click: goTo(DesktopWindow.OPEN_USAGE_MENU_ACTION) },
