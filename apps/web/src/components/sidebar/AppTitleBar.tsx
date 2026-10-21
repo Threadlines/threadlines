@@ -24,10 +24,12 @@ const SLOT_START =
 
 /**
  * The window's title row on a wide screen, part of the frame with the rail:
- * past the macOS traffic lights (or from the left edge elsewhere), the list
- * toggle, back and forward, then the app's name. Nothing there moves when the
- * list hides. On a page with no list (Pull Requests, Usage) the toggle stays,
- * disabled.
+ * past the macOS traffic lights (or from the left edge elsewhere), the app's
+ * name, then the list toggle, back and forward. The name comes first so the
+ * buttons stand between it and the page's header: a thread's project and
+ * title never read as the next steps of a path that starts at "Threadlines".
+ * Nothing there moves when the list hides. On a page with no list (Pull
+ * Requests, Usage) the toggle stays, disabled.
  *
  * The rest of the row belongs to the open page (TitleBarContent): a thread's
  * header, Settings' Restore defaults. It ends clear of the window controls
@@ -88,6 +90,9 @@ export function AppTitleBar({
       }
     >
       <div ref={measureCluster} className="flex shrink-0 items-center gap-0.5">
+        <div className="me-2.5 flex min-w-0">
+          <AppWordmark />
+        </div>
         <ChromeIconButton
           size="titlebar"
           side="bottom"
@@ -141,9 +146,6 @@ export function AppTitleBar({
         >
           <ArrowRightIcon aria-hidden="true" />
         </ChromeIconButton>
-        <div className="ms-1.5 flex min-w-0">
-          <AppWordmark />
-        </div>
       </div>
       <div
         ref={slotRef}

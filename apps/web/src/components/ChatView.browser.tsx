@@ -3484,6 +3484,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .toBeVisible();
       expect(titleRow.querySelector("h2")?.textContent).toBe("Browser test thread");
       expect(document.querySelector('header[data-find-region="chat"]')).toBeNull();
+      // The app's name leads the row and the frame's buttons stand between
+      // it and the header, so it never reads as the first step of the
+      // header's project / title path.
+      const right = (testId: string) =>
+        document.querySelector(`[data-testid="${testId}"]`)!.getBoundingClientRect().right;
+      expect(right("app-wordmark")).toBeLessThan(right("titlebar-sidebar-toggle"));
+      expect(right("titlebar-forward")).toBeLessThan(slot.getBoundingClientRect().left);
       // Its controls are buttons in a window drag region, never dragging it.
       const panelToggle = slot.querySelector<HTMLElement>('button[aria-label="Toggle panel"]')!;
       expect(getComputedStyle(slot).getPropertyValue("-webkit-app-region")).toBe("drag");
@@ -3650,6 +3657,46 @@ describe("ChatView timeline estimator parity (full app)", () => {
     } finally {
       await mounted.cleanup();
       root.classList.remove("electron", "mac");
+    }
+  });
+
+  it("pauses the fleet's traveling dots while the window is in the background", async () => {
+    const workingThreadId = "thread-fleet-paused" as ThreadId;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-fleet-paused" as MessageId,
+          targetText: "fleet paused",
+        }),
+        workingThreadId,
+      ),
+      initialPath: "/fleet",
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus");
+
+    try {
+      await waitForServerConfigToApply();
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingThreadId, "working", {
+        title: "Double charges at checkout",
+      });
+      const dot = () =>
+        document.querySelector<HTMLElement>('[data-testid="fleet-traveling-dots"] .fleet-dot');
+      hasFocus.mockReturnValue(true);
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => {
+        expect(getComputedStyle(dot()!).animationPlayState).toBe("running");
+      });
+
+      // A window in the background draws no frames for the dots.
+      hasFocus.mockReturnValue(false);
+      window.dispatchEvent(new Event("blur"));
+      await vi.waitFor(() => {
+        expect(getComputedStyle(dot()!).animationPlayState).toBe("paused");
+      });
+    } finally {
+      hasFocus.mockRestore();
+      await mounted.cleanup();
     }
   });
 

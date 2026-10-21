@@ -30,8 +30,8 @@
      The desktop app draws Windows and Linux window controls this tall, and
      centers the macOS traffic lights in it (DesktopWindow.ts). */
   --app-titlebar-height: 38px;
-  /* Where the title row's first button starts: centered over the 48px rail,
-     or past the window controls where they sit at the left (below). */
+  /* Where the title row's first item (the app's name) starts: over the 48px
+     rail, or past the window controls where they sit at the left (below). */
   --app-titlebar-leading: 9px;
   /* The navigation rail's width (NAVIGATION_RAIL_WIDTH_PX). */
   --app-rail-width: 48px;
@@ -53,7 +53,10 @@
    Linux report theirs: .wco above). Marketing captures have no buttons. */
 html.electron.mac:not([data-marketing-capture]) {
   --workspace-controls-left: 88px;
-  --app-titlebar-leading: 78px;
+  /* The green light ends 76px in (DesktopWindow's trafficLightPosition);
+     the logo starts 23px past it (its link pads 4px), the same gap the name
+     keeps from the sidebar button after it. */
+  --app-titlebar-leading: 95px;
 }
 
 @theme inline {
