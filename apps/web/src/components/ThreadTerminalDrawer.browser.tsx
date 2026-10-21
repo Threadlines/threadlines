@@ -740,16 +740,14 @@ describe("TerminalViewport", () => {
       expect(useBrowserPanelStore.getState().browserStateByThreadKey).toEqual({});
 
       links[0]?.hover?.(new MouseEvent("mousemove"), "http://localhost:4321/");
-      document
-        .querySelector<HTMLElement>("[data-terminal-viewport-mount='true']")
-        ?.dispatchEvent(
-          new MouseEvent("contextmenu", {
-            bubbles: true,
-            cancelable: true,
-            clientX: 8,
-            clientY: 8,
-          }),
-        );
+      document.querySelector<HTMLElement>("[data-terminal-viewport-mount='true']")?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 8,
+          clientY: 8,
+        }),
+      );
 
       await vi.waitFor(() => {
         expect(localApi.contextMenu.show).toHaveBeenCalledWith(
