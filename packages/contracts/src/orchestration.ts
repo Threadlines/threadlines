@@ -26,6 +26,7 @@ import {
   ProviderItemId,
   RoomAgentRequestId,
   RuntimeTaskId,
+  ScheduledTaskId,
   ThreadId,
   SideTurnId,
   ThreadParticipantId,
@@ -599,6 +600,19 @@ export const ThreadRemoteOrigin = Schema.Struct({
   threadTitle: TrimmedNonEmptyString,
 });
 export type ThreadRemoteOrigin = typeof ThreadRemoteOrigin.Type;
+
+/**
+ * A thread a scheduled task's run started (docs/design/fleet.md, Part 6):
+ * "Scheduled · <task>" on its inbox row. Set once, at creation, and only by
+ * the server's scheduler. `taskName` is the name when the run started; the
+ * task may be renamed or deleted since.
+ */
+export const ThreadScheduledRun = Schema.Struct({
+  taskId: ScheduledTaskId,
+  taskName: TrimmedNonEmptyString,
+  slotUtc: IsoDateTime,
+});
+export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
 
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
@@ -1898,6 +1912,8 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /** See OrchestrationThreadShell.scheduledRun. */
+  scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /** Child threads this thread started: open requests, limits and notes. */
   childRequests: OrchestrationChildRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_CHILD_REQUEST_STATE)),
@@ -2087,6 +2103,11 @@ export const OrchestrationThreadShell = Schema.Struct({
    */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
   /**
+   * Started by a scheduled task's run (ThreadScheduledRun): "Scheduled ·
+   * <task>". Absent or null: not a run thread.
+   */
+  scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
+  /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
    * weighs this stamp against real work activity, so filing a thread must not
@@ -2272,6 +2293,8 @@ const ThreadCreateLineageFields = {
   attachedToParent: Schema.optional(Schema.Boolean),
   /** Started over a computer link: see ThreadRemoteOrigin. Only the link handler sets it. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
+  /** Started by a scheduled run: see ThreadScheduledRun. Only the scheduler sets it. */
+  scheduledRun: Schema.optional(ThreadScheduledRun),
 };
 // The normalizer refuses these on commands that arrive from a client.
 
@@ -3763,6 +3786,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   attachedToParent: Schema.optional(Schema.Boolean),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
+  /** See OrchestrationThreadShell.scheduledRun. */
+  scheduledRun: Schema.optional(ThreadScheduledRun),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
