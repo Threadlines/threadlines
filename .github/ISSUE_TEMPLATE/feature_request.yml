@@ -8,8 +8,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this form for new capabilities or meaningful improvements to existing behavior.
-        This repo is still early. Small, concrete requests that clearly explain the problem and scope are much easier to evaluate.
+        Use this form for new capabilities or improvements to existing behavior.
+        Start with the problem you hit, then the change you'd like. If you want to build it yourself, tick the box at the end and we can agree on the approach before you start.
 
   - type: checkboxes
     id: checks

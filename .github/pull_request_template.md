@@ -1,4 +1,4 @@
-<!-- Keep it small and focused. See CONTRIBUTING.md. -->
+<!-- Thanks for helping out. CONTRIBUTING.md lists the checks to run. -->
 
 ## Problem
 
