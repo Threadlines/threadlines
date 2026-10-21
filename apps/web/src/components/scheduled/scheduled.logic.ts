@@ -1,10 +1,11 @@
 /**
- * The Scheduled page's pure parts (docs/design/fleet.md, Part 6): its search
- * params, how runs and times read, and the task form's state, checks and the
- * draft it saves.
+ * The Scheduled page's pure parts (docs/design/fleet.md, Part 6): which
+ * computers it lists, its search params, how runs and times read, and the
+ * task form's state, checks and the draft it saves.
  */
 import type {
   EnvironmentId,
+  ExecutionEnvironmentDescriptor,
   ModelSelection,
   ProjectId,
   RuntimeMode,
@@ -24,6 +25,66 @@ import {
   upcomingSlots,
 } from "@threadlines/shared/scheduledTasks";
 import * as Result from "effect/Result";
+
+import type { SavedEnvironmentConnectionState } from "../../environments/runtime/catalog";
+import type { ScheduledTaskEnvironment } from "../../lib/scheduledTasksState";
+import { resolveEnvironmentOptionLabel } from "../BranchToolbar.logic";
+
+// ---------------------------------------------------------------------------
+// Which computers run scheduled tasks
+// ---------------------------------------------------------------------------
+
+interface ScheduledTaskComputer {
+  readonly connectionState: SavedEnvironmentConnectionState;
+  readonly descriptor: Pick<ExecutionEnvironmentDescriptor, "capabilities" | "label"> | null;
+}
+
+/**
+ * This computer and every connected saved computer whose server reports the
+ * `scheduledTasks` capability, this one first and the rest by name. An
+ * absent capability (an older Threadlines) is a no.
+ */
+export function scheduledTaskEnvironmentsOf(input: {
+  readonly primaryEnvironmentId: EnvironmentId | null;
+  readonly primaryDescriptor: Pick<ExecutionEnvironmentDescriptor, "capabilities" | "label"> | null;
+  readonly runtimeById: Readonly<Record<EnvironmentId, ScheduledTaskComputer>>;
+  readonly savedLabelOf: (environmentId: EnvironmentId) => string | null;
+}): ScheduledTaskEnvironment[] {
+  const environments: ScheduledTaskEnvironment[] = [];
+  const seen = new Set<EnvironmentId>();
+  const { primaryEnvironmentId, primaryDescriptor } = input;
+  if (primaryEnvironmentId && primaryDescriptor?.capabilities.scheduledTasks === true) {
+    seen.add(primaryEnvironmentId);
+    environments.push({
+      environmentId: primaryEnvironmentId,
+      isPrimary: true,
+      label: resolveEnvironmentOptionLabel({
+        isPrimary: true,
+        environmentId: primaryEnvironmentId,
+        runtimeLabel: primaryDescriptor.label,
+      }),
+    });
+  }
+  const others: ScheduledTaskEnvironment[] = [];
+  for (const environmentId of Object.keys(input.runtimeById) as EnvironmentId[]) {
+    if (seen.has(environmentId)) continue;
+    const runtime = input.runtimeById[environmentId];
+    if (!runtime || runtime.connectionState !== "connected") continue;
+    if (runtime.descriptor?.capabilities.scheduledTasks !== true) continue;
+    seen.add(environmentId);
+    others.push({
+      environmentId,
+      isPrimary: false,
+      label: resolveEnvironmentOptionLabel({
+        isPrimary: false,
+        environmentId,
+        runtimeLabel: runtime.descriptor.label,
+        savedLabel: input.savedLabelOf(environmentId),
+      }),
+    });
+  }
+  return [...environments, ...others.toSorted((a, b) => a.label.localeCompare(b.label))];
+}
 
 // ---------------------------------------------------------------------------
 // Where the page is

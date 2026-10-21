@@ -18,7 +18,7 @@ import type {
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
 
-import { resolveEnvironmentOptionLabel } from "../components/BranchToolbar.logic";
+import { scheduledTaskEnvironmentsOf } from "../components/scheduled/scheduled.logic";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import {
   readEnvironmentConnection,
@@ -34,53 +34,23 @@ export interface ScheduledTaskEnvironment {
   readonly isPrimary: boolean;
 }
 
-/**
- * This computer and every connected saved computer whose server reports the
- * capability, this one first. An absent capability is a no.
- */
+/** The computers whose servers run scheduled tasks, this one first. */
 export function useScheduledTaskEnvironments(): readonly ScheduledTaskEnvironment[] {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const primaryDescriptor = usePrimaryEnvironmentDescriptor();
-  const primarySupported = primaryDescriptor?.capabilities.scheduledTasks === true;
-  const primaryLabel = primaryDescriptor?.label ?? null;
   const savedById = useSavedEnvironmentRegistryStore((state) => state.byId);
   const runtimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
 
-  return useMemo(() => {
-    const environments: ScheduledTaskEnvironment[] = [];
-    const seen = new Set<EnvironmentId>();
-    if (primaryEnvironmentId && primarySupported) {
-      seen.add(primaryEnvironmentId);
-      environments.push({
-        environmentId: primaryEnvironmentId,
-        isPrimary: true,
-        label: resolveEnvironmentOptionLabel({
-          isPrimary: true,
-          environmentId: primaryEnvironmentId,
-          runtimeLabel: primaryLabel,
-        }),
-      });
-    }
-    const others: ScheduledTaskEnvironment[] = [];
-    for (const environmentId of Object.keys(runtimeById) as EnvironmentId[]) {
-      if (seen.has(environmentId)) continue;
-      const runtime = runtimeById[environmentId];
-      if (!runtime || runtime.connectionState !== "connected") continue;
-      if (runtime.descriptor?.capabilities.scheduledTasks !== true) continue;
-      seen.add(environmentId);
-      others.push({
-        environmentId,
-        isPrimary: false,
-        label: resolveEnvironmentOptionLabel({
-          isPrimary: false,
-          environmentId,
-          runtimeLabel: runtime.descriptor.label,
-          savedLabel: savedById[environmentId]?.label ?? null,
-        }),
-      });
-    }
-    return [...environments, ...others.toSorted((a, b) => a.label.localeCompare(b.label))];
-  }, [primaryEnvironmentId, primaryLabel, primarySupported, runtimeById, savedById]);
+  return useMemo(
+    () =>
+      scheduledTaskEnvironmentsOf({
+        primaryEnvironmentId,
+        primaryDescriptor,
+        runtimeById,
+        savedLabelOf: (environmentId) => savedById[environmentId]?.label ?? null,
+      }),
+    [primaryDescriptor, primaryEnvironmentId, runtimeById, savedById],
+  );
 }
 
 interface ScheduledTasksState {

@@ -16,6 +16,7 @@ import {
   formProblems,
   formatWhen,
   parseScheduledSearch,
+  scheduledTaskEnvironmentsOf,
   taskForm,
 } from "./scheduled.logic";
 
@@ -52,6 +53,46 @@ const task = (patch: Partial<ScheduledTask> = {}): ScheduledTask => ({
   createdAt: "2026-10-20T08:00:00.000Z",
   updatedAt: "2026-10-20T08:00:00.000Z",
   ...patch,
+});
+
+describe("scheduledTaskEnvironmentsOf", () => {
+  const runs = { repositoryIdentity: true, scheduledTasks: true };
+  const older = { repositoryIdentity: true };
+
+  it("lists only connected computers whose server runs scheduled tasks, this one first", () => {
+    const listed = scheduledTaskEnvironmentsOf({
+      primaryEnvironmentId: ENVIRONMENT,
+      primaryDescriptor: { label: "Studio Mac", capabilities: runs },
+      runtimeById: {
+        [EnvironmentId.make("environment-old")]: {
+          connectionState: "connected",
+          descriptor: { label: "Old laptop", capabilities: older },
+        },
+        [EnvironmentId.make("environment-off")]: {
+          connectionState: "disconnected",
+          descriptor: { label: "Asleep desktop", capabilities: runs },
+        },
+        [EnvironmentId.make("environment-pc")]: {
+          connectionState: "connected",
+          descriptor: { label: "Basement PC", capabilities: runs },
+        },
+      },
+      savedLabelOf: () => null,
+    });
+    expect(listed.map((environment) => environment.label)).toEqual(["Studio Mac", "Basement PC"]);
+    expect(listed[0]?.isPrimary).toBe(true);
+  });
+
+  it("lists nothing when no server runs them, so Scheduled stays hidden", () => {
+    expect(
+      scheduledTaskEnvironmentsOf({
+        primaryEnvironmentId: ENVIRONMENT,
+        primaryDescriptor: { label: "Studio Mac", capabilities: older },
+        runtimeById: {},
+        savedLabelOf: () => null,
+      }),
+    ).toEqual([]);
+  });
 });
 
 describe("parseScheduledSearch", () => {
