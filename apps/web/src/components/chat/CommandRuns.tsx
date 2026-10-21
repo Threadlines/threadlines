@@ -23,6 +23,7 @@ import { commandRunDuration, commandRunIdOfOutputMessage } from "@threadlines/sh
 import {
   assessShellCommand,
   prepareShellCommand,
+  shellCommandsInMarkdown,
   type ShellCommandAssessment,
 } from "@threadlines/shared/shellCommandSafety";
 import {
@@ -67,9 +68,29 @@ export const CommandRunActionsContext = createContext<CommandRunActions | null>(
 export interface CodeBlockRunScope {
   readonly messageId: MessageId;
   readonly participantId: ThreadParticipantId | null;
+  /** The reply as the server has it, which it checks every run against. */
+  readonly text: string;
 }
 
 export const CodeBlockRunScopeContext = createContext<CodeBlockRunScope | null>(null);
+
+const replyCommandsCache = new WeakMap<
+  CodeBlockRunScope,
+  { readonly dialect: CommandDialect; readonly commands: ReadonlySet<string> }
+>();
+
+/**
+ * The commands the server finds in a reply (shellCommandsInMarkdown), read
+ * once per reply. A block offers only these, so a block the server reads
+ * differently, like an indented code block, gets no button it would refuse.
+ */
+function replyCommands(scope: CodeBlockRunScope, dialect: CommandDialect): ReadonlySet<string> {
+  const cached = replyCommandsCache.get(scope);
+  if (cached?.dialect === dialect) return cached.commands;
+  const commands = new Set(shellCommandsInMarkdown(scope.text, dialect).map((block) => block.text));
+  replyCommandsCache.set(scope, { dialect, commands });
+  return commands;
+}
 
 function latestRun(
   runs: ReadonlyArray<OrchestrationCommandRun>,
@@ -282,11 +303,12 @@ function useCodeBlockCommand(code: string, language: string | undefined) {
   const actions = use(CommandRunActionsContext);
   const scope = use(CodeBlockRunScopeContext);
   // A reply still streaming has no scope, so its blocks skip the parse.
-  const dialect = actions?.supported && scope !== null ? actions.dialect : null;
-  const prepared = useMemo(
-    () => (dialect === null ? null : prepareShellCommand(code, language, dialect)),
-    [code, dialect, language],
-  );
+  const dialect = actions?.supported ? actions.dialect : null;
+  const prepared = useMemo(() => {
+    if (dialect === null || scope === null) return null;
+    const block = prepareShellCommand(code, language, dialect);
+    return block !== null && replyCommands(scope, dialect).has(block.text) ? block : null;
+  }, [code, dialect, language, scope]);
   if (actions === null || scope === null || prepared === null) return null;
   const run = latestRun(
     actions.runs,

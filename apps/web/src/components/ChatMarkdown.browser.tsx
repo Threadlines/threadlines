@@ -1159,7 +1159,7 @@ describe("ChatMarkdown code block commands", () => {
   const renderReply = (text: string, actions: CommandRunActions) =>
     renderWithQueryClient(
       <CommandRunActionsContext value={actions}>
-        <CodeBlockRunScopeContext value={{ messageId: REPLY, participantId: null }}>
+        <CodeBlockRunScopeContext value={{ messageId: REPLY, participantId: null, text }}>
           <ChatMarkdown text={text} cwd="/repo" />
         </CodeBlockRunScopeContext>
       </CommandRunActionsContext>,
@@ -1196,8 +1196,10 @@ describe("ChatMarkdown code block commands", () => {
 
   it("finds a command in a block that names no shell, and skips a title", async () => {
     const actions: CommandRunActions = { ...actionsWith(), dialect: "powershell" };
+    // The indented block is a code block too, but the server only reads
+    // fenced ones, so it gets no button the server would refuse.
     const screen = await renderReply(
-      "Push it:\n\n```\ngit push -u origin feat/board\n```\n\nTitle:\n\n```\nOne Board field per card\n```\n",
+      "Push it:\n\n```\ngit push -u origin feat/board\n```\n\nTitle:\n\n```\nOne Board field per card\n```\n\nOr:\n\n    git status\n",
       actions,
     );
     try {

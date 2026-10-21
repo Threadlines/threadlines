@@ -169,6 +169,12 @@ describe("prepareShellCommand", () => {
       "npx @angular/cli new app",
       "pnpm build \\\n  --filter web",
       'git commit -m "Ship it" -m ""',
+      // A `.cmd` launcher hands these to cmd.exe, which would act on them.
+      "code 'notes&whoami'",
+      'git commit -m "50% done"',
+      "npm install foo%USERNAME%",
+      // PowerShell reads `--%` even quoted.
+      "git log '--%' HEAD",
     ]) {
       expect(prepareShellCommand(command, "bash", "powershell"), command).toBeNull();
       expect(prepareShellCommand(command, undefined, "posix"), command).toBeNull();

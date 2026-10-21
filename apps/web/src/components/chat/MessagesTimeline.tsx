@@ -3484,13 +3484,18 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     () =>
       streaming || row.message.sideTurnId !== undefined || row.message.turnId == null
         ? null
-        : { messageId: row.message.id, participantId: row.message.participantId ?? null },
+        : {
+            messageId: row.message.id,
+            participantId: row.message.participantId ?? null,
+            text: row.message.text,
+          },
     [
       streaming,
       row.message.id,
       row.message.participantId,
       row.message.sideTurnId,
       row.message.turnId,
+      row.message.text,
     ],
   );
 

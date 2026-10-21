@@ -193,15 +193,20 @@ const PORTABLE_PROGRAMS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * An argument both shells pass on unchanged:
- * - a plain word, not starting with `@` (PowerShell splatting);
- * - an option without `.`, `:` or `%` (PowerShell splits `-Dfoo.bar`, reads
- *   `-name:value`, and stops parsing at `--%`). A bare `--` is left out too:
- *   PowerShell drops it before a `.ps1` shim like npm's sees it;
- * - one quoted string holding nothing either shell expands or escapes, never
- *   empty (Windows PowerShell drops an empty argument).
+ * An argument both shells pass on unchanged. On Windows many of these
+ * programs start through a `.cmd` launcher, so cmd.exe reads the arguments
+ * too, and PowerShell hands it a quoted word with no spaces unquoted. No word
+ * may hold anything cmd.exe acts on (`&|<>^%()!`), and:
+ * - a plain word can't start with `@` (PowerShell splatting);
+ * - an option can't hold `.` or `:` (PowerShell splits `-Dfoo.bar` and reads
+ *   `-name:value`). A bare `--` is left out too: PowerShell drops it before a
+ *   `.ps1` shim like npm's sees it;
+ * - a quoted string holds only letters, digits, spaces and `./:+=@#,-`, never
+ *   starts with `-` (PowerShell still reads `'--%'`), and is never empty
+ *   (Windows PowerShell drops an empty argument).
  */
-const PORTABLE_WORD = /^(?:[\w./:%+=][\w./:%+=@-]*|-(?!-$)[\w+=/@-]*|'[^'"\\]+'|"[^"$`\\!]+")$/;
+const PORTABLE_WORD =
+  /^(?:[\w./:+=][\w./:+=@-]*|-(?!-$)[\w+=/@-]*|'(?!-)[\w ./:+=@#,-]+'|"(?!-)[\w ./:+=@#,'-]+")$/;
 
 /**
  * Whether a command means the same in a POSIX shell and in PowerShell: each
