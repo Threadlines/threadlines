@@ -240,12 +240,11 @@ export function resolveFleetDirection(
   const inbound =
     worker.links?.snapshot.inbound.find((link) => link.environmentId === asker.environmentId) ??
     null;
+  // Only what the worker says now: Allow and Deny go to it.
   const pending =
-    inbound === null
+    inbound === null || worker.links?.live !== true || !worker.reachable
       ? []
-      : (worker.links?.snapshot.pending ?? []).filter(
-          (request) => request.deviceId === inbound.deviceId,
-        );
+      : worker.links.snapshot.pending.filter((request) => request.deviceId === inbound.deviceId);
   const workerCurrent = worker.reachable && worker.links?.live === true;
 
   let status: FleetDirectionStatus;

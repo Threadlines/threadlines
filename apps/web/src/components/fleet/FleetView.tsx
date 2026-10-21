@@ -1,4 +1,3 @@
-import type { EnvironmentId } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 
@@ -7,6 +6,7 @@ import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { PageTitlebar } from "../PageTitlebar";
 import { openConnectComputerDialog } from "../settings/connections/JoinComputerDialog";
 import { SettingsGroup } from "../settings/settingsLayout";
+import { usePendingLinkRequests } from "../sidebar/linkedComputers";
 import { Button } from "../ui/button";
 import {
   describeComputerCounts,
@@ -39,7 +39,7 @@ export function FleetView() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const nowMs = useRelativeTimeTick(30_000);
-  const { model, directory, edges, links, summaryByThreadKey } = useFleetData();
+  const { model, directory, edges, summaryByThreadKey } = useFleetData();
   const computers = useMemo(() => [model.center, ...model.others], [model]);
   const { providerLabel, modelNameOf } = useFleetLabels(computers);
 
@@ -52,19 +52,16 @@ export function FleetView() {
       ),
     [directory],
   );
-  // Threads other computers asked to start, waiting for an Allow, wherever.
+  // Threads other computers asked to start, waiting for an Allow, on the
+  // computers this app hears from now (the same list the inbox leads with).
+  const pendingRequests = usePendingLinkRequests();
   const pending = useMemo(
     () =>
-      Object.entries(links).flatMap(([environmentId, entry]) =>
-        entry.snapshot.pending.map((request) => ({
-          request,
-          worker: {
-            environmentId: environmentId as EnvironmentId,
-            label: labelOfEnvironment.get(environmentId as EnvironmentId) ?? "this computer",
-          },
-        })),
-      ),
-    [labelOfEnvironment, links],
+      pendingRequests.map(({ environmentId, request }) => ({
+        request,
+        worker: { environmentId, label: labelOfEnvironment.get(environmentId) ?? "this computer" },
+      })),
+    [labelOfEnvironment, pendingRequests],
   );
 
   const listed = computers.filter((computer) => computer.threads.length > 0);
