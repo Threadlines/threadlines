@@ -282,6 +282,7 @@ function ProviderNode({
         <ProviderGlyph
           instanceId={provider.instanceId}
           driverKind={provider.driverKind}
+          environmentId={provider.environmentId}
           className="size-3.5"
         />
         {count > 0 ? (

@@ -7,13 +7,12 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useState } from "react";
 
-import { usePrimaryEnvironmentId } from "../../environments/primary";
-import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
+import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
 import { useIsMobile } from "../../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { cn } from "../../lib/utils";
 import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../../providerInstances";
-import { useServerConfig, useServerProviders } from "../../rpc/serverState";
+import { useServerConfig } from "../../rpc/serverState";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import type { SidebarThreadSummary } from "../../types";
 import { getPickerModelName } from "../chat/providerIconUtils";
@@ -57,25 +56,21 @@ const NO_PROVIDER_ENTRIES: ReadonlyArray<ProviderInstanceEntry> = [];
  * Each computer's own agents, looked up by computer: instance ids are named
  * per computer, so the same id can be a different agent elsewhere.
  */
-function useProviderEntriesByComputer(): (
-  environmentId: EnvironmentId | null,
-) => ReadonlyArray<ProviderInstanceEntry> {
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const primaryProviders = useServerProviders();
-  const savedRuntime = useSavedEnvironmentRuntimeStore((state) => state.byId);
+function useProviderEntriesByComputer(
+  computers: ReadonlyArray<FleetComputer>,
+): (environmentId: EnvironmentId | null) => ReadonlyArray<ProviderInstanceEntry> {
+  const providersOn = useEnvironmentProviders();
   const byEnvironmentId = useMemo(() => {
     const entries = new Map<EnvironmentId, ReadonlyArray<ProviderInstanceEntry>>();
-    for (const [environmentId, runtime] of Object.entries(savedRuntime) as Array<
-      [EnvironmentId, (typeof savedRuntime)[EnvironmentId]]
-    >) {
-      const providers = runtime?.serverConfig?.providers;
-      if (providers) entries.set(environmentId, deriveProviderInstanceEntries(providers));
-    }
-    if (primaryEnvironmentId !== null) {
-      entries.set(primaryEnvironmentId, deriveProviderInstanceEntries(primaryProviders));
+    for (const computer of computers) {
+      if (computer.environmentId === null) continue;
+      entries.set(
+        computer.environmentId,
+        deriveProviderInstanceEntries(providersOn(computer.environmentId)),
+      );
     }
     return entries;
-  }, [primaryEnvironmentId, primaryProviders, savedRuntime]);
+  }, [computers, providersOn]);
   return useCallback(
     (environmentId) =>
       environmentId === null
@@ -153,6 +148,7 @@ function FleetThreadRow({
             <ProviderGlyph
               instanceId={thread.provider.instanceId}
               driverKind={thread.provider.driverKind}
+              environmentId={thread.environmentId}
               className="size-3.5 shrink-0"
             />
             {modelName ? <span className="truncate">{modelName}</span> : null}
@@ -184,7 +180,8 @@ export function FleetView() {
   const isMobile = useIsMobile();
   const nowMs = useRelativeTimeTick(30_000);
   const { model, summaryByThreadKey, isOwner } = useFleetModel();
-  const providerEntriesFor = useProviderEntriesByComputer();
+  const computers = useMemo(() => [model.center, ...model.others], [model]);
+  const providerEntriesFor = useProviderEntriesByComputer(computers);
   const hostLabel = useServerConfig()?.environment.label ?? "This computer";
   const [selectedComputerId, setSelectedComputerId] = useState<string | null>(null);
   const [connectOpen, setConnectOpen] = useState(false);
@@ -218,7 +215,6 @@ export function FleetView() {
     [providerEntriesFor],
   );
 
-  const computers = useMemo(() => [model.center, ...model.others], [model]);
   // A computer that left (removed under Connections) stops filtering.
   const selected = computers.find((computer) => computer.id === selectedComputerId) ?? null;
   const listed = selected

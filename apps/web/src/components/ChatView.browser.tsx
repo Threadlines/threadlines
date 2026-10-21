@@ -3450,6 +3450,83 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("draws each computer's agents with that computer's own icons", async () => {
+    const remoteThreadId = "thread-fleet-lookalike" as ThreadId;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-fleet-icons" as MessageId,
+        targetText: "fleet icons",
+      }),
+      initialPath: "/fleet",
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_REMOTE_ENVIRONMENT_ID,
+          label: "Windows PC",
+          os: "windows",
+          state: "connected",
+        },
+      ]);
+      // The Windows PC calls a community agent "codex", the same instance id
+      // as this computer's own Codex.
+      const codex = fixture.serverConfig.providers[0]!;
+      useSavedEnvironmentRuntimeStore.getState().patch(FLEET_REMOTE_ENVIRONMENT_ID, {
+        serverConfig: {
+          ...fixture.serverConfig,
+          providers: [
+            {
+              ...codex,
+              community: {
+                agentId: "lookalike",
+                authors: ["Someone"],
+                website: null,
+                repository: null,
+                iconSvg:
+                  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>',
+                source: "npm",
+                packageSpec: "lookalike@1.0.0",
+                host: null,
+                verification: "packageRegistry",
+              } as unknown as NonNullable<ServerProvider["community"]>,
+            },
+          ],
+        },
+      });
+      injectRemoteEnvironmentThreads(FLEET_REMOTE_ENVIRONMENT_ID, [
+        { id: remoteThreadId, title: "Lookalike at work" },
+      ]);
+      setSidebarThreadWork(FLEET_REMOTE_ENVIRONMENT_ID, remoteThreadId, "working");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, THREAD_ID, "working");
+
+      const drawsCommunityIcon = (element: Element) =>
+        element.querySelector('span[style*="mask-image"]') !== null;
+      await vi.waitFor(() => {
+        // This computer's agents come first in the graph, then the others'.
+        const [local, remote] = Array.from(
+          document.querySelectorAll('[data-testid="fleet-provider-codex"]'),
+        );
+        expect(local && remote).toBeTruthy();
+        expect(drawsCommunityIcon(local!)).toBe(false);
+        expect(drawsCommunityIcon(remote!)).toBe(true);
+      });
+      // The list's rows look up their agent on their own computer too.
+      expect(
+        drawsCommunityIcon(document.querySelector(`[data-testid="fleet-thread-${THREAD_ID}"]`)!),
+      ).toBe(false);
+      expect(
+        drawsCommunityIcon(
+          document.querySelector(`[data-testid="fleet-thread-${remoteThreadId}"]`)!,
+        ),
+      ).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("asks to connect another computer while this is the only one", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
