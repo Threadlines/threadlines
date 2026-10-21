@@ -83,7 +83,7 @@ server's disk. New RPCs (schemas in `packages/contracts`):
 - `server.addProviderAccount({ driver, displayName, accentColor?, folder? })`
   → `{ instanceId }`.
   - Instance ids are permanent and never reused: `<driver>_<slug>_<4 random
-hex>` (e.g. `claudeAgent_work_3f9a`). Old threads keep pointing at a
+    hex>` (e.g. `claudeAgent_work_3f9a`). Old threads keep pointing at a
     removed id, so a reused id would silently hand them to a different
     account. The name stays an editable label.
   - Managed folder: exactly `<stateDir>/accounts/<instanceId>`, created `0700`
@@ -168,7 +168,7 @@ Three separate notions, each with one resolver in `ClaudeHome.ts`:
 
 - **main folder** (what the instance would use without an account folder:
   instance env `CLAUDE_CONFIG_DIR`, else inherited, else `<homePath or os
-home>/.claude`): overlay source and continuation identity, so the default
+  home>/.claude`): overlay source and continuation identity, so the default
   instance and its accounts share a continuation key;
 - **effective folder** (account folder, else main): `CLAUDE_CONFIG_DIR` for the
   process, transcripts, skills/settings/hooks reading, token-usage history;

@@ -1,4 +1,4 @@
-import { assert, expect, it } from "vitest";
+import { assert, expect, it } from "vite-plus/test";
 import { parse as parseYaml } from "yaml";
 import type { CopilotClientOptions, SessionConfig } from "@github/copilot-sdk";
 

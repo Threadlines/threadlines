@@ -52,10 +52,10 @@ describe("useStreamingTextReveal", () => {
     const shown = body.textContent?.length ?? 0;
     expect(shown).toBeGreaterThan(0);
     expect(shown).toBeLessThan(60);
-    await expect.element(screen.getByTestId("state")).toHaveTextContent("revealing");
+    await expect.element(screen.getByTestId("state")).toMatchTextContent("revealing");
 
     api!.push(FULL_TEXT, false);
-    await expect.element(screen.getByTestId("state")).toHaveTextContent("settled");
+    await expect.element(screen.getByTestId("state")).toMatchTextContent("settled");
     expect(body.textContent).toBe(`${FULL_TEXT}Trailing block`);
     expect(body.querySelectorAll<HTMLElement>("p")[1]?.style.display).toBe("");
   });

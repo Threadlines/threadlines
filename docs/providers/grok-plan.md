@@ -102,13 +102,13 @@ That also fixes Homebrew installs (the `cursor-cli` cask installs only
   (smoke test only); macOS binaries are signed "X.AI Corporation (5Y6N3AJ54S)".
 - Update: `grok update [--check] [--json] [--version V] [--alpha|--stable]`;
   `--check --json` returns `{currentVersion, latestVersion, updateAvailable,
-installer, channel, ...}` [v]. Per installer: npm runs `npm i -g` (always
+  installer, channel, ...}` [v]. Per installer: npm runs `npm i -g` (always
   global), internal swaps the `~/.grok/bin` symlink, WinGet prints the winget
   command and changes nothing [v]; Homebrew probably gets a second copy in
   `~/.grok` (T3 #18768) [r].
 - Auto-update: on by default; off with the top-level `--no-auto-update` (must
   come before `agent`), `GROK_DISABLE_AUTOUPDATER=1`, or `[cli] auto_update =
-false` [v]. `agent stdio` self-updates when run from `$GROK_HOME/bin/grok`
+  false` [v]. `agent stdio` self-updates when run from `$GROK_HOME/bin/grok`
   [r]. T3's health checks opened blank console windows on Windows through it
   (#18075) [r].
 - State: everything under `GROK_HOME` (default `~/.grok`): `auth.json` (0600,
@@ -198,7 +198,7 @@ false` [v]. `agent stdio` self-updates when run from `$GROK_HOME/bin/grok`
   is gated [v]. The gate is on unless `GROK_FOLDER_TRUST`, config, managed
   config or a remote xAI flag turns it off (`folder_trust.rs:142-150` in
   permission-rules) [v]. Opt in and answer `_x.ai/folder_trust/request
-{sessionId, cwd, workspace, configKinds}` with a question card ("Trust this
+  {sessionId, cwd, workspace, configKinds}` with a question card ("Trust this
   folder? Grok will load its instructions, MCP servers and hooks"). The prompt
   is the path xAI built for GUI clients ("dormant" only because no client
   advertises it yet, `folder_trust_prompt.rs:1-16`) [v]. It runs detached for up
@@ -280,7 +280,7 @@ false` [v]. `agent stdio` self-updates when run from `$GROK_HOME/bin/grok`
   stop it [v: source]. Signed out means "Sign in" on the chat, never a silent
   authenticate.
 - **Sign in (one click):** in a sign-in process, `authenticate {methodId:
-"grok.com", _meta: {request_seq}}` (it blocks until done) and in parallel poll
+  "grok.com", _meta: {request_seq}}` (it blocks until done) and in parallel poll
   `_x.ai/auth/get_url` → `{auth_url, mode: loopback|device|command}` [v from
   source]. Grok opens the browser on its own computer in both flows [v]. On
   the server's own computer that's the loopback flow, and we show the address
@@ -291,14 +291,14 @@ false` [v]. `agent stdio` self-updates when run from `$GROK_HOME/bin/grok`
   Antigravity pattern). xAI can flip the default flow remotely, so handle every
   `mode` [v]. Cancel with `_x.ai/auth/cancel {request_seq}`. Grox and four
   other apps ship this flow [r]. Fallback if the ACP flow fails: `grok login
---device-auth` in the sign-in terminal [r].
+  --device-auth` in the sign-in terminal [r].
 - **Signed in is not "can run":** an account without a qualifying plan hits a
   paywall gate (`grok_build_access_gate`); the sign-in response `_meta`
   carries email, tier and `gate {message,url,label}`, and
   `_x.ai/auth/check_subscription` re-checks it [v from source]. Show the gate
   as its own state with xAI's link, not as "signed out".
 - **Sign out:** `_x.ai/auth/logout` returns `{ok, was_logged_in, email,
-api_key_still_set}` [v from source]. Follow Will's rule: no Sign out on the
+  api_key_still_set}` [v from source]. Follow Will's rule: no Sign out on the
   default instance, which shares `~/.grok` with the terminal; Sign out only on
   extra accounts (own `GROK_HOME`).
 - **API key (Will, 2026-10-15: offer both, sign-in is the default):** a stored
@@ -421,7 +421,7 @@ Unverified: that `grok login`/`authenticate` writes to the custom
 ### Usage
 
 - **Limit meters:** `_x.ai/billing` → `creditUsagePercent`, `currentPeriod
-{type: WEEKLY|MONTHLY, start, end}`, `subscriptionTier`, on-demand cap and
+  {type: WEEKLY|MONTHLY, start, end}`, `subscriptionTier`, on-demand cap and
   prepaid balance [v from source; signed-out returns auth required]. A missing
   percent means nothing metered yet, not unsupported (T3 #12799) [v]. New
   `accountUsage.source` literal `grok-billing`; the ACP probe can already

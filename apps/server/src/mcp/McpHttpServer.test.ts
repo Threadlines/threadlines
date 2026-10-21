@@ -9,7 +9,7 @@ import * as Stream from "effect/Stream";
 import { McpProtocol, McpServer, Tool, Toolkit } from "effect/unstable/ai";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import * as NodeHttp from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";

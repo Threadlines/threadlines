@@ -1,5 +1,5 @@
 import { EventId, TurnId } from "@threadlines/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import {

@@ -41,13 +41,13 @@ describe("WebSocketConnectionSurface", () => {
   });
 
   it("shows the app while this device still has access", async () => {
-    renderSurface();
+    await renderSurface();
 
     await expect.element(page.getByText("Threads and composer")).toBeVisible();
   });
 
   it("replaces the app with a re-pair state once the computer removes this device", async () => {
-    renderSurface();
+    await renderSurface();
     setPrimaryAccessRemoved(true);
 
     await expect.element(page.getByText("Access removed")).toBeVisible();

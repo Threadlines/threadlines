@@ -252,6 +252,15 @@ function getCommitMessageTextarea() {
   return textarea as HTMLTextAreaElement;
 }
 
+/**
+ * Hovers a changed file's row so its row actions take the pointer. They only
+ * do while the row is hovered, as on a user's way to the button, and a click
+ * checks what is under the pointer before it moves there.
+ */
+async function hoverChangedFileRow(path: string) {
+  await page.getByRole("button", { name: `Open diff for ${path}` }).hover();
+}
+
 function makeEnvironmentApi(
   overrides: {
     readonly vcs?: Partial<EnvironmentApi["vcs"]>;
@@ -565,6 +574,7 @@ describe("SourceControlPanel changes", () => {
 
       await page.getByRole("button", { name: "Use parent repository" }).click();
       await expect.element(stageButton).not.toBeDisabled();
+      await hoverChangedFileRow("../sibling/app.ts");
       await stageButton.click();
       await vi.waitFor(() => {
         expect(stageChanges).toHaveBeenCalledWith({
@@ -618,6 +628,7 @@ describe("SourceControlPanel changes", () => {
       expect(untrackedBadge).toBeInstanceOf(HTMLElement);
       expect(untrackedBadge?.textContent).toBe("U");
 
+      await hoverChangedFileRow("src/app.ts");
       await page.getByRole("button", { name: "Discard changes to src/app.ts" }).click();
 
       await expect.element(page.getByText("Discard changes?")).toBeVisible();
@@ -670,6 +681,7 @@ describe("SourceControlPanel changes", () => {
     });
 
     try {
+      await hoverChangedFileRow("src/app.ts");
       await page.getByRole("button", { name: "Discard changes to src/app.ts" }).click();
       await page.getByRole("button", { name: "Discard" }).click();
 
@@ -1203,6 +1215,7 @@ describe("SourceControlPanel changes", () => {
         expect(getCommitMessageTextarea().value).toBe("Update app change");
       });
 
+      await hoverChangedFileRow("src/app.ts");
       await page.getByRole("button", { name: "Discard changes to src/app.ts" }).click();
       await page.getByRole("button", { name: "Discard" }).click();
 
@@ -1806,11 +1819,13 @@ describe("SourceControlPanel changes", () => {
         expect(bounds.height).toBeLessThanOrEqual(18);
       }
 
+      await hoverChangedFileRow("src/app.ts");
       await page.getByRole("button", { name: "Stage changes to src/app.ts" }).click();
       await vi.waitFor(() => {
         expect(stageChanges).toHaveBeenCalledWith({ cwd: CWD, filePaths: ["src/app.ts"] });
       });
 
+      await hoverChangedFileRow("README.md");
       await page.getByRole("button", { name: "Unstage changes to README.md" }).click();
       await vi.waitFor(() => {
         expect(unstageChanges).toHaveBeenCalledWith({ cwd: CWD, filePaths: ["README.md"] });
@@ -2104,7 +2119,7 @@ describe("SourceControlPanel changes", () => {
       const cleanupItem = page.getByRole("menuitem", { name: /Clean up worktrees/ });
       await expect.element(cleanupItem).toBeVisible();
       // Root excluded, the live checkout is in use, so two are cleanable.
-      await expect.element(cleanupItem).toHaveTextContent("2 unused");
+      await expect.element(cleanupItem).toMatchTextContent("2 unused");
       await cleanupItem.click();
     };
 

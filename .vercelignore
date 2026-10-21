@@ -13,6 +13,7 @@ packages/*/.vite-plus
 .tanstack
 .vercel
 .vitest-*
+.vitest/
 .playwright-mcp
 .codex-local
 .gstack

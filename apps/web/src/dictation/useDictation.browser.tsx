@@ -115,7 +115,7 @@ describe("useDictation", () => {
     await page.getByRole("button", { name: "start" }).click();
     await expect
       .element(page.getByTestId("status"), { timeout: 5_000 })
-      .toHaveTextContent("recording");
+      .toMatchTextContent("recording");
     captureHarness.emit(1_000);
     await page.getByRole("button", { name: "stop" }).click();
 
@@ -130,7 +130,7 @@ describe("useDictation", () => {
     await vi.waitFor(() => expect(onText).toHaveBeenCalledWith("add a dictation button"), {
       timeout: 5_000,
     });
-    await expect.element(page.getByTestId("status"), { timeout: 5_000 }).toHaveTextContent("idle");
+    await expect.element(page.getByTestId("status"), { timeout: 5_000 }).toMatchTextContent("idle");
     await mounted.unmount();
   });
 
@@ -141,13 +141,13 @@ describe("useDictation", () => {
     await page.getByRole("button", { name: "start" }).click();
     await expect
       .element(page.getByTestId("status"), { timeout: 5_000 })
-      .toHaveTextContent("recording");
+      .toMatchTextContent("recording");
     captureHarness.emit(100);
     await page.getByRole("button", { name: "stop" }).click();
 
     await expect
       .element(page.getByTestId("error"), { timeout: 5_000 })
-      .toHaveTextContent("Nothing was heard. Try again closer to the mic.");
+      .toMatchTextContent("Nothing was heard. Try again closer to the mic.");
     expect(transcribe).not.toHaveBeenCalled();
     expect(onText).not.toHaveBeenCalled();
     await mounted.unmount();
@@ -163,14 +163,14 @@ describe("useDictation", () => {
     await page.getByRole("button", { name: "start" }).click();
     await expect
       .element(page.getByTestId("status"), { timeout: 5_000 })
-      .toHaveTextContent("recording");
+      .toMatchTextContent("recording");
     captureHarness.emit(1_000);
     await page.getByRole("button", { name: "stop" }).click();
 
     await expect
       .element(page.getByTestId("error"), { timeout: 5_000 })
-      .toHaveTextContent("Another recording is still being transcribed.");
-    await expect.element(page.getByTestId("status"), { timeout: 5_000 }).toHaveTextContent("idle");
+      .toMatchTextContent("Another recording is still being transcribed.");
+    await expect.element(page.getByTestId("status"), { timeout: 5_000 }).toMatchTextContent("idle");
     expect(onText).not.toHaveBeenCalled();
     await mounted.unmount();
   });
@@ -182,11 +182,11 @@ describe("useDictation", () => {
     await page.getByRole("button", { name: "start" }).click();
     await expect
       .element(page.getByTestId("status"), { timeout: 5_000 })
-      .toHaveTextContent("recording");
+      .toMatchTextContent("recording");
     captureHarness.emit(1_000);
     await page.getByRole("button", { name: "cancel" }).click();
 
-    await expect.element(page.getByTestId("status"), { timeout: 5_000 }).toHaveTextContent("idle");
+    await expect.element(page.getByTestId("status"), { timeout: 5_000 }).toMatchTextContent("idle");
     expect(transcribe).not.toHaveBeenCalled();
 
     // The next clip starts empty rather than replaying the discarded audio.

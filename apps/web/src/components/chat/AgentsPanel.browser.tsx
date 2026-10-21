@@ -303,7 +303,7 @@ describe("AgentsPanel", () => {
 
       await expect
         .element(page.getByRole("alert"))
-        .toHaveTextContent("Not sent. This agent is no longer available.");
+        .toMatchTextContent("Not sent. This agent is no longer available.");
       await expect.element(box).toHaveValue("Check the route again.");
     } finally {
       await mounted.unmount();

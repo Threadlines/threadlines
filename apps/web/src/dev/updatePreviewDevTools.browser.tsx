@@ -185,10 +185,10 @@ it("simulates the download from the chip instead of calling the real updater", a
   await installAndMount();
 
   const chip = page.getByTestId("sidebar-version-chip");
-  await expect.element(chip).toHaveTextContent("Update");
+  await expect.element(chip).toMatchTextContent("Update");
   await chip.click();
 
-  await expect.element(chip).toHaveTextContent(/\d+%/);
+  await expect.element(chip).toMatchTextContent(/\d+%/);
   expect(realDownloadUpdate).not.toHaveBeenCalled();
   window.threadlinesUpdatePreview?.clearDesktopUpdate();
 });
@@ -199,7 +199,7 @@ it("boots into the mode picked via localStorage", async () => {
 
   const card = page.getByTestId("sidebar-version-card");
   await expect.element(card.getByText(/downloaded/)).toBeVisible();
-  await expect.element(page.getByTestId("sidebar-version-chip")).toHaveTextContent("Restart");
+  await expect.element(page.getByTestId("sidebar-version-chip")).toMatchTextContent("Restart");
 });
 
 it("skips the boot preview when set to off", async () => {

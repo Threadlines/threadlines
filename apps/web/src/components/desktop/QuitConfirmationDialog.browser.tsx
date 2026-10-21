@@ -105,7 +105,7 @@ describe("QuitConfirmationDialog", () => {
     const dialog = page.getByRole("alertdialog");
     await expect
       .element(dialog)
-      .toHaveTextContent(
+      .toMatchTextContent(
         "An agent session is still running on this computer. Quitting now will stop it and the local Threadlines server. Work on Studio Mac keeps running.",
       );
 

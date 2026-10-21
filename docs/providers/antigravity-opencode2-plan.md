@@ -102,7 +102,7 @@ descriptor plus generic core additions.**
 8. **Honest rollback.** `AcpAdapter.rollbackThread` only splices the local turn
    list (~1234) [v], so after a revert Cursor and fx still remember the reverted
    turns, silently. Add an adapter capability `conversationRollback: "native" |
-"none"`. For `none`, the revert can restart the conversation: stop the
+   "none"`. For `none`, the revert can restart the conversation: stop the
    session and start a fresh one seeded with the transcript up to the revert
    point. It is a disclosed, lossy restart, not exact rollback. The existing
    `ThreadContextSeedBuilder` cannot be reused as-is (Sol review): rollback runs
@@ -174,7 +174,7 @@ Facts recorded against `agy-acp-server` 1.3.0 (darwin-arm64), isolated
   naming `<GEMINI_HOME>/antigravity-acp/settings.json` `auth.type` as the
   alternative to calling `authenticate`.
 - `authenticate("oauth-personal")` with no credentials prints `Open the
-following link to authenticate the ACP server: <url>` on **stderr**: a
+  following link to authenticate the ACP server: <url>` on **stderr**: a
   Google PKCE URL whose `redirect_uri` is `http://127.0.0.1:<port>/` on the
   machine running the agent. The process exits cleanly on stdin EOF.
 - Windows ships a PyInstaller one-file exe (unpacks to `TEMP` per launch);
@@ -188,7 +188,7 @@ Build (server unless noted):
 1. **Managed runtime** (`provider/antigravity/AntigravityRuntime.ts`): pinned
    1.3.0 table (url, sha256, archive bytes, entry names and sizes); layout
    `<home>/tools/antigravity-acp/<platform>-<arch>/{active.json,
-versions/<sha256>/, versions/.staging-*}`; streamed download with running
+   versions/<sha256>/, versions/.staging-*}`; streamed download with running
    sha256 and byte cap, `yauzl` extraction that accepts exactly the expected
    entries, ACP `initialize` validation (name, version, resume, logout,
    `oauth-personal`), atomic `active.json` swap. Leases per version dir; old
@@ -197,12 +197,12 @@ versions/<sha256>/, versions/.staging-*}`; streamed download with running
    existing Install/Update buttons drive it; the version advisory compares
    the active release with the pinned one.
 2. **Profile and process env**: `GEMINI_HOME = <state>/providers/antigravity/
-<sha256(instanceId)>`, `AGY_ACP_FORCE_FILE_STORAGE=1`,
+   <sha256(instanceId)>`, `AGY_ACP_FORCE_FILE_STORAGE=1`,
    `PYTHONUNBUFFERED=1`, a no-op `BROWSER` (node helper, `ELECTRON_RUN_AS_NODE`)
    so the server host never opens a browser, ambient Gemini/Google credential
    variables stripped, `--uid=` on Linux. `settings.json` `auth.type`
    written on launch. Per-process temp dir `<state>/antigravity-tmp/<12 hex>/
-run-*` (`TMPDIR`; `TEMP`/`TMP` on Windows), removed when the process scope
+   run-*` (`TMPDIR`; `TEMP`/`TMP` on Windows), removed when the process scope
    closes; the instance's temp root is swept on driver start.
 3. **Generic ACP core** (Cursor and fx unaffected unless they opt in):
    - descriptor `spawn` may be a scoped Effect (per-process setup/teardown);
@@ -262,7 +262,7 @@ throwaway `GEMINI_HOME`):
 - Tool calls: reads are `kind: "read"` with `rawInput.AbsolutePath`; commands
   are `kind: "execute"` with `CommandLine`/`Cwd` on `tool_call` and
   `command_line`/`working_dir` on updates; results carry `rawOutput
-{commandLine, workingDir, exitCode, combinedOutput}`. Failures are
+  {commandLine, workingDir, exitCode, combinedOutput}`. Failures are
   `status: "failed", rawOutput: "Tool execution failed"`. In `yolo` the ids
   look like `<sessionId>:<n>`.
 - Edits: the pending `tool_call` (`kind: "edit"`, title `Run edit_file?`)
@@ -270,9 +270,9 @@ throwaway `GEMINI_HOME`):
   the file itself after `allow`. No client fs capability is needed: evidence
   comes from the diff. Edit approvals offer only `allow` / `deny`; command
   approvals add `allow_always` with `_meta["agy.security.warning"]
-{severity, risk, title, message}`.
+  {severity, risk, title, message}`.
 - Questions: `toolCallId: "interaction_<hex>"`, options `{optionId: "1",
-name: "Tabs", kind: "allow_once"}`; answered by option id.
+  name: "Tabs", kind: "allow_once"}`; answered by option id.
 - Cancel: `session/cancel` returns the prompt with `stopReason: "cancelled"`
   in ~6 ms, preceded by one synthetic chunk "The request was cancelled by the
   client." (to be dropped).
@@ -421,7 +421,7 @@ our dead 1.x driver under the same `opencode` kind.**
 - **Install/update**: maintenance resolver currently knows 1.x names
   (`opencode-ai`, `anomalyco/tap/opencode`) [v]; switch to `@opencode/cli`, the
   curl installer and `opencode upgrade`. Version gate on `--version` (`opencode
-v2.x` on 2.x, bare `1.18.x` on 1.x) [r], minimum = the version we record
+  v2.x` on 2.x, bare `1.18.x` on 1.x) [r], minimum = the version we record
   fixtures against.
 - **Text generation**: temporary session that rejects every tool ask [r].
 
@@ -514,13 +514,13 @@ One-click actions (`opencode/OpenCodeBinary.ts`, live-verified on macOS):
   - npm: `npm uninstall -g opencode-ai ; npm install -g @opencode/cli@latest`
     (npm refuses one over the other: EEXIST).
   - pnpm: remove, then `pnpm add -g @opencode/cli@latest
---allow-build=@opencode/cli || pnpm add -g @opencode/cli@latest` (the
+    --allow-build=@opencode/cli || pnpm add -g @opencode/cli@latest` (the
     flag needs pnpm 10.4; pnpm 9 runs the postinstall anyway). bun: remove,
     add, then `bun pm -g trust @opencode/cli`. pnpm 10 and bun skip
     `@opencode/cli`'s postinstall (which fetches the binary) otherwise; later
     plain updates keep working.
   - Homebrew: `brew uninstall opencode ; brew install
-anomalyco/tap/opencode-v2` (the tap's `opencode` is 1.18.34, and
+    anomalyco/tap/opencode-v2` (the tap's `opencode` is 1.18.34, and
     `opencode-v2` conflicts with it).
   - No move (status message gives the install command instead): Scoop,
     Chocolatey, a 1.x installer binary on Windows, a binary only the npm
