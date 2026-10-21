@@ -89,8 +89,30 @@ describe("upcomingSlots", () => {
   });
 });
 
-describe("a cadence across a fall-back", () => {
+describe("a cadence across a clock change", () => {
   const custom = (cron: string) => ({ kind: "custom", cron }) as const;
+  /**
+   * Every whole minute in (after, until] whose own wall clock in `timeZone`
+   * reads a minute divisible by `step`: what an every-hour `*\/step` cadence
+   * must run at, worked out minute by minute from Intl alone.
+   */
+  const realMatches = (timeZone: string, after: string, until: string, step: number) => {
+    const format = new Intl.DateTimeFormat("en-US", { timeZone, minute: "numeric" });
+    const matches: Array<string> = [];
+    for (
+      let instant = (Math.floor(at(after).getTime() / 60_000) + 1) * 60_000;
+      instant <= at(until).getTime();
+      instant += 60_000
+    ) {
+      const minute = format.formatToParts(instant).find((part) => part.type === "minute");
+      if (Number(minute?.value) % step === 0) matches.push(new Date(instant).toISOString());
+    }
+    return matches;
+  };
+  const sevens = (timeZone: string, after: string, until: string) => {
+    const expected = realMatches(timeZone, after, until, 7);
+    expect(slots(custom("*/7 * * * *"), timeZone, after, expected.length)).toEqual(expected);
+  };
   const gaps = (cadence: ScheduledTaskCadence, timeZone: string, after: string, count: number) => {
     const walked = Result.getOrThrow(upcomingSlots(cadence, timeZone, at(after), count));
     return new Set(
@@ -135,6 +157,35 @@ describe("a cadence across a fall-back", () => {
     expect(gaps(custom("*/15 * * * *"), "America/New_York", "2026-03-08T05:00:00Z", 12)).toEqual(
       new Set([15]),
     );
+  });
+
+  it("never skips a real match, whatever the size of the change", () => {
+    // Lord Howe falls back half an hour: 02:00 (+11) to 01:30 (+10:30) at
+    // 15:00Z. From 01:56, the next real 7th minute is the repeated 01:35.
+    expect(slots(custom("*/7 * * * *"), "Australia/Lord_Howe", "2026-04-04T14:56:00Z", 1)).toEqual([
+      "2026-04-04T15:05:00.000Z",
+    ]);
+    sevens("Australia/Lord_Howe", "2026-04-04T14:00:00Z", "2026-04-04T16:30:00Z");
+    // And springs forward half an hour: 02:00 (+10:30) to 02:30 (+11).
+    sevens("Australia/Lord_Howe", "2026-10-03T14:30:00Z", "2026-10-03T17:00:00Z");
+    // New York's hour each way.
+    sevens("America/New_York", "2027-03-14T06:00:00Z", "2027-03-14T08:30:00Z");
+    sevens("America/New_York", "2026-11-01T04:30:00Z", "2026-11-01T07:30:00Z");
+  });
+
+  it("asked exactly on the change, runs at the first real match after it", () => {
+    // Falling back: 01:00 EST again, then 01:07.
+    expect(slots(custom("*/7 * * * *"), "America/New_York", "2026-11-01T06:00:00Z", 1)).toEqual([
+      "2026-11-01T06:07:00.000Z",
+    ]);
+    sevens("America/New_York", "2026-11-01T06:00:00Z", "2026-11-01T08:00:00Z");
+    sevens("Australia/Lord_Howe", "2026-04-04T15:00:00Z", "2026-04-04T16:30:00Z");
+    // Springing forward: 03:00 EDT, then 03:07.
+    expect(slots(custom("*/7 * * * *"), "America/New_York", "2027-03-14T07:00:00Z", 1)).toEqual([
+      "2027-03-14T07:07:00.000Z",
+    ]);
+    sevens("America/New_York", "2027-03-14T07:00:00Z", "2027-03-14T08:30:00Z");
+    sevens("Australia/Lord_Howe", "2026-10-03T15:30:00Z", "2026-10-03T17:00:00Z");
   });
 });
 

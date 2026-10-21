@@ -6,12 +6,13 @@
  *
  * Every cadence but `manual` compiles to a 5-field cron expression (minute
  * resolution) evaluated with `effect/Cron` in the task's own time zone; a
- * `once` cadence is the one instant that expression gives on its date. A wall
- * time that doesn't exist on a spring-forward day (02:30) runs at the same
- * distance past the jump (03:30). On a fall-back day, a cadence that runs
- * every hour (its hour field is `*`: hourly, every 15 minutes) keeps to real
- * time through the repeated hour, so it runs in both passes of it; one with
- * set hours runs each wall time once, at the earlier instant.
+ * `once` cadence is the one instant that expression gives on its date. A
+ * cadence that runs every hour (its hour field is `*`: hourly, every 15
+ * minutes) keeps to real time through clock changes: it runs whenever the
+ * wall clock reads a matching time, in both passes of a repeated stretch and
+ * never in a skipped one. One with set hours runs each wall time once: a time
+ * the clocks skip (02:30) runs the same distance past the jump (03:30), and
+ * one they repeat runs at the earlier instant.
  *
  * Every call that evaluates a schedule catches what `effect/Cron` throws, so
  * one task's bad schedule can only fail that task.
@@ -134,84 +135,104 @@ export interface CadenceSchedule {
 }
 
 /**
- * Longer than any stretch of wall time a fall-back repeats: an hour almost
- * everywhere, two in a few zones.
+ * No zone changes its offset twice within this long (the closest pair in the
+ * time zone database, Morocco's pause for Ramadan, is weeks apart), so two
+ * readings this far apart that agree have no change between them.
  */
-const REPEAT_MAX_MS = 3 * 60 * 60_000;
+const OFFSET_PROBE_MS = 6 * 60 * 60_000;
+
+/**
+ * More offset changes than an every-hour cadence's next match can lie
+ * beyond: it matches every hour of any day its date fields allow, so its
+ * next match is at most a few years off (a February 29), two changes a year.
+ */
+const MAX_OFFSET_CHANGES = 64;
 
 /** `zone`'s offset from UTC at the instant `at`, in milliseconds. */
 const offsetAt = (zone: DateTime.TimeZone, at: number) =>
   DateTime.zonedOffset(DateTime.makeZonedUnsafe(at, { timeZone: zone }));
 
 /**
- * The first instant in (from, to] at `zone`'s offset at `to`, for two
- * instants on either side of one offset change. The span is under two
- * REPEAT_MAX_MS, so halving it takes at most 24 steps.
+ * The first instant in (from, to] where `zone` is no longer at `offset`, the
+ * offset it has at `from`; null when it keeps it throughout. Readings every
+ * OFFSET_PROBE_MS find the stretch the change is in, and halving that
+ * stretch finds the instant in at most 25 steps.
  */
-const offsetChange = (zone: DateTime.TimeZone, from: number, to: number) => {
-  const before = offsetAt(zone, from);
+const firstOffsetChange = (
+  zone: DateTime.TimeZone,
+  from: number,
+  to: number,
+  offset: number,
+): number | null => {
   let low = from;
-  let high = to;
-  while (high - low > 1) {
-    const middle = Math.floor((low + high) / 2);
-    if (offsetAt(zone, middle) === before) low = middle;
-    else high = middle;
+  while (low < to) {
+    let high = Math.min(low + OFFSET_PROBE_MS, to);
+    if (offsetAt(zone, high) !== offset) {
+      while (high - low > 1) {
+        const middle = Math.floor((low + high) / 2);
+        if (offsetAt(zone, middle) === offset) low = middle;
+        else high = middle;
+      }
+      return high;
+    }
+    low = high;
   }
-  return high;
+  return null;
 };
 
 /**
- * `Cron.next` works in wall time: it takes the first matching wall time after
- * the input's, at that wall time's earlier instant. Around a fall-back that
- * goes wrong twice, and both are fixed here in a fixed number of steps, never
- * a loop that could give up on a valid schedule:
+ * A cadence's next slot. `Cron.next` works in wall time: it takes the first
+ * matching wall time after the input's, at that wall time's earlier instant,
+ * and moves a wall time the clocks skip past the jump. Two kinds of cadence
+ * want different things from a clock change:
  *
- * - An every-hour cadence never runs in the repeated hour's second pass.
- *   Every real match `Cron.next` misses is in a second pass that `after` is
- *   in, or that starts within REPEAT_MAX_MS of it (`after` sits in the same
- *   period's first pass, past that wall time). So the first instant matching
- *   at the zone's offset at `after`, and at its offset REPEAT_MAX_MS later,
- *   both checked against the offset the zone really has then, find it.
- * - Asked during a second pass, it answers with the first pass's instant of
- *   a wall time still ahead, already gone. For a cadence with set hours, that
- *   whole stretch of wall time already ran, so the answer is the next one
- *   from where the first pass ended.
- *
- * `wall` is the same expression read in UTC.
+ * - An every-hour cadence (its hour field matches every hour) keeps to real
+ *   time: its next slot is the first instant whose own wall clock matches.
+ *   Between two offset changes the offset is fixed, so that is the first
+ *   match of `wall` (the expression read in UTC) shifted by the offset. The
+ *   walk takes that match, and if the offset changes before it, starts again
+ *   from the change at the new offset: one step per change crossed, never a
+ *   match skipped, whatever the size of the change.
+ * - A cadence with set hours runs each wall time once, so `Cron.next` is
+ *   right, except when asked during a repeated stretch's second pass: it then
+ *   answers with the first pass's instant of a wall time still ahead, already
+ *   gone. That whole stretch of wall time already ran, so the answer is the
+ *   next one from where the first pass ended.
  */
 const cronSchedule = (zoned: Cron.Cron, wall: Cron.Cron): CadenceSchedule => {
   const zone = Option.getOrUndefined(zoned.tz);
-  const everyHour = zoned.hours.size === 0;
+  const everyHour = zoned.hours.size === 0 || zoned.hours.size === 24;
   /** The first instant after `at` whose wall time at a fixed `offset` matches. */
   const nextAtOffset = (at: number, offset: number) =>
     Cron.next(wall, new Date(at + offset)).getTime() - offset;
+  /** The first instant after `at` whose own wall clock matches; null past MAX_OFFSET_CHANGES. */
+  const nextInRealTime = (tz: DateTime.TimeZone, at: number) => {
+    let cursor = at;
+    let offset = offsetAt(tz, at + 1);
+    for (let changes = 0; changes <= MAX_OFFSET_CHANGES; changes += 1) {
+      const candidate = nextAtOffset(cursor, offset);
+      const change = firstOffsetChange(tz, cursor + 1, candidate, offset);
+      if (change === null) return candidate;
+      cursor = change - 1;
+      offset = offsetAt(tz, change);
+    }
+    return null;
+  };
   return {
     next: (after) => {
       try {
         const at = after.getTime();
-        const native = Cron.next(zoned, after).getTime();
-        if (zone === undefined) return Result.succeed(new Date(native));
-        const offset = offsetAt(zone, at);
-        if (everyHour) {
-          const later = offsetAt(zone, at + REPEAT_MAX_MS);
-          // No fall-back ahead, and not asked in a second pass with a
-          // match left in it: `Cron.next` is right.
-          if (native > at && later === offset) return Result.succeed(new Date(native));
-          const found = [native];
-          for (const fixed of new Set([offset, later])) {
-            const candidate = nextAtOffset(at, fixed);
-            // A real match only if the zone is at that offset then.
-            if (offsetAt(zone, candidate) === fixed) found.push(candidate);
-          }
-          const first = Math.min(...found.filter((slot) => slot > at));
-          if (Number.isFinite(first)) return Result.succeed(new Date(first));
+        if (zone !== undefined && everyHour) {
+          const slot = nextInRealTime(zone, at);
+          if (slot !== null) return Result.succeed(new Date(slot));
         }
-        if (native > at) return Result.succeed(new Date(native));
+        const native = Cron.next(zoned, after).getTime();
+        if (zone === undefined || native > at) return Result.succeed(new Date(native));
         // A second pass: `native` is in the first, at the other offset.
+        const offset = offsetAt(zone, at);
+        const firstPassEnd = firstOffsetChange(zone, native, at, offsetAt(zone, native));
         const resumed =
-          offsetAt(zone, native) === offset
-            ? null
-            : Cron.next(zoned, new Date(offsetChange(zone, native, at) - 1)).getTime();
+          firstPassEnd === null ? null : Cron.next(zoned, new Date(firstPassEnd - 1)).getTime();
         // Neither can happen; still, a match at today's offset beats failing.
         return Result.succeed(
           new Date(resumed !== null && resumed > at ? resumed : nextAtOffset(at, offset)),
