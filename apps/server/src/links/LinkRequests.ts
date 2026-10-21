@@ -112,9 +112,21 @@ export interface PeerLink {
   readonly deviceId: string;
   readonly label: string;
   readonly environmentId: string | null;
+  /** `environmentId` was fixed by the invite this computer made for it. */
+  readonly environmentPinned: boolean;
   readonly access: ComputerLinkAccess;
   readonly maxRuntimeMode: RuntimeMode;
 }
+
+/**
+ * Why a linked computer can't go on as the computer it now says it is: its
+ * link here was made for another one. Null when it may (an unpinned link
+ * goes by what it says; that is recorded, and shown as unconfirmed).
+ */
+export const linkIdentityRefusal = (link: PeerLink, environmentId: string): string | null =>
+  link.environmentPinned && link.environmentId !== environmentId
+    ? "This link was made for a different computer."
+    : null;
 
 /** How long a start waits for this computer's user before it expires. */
 export const LINK_APPROVAL_TTL_MS = 24 * 60 * 60_000;
@@ -765,6 +777,15 @@ const make = Effect.gen(function* () {
 
   const start: LinkRequestsShape["start"] = (link, input) =>
     Effect.gen(function* () {
+      // Its thread here names the computer that asked: never one it isn't.
+      const impostor = linkIdentityRefusal(link, input.parent.environmentId);
+      if (impostor !== null) {
+        yield* Effect.logWarning("links.identity-mismatch", {
+          deviceId: link.deviceId,
+          claimed: input.parent.environmentId,
+        });
+        return { status: "refused", reason: impostor } as const;
+      }
       const existing = yield* ledger
         .get(link.deviceId, input.requestId)
         .pipe(Effect.orElseSucceed(Option.none));

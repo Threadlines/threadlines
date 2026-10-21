@@ -62,6 +62,13 @@ export const InboundComputerLink = Schema.Struct({
   deviceId: TrimmedNonEmptyString,
   /** The other computer, once it introduced itself. */
   environmentId: Schema.NullOr(EnvironmentId),
+  /**
+   * `environmentId` was fixed when this computer made the invite (the app
+   * that asked for it named the computer it was for), so the other computer
+   * can't pass itself off as a different one. False or missing: it is only
+   * what that computer said about itself.
+   */
+  environmentPinned: Schema.optional(Schema.Boolean),
   label: TrimmedNonEmptyString,
   platform: Schema.NullOr(TrimmedNonEmptyString),
   access: ComputerLinkAccess,
@@ -126,6 +133,14 @@ export class ComputerLinkError extends Schema.TaggedError<ComputerLinkError>()(
     return this.detail;
   }
 }
+
+/**
+ * The computer that will claim the invite, as the app that asks for it knows
+ * it. This computer records the link as that computer's from the start, and
+ * refuses the link when it later says it is a different one.
+ */
+export const LinksCreateInviteInput = Schema.Struct({ joinerEnvironmentId: EnvironmentId });
+export type LinksCreateInviteInput = typeof LinksCreateInviteInput.Type;
 
 export const LinksAcceptInput = Schema.Struct({ invite: ComputerLinkInvite });
 export type LinksAcceptInput = typeof LinksAcceptInput.Type;

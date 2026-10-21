@@ -36,13 +36,19 @@ import { RelayDeviceRepository, type RelayDeviceRow } from "../relay/RelayDevice
 import { RelayHost } from "../relay/RelayHost.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { isLoopbackHost } from "../startupAccess.ts";
-import { DEFAULT_LINK_MAX_RUNTIME_MODE, LinkRequests, type PeerLink } from "./LinkRequests.ts";
+import {
+  DEFAULT_LINK_MAX_RUNTIME_MODE,
+  LinkRequests,
+  linkIdentityRefusal,
+  type PeerLink,
+} from "./LinkRequests.ts";
 
 /** A device row as the link it is: its access settings with their defaults. */
 export const peerLinkOf = (row: RelayDeviceRow): PeerLink => ({
   deviceId: row.deviceId,
   label: row.label,
   environmentId: row.linkEnvironmentId,
+  environmentPinned: row.linkEnvironmentPinned,
   access: row.linkAccess ?? "ask",
   maxRuntimeMode: row.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE,
 });
@@ -99,6 +105,15 @@ const makePeerRpcLayer = (input: {
       const describe = (caller: PeerCaller) =>
         Effect.gen(function* () {
           const link = yield* currentLink;
+          // A link made for one computer never records another's name.
+          const impostor = linkIdentityRefusal(link, caller.environmentId);
+          if (impostor !== null) {
+            yield* Effect.logWarning("links.identity-mismatch", {
+              deviceId: link.deviceId,
+              claimed: caller.environmentId,
+            });
+            return yield* failed(impostor);
+          }
           yield* devices
             .touchLink({
               deviceId: link.deviceId,

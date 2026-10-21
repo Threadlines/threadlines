@@ -114,7 +114,7 @@ We reuse relay-v2 device pairing (`apps/server/src/relay/RelayHost.ts`) instead 
 
 The client is connected to both A and B.
 
-1. Client → B: `links.createInvite`. B mints a `computer-link` invite (single use, 10 min TTL, auto-approve claim) and returns `{ hostId, relayOrigin, inviteId, inviteSecret, hostPublicKey, directRoutes, environmentId, label, expiresAt }`. B registers with the relay first if it never has.
+1. Client → B: `links.createInvite({ joinerEnvironmentId: A })`. B mints a `computer-link` invite (single use, 10 min TTL, auto-approve claim) for A only and returns `{ hostId, relayOrigin, inviteId, inviteSecret, hostPublicKey, directRoutes, environmentId, label, expiresAt }`. B registers with the relay first if it never has.
 2. Client → A: `links.accept(invite)`. A's server claims it as a device (Node joiner, below). It stores its device keys in `ServerSecretStore` under `computer-link-<linkId>`, inserts a `computer_links` row, and connects once to confirm.
 3. The client repeats with roles swapped for B → A. If one direction fails, the UI says which and offers Retry.
 
@@ -128,6 +128,7 @@ The client is connected to both A and B.
 
 - Today the in-memory `localInvites` map (RelayHost.ts:243-257) holds the invite, and recovery calls `finishApproval` from a device row whose `kind` came from the joiner (RelayHost.ts:785-797, 935).
 - New: the invite record is persisted, with `purpose: device | computer-link` set by the host. `approveVerified` copies `grant: client | peer` from the verified invite into the device row in the same insert, before any session exists. `finishApproval` and restart recovery issue the session role from `row.grant` only.
+- The invite also pins the joining computer's environment id, as the client that asked for it knows it. `approveVerified` writes it into the device row as `link_environment_id` with `link_environment_pinned = 1`. A pinned link refuses a `peer.describe` or `peer.request.start` that names a different computer, and its id never changes. An unpinned row (from an invite that named no computer) records what the computer says about itself, and clients show it as unconfirmed: never merged with a saved computer of that id.
 - Test: crash between inserting the device row and issuing its session, then restart → the session has the invite's role.
 
 ### Server pieces (A side, outbound)

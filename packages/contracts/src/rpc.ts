@@ -10,6 +10,7 @@ import {
   ComputerLinksSnapshot,
   InboundComputerLink,
   LinksAcceptInput,
+  LinksCreateInviteInput,
   LinksRemoveInput,
   LinksRespondRequestInput,
   LinksSetAccessInput,
@@ -1740,7 +1741,7 @@ export const WsLinksSubscribeRpc = Rpc.make(WS_METHODS.linksSubscribe, {
 
 /** Owner or client: a remote client is how one click links two computers. */
 export const WsLinksCreateInviteRpc = Rpc.make(WS_METHODS.linksCreateInvite, {
-  payload: Schema.Struct({}),
+  payload: LinksCreateInviteInput,
   success: ComputerLinkInvite,
   error: ComputerLinkError,
 });
