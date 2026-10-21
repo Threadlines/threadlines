@@ -78,6 +78,7 @@ import {
 } from "../../mcp/McpHttpServer.ts";
 import { buildAgentPageInstructions } from "../../mcp/pageTools.ts";
 import { buildCommandRequestInstructions } from "../../mcp/commandTools.ts";
+import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
@@ -2001,6 +2002,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 toolPrefix: `${openCodeCommandsServerName(ctx.toolKey)}_`,
               }),
             ]
+          : []),
+        ...(ctx.roomTools
+          ? [buildScheduleInstructions({ toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_` })]
           : []),
         FILE_LINK_INSTRUCTIONS,
         ...(managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),

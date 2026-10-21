@@ -9626,6 +9626,13 @@ describe("ClaudeAdapterLive", () => {
         });
         // Not asked for: nothing is said either way.
         assert.equal(plain.roomTools, undefined);
+        const appendOf = (options: { readonly systemPrompt?: unknown }) =>
+          (options.systemPrompt as { readonly append?: string } | undefined)?.append ?? "";
+        // No schedule tools, so no word about them.
+        assert.notInclude(
+          appendOf(harness.getLastCreateQueryInput()!.options),
+          "<threadlines_schedules>",
+        );
 
         const session = yield* adapter.startSession({
           threadId: THREAD_ID,
@@ -9646,6 +9653,14 @@ describe("ClaudeAdapterLive", () => {
         // Claude outwaits the room's own deadline, so the deadline answers first.
         assert.isAbove(room!.timeout, Duration.toMillis(ROOM_REQUEST_DEADLINE));
         assert.include(options.allowedTools ?? [], "mcp__threadlines_room__room_ask");
+        // Asked to schedule something, it uses Threadlines' scheduled tasks
+        // rather than its own schedulers, which the user would never see.
+        assert.include(appendOf(options), "`mcp__threadlines_room__schedule_create`");
+        assert.include(appendOf(options), "CronCreate");
+        assert.notInclude(
+          options.allowedTools ?? [],
+          "mcp__threadlines_room__scheduled_run_finish",
+        );
         const token = room!.headers.Authorization!.replace("Bearer ", "");
         assert.equal(
           (yield* mcpSessionRegistry.resolve(token))?.roomTools.size,
@@ -9654,6 +9669,19 @@ describe("ClaudeAdapterLive", () => {
 
         yield* adapter.stopSession(THREAD_ID);
         assert.equal(yield* mcpSessionRegistry.resolve(token), null);
+
+        // A scheduled run's agent finishes its run without a permission prompt.
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          roomTools: true,
+          scheduledRunTools: true,
+        });
+        assert.include(
+          harness.getLastCreateQueryInput()!.options.allowedTools ?? [],
+          "mcp__threadlines_room__scheduled_run_finish",
+        );
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),

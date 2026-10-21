@@ -115,7 +115,7 @@ export const ScheduleListTool = Tool.make("schedule_list", {
 export const ScheduleCreateTool = changesSchedules(
   Tool.make("schedule_create", {
     description:
-      "Create a scheduled task in this project: at each scheduled time it starts a new thread with `prompt` as its first message (each run sees only the prompt, so make it self-contained), or with `each_run: \"this_thread\"` sends it to this thread as a follow-up. Runs use your model unless `agent` names another, and your current access, never more. It runs while Threadlines is running on this computer; a time missed while it was off or asleep gets one catch-up run. Depending on the user's settings the task is created at once or a card asks the user first (`asked_user`); you won't hear back, so tell the user it waits for their OK.",
+      "Create a scheduled task in this project. Use it whenever the user wants work done later or on a schedule: the task shows on Threadlines' Scheduled page, where the user manages it. At each scheduled time it starts a new thread with `prompt` as its first message (each run sees only the prompt, so make it self-contained), or with `each_run: \"this_thread\"` sends it to this thread as a follow-up. Runs use your model unless `agent` names another, and your current access, never more. It runs while Threadlines is running on this computer; a time missed while it was off or asleep gets one catch-up run. Depending on the user's settings the task is created at once or a card asks the user first (`asked_user`): tell the user it waits for their OK, and you'll hear their answer at your next turn.",
     parameters: Schema.Struct({
       name: Schema.String.annotate({ description: "A short name for the task." }),
       prompt: Schema.String.annotate({ description: "What each run should do." }),
@@ -147,7 +147,7 @@ export const ScheduleCreateTool = changesSchedules(
 export const ScheduleUpdateTool = changesSchedules(
   Tool.make("schedule_update", {
     description:
-      "Change one of this project's scheduled tasks (an id from schedule_list): its name, instructions, schedule, time zone or where its threads work, or pause and resume it with `paused`. Fields left out stay as they are. Depending on the user's settings the change is made at once or a card asks the user first (`asked_user`); you won't hear back, so tell the user it waits for their OK.",
+      "Change one of this project's scheduled tasks (an id from schedule_list): its name, instructions, schedule, time zone or where its threads work, or pause and resume it with `paused`. Fields left out stay as they are. Depending on the user's settings the change is made at once or a card asks the user first (`asked_user`): tell the user it waits for their OK, and you'll hear their answer at your next turn.",
     parameters: Schema.Struct({
       id: Schema.String.annotate({ description: "The task's id, from schedule_list." }),
       name: Schema.optional(Schema.String),
@@ -178,6 +178,30 @@ export const ScheduledRunFinishTool = changesSchedules(
     dependencies,
   }).annotate(Tool.Title, "Finish a scheduled run"),
 );
+
+/**
+ * The short note a thread's own runtime gets at session start when it has
+ * the room tools: work the user wants done later or on a schedule belongs in
+ * Threadlines' scheduled tasks, where the user sees it. The rules are in the
+ * tools' descriptions. Never for a side runtime, which has no schedule tools.
+ */
+export function buildScheduleInstructions(input: {
+  /** What precedes the tools' names for this provider. */
+  readonly toolPrefix: string;
+  /** Claude: its own schedulers would keep the work out of Threadlines. */
+  readonly claude?: boolean;
+}): string {
+  const tool = (name: string) => `\`${input.toolPrefix}${name}\``;
+  const lines = [
+    `When the user wants work done later or on a schedule ("every weekday at 9", "each Monday", "tomorrow at 8am"), make it a Threadlines scheduled task with ${tool("schedule_create")}. At each time it starts an agent on your prompt while Threadlines is running on this computer, and the user sees and manages it on the Scheduled page. ${tool("schedule_list")} and ${tool("schedule_update")} find, change, pause and resume the ones that exist.`,
+    ...(input.claude === true
+      ? [
+          "Don't use CronCreate, ScheduleWakeup or cloud routines (the schedule skill) for that: they live only in this conversation or outside Threadlines, where the user won't find them. They are still the way to check back on your own work later in this conversation.",
+        ]
+      : []),
+  ];
+  return `<threadlines_schedules>\n${lines.join("\n")}\n</threadlines_schedules>`;
+}
 
 export const ScheduleToolkit = Toolkit.make(
   ScheduleListTool,

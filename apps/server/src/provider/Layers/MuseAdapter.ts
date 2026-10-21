@@ -89,6 +89,7 @@ import {
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { ROOM_MCP_SERVER_NAME } from "../../mcp/roomToolAccess.ts";
+import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
 import {
@@ -1783,6 +1784,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           : []),
         // Muse's own names for outside tools are not ours to guess; the bare name is unambiguous.
         ...(ctx.commandRequests ? [buildCommandRequestInstructions({ toolPrefix: "" })] : []),
+        ...(ctx.roomTools ? [buildScheduleInstructions({ toolPrefix: "" })] : []),
         FILE_LINK_INSTRUCTIONS,
         ...(ctx.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n");

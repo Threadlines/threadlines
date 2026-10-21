@@ -53,7 +53,7 @@ const REMOTE_ORIGIN_REFUSAL =
 const GONE = "This thread is gone.";
 const NOT_YOUR_TURN = "Scheduled tasks can only be changed during your own turn.";
 const ASKED_USER =
-  "A card in this thread asks the user. The change is made when they allow it; you won't hear back, so tell the user it waits for their OK.";
+  "A card in this thread asks the user. The change is made when they allow it: tell the user it waits for their OK. You'll hear their answer at your next turn; don't ask again.";
 
 /** A task as an agent reads it. */
 const forAgent = (task: ScheduledTask, callerThreadId: ThreadId): AgentScheduledTask => ({
