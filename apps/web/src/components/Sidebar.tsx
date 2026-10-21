@@ -28,6 +28,7 @@ import {
   selectSidebarThreadsAcrossEnvironments,
   selectThreadByRef,
   useStore,
+  type AppState,
 } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -73,11 +74,13 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
+  attachedParentKeyOf,
   buildInboxSections,
   buildProjectScopeOptions,
   canMarkThreadDone,
   childThreadsHoverLine,
   countInboxRowAttention,
+  familyParentKeyOf,
   getSidebarIdlePrewarmThreadIds,
   groupInboxLiveRows,
   inboxLiveRowHasAttention,
@@ -96,19 +99,25 @@ import {
   sortDoneThreads,
   sortInboxThreads,
   summarizeChildThreads,
+  resolveRemoteFamilyChildren,
   windowInboxDoneRows,
   windowInboxThreads,
   useThreadJumpHintVisibility,
   type InboxLiveRow,
+  type InboxRemoteChild,
   type ThreadStatusPill,
 } from "./Sidebar.logic";
 import type { SidebarGrouping } from "@threadlines/contracts/settings";
 import {
   InboxChildRow,
   InboxDoneRow,
+  InboxLinkRequestRow,
+  InboxRemoteChildRow,
   InboxThreadRow,
   type InboxThreadFamily,
+  type RemoteParentLine,
 } from "./sidebar/InboxRows";
+import { useComputerLabel, usePendingLinkRequests } from "./sidebar/linkedComputers";
 import type { ThreadHoverCardLineage } from "./sidebar/ThreadHoverCard";
 import { confirmThreadDeleteWithChildren } from "./ThreadDeleteDialog";
 import { childAttachRefusal } from "@threadlines/shared/childThreads";
@@ -256,17 +265,17 @@ interface InboxLiveSection {
   readonly rows: readonly InboxLiveRow<InboxEntry>[];
 }
 
+/** Every parent without children on other computers shares this. */
+const NO_REMOTE_CHILDREN: readonly InboxRemoteChild[] = [];
+
 /**
- * The key of the thread this one is still attached to (child threads), in
- * the same environment; null for a thread no other thread started, or one
- * made its own.
+ * The computers whose thread lists this app has: their threads speak for
+ * themselves, so a parent's record of a child there stays out of its family.
  */
-function attachedParentKeyOf(
-  thread: Pick<SidebarThreadSummary, "environmentId" | "parentThreadId" | "attachedToParent">,
-): string | null {
-  return thread.attachedToParent === true && thread.parentThreadId != null
-    ? scopedThreadKey(scopeThreadRef(thread.environmentId, thread.parentThreadId))
-    : null;
+function selectEnvironmentIdsWithThreads(state: AppState): string[] {
+  return Object.entries(state.environmentStateById).flatMap(([environmentId, environment]) =>
+    environment.bootstrapComplete ? [environmentId] : [],
+  );
 }
 
 function buildThreadJumpLabelMap(input: {
@@ -540,6 +549,13 @@ export default function Sidebar() {
   const modelPickerOpen = useModelPickerOpen();
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
+  const computerLabel = useComputerLabel();
+  const environmentIdsWithThreadsList = useStore(useShallow(selectEnvironmentIdsWithThreads));
+  const environmentIdsWithThreads = useMemo(
+    () => new Set<string>(environmentIdsWithThreadsList),
+    [environmentIdsWithThreadsList],
+  );
+  const pendingLinkRequests = usePendingLinkRequests();
   const [renamingThreadKey, setRenamingThreadKey] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
   const [confirmingArchiveThreadKey, setConfirmingArchiveThreadKey] = useState<string | null>(null);
@@ -736,12 +752,13 @@ export default function Sidebar() {
     const preparedByKey = new Map(prepared.map((item) => [item.threadKey, item] as const));
     // A child's wrap-up reads its parent's, so each answer is worked out once
     // and parents are asked first. Families are one level deep; `visiting`
-    // only guards against a loop the server should never let happen.
+    // only guards against a loop the server should never let happen. A child
+    // on another computer wraps with its parent like any other.
     const doneByKey = new Map<string, boolean>();
     const resolveDone = (item: (typeof prepared)[number], visiting: ReadonlySet<string>) => {
       const known = doneByKey.get(item.threadKey);
       if (known !== undefined) return known;
-      const parentKey = wrapUpChildThreadsOnFinish ? attachedParentKeyOf(item.thread) : null;
+      const parentKey = wrapUpChildThreadsOnFinish ? familyParentKeyOf(item.thread) : null;
       const parent = parentKey === null ? undefined : preparedByKey.get(parentKey);
       const childWrapUp =
         parentKey === null
@@ -968,19 +985,38 @@ export default function Sidebar() {
   }, [machineScopedEntries, scopedEnvironmentIdValue, sidebarProjects]);
 
   // Families first: a parent's attached children travel with it through
-  // every scope, and a family takes one row in the live list.
+  // every scope, and a family takes one row in the live list. A family can
+  // span computers: a child on a computer the machine filter shows, under a
+  // parent on one it hides, stands on its own instead.
   const { liveEntries, doneEntries } = useMemo(() => {
     const entryByThreadKey = new Map(entries.map((entry) => [entry.threadKey, entry] as const));
     const lookup = (thread: SidebarThreadSummary) =>
       entryByThreadKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))!;
+    const inScope = (entry: InboxEntry) =>
+      (scopedEnvironmentIdValue === null ||
+        entry.thread.environmentId === scopedEnvironmentIdValue) &&
+      (!roomsFilterActive || isRoom(entry.thread)) &&
+      (scopedProjectKeyValue === null || entry.projectKey === scopedProjectKeyValue);
+    const canSeeComputer = (environmentId: EnvironmentId) =>
+      environmentIdsWithThreads.has(environmentId);
     const { live, done } = buildInboxSections({
       entries,
-      parentKeyOf: (entry) => attachedParentKeyOf(entry.thread),
-      inScope: (entry) =>
-        (scopedEnvironmentIdValue === null ||
-          entry.thread.environmentId === scopedEnvironmentIdValue) &&
-        (!roomsFilterActive || isRoom(entry.thread)) &&
-        (scopedProjectKeyValue === null || entry.projectKey === scopedProjectKeyValue),
+      parentKeyOf: (entry) => familyParentKeyOf(entry.thread),
+      inScope,
+      standsAlone: (child, parent) =>
+        scopedEnvironmentIdValue !== null &&
+        parent.thread.environmentId !== scopedEnvironmentIdValue &&
+        inScope(child),
+      remoteChildrenOf: (parent) =>
+        (parent.thread.remoteChildren?.length ?? 0) +
+          (parent.thread.remoteChildStarts?.length ?? 0) ===
+        0
+          ? NO_REMOTE_CHILDREN
+          : resolveRemoteFamilyChildren({
+              parent: parent.thread,
+              canSeeComputer,
+              computerLabel,
+            }),
       isFamilyOpen: (parentKey) => childThreadFamilyOpenById[parentKey] === true,
       activeThreadKey: routeThreadKey,
       sortLive: (heads) => sortInboxThreads(heads.map((entry) => entry.thread)).map(lookup),
@@ -997,8 +1033,10 @@ export default function Sidebar() {
     return { liveEntries: live, doneEntries: done };
   }, [
     childThreadFamilyOpenById,
+    computerLabel,
     doneThreadOverlays,
     entries,
+    environmentIdsWithThreads,
     roomsFilterActive,
     routeThreadKey,
     scopedEnvironmentIdValue,
@@ -1044,40 +1082,86 @@ export default function Sidebar() {
   const familyByThreadKey = useMemo(() => {
     const byKey = new Map<string, InboxThreadFamily>();
     for (const row of liveEntries) {
-      if (row.children.length === 0) continue;
+      if (row.children.length === 0 && row.remoteChildren.length === 0) continue;
       byKey.set(row.entry.threadKey, {
-        summary: summarizeChildThreads(row.children),
+        summary: summarizeChildThreads([...row.children, ...row.remoteChildren]),
         open: childThreadFamilyOpenById[row.entry.threadKey] === true,
       });
     }
     return byKey;
   }, [childThreadFamilyOpenById, liveEntries]);
+  // Where a thread another computer's agent started came from: the parent's
+  // title as this app has it (else as the thread was told), and its computer.
+  const remoteParentOf = useCallback(
+    (thread: SidebarThreadSummary): RemoteParentLine | null => {
+      const remoteOrigin = thread.remoteOrigin ?? null;
+      if (remoteOrigin === null) return null;
+      return {
+        title:
+          sidebarThreadByKey.get(
+            scopedThreadKey(scopeThreadRef(remoteOrigin.environmentId, remoteOrigin.threadId)),
+          )?.title ?? remoteOrigin.threadTitle,
+        computerLabel: computerLabel(remoteOrigin.environmentId, remoteOrigin.environmentLabel),
+      };
+    },
+    [computerLabel, sidebarThreadByKey],
+  );
+  // A live row standing on its own that another computer's agent started
+  // says so where its project name sits; nested, its parent row says it.
+  const remoteParentByThreadKey = useMemo(() => {
+    const byKey = new Map<string, RemoteParentLine>();
+    for (const row of liveEntries) {
+      const line = remoteParentOf(row.entry.thread);
+      if (line !== null) byKey.set(row.entry.threadKey, line);
+    }
+    return byKey;
+  }, [liveEntries, remoteParentOf]);
   const lineageByThreadKey = useMemo(() => {
     const byKey = new Map<string, ThreadHoverCardLineage>();
-    const add = (entry: InboxEntry, children: readonly InboxEntry[]) => {
+    const add = (
+      entry: InboxEntry,
+      children: readonly InboxEntry[],
+      remoteChildren: readonly InboxRemoteChild[],
+    ) => {
       const parentThreadId = entry.thread.parentThreadId ?? null;
+      const remoteParent = remoteParentOf(entry.thread);
       const startedBy =
-        parentThreadId === null
-          ? null
-          : (sidebarThreadByKey.get(
-              scopedThreadKey(scopeThreadRef(entry.thread.environmentId, parentThreadId)),
-            )?.title ?? null);
+        remoteParent !== null
+          ? `${remoteParent.title} on ${remoteParent.computerLabel}`
+          : parentThreadId === null
+            ? null
+            : (sidebarThreadByKey.get(
+                scopedThreadKey(scopeThreadRef(entry.thread.environmentId, parentThreadId)),
+              )?.title ?? null);
       const threads =
-        children.length === 0 ? null : childThreadsHoverLine(summarizeChildThreads(children));
+        children.length === 0 && remoteChildren.length === 0
+          ? null
+          : childThreadsHoverLine(summarizeChildThreads([...children, ...remoteChildren]));
       if (startedBy !== null || threads !== null) {
         byKey.set(entry.threadKey, { startedBy, threads });
       }
     };
     for (const row of liveEntries) {
-      add(row.entry, row.children);
-      for (const child of row.children) add(child, []);
+      add(row.entry, row.children, row.remoteChildren);
+      for (const child of row.children) add(child, [], NO_REMOTE_CHILDREN);
     }
     for (const row of doneEntries) {
-      add(row.entry, row.children);
-      if (row.openChild) add(row.openChild, []);
+      add(row.entry, row.children, row.remoteChildren);
+      if (row.openChild) add(row.openChild, [], NO_REMOTE_CHILDREN);
     }
     return byKey;
-  }, [doneEntries, liveEntries, sidebarThreadByKey]);
+  }, [doneEntries, liveEntries, remoteParentOf, sidebarThreadByKey]);
+  // The requests waiting for the user's Allow, on the computers the machine
+  // filter shows: a request belongs to the computer it would run on.
+  const shownLinkRequests = useMemo(
+    () =>
+      scopedEnvironmentIdValue === null
+        ? pendingLinkRequests
+        : pendingLinkRequests.filter(
+            (pending) => pending.environmentId === scopedEnvironmentIdValue,
+          ),
+    [pendingLinkRequests, scopedEnvironmentIdValue],
+  );
   const toggleChildThreadFamily = useCallback(
     (parentThreadKey: string) => {
       setChildThreadFamilyOpen(
@@ -2018,6 +2102,21 @@ export default function Sidebar() {
                     newThreadShortcutLabel={newThreadShortcutLabel}
                   />
 
+                  {/* Threads another computer asked to start lead the list:
+                      each waits for the user's Allow, and expires unanswered. */}
+                  {shownLinkRequests.length > 0 ? (
+                    <ul data-testid="inbox-link-requests">
+                      {shownLinkRequests.map(({ environmentId, request }) => (
+                        <InboxLinkRequestRow
+                          key={`${environmentId}:${request.deviceId}:${request.requestId}`}
+                          environmentId={environmentId}
+                          computerLabel={computerLabel(environmentId, environmentId)}
+                          request={request}
+                        />
+                      ))}
+                    </ul>
+                  ) : null}
+
                   {/* Unsent drafts sit above the inbox: an interrupted "new
                       thread" is the one row you want back in one click. */}
                   <SidebarDraftBlock
@@ -2070,63 +2169,27 @@ export default function Sidebar() {
                               onToggleCollapsed={toggleInboxGroup}
                             />
                           ) : null}
-                          {section.rows.map(({ entry, shownChildren, wrappedParent }) => (
-                            <React.Fragment key={entry.threadKey}>
-                              <InboxThreadRow
-                                thread={entry.thread}
-                                status={entry.status}
-                                // A row names its project unless the list already
-                                // does: scoped to one, or grouped by project.
-                                projectLabel={
-                                  scopedProjectKeyValue === null && sidebarGrouping !== "project"
-                                    ? entry.projectLabel
-                                    : null
-                                }
-                                // Under a project group's header the project's
-                                // mark is said once, there.
-                                showProjectMark={sidebarGrouping !== "project"}
-                                isActive={routeThreadKey === entry.threadKey}
-                                jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
-                                canMarkDone={entry.canMarkDone}
-                                orderedThreadKeys={orderedThreadKeys}
-                                renamingThreadKey={renamingThreadKey}
-                                renamingTitle={renamingTitle}
-                                setRenamingTitle={setRenamingTitle}
-                                renamingInputRef={renamingInputRef}
-                                renamingCommittedRef={renamingCommittedRef}
-                                handleThreadClick={handleThreadClick}
-                                navigateToThread={navigateToThread}
-                                handleMultiSelectContextMenu={handleMultiSelectContextMenu}
-                                handleThreadContextMenu={handleThreadContextMenu}
-                                clearSelection={clearSelection}
-                                commitRename={commitRename}
-                                cancelRename={cancelRename}
-                                markThreadDone={markThreadDone}
-                                listPullRequest={
-                                  pullRequestByThreadKey.get(entry.threadKey) ?? null
-                                }
-                                linkedPullRequests={
-                                  linkedPullRequestsByThreadKey.get(entry.threadKey) ??
-                                  NO_PULL_REQUESTS
-                                }
-                                openPrLink={openPrLink}
-                                family={familyByThreadKey.get(entry.threadKey) ?? null}
-                                onToggleFamily={toggleChildThreadFamily}
-                                wrappedParentTitle={wrappedParent?.thread.title ?? null}
-                                lineage={lineageByThreadKey.get(entry.threadKey)}
-                              />
-                              {shownChildren.map((child) => (
-                                <InboxChildRow
-                                  key={child.threadKey}
-                                  thread={child.thread}
-                                  status={child.status}
-                                  isDone={child.isDone}
-                                  doneAt={child.doneAt}
-                                  isActive={routeThreadKey === child.threadKey}
-                                  jumpLabel={
-                                    visibleThreadJumpLabelByKey.get(child.threadKey) ?? null
+                          {section.rows.map(
+                            ({ entry, shownChildren, shownRemoteChildren, wrappedParent }) => (
+                              <React.Fragment key={entry.threadKey}>
+                                <InboxThreadRow
+                                  thread={entry.thread}
+                                  status={entry.status}
+                                  // A row names its project unless the list already
+                                  // does: scoped to one, or grouped by project.
+                                  projectLabel={
+                                    scopedProjectKeyValue === null && sidebarGrouping !== "project"
+                                      ? entry.projectLabel
+                                      : null
                                   }
-                                  canMarkDone={child.canMarkDone}
+                                  // Under a project group's header the project's
+                                  // mark is said once, there.
+                                  showProjectMark={sidebarGrouping !== "project"}
+                                  isActive={routeThreadKey === entry.threadKey}
+                                  jumpLabel={
+                                    visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null
+                                  }
+                                  canMarkDone={entry.canMarkDone}
                                   orderedThreadKeys={orderedThreadKeys}
                                   renamingThreadKey={renamingThreadKey}
                                   renamingTitle={renamingTitle}
@@ -2141,12 +2204,66 @@ export default function Sidebar() {
                                   commitRename={commitRename}
                                   cancelRename={cancelRename}
                                   markThreadDone={markThreadDone}
-                                  reopenThread={reopenThread}
-                                  lineage={lineageByThreadKey.get(child.threadKey)}
+                                  listPullRequest={
+                                    pullRequestByThreadKey.get(entry.threadKey) ?? null
+                                  }
+                                  linkedPullRequests={
+                                    linkedPullRequestsByThreadKey.get(entry.threadKey) ??
+                                    NO_PULL_REQUESTS
+                                  }
+                                  openPrLink={openPrLink}
+                                  family={familyByThreadKey.get(entry.threadKey) ?? null}
+                                  onToggleFamily={toggleChildThreadFamily}
+                                  wrappedParentTitle={wrappedParent?.thread.title ?? null}
+                                  remoteParent={
+                                    remoteParentByThreadKey.get(entry.threadKey) ?? null
+                                  }
+                                  lineage={lineageByThreadKey.get(entry.threadKey)}
                                 />
-                              ))}
-                            </React.Fragment>
-                          ))}
+                                {shownChildren.map((child) => (
+                                  <InboxChildRow
+                                    key={child.threadKey}
+                                    thread={child.thread}
+                                    status={child.status}
+                                    isDone={child.isDone}
+                                    doneAt={child.doneAt}
+                                    isActive={routeThreadKey === child.threadKey}
+                                    jumpLabel={
+                                      visibleThreadJumpLabelByKey.get(child.threadKey) ?? null
+                                    }
+                                    canMarkDone={child.canMarkDone}
+                                    orderedThreadKeys={orderedThreadKeys}
+                                    renamingThreadKey={renamingThreadKey}
+                                    renamingTitle={renamingTitle}
+                                    setRenamingTitle={setRenamingTitle}
+                                    renamingInputRef={renamingInputRef}
+                                    renamingCommittedRef={renamingCommittedRef}
+                                    handleThreadClick={handleThreadClick}
+                                    navigateToThread={navigateToThread}
+                                    handleMultiSelectContextMenu={handleMultiSelectContextMenu}
+                                    handleThreadContextMenu={handleThreadContextMenu}
+                                    clearSelection={clearSelection}
+                                    commitRename={commitRename}
+                                    cancelRename={cancelRename}
+                                    markThreadDone={markThreadDone}
+                                    reopenThread={reopenThread}
+                                    lineage={lineageByThreadKey.get(child.threadKey)}
+                                    computerLabel={
+                                      child.thread.environmentId === entry.thread.environmentId
+                                        ? null
+                                        : computerLabel(
+                                            child.thread.environmentId,
+                                            "another computer",
+                                          )
+                                    }
+                                  />
+                                ))}
+                                {shownRemoteChildren.map((child) => (
+                                  <InboxRemoteChildRow key={child.threadKey} child={child} />
+                                ))}
+                              </React.Fragment>
+                            ),
+                          )}
                         </React.Fragment>
                       ))}
                     </ul>
@@ -2217,65 +2334,69 @@ export default function Sidebar() {
                         testId="inbox-done-toggle"
                       />
                       <ul data-testid="inbox-done-list">
-                        {renderedDoneEntries.map(({ entry, children, openChild }) => (
-                          <React.Fragment key={entry.threadKey}>
-                            <InboxDoneRow
-                              thread={entry.thread}
-                              projectLabel={
-                                scopedProjectKeyValue === null ? entry.projectLabel : null
-                              }
-                              doneAt={entry.doneAt}
-                              isActive={routeThreadKey === entry.threadKey}
-                              appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
-                              confirmingArchiveThreadKey={confirmingArchiveThreadKey}
-                              setConfirmingArchiveThreadKey={setConfirmingArchiveThreadKey}
-                              confirmArchiveButtonRefs={confirmArchiveButtonRefs}
-                              navigateToThread={navigateToThread}
-                              handleThreadContextMenu={handleThreadContextMenu}
-                              reopenThread={reopenThread}
-                              attemptArchiveThread={attemptArchiveThread}
-                              listPullRequest={pullRequestByThreadKey.get(entry.threadKey) ?? null}
-                              linkedPullRequests={
-                                linkedPullRequestsByThreadKey.get(entry.threadKey) ??
-                                NO_PULL_REQUESTS
-                              }
-                              openPrLink={openPrLink}
-                              childCount={children.length}
-                              lineage={lineageByThreadKey.get(entry.threadKey)}
-                            />
-                            {/* Its wrapped threads live inside it; the one open
-                                in the chat still shows where it is. */}
-                            {openChild ? (
-                              <InboxChildRow
-                                thread={openChild.thread}
-                                status={openChild.status}
-                                isDone
-                                doneAt={openChild.doneAt}
-                                isActive
-                                jumpLabel={
-                                  visibleThreadJumpLabelByKey.get(openChild.threadKey) ?? null
+                        {renderedDoneEntries.map(
+                          ({ entry, children, remoteChildren, openChild }) => (
+                            <React.Fragment key={entry.threadKey}>
+                              <InboxDoneRow
+                                thread={entry.thread}
+                                projectLabel={
+                                  scopedProjectKeyValue === null ? entry.projectLabel : null
                                 }
-                                canMarkDone={false}
-                                orderedThreadKeys={orderedThreadKeys}
-                                renamingThreadKey={renamingThreadKey}
-                                renamingTitle={renamingTitle}
-                                setRenamingTitle={setRenamingTitle}
-                                renamingInputRef={renamingInputRef}
-                                renamingCommittedRef={renamingCommittedRef}
-                                handleThreadClick={handleThreadClick}
+                                doneAt={entry.doneAt}
+                                isActive={routeThreadKey === entry.threadKey}
+                                appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
+                                confirmingArchiveThreadKey={confirmingArchiveThreadKey}
+                                setConfirmingArchiveThreadKey={setConfirmingArchiveThreadKey}
+                                confirmArchiveButtonRefs={confirmArchiveButtonRefs}
                                 navigateToThread={navigateToThread}
-                                handleMultiSelectContextMenu={handleMultiSelectContextMenu}
                                 handleThreadContextMenu={handleThreadContextMenu}
-                                clearSelection={clearSelection}
-                                commitRename={commitRename}
-                                cancelRename={cancelRename}
-                                markThreadDone={markThreadDone}
                                 reopenThread={reopenThread}
-                                lineage={lineageByThreadKey.get(openChild.threadKey)}
+                                attemptArchiveThread={attemptArchiveThread}
+                                listPullRequest={
+                                  pullRequestByThreadKey.get(entry.threadKey) ?? null
+                                }
+                                linkedPullRequests={
+                                  linkedPullRequestsByThreadKey.get(entry.threadKey) ??
+                                  NO_PULL_REQUESTS
+                                }
+                                openPrLink={openPrLink}
+                                childCount={children.length + remoteChildren.length}
+                                lineage={lineageByThreadKey.get(entry.threadKey)}
                               />
-                            ) : null}
-                          </React.Fragment>
-                        ))}
+                              {/* Its wrapped threads live inside it; the one open
+                                in the chat still shows where it is. */}
+                              {openChild ? (
+                                <InboxChildRow
+                                  thread={openChild.thread}
+                                  status={openChild.status}
+                                  isDone
+                                  doneAt={openChild.doneAt}
+                                  isActive
+                                  jumpLabel={
+                                    visibleThreadJumpLabelByKey.get(openChild.threadKey) ?? null
+                                  }
+                                  canMarkDone={false}
+                                  orderedThreadKeys={orderedThreadKeys}
+                                  renamingThreadKey={renamingThreadKey}
+                                  renamingTitle={renamingTitle}
+                                  setRenamingTitle={setRenamingTitle}
+                                  renamingInputRef={renamingInputRef}
+                                  renamingCommittedRef={renamingCommittedRef}
+                                  handleThreadClick={handleThreadClick}
+                                  navigateToThread={navigateToThread}
+                                  handleMultiSelectContextMenu={handleMultiSelectContextMenu}
+                                  handleThreadContextMenu={handleThreadContextMenu}
+                                  clearSelection={clearSelection}
+                                  commitRename={commitRename}
+                                  cancelRename={cancelRename}
+                                  markThreadDone={markThreadDone}
+                                  reopenThread={reopenThread}
+                                  lineage={lineageByThreadKey.get(openChild.threadKey)}
+                                />
+                              ) : null}
+                            </React.Fragment>
+                          ),
+                        )}
                       </ul>
                       {!doneCollapsed && (nextDoneRevealCount > 0 || revealedDoneCount > 0) ? (
                         <div className="flex items-center gap-1 px-3 pt-2 pb-3">

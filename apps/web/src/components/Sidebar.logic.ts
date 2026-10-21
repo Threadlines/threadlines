@@ -1,5 +1,12 @@
 import * as React from "react";
+import type {
+  AgentThreadStatusWord,
+  EnvironmentId,
+  RemoteChildRequestStatus,
+  ThreadId,
+} from "@threadlines/contracts";
 import type { SidebarProjectSortOrder } from "@threadlines/contracts/settings";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import {
   getThreadInFlightStatus,
   getThreadSortTimestamp,
@@ -999,12 +1006,76 @@ export function windowInboxThreads<T>(input: {
 // inbox shows a family as one row with a summary line that opens in place,
 // so an agent that starts five threads costs the list one seat, not six.
 
-/** What the family rules read about each inbox thread. */
-export interface InboxFamilyEntry {
-  readonly threadKey: string;
-  readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt">;
+/**
+ * The key of the thread this one is still attached to (child threads), in
+ * the same environment; null for a thread no other thread started, or one
+ * made its own. What the server's own family commands (separate, stop its
+ * threads, delete with its threads) act on.
+ */
+export function attachedParentKeyOf(
+  thread: Pick<SidebarThreadSummary, "environmentId" | "parentThreadId" | "attachedToParent">,
+): string | null {
+  return thread.attachedToParent === true && thread.parentThreadId != null
+    ? scopedThreadKey(scopeThreadRef(thread.environmentId, thread.parentThreadId))
+    : null;
+}
+
+/**
+ * The key of the family a thread sits in: its attached parent on its own
+ * computer, or the thread on another computer whose agent started it there
+ * (`remoteOrigin`). Keys are environment-scoped, so a family can span two
+ * computers (docs/design/fleet.md, Part 5).
+ */
+export function familyParentKeyOf(
+  thread: Pick<
+    SidebarThreadSummary,
+    "environmentId" | "parentThreadId" | "attachedToParent" | "remoteOrigin"
+  >,
+): string | null {
+  const remoteOrigin = thread.remoteOrigin ?? null;
+  return remoteOrigin === null
+    ? attachedParentKeyOf(thread)
+    : scopedThreadKey(scopeThreadRef(remoteOrigin.environmentId, remoteOrigin.threadId));
+}
+
+/** What a family's summary and counts read about each of its threads. */
+export interface InboxFamilyStatus {
   readonly status: ThreadStatusPill | null;
   readonly isDone: boolean;
+}
+
+/** What the family rules read about each inbox thread. */
+export interface InboxFamilyEntry extends InboxFamilyStatus {
+  readonly threadKey: string;
+  readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt">;
+}
+
+/**
+ * Where a child on another computer stands, as its parent last heard: one of
+ * that computer's status words for a thread it runs, or how far a start has
+ * got before there is a thread (`RemoteChildRequestStatus`).
+ */
+export type InboxRemoteChildPhase = AgentThreadStatusWord | RemoteChildRequestStatus;
+
+/**
+ * A child in a parent's family that runs on a computer this app can't see
+ * (no thread list for it), shown from the parent's own record of it: its
+ * last known status, or a start that has no thread there yet. It can't be
+ * opened: the app has no thread to open.
+ */
+export interface InboxRemoteChild extends InboxFamilyStatus {
+  /**
+   * The key its thread would have in this app (environment-scoped), or
+   * `start:<environmentId>:<requestId>` for a start with no thread yet.
+   */
+  readonly threadKey: string;
+  readonly environmentId: EnvironmentId;
+  /** Null for a start with no thread there yet. */
+  readonly threadId: ThreadId | null;
+  /** The computer it runs on, by the name this app knows it by. */
+  readonly computerLabel: string;
+  readonly title: string;
+  readonly phase: InboxRemoteChildPhase;
 }
 
 /** One live row: a thread, the family it heads, and what shows under it. */
@@ -1015,8 +1086,17 @@ export interface InboxLiveRow<E extends InboxFamilyEntry> {
   /** The children drawn under it: all of them while open, else only those
    *  that need the user and the one open in the chat. */
   readonly shownChildren: readonly E[];
+  /** Its family's children on computers this app can't see, after `children`. */
+  readonly remoteChildren: readonly InboxRemoteChild[];
+  /** The ones drawn: all while open, else only those that need the user. */
+  readonly shownRemoteChildren: readonly InboxRemoteChild[];
   /** A live child whose parent is wrapped stands on its own, naming the parent. */
   readonly wrappedParent: E | null;
+  /**
+   * A child on another computer whose parent the machine filter hides: it
+   * stands on its own, naming the parent and its computer.
+   */
+  readonly scopedOutParent: E | null;
 }
 
 /** One wrapped row: a thread, and the threads its family had. */
@@ -1024,6 +1104,8 @@ export interface InboxDoneRow<E extends InboxFamilyEntry> {
   readonly entry: E;
   /** Its attached children, oldest first: the wrapped ones live inside it. */
   readonly children: readonly E[];
+  /** Its children on computers this app can't see; they wrap inside it too. */
+  readonly remoteChildren: readonly InboxRemoteChild[];
   /** A wrapped child of this wrapped parent that is open in the chat. */
   readonly openChild: E | null;
 }
@@ -1034,7 +1116,7 @@ const NEEDS_YOU_NOW: ReadonlySet<ThreadStatusPill["label"]> = new Set([
 ]);
 
 /** A child that is waiting on the user's answer: never folded out of sight. */
-export function isChildThreadNeedingYou(entry: InboxFamilyEntry): boolean {
+export function isChildThreadNeedingYou(entry: InboxFamilyStatus): boolean {
   return !entry.isDone && entry.status !== null && NEEDS_YOU_NOW.has(entry.status.label);
 }
 
@@ -1046,7 +1128,7 @@ const IN_FLIGHT: ReadonlySet<ThreadStatusPill["label"]> = new Set([
 ]);
 
 /** A child with work in flight: what "Stop N working threads" stops. */
-export function isChildThreadWorking(entry: InboxFamilyEntry): boolean {
+export function isChildThreadWorking<T extends InboxFamilyStatus>(entry: T): boolean {
   return !entry.isDone && entry.status !== null && IN_FLIGHT.has(entry.status.label);
 }
 
@@ -1102,16 +1184,24 @@ export function countThreadAttention(
 
 /**
  * Lays the inbox out in families. `parentKeyOf` names the parent a thread is
- * attached to, whether or not it is in the list; a thread whose parent is not
- * (archived, deleted) stands on its own. Scope is decided by the family's
- * parent, so children always travel with it. The live and wrapped orders come
- * from the caller's sorts, applied to the rows that stand on their own;
- * children keep creation order and are never re-sorted.
+ * attached to, whether or not it is in the list, and on whichever computer
+ * (keys are environment-scoped); a thread whose parent is not in the list
+ * (archived, deleted, on a computer this app can't see) stands on its own.
+ * Scope is decided by the family's parent, so children always travel with
+ * it, except where `standsAlone` lets a child the scope keeps stand apart
+ * from a parent it hides (the machine filter showing a child's computer but
+ * not its parent's). `remoteChildrenOf` adds a parent's children on
+ * computers this app can't see; one whose thread is in the list is the
+ * thread, never both. The live and wrapped orders come from the caller's
+ * sorts, applied to the rows that stand on their own; children keep creation
+ * order and are never re-sorted.
  */
 export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   readonly entries: readonly E[];
   readonly parentKeyOf: (entry: E) => string | null;
   readonly inScope: (entry: E) => boolean;
+  readonly standsAlone?: ((child: E, parent: E) => boolean) | undefined;
+  readonly remoteChildrenOf?: ((parent: E) => readonly InboxRemoteChild[]) | undefined;
   readonly isFamilyOpen: (parentKey: string) => boolean;
   readonly activeThreadKey: string | null;
   readonly sortLive: (entries: readonly E[]) => E[];
@@ -1122,6 +1212,12 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
     const parentKey = input.parentKeyOf(entry);
     if (parentKey === null || parentKey === entry.threadKey) return null;
     return entryByKey.get(parentKey) ?? null;
+  };
+  const remoteChildrenOf = (parent: E): readonly InboxRemoteChild[] => {
+    const remote = input.remoteChildrenOf?.(parent) ?? [];
+    return remote.length === 0
+      ? remote
+      : remote.filter((child) => !entryByKey.has(child.threadKey));
   };
   const childrenByParentKey = new Map<string, E[]>();
   for (const entry of input.entries) {
@@ -1143,6 +1239,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   const liveHeads: E[] = [];
   const doneHeads: E[] = [];
   const wrappedParentByKey = new Map<string, E>();
+  const scopedOutParentByKey = new Map<string, E>();
   for (const entry of input.entries) {
     const parent = parentOf(entry);
     if (parent === null) {
@@ -1150,28 +1247,52 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       (entry.isDone ? doneHeads : liveHeads).push(entry);
       continue;
     }
+    if (!input.inScope(parent)) {
+      // The scope hides its parent but keeps it: a row of its own.
+      if (input.standsAlone?.(entry, parent) === true) {
+        (entry.isDone ? doneHeads : liveHeads).push(entry);
+        scopedOutParentByKey.set(entry.threadKey, parent);
+      }
+      continue;
+    }
     // In a live family, or inside its wrapped parent: not a row of its own.
     if (!parent.isDone || entry.isDone) continue;
-    if (!input.inScope(parent)) continue;
     liveHeads.push(entry);
     wrappedParentByKey.set(entry.threadKey, parent);
   }
 
   const live = input.sortLive(liveHeads).map((entry): InboxLiveRow<E> => {
     const wrappedParent = wrappedParentByKey.get(entry.threadKey) ?? null;
-    const children = wrappedParent === null ? (childrenByParentKey.get(entry.threadKey) ?? []) : [];
-    const shownChildren = input.isFamilyOpen(entry.threadKey)
+    const scopedOutParent = scopedOutParentByKey.get(entry.threadKey) ?? null;
+    const heads = wrappedParent === null && scopedOutParent === null;
+    const children = heads ? (childrenByParentKey.get(entry.threadKey) ?? []) : [];
+    const remoteChildren = heads ? remoteChildrenOf(entry) : [];
+    const open = input.isFamilyOpen(entry.threadKey);
+    const shownChildren = open
       ? children
       : children.filter(
           (child) => isChildThreadNeedingYou(child) || child.threadKey === input.activeThreadKey,
         );
-    return { entry, children, shownChildren, wrappedParent };
-  });
-  const done = input.sortDone(doneHeads).map((entry): InboxDoneRow<E> => {
-    const children = childrenByParentKey.get(entry.threadKey) ?? [];
+    const shownRemoteChildren = open
+      ? remoteChildren
+      : remoteChildren.filter(isChildThreadNeedingYou);
     return {
       entry,
       children,
+      shownChildren,
+      remoteChildren,
+      shownRemoteChildren,
+      wrappedParent,
+      scopedOutParent,
+    };
+  });
+  const done = input.sortDone(doneHeads).map((entry): InboxDoneRow<E> => {
+    const standsApart = scopedOutParentByKey.has(entry.threadKey);
+    const children = standsApart ? [] : (childrenByParentKey.get(entry.threadKey) ?? []);
+    return {
+      entry,
+      children,
+      remoteChildren: standsApart ? [] : remoteChildrenOf(entry),
       openChild:
         children.find((child) => child.isDone && child.threadKey === input.activeThreadKey) ?? null,
     };
@@ -1181,9 +1302,9 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
 
 /** Whether a live row earns a seat past the fold: it or a live child shows a status. */
 export function inboxLiveRowHasAttention(row: InboxLiveRow<InboxFamilyEntry>): boolean {
+  const hasStatus = (child: InboxFamilyStatus) => !child.isDone && child.status !== null;
   return (
-    row.entry.status !== null ||
-    row.children.some((child) => !child.isDone && child.status !== null)
+    row.entry.status !== null || row.children.some(hasStatus) || row.remoteChildren.some(hasStatus)
   );
 }
 
@@ -1233,10 +1354,10 @@ export interface ChildThreadsSummary {
   } | null;
 }
 
-export function summarizeChildThreads(
-  children: ReadonlyArray<InboxFamilyEntry>,
+export function summarizeChildThreads<T extends InboxFamilyStatus>(
+  children: ReadonlyArray<T>,
 ): ChildThreadsSummary {
-  const dotOf = (child: InboxFamilyEntry) =>
+  const dotOf = (child: InboxFamilyStatus) =>
     child.isDone || child.status === null ? null : child.status.dotClass;
   const needsYou = children.filter(isChildThreadNeedingYou).length;
   const failed = children.filter(
@@ -1292,6 +1413,143 @@ export function childThreadsHoverLine(summary: ChildThreadsSummary): string {
     : `Threads: ${summary.count} · ${formatChildThreadsHighlight(summary.highlight)}`;
 }
 
+// ── Families across computers ────────────────────────────────────────
+//
+// A thread an agent on one computer started on another belongs to its
+// parent's family (docs/design/fleet.md, Part 5). Where the app has the
+// child's computer, the child row is the real thread. Where it doesn't, the
+// parent's own record of the child stands in for it, with its last known
+// status, and so does a start that has no thread there yet.
+
+const REMOTE_THREAD_PHASES: readonly AgentThreadStatusWord[] = [
+  "working",
+  "needs the user",
+  "waiting",
+  "failed",
+  "idle",
+  "wrapped",
+];
+
+const REMOTE_PHASE_PILLS: Record<InboxRemoteChildPhase, ThreadStatusPill | null> = {
+  working: {
+    label: "Working",
+    colorClass: "text-primary-readable",
+    dotClass: THREAD_STATUS_DOT_CLASSES.blue,
+    pulse: true,
+  },
+  "needs the user": {
+    label: "Awaiting Input",
+    colorClass: "text-amber-600 dark:text-amber-300/90",
+    dotClass: THREAD_STATUS_DOT_CLASSES.amber,
+    pulse: false,
+  },
+  waiting: {
+    label: "Waiting",
+    colorClass: "text-cyan-600 dark:text-cyan-300/90",
+    dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
+    pulse: true,
+  },
+  failed: {
+    label: "Failed",
+    colorClass: "text-red-600 dark:text-red-400/90",
+    dotClass: THREAD_STATUS_DOT_CLASSES.red,
+    pulse: false,
+  },
+  idle: null,
+  wrapped: null,
+  sending: {
+    label: "Starting",
+    colorClass: "text-primary-readable",
+    dotClass: THREAD_STATUS_DOT_CLASSES.blue,
+    pulse: true,
+  },
+  accepted: {
+    label: "Starting",
+    colorClass: "text-primary-readable",
+    dotClass: THREAD_STATUS_DOT_CLASSES.blue,
+    pulse: true,
+  },
+  // Its computer waits for the user's Allow: the user is who it waits on.
+  awaiting_approval: {
+    label: "Pending Approval",
+    colorClass: "text-amber-600 dark:text-amber-300/90",
+    dotClass: THREAD_STATUS_DOT_CLASSES.amber,
+    pulse: false,
+  },
+};
+
+/**
+ * A parent's children on computers this app can't see, from the parent's
+ * record (its `remoteChildren` and `remoteChildStarts`), in that order. A
+ * child on a computer whose threads the app has is left out: its thread
+ * speaks for it, or it is gone there. So is a start that computer already
+ * took, since its thread shows up there; a start it hasn't taken yet has no
+ * thread anywhere, so it stays. `computerLabel` names a computer the way
+ * this app knows it, falling back to the name the parent last heard.
+ */
+export function resolveRemoteFamilyChildren(input: {
+  readonly parent: Pick<SidebarThreadSummary, "remoteChildren" | "remoteChildStarts">;
+  readonly canSeeComputer: (environmentId: EnvironmentId) => boolean;
+  readonly computerLabel: (environmentId: EnvironmentId, lastKnown: string) => string;
+}): InboxRemoteChild[] {
+  const children = (input.parent.remoteChildren ?? []).flatMap((child): InboxRemoteChild[] => {
+    if (input.canSeeComputer(child.environmentId)) return [];
+    // An unknown word reads as idle, the way the parent's own tools read it.
+    const phase = REMOTE_THREAD_PHASES.find((word) => word === child.cachedStatus) ?? "idle";
+    return [
+      {
+        threadKey: scopedThreadKey(scopeThreadRef(child.environmentId, child.threadId)),
+        environmentId: child.environmentId,
+        threadId: child.threadId,
+        computerLabel: input.computerLabel(child.environmentId, child.label),
+        title: child.title,
+        phase,
+        status: REMOTE_PHASE_PILLS[phase],
+        isDone: phase === "wrapped",
+      },
+    ];
+  });
+  const starts = (input.parent.remoteChildStarts ?? [])
+    .filter((start) => !(start.status === "accepted" && input.canSeeComputer(start.environmentId)))
+    .toSorted(
+      (left, right) =>
+        (toSortableTimestamp(left.createdAt) ?? 0) - (toSortableTimestamp(right.createdAt) ?? 0),
+    )
+    .map((start): InboxRemoteChild => ({
+      threadKey: `start:${start.environmentId}:${start.requestId}`,
+      environmentId: start.environmentId,
+      threadId: null,
+      computerLabel: input.computerLabel(start.environmentId, start.label),
+      title: start.title,
+      phase: start.status,
+      status: REMOTE_PHASE_PILLS[start.status],
+      isDone: false,
+    }));
+  return [...children, ...starts];
+}
+
+/**
+ * What a remote child's row says about where it stands: a thread's status
+ * word ("working", "needs you"), or, before there is a thread, how far its
+ * start got ("Waiting for Mac mini to allow it").
+ */
+export function remoteChildStatusText(
+  child: Pick<InboxRemoteChild, "phase" | "computerLabel">,
+): string {
+  switch (child.phase) {
+    case "sending":
+      return `Sending to ${child.computerLabel}`;
+    case "accepted":
+      return `Starting on ${child.computerLabel}`;
+    case "awaiting_approval":
+      return `Waiting for ${child.computerLabel} to allow it`;
+    case "needs the user":
+      return "needs you";
+    default:
+      return child.phase;
+  }
+}
+
 // ── Grouping ─────────────────────────────────────────────────────────
 //
 // The live list can be shown under a header per project or per computer
@@ -1329,7 +1587,8 @@ export function groupInboxLiveRows<R>(
 
 /**
  * What a group's header counts: live threads blocked on the user, and live
- * threads with work in flight, children of its families included.
+ * threads with work in flight, children of its families included (on other
+ * computers too).
  */
 export function countInboxRowAttention(
   rows: readonly InboxLiveRow<InboxFamilyEntry>[],
@@ -1337,7 +1596,7 @@ export function countInboxRowAttention(
   let needsYou = 0;
   let working = 0;
   for (const row of rows) {
-    for (const entry of [row.entry, ...row.children]) {
+    for (const entry of [row.entry, ...row.children, ...row.remoteChildren]) {
       if (entry.isDone) continue;
       if (isNeedsUserStatus(entry.status)) needsYou += 1;
       else if (entry.status !== null && IN_FLIGHT.has(entry.status.label)) working += 1;

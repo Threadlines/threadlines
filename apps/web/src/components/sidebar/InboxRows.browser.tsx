@@ -1,6 +1,8 @@
 import "../../index.css";
 
 import {
+  ChildRequestId,
+  type ComputerLinkPendingRequest,
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
@@ -8,7 +10,7 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { page, userEvent } from "vite-plus/test/browser";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 // The row asks git for the checkout's current ref, which is what decides
 // whether its own status or the workspace listing answers for the branch.
@@ -32,8 +34,24 @@ import { render } from "vitest-browser-react";
 
 import type { ThreadPullRequest } from "../pull-requests/pullRequests.logic";
 import type { SidebarThreadSummary } from "../../types";
-import { resolveThreadStatusPill, summarizeChildThreads } from "../Sidebar.logic";
-import { InboxChildRow, InboxThreadRow } from "./InboxRows";
+import {
+  __resetComputerLinksForTests,
+  __setComputerLinksClientForTests,
+  useComputerLinksStore,
+  type ComputerLinksClient,
+} from "../../environments/links/computerLinks";
+import {
+  resolveRemoteFamilyChildren,
+  resolveThreadStatusPill,
+  summarizeChildThreads,
+} from "../Sidebar.logic";
+import {
+  InboxChildRow,
+  InboxLinkRequestRow,
+  InboxRemoteChildRow,
+  InboxThreadRow,
+} from "./InboxRows";
+import { usePendingLinkRequests } from "./linkedComputers";
 import { ThreadHoverCardProvider } from "./ThreadHoverCard";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
@@ -319,6 +337,179 @@ describe("child thread families in the inbox", () => {
     await page.getByTestId("child-row-thread-wrapped-child").hover();
     await userEvent.click(page.getByTestId("child-reopen-thread-wrapped-child"));
     expect(reopenThread).toHaveBeenCalledWith(`${ENVIRONMENT_ID}:thread-wrapped-child`);
+  });
+
+  it("says which computer a family's thread runs on, and where a thread on its own came from", async () => {
+    const remoteChild: SidebarThreadSummary = {
+      ...THREAD,
+      id: ThreadId.make("thread-on-windows"),
+      title: "Fix the flaky test",
+      branch: null,
+    };
+    // A start Windows PC hasn't allowed yet: there is no thread there.
+    const [waitingStart] = resolveRemoteFamilyChildren({
+      parent: {
+        remoteChildStarts: [
+          {
+            requestId: ChildRequestId.make("request-notes"),
+            environmentId: EnvironmentId.make("environment-windows"),
+            label: "Windows PC",
+            title: "Draft the notes",
+            status: "awaiting_approval",
+            createdAt: "2026-10-21T09:00:00.000Z",
+          },
+        ],
+      },
+      canSeeComputer: () => false,
+      computerLabel: (_environmentId, lastKnown) => lastKnown,
+    });
+    render(
+      <ThreadHoverCardProvider>
+        <ul>
+          <InboxThreadRow
+            {...rowCallbacks}
+            thread={remoteChild}
+            status={status("Working")}
+            projectLabel="threadlines"
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            listPullRequest={null}
+            linkedPullRequests={[]}
+            openPrLink={() => undefined}
+            remoteParent={{ title: "Ship the 0.6 release", computerLabel: "Mac mini" }}
+          />
+          <InboxChildRow
+            {...rowCallbacks}
+            thread={remoteChild}
+            status={status("Working")}
+            isDone={false}
+            doneAt={null}
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            reopenThread={() => undefined}
+            computerLabel="Windows PC"
+          />
+          <InboxRemoteChildRow child={waitingStart!} />
+        </ul>
+      </ThreadHoverCardProvider>,
+    );
+
+    await expect
+      .element(page.getByTestId(`thread-detail-${remoteChild.id}`))
+      .toHaveTextContent("from Ship the 0.6 release on Mac mini");
+    await expect
+      .element(page.getByTestId(`child-computer-${remoteChild.id}`))
+      .toHaveAttribute("aria-label", "On Windows PC");
+    await expect
+      .element(page.getByTestId("remote-child-meta-start:environment-windows:request-notes"))
+      .toHaveTextContent("Waiting for Windows PC to allow it");
+  });
+});
+
+describe("a thread another computer asked to start", () => {
+  const MAC_MINI = EnvironmentId.make("environment-mac-mini");
+  const REQUEST: ComputerLinkPendingRequest = {
+    deviceId: "device-windows-pc",
+    requestId: ChildRequestId.make("request-changelog"),
+    fromLabel: "Windows PC",
+    parentThreadTitle: "Ship the 0.6 release",
+    title: "Write the changelog",
+    prompt: "Read the pull requests merged since 0.5,\n\n   then write the changelog.",
+    projectName: "threadlines",
+    createdAt: "2026-10-21T09:00:00.000Z",
+    expiresAt: "2099-10-22T09:00:00.000Z",
+  };
+
+  // What the sidebar draws from the links store: each request waiting on a
+  // computer this app hears from, as a row.
+  function PendingRequestRows() {
+    const pending = usePendingLinkRequests();
+    return (
+      <ul>
+        {pending.map(({ environmentId, request }) => (
+          <InboxLinkRequestRow
+            key={request.requestId}
+            environmentId={environmentId}
+            computerLabel="Mac mini"
+            request={request}
+          />
+        ))}
+      </ul>
+    );
+  }
+
+  function stubMacMini(respondRequest: ComputerLinksClient["respondRequest"]) {
+    const unused = () => {
+      throw new Error("Not part of this test.");
+    };
+    __setComputerLinksClientForTests(MAC_MINI, {
+      subscribe: () => () => undefined,
+      createInvite: unused,
+      accept: unused,
+      setAccess: unused,
+      remove: unused,
+      respondRequest,
+    });
+    useComputerLinksStore
+      .getState()
+      .put(MAC_MINI, { outbound: [], inbound: [], pending: [REQUEST] });
+  }
+
+  afterEach(() => {
+    __resetComputerLinksForTests();
+  });
+
+  it("names both computers and sends Allow to the computer it would run on", async () => {
+    const respondRequest = vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined);
+    stubMacMini(respondRequest);
+    render(<PendingRequestRows />);
+
+    await expect
+      .element(page.getByTestId(`link-request-title-${REQUEST.requestId}`))
+      .toHaveTextContent("Windows PC wants to start a thread: Write the changelog");
+    await expect
+      .element(page.getByTestId(`link-request-where-${REQUEST.requestId}`))
+      .toHaveTextContent("threadlines on Mac mini · from Ship the 0.6 release");
+    await expect
+      .element(page.getByTestId(`link-request-prompt-${REQUEST.requestId}`))
+      .toHaveTextContent("Read the pull requests merged since 0.5, then write the changelog.");
+
+    await userEvent.click(page.getByTestId(`link-request-allow-${REQUEST.requestId}`));
+    expect(respondRequest).toHaveBeenCalledWith({
+      deviceId: REQUEST.deviceId,
+      requestId: REQUEST.requestId,
+      allow: true,
+    });
+    // Answered: nothing more to press while Mac mini drops the request.
+    await expect.element(page.getByTestId(`link-request-deny-${REQUEST.requestId}`)).toBeDisabled();
+  });
+
+  it("sends Deny, and offers both again when Mac mini can't take the answer", async () => {
+    const respondRequest = vi.fn<ComputerLinksClient["respondRequest"]>(async () => {
+      throw new Error("Mac mini can't be reached right now.");
+    });
+    stubMacMini(respondRequest);
+    render(<PendingRequestRows />);
+
+    await userEvent.click(page.getByTestId(`link-request-deny-${REQUEST.requestId}`));
+    expect(respondRequest).toHaveBeenCalledWith({
+      deviceId: REQUEST.deviceId,
+      requestId: REQUEST.requestId,
+      allow: false,
+    });
+    await expect.element(page.getByTestId(`link-request-allow-${REQUEST.requestId}`)).toBeEnabled();
+    await expect.element(page.getByTestId(`link-request-deny-${REQUEST.requestId}`)).toBeEnabled();
+  });
+
+  it("leaves out a computer the app no longer hears from", async () => {
+    stubMacMini(vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined));
+    useComputerLinksStore.getState().markStale(MAC_MINI);
+    render(<PendingRequestRows />);
+
+    await expect.element(page.getByRole("list")).toBeInTheDocument();
+    expect(page.getByTestId(`link-request-${REQUEST.requestId}`).elements()).toHaveLength(0);
   });
 });
 
