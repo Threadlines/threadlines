@@ -71,6 +71,15 @@ export const AgentBrowserSitePolicy = Schema.Literals(["ask", "any"]);
 export type AgentBrowserSitePolicy = typeof AgentBrowserSitePolicy.Type;
 export const DEFAULT_AGENT_BROWSER_SITE_POLICY: AgentBrowserSitePolicy = "ask";
 
+/**
+ * Where a plain click on a web link in a thread opens: the thread's browser
+ * panel or the computer's own browser. Cmd or Ctrl on the click opens the
+ * other one. Desktop only; the web app has no browser panel.
+ */
+export const LinkOpenTarget = Schema.Literals(["browser-panel", "external"]);
+export type LinkOpenTarget = typeof LinkOpenTarget.Type;
+export const DEFAULT_LINK_OPEN_TARGET: LinkOpenTarget = "browser-panel";
+
 /** A certificate trusted for a project's pages; see `isBrowserCertificateTrusted`. */
 export const BrowserTrustedCertificate = Schema.Struct({
   host: TrimmedNonEmptyString,
@@ -159,6 +168,9 @@ export const ClientSettingsSchema = Schema.Struct({
       model: TrimmedNonEmptyString,
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  openLinksIn: LinkOpenTarget.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_LINK_OPEN_TARGET)),
+  ),
   providerModelPreferences: Schema.Record(
     ProviderInstanceId,
     Schema.Struct({
@@ -1146,6 +1158,7 @@ export const ClientSettingsPatch = Schema.Struct({
       }),
     ),
   ),
+  openLinksIn: Schema.optionalKey(LinkOpenTarget),
   providerModelPreferences: Schema.optionalKey(
     Schema.Record(
       ProviderInstanceId,

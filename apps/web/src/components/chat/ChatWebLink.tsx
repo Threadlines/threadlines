@@ -9,7 +9,13 @@ import {
 
 import { isElectron } from "../../env";
 import { readLocalApi } from "../../localApi";
-import { isPlainPrimaryClick, openUrlInBrowserPanel } from "../browser/openInBrowserPanel";
+import {
+  canOpenInBrowserPanel,
+  isPlainPrimaryClick,
+  openUrlInBrowserPanel,
+  readLinkOpenTarget,
+  webLinkClickTarget,
+} from "../browser/openInBrowserPanel";
 import { isLinkToPullRequest } from "../pull-requests/pullRequests.logic";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { copyTextWithToast } from "./copyTextWithToast";
@@ -36,14 +42,14 @@ export interface ChatWebLinkProps extends Omit<
 /**
  * A web address in a transcript.
  *
- * The plain click stays in the app, because a link an agent wrote is about the
- * work in front of you and leaving to read it costs you the place you were. A
- * link to one of the thread's pull requests opens it in the Pull request tab,
- * the same place the sidebar badge goes; any other page goes to the thread's
- * browser.
- * Everything else -- modifiers, middle click, and any thread without a panel --
- * falls through to the anchor's own behaviour, so the link is never less
- * capable than an ordinary one.
+ * A link to one of the thread's pull requests opens it in the Pull request
+ * tab, the same place the sidebar badge goes. Any other page follows
+ * `webLinkClickTarget`: by default the plain click stays in the thread's
+ * browser, because a link an agent wrote is about the work in front of you
+ * and leaving to read it costs you the place you were. Whatever goes outside
+ * -- by the user's choice, a modifier, a middle click, or a thread without a
+ * panel -- falls through to the anchor's own behaviour, so the link is never
+ * less capable than an ordinary one.
  */
 export const ChatWebLink = memo(function ChatWebLink({
   href,
@@ -65,16 +71,20 @@ export const ChatWebLink = memo(function ChatWebLink({
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLAnchorElement>) => {
       onClick?.(event);
-      if (event.defaultPrevented || !isPlainPrimaryClick(event)) {
+      if (event.defaultPrevented) {
         return;
       }
-      if (tabPullRequest !== null) {
+      if (tabPullRequest !== null && isPlainPrimaryClick(event)) {
         event.preventDefault();
         event.stopPropagation();
         pullRequestLinks?.open(tabPullRequest.number);
         return;
       }
-      if (!isElectron || threadRef === null) {
+      if (
+        !isElectron ||
+        threadRef === null ||
+        webLinkClickTarget(event, readLinkOpenTarget()) !== "browser-panel"
+      ) {
         return;
       }
       if (!openUrlInBrowserPanel(threadRef, href)) {
@@ -95,11 +105,14 @@ export const ChatWebLink = memo(function ChatWebLink({
       event.preventDefault();
       event.stopPropagation();
 
-      // The browser-panel entry only appears where the plain click no longer
-      // goes there, so every destination stays one right-click away.
+      // The browser-panel entry only appears where the plain click does not
+      // go there, so every destination stays one right-click away.
+      const offersBrowserPanel =
+        (opensPullRequestTab || readLinkOpenTarget() !== "browser-panel") &&
+        canOpenInBrowserPanel(threadRef);
       const clicked = await api.contextMenu.show(
         [
-          ...(opensPullRequestTab && threadRef !== null
+          ...(offersBrowserPanel
             ? [{ id: "open-browser-panel", label: "Open in browser panel" } as const]
             : []),
           { id: "open-external", label: "Open in external browser" },

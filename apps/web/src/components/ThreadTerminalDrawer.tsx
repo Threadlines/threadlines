@@ -34,7 +34,11 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
 import { isElectron } from "../env";
 import { openInPreferredEditor } from "../editorPreferences";
-import { openUrlInBrowserPanel } from "./browser/openInBrowserPanel";
+import {
+  canOpenInBrowserPanel,
+  openUrlInBrowserPanel,
+  readLinkOpenTarget,
+} from "./browser/openInBrowserPanel";
 import { createXtermSurface, terminalThemeFromApp } from "./terminal/xtermSurface";
 import { copyTextWithToast } from "./chat/copyTextWithToast";
 import { applyTerminalInputData, createTerminalCommandInputState } from "../terminalCommandTracker";
@@ -402,7 +406,7 @@ export function TerminalViewport({
   const selectionActionTimerRef = useRef<number | null>(null);
   const keybindingsRef = useRef(keybindings);
   // The link under the pointer right now, so a right click knows what it is on.
-  const hoveredLinkRef = useRef<TerminalLinkMatch | null>(null);
+  const hoveredLinkRef = useRef<Pick<TerminalLinkMatch, "kind" | "text"> | null>(null);
   const lastAppliedTerminalEventIdRef = useRef(0);
   const terminalHydratedRef = useRef(false);
   const terminalCommandInputStateRef = useRef(createTerminalCommandInputState());
@@ -581,6 +585,50 @@ export function TerminalViewport({
       return false;
     });
 
+    const openLinkExternally = (url: string) =>
+      localApi.shell.openExternal(url).catch((error: unknown) => {
+        const activeTerminal = terminalRef.current;
+        if (!activeTerminal) return;
+        writeSystemMessage(
+          activeTerminal,
+          error instanceof Error ? error.message : "Unable to open link",
+        );
+      });
+
+    // Same choice as a chat link (Settings › General › Open links in). Threads
+    // without a panel (general chat, plain web) always go to the external
+    // browser; the right-click menu offers the other place.
+    const openWebLink = (url: string) => {
+      if (
+        isElectron &&
+        readLinkOpenTarget() === "browser-panel" &&
+        openUrlInBrowserPanel(threadRef, url)
+      ) {
+        return;
+      }
+      void openLinkExternally(url);
+    };
+
+    // Links a program marks up itself (OSC 8, as `ls --hyperlink` prints) open
+    // like the addresses found in the text. xterm's own handler would confirm
+    // and then open a blank window, which the desktop refuses. xterm passes
+    // only http and https links here.
+    terminal.options.linkHandler = {
+      activate: (event, text) => {
+        if (isTerminalLinkActivation(event)) {
+          openWebLink(text);
+        }
+      },
+      hover: (_event, text) => {
+        hoveredLinkRef.current = { kind: "url", text };
+      },
+      leave: (_event, text) => {
+        if (hoveredLinkRef.current?.kind === "url" && hoveredLinkRef.current.text === text) {
+          hoveredLinkRef.current = null;
+        }
+      },
+    };
+
     const terminalLinksDisposable = terminal.registerLinkProvider({
       provideLinks: (bufferLineNumber, callback) => {
         const activeTerminal = terminalRef.current;
@@ -629,19 +677,7 @@ export function TerminalViewport({
               if (!latestTerminal) return;
 
               if (match.kind === "url") {
-                // Same rule as a chat link: the plain activation stays in the
-                // thread's own browser. Threads without a panel (general chat,
-                // plain web) fall through to the external browser as before;
-                // the right-click menu is the deliberate way out.
-                if (isElectron && openUrlInBrowserPanel(threadRef, match.text)) {
-                  return;
-                }
-                void localApi.shell.openExternal(match.text).catch((error: unknown) => {
-                  writeSystemMessage(
-                    latestTerminal,
-                    error instanceof Error ? error.message : "Unable to open link",
-                  );
-                });
+                openWebLink(match.text);
                 return;
               }
 
@@ -707,22 +743,25 @@ export function TerminalViewport({
       const position = { x: event.clientX, y: event.clientY };
       void (async () => {
         if (link.kind === "url") {
+          // As in chat: the panel is offered only when the click goes elsewhere.
+          const offersBrowserPanel =
+            readLinkOpenTarget() !== "browser-panel" && canOpenInBrowserPanel(threadRef);
           const clicked = await localApi.contextMenu.show(
             [
+              ...(offersBrowserPanel
+                ? [{ id: "open-browser-panel", label: "Open in browser panel" } as const]
+                : []),
               { id: "open-external", label: "Open in external browser" },
               { id: "copy-link", label: "Copy link address" },
             ] as const,
             position,
           );
+          if (clicked === "open-browser-panel") {
+            openUrlInBrowserPanel(threadRef, link.text);
+            return;
+          }
           if (clicked === "open-external") {
-            await localApi.shell.openExternal(link.text).catch((error: unknown) => {
-              const activeTerminal = terminalRef.current;
-              if (!activeTerminal) return;
-              writeSystemMessage(
-                activeTerminal,
-                error instanceof Error ? error.message : "Unable to open link",
-              );
-            });
+            await openLinkExternally(link.text);
             return;
           }
           if (clicked === "copy-link") {

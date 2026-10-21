@@ -12,7 +12,12 @@ import {
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useStore, type EnvironmentState } from "../../store";
 import type { Project, ThreadShell } from "../../types";
-import { isPlainPrimaryClick, openTabForPage, openUrlInBrowserPanel } from "./openInBrowserPanel";
+import {
+  isPlainPrimaryClick,
+  openTabForPage,
+  openUrlInBrowserPanel,
+  webLinkClickTarget,
+} from "./openInBrowserPanel";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-open-in-browser");
 const THREAD_ID = ThreadId.make("thread-open-in-browser");
@@ -137,6 +142,24 @@ describe("openUrlInBrowserPanel", () => {
     expect(isPlainPrimaryClick({ ...click, button: 1 })).toBe(false);
     expect(isPlainPrimaryClick({ ...click, ctrlKey: true })).toBe(false);
     expect(isPlainPrimaryClick({ ...click, shiftKey: true })).toBe(false);
+  });
+
+  it("sends the plain click where the user chose and Cmd or Ctrl to the other place", () => {
+    const click = {
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+    };
+    expect(webLinkClickTarget(click, "browser-panel")).toBe("browser-panel");
+    expect(webLinkClickTarget(click, "external")).toBe("external");
+    expect(webLinkClickTarget({ ...click, metaKey: true }, "browser-panel")).toBe("external");
+    expect(webLinkClickTarget({ ...click, metaKey: true }, "external")).toBe("browser-panel");
+    expect(webLinkClickTarget({ ...click, ctrlKey: true }, "external")).toBe("browser-panel");
+    // Middle clicks and other modifiers stay the anchor's, whatever the choice.
+    expect(webLinkClickTarget({ ...click, button: 1 }, "external")).toBeNull();
+    expect(webLinkClickTarget({ ...click, shiftKey: true }, "browser-panel")).toBeNull();
   });
 
   it("leaves general chat threads alone, because they have no browser", () => {

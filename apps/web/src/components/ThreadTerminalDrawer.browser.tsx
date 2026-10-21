@@ -18,6 +18,13 @@ interface TestTerminalLink {
   leave?: (event: MouseEvent, text: string) => void;
 }
 
+/** The handler the viewport gives xterm for links a program marks up (OSC 8). */
+interface TestTerminalLinkHandler {
+  activate: (event: MouseEvent, text: string) => void;
+  hover?: (event: MouseEvent, text: string) => void;
+  leave?: (event: MouseEvent, text: string) => void;
+}
+
 interface TestTerminalLinkProvider {
   provideLinks: (
     bufferLineNumber: number,
@@ -38,6 +45,7 @@ const {
   readEnvironmentApiMock,
   readLocalApiMock,
   linkProviderRef,
+  terminalOptionsRef,
   terminalBufferLinesRef,
   onTerminalWriteRef,
   terminalOnDataRef,
@@ -71,6 +79,9 @@ const {
   linkProviderRef: {
     current: null as TestTerminalLinkProvider | null,
   },
+  terminalOptionsRef: {
+    current: null as { linkHandler?: TestTerminalLinkHandler } | null,
+  },
   terminalBufferLinesRef: {
     current: [] as string[],
   },
@@ -102,7 +113,7 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class MockTerminal {
     cols = 80;
     rows = 24;
-    options: { theme?: unknown } = {};
+    options: { theme?: unknown; linkHandler?: TestTerminalLinkHandler } = {};
     buffer = {
       active: {
         viewportY: 0,
@@ -117,6 +128,7 @@ vi.mock("@xterm/xterm", () => ({
 
     constructor(options: unknown) {
       terminalConstructorSpy(options);
+      terminalOptionsRef.current = this.options;
     }
 
     loadAddon(addon: unknown) {
@@ -215,6 +227,7 @@ vi.mock("~/localApi", () => ({
 vi.mock("../env", () => ({ isElectron: true }));
 
 import { TerminalViewport } from "./ThreadTerminalDrawer";
+import { updateSettings } from "../hooks/useSettings";
 import { selectTerminalSubmittedCommand, useTerminalStateStore } from "../terminalStateStore";
 import {
   selectActiveTab,
@@ -380,7 +393,9 @@ describe("TerminalViewport", () => {
     deferTerminalWriteCallbacksRef.current = false;
     terminalSelectionStateRef.current = null;
     linkProviderRef.current = null;
+    terminalOptionsRef.current = null;
     terminalBufferLinesRef.current = [];
+    updateSettings({ openLinksIn: "browser-panel" });
     useStore.setState({ activeEnvironmentId: null, environmentStateById: {} });
     useBrowserPanelStore.setState({
       browserStateByThreadKey: {},
@@ -694,6 +709,100 @@ describe("TerminalViewport", () => {
       });
       // The activated route stayed untouched: nothing landed in the panel.
       expect(useBrowserPanelStore.getState().browserStateByThreadKey).toEqual({});
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("sends links outside when that is the choice, with the panel one right-click away", async () => {
+    updateSettings({ openLinksIn: "external" });
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    seedWorkspaceThread("environment-a");
+    const localApi = {
+      contextMenu: { show: vi.fn(async () => "open-browser-panel") },
+      shell: { openExternal: vi.fn(async () => undefined) },
+    };
+    readLocalApiMock.mockReturnValueOnce(localApi);
+
+    const mounted = await mountTerminalViewport({ threadRef });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+        expect(linkProviderRef.current).not.toBeNull();
+      });
+
+      const links = provideTerminalLinks("  Local   http://localhost:4321/");
+      links[0]?.activate(linkActivationEvent());
+      expect(localApi.shell.openExternal).toHaveBeenCalledWith("http://localhost:4321/");
+      expect(useBrowserPanelStore.getState().browserStateByThreadKey).toEqual({});
+
+      links[0]?.hover?.(new MouseEvent("mousemove"), "http://localhost:4321/");
+      document
+        .querySelector<HTMLElement>("[data-terminal-viewport-mount='true']")
+        ?.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: 8,
+            clientY: 8,
+          }),
+        );
+
+      await vi.waitFor(() => {
+        expect(localApi.contextMenu.show).toHaveBeenCalledWith(
+          [
+            { id: "open-browser-panel", label: "Open in browser panel" },
+            { id: "open-external", label: "Open in external browser" },
+            { id: "copy-link", label: "Copy link address" },
+          ],
+          { x: 8, y: 8 },
+        );
+        const panel = selectThreadBrowserState(
+          useBrowserPanelStore.getState().browserStateByThreadKey,
+          threadRef,
+        );
+        expect(selectActiveTab(panel)?.url).toBe("http://localhost:4321/");
+      });
+      expect(localApi.shell.openExternal).toHaveBeenCalledTimes(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a link a program marked up (OSC 8) like any other terminal link", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    seedWorkspaceThread("environment-a");
+    const localApi = {
+      contextMenu: { show: vi.fn(async () => null) },
+      shell: { openExternal: vi.fn(async () => undefined) },
+    };
+    readLocalApiMock.mockReturnValueOnce(localApi);
+
+    const mounted = await mountTerminalViewport({ threadRef });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+        expect(terminalOptionsRef.current?.linkHandler).toBeDefined();
+      });
+      const linkHandler = terminalOptionsRef.current?.linkHandler;
+
+      // A plain click is for selecting text, as with any terminal link.
+      linkHandler?.activate(new MouseEvent("click"), "http://localhost:4321/docs");
+      expect(useBrowserPanelStore.getState().browserStateByThreadKey).toEqual({});
+
+      linkHandler?.activate(linkActivationEvent(), "http://localhost:4321/docs");
+      const panel = selectThreadBrowserState(
+        useBrowserPanelStore.getState().browserStateByThreadKey,
+        threadRef,
+      );
+      expect(selectActiveTab(panel)?.url).toBe("http://localhost:4321/docs");
+      expect(localApi.shell.openExternal).not.toHaveBeenCalled();
     } finally {
       await mounted.cleanup();
     }

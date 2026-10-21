@@ -32,6 +32,7 @@ const clientSettings: ClientSettings = {
   fileViewerWordWrap: false,
   followUpDelivery: "steer",
   favorites: [],
+  openLinksIn: "browser-panel",
   providerModelPreferences: {},
   suppressCrossProviderSwitchWarning: false,
   sidebarProjectGroupingMode: "repository_path",
