@@ -4358,6 +4358,54 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("never promises an offline computer finishes an unlink nothing can tell it about", async () => {
+    // Only Mac mini's agents work here: this computer has no link to Mac mini.
+    primaryLinksSnapshot = fleetLinksSnapshot({
+      inbound: [fleetInboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+    });
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-fleet-unlink-one-way" as MessageId,
+        targetText: "fleet unlink one way",
+      }),
+      configureFixture: withComputerLinksFixture,
+      resolveRpc: (body) =>
+        body._tag === WS_METHODS.linksRemove ? { otherComputer: "not_asked" } : undefined,
+      initialPath: `/fleet/${FLEET_OFFLINE_ENVIRONMENT_ID}`,
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          label: "Mac mini",
+          os: "darwin",
+          state: "disconnected",
+        },
+      ]);
+      await page.getByTestId(`fleet-pair-${LOCAL_ENVIRONMENT_ID}-unlink`).click();
+      const dialog = page.getByTestId("fleet-unlink-dialog");
+      await expect
+        .element(dialog.getByTestId("fleet-unlink-keeps-side"))
+        .toHaveTextContent(
+          "Mac mini is offline. It can't start work on Local environment after this, but it still lists the link until you unlink again while it's online.",
+        );
+      await expect.element(dialog.getByTestId("fleet-unlink-offline")).not.toBeInTheDocument();
+      await dialog
+        .getByRole("button", { name: "Unlink on Local environment now", exact: true })
+        .click();
+      await expect
+        .element(dialog.getByTestId("fleet-unlink-results"))
+        .toHaveTextContent(
+          "Mac mini's agents on Local environment: unlinked on Local environment. Mac mini still lists it until you unlink again while it's online.",
+        );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("removes a computer from this app without unlinking it", async () => {
     const windowsLinks = fakeComputerLinksClient();
     primaryLinksSnapshot = fleetLinksSnapshot({

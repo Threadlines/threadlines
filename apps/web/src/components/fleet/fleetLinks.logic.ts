@@ -416,13 +416,18 @@ export interface FleetUnlinkStep {
 export interface FleetUnlinkPlan {
   /** Inbound halves first, so each outbound half knows whether its other half is gone. */
   readonly steps: ReadonlyArray<FleetUnlinkStep>;
-  /** Computers holding a half this app can't reach: they finish when they're back. */
   /**
    * Computers this app can't reach now. Whatever halves they hold (known or
-   * not: an offline computer's last word may be missing) wait for them, and
-   * they finish when they're back.
+   * not: an offline computer's last word may be missing) wait for them.
    */
   readonly finishLater: ReadonlyArray<FleetLinkReach>;
+  /**
+   * Those of them nobody will tell: the other computer has no link to them
+   * to carry the unlink, so their own side stays listed until an unlink
+   * while they're online. (It can't start work anyway: the other computer
+   * removes its side now.) The rest finish when they're back.
+   */
+  readonly keepItsSide: ReadonlyArray<FleetLinkReach>;
   /** No half can be removed now. */
   readonly blocked: boolean;
 }
@@ -475,13 +480,34 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
     if (!computer.reachable) finishLater.set(computer.environmentId, computer);
   }
   const steps = [...inboundSteps, ...outboundSteps];
-  return { steps, finishLater: [...finishLater.values()], blocked: steps.length === 0 };
+  // An offline computer hears the unlink over the other computer's link to
+  // it, which that computer keeps trying until it gets through.
+  const toldLater = new Set(
+    outboundSteps.map((step) =>
+      step.direction === "outward"
+        ? pair.outward.worker.environmentId
+        : pair.inward.worker.environmentId,
+    ),
+  );
+  return {
+    steps,
+    finishLater: [...finishLater.values()],
+    keepItsSide: [...finishLater.values()].filter(
+      (computer) => !toldLater.has(computer.environmentId),
+    ),
+    blocked: steps.length === 0,
+  };
 }
 
-/** How one direction came out of an unlink. */
+/**
+ * How one direction came out of an unlink. `leftover`: unlinked on the
+ * working computer, while the asking one (offline, and nobody can tell it)
+ * still lists its side until an unlink while it's online.
+ */
 export type FleetUnlinkOutcome =
   | { readonly kind: "done" }
   | { readonly kind: "pending"; readonly waitingFor: string }
+  | { readonly kind: "leftover"; readonly holder: string }
   | { readonly kind: "failed"; readonly detail: string };
 
 /** What one step of an unlink answered. */
@@ -506,6 +532,7 @@ export function resolveFleetUnlinkOutcomes(
   results: ReadonlyArray<FleetUnlinkStepResult>,
 ): Array<{ readonly direction: FleetDirection; readonly outcome: FleetUnlinkOutcome }> {
   const finishLater = new Set(plan.finishLater.map((computer) => computer.environmentId));
+  const keepItsSide = new Set(plan.keepItsSide.map((computer) => computer.environmentId));
   const resultsOf = (name: "outward" | "inward") =>
     results.filter((result) => result.step.direction === name);
   /** The direction's asking computer heard from the other one that the unlink is done there. */
@@ -550,7 +577,9 @@ export function resolveFleetUnlinkOutcomes(
           outcome:
             waitingFor === null
               ? { kind: "done" }
-              : { kind: "pending", waitingFor: waitingFor.label },
+              : waitingFor === direction.asker && keepItsSide.has(direction.asker.environmentId)
+                ? { kind: "leftover", holder: direction.asker.label }
+                : { kind: "pending", waitingFor: waitingFor.label },
         },
       ];
     },

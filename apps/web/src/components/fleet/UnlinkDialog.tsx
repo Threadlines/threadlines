@@ -68,6 +68,12 @@ export function UnlinkDialog({
         ];
   });
   const finishLaterNames = plan.finishLater.map((computer) => computer.label);
+  const keepItsSide = new Set(plan.keepItsSide.map((computer) => computer.environmentId));
+  const finishingNames = plan.finishLater
+    .filter((computer) => !keepItsSide.has(computer.environmentId))
+    .map((computer) => computer.label);
+  const otherOf = (environmentId: EnvironmentId) =>
+    environmentId === pair.self.environmentId ? pair.other : pair.self;
 
   const unlink = async () => {
     setRunning(true);
@@ -110,14 +116,24 @@ export function UnlinkDialog({
                   {line}
                 </p>
               ))}
-              {finishLaterNames.length > 0 ? (
+              {finishingNames.length > 0 ? (
                 <p className="text-muted-foreground" data-testid="fleet-unlink-offline">
-                  {joinNames(finishLaterNames)} {finishLaterNames.length === 1 ? "is" : "are"}{" "}
-                  offline. {joinNames(finishLaterNames)}{" "}
-                  {finishLaterNames.length === 1 ? "finishes" : "finish"} when{" "}
-                  {finishLaterNames.length === 1 ? "it's" : "they're"} back.
+                  {joinNames(finishingNames)} {finishingNames.length === 1 ? "is" : "are"} offline.{" "}
+                  {joinNames(finishingNames)} {finishingNames.length === 1 ? "finishes" : "finish"}{" "}
+                  when {finishingNames.length === 1 ? "it's" : "they're"} back.
                 </p>
               ) : null}
+              {plan.keepItsSide.map((computer) => (
+                <p
+                  key={computer.environmentId}
+                  className="text-muted-foreground"
+                  data-testid="fleet-unlink-keeps-side"
+                >
+                  {computer.label} is offline. It can&apos;t start work on{" "}
+                  {otherOf(computer.environmentId).label} after this, but it still lists the link
+                  until you unlink again while it&apos;s online.
+                </p>
+              ))}
               {plan.blocked ? (
                 <p className="text-warning">
                   Connect to {joinNames([pair.self.label, pair.other.label])} first.
@@ -131,7 +147,7 @@ export function UnlinkDialog({
                   key={`${direction.asker.environmentId}>${direction.worker.environmentId}`}
                   className="flex items-start gap-1.5"
                 >
-                  {outcome.kind === "done" ? (
+                  {outcome.kind === "done" || outcome.kind === "leftover" ? (
                     <CircleCheckIcon
                       aria-hidden
                       className="mt-0.5 size-3.5 shrink-0 text-success"
@@ -151,9 +167,11 @@ export function UnlinkDialog({
                     {direction.asker.label}&apos;s agents on {direction.worker.label}:{" "}
                     {outcome.kind === "done"
                       ? "unlinked."
-                      : outcome.kind === "pending"
-                        ? `${outcome.waitingFor} finishes when it's back.`
-                        : outcome.detail}
+                      : outcome.kind === "leftover"
+                        ? `unlinked on ${direction.worker.label}. ${outcome.holder} still lists it until you unlink again while it's online.`
+                        : outcome.kind === "pending"
+                          ? `${outcome.waitingFor} finishes when it's back.`
+                          : outcome.detail}
                   </span>
                 </li>
               ))}

@@ -424,6 +424,30 @@ describe("planFleetUnlink", () => {
       },
     );
   });
+
+  it("never promises an offline computer finishes when nothing can tell it", () => {
+    // Only Windows PC's agents work on Mac, and Windows PC is offline: Mac
+    // has no link to it to carry the unlink.
+    const pair = resolveFleetPair(
+      reach(MAC, "Mac", {
+        links: { live: true, snapshot: snapshot({ inbound: [inbound(WINDOWS, "Windows PC")] }) },
+      }),
+      reach(WINDOWS, "Windows PC", {
+        reachable: false,
+        links: { live: false, snapshot: snapshot({ outbound: [outbound(MAC, "Mac")] }) },
+      }),
+    );
+    const plan = planFleetUnlink(pair);
+    expect(plan.keepItsSide.map((computer) => computer.label)).toEqual(["Windows PC"]);
+    const outcomes = resolveFleetUnlinkOutcomes(
+      pair,
+      plan,
+      plan.steps.map((step) => ({ step, error: null, otherComputer: "not_asked" as const })),
+    ).map(({ direction, outcome }) => [direction.asker.label, outcome]);
+    expect(outcomes).toEqual([["Windows PC", { kind: "leftover", holder: "Windows PC" }]]);
+    // With a link of Mac's to carry it, Windows PC does finish when it's back.
+    expect(planFleetUnlink(linkedPair(false)).keepItsSide).toEqual([]);
+  });
 });
 
 describe("cross-computer work in the graph", () => {
