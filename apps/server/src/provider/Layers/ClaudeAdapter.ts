@@ -753,11 +753,15 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
     uri: string,
   ) => Promise<{ readonly contents?: ReadonlyArray<unknown> }>;
   /** The SDK's raw control request, which `mcp_call` (a tool call with no
-   *  model turn) has no method of its own for yet. */
+   *  model turn) has no method of its own for yet. `result_not_for_model`
+   *  asks for the tool's own content blocks instead of what a model turn
+   *  would be handed; CLIs without `mcp_call_result_not_for_model_v1`
+   *  ignore it. */
   readonly request?: (request: {
     readonly subtype: "mcp_call";
     readonly tool: string;
     readonly arguments: Readonly<Record<string, unknown>>;
+    readonly result_not_for_model?: boolean;
   }) => Promise<unknown>;
   readonly close: () => void;
 }
@@ -9819,6 +9823,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             subtype: "mcp_call",
             tool: claudeMcpToolName(input.server, input.tool),
             arguments: input.arguments,
+            // The result goes to the app's view, not to Claude.
+            result_not_for_model: true,
           }),
         catch: (cause) => mcpAppRequestError("callMcpTool", toMessage(cause, "Tool call failed.")),
       }).pipe(

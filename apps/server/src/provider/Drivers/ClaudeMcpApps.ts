@@ -89,7 +89,9 @@ export function claudeMcpToolResult(input: {
   };
 }
 
-/** The result of Claude's `mcp_call` control request, as a `CallToolResult`. */
+/** The result of Claude's `mcp_call` control request, as a `CallToolResult`:
+ *  the tool's own content blocks when the CLI honours `result_not_for_model`,
+ *  else the one string a model turn would get. */
 export function claudeMcpCallResult(response: unknown): McpAppToolResult {
   const record = asRecord(asRecord(response)?.response) ?? asRecord(response) ?? {};
   return claudeMcpToolResult({
