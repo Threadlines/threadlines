@@ -33,6 +33,7 @@ type CheckRunEvaluation = {
 // shards in step with the `server_test` matrix in .github/workflows/ci.yml.
 const DEFAULT_REQUIRED_CHECKS = [
   "Checks and Build",
+  "Unit Test",
   "Server Test (1/3)",
   "Server Test (2/3)",
   "Server Test (3/3)",
