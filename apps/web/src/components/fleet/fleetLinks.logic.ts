@@ -347,6 +347,11 @@ export interface FleetUnlinkPlan {
   /** Inbound halves first, so each outbound half knows whether its other half is gone. */
   readonly steps: ReadonlyArray<FleetUnlinkStep>;
   /** Computers holding a half this app can't reach: they finish when they're back. */
+  /**
+   * Computers this app can't reach now. Whatever halves they hold (known or
+   * not: an offline computer's last word may be missing) wait for them, and
+   * they finish when they're back.
+   */
   readonly finishLater: ReadonlyArray<FleetLinkReach>;
   /** No half can be removed now. */
   readonly blocked: boolean;
@@ -395,6 +400,9 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
         finishLater.set(asker.environmentId, asker);
       }
     }
+  }
+  for (const computer of [pair.self, pair.other]) {
+    if (!computer.reachable) finishLater.set(computer.environmentId, computer);
   }
   const steps = [...inboundSteps, ...outboundSteps];
   return { steps, finishLater: [...finishLater.values()], blocked: steps.length === 0 };

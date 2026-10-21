@@ -32,6 +32,15 @@ import {
   type ThreadParticipantId,
   type TurnId,
   WS_METHODS,
+  AuthSessionId,
+  type ComputerLinkInvite,
+  ComputerLinkId,
+  type ComputerLinkPendingRequest,
+  type ComputerLinksSnapshot,
+  type InboundComputerLink,
+  type OutboundComputerLink,
+  RelayHostId,
+  RelayInviteId,
   CheckpointRef,
   OrchestrationSessionStatus,
   DEFAULT_SERVER_SETTINGS,
@@ -61,6 +70,13 @@ import {
 import { render } from "vitest-browser-react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import {
+  __resetComputerLinksForTests,
+  __setComputerLinksClientForTests,
+  type ComputerLinksClient,
+  useComputerLinksStore,
+} from "../environments/links/computerLinks";
+import { closeConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
 import { updateSettings } from "../hooks/useSettings";
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
@@ -1003,6 +1019,126 @@ async function saveFleetComputers(
         : {}),
     });
   }
+}
+
+/** What this computer's server streams for `links.subscribe`; null sends nothing. */
+let primaryLinksSnapshot: ComputerLinksSnapshot | null = null;
+
+/** This computer's server, and the computers saved from its config, take links. */
+function withComputerLinksFixture(nextFixture: TestFixture): void {
+  const capabilities = {
+    ...nextFixture.serverConfig.environment.capabilities,
+    computerLinks: true,
+  };
+  nextFixture.serverConfig = {
+    ...nextFixture.serverConfig,
+    environment: { ...nextFixture.serverConfig.environment, capabilities },
+  };
+  nextFixture.welcome = {
+    ...nextFixture.welcome,
+    environment: { ...nextFixture.welcome.environment, capabilities },
+  };
+}
+
+function fleetLinksSnapshot(parts: Partial<ComputerLinksSnapshot>): ComputerLinksSnapshot {
+  return { outbound: [], inbound: [], pending: [], ...parts };
+}
+
+/** This computer's own link to `remote`. */
+function fleetOutboundLink(
+  remote: EnvironmentId,
+  remoteLabel: string,
+  overrides: Partial<OutboundComputerLink> = {},
+): OutboundComputerLink {
+  return {
+    linkId: ComputerLinkId.make(`link-to-${remote}`),
+    remoteEnvironmentId: remote,
+    remoteLabel,
+    remotePlatform: null,
+    state: "active",
+    connection: "idle",
+    route: null,
+    createdAt: NOW_ISO,
+    lastConnectedAt: null,
+    lastError: null,
+    ...overrides,
+  };
+}
+
+/** `from`'s link to the computer whose snapshot holds it (null: it hasn't said who it is). */
+function fleetInboundLink(
+  from: EnvironmentId | null,
+  label: string,
+  overrides: Partial<InboundComputerLink> = {},
+): InboundComputerLink {
+  return {
+    deviceId: `device-${from ?? label}`,
+    environmentId: from,
+    label,
+    platform: null,
+    sessionId: AuthSessionId.make(`session-${from ?? label}`),
+    access: "ask",
+    maxRuntimeMode: "auto",
+    createdAt: NOW_ISO,
+    lastUsedAt: null,
+    ...overrides,
+  };
+}
+
+function fleetPendingRequest(
+  from: EnvironmentId,
+  requestId: string,
+  title: string,
+): ComputerLinkPendingRequest {
+  return {
+    deviceId: `device-${from}`,
+    requestId: ChildRequestId.make(requestId),
+    fromLabel: "Mac mini",
+    parentThreadTitle: "Release checklist",
+    title,
+    prompt: "Run the tests and tell me what fails.",
+    projectName: "Orbit",
+    createdAt: NOW_ISO,
+    expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+  };
+}
+
+function fleetInvite(environmentId: EnvironmentId, label: string): ComputerLinkInvite {
+  return {
+    hostId: RelayHostId.make(`host-${environmentId}`),
+    relayOrigin: "https://relay.example.test",
+    inviteId: RelayInviteId.make(`invite-${environmentId}`),
+    inviteSecret: "secret",
+    hostPublicKey: "key",
+    directOrigins: [],
+    environmentId,
+    label,
+    expiresAt: "2099-01-01T00:10:00.000Z",
+  };
+}
+
+/** A saved computer's links calls, as its server would take them. */
+function fakeComputerLinksClient() {
+  const setAccess = vi.fn(async () => ({}));
+  const accept = vi.fn(async () => ({}));
+  const remove = vi.fn(async () => ({ otherComputer: "confirmed" as const }));
+  const respondRequest = vi.fn(async () => undefined);
+  const createInvite = vi.fn(async () => fleetInvite(FLEET_REMOTE_ENVIRONMENT_ID, "Windows PC"));
+  return {
+    setAccess,
+    accept,
+    remove,
+    respondRequest,
+    createInvite,
+    client: {
+      subscribe: () => () => undefined,
+      setAccess,
+      accept,
+      remove,
+      respondRequest,
+      createInvite,
+    } as unknown as ComputerLinksClient,
+  };
 }
 
 function updateThreadSessionInSnapshot(
@@ -2991,6 +3127,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
             },
           ];
         }
+        if (request._tag === WS_METHODS.linksSubscribe) {
+          return primaryLinksSnapshot === null ? [] : [primaryLinksSnapshot];
+        }
         if (request._tag === ORCHESTRATION_WS_METHODS.subscribeShell) {
           if (suppressInitialShellSnapshot) {
             return [];
@@ -3032,6 +3171,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     wsRequests.length = 0;
     customWsRpcResolver = null;
     suppressInitialShellSnapshot = false;
+    primaryLinksSnapshot = null;
+    __resetComputerLinksForTests();
+    closeConnectComputerDialog();
     __resetEnvironmentApiOverridesForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
@@ -3660,7 +3802,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("draws the fleet from saved computers and their threads, and narrows the list to one", async () => {
+  it("draws the fleet from saved computers and their threads, and a computer opens its page", async () => {
     const workingThreadId = "thread-fleet-working" as ThreadId;
     const remoteThreadId = "thread-fleet-remote" as ThreadId;
     const mounted = await mountChatView({
@@ -3722,27 +3864,35 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .toHaveTextContent("Mac mini was last seen 2h ago.");
       // The rail counts the work too.
       await expect.element(page.getByTestId("rail-fleet")).toHaveAttribute("aria-current", "page");
-
-      await remoteNode.click();
       await expect
-        .element(page.getByTestId(`fleet-thread-${workingThreadId}`))
+        .element(page.getByTestId("fleet-list-all"))
+        .toHaveAttribute("aria-current", "page");
+
+      // A computer in the graph opens its page, and so does its row in the list.
+      await remoteNode.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === `/fleet/${FLEET_REMOTE_ENVIRONMENT_ID}`,
+        "A computer in the graph should open its page.",
+      );
+      const working = page.getByTestId("fleet-working-now");
+      await expect.element(working.getByTestId(`fleet-thread-${remoteThreadId}`)).toBeVisible();
+      await expect
+        .element(working.getByTestId(`fleet-thread-${workingThreadId}`))
         .not.toBeInTheDocument();
-      await expect.element(page.getByTestId(`fleet-thread-${remoteThreadId}`)).toBeVisible();
-      // The list of computers beside the rail follows the graph.
       await expect
         .element(page.getByTestId(`fleet-list-computer-${FLEET_REMOTE_ENVIRONMENT_ID}`))
-        .toHaveAttribute("aria-pressed", "true");
-      await page.getByTestId("fleet-show-all").click();
-      await expect.element(page.getByTestId(`fleet-thread-${workingThreadId}`)).toBeVisible();
-
-      // And narrows the page the same way: once to narrow, All computers to undo.
-      await page.getByTestId(`fleet-list-computer-${FLEET_REMOTE_ENVIRONMENT_ID}`).click();
+        .toHaveAttribute("aria-current", "page");
+      await page.getByTestId(`fleet-list-computer-${FLEET_OFFLINE_ENVIRONMENT_ID}`).click();
       await expect
-        .element(page.getByTestId(`fleet-thread-${workingThreadId}`))
-        .not.toBeInTheDocument();
-      await expect.element(page.getByTestId("fleet-show-all")).toBeVisible();
+        .element(page.getByText("Mac mini is offline. Its work shows here when it's back."))
+        .toBeVisible();
       await page.getByTestId("fleet-list-all").click();
-      await expect.element(page.getByTestId(`fleet-thread-${workingThreadId}`)).toBeVisible();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/fleet" || pathname === "/fleet/",
+        "All computers should go back to the graph.",
+      );
 
       await page.getByTestId(`fleet-thread-${remoteThreadId}`).click();
       await waitForURL(
@@ -3844,16 +3994,383 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await expect
-        .element(page.getByText("Link another computer or your phone to see them here."))
+        .element(page.getByText("Connect another computer to see it here."))
         .toBeVisible();
-      // Only this computer's owner can let a device in; anyone else is shown
-      // where that is done.
-      await page.getByRole("button", { name: "Connect", exact: true }).click();
+      await page
+        .getByTestId("fleet-view")
+        .getByRole("button", { name: "Connect to a computer", exact: true })
+        .click();
+      await expect
+        .element(page.getByRole("dialog", { name: "Connect to a computer" }))
+        .toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("lists linked computers this app doesn't save, and one waiting to say which it is", async () => {
+    const buildBox = EnvironmentId.make("environment-build-box");
+    primaryLinksSnapshot = fleetLinksSnapshot({
+      outbound: [fleetOutboundLink(FLEET_REMOTE_ENVIRONMENT_ID, "DESKTOP-42")],
+      inbound: [
+        fleetInboundLink(FLEET_REMOTE_ENVIRONMENT_ID, "DESKTOP-42"),
+        fleetInboundLink(buildBox, "build box"),
+        fleetInboundLink(null, "Studio"),
+      ],
+    });
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-fleet-linked" as MessageId,
+        targetText: "fleet linked",
+      }),
+      configureFixture: withComputerLinksFixture,
+      initialPath: "/fleet",
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_REMOTE_ENVIRONMENT_ID,
+          label: "Windows PC",
+          os: "windows",
+          state: "connected",
+        },
+      ]);
+      const list = page.getByTestId("fleet-computers-list");
+      // Saved and linked: one row, under the name this app saved it with.
+      await expect
+        .element(list.getByTestId(`fleet-list-computer-${FLEET_REMOTE_ENVIRONMENT_ID}`))
+        .toHaveTextContent("Windows PC");
+      await expect.element(list.getByText("DESKTOP-42")).not.toBeInTheDocument();
+      await expect
+        .element(list.getByTestId(`fleet-list-computer-${buildBox}`))
+        .toHaveTextContent("build boxLinked with Local environment");
+      await expect
+        .element(list.getByTestId("fleet-list-computer-device:device-Studio"))
+        .toHaveTextContent("StudioWaiting to hear from it");
+
+      // It says which computer it is: its own entry from then on.
+      const studio = EnvironmentId.make("environment-studio");
+      rpcHarness.emitStreamValue(
+        WS_METHODS.linksSubscribe,
+        fleetLinksSnapshot({
+          ...primaryLinksSnapshot,
+          inbound: [
+            fleetInboundLink(FLEET_REMOTE_ENVIRONMENT_ID, "DESKTOP-42"),
+            fleetInboundLink(buildBox, "build box"),
+            fleetInboundLink(studio, "Studio", { deviceId: "device-Studio" }),
+          ],
+        }),
+      );
+      await expect
+        .element(list.getByTestId(`fleet-list-computer-${studio}`))
+        .toHaveTextContent("Studio");
+      await expect
+        .element(list.getByTestId("fleet-list-computer-device:device-Studio"))
+        .not.toBeInTheDocument();
+
+      // Linked but not in this app: its work is out of sight, never "idle".
+      await list.getByTestId(`fleet-list-computer-${buildBox}`).click();
+      await expect.element(page.getByText("Connect to build box to see its work.")).toBeVisible();
+      await expect
+        .element(page.getByTestId("fleet-computer-meta"))
+        .toHaveTextContent("Not connected to this app");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("sets each direction on the computer it runs on, and links the other direction", async () => {
+    const windowsLinks = fakeComputerLinksClient();
+    primaryLinksSnapshot = fleetLinksSnapshot({
+      outbound: [fleetOutboundLink(FLEET_REMOTE_ENVIRONMENT_ID, "Windows PC")],
+    });
+    const linkCalls: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-fleet-directions" as MessageId,
+        targetText: "fleet directions",
+      }),
+      configureFixture: withComputerLinksFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.linksCreateInvite) {
+          linkCalls.push(body);
+          return fleetInvite(LOCAL_ENVIRONMENT_ID, "Local environment");
+        }
+        return undefined;
+      },
+      initialPath: `/fleet/${FLEET_REMOTE_ENVIRONMENT_ID}`,
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_REMOTE_ENVIRONMENT_ID,
+          label: "Windows PC",
+          os: "windows",
+          state: "connected",
+        },
+      ]);
+      __setComputerLinksClientForTests(FLEET_REMOTE_ENVIRONMENT_ID, windowsLinks.client);
+      useComputerLinksStore
+        .getState()
+        .put(
+          FLEET_REMOTE_ENVIRONMENT_ID,
+          fleetLinksSnapshot({
+            inbound: [fleetInboundLink(LOCAL_ENVIRONMENT_ID, "Local environment")],
+          }),
+        );
+
+      const pair = page.getByTestId(`fleet-pair-${LOCAL_ENVIRONMENT_ID}`);
+      // On Windows PC's page, "outward" is Windows PC's agents on this computer.
+      const linked = pair.getByTestId(`fleet-pair-${LOCAL_ENVIRONMENT_ID}-inward`);
+      await expect
+        .element(linked)
+        .toHaveTextContent("Local environment's agents can start work on Windows PC");
+      await linked.getByTestId(`fleet-pair-${LOCAL_ENVIRONMENT_ID}-inward-access`).click();
+      await page.getByRole("option", { name: "Allowed", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(windowsLinks.setAccess).toHaveBeenCalledWith({
+          deviceId: `device-${LOCAL_ENVIRONMENT_ID}`,
+          access: "allowed",
+        });
+      });
+
+      // The other way isn't linked: Link for just that direction.
+      const unlinked = pair.getByTestId(`fleet-pair-${LOCAL_ENVIRONMENT_ID}-outward`);
+      await expect
+        .element(unlinked)
+        .toHaveTextContent("Windows PC's agents can start work on Local environment");
+      await unlinked.getByRole("button", { name: "Link", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(linkCalls).toHaveLength(1);
+        expect(windowsLinks.accept).toHaveBeenCalledWith({
+          invite: fleetInvite(LOCAL_ENVIRONMENT_ID, "Local environment"),
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps an offline computer's settings, disabled, and answers requests from a computer's page", async () => {
+    primaryLinksSnapshot = fleetLinksSnapshot({
+      outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      inbound: [fleetInboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      pending: [
+        fleetPendingRequest(FLEET_OFFLINE_ENVIRONMENT_ID, "request-allow", "Fix the build"),
+        fleetPendingRequest(FLEET_OFFLINE_ENVIRONMENT_ID, "request-deny", "Rewrite history"),
+      ],
+    });
+    const responses: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-fleet-requests" as MessageId,
+        targetText: "fleet requests",
+      }),
+      configureFixture: withComputerLinksFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.linksRespondRequest) {
+          responses.push(body);
+          return {};
+        }
+        return undefined;
+      },
+      initialPath: `/fleet/${LOCAL_ENVIRONMENT_ID}`,
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          label: "Mac mini",
+          os: "darwin",
+          state: "disconnected",
+        },
+      ]);
+      useComputerLinksStore.getState().put(
+        FLEET_OFFLINE_ENVIRONMENT_ID,
+        fleetLinksSnapshot({
+          inbound: [
+            fleetInboundLink(LOCAL_ENVIRONMENT_ID, "Local environment", { access: "allowed" }),
+          ],
+        }),
+      );
+      useComputerLinksStore.getState().markStale(FLEET_OFFLINE_ENVIRONMENT_ID);
+
+      const pair = page.getByTestId(`fleet-pair-${FLEET_OFFLINE_ENVIRONMENT_ID}`);
+      // This computer's agents on Mac mini: Mac mini's setting, last known.
+      const outward = pair.getByTestId(`fleet-pair-${FLEET_OFFLINE_ENVIRONMENT_ID}-outward`);
+      await expect
+        .element(outward.getByTestId(`fleet-pair-${FLEET_OFFLINE_ENVIRONMENT_ID}-outward-access`))
+        .toHaveTextContent("Allowed");
+      await expect
+        .element(outward.getByTestId(`fleet-pair-${FLEET_OFFLINE_ENVIRONMENT_ID}-outward-access`))
+        .toBeDisabled();
+      await expect.element(outward).toHaveTextContent("Mac mini is offline.");
+
+      // Mac mini's requests to start threads here wait at the top of its row.
+      await expect
+        .element(pair.getByTestId("link-request-request-allow"))
+        .toHaveTextContent("Mac mini wants to start a thread: Fix the build");
+      await pair.getByTestId("link-request-allow-request-allow").click();
+      await pair.getByTestId("link-request-deny-request-deny").click();
+      await vi.waitFor(() => {
+        expect(responses).toEqual([
+          expect.objectContaining({ requestId: "request-allow", allow: true }),
+          expect.objectContaining({ requestId: "request-deny", allow: false }),
+        ]);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("unlinks both ways, stopping what the links started, and says which computer finishes later", async () => {
+    primaryLinksSnapshot = fleetLinksSnapshot({
+      outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      inbound: [fleetInboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+    });
+    const removals: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-fleet-unlink" as MessageId,
+        targetText: "fleet unlink",
+      }),
+      configureFixture: withComputerLinksFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.linksRemove) {
+          removals.push(body);
+          return {
+            otherComputer: body.direction === "outbound" ? "pending" : "not_asked",
+          };
+        }
+        return undefined;
+      },
+      initialPath: `/fleet/${FLEET_OFFLINE_ENVIRONMENT_ID}`,
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          label: "Mac mini",
+          os: "darwin",
+          state: "disconnected",
+        },
+      ]);
+      // A thread Mac mini's agent started here is still at work.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, THREAD_ID, "working", {
+        remoteOrigin: {
+          linkDeviceId: `device-${FLEET_OFFLINE_ENVIRONMENT_ID}`,
+          environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          environmentLabel: "Mac mini",
+          threadId: "thread-on-mini" as ThreadId,
+          threadTitle: "Ship the release",
+        },
+      });
+
+      await page.getByTestId(`fleet-pair-${LOCAL_ENVIRONMENT_ID}-unlink`).click();
+      const dialog = page.getByTestId("fleet-unlink-dialog");
+      await expect
+        .element(dialog.getByTestId("fleet-unlink-running"))
+        .toHaveTextContent(
+          "1 thread Mac mini started on Local environment is still running. Unlinking stops it.",
+        );
+      await expect
+        .element(dialog.getByTestId("fleet-unlink-offline"))
+        .toHaveTextContent("Mac mini is offline. Mac mini finishes when it's back.");
+      await dialog
+        .getByRole("button", { name: "Unlink on Local environment now", exact: true })
+        .click();
+      await vi.waitFor(() => {
+        expect(removals).toEqual([
+          expect.objectContaining({
+            direction: "inbound",
+            deviceId: `device-${FLEET_OFFLINE_ENVIRONMENT_ID}`,
+            stopRunning: true,
+          }),
+          expect.objectContaining({
+            direction: "outbound",
+            linkId: `link-to-${FLEET_OFFLINE_ENVIRONMENT_ID}`,
+          }),
+        ]);
+      });
+      // Mac mini's halves wait for it; nothing is claimed done that isn't.
+      await expect
+        .element(dialog.getByTestId("fleet-unlink-results"))
+        .toHaveTextContent(
+          "Local environment's agents on Mac mini: Mac mini finishes when it's back.",
+        );
+      expect(removals[1]).not.toHaveProperty("otherHalfRemoved");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("removes a computer from this app without unlinking it", async () => {
+    const windowsLinks = fakeComputerLinksClient();
+    primaryLinksSnapshot = fleetLinksSnapshot({
+      outbound: [fleetOutboundLink(FLEET_REMOTE_ENVIRONMENT_ID, "Windows PC")],
+      inbound: [fleetInboundLink(FLEET_REMOTE_ENVIRONMENT_ID, "Windows PC")],
+    });
+    const removals: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-fleet-remove" as MessageId,
+        targetText: "fleet remove",
+      }),
+      configureFixture: withComputerLinksFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.linksRemove) {
+          removals.push(body);
+          return { otherComputer: "confirmed" };
+        }
+        return undefined;
+      },
+      initialPath: `/fleet/${FLEET_REMOTE_ENVIRONMENT_ID}`,
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_REMOTE_ENVIRONMENT_ID,
+          label: "Windows PC",
+          os: "windows",
+          state: "connected",
+        },
+      ]);
+      __setComputerLinksClientForTests(FLEET_REMOTE_ENVIRONMENT_ID, windowsLinks.client);
+      await page.getByTestId("fleet-remove-from-app").click();
+      const dialog = page.getByTestId("fleet-remove-dialog");
+      await expect
+        .element(dialog.getByTestId("fleet-remove-stays-linked"))
+        .toHaveTextContent(
+          "Windows PC and Local environment stay linked. Unlink them first to stop agents working across them.",
+        );
+      await dialog.getByTestId("fleet-remove-confirm").click();
       await waitForURL(
         mounted.router,
-        (pathname) => pathname === "/settings/connections",
-        "Connect should lead to Settings › Connections.",
+        (pathname) => pathname === "/fleet" || pathname === "/fleet/",
+        "Removing a computer should go back to All computers.",
       );
+      await vi.waitFor(() => {
+        expect(
+          useSavedEnvironmentRegistryStore.getState().byId[FLEET_REMOTE_ENVIRONMENT_ID],
+        ).toBeUndefined();
+      });
+      expect(removals).toEqual([]);
+      expect(windowsLinks.remove).not.toHaveBeenCalled();
     } finally {
       await mounted.cleanup();
     }

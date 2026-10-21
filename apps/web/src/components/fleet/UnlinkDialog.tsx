@@ -88,15 +88,13 @@ export function UnlinkDialog({
       if (direction.outbound === null && direction.inbound === null) return [];
       const result = results.get(name);
       if (result?.failed) return [[direction, { kind: "failed", detail: result.failed }]];
-      // A half on a computer this app couldn't reach, or an asking computer
-      // that couldn't reach the other one yet: that computer finishes later.
+      // Both directions have a half on each computer: while one of them
+      // can't be reached, or the asking computer couldn't reach the other
+      // one yet, that computer finishes later.
       const waitingFor =
-        direction.outbound !== null && finishLater.has(direction.asker.environmentId)
-          ? direction.asker
-          : (direction.inbound !== null && finishLater.has(direction.worker.environmentId)) ||
-              result?.pending === true
-            ? direction.worker
-            : null;
+        [direction.asker, direction.worker].find((computer) =>
+          finishLater.has(computer.environmentId),
+        ) ?? (result?.pending === true ? direction.worker : null);
       return [
         [
           direction,

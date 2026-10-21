@@ -59,6 +59,7 @@ import {
 import { ComputerConnectionGroup } from "../fleet/ComputerConnectionGroup";
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import {
+  closeConnectComputerDialog,
   ConnectComputerDialogHost,
   openConnectComputerDialog,
 } from "./connections/JoinComputerDialog";
@@ -1041,6 +1042,7 @@ describe("GeneralSettingsPanel observability", () => {
     mockConnectDesktopSshEnvironment.mockReset();
     savedComputersHarness.reset();
     __resetComputerLinksForTests();
+    closeConnectComputerDialog();
   });
 
   afterEach(async () => {

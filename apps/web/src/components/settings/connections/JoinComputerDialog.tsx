@@ -151,6 +151,11 @@ export function openConnectComputerDialog(): void {
   useConnectComputerDialogStore.setState({ open: true });
 }
 
+/** Closes "Connect to a computer" (a fresh app in tests, a page that takes over). */
+export function closeConnectComputerDialog(): void {
+  useConnectComputerDialogStore.setState({ open: false });
+}
+
 /** Mounted once with the app shell: the dialog, while it is open. */
 export function ConnectComputerDialogHost() {
   const open = useConnectComputerDialogStore((state) => state.open);
@@ -158,7 +163,7 @@ export function ConnectComputerDialogHost() {
     <JoinComputerDialog
       open
       onOpenChange={(next) => {
-        if (!next) useConnectComputerDialogStore.setState({ open: false });
+        if (!next) closeConnectComputerDialog();
       }}
     />
   ) : null;
