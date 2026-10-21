@@ -268,9 +268,32 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     ...(session.awaitedBackgroundTasks?.length
       ? { awaitedBackgroundTasks: session.awaitedBackgroundTasks }
       : {}),
+    ...(session.startup?.phase === "launching"
+      ? { launchingInstanceId: session.startup.providerInstanceId }
+      : {}),
     createdAt: session.updatedAt,
     updatedAt: session.updatedAt,
     ...(session.lastError ? { lastError: session.lastError } : {}),
+  };
+}
+
+/**
+ * A session update applied over the thread's current session. One that does
+ * not name the slot holder keeps the current one, and one that leaves out the
+ * startup phase keeps that (see OrchestrationSession).
+ */
+function mapSessionUpdate(
+  session: OrchestrationSession,
+  current: ThreadSession | null | undefined,
+): ThreadSession {
+  return {
+    ...mapSession(session),
+    ...(session.participantId === undefined && current?.participantId
+      ? { participantId: current.participantId }
+      : {}),
+    ...(session.startup === undefined && current?.launchingInstanceId
+      ? { launchingInstanceId: current.launchingInstanceId }
+      : {}),
   };
 }
 
@@ -775,6 +798,7 @@ function threadSessionsEqual(
     left.orchestrationStatus === right.orchestrationStatus &&
     left.activeTurnId === right.activeTurnId &&
     left.participantId === right.participantId &&
+    left.launchingInstanceId === right.launchingInstanceId &&
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt &&
     left.lastError === right.lastError &&
@@ -2405,6 +2429,10 @@ function applyEnvironmentOrchestrationEvent(
               ...(participantId !== null ? { participantId } : {}),
               status: "connecting",
               orchestrationStatus: "starting",
+              // Only the server's launch sets or clears the mark, as there.
+              ...(thread.session?.launchingInstanceId
+                ? { launchingInstanceId: thread.session.launchingInstanceId }
+                : {}),
               createdAt: thread.session?.createdAt ?? event.payload.createdAt,
               updatedAt: event.payload.createdAt,
               ...(thread.session?.lastError ? { lastError: thread.session.lastError } : {}),
@@ -2574,11 +2602,7 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.session-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
-        // An update that does not name the slot holder keeps the current one.
-        session:
-          event.payload.session.participantId !== undefined || !thread.session?.participantId
-            ? mapSession(event.payload.session)
-            : { ...mapSession(event.payload.session), participantId: thread.session.participantId },
+        session: mapSessionUpdate(event.payload.session, thread.session),
         error: sanitizeThreadErrorMessage(event.payload.session.lastError),
         latestTurn:
           event.payload.session.status === "running" && event.payload.session.activeTurnId !== null

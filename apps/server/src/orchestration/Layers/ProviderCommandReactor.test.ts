@@ -316,6 +316,13 @@ describe("ProviderCommandReactor", () => {
     );
     // Like ProviderService: an early runtime is listed, but waits to be adopted.
     const earlyKeys = new Set<string>();
+    // Early starts still running: adopting one waits until the test lets it
+    // finish, and says it is waiting.
+    const earlyStartsInFlight = new Map<
+      string,
+      { readonly instanceId: ProviderInstanceId; readonly finished: Deferred.Deferred<void> }
+    >();
+    const earlyAdoptsWaiting = new Set<string>();
     const startEarlySession = vi.fn<ProviderServiceShape["startEarlySession"]>((threadId, input) =>
       earlyKeys.has(threadId)
         ? Effect.succeed("renewed" as const)
@@ -467,12 +474,23 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       startEarlySession,
       adoptEarlySession: (threadId) =>
-        Effect.sync(() =>
-          earlyKeys.delete(threadId)
-            ? runtimeSessions.find((session) => session.threadId === threadId)
-            : undefined,
+        Effect.suspend(() => {
+          const inFlight = earlyStartsInFlight.get(threadId);
+          if (inFlight === undefined) return Effect.void;
+          earlyAdoptsWaiting.add(threadId);
+          return Deferred.await(inFlight.finished);
+        }).pipe(
+          Effect.andThen(
+            Effect.sync(() =>
+              earlyKeys.delete(threadId)
+                ? runtimeSessions.find((session) => session.threadId === threadId)
+                : undefined,
+            ),
+          ),
         ),
       isEarlySession: (threadId) => Effect.sync(() => earlyKeys.has(threadId)),
+      earlyStartInFlight: (threadId) =>
+        Effect.sync(() => earlyStartsInFlight.get(threadId)?.instanceId),
       abandonEarlySession: () => Effect.void,
       listExternalThreads: () => unsupported(),
       readExternalThread: () => unsupported(),
@@ -678,6 +696,8 @@ describe("ProviderCommandReactor", () => {
       startSession,
       startEarlySession,
       earlyKeys,
+      earlyStartsInFlight,
+      earlyAdoptsWaiting,
       sendTurn,
       steerTurn,
       interruptTurn,
@@ -866,6 +886,225 @@ describe("ProviderCommandReactor", () => {
       turnId: "turn-1",
       state: "running",
     });
+  });
+
+  /** Every session update that marked the thread as launching, oldest first. */
+  const launchingWrites = async (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId = ThreadId.make("thread-1"),
+  ) => {
+    const events = await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)));
+    return Array.from(events).flatMap((event) =>
+      event.type === "thread.session-set" &&
+      event.payload.threadId === threadId &&
+      event.payload.session.startup != null
+        ? [event.payload.session]
+        : [],
+    );
+  };
+
+  const projectedSession = async (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId = ThreadId.make("thread-1"),
+  ) => (await harness.readModel()).threads.find((entry) => entry.id === threadId)?.session ?? null;
+
+  /** Holds the next session start until the returned release is called. */
+  const holdNextStart = (harness: Awaited<ReturnType<typeof createHarness>>) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const defaultStartSession = harness.startSession.getMockImplementation();
+    if (!defaultStartSession) {
+      throw new Error("startSession mock has no implementation");
+    }
+    harness.startSession.mockImplementationOnce((threadId: unknown, input: unknown) =>
+      Effect.promise(() => gate).pipe(Effect.flatMap(() => defaultStartSession(threadId, input))),
+    );
+    return release;
+  };
+
+  const startTurn = (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    id: string,
+    extra?: { readonly modelSelection?: ModelSelection },
+  ) =>
+    Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-turn-start-${id}`),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId(`user-message-${id}`),
+          role: "user",
+          text: id,
+          attachments: [],
+        },
+        ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+  it("says the agent is launching while its program starts, through the provider's own updates", async () => {
+    const harness = await createHarness();
+    const release = holdNextStart(harness);
+    await startTurn(harness, "cold");
+
+    await waitFor(async () => (await projectedSession(harness))?.startup != null);
+    const launching = await projectedSession(harness);
+    expect(launching).toMatchObject({
+      status: "starting",
+      startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
+      // Marking keeps the turn's start time: the chat times the turn from it.
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    // Codex reports its start-up as a fresh session update without the mark;
+    // the mark stays until the start is over.
+    if (!launching) {
+      throw new Error("Expected a starting session.");
+    }
+    const { startup: _startup, ...providerUpdate } = launching;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-provider-starting"),
+        threadId: ThreadId.make("thread-1"),
+        session: providerUpdate,
+        createdAt: "2026-01-01T00:00:00.500Z",
+      }),
+    );
+    expect((await projectedSession(harness))?.startup).toMatchObject({ phase: "launching" });
+
+    release();
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+  });
+
+  it("clears the launching mark when the agent's program fails to start", async () => {
+    const harness = await createHarness();
+    harness.startSession.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread.turn.start",
+          detail: "spawn failed in test harness",
+        }),
+      ),
+    );
+    await startTurn(harness, "fails");
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return thread?.session?.lastError?.includes("spawn failed in test harness") === true;
+    });
+    expect(await launchingWrites(harness)).toHaveLength(1);
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+    expect(harness.sendTurn.mock.calls.length).toBe(0);
+  });
+
+  it("says launching while a message waits on an agent still starting early", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    await harness.warmUp({
+      threadId,
+      participantId: null,
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      runtimeMode: "approval-required",
+    });
+    await waitFor(() => harness.earlyKeys.has(threadId));
+    const finished = Effect.runSync(Deferred.make<void>());
+    harness.earlyStartsInFlight.set(threadId, {
+      instanceId: ProviderInstanceId.make("codex"),
+      finished,
+    });
+
+    await startTurn(harness, "early");
+    await waitFor(async () => (await projectedSession(harness))?.startup != null);
+    expect((await projectedSession(harness))?.startup).toEqual({
+      phase: "launching",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+
+    harness.earlyStartsInFlight.delete(threadId);
+    Effect.runSync(Deferred.succeed(finished, undefined));
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+    // The early start was the only one.
+    expect(harness.startSession.mock.calls.length).toBe(1);
+  });
+
+  it("names the agent the message switches to, not the one still starting early", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    await harness.warmUp({
+      threadId,
+      participantId: null,
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      runtimeMode: "approval-required",
+    });
+    await waitFor(() => harness.earlyKeys.has(threadId));
+    const finished = Effect.runSync(Deferred.make<void>());
+    harness.earlyStartsInFlight.set(threadId, {
+      instanceId: ProviderInstanceId.make("codex"),
+      finished,
+    });
+
+    // The user picked Claude before Codex finished starting.
+    await startTurn(harness, "switch-while-early", {
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-opus-4-6",
+      },
+    });
+    // The message waits on the early start before anything else.
+    await waitFor(() => harness.earlyAdoptsWaiting.has(threadId));
+    harness.earlyStartsInFlight.delete(threadId);
+    Effect.runSync(Deferred.succeed(finished, undefined));
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect(
+      (await launchingWrites(harness)).map((session) => session.startup?.providerInstanceId),
+    ).toEqual([ProviderInstanceId.make("claudeAgent")]);
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+  });
+
+  it("clears a launching mark no launch holds on the next turn", async () => {
+    const harness = await createHarness();
+    await startTurn(harness, "first");
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    const running = await projectedSession(harness);
+    if (!running) {
+      throw new Error("Expected the first turn to bind a session.");
+    }
+    // A write that read the session mid-launch brings the old mark back.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-stale-mark"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          ...running,
+          status: "ready",
+          activeTurnId: null,
+          startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await startTurn(harness, "second");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
+    expect(harness.startSession.mock.calls.length).toBe(1);
   });
 
   it("starts a stopped agent while the user types, and the message then uses it", async () => {
@@ -3382,6 +3621,8 @@ describe("ProviderCommandReactor", () => {
               activeTurnId: staleTurnId,
               pendingBackgroundTaskCount: 1,
               awaitedBackgroundTaskCount: 1,
+              // The process died while it was launching an agent.
+              startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
               lastError: null,
               updatedAt: now,
             },
@@ -3414,6 +3655,7 @@ describe("ProviderCommandReactor", () => {
               activeTurnId: null,
               pendingBackgroundTaskCount: 1,
               awaitedBackgroundTaskCount: 1,
+              startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
               lastError: null,
               updatedAt: now,
             },
@@ -3451,6 +3693,9 @@ describe("ProviderCommandReactor", () => {
       (entry) => entry.id === waitingThreadId,
     );
     expect(waiting?.session).toMatchObject({ status: "ready", pendingBackgroundTaskCount: 0 });
+    // Launches the old process never finished say nothing now.
+    expect(thread?.session?.startup ?? null).toBeNull();
+    expect(waiting?.session?.startup ?? null).toBeNull();
     expect(
       thread?.activities.find((entry) => entry.kind === "provider.session.restart-interrupted"),
     ).toMatchObject({ turnId: staleTurnId });
@@ -4756,6 +5001,11 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(harness.startSession.mock.calls.length).toBe(1);
     expect(harness.stopSession.mock.calls.length).toBe(0);
+    // Only the first turn launched the agent's program; the warm one never
+    // said it was launching, though its session was "starting" too.
+    await waitFor(async () => (await projectedSession(harness, threadId))?.status === "running");
+    expect(await launchingWrites(harness, threadId)).toHaveLength(1);
+    expect((await projectedSession(harness, threadId))?.startup ?? null).toBeNull();
   });
 
   it("restarts an existing Codex thread on a compatible requested instance", async () => {
@@ -5809,6 +6059,13 @@ describe("ProviderCommandReactor", () => {
     expect(
       thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
     ).toBe(false);
+    // The hand-over's launch names the instance being started, while the
+    // session still belongs to the old one.
+    const launches = await launchingWrites(harness);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.startup?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
+    expect(launches[0]?.providerInstanceId).toBe(ProviderInstanceId.make("codex"));
+    expect(thread?.session?.startup ?? null).toBeNull();
   });
 
   it("hands off with a seed to a same-driver instance that has its own history", async () => {
@@ -6337,6 +6594,10 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
       threadId: ThreadId.make("thread-1"),
     });
+    // Picking the conversation back up launches the agent's program again.
+    await waitFor(async () => (await projectedSession(harness))?.status === "running");
+    expect(await launchingWrites(harness)).toHaveLength(1);
+    expect((await projectedSession(harness))?.startup ?? null).toBeNull();
   });
 
   it("rejects active runtime sessions that are missing provider instance ids", async () => {

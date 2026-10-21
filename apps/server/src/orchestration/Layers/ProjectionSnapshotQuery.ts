@@ -50,6 +50,7 @@ import {
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
   OrchestrationAwaitedBackgroundTask,
+  OrchestrationSessionStartup,
   RoomAgentMessageKind,
   RoomAgentRef,
   RoomAgentRequestId,
@@ -246,6 +247,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
   Struct.assign({
     awaitedBackgroundTasks: Schema.fromJsonString(Schema.Array(OrchestrationAwaitedBackgroundTask)),
+    startup: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSessionStartup))),
   }),
 );
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
@@ -464,6 +466,7 @@ function mapSessionRow(
     pendingBackgroundTaskCount: row.pendingBackgroundTaskCount,
     awaitedBackgroundTaskCount: row.awaitedBackgroundTaskCount,
     awaitedBackgroundTasks: row.awaitedBackgroundTasks,
+    ...(row.startup ? { startup: row.startup } : {}),
     lastError: row.lastError,
     updatedAt: row.updatedAt,
   };
@@ -1155,6 +1158,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_background_task_count AS "pendingBackgroundTaskCount",
           awaited_background_task_count AS "awaitedBackgroundTaskCount",
           awaited_background_tasks AS "awaitedBackgroundTasks",
+          startup,
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
@@ -1205,6 +1209,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
           sessions.awaited_background_task_count AS "awaitedBackgroundTaskCount",
           sessions.awaited_background_tasks AS "awaitedBackgroundTasks",
+          sessions.startup,
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
@@ -1235,6 +1240,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
           sessions.awaited_background_task_count AS "awaitedBackgroundTaskCount",
           sessions.awaited_background_tasks AS "awaitedBackgroundTasks",
+          sessions.startup,
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
@@ -2018,6 +2024,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_background_task_count AS "pendingBackgroundTaskCount",
           awaited_background_task_count AS "awaitedBackgroundTaskCount",
           awaited_background_tasks AS "awaitedBackgroundTasks",
+          startup,
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions

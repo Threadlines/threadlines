@@ -7355,6 +7355,48 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("names the agent on the working row while its program starts", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-launching-agent" as MessageId,
+      targetText: "launching agent target",
+      sessionStatus: "starting",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID && thread.session
+            ? {
+                ...thread,
+                session: {
+                  ...thread.session,
+                  startup: {
+                    phase: "launching",
+                    providerInstanceId: ProviderInstanceId.make("codex"),
+                  },
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          const anchor = document.querySelector<HTMLElement>('[data-turn-working-anchor="true"]');
+          expect(
+            anchor?.querySelector('[data-turn-working-label="true"]')?.textContent?.trim(),
+          ).toMatch(/^Starting Codex/);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders compact thread actions in the shared thread-row hover group", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

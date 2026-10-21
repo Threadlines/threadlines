@@ -130,6 +130,7 @@ function createProviderServiceHarness(
     startEarlySession: () => Effect.succeed("unsupported" as const),
     adoptEarlySession: () => Effect.succeed(undefined),
     isEarlySession: () => Effect.succeed(false),
+    earlyStartInFlight: () => Effect.succeed(undefined),
     abandonEarlySession: () => Effect.void,
     listExternalThreads: () => unsupported(),
     readExternalThread: () => unsupported(),

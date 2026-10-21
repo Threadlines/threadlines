@@ -1945,6 +1945,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           : {}),
         activeTurnId: event.payload.session.activeTurnId,
         ...carriedBackgroundTasks(event.payload.session),
+        // Absent keeps the stored startup phase; see OrchestrationSession.
+        ...(event.payload.session.startup !== undefined
+          ? { startup: event.payload.session.startup }
+          : {}),
         lastError: event.payload.session.lastError,
         updatedAt: event.payload.session.updatedAt,
       });

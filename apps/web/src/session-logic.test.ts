@@ -13,6 +13,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveActiveModelFallbackState,
   deriveActiveStatusLabel,
+  deriveThreadComputerName,
+  describeLaunchingAgent,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   derivePendingApprovals,
@@ -7911,6 +7913,67 @@ describe("deriveActiveStatusLabel", () => {
         isSessionStarting: true,
       }),
     ).toBe("Preparing turn");
+  });
+
+  it("names the agent while its program starts, with its computer when worth naming", () => {
+    const starting = (launchingAgent: string | null) =>
+      deriveActiveStatusLabel({
+        phase: "connecting",
+        workLogEntries: [],
+        isSessionStarting: true,
+        launchingAgent,
+      });
+    expect(starting(describeLaunchingAgent({ agentName: "Codex", computerName: null }))).toBe(
+      "Starting Codex",
+    );
+    expect(starting(describeLaunchingAgent({ agentName: "Codex", computerName: "Mac mini" }))).toBe(
+      "Starting Codex on Mac mini",
+    );
+    // An instance that is gone has no name to give.
+    expect(starting(describeLaunchingAgent({ agentName: null, computerName: null }))).toBe(
+      "Starting the agent",
+    );
+    // A warm turn's session starts too, but nothing is launching.
+    expect(starting(null)).toBe("Preparing turn");
+  });
+
+  it("names the thread's computer only when it is another of several connected ones", () => {
+    const name = (input: {
+      readonly threadEnvironmentId: string;
+      readonly primaryEnvironmentId: string | null;
+      readonly connectedEnvironmentIds: ReadonlyArray<string>;
+    }) => deriveThreadComputerName({ ...input, computerLabel: " Mac mini " });
+
+    expect(
+      name({
+        threadEnvironmentId: "mac",
+        primaryEnvironmentId: "laptop",
+        connectedEnvironmentIds: ["mac"],
+      }),
+    ).toBe("Mac mini");
+    // The thread is on this device's own computer.
+    expect(
+      name({
+        threadEnvironmentId: "laptop",
+        primaryEnvironmentId: "laptop",
+        connectedEnvironmentIds: ["mac"],
+      }),
+    ).toBeNull();
+    // The only computer the app is connected to (a phone linked to one Mac).
+    expect(
+      name({
+        threadEnvironmentId: "mac",
+        primaryEnvironmentId: null,
+        connectedEnvironmentIds: ["mac"],
+      }),
+    ).toBeNull();
+    expect(
+      name({
+        threadEnvironmentId: "mac",
+        primaryEnvironmentId: null,
+        connectedEnvironmentIds: ["mac", "studio"],
+      }),
+    ).toBe("Mac mini");
   });
 
   it("prioritizes pending approvals over generic running state", () => {

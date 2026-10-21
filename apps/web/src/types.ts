@@ -441,6 +441,12 @@ export interface ThreadSession {
   awaitedBackgroundTaskCount?: number | undefined;
   /** What those tasks are, when the provider said; see describedAwaitedTasks. */
   awaitedBackgroundTasks?: ReadonlyArray<OrchestrationAwaitedBackgroundTask> | undefined;
+  /**
+   * While the agent's own program is starting (OrchestrationSession.startup),
+   * the instance being started. During a hand-over it is not yet
+   * `providerInstanceId`.
+   */
+  launchingInstanceId?: ProviderInstanceId | undefined;
   createdAt: string;
   updatedAt: string;
   lastError?: string;
