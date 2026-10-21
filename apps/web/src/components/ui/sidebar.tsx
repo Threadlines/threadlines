@@ -278,7 +278,8 @@ function Sidebar({
         <div
           className={cn(
             "relative w-(--sidebar-width) bg-transparent",
-            animateLayout && "transition-[width] duration-200 ease-linear",
+            animateLayout &&
+              "transition-[width] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none",
             "group-data-[collapsible=offcanvas]:w-0",
             "group-data-[side=right]:rotate-180",
             variant === "floating" || variant === "inset"
@@ -293,7 +294,8 @@ function Sidebar({
         <div
           className={cn(
             "absolute inset-y-0 z-10 hidden w-(--sidebar-width) md:flex",
-            animateLayout && "transition-[left,right,width] duration-200 ease-linear",
+            animateLayout &&
+              "transition-[left,right,width,opacity] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] group-data-[collapsible=offcanvas]:opacity-0 motion-reduce:transition-none",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
@@ -418,6 +420,7 @@ function SidebarRail({
         setLocalStorageItem(resolvedResizable.storageKey, resizeState.width, Schema.Finite);
       }
       resolvedResizable?.onResize?.(resizeState.width);
+      delete resizeState.wrapper.dataset.sidebarResizing;
       resizeStateRef.current = null;
       if (resizeState.rail.hasPointerCapture(pointerId)) {
         resizeState.rail.releasePointerCapture(pointerId);
@@ -474,6 +477,9 @@ function SidebarRail({
         wrapper,
       };
       wrapper.style.setProperty("--sidebar-width", `${initialWidth}px`);
+      // Anything that follows the width with its own transition (the title
+      // row's page slot) follows a drag at once instead.
+      wrapper.dataset.sidebarResizing = "";
       event.currentTarget.setPointerCapture(event.pointerId);
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
@@ -611,6 +617,7 @@ function SidebarRail({
       resizeState?.transitionTargets.forEach((element) => {
         element.style.removeProperty("transition-duration");
       });
+      if (resizeState) delete resizeState.wrapper.dataset.sidebarResizing;
       document.body.style.removeProperty("cursor");
       document.body.style.removeProperty("user-select");
     };

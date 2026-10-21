@@ -4,18 +4,23 @@ import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { SidebarOpenTrigger } from "./ui/sidebar";
+import { HeaderEdgeFade } from "./HeaderEdgeFade";
+import { TitleBarContent } from "./sidebar/titleBarSlot";
 
 /**
- * The strip across the top of a full-page surface (General chats, Pull
- * requests, Usage, Settings, Fleet).
+ * The top of a full-page surface (General chats, Pull requests, Usage,
+ * Settings, Fleet).
  *
- * In the desktop app it is the page's top bar, the height of a thread's
- * header, inside the work panel below the window's title row; it also moves
- * the window.
+ * While the window has a title row (a wide desktop window or browser), the
+ * page's controls for the whole page (Settings' Restore defaults) go up into
+ * the row's slot for the open page, and the page draws no strip of its own;
+ * a page with no such controls leaves the slot empty. Each of these pages
+ * draws its own title.
  *
+ * Without a title row the strip comes back. In a desktop window too narrow
+ * for the rail it is the sidebar trigger and the page name, like a phone's.
  * On the web below the `md` breakpoint the sidebar is a sheet, and the only
- * way to reach it is a trigger in the page itself. A thread carries one in its
- * header; a page with none strands the reader. So here the strip is that
+ * way to reach it is a trigger in the page itself, so there the strip is that
  * header: the trigger and the page name, the same row a thread shows. Pages
  * that already draw their own mobile header (a Back arrow) opt out with
  * `mobile="none"` rather than showing two.
@@ -25,11 +30,33 @@ export function PageTitlebar({
   mobile = "sidebar",
   children,
 }: {
-  /** Small muted page name on desktop; the header title on a phone. */
+  /** The page's name in the narrow strip. */
   readonly label?: string;
   /** What the strip is on a phone: the sidebar trigger row, or nothing. */
   readonly mobile?: "sidebar" | "none";
-  /** Optional extra content, laid out after the label. */
+  /** Controls for the whole page, laid out at the end. */
+  readonly children?: ReactNode;
+}) {
+  return (
+    <TitleBarContent
+      fallback={
+        <NarrowPageStrip label={label} mobile={mobile}>
+          {children}
+        </NarrowPageStrip>
+      }
+    >
+      {children}
+    </TitleBarContent>
+  );
+}
+
+function NarrowPageStrip({
+  label,
+  mobile,
+  children,
+}: {
+  readonly label: string | undefined;
+  readonly mobile: "sidebar" | "none";
   readonly children?: ReactNode;
 }) {
   if (!isElectron) {
@@ -49,15 +76,14 @@ export function PageTitlebar({
   return (
     <div
       className={cn(
-        "drag-region flex shrink-0 items-center gap-2 border-b border-border px-5",
+        "drag-region relative flex shrink-0 items-center gap-2 px-5",
         ELECTRON_HEADER_HEIGHT_CLASS,
       )}
     >
       <SidebarOpenTrigger className="size-7 shrink-0" />
-      {label ? (
-        <span className="text-xs font-medium tracking-wide text-muted-foreground/70">{label}</span>
-      ) : null}
+      {label ? <span className="text-xs font-medium text-muted-foreground">{label}</span> : null}
       {children}
+      <HeaderEdgeFade at="below" />
     </div>
   );
 }

@@ -14,6 +14,7 @@ import { usePrimaryEnvironmentId } from "../environments/primary";
 import type { EnvironmentId } from "@threadlines/contracts";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
+import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebar/sidebarListField";
 import { toSortableTimestamp } from "../lib/threadSort";
 import {
   markThreadDoneByKey,
@@ -44,6 +45,7 @@ import { readLocalApi } from "../localApi";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../hooks/useRelativeTimeTick";
 import {
   prewarmThreadJumpTargets,
@@ -429,17 +431,22 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader() {
 });
 
 /**
- * The list's footer: update notices and the version. Usage and Settings moved
- * into the rail (and the phone's row of destinations).
+ * The list's footer: agent-update progress and the Intel-build warning, each
+ * only while it has something to say, so the footer is usually gone. The
+ * app's own version and updates live in the rail's update button; where the
+ * rail is hidden (a phone, a narrow window) the version tag stays here.
  */
 const SidebarChromeFooter = memo(function SidebarChromeFooter() {
+  const isMobile = useIsMobile();
   return (
-    <SidebarFooter className="p-2">
+    <SidebarFooter className="p-2 empty:hidden">
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
-      <div className="flex min-h-6 items-center justify-end px-1">
-        <SidebarVersionTag />
-      </div>
+      {isMobile ? (
+        <div className="flex min-h-6 items-center justify-end px-1">
+          <SidebarVersionTag />
+        </div>
+      ) : null}
     </SidebarFooter>
   );
 });
@@ -1965,13 +1972,13 @@ export default function Sidebar() {
             <ThreadHoverCardProvider>
               {/* Outside the scroll container: search and compose are chrome, and
                 chrome does not scroll away. The list clips beneath the rule. */}
-              <SidebarGroup className="shrink-0 bg-sidebar px-2 pt-2 pb-1.5">
+              <SidebarGroup className="shrink-0 bg-sidebar px-3 pt-3 pb-1">
                 <CommandDialogTrigger
                   render={
                     <button
                       type="button"
                       data-testid="command-palette-trigger"
-                      className="flex h-7 w-full min-w-0 cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-1 text-muted-foreground/70 transition-colors select-none hover:border-border hover:bg-muted/50 hover:text-foreground focus-ring"
+                      className={SIDEBAR_LIST_FIELD_CLASS}
                     />
                   }
                 >

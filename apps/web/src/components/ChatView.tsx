@@ -390,6 +390,8 @@ import {
   AlertDialogTitle,
 } from "./ui/alert-dialog";
 import { Checkbox } from "./ui/checkbox";
+import { HeaderEdgeFade } from "./HeaderEdgeFade";
+import { TitleBarContent } from "./sidebar/titleBarSlot";
 import {
   canRequestProviderRateLimitResetCredit,
   isProviderUsageLimitErrorMessage,
@@ -7498,6 +7500,77 @@ export default function ChatView(props: ChatViewProps) {
 
   const chatHeaderBottomVarRef = useChatHeaderBottomVarRef();
 
+  const chatHeader = activeThread ? (
+    <ChatHeader
+      activeThreadEnvironmentId={activeThread.environmentId}
+      activeThreadTitle={
+        isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title
+      }
+      // "General Chats" is the backing project, not a place the user chose
+      // to be. Chats present as their own mode, so the crumb says so.
+      activeProjectName={isGeneralChatThread ? "General chats" : activeProject?.name}
+      isGitRepo={isGitRepo}
+      openInCwd={isGeneralChatThread ? null : gitCwd}
+      projectCwd={isGeneralChatThread ? null : (activeProject?.cwd ?? null)}
+      activeProjectScripts={isGeneralChatThread ? undefined : activeProject?.scripts}
+      preferredScriptId={
+        activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
+      }
+      keybindings={keybindings}
+      availableEditors={availableEditors}
+      terminalAvailable={activeProject !== undefined}
+      terminalOpen={terminalState.terminalOpen}
+      terminalToggleShortcutLabel={terminalToggleShortcutLabel}
+      railToggleShortcutLabel={sourceControlPanelShortcutLabel}
+      railOpen={rightPanelEngaged}
+      sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
+      browserAvailable={browserAvailable}
+      browserOpen={browserOpen}
+      onToggleBrowser={handleToggleBrowser}
+      workingTreeChanges={workingTreeChanges}
+      remoteBehindCount={remoteBehindCount}
+      liveAgents={headerLiveAgents}
+      agentProviderInstanceId={activeProviderInstanceId}
+      agentProviderDriverKind={activeProviderDriver}
+      fileBrowserAvailable={!isGeneralChatThread}
+      taskProgress={taskProgress}
+      forkContext={forkHeaderContext}
+      parentContext={parentHeaderContext}
+      onOpenParentThread={onOpenForkSourceThread}
+      backgroundRuns={backgroundRuns}
+      activeThreadRef={activeThreadRef}
+      onRunProjectScript={runProjectScript}
+      onAddProjectScript={saveProjectScript}
+      onUpdateProjectScript={updateProjectScript}
+      onDeleteProjectScript={deleteProjectScript}
+      onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
+      onStopBackgroundRun={stopBackgroundRun}
+      workflowRuns={runningWorkflowRuns}
+      onOpenWorkflowRun={openWorkflowRun}
+      onStopWorkflowRun={stopWorkflowRun}
+      onViewProposedPlan={
+        taskProgressProposedPlan !== null && !isGeneralChatThread ? onViewProposedPlan : undefined
+      }
+      onImplementProposedPlan={
+        canImplementProposedPlan ? onImplementProposedPlanInThread : undefined
+      }
+      onDismissProposedPlan={
+        canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined
+      }
+      onOpenForkSourceThread={onOpenForkSourceThread}
+      onToggleTerminal={toggleTerminalVisibility}
+      onToggleRail={onToggleRail}
+      onOpenSourceTab={onOpenHeaderSourceTab}
+      onOpenAgentsTab={onOpenHeaderAgentsTab}
+      onContinueInProject={
+        isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
+          ? onContinueInProject
+          : undefined
+      }
+      continueInProjectDisabledReason={continueInProjectDisabledReason}
+    />
+  ) : null;
+
   // Empty state: no active thread
   if (!activeThread) {
     return <NoActiveThreadState />;
@@ -7505,88 +7578,27 @@ export default function ChatView(props: ChatViewProps) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-      {/* Top bar */}
-      <header
-        ref={chatHeaderBottomVarRef}
-        data-find-region="chat"
-        className={cn(
-          "border-b border-border transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
-          isElectron
-            ? cn("drag-region flex items-center px-3 sm:px-5", ELECTRON_HEADER_HEIGHT_CLASS)
-            : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
-        )}
+      {/* Top bar: up in the window's title row while there is one, else here. */}
+      <TitleBarContent
+        measureRef={chatHeaderBottomVarRef}
+        findRegion="chat"
+        fallback={
+          <header
+            ref={chatHeaderBottomVarRef}
+            data-find-region="chat"
+            className={cn(
+              "relative transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
+              isElectron
+                ? cn("drag-region flex items-center px-3 sm:px-5", ELECTRON_HEADER_HEIGHT_CLASS)
+                : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
+            )}
+          >
+            {chatHeader}
+          </header>
+        }
       >
-        <ChatHeader
-          activeThreadEnvironmentId={activeThread.environmentId}
-          activeThreadTitle={
-            isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title
-          }
-          // "General Chats" is the backing project, not a place the user chose
-          // to be. Chats present as their own mode, so the crumb says so.
-          activeProjectName={isGeneralChatThread ? "General chats" : activeProject?.name}
-          isGitRepo={isGitRepo}
-          openInCwd={isGeneralChatThread ? null : gitCwd}
-          projectCwd={isGeneralChatThread ? null : (activeProject?.cwd ?? null)}
-          activeProjectScripts={isGeneralChatThread ? undefined : activeProject?.scripts}
-          preferredScriptId={
-            activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
-          }
-          keybindings={keybindings}
-          availableEditors={availableEditors}
-          terminalAvailable={activeProject !== undefined}
-          terminalOpen={terminalState.terminalOpen}
-          terminalToggleShortcutLabel={terminalToggleShortcutLabel}
-          railToggleShortcutLabel={sourceControlPanelShortcutLabel}
-          railOpen={rightPanelEngaged}
-          sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
-          browserAvailable={browserAvailable}
-          browserOpen={browserOpen}
-          onToggleBrowser={handleToggleBrowser}
-          workingTreeChanges={workingTreeChanges}
-          remoteBehindCount={remoteBehindCount}
-          liveAgents={headerLiveAgents}
-          agentProviderInstanceId={activeProviderInstanceId}
-          agentProviderDriverKind={activeProviderDriver}
-          fileBrowserAvailable={!isGeneralChatThread}
-          taskProgress={taskProgress}
-          forkContext={forkHeaderContext}
-          parentContext={parentHeaderContext}
-          onOpenParentThread={onOpenForkSourceThread}
-          backgroundRuns={backgroundRuns}
-          activeThreadRef={activeThreadRef}
-          onRunProjectScript={runProjectScript}
-          onAddProjectScript={saveProjectScript}
-          onUpdateProjectScript={updateProjectScript}
-          onDeleteProjectScript={deleteProjectScript}
-          onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
-          onStopBackgroundRun={stopBackgroundRun}
-          workflowRuns={runningWorkflowRuns}
-          onOpenWorkflowRun={openWorkflowRun}
-          onStopWorkflowRun={stopWorkflowRun}
-          onViewProposedPlan={
-            taskProgressProposedPlan !== null && !isGeneralChatThread
-              ? onViewProposedPlan
-              : undefined
-          }
-          onImplementProposedPlan={
-            canImplementProposedPlan ? onImplementProposedPlanInThread : undefined
-          }
-          onDismissProposedPlan={
-            canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined
-          }
-          onOpenForkSourceThread={onOpenForkSourceThread}
-          onToggleTerminal={toggleTerminalVisibility}
-          onToggleRail={onToggleRail}
-          onOpenSourceTab={onOpenHeaderSourceTab}
-          onOpenAgentsTab={onOpenHeaderAgentsTab}
-          onContinueInProject={
-            isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
-              ? onContinueInProject
-              : undefined
-          }
-          continueInProjectDisabledReason={continueInProjectDisabledReason}
-        />
-      </header>
+        {chatHeader}
+      </TitleBarContent>
 
       {threadErrorRateLimitResetCreditDialog}
       <ForkThreadDialog
@@ -7635,6 +7647,7 @@ export default function ChatView(props: ChatViewProps) {
         >
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col draft-hero:mt-auto draft-hero:flex-none">
+            <HeaderEdgeFade at="top" />
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <CommandRunActionsContext value={commandRunActions}>
               <MessagesTimeline

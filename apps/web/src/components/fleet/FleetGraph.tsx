@@ -199,7 +199,9 @@ function ComputerNode({
         className={cn(
           "relative flex size-[42px] items-center justify-center rounded-full border-[1.5px] bg-card transition-colors",
           RING_CLASS[computer.work],
-          onSelect !== null && "group-hover/node:bg-accent",
+          // The hover tint is painted over the solid fill (an inset shadow),
+          // never instead of it: a see-through fill lets the lines show through.
+          onSelect !== null && "group-hover/node:shadow-[inset_0_0_0_21px_var(--accent)]",
           selected && "outline-[1.5px] outline-offset-[3px] outline-foreground/50",
         )}
       >
