@@ -57,6 +57,12 @@ export const OutboundComputerLink = Schema.Struct({
   connection: ComputerLinkConnection,
   /** How the open connection reaches it. */
   route: Schema.NullOr(Schema.Literals(["direct", "relay"])),
+  /**
+   * This link's device on the other computer: the inbound link there that is
+   * its other half (InboundComputerLink.deviceId). Missing from servers that
+   * don't report it.
+   */
+  remoteDeviceId: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
   lastConnectedAt: Schema.NullOr(IsoDateTime),
   lastError: Schema.NullOr(TrimmedNonEmptyString),

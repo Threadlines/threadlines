@@ -123,6 +123,14 @@ export interface ComputerLinkClientShape {
   ) => Effect.Effect<PeerDescriptor, PeerRpcError | ComputerLinkUnavailableError>;
   /** The last description this server got, however old; null if none. */
   readonly cachedDescribe: (environmentId: EnvironmentId) => PeerDescriptor | null;
+  /**
+   * peer.describe over that very link, not whichever link to its computer is
+   * in use: how to ask whether the other computer still takes one link.
+   * Fails `revoked` when it is refused (or already marked so here).
+   */
+  readonly describeOver: (
+    linkId: ComputerLinkId,
+  ) => Effect.Effect<PeerDescriptor, PeerRpcError | ComputerLinkUnavailableError>;
   /** Live connection state of every link; current value first. */
   readonly statuses: Stream.Stream<ReadonlyMap<string, ComputerLinkLiveStatus>>;
   readonly currentStatuses: Effect.Effect<ReadonlyMap<string, ComputerLinkLiveStatus>>;
@@ -544,6 +552,34 @@ const make = Effect.gen(function* () {
   const cachedDescribe: ComputerLinkClientShape["cachedDescribe"] = (environmentId) =>
     describeCache.get(environmentId)?.value ?? null;
 
+  const describeOver: ComputerLinkClientShape["describeOver"] = (linkId) =>
+    Effect.gen(function* () {
+      const found = yield* repo.get(linkId).pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isNone(found) || found.value.state === "revoked") {
+        return yield* unavailable(
+          Option.match(found, { onNone: () => "", onSome: (row) => row.remoteEnvironmentId }),
+          "That link is already gone.",
+          true,
+        );
+      }
+      const row = found.value;
+      if (row.state === "unlinking") {
+        return yield* unavailable(
+          row.remoteEnvironmentId,
+          `This computer unlinked ${row.remoteLabel}.`,
+        );
+      }
+      const connection = yield* connectionForRow(row);
+      return yield* callOn(
+        connection,
+        (peer) =>
+          peer["peer.describe"]({
+            caller: { environmentId: descriptor.environmentId, label: descriptor.label },
+          }),
+        REQUEST_TIMEOUT_MS,
+      );
+    });
+
   const disconnect: ComputerLinkClientShape["disconnect"] = (linkId) =>
     Effect.gen(function* () {
       const connection = connections.get(linkId);
@@ -631,6 +667,7 @@ const make = Effect.gen(function* () {
     peerStream,
     describe,
     cachedDescribe,
+    describeOver,
     statuses: SubscriptionRef.changes(statusRef),
     currentStatuses: SubscriptionRef.get(statusRef),
     disconnect,

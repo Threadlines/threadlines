@@ -41,6 +41,7 @@ export type ComputerLinkRow = typeof ComputerLinkRow.Type;
  */
 export const isUsableLink = (row: Pick<ComputerLinkRow, "state">) =>
   row.state === "active" || row.state === "failed";
+const USABLE_LINK_STATES: ReadonlyArray<ComputerLinkRow["state"]> = ["active", "failed"];
 
 const ComputerLinkDbRow = Schema.Struct({
   ...ComputerLinkRow.fields,
@@ -66,9 +67,10 @@ export interface ComputerLinkRepositoryShape {
   ) => Effect.Effect<Option.Option<ComputerLinkRow>, ComputerLinkRepositoryError>;
   readonly insert: (row: ComputerLinkRow) => Effect.Effect<void, ComputerLinkRepositoryError>;
   /**
-   * Changes what is given. With `onlyFrom`, nothing changes unless the link's
-   * state is one of those when it is written (an `unlinking` or `revoked`
-   * link never turns back into a usable one by a late write).
+   * Changes what is given. A state change applies only while the link is
+   * usable (`active` or `failed`), or, with `onlyFrom`, in one of those
+   * states, checked as it is written: an `unlinking` or `revoked` link never
+   * turns into anything else by a late write. It only ever goes away.
    */
   readonly update: (input: {
     readonly linkId: ComputerLinkId;
@@ -174,7 +176,7 @@ const make = Effect.gen(function* () {
       if (input.lastConnectedAt !== undefined) set("last_connected_at", input.lastConnectedAt);
       if (input.lastError !== undefined) set("last_error", input.lastError);
       if (sets.length === 0) return;
-      const onlyFrom = input.onlyFrom ?? [];
+      const onlyFrom = input.onlyFrom ?? (input.state !== undefined ? USABLE_LINK_STATES : []);
       const stateCheck =
         onlyFrom.length > 0 ? ` AND state IN (${onlyFrom.map(() => "?").join(", ")})` : "";
       yield* sql.unsafe(

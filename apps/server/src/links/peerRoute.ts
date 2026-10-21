@@ -107,6 +107,7 @@ export const makePeerRpcLayer = (input: {
             });
             return yield* failed(impostor);
           }
+          yield* computerLinks.linkInUse(link);
           yield* devices
             .touchLink({
               deviceId: link.deviceId,
@@ -149,7 +150,17 @@ export const makePeerRpcLayer = (input: {
       return PeerRpcGroup.of({
         "peer.describe": (payload) => guarded(describe(payload.caller)),
         "peer.request.start": (payload) =>
-          guarded(Effect.flatMap(currentLink, (link) => linkRequests.start(link, payload))),
+          guarded(
+            Effect.gen(function* () {
+              const link = yield* currentLink;
+              // A start names the computer that asks: one this link is for
+              // proves that computer uses it now.
+              if (linkIdentityRefusal(link, payload.parent.environmentId) === null) {
+                yield* computerLinks.linkInUse(link);
+              }
+              return yield* linkRequests.start(link, payload);
+            }),
+          ),
         "peer.request.send": (payload) =>
           guarded(Effect.flatMap(currentLink, (link) => linkRequests.send(link, payload))),
         "peer.request.cancel": (payload) =>
