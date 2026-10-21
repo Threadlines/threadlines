@@ -89,6 +89,55 @@ describe("upcomingSlots", () => {
   });
 });
 
+describe("a cadence across a fall-back", () => {
+  const custom = (cron: string) => ({ kind: "custom", cron }) as const;
+  const gaps = (cadence: ScheduledTaskCadence, timeZone: string, after: string, count: number) => {
+    const walked = Result.getOrThrow(upcomingSlots(cadence, timeZone, at(after), count));
+    return new Set(
+      walked.map(
+        (slot, index) => (slot.getTime() - (walked[index - 1] ?? at(after)).getTime()) / 60_000,
+      ),
+    );
+  };
+
+  it("asked inside the repeated hour, runs next after the question, within its own gap", () => {
+    // Nov 1 2026, 06:05Z: 01:05 in New York for the second time (EST).
+    expect(slots(custom("* * * * *"), "America/New_York", "2026-11-01T06:05:00Z", 2)).toEqual([
+      "2026-11-01T06:06:00.000Z",
+      "2026-11-01T06:07:00.000Z",
+    ]);
+    expect(slots(custom("*/15 * * * *"), "America/New_York", "2026-11-01T06:05:00Z", 2)).toEqual([
+      "2026-11-01T06:15:00.000Z",
+      "2026-11-01T06:30:00.000Z",
+    ]);
+    // Set hours: 01:30 already ran in the first pass, so tomorrow's.
+    expect(slots(custom("30 1 * * *"), "America/New_York", "2026-11-01T06:05:00Z", 1)).toEqual([
+      "2026-11-02T06:30:00.000Z",
+    ]);
+  });
+
+  it("keeps an every-hour cadence to real time through both passes, in any zone", () => {
+    // From 00:00 EDT: every minute, quarter hour and hour, none lost or doubled.
+    expect(gaps(custom("* * * * *"), "America/New_York", "2026-11-01T04:00:00Z", 240)).toEqual(
+      new Set([1]),
+    );
+    expect(gaps(custom("*/15 * * * *"), "America/New_York", "2026-11-01T04:00:00Z", 16)).toEqual(
+      new Set([15]),
+    );
+    expect(
+      slots({ kind: "hourly", minute: 0 }, "America/New_York", "2026-11-01T04:30:00Z", 3),
+    ).toEqual(["2026-11-01T05:00:00.000Z", "2026-11-01T06:00:00.000Z", "2026-11-01T07:00:00.000Z"]);
+    // Oct 25 2026 in Madrid: 03:00 CEST falls back to 02:00 CET.
+    expect(gaps(custom("* * * * *"), "Europe/Madrid", "2026-10-24T23:30:00Z", 180)).toEqual(
+      new Set([1]),
+    );
+    // And the spring-forward hour it skips costs it nothing either.
+    expect(gaps(custom("*/15 * * * *"), "America/New_York", "2026-03-08T05:00:00Z", 12)).toEqual(
+      new Set([15]),
+    );
+  });
+});
+
 describe("a one-time cadence", () => {
   const once = (date: string, hour: number, minute = 0) =>
     ({ kind: "once", date, time: { hour, minute } }) as const;

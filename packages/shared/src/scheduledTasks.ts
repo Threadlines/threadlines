@@ -6,11 +6,12 @@
  *
  * Every cadence but `manual` compiles to a 5-field cron expression (minute
  * resolution) evaluated with `effect/Cron` in the task's own time zone; a
- * `once` cadence is the one instant that expression gives on its date. Time
- * zone changes follow Effect's compatible resolution: a wall time that doesn't
- * exist on a spring-forward day (02:30) runs at the same distance past the
- * jump (03:30), and a wall time the clocks pass twice on a fall-back day runs
- * once, at the earlier instant.
+ * `once` cadence is the one instant that expression gives on its date. A wall
+ * time that doesn't exist on a spring-forward day (02:30) runs at the same
+ * distance past the jump (03:30). On a fall-back day, a cadence that runs
+ * every hour (its hour field is `*`: hourly, every 15 minutes) keeps to real
+ * time through the repeated hour, so it runs in both passes of it; one with
+ * set hours runs each wall time once, at the earlier instant.
  *
  * Every call that evaluates a schedule catches what `effect/Cron` throws, so
  * one task's bad schedule can only fail that task.
@@ -132,26 +133,103 @@ export interface CadenceSchedule {
   readonly next: (after: Date) => Result.Result<Date | null, string>;
 }
 
-/** Steps `Cron.next` takes past an answer that isn't after its input. */
-const CRON_NEXT_RETRIES = 4;
+/**
+ * Longer than any stretch of wall time a fall-back repeats: an hour almost
+ * everywhere, two in a few zones.
+ */
+const REPEAT_MAX_MS = 3 * 60 * 60_000;
 
-const cronSchedule = (cron: Cron.Cron): CadenceSchedule => ({
-  next: (after) => {
-    try {
-      // Asked during a repeated hour (clocks falling back), `Cron.next` can
-      // answer the earlier instant of that hour's wall time, which already
-      // passed: step on from it until the answer is after `after`.
-      let candidate = Cron.next(cron, after);
-      for (let step = 0; candidate.getTime() <= after.getTime(); step += 1) {
-        if (step >= CRON_NEXT_RETRIES) return Result.fail("This schedule never runs.");
-        candidate = Cron.next(cron, candidate);
+/** `zone`'s offset from UTC at the instant `at`, in milliseconds. */
+const offsetAt = (zone: DateTime.TimeZone, at: number) =>
+  DateTime.zonedOffset(DateTime.makeZonedUnsafe(at, { timeZone: zone }));
+
+/**
+ * The first instant in (from, to] at `zone`'s offset at `to`, for two
+ * instants on either side of one offset change. The span is under two
+ * REPEAT_MAX_MS, so halving it takes at most 24 steps.
+ */
+const offsetChange = (zone: DateTime.TimeZone, from: number, to: number) => {
+  const before = offsetAt(zone, from);
+  let low = from;
+  let high = to;
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (offsetAt(zone, middle) === before) low = middle;
+    else high = middle;
+  }
+  return high;
+};
+
+/**
+ * `Cron.next` works in wall time: it takes the first matching wall time after
+ * the input's, at that wall time's earlier instant. Around a fall-back that
+ * goes wrong twice, and both are fixed here in a fixed number of steps, never
+ * a loop that could give up on a valid schedule:
+ *
+ * - An every-hour cadence never runs in the repeated hour's second pass.
+ *   Every real match `Cron.next` misses is in a second pass that `after` is
+ *   in, or that starts within REPEAT_MAX_MS of it (`after` sits in the same
+ *   period's first pass, past that wall time). So the first instant matching
+ *   at the zone's offset at `after`, and at its offset REPEAT_MAX_MS later,
+ *   both checked against the offset the zone really has then, find it.
+ * - Asked during a second pass, it answers with the first pass's instant of
+ *   a wall time still ahead, already gone. For a cadence with set hours, that
+ *   whole stretch of wall time already ran, so the answer is the next one
+ *   from where the first pass ended.
+ *
+ * `wall` is the same expression read in UTC.
+ */
+const cronSchedule = (zoned: Cron.Cron, wall: Cron.Cron): CadenceSchedule => {
+  const zone = Option.getOrUndefined(zoned.tz);
+  const everyHour = zoned.hours.size === 0;
+  /** The first instant after `at` whose wall time at a fixed `offset` matches. */
+  const nextAtOffset = (at: number, offset: number) =>
+    Cron.next(wall, new Date(at + offset)).getTime() - offset;
+  return {
+    next: (after) => {
+      try {
+        const at = after.getTime();
+        const native = Cron.next(zoned, after).getTime();
+        if (zone === undefined) return Result.succeed(new Date(native));
+        const offset = offsetAt(zone, at);
+        if (everyHour) {
+          const later = offsetAt(zone, at + REPEAT_MAX_MS);
+          // No fall-back ahead, and not asked in a second pass with a
+          // match left in it: `Cron.next` is right.
+          if (native > at && later === offset) return Result.succeed(new Date(native));
+          const found = [native];
+          for (const fixed of new Set([offset, later])) {
+            const candidate = nextAtOffset(at, fixed);
+            // A real match only if the zone is at that offset then.
+            if (offsetAt(zone, candidate) === fixed) found.push(candidate);
+          }
+          const first = Math.min(...found.filter((slot) => slot > at));
+          if (Number.isFinite(first)) return Result.succeed(new Date(first));
+        }
+        if (native > at) return Result.succeed(new Date(native));
+        // A second pass: `native` is in the first, at the other offset.
+        const resumed =
+          offsetAt(zone, native) === offset
+            ? null
+            : Cron.next(zoned, new Date(offsetChange(zone, native, at) - 1)).getTime();
+        // Neither can happen; still, a match at today's offset beats failing.
+        return Result.succeed(
+          new Date(resumed !== null && resumed > at ? resumed : nextAtOffset(at, offset)),
+        );
+      } catch {
+        return Result.fail("This schedule never runs.");
       }
-      return Result.succeed(candidate);
-    } catch {
-      return Result.fail("This schedule never runs.");
-    }
-  },
-});
+    },
+  };
+};
+
+/** A cron expression's schedule in `timeZone`, read in UTC too for `cronSchedule`. */
+const parseCronSchedule = (expression: string, timeZone: string) =>
+  Cron.parse(expression, timeZone).pipe(
+    Result.flatMap((zoned) =>
+      Cron.parse(expression, "UTC").pipe(Result.map((wall) => cronSchedule(zoned, wall))),
+    ),
+  );
 
 /**
  * The cadence's schedule in `timeZone`; null for `manual`. Fails with one
@@ -174,8 +252,7 @@ export function compileCadence(
       "A custom schedule takes 5 fields: minute, hour, day of month, month and day of week.",
     );
   }
-  return Cron.parse(expression, timeZone).pipe(
-    Result.map(cronSchedule),
+  return parseCronSchedule(expression, timeZone).pipe(
     Result.mapError(() => `"${expression}" isn't a schedule Threadlines can read.`),
   );
 }
@@ -195,9 +272,9 @@ function compileOnce(
     return Result.fail(`"${cadence.date}" isn't a date.`);
   }
   const from = new Date(Date.UTC(parts.year, parts.month - 1, parts.day) - 2 * DAY_MS);
-  const instant = Cron.parse(expression, timeZone).pipe(
+  const instant = parseCronSchedule(expression, timeZone).pipe(
     Result.mapError(() => `"${cadence.date}" isn't a date.`),
-    Result.flatMap((cron) => cronSchedule(cron).next(from)),
+    Result.flatMap((schedule) => schedule.next(from)),
     Result.flatMap((slot) =>
       slot !== null && slot.getTime() - from.getTime() < 4 * DAY_MS
         ? Result.succeed(slot)
