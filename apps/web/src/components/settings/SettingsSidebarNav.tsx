@@ -11,7 +11,6 @@ import {
   SidebarMenuItem,
   SidebarSeparator,
 } from "../ui/sidebar";
-import { SidebarUsageMeter } from "../sidebar/SidebarUsageMeter";
 import { SidebarVersionTag } from "../sidebar/SidebarVersionTag";
 import { isHostedStaticApp } from "../../hostedPairing";
 import {
@@ -86,11 +85,6 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       <SidebarSeparator />
       <SidebarFooter className="p-2">
         <SidebarMenu>
-          {/* The same meter the main sidebar keeps above Settings, so the
-              bottom-left corner means "today's usage" on both surfaces. */}
-          <SidebarMenuItem>
-            <SidebarUsageMeter />
-          </SidebarMenuItem>
           <SidebarMenuItem className="flex items-center gap-1.5">
             <SidebarMenuButton
               size="sm"

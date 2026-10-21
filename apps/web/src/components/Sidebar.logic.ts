@@ -1050,6 +1050,45 @@ export function isChildThreadWorking(entry: InboxFamilyEntry): boolean {
   return !entry.isDone && entry.status !== null && IN_FLIGHT.has(entry.status.label);
 }
 
+/** What a thread asks of the user right now, as the rail and Fleet count it. */
+export type ThreadAttention = "needs-you" | "working";
+
+/**
+ * Whether a thread needs the user (an approval, a question, a failure they
+ * have not seen) or has work in flight. Both hold the thread in the live list
+ * whatever the wrap-up rules say, so counting them needs no Wrapped check: a
+ * failure the user has seen is the one exception, and it stops counting here.
+ */
+export function resolveThreadAttention(
+  thread: InboxLifecycleInput,
+  status: ThreadStatusPill | null,
+): ThreadAttention | null {
+  if (status === null) return null;
+  if (NEEDS_YOU_NOW.has(status.label)) return "needs-you";
+  if (status.label === "Failed") return hasUnseenSessionFailure(thread) ? "needs-you" : null;
+  return IN_FLIGHT.has(status.label) ? "working" : null;
+}
+
+/** How many threads need the user and how many are working. */
+export interface ThreadAttentionCounts {
+  readonly needsYou: number;
+  readonly working: number;
+}
+
+export const NO_THREAD_ATTENTION: ThreadAttentionCounts = { needsYou: 0, working: 0 };
+
+export function countThreadAttention(
+  attentions: Iterable<ThreadAttention | null>,
+): ThreadAttentionCounts {
+  let needsYou = 0;
+  let working = 0;
+  for (const attention of attentions) {
+    if (attention === "needs-you") needsYou += 1;
+    else if (attention === "working") working += 1;
+  }
+  return needsYou === 0 && working === 0 ? NO_THREAD_ATTENTION : { needsYou, working };
+}
+
 /**
  * Lays the inbox out in families. `parentKeyOf` names the parent a thread is
  * attached to, whether or not it is in the list; a thread whose parent is not
@@ -1242,77 +1281,56 @@ export function childThreadsHoverLine(summary: ChildThreadsSummary): string {
     : `Threads: ${summary.count} · ${formatChildThreadsHighlight(summary.highlight)}`;
 }
 
-// ── General chats ────────────────────────────────────────────────────
+// ── Grouping ─────────────────────────────────────────────────────────
 //
-// General chats have their own page and never join the inbox. The live ones
-// get a short line under the General Chats row instead, so a chat that needs
-// the user, is at work, or finished unread is one click away.
+// The live list can be shown under a header per project or per computer
+// (the "Group" choice in the scope menu). Grouping runs over the rows the
+// family rules built, so a family goes where its parent goes, and it never
+// reorders rows inside a group: pins keep leading. Wrapped stays one flat
+// section below.
 
-/** Lines under General Chats before the rest fold into "N more". */
-export const GENERAL_CHAT_LINE_LIMIT = 3;
-
-/** What the line rules read about each general chat. */
-export interface GeneralChatLineEntry {
-  readonly threadKey: string;
-  readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt">;
-  readonly status: ThreadStatusPill | null;
+/** One group of live rows, keyed by what the rows share. */
+export interface InboxRowGroup<R> {
+  readonly key: string;
+  readonly rows: readonly R[];
 }
 
 /**
- * Line order: what stopped for the user, then a ready plan, then work in
- * flight, then a result nobody has read. A quiet chat only has a line while
- * it is open, and goes last.
+ * The rows split into groups by `groupKeyOf`, each group placed where its
+ * first row stood in the list and keeping the rows' order.
  */
-function generalChatLineRank(status: ThreadStatusPill | null): number {
-  if (status === null) return 4;
-  switch (status.label) {
-    case "Pending Approval":
-    case "Awaiting Input":
-    case "Failed":
-      return 0;
-    case "Plan Ready":
-      return 1;
-    case "Working":
-    case "Starting":
-    case "Answering":
-    case "Waiting":
-      return 2;
-    case "Completed":
-    case "Checking back":
-      return 3;
+export function groupInboxLiveRows<R>(
+  rows: readonly R[],
+  groupKeyOf: (row: R) => string,
+): InboxRowGroup<R>[] {
+  const rowsByKey = new Map<string, R[]>();
+  for (const row of rows) {
+    const key = groupKeyOf(row);
+    const groupRows = rowsByKey.get(key);
+    if (groupRows) {
+      groupRows.push(row);
+    } else {
+      rowsByKey.set(key, [row]);
+    }
   }
+  return [...rowsByKey].map(([key, groupRows]) => ({ key, rows: groupRows }));
 }
 
 /**
- * The general chats drawn as lines, in order, and how many live ones fold
- * behind "N more". Every chat with a status qualifies, and so does the chat
- * open in the main view, so the sidebar always says where the user is. Like
- * the inbox, a chat blocked on the user never folds away, and neither does
- * the open one; both take their seats first.
+ * What a group's header counts: live threads blocked on the user, and live
+ * threads with work in flight, children of its families included.
  */
-export function selectGeneralChatLines<E extends GeneralChatLineEntry>(input: {
-  readonly chats: readonly E[];
-  readonly activeThreadKey: string | null;
-  readonly limit: number;
-}): { readonly lines: E[]; readonly hiddenCount: number } {
-  const ranked = input.chats
-    .filter((chat) => chat.status !== null || chat.threadKey === input.activeThreadKey)
-    .toSorted((left, right) => {
-      const byRank = generalChatLineRank(left.status) - generalChatLineRank(right.status);
-      if (byRank !== 0) return byRank;
-      const byCreated =
-        (toSortableTimestamp(right.thread.createdAt) ?? 0) -
-        (toSortableTimestamp(left.thread.createdAt) ?? 0);
-      return byCreated !== 0 ? byCreated : left.threadKey.localeCompare(right.threadKey);
-    });
-  const keepsSeat = (chat: E) =>
-    isNeedsUserStatus(chat.status) || chat.threadKey === input.activeThreadKey;
-  let freeSeats = Math.max(0, input.limit - ranked.filter(keepsSeat).length);
-  const lines = ranked.filter((chat) => {
-    if (keepsSeat(chat)) return true;
-    if (freeSeats === 0) return false;
-    freeSeats -= 1;
-    return true;
-  });
-  return { lines, hiddenCount: ranked.length - lines.length };
+export function countInboxRowAttention(
+  rows: readonly InboxLiveRow<InboxFamilyEntry>[],
+): ThreadAttentionCounts {
+  let needsYou = 0;
+  let working = 0;
+  for (const row of rows) {
+    for (const entry of [row.entry, ...row.children]) {
+      if (entry.isDone) continue;
+      if (isNeedsUserStatus(entry.status)) needsYou += 1;
+      else if (entry.status !== null && IN_FLIGHT.has(entry.status.label)) working += 1;
+    }
+  }
+  return needsYou === 0 && working === 0 ? NO_THREAD_ATTENTION : { needsYou, working };
 }

@@ -1,10 +1,4 @@
-import {
-  ChevronDownIcon,
-  ChevronsUpIcon,
-  ArrowLeftIcon,
-  SearchIcon,
-  SettingsIcon,
-} from "lucide-react";
+import { ChevronDownIcon, ChevronsUpIcon, CloudIcon, MonitorIcon, SearchIcon } from "lucide-react";
 import { ThreadlinesGlyph } from "./Icons";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -59,7 +53,6 @@ import {
   requestIdleThreadDetailPrewarm,
 } from "../environments/runtime/service";
 import { useThreadActions } from "../hooks/useThreadActions";
-import { useNavigateBackWithinApp } from "../hooks/useNavigateBackWithinApp";
 import {
   buildThreadRouteParams,
   resolveThreadRouteRef,
@@ -75,9 +68,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
   SidebarSeparator,
   SidebarTrigger,
   useSidebar,
@@ -89,7 +79,9 @@ import {
   buildProjectScopeOptions,
   canMarkThreadDone,
   childThreadsHoverLine,
+  countInboxRowAttention,
   getSidebarIdlePrewarmThreadIds,
+  groupInboxLiveRows,
   inboxLiveRowHasAttention,
   inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
@@ -102,17 +94,18 @@ import {
   resolveDoneTimestamp,
   resolveSeenThreadStatus,
   resolveThreadStatusPill,
-  GENERAL_CHAT_LINE_LIMIT,
-  selectGeneralChatLines,
   shouldClearThreadSelectionOnMouseDown,
   sortDoneThreads,
+  THREAD_STATUS_DOT_CLASSES,
   sortInboxThreads,
   summarizeChildThreads,
   windowInboxDoneRows,
   windowInboxThreads,
   useThreadJumpHintVisibility,
+  type InboxLiveRow,
   type ThreadStatusPill,
 } from "./Sidebar.logic";
+import type { SidebarGrouping } from "@threadlines/contracts/settings";
 import {
   InboxChildRow,
   InboxDoneRow,
@@ -134,8 +127,8 @@ import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
-import { SidebarGeneralChats, type SidebarGeneralChatEntry } from "./sidebar/SidebarGeneralChats";
-import { SidebarPullRequestsRow } from "./sidebar/SidebarPullRequestsRow";
+import { SidebarDestinationRow } from "./sidebar/NavigationRail";
+import { ProjectFavicon } from "./ProjectFavicon";
 import { isRoom } from "../rooms";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
@@ -149,13 +142,12 @@ import {
   type ThreadPullRequest,
 } from "./pull-requests/pullRequests.logic";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
-import { SidebarUsageMeter } from "./sidebar/SidebarUsageMeter";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
 import { readEnvironmentApi } from "../environmentApi";
 import { useRoomsEnabled } from "~/hooks/useRoomsEnabled";
-import { useSettings } from "~/hooks/useSettings";
+import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
-import { resolveElectronSidebarWordmarkLayout } from "../desktopChrome";
+import { SIDEBAR_LIST_HEADER_ROW_CLASS } from "../desktopChrome";
 import { derivePhysicalProjectKey, selectProjectGroupingSettings } from "../logicalProject";
 import {
   useSavedEnvironmentRegistryStore,
@@ -248,6 +240,19 @@ interface InboxEntry {
   isDone: boolean;
   canMarkDone: boolean;
   doneAt: string | null;
+}
+
+/** A run of live rows, under a group header while the inbox is grouped. */
+interface InboxLiveSection {
+  readonly group: {
+    readonly key: string;
+    readonly label: string;
+    readonly icon: React.ReactNode;
+    readonly needsYou: number;
+    readonly working: number;
+    readonly collapsed: boolean;
+  } | null;
+  readonly rows: readonly InboxLiveRow<InboxEntry>[];
 }
 
 /**
@@ -351,14 +356,89 @@ function InboxSectionHeader({
   );
 }
 
+/**
+ * A group's header while the inbox is grouped by project or computer: what
+ * the group is, what in it needs the user or is working, and the fold
+ * chevron. The whole row folds the group. Not sticky: the Wrapped header
+ * below is the list's one sticky rule.
+ */
+function InboxGroupHeader({
+  groupKey,
+  label,
+  icon,
+  needsYou,
+  working,
+  collapsed,
+  onToggleCollapsed,
+}: {
+  groupKey: string;
+  label: string;
+  icon: React.ReactNode;
+  needsYou: number;
+  working: number;
+  collapsed: boolean;
+  onToggleCollapsed: (groupKey: string) => void;
+}) {
+  return (
+    <li className="list-none">
+      <button
+        type="button"
+        data-thread-selection-safe
+        data-testid={`inbox-group-${groupKey}`}
+        aria-expanded={!collapsed}
+        className="group/inbox-group mt-1.5 flex w-full cursor-pointer items-center gap-1.5 px-3 pt-1 pb-1 text-left select-none focus-ring"
+        onClick={() => onToggleCollapsed(groupKey)}
+      >
+        <span aria-hidden="true" className="flex size-3.5 shrink-0 items-center justify-center">
+          {icon}
+        </span>
+        <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground transition-colors group-hover/inbox-group:text-foreground">
+          {label}
+        </span>
+        {/* Counts as dots and numbers, in the rail's colors: the name keeps
+            the room a narrow list has. */}
+        <span className="ms-auto flex shrink-0 items-center gap-2 font-mono text-[10px] text-muted-foreground tabular-nums">
+          {needsYou > 0 ? (
+            <span
+              className="flex items-center gap-1"
+              title={needsYou === 1 ? "1 needs you" : `${needsYou} need you`}
+            >
+              <span
+                aria-hidden="true"
+                className={cn("size-1.5 rounded-full", THREAD_STATUS_DOT_CLASSES.amber)}
+              />
+              {needsYou}
+              <span className="sr-only">{needsYou === 1 ? " needs you" : " need you"}</span>
+            </span>
+          ) : null}
+          {working > 0 ? (
+            <span className="flex items-center gap-1" title={`${working} working`}>
+              <span
+                aria-hidden="true"
+                className={cn("size-1.5 rounded-full", THREAD_STATUS_DOT_CLASSES.blue)}
+              />
+              {working}
+              <span className="sr-only"> working</span>
+            </span>
+          ) : null}
+        </span>
+        <ChevronDownIcon
+          aria-hidden="true"
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground/50 transition-transform duration-150 group-hover/inbox-group:text-foreground",
+            collapsed && "-rotate-90",
+          )}
+        />
+      </button>
+    </li>
+  );
+}
+
 const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
 }: {
   isElectron: boolean;
 }) {
-  const electronWordmarkLayout = resolveElectronSidebarWordmarkLayout(
-    typeof navigator === "undefined" ? "" : navigator.platform,
-  );
   const wordmark = (
     <div className="flex min-w-0 items-center gap-2">
       <SidebarTrigger
@@ -390,74 +470,33 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
     </div>
   );
 
+  // On wide screens the row is a top bar's height, beside the rail; on macOS
+  // it starts past the traffic lights, which reach over the rail.
   return isElectron ? (
     <SidebarHeader className="drag-region shrink-0 gap-0 px-0 py-0">
-      {electronWordmarkLayout.spacerClassName ? (
-        <div aria-hidden="true" className={electronWordmarkLayout.spacerClassName} />
-      ) : null}
-      <div className={electronWordmarkLayout.wordmarkRowClassName}>{wordmark}</div>
+      <div className={SIDEBAR_LIST_HEADER_ROW_CLASS}>{wordmark}</div>
     </SidebarHeader>
   ) : (
     <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3 md:shrink-0 md:gap-0 md:px-0 md:py-0">
-      <div className="min-w-0 md:flex md:h-[var(--workspace-topbar-height)] md:min-h-[var(--workspace-topbar-height)] md:items-center md:pr-3 md:pl-[var(--workspace-titlebar-content-left)]">
+      <div className="min-w-0 md:flex md:h-[var(--workspace-topbar-height)] md:min-h-[var(--workspace-topbar-height)] md:items-center md:pr-3 md:pl-[var(--sidebar-list-header-left)]">
         {wordmark}
       </div>
     </SidebarHeader>
   );
 });
 
+/**
+ * The list's footer: update notices and the version. Usage and Settings moved
+ * into the rail (and the phone's row of destinations).
+ */
 const SidebarChromeFooter = memo(function SidebarChromeFooter() {
-  const navigate = useNavigate();
-  const pathname = useLocation({ select: (location) => location.pathname });
-  const navigateBackWithinApp = useNavigateBackWithinApp();
-  const { isMobile, setOpenMobile } = useSidebar();
-  const isOnUsage = pathname === "/usage";
-  // On mobile, /settings renders a full-page section index, so the sheet
-  // closes to reveal it; the sheet itself never hosts settings navigation.
-  const handleSettingsClick = useCallback(() => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
-    void navigate({ to: "/settings" });
-  }, [isMobile, navigate, setOpenMobile]);
-  const handleBackClick = useCallback(() => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
-    navigateBackWithinApp();
-  }, [isMobile, navigateBackWithinApp, setOpenMobile]);
-
   return (
     <SidebarFooter className="p-2">
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
-      <SidebarMenu>
-        <SidebarMenuItem>
-          {isOnUsage ? (
-            <SidebarMenuButton
-              size="sm"
-              className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-              onClick={handleBackClick}
-            >
-              <ArrowLeftIcon className="size-3.5" />
-              <span className="text-xs">Back</span>
-            </SidebarMenuButton>
-          ) : (
-            <SidebarUsageMeter />
-          )}
-        </SidebarMenuItem>
-        <SidebarMenuItem className="flex items-center gap-1.5">
-          <SidebarMenuButton
-            size="sm"
-            className="flex-1 gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-            onClick={handleSettingsClick}
-          >
-            <SettingsIcon className="size-3.5" />
-            <span className="text-xs">Settings</span>
-          </SidebarMenuButton>
-          <SidebarVersionTag />
-        </SidebarMenuItem>
-      </SidebarMenu>
+      <div className="flex min-h-6 items-center justify-end px-1">
+        <SidebarVersionTag />
+      </div>
     </SidebarFooter>
   );
 });
@@ -504,13 +543,17 @@ export default function Sidebar() {
   const setInboxProjectScope = useUiStateStore((store) => store.setInboxProjectScope);
   const inboxEnvironmentScopeId = useUiStateStore((store) => store.inboxEnvironmentScopeId);
   const setInboxEnvironmentScope = useUiStateStore((store) => store.setInboxEnvironmentScope);
+  const collapsedInboxGroups = useUiStateStore((store) => store.collapsedInboxGroups);
+  const setInboxGroupCollapsed = useUiStateStore((store) => store.setInboxGroupCollapsed);
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = pathname.startsWith("/settings");
-  const isOnChats = pathname.startsWith("/chats");
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
   const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
+  const wrapUpIdleThreads = useSettings((s) => s.wrapUpIdleThreads);
+  const sidebarGroupingSetting = useSettings((s) => s.sidebarGrouping);
+  const { updateSettings } = useUpdateSettings();
   const roomsEnabled = useRoomsEnabled();
   // The Rooms filter (in the scope menu) narrows what the inbox shows, never
   // what the wrap-up rules read, so it can not change which threads get filed
@@ -645,7 +688,8 @@ export default function Sidebar() {
     [resolveProjectKeyForRef],
   );
 
-  // General chats belong to no project and have their own page; they never
+  // General chats belong to no project and have their own page (the rail's
+  // General Chats, which counts what in them needs the user); they never
   // join the inbox, which is the list of project work.
   const generalChatProjectKeys = useMemo(
     () =>
@@ -655,15 +699,6 @@ export default function Sidebar() {
           .map((project) => project.projectKey),
       ),
     [sidebarProjects],
-  );
-  // ...and get their own lines under the General Chats row instead.
-  const generalChatThreads = useMemo(
-    () =>
-      sidebarThreads.filter(
-        (thread) =>
-          thread.archivedAt === null && generalChatProjectKeys.has(resolveThreadProjectKey(thread)),
-      ),
-    [generalChatProjectKeys, resolveThreadProjectKey, sidebarThreads],
   );
   const inboxThreads = useMemo(
     () =>
@@ -773,7 +808,8 @@ export default function Sidebar() {
         item.override,
         {
           now: nowIso,
-          autoDoneAfterDays: INBOX_AUTO_DONE_AFTER_DAYS,
+          // "Wrap up idle threads" off: nothing files itself for sitting still.
+          autoDoneAfterDays: wrapUpIdleThreads ? INBOX_AUTO_DONE_AFTER_DAYS : null,
           // The thread's own word wins over the app setting. It waits for every
           // pull request the thread has, its own and the ones its agent opened
           // elsewhere. A landing the host did not date is taken as now, which
@@ -824,35 +860,11 @@ export default function Sidebar() {
     seenThreadOverlays,
     sidebarProjectByKey,
     wrapUpChildThreadsOnFinish,
+    wrapUpIdleThreads,
     wrapUpOnPullRequestSettled,
     threadSeedVisitedAtById,
     threadWrapUpOnPullRequestSettledById,
   ]);
-
-  // The general chats' lines under their row: each chat's status read the
-  // same seen-aware way as the inbox's, then the live ones and the open one
-  // picked out.
-  const generalChatEntries = useMemo(
-    () =>
-      generalChatThreads.map((thread): SidebarGeneralChatEntry => {
-        const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-        const { status } = resolveSeenThreadStatus(thread, threadKey, {
-          seenThreadOverlays,
-          threadSeedVisitedAtById,
-        });
-        return { threadKey, thread, status };
-      }),
-    [generalChatThreads, seenThreadOverlays, threadSeedVisitedAtById],
-  );
-  const generalChatLines = useMemo(
-    () =>
-      selectGeneralChatLines({
-        chats: generalChatEntries,
-        activeThreadKey: routeThreadKey,
-        limit: GENERAL_CHAT_LINE_LIMIT,
-      }),
-    [generalChatEntries, routeThreadKey],
-  );
 
   // Every machine the inbox knows about: this device, plus whatever has been
   // added under Settings › Connections. Ordered with this device first, the rest by
@@ -1136,23 +1148,107 @@ export default function Sidebar() {
     setRevealedDoneCount(0);
   }, [scopedEnvironmentIdValue, scopedProjectKeyValue]);
 
-  // Exactly the inbox rows drawn, in order: jump labels and shift-range
-  // selection walk this list.
+  // Grouping by computer needs a second computer to mean anything.
+  const sidebarGrouping: SidebarGrouping =
+    sidebarGroupingSetting === "computer" && environmentScopeOptions.length <= 1
+      ? "none"
+      : sidebarGroupingSetting;
+  // The live list as drawn: one section, or a section per project or
+  // computer. Groups take the families as built (a family goes where its
+  // parent goes) and the rows the fold left showing, in list order, so pins
+  // still lead inside each group. A folded group keeps only the row holding
+  // the thread open in the chat; its header still counts everything in it.
+  const liveSections = useMemo((): readonly InboxLiveSection[] => {
+    if (sidebarGrouping === "none") {
+      return [{ group: null, rows: visibleLiveEntries }];
+    }
+    const groupKeyOf = (row: (typeof liveEntries)[number]) =>
+      sidebarGrouping === "project"
+        ? `project:${row.entry.projectKey}`
+        : `computer:${row.entry.thread.environmentId}`;
+    const countsByKey = new Map(
+      groupInboxLiveRows(liveEntries, groupKeyOf).map(
+        (group) => [group.key, countInboxRowAttention(group.rows)] as const,
+      ),
+    );
+    return groupInboxLiveRows(visibleLiveEntries, groupKeyOf).map((group) => {
+      const first = group.rows[0]!.entry;
+      const collapsed = collapsedInboxGroups[group.key] === true;
+      const counts = countsByKey.get(group.key) ?? countInboxRowAttention(group.rows);
+      let label: string;
+      let icon: React.ReactNode;
+      if (sidebarGrouping === "project") {
+        const project = sidebarProjectByKey.get(first.projectKey);
+        label = project?.displayName ?? first.projectLabel ?? "Project";
+        icon = project ? (
+          <ProjectFavicon
+            cwd={project.cwd}
+            environmentId={project.environmentId}
+            name={project.displayName}
+            className="size-3.5 shrink-0"
+          />
+        ) : null;
+      } else {
+        const machine = environmentScopeOptions.find(
+          (option) => option.environmentId === first.thread.environmentId,
+        );
+        label = machine?.label ?? "Computer";
+        const MachineIcon = machine?.isPrimary ? MonitorIcon : CloudIcon;
+        icon = <MachineIcon className="size-3.5 text-muted-foreground" />;
+      }
+      return {
+        group: {
+          key: group.key,
+          label,
+          icon,
+          needsYou: counts.needsYou,
+          working: counts.working,
+          collapsed,
+        },
+        rows: collapsed
+          ? group.rows.filter(
+              (row) =>
+                row.entry.threadKey === routeThreadKey ||
+                inboxLiveRowHoldsOpenChild(row, routeThreadKey),
+            )
+          : group.rows,
+      };
+    });
+  }, [
+    collapsedInboxGroups,
+    environmentScopeOptions,
+    liveEntries,
+    routeThreadKey,
+    sidebarGrouping,
+    sidebarProjectByKey,
+    visibleLiveEntries,
+  ]);
+  const toggleInboxGroup = useCallback(
+    (groupKey: string) => {
+      setInboxGroupCollapsed(
+        groupKey,
+        useUiStateStore.getState().collapsedInboxGroups[groupKey] !== true,
+      );
+    },
+    [setInboxGroupCollapsed],
+  );
+  const handleGroupingChange = useCallback(
+    (grouping: SidebarGrouping) => {
+      updateSettings({ sidebarGrouping: grouping });
+    },
+    [updateSettings],
+  );
+
+  // Exactly the inbox rows drawn, in order: jump labels, shift-range
+  // selection, previous/next and prewarming walk this list.
   const orderedThreadKeys = useMemo(
     () => [
-      ...visibleLiveEntries.flatMap(inboxLiveRowThreadKeys),
+      ...liveSections.flatMap((section) => section.rows.flatMap(inboxLiveRowThreadKeys)),
       ...renderedDoneEntries.flatMap((row) =>
         row.openChild ? [row.entry.threadKey, row.openChild.threadKey] : [row.entry.threadKey],
       ),
     ],
-    [renderedDoneEntries, visibleLiveEntries],
-  );
-  // Every thread drawn, the general chats' lines above the inbox: previous/next
-  // and prewarming walk this. The numbered jumps stay with the inbox, whose
-  // numbers must not shift each time a chat starts or stops work.
-  const traversalThreadKeys = useMemo(
-    () => [...generalChatLines.lines.map((line) => line.threadKey), ...orderedThreadKeys],
-    [generalChatLines.lines, orderedThreadKeys],
+    [liveSections, renderedDoneEntries],
   );
 
   const navigateToThread = useCallback(
@@ -1669,27 +1765,6 @@ export default function Sidebar() {
     sidebarProjectByKey,
   ]);
 
-  const handleNewGeneralChat = useCallback(() => {
-    const generalChatsProject = sidebarProjects.find((project) => project.kind === "general-chat");
-    const projectRef = generalChatsProject
-      ? scopeProjectRef(generalChatsProject.environmentId, generalChatsProject.id)
-      : null;
-    if (projectRef === null) {
-      return;
-    }
-    if (isMobile) {
-      setOpenMobile(false);
-    }
-    void startNewGeneralChatThread(handleNewThread, projectRef);
-  }, [handleNewThread, isMobile, setOpenMobile, sidebarProjects]);
-
-  const handleOpenChats = useCallback(() => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
-    void navigate({ to: "/chats" });
-  }, [isMobile, navigate, setOpenMobile]);
-
   const handleScopeChange = useCallback(
     (projectKey: string | null) => {
       setInboxProjectScope(projectKey);
@@ -1788,7 +1863,7 @@ export default function Sidebar() {
   const idlePrewarmThreadKeyList = isMobile
     ? ""
     : getSidebarIdlePrewarmThreadIds({
-        traversalThreadIds: traversalThreadKeys,
+        traversalThreadIds: orderedThreadKeys,
         activeThreadId: routeThreadKey,
       }).join("\n");
   useEffect(
@@ -1824,7 +1899,7 @@ export default function Sidebar() {
       const traversalDirection = threadTraversalDirectionFromCommand(command);
       if (traversalDirection !== null) {
         const targetThreadKey = resolveAdjacentThreadId({
-          threadIds: traversalThreadKeys,
+          threadIds: orderedThreadKeys,
           currentThreadId: routeThreadKey,
           direction: traversalDirection,
         });
@@ -1870,11 +1945,11 @@ export default function Sidebar() {
     getCurrentSidebarShortcutContext,
     keybindings,
     navigateToThread,
+    orderedThreadKeys,
     platform,
     routeThreadKey,
     sidebarThreadByKey,
     threadJumpThreadKeys,
-    traversalThreadKeys,
   ]);
 
   useEffect(() => {
@@ -1894,6 +1969,8 @@ export default function Sidebar() {
   return (
     <>
       <SidebarChromeHeader isElectron={isElectron} />
+      {/* A phone has no rail: its destinations are a row under the header. */}
+      {isMobile ? <SidebarDestinationRow /> : null}
 
       {isOnSettings && !isMobile ? (
         // Desktop only: mobile keeps the thread list in the sheet and gets a
@@ -1934,24 +2011,6 @@ export default function Sidebar() {
                   className="pointer-events-none absolute inset-x-0 top-0 z-20 h-3 bg-linear-to-b from-sidebar to-transparent"
                 />
                 <SidebarContent className="gap-0">
-                  {/* General Chats and Pull Requests read as a pair, so the gap
-                      belongs under the pair rather than between the two rows,
-                      and it survives an environment that has no pull requests. */}
-                  <div className="mb-4">
-                    <SidebarGeneralChats
-                      entries={generalChatEntries}
-                      lines={generalChatLines.lines}
-                      hiddenCount={generalChatLines.hiddenCount}
-                      activeThreadKey={routeThreadKey}
-                      isOnChatsPage={isOnChats}
-                      onOpenChats={handleOpenChats}
-                      onNewChat={handleNewGeneralChat}
-                      onOpenChat={navigateToThread}
-                    />
-
-                    <SidebarPullRequestsRow snapshot={openPullRequests} />
-                  </div>
-
                   <ProjectScopeMenu
                     options={scopeOptions}
                     projectByKey={sidebarProjectByKey}
@@ -1962,6 +2021,8 @@ export default function Sidebar() {
                     onEnvironmentScopeChange={handleEnvironmentScopeChange}
                     roomsOnly={roomsEnabled ? roomsOnly : null}
                     onRoomsOnlyChange={setRoomsOnly}
+                    grouping={sidebarGrouping}
+                    onGroupingChange={handleGroupingChange}
                     onAddProject={() => openAddProjectCommandPalette()}
                     onNewThread={handleComposeClick}
                     newThreadShortcutLabel={newThreadShortcutLabel}
@@ -2006,68 +2067,92 @@ export default function Sidebar() {
                     )
                   ) : (
                     <ul data-testid="inbox-thread-list">
-                      {visibleLiveEntries.map(({ entry, shownChildren, wrappedParent }) => (
-                        <React.Fragment key={entry.threadKey}>
-                          <InboxThreadRow
-                            thread={entry.thread}
-                            status={entry.status}
-                            projectLabel={
-                              scopedProjectKeyValue === null ? entry.projectLabel : null
-                            }
-                            isActive={routeThreadKey === entry.threadKey}
-                            jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
-                            canMarkDone={entry.canMarkDone}
-                            orderedThreadKeys={orderedThreadKeys}
-                            renamingThreadKey={renamingThreadKey}
-                            renamingTitle={renamingTitle}
-                            setRenamingTitle={setRenamingTitle}
-                            renamingInputRef={renamingInputRef}
-                            renamingCommittedRef={renamingCommittedRef}
-                            handleThreadClick={handleThreadClick}
-                            navigateToThread={navigateToThread}
-                            handleMultiSelectContextMenu={handleMultiSelectContextMenu}
-                            handleThreadContextMenu={handleThreadContextMenu}
-                            clearSelection={clearSelection}
-                            commitRename={commitRename}
-                            cancelRename={cancelRename}
-                            markThreadDone={markThreadDone}
-                            listPullRequest={pullRequestByThreadKey.get(entry.threadKey) ?? null}
-                            linkedPullRequests={
-                              linkedPullRequestsByThreadKey.get(entry.threadKey) ?? NO_PULL_REQUESTS
-                            }
-                            openPrLink={openPrLink}
-                            family={familyByThreadKey.get(entry.threadKey) ?? null}
-                            onToggleFamily={toggleChildThreadFamily}
-                            wrappedParentTitle={wrappedParent?.thread.title ?? null}
-                            lineage={lineageByThreadKey.get(entry.threadKey)}
-                          />
-                          {shownChildren.map((child) => (
-                            <InboxChildRow
-                              key={child.threadKey}
-                              thread={child.thread}
-                              status={child.status}
-                              isDone={child.isDone}
-                              doneAt={child.doneAt}
-                              isActive={routeThreadKey === child.threadKey}
-                              jumpLabel={visibleThreadJumpLabelByKey.get(child.threadKey) ?? null}
-                              canMarkDone={child.canMarkDone}
-                              orderedThreadKeys={orderedThreadKeys}
-                              renamingThreadKey={renamingThreadKey}
-                              renamingTitle={renamingTitle}
-                              setRenamingTitle={setRenamingTitle}
-                              renamingInputRef={renamingInputRef}
-                              renamingCommittedRef={renamingCommittedRef}
-                              handleThreadClick={handleThreadClick}
-                              navigateToThread={navigateToThread}
-                              handleMultiSelectContextMenu={handleMultiSelectContextMenu}
-                              handleThreadContextMenu={handleThreadContextMenu}
-                              clearSelection={clearSelection}
-                              commitRename={commitRename}
-                              cancelRename={cancelRename}
-                              markThreadDone={markThreadDone}
-                              reopenThread={reopenThread}
-                              lineage={lineageByThreadKey.get(child.threadKey)}
+                      {liveSections.map((section) => (
+                        <React.Fragment key={section.group?.key ?? "inbox"}>
+                          {section.group ? (
+                            <InboxGroupHeader
+                              groupKey={section.group.key}
+                              label={section.group.label}
+                              icon={section.group.icon}
+                              needsYou={section.group.needsYou}
+                              working={section.group.working}
+                              collapsed={section.group.collapsed}
+                              onToggleCollapsed={toggleInboxGroup}
                             />
+                          ) : null}
+                          {section.rows.map(({ entry, shownChildren, wrappedParent }) => (
+                            <React.Fragment key={entry.threadKey}>
+                              <InboxThreadRow
+                                thread={entry.thread}
+                                status={entry.status}
+                                // A row names its project unless the list already
+                                // does: scoped to one, or grouped by project.
+                                projectLabel={
+                                  scopedProjectKeyValue === null && sidebarGrouping !== "project"
+                                    ? entry.projectLabel
+                                    : null
+                                }
+                                isActive={routeThreadKey === entry.threadKey}
+                                jumpLabel={visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null}
+                                canMarkDone={entry.canMarkDone}
+                                orderedThreadKeys={orderedThreadKeys}
+                                renamingThreadKey={renamingThreadKey}
+                                renamingTitle={renamingTitle}
+                                setRenamingTitle={setRenamingTitle}
+                                renamingInputRef={renamingInputRef}
+                                renamingCommittedRef={renamingCommittedRef}
+                                handleThreadClick={handleThreadClick}
+                                navigateToThread={navigateToThread}
+                                handleMultiSelectContextMenu={handleMultiSelectContextMenu}
+                                handleThreadContextMenu={handleThreadContextMenu}
+                                clearSelection={clearSelection}
+                                commitRename={commitRename}
+                                cancelRename={cancelRename}
+                                markThreadDone={markThreadDone}
+                                listPullRequest={
+                                  pullRequestByThreadKey.get(entry.threadKey) ?? null
+                                }
+                                linkedPullRequests={
+                                  linkedPullRequestsByThreadKey.get(entry.threadKey) ??
+                                  NO_PULL_REQUESTS
+                                }
+                                openPrLink={openPrLink}
+                                family={familyByThreadKey.get(entry.threadKey) ?? null}
+                                onToggleFamily={toggleChildThreadFamily}
+                                wrappedParentTitle={wrappedParent?.thread.title ?? null}
+                                lineage={lineageByThreadKey.get(entry.threadKey)}
+                              />
+                              {shownChildren.map((child) => (
+                                <InboxChildRow
+                                  key={child.threadKey}
+                                  thread={child.thread}
+                                  status={child.status}
+                                  isDone={child.isDone}
+                                  doneAt={child.doneAt}
+                                  isActive={routeThreadKey === child.threadKey}
+                                  jumpLabel={
+                                    visibleThreadJumpLabelByKey.get(child.threadKey) ?? null
+                                  }
+                                  canMarkDone={child.canMarkDone}
+                                  orderedThreadKeys={orderedThreadKeys}
+                                  renamingThreadKey={renamingThreadKey}
+                                  renamingTitle={renamingTitle}
+                                  setRenamingTitle={setRenamingTitle}
+                                  renamingInputRef={renamingInputRef}
+                                  renamingCommittedRef={renamingCommittedRef}
+                                  handleThreadClick={handleThreadClick}
+                                  navigateToThread={navigateToThread}
+                                  handleMultiSelectContextMenu={handleMultiSelectContextMenu}
+                                  handleThreadContextMenu={handleThreadContextMenu}
+                                  clearSelection={clearSelection}
+                                  commitRename={commitRename}
+                                  cancelRename={cancelRename}
+                                  markThreadDone={markThreadDone}
+                                  reopenThread={reopenThread}
+                                  lineage={lineageByThreadKey.get(child.threadKey)}
+                                />
+                              ))}
+                            </React.Fragment>
                           ))}
                         </React.Fragment>
                       ))}

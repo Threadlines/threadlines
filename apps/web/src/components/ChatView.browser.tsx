@@ -120,6 +120,7 @@ import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store"
 import { dismissFirstRunSetup } from "./setup/firstRunGate";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
+import type { SidebarThreadSummary } from "../types";
 import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers";
 import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
@@ -846,6 +847,163 @@ function toShellSnapshot(snapshot: OrchestrationReadModel) {
     threads: snapshot.threads.map(toShellThread),
     updatedAt: snapshot.updatedAt,
   };
+}
+
+/**
+ * Puts a thread to work, or has it wait on the user, the way the shell
+ * stream's next summary would, without a server round trip. Use it on a
+ * thread that is not open: the open one's detail stream re-derives its row.
+ */
+function setSidebarThreadWork(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  work: "working" | "needs-you",
+  overrides: Partial<SidebarThreadSummary> = {},
+): void {
+  useStore.setState((state) => {
+    const environment = state.environmentStateById[environmentId];
+    const summary = environment?.sidebarThreadSummaryById[threadId];
+    if (!environment || !summary) {
+      throw new Error(`No sidebar summary for ${environmentId}/${threadId}.`);
+    }
+    const next: SidebarThreadSummary =
+      work === "working"
+        ? {
+            ...summary,
+            latestTurn: {
+              turnId: `turn-${threadId}` as TurnId,
+              state: "running",
+              requestedAt: NOW_ISO,
+              startedAt: NOW_ISO,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            session: summary.session
+              ? { ...summary.session, status: "running", orchestrationStatus: "running" }
+              : summary.session,
+            ...overrides,
+          }
+        : { ...summary, hasPendingApprovals: true, ...overrides };
+    return {
+      environmentStateById: {
+        ...state.environmentStateById,
+        [environmentId]: {
+          ...environment,
+          sidebarThreadSummaryById: { ...environment.sidebarThreadSummaryById, [threadId]: next },
+        },
+      },
+    };
+  });
+}
+
+/**
+ * A second computer's threads, as its shell stream would leave them in the
+ * store: a copy of this computer's state holding only the given threads.
+ */
+function injectRemoteEnvironmentThreads(
+  environmentId: EnvironmentId,
+  threads: ReadonlyArray<{ readonly id: ThreadId; readonly title: string }>,
+): void {
+  useStore.setState((state) => {
+    const local = state.environmentStateById[LOCAL_ENVIRONMENT_ID]!;
+    const template = local.sidebarThreadSummaryById[THREAD_ID]!;
+    const shellTemplate = local.threadShellById[THREAD_ID]!;
+    const project = local.projectById[PROJECT_ID]!;
+    return {
+      environmentStateById: {
+        ...state.environmentStateById,
+        [environmentId]: {
+          ...local,
+          projectIds: [PROJECT_ID],
+          projectById: { [PROJECT_ID]: { ...project, environmentId } },
+          threadIds: threads.map((thread) => thread.id),
+          threadIdsByProjectId: { [PROJECT_ID]: threads.map((thread) => thread.id) },
+          sidebarThreadSummaryById: Object.fromEntries(
+            threads.map((thread) => [
+              thread.id,
+              { ...template, id: thread.id, environmentId, title: thread.title },
+            ]),
+          ),
+          threadShellById: Object.fromEntries(
+            threads.map((thread) => [
+              thread.id,
+              { ...shellTemplate, id: thread.id, environmentId, title: thread.title },
+            ]),
+          ),
+        },
+      },
+    };
+  });
+}
+
+const SIDEBAR_TOGGLE_KEYBINDING = {
+  command: "sidebar.toggle",
+  shortcut: {
+    key: "b",
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    modKey: true,
+  },
+  whenAst: { type: "not", node: { type: "identifier", name: "terminalFocus" } },
+} as const;
+
+const FLEET_REMOTE_ENVIRONMENT_ID = EnvironmentId.make("environment-windows");
+const FLEET_OFFLINE_ENVIRONMENT_ID = EnvironmentId.make("environment-mac-mini");
+const FLEET_RECONNECTING_ENVIRONMENT_ID = EnvironmentId.make("environment-linux");
+
+/**
+ * Saves computers the way Settings › Connections does, then sets what the
+ * connection service would report for each, once its first (credential-less)
+ * attempt has settled.
+ */
+async function saveFleetComputers(
+  computers: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+    readonly os: "darwin" | "windows" | "linux";
+    readonly state: "connected" | "connecting" | "disconnected";
+    readonly lastConnectedAt?: string;
+  }>,
+): Promise<void> {
+  for (const computer of computers) {
+    useSavedEnvironmentRegistryStore.getState().upsert({
+      environmentId: computer.environmentId,
+      label: computer.label,
+      httpBaseUrl: `https://${computer.environmentId}.example.test`,
+      wsBaseUrl: `wss://${computer.environmentId}.example.test/ws`,
+      createdAt: NOW_ISO,
+      lastConnectedAt: computer.lastConnectedAt ?? NOW_ISO,
+    });
+  }
+  await vi.waitFor(
+    () => {
+      for (const computer of computers) {
+        expect(
+          useSavedEnvironmentRuntimeStore.getState().byId[computer.environmentId]?.authState,
+        ).toBe("requires-auth");
+      }
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+  for (const computer of computers) {
+    useSavedEnvironmentRuntimeStore.getState().patch(computer.environmentId, {
+      connectionState: computer.state,
+      authState: "authenticated",
+      lastError: null,
+      route: computer.state === "connected" ? "direct" : null,
+      descriptor: {
+        ...fixture.serverConfig.environment,
+        environmentId: computer.environmentId,
+        label: computer.label,
+        platform: { os: computer.os, arch: "x64" },
+      },
+      ...(computer.state === "disconnected"
+        ? { disconnectedAt: computer.lastConnectedAt ?? NOW_ISO }
+        : {}),
+    });
+  }
 }
 
 function updateThreadSessionInSnapshot(
@@ -2901,6 +3059,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       threadSeedVisitedAtById: {},
       doneThreadOverlays: {},
       inboxProjectScopeKey: null,
+      collapsedInboxGroups: {},
+      sidebarListOpen: true,
     });
     useTerminalStateStore.persist.clearStorage();
     useTerminalStateStore.setState({
@@ -3027,62 +3187,249 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("swaps the sidebar Usage action for a history-aware Back action on Usage", async () => {
+  it("goes to Usage from the rail, and Threads brings back the thread it left", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-usage-sidebar-back" as MessageId,
-        targetText: "usage sidebar back",
+        targetMessageId: "msg-user-rail-usage" as MessageId,
+        targetText: "rail usage",
       }),
     });
 
     try {
       const initialPathname = mounted.router.state.location.pathname;
-      const usageButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('[data-testid="sidebar-usage-meter"]'),
-        "Unable to find the sidebar Usage button.",
-      );
-      usageButton.click();
+      await expect
+        .element(page.getByTestId("rail-threads"))
+        .toHaveAttribute("aria-current", "page");
+      await page.getByTestId("rail-usage").click();
       await waitForURL(
         mounted.router,
         (pathname) => pathname === "/usage",
         "Expected the Usage route.",
       );
+      await expect.element(page.getByTestId("rail-usage")).toHaveAttribute("aria-current", "page");
 
-      const footer = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-slot="sidebar-footer"]'),
-        "Unable to find the sidebar footer.",
-      );
-      const backButton = await waitForElement(
-        () =>
-          Array.from(footer.querySelectorAll<HTMLButtonElement>("button")).find(
-            (button) => button.textContent?.trim() === "Back",
-          ) ?? null,
-        "Unable to find the Usage Back button.",
-      );
-      expect(
-        Array.from(footer.querySelectorAll("button")).some(
-          (button) => button.textContent?.trim() === "Settings",
-        ),
-      ).toBe(true);
-      expect(
-        Array.from(footer.querySelectorAll("button")).some((button) =>
-          button.textContent?.trim().startsWith("Usage"),
-        ),
-      ).toBe(false);
-
-      backButton.click();
+      await page.getByTestId("rail-threads").click();
       await waitForURL(
         mounted.router,
         (pathname) => pathname === initialPathname,
-        "Expected Back to return to the route that opened Usage.",
+        "Threads should return to the thread that was open.",
       );
-      await waitForElement(
-        () =>
-          Array.from(footer.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-            button.textContent?.trim().startsWith("Usage"),
-          ) ?? null,
-        "Expected Usage to return after leaving Usage.",
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("hides the thread list down to the rail, which keeps what needs you in view", async () => {
+    const askingThreadId = "thread-rail-asking" as ThreadId;
+    const workingThreadId = "thread-rail-working" as ThreadId;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        addThreadToSnapshot(
+          createSnapshotForTargetUser({
+            targetMessageId: "msg-user-rail-hide" as MessageId,
+            targetText: "rail hide",
+          }),
+          askingThreadId,
+        ),
+        workingThreadId,
+      ),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [SIDEBAR_TOGGLE_KEYBINDING],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingThreadId, "needs-you");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingThreadId, "working");
+      const threadsButton = page.getByTestId("rail-threads");
+      await expect
+        .element(threadsButton.getByTestId("rail-needs-you-badge"))
+        .toHaveTextContent("1");
+      // While the list shows, it says what is working; the rail stays quiet.
+      expect(document.querySelector('[data-testid="rail-threads-working"]')).toBeNull();
+      const rail = document.querySelector('[data-testid="navigation-rail"]')!;
+      const list = document.querySelector('[data-slot="sidebar-container"]')!;
+      expect(list.getBoundingClientRect().left).toBe(rail.getBoundingClientRect().right);
+
+      await page.getByTestId("rail-sidebar-toggle").click();
+      await vi.waitFor(() => {
+        expect(useUiStateStore.getState().sidebarListOpen).toBe(false);
+        expect(
+          document
+            .querySelector('[data-slot="sidebar-wrapper"]')
+            ?.getAttribute("data-sidebar-state"),
+        ).toBe("collapsed");
+      });
+      await expect.element(page.getByTestId("rail-threads-working")).toHaveTextContent("1");
+      await expect.element(page.getByTestId("rail-new-thread")).toBeVisible();
+      // The thread's own header starts where the rail ends.
+      await vi.waitFor(() => {
+        const header = document.querySelector('header[data-find-region="chat"]')!;
+        expect(header.getBoundingClientRect().left).toBe(rail.getBoundingClientRect().right);
+      });
+
+      // Mod+B brings the list back.
+      const useMetaForMod = isMacPlatform(navigator.platform);
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "b",
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+      });
+      expect(document.querySelector('[data-testid="rail-new-thread"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("starts the rail's buttons below the macOS window controls, and clears them with the list hidden", async () => {
+    const root = document.documentElement;
+    root.classList.add("electron", "mac");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-mac" as MessageId,
+        targetText: "rail mac",
+      }),
+    });
+
+    try {
+      const toggle = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="rail-sidebar-toggle"]'),
+        "Unable to find the rail's sidebar toggle.",
+      );
+      // The traffic lights sit at x 16-68, y 18-30: the strip above the
+      // rail's first button is theirs.
+      expect(toggle.getBoundingClientRect().top).toBeGreaterThanOrEqual(52);
+      useUiStateStore.getState().setSidebarListOpen(false);
+      await vi.waitFor(() => {
+        const header = document.querySelector<HTMLElement>('header[data-find-region="chat"]')!;
+        const contentLeft =
+          header.getBoundingClientRect().left +
+          Number.parseFloat(getComputedStyle(header).paddingLeft);
+        expect(contentLeft).toBeGreaterThanOrEqual(88);
+      });
+    } finally {
+      await mounted.cleanup();
+      root.classList.remove("electron", "mac");
+    }
+  });
+
+  it("draws the fleet from saved computers and their threads, and narrows the list to one", async () => {
+    const workingThreadId = "thread-fleet-working" as ThreadId;
+    const remoteThreadId = "thread-fleet-remote" as ThreadId;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-fleet" as MessageId,
+          targetText: "fleet",
+        }),
+        workingThreadId,
+      ),
+      initialPath: "/fleet",
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_REMOTE_ENVIRONMENT_ID,
+          label: "Windows PC",
+          os: "windows",
+          state: "connected",
+        },
+        {
+          environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          label: "Mac mini",
+          os: "darwin",
+          state: "disconnected",
+          // Half past the hour, so the page's clock (taken at mount) reads 2h.
+          lastConnectedAt: new Date(Date.now() - 150 * 60_000).toISOString(),
+        },
+      ]);
+      injectRemoteEnvironmentThreads(FLEET_REMOTE_ENVIRONMENT_ID, [
+        { id: remoteThreadId, title: "Sign the installer" },
+      ]);
+      setSidebarThreadWork(FLEET_REMOTE_ENVIRONMENT_ID, remoteThreadId, "needs-you");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingThreadId, "working", {
+        title: "Double charges at checkout",
+      });
+
+      await expect
+        .element(page.getByTestId("fleet-summary"))
+        .toHaveTextContent("1 working and 1 needs you, on 2 computers. Mac mini is offline.");
+      const remoteNode = page.getByTestId(`fleet-node-${FLEET_REMOTE_ENVIRONMENT_ID}`);
+      await expect.element(remoteNode.getByTestId("fleet-connection-connected")).toBeVisible();
+      await expect
+        .element(
+          page
+            .getByTestId(`fleet-node-${FLEET_OFFLINE_ENVIRONMENT_ID}`)
+            .getByTestId("fleet-connection-offline"),
+        )
+        .toBeVisible();
+      await expect
+        .element(page.getByTestId(`fleet-thread-${workingThreadId}`))
+        .toHaveTextContent("Double charges at checkout");
+      await expect.element(page.getByTestId(`fleet-thread-${remoteThreadId}`)).toBeVisible();
+      await expect
+        .element(page.getByTestId("fleet-quiet"))
+        .toHaveTextContent("Mac mini was last seen 2h ago.");
+      // The rail counts the work too.
+      await expect.element(page.getByTestId("rail-fleet")).toHaveAttribute("aria-current", "page");
+
+      await remoteNode.click();
+      await expect
+        .element(page.getByTestId(`fleet-thread-${workingThreadId}`))
+        .not.toBeInTheDocument();
+      await expect.element(page.getByTestId(`fleet-thread-${remoteThreadId}`)).toBeVisible();
+      await page.getByTestId("fleet-show-all").click();
+      await expect.element(page.getByTestId(`fleet-thread-${workingThreadId}`)).toBeVisible();
+
+      await page.getByTestId(`fleet-thread-${remoteThreadId}`).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === `/${FLEET_REMOTE_ENVIRONMENT_ID}/${remoteThreadId}`,
+        "A Fleet row should open its thread.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("asks to connect another computer while this is the only one", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-fleet-alone" as MessageId,
+        targetText: "fleet alone",
+      }),
+      initialPath: "/fleet",
+    });
+
+    try {
+      await expect
+        .element(page.getByText("Link another computer or your phone to see them here."))
+        .toBeVisible();
+      // Only this computer's owner can let a device in; anyone else is shown
+      // where that is done.
+      await page.getByRole("button", { name: "Connect", exact: true }).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/settings/connections",
+        "Connect should lead to Settings › Connections.",
       );
     } finally {
       await mounted.cleanup();
@@ -3259,9 +3606,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
       sidebarTrigger.click();
       await waitForLayout();
 
+      // The phone has no rail: its destinations are a row in the sheet.
       const settingsButton = await waitForElement(
-        () => findButtonContainingText("Settings"),
-        "Unable to find the sidebar settings button.",
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-destination-row"] [data-testid="rail-settings"]',
+          ),
+        "Unable to find the sheet's Settings button.",
       );
       settingsButton.click();
 
@@ -7511,42 +7862,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps General Chats as its own destination above the scope row", async () => {
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-general-chats-nav" as MessageId,
-        targetText: "general chats nav target",
-      }),
-    });
-
-    try {
-      const chatsRow = page.getByTestId("sidebar-general-chats");
-      await expect.element(chatsRow).toBeInTheDocument();
-      await chatsRow.click();
-
-      await waitForURL(
-        mounted.router,
-        (pathname) => pathname === "/chats",
-        "General Chats should open the chats page.",
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("gives a live general chat a line under General Chats that opens it", async () => {
+  it("counts general chats on the rail, keeps them out of the inbox, and selects General Chats while one is open", async () => {
     const workingChatId = "thread-general-chat-working" as ThreadId;
-    const quietChatId = "thread-general-chat-quiet" as ThreadId;
+    const askingChatId = "thread-general-chat-asking" as ThreadId;
     const withChats = addThreadToSnapshot(
       addThreadToSnapshot(
         createSnapshotForTargetUser({
-          targetMessageId: "msg-user-general-chat-lines" as MessageId,
-          targetText: "general chat lines target",
+          targetMessageId: "msg-user-general-chat-rail" as MessageId,
+          targetText: "general chat rail target",
         }),
         workingChatId,
       ),
-      quietChatId,
+      askingChatId,
     );
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -7572,23 +7899,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
                 ...thread,
                 projectId: GENERAL_CHATS_PROJECT_ID,
                 title: "Best way to store passkeys",
-                latestTurn: {
-                  turnId: "turn-general-chat-working" as TurnId,
-                  state: "running" as const,
-                  requestedAt: NOW_ISO,
-                  startedAt: NOW_ISO,
-                  completedAt: null,
-                  assistantMessageId: null,
-                },
-                session: thread.session
-                  ? {
-                      ...thread.session,
-                      status: "running" as const,
-                      activeTurnId: "turn-general-chat-working" as TurnId,
-                    }
-                  : thread.session,
               }
-            : thread.id === quietChatId
+            : thread.id === askingChatId
               ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Draft reply" }
               : thread,
         ),
@@ -7596,30 +7908,19 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const line = page.getByTestId(`sidebar-general-chat-${workingChatId}`);
-      await expect.element(line).toBeInTheDocument();
-      await expect
-        .element(page.getByTestId(`sidebar-general-chat-status-${workingChatId}`))
-        .toHaveTextContent(/^working/);
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingChatId, "working");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingChatId, "needs-you");
+      const chatsButton = page.getByTestId("rail-chats");
+      // Chats have no list beside the rail, so their work always shows on it.
+      await expect.element(chatsButton.getByTestId("rail-needs-you-badge")).toHaveTextContent("1");
+      await expect.element(page.getByTestId("rail-chats-working")).toHaveTextContent("1");
+      // The inbox's own counts leave them out.
       expect(
-        document.querySelector(`[data-testid="sidebar-general-chat-${quietChatId}"]`),
-        "A quiet chat nobody has open has nothing to say, so it gets no line.",
+        document.querySelector('[data-testid="rail-threads"] [data-testid="rail-needs-you-badge"]'),
       ).toBeNull();
-      expect(
-        document.querySelector(`[data-testid="thread-row-${workingChatId}"]`),
-        "General chats still stay out of the inbox.",
-      ).toBeNull();
+      expect(document.querySelector(`[data-testid="thread-row-${workingChatId}"]`)).toBeNull();
 
-      await line.click();
-      await waitForURL(
-        mounted.router,
-        (pathname) => pathname.endsWith(`/${workingChatId}`),
-        "The line should open its chat.",
-      );
-      await expect.element(line).toHaveAttribute("aria-current", "page");
-
-      // The General Chats page says the same thing in the same words.
-      await page.getByTestId("sidebar-general-chats").click();
+      await chatsButton.click();
       await waitForURL(
         mounted.router,
         (pathname) => pathname === "/chats",
@@ -7634,37 +7935,140 @@ describe("ChatView timeline estimator parity (full app)", () => {
         )
         .toHaveTextContent(/^working/);
 
-      // The chat settles while the pointer is still over the sidebar (it just
-      // clicked General Chats): its line holds still rather than pulling the
-      // rows below out from under the pointer, and leaves once it moves away.
-      useStore.setState((state) => {
-        const environment = state.environmentStateById[LOCAL_ENVIRONMENT_ID]!;
-        const summary = environment.sidebarThreadSummaryById[workingChatId]!;
-        return {
-          environmentStateById: {
-            ...state.environmentStateById,
-            [LOCAL_ENVIRONMENT_ID]: {
-              ...environment,
-              sidebarThreadSummaryById: {
-                ...environment.sidebarThreadSummaryById,
-                [workingChatId]: {
-                  ...summary,
-                  latestTurn: null,
-                  session: summary.session
-                    ? { ...summary.session, status: "ready", orchestrationStatus: "ready" }
-                    : null,
-                },
-              },
-            },
+      await page.getByTestId("chats-view-row").filter({ hasText: "Draft reply" }).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${askingChatId}`),
+        "A chat row should open its chat.",
+      );
+      await expect.element(chatsButton).toHaveAttribute("aria-current", "page");
+      expect(
+        document.querySelector('[data-testid="rail-threads"]')?.getAttribute("aria-current"),
+      ).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups the inbox by project with families under their parent, and folds a group", async () => {
+    const otherProjectThreadId = "thread-group-other-project" as ThreadId;
+    const childThreadId = "thread-group-child" as ThreadId;
+    const base = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-inbox-groups" as MessageId,
+          targetText: "inbox groups",
+        }),
+        otherProjectThreadId,
+      ),
+      childThreadId,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            ...base.projects[0]!,
+            id: SECOND_PROJECT_ID,
+            title: "Second project",
+            workspaceRoot: "/repo/second-project",
           },
-        };
+        ],
+        threads: base.threads.map((thread) =>
+          thread.id === otherProjectThreadId
+            ? { ...thread, projectId: SECOND_PROJECT_ID, title: "Second project thread" }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      // A thread the other project's thread started, filed under the first
+      // project: it travels with its parent.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, childThreadId, "working", {
+        parentThreadId: otherProjectThreadId,
+        attachedToParent: true,
+        title: "Child thread",
       });
+      updateSettings({ sidebarGrouping: "project" });
+      const headers = () =>
+        Array.from(document.querySelectorAll<HTMLElement>('[data-testid^="inbox-group-project:"]'));
+      await vi.waitFor(() => expect(headers()).toHaveLength(2));
+      const secondHeader = headers().find((header) =>
+        header.textContent?.includes("Second project"),
+      )!;
+      // The family's work counts on its parent's group.
+      expect(secondHeader.textContent).toContain("1 working");
+      const listed = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="inbox-thread-list"] [data-testid^="inbox-group-"], [data-testid="inbox-thread-list"] [data-testid^="thread-row-"]',
+        ),
+      ).map((element) => element.dataset.testid);
+      const parentIndex = listed.indexOf(`thread-row-${otherProjectThreadId}`);
+      expect(listed[parentIndex - 1]).toBe(secondHeader.dataset.testid);
+      // The child folds into its parent's family line rather than standing
+      // in its own project's group.
+      await expect.element(page.getByTestId(`thread-family-${otherProjectThreadId}`)).toBeVisible();
+      expect(listed).not.toContain(`thread-row-${childThreadId}`);
+
+      secondHeader.click();
       await expect
-        .element(page.getByTestId(`sidebar-general-chat-status-${workingChatId}`))
-        .not.toHaveTextContent(/^working/);
-      await expect.element(line).toBeInTheDocument();
-      await page.getByTestId("chats-view-row").first().hover();
-      await expect.element(line).not.toBeInTheDocument();
+        .element(page.getByTestId(`thread-row-${otherProjectThreadId}`))
+        .not.toBeInTheDocument();
+      expect(useUiStateStore.getState().collapsedInboxGroups).toEqual({
+        [secondHeader.dataset.testid!.slice("inbox-group-".length)]: true,
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps idle threads in the list once Wrap up idle threads is off", async () => {
+    const idleThreadId = "thread-idle-for-days" as ThreadId;
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString();
+    const base = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-wrap-idle" as MessageId,
+        targetText: "wrap idle",
+      }),
+      idleThreadId,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === idleThreadId
+            ? {
+                ...thread,
+                title: "Quiet for days",
+                createdAt: threeDaysAgo,
+                updatedAt: threeDaysAgo,
+                lastSeenAt: threeDaysAgo,
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      await expect.element(page.getByTestId(`done-row-${idleThreadId}`)).toBeInTheDocument();
+
+      await page.getByTestId("rail-settings").click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.startsWith("/settings"),
+        "Settings should open from the rail.",
+      );
+      await mounted.router.navigate({ to: "/settings/threads" });
+      await page.getByRole("switch", { name: "Wrap up idle threads" }).click();
+      expect(getClientSettings().wrapUpIdleThreads).toBe(false);
+
+      await page.getByTestId("rail-threads").click();
+      await expect.element(page.getByTestId(`thread-row-${idleThreadId}`)).toBeInTheDocument();
+      expect(document.querySelector(`[data-testid="done-row-${idleThreadId}"]`)).toBeNull();
     } finally {
       await mounted.cleanup();
     }
