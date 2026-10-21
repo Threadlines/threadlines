@@ -294,6 +294,23 @@ function lastSeenPhrase(lastSeenAt: string, nowMs: number): string {
   return elapsed === "just now" ? "just now" : `${elapsed} ago`;
 }
 
+/**
+ * A computer's work (or the whole fleet's) in a few words: "2 working · 1
+ * needs you", or "" when quiet.
+ */
+export function describeComputerCounts(
+  computer: Pick<FleetComputer, "working" | "needsYou">,
+): string {
+  return [
+    computer.working > 0 ? `${computer.working} working` : null,
+    computer.needsYou > 0
+      ? `${computer.needsYou} ${computer.needsYou === 1 ? "needs" : "need"} you`
+      : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
+}
+
 /** The mono line under a computer's name: where it is, or how long it has been gone. */
 export function describeComputerLocation(computer: FleetComputerInput, nowMs: number): string {
   if (computer.kind === "this") {

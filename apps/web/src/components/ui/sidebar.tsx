@@ -158,9 +158,6 @@ function SidebarProvider({
           {
             "--sidebar-width": SIDEBAR_WIDTH,
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
-            // What stands left of a left sidebar (the app's navigation rail):
-            // its fixed pane starts past it, and slides away beneath it.
-            "--sidebar-rail-width": "0px",
             ...style,
           } as React.CSSProperties
         }
@@ -290,12 +287,15 @@ function Sidebar({
           )}
           data-slot="sidebar-gap"
         />
+        {/* Placed in the nearest positioned ancestor: the app's work panel,
+            which clips it as it slides away, so a sidebar never covers the
+            window's title row or the rail. */}
         <div
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
+            "absolute inset-y-0 z-10 hidden w-(--sidebar-width) md:flex",
             animateLayout && "transition-[left,right,width] duration-200 ease-linear",
             side === "left"
-              ? "left-(--sidebar-rail-width) group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-rail-width)-var(--sidebar-width))]"
+              ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
             // Adjust the padding for floating and inset variants.
             variant === "floating" || variant === "inset"
@@ -360,7 +360,7 @@ function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTrigge
 
 /**
  * Header-local sidebar trigger for mobile sheet layouts. Desktop uses the
- * shared fixed titlebar control from AppSidebarLayout.
+ * toggle in the window's title row (AppTitleBar).
  */
 function SidebarOpenTrigger({ className, style, ...props }: React.ComponentProps<typeof Button>) {
   return <SidebarTrigger className={cn(className, "md:hidden")} style={style} {...props} />;

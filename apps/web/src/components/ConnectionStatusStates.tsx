@@ -10,7 +10,6 @@ import {
 import { type ReactNode } from "react";
 
 import { APP_BASE_NAME, APP_DISPLAY_NAME, DESKTOP_DOWNLOAD_URL } from "../branding";
-import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { cn } from "../lib/utils";
 import { CONNECTIONS_SETTINGS_SECTION_PATH } from "./settings/settingsNavigation";
@@ -57,7 +56,6 @@ function ConnectionStatusState({
         <header
           className={cn(
             "border-b border-border px-3 py-2 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 sm:py-3",
-            chrome === "sidebar-inset" && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
           )}
         >
           <div className="flex items-center gap-2">
@@ -95,7 +93,7 @@ function ConnectionStatusState({
 
 function SidebarInsetShell({ children }: { children: ReactNode }) {
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
       {children}
     </SidebarInset>
   );

@@ -36,7 +36,7 @@ import {
   travelingDotDelaySeconds,
 } from "./fleetGraph.logic";
 
-const GLYPH_ICONS: Record<FleetGlyph, LucideIcon> = {
+export const FLEET_GLYPH_ICONS: Record<FleetGlyph, LucideIcon> = {
   laptop: LaptopIcon,
   monitor: MonitorIcon,
   server: ServerIcon,
@@ -50,7 +50,7 @@ const RING_CLASS: Record<FleetWork, string> = {
   idle: "border-border",
 };
 
-const CONNECTION_DOT_CLASS = {
+export const FLEET_CONNECTION_DOT_CLASS = {
   connected: "bg-success",
   reconnecting: "bg-warning",
   offline: "bg-muted-foreground",
@@ -188,7 +188,7 @@ function ComputerNode({
   readonly dimmed: boolean;
   readonly onSelect: ((computerId: string) => void) | null;
 }) {
-  const Glyph = GLYPH_ICONS[computer.glyph];
+  const Glyph = FLEET_GLYPH_ICONS[computer.glyph];
   // Offline, or set aside while another computer is picked: quiet text, but
   // the node stays opaque so lines never show through it.
   const quiet = computer.connection === "offline" || dimmed;
@@ -212,7 +212,7 @@ function ComputerNode({
           data-testid={`fleet-connection-${computer.connection}`}
           className={cn(
             "absolute right-0 bottom-0 size-2.5 rounded-full ring-2 ring-card",
-            CONNECTION_DOT_CLASS[computer.connection],
+            FLEET_CONNECTION_DOT_CLASS[computer.connection],
           )}
         />
       </span>

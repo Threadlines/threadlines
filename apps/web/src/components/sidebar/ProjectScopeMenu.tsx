@@ -117,7 +117,11 @@ export interface ProjectScopeMenuProps {
   grouping: SidebarGrouping;
   onGroupingChange: (grouping: SidebarGrouping) => void;
   onAddProject: () => void;
-  onNewThread: () => void;
+  /**
+   * A new-thread button at the row's end, on a phone. Null on a wide screen,
+   * where the rail's New thread is the one.
+   */
+  onNewThread: (() => void) | null;
   newThreadShortcutLabel: string | null;
 }
 
@@ -767,24 +771,26 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
           </TooltipTrigger>
           <TooltipPopup side="bottom">Add project</TooltipPopup>
         </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                aria-label="New thread"
-                data-testid="new-thread-button"
-                className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
-                onClick={onNewThread}
-              />
-            }
-          >
-            <SquarePenIcon className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipPopup side="bottom">
-            {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
-          </TooltipPopup>
-        </Tooltip>
+        {onNewThread ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label="New thread"
+                  data-testid="new-thread-button"
+                  className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
+                  onClick={onNewThread}
+                />
+              }
+            >
+              <SquarePenIcon className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">
+              {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
       </div>
 
       <Dialog

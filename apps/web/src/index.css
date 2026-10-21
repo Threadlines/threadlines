@@ -1,8 +1,11 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark, .dark *));
-/* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
-@custom-variant wco (&:is(.wco, .wco *));
+/* Window Controls Overlay: active when Electron exposes native titlebar control geometry.
+   Never inside the app shell's work panel: the title row above it holds the
+   window controls, so only what covers the whole window (a sheet, setup)
+   has to keep clear of them. */
+@custom-variant wco (&:is(.wco, .wco *):not([data-slot="app-panel"] *));
 /* The primary pointer can hover (mouse/trackpad). Hide-until-hover affordances
    are gated on this, so touch screens get them permanently visible instead. */
 @custom-variant can-hover (@media (hover: hover));
@@ -24,33 +27,18 @@
   --workspace-native-controls-inset: 0px;
   --workspace-titlebar-control-size: 1.75rem;
   --workspace-titlebar-control-gap: 0.25rem;
-}
-
-[data-slot="sidebar-wrapper"] {
-  /* Where a page's top bar starts its content while the thread list is
-     hidden: clear of whatever window controls reach past the rail (the macOS
-     traffic lights), and never tighter than a top bar's own padding. The
-     sidebar toggle lives in the rail, so nothing else needs the room. */
-  --workspace-titlebar-content-left: max(
-    1.25rem,
-    calc(var(--workspace-controls-left) - var(--sidebar-rail-width))
-  );
-  /* The same clearance for the thread list's header row, which starts where
-     the rail ends. */
-  --sidebar-list-header-left: max(
-    0.75rem,
-    calc(var(--workspace-controls-left) - var(--sidebar-rail-width))
-  );
-  /* The rail's buttons start below a strip the window controls own (macOS
-     draws its traffic lights over the rail); elsewhere they start at the top. */
-  --sidebar-rail-top-inset: 0px;
-}
-
-html.electron.mac:not([data-marketing-capture]) [data-slot="sidebar-wrapper"] {
-  --sidebar-rail-top-inset: var(--workspace-topbar-height);
+  /* The app shell's title row (AppTitleBar), part of the frame with the rail.
+     The desktop app draws Windows and Linux window controls this tall, and
+     centers the macOS traffic lights in it (DesktopWindow.ts). */
+  --app-titlebar-height: 38px;
+  /* Where the title row's first button starts: centered over the 48px rail,
+     or past the window controls where they sit at the left (below). */
+  --app-titlebar-leading: 9px;
 }
 
 .wco {
+  --app-titlebar-height: env(titlebar-area-height, 38px);
+  --app-titlebar-leading: calc(env(titlebar-area-x, 0px) + 9px);
   --workspace-topbar-height: env(titlebar-area-height, 52px);
   --workspace-controls-top: env(titlebar-area-y, 0px);
   --workspace-controls-left: calc(env(titlebar-area-x, 0px) + 0.75rem);
@@ -67,6 +55,7 @@ html.electron.mac:not([data-marketing-capture]) [data-slot="sidebar-wrapper"] {
    Linux report theirs: .wco above). Marketing captures have no buttons. */
 html.electron.mac:not([data-marketing-capture]) {
   --workspace-controls-left: 88px;
+  --app-titlebar-leading: 78px;
 }
 
 @theme inline {
@@ -133,6 +122,7 @@ html.electron.mac:not([data-marketing-capture]) {
   --color-foreground: var(--foreground);
   --color-background: var(--background);
   --color-rail: var(--rail);
+  --color-frame: var(--frame);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
@@ -252,6 +242,9 @@ html.electron.mac:not([data-marketing-capture]) {
      rail 0.965 < background 0.98 < card/popover white); dark inverts it (see below). */
   --background: oklch(0.98 0 0);
   --app-chrome-background: oklch(0.95 0 0);
+  /* The window's frame: the title row and the rail, around the rounded work
+     panel. Light: the soft chrome grey around the near-white canvas. */
+  --frame: var(--app-chrome-background);
   --foreground: oklch(0.285 0 0);
   --card: var(--color-white);
   --card-foreground: var(--foreground);
@@ -369,9 +362,9 @@ html.electron.mac:not([data-marketing-capture]) {
 
        Elevation ladder — distinct lightness steps so sections read as stacked
        surfaces, not one flat field (deepest to highest):
-         chrome 0.19       window frame / gutters behind panels
-         background 0.228  main content well
-         rail 0.26         left + right side panels
+         chrome 0.19       gutters behind panels
+         background 0.228  the work panel (page lists and pages)
+         rail 0.26         docked side panels; the frame (title row, rail)
          card 0.292        raised cards, activity bands, composer
          popover 0.312     floating menus */
     --background: oklch(0.228 0 0);
@@ -380,6 +373,9 @@ html.electron.mac:not([data-marketing-capture]) {
     --card: oklch(0.292 0 0);
     --card-foreground: var(--foreground);
     --rail: oklch(0.26 0 0);
+    /* Dark: the frame is a step lighter than the work panel, never a black
+       stripe around it. */
+    --frame: var(--rail);
     --agent-line: --alpha(var(--color-white) / 20%);
     --sidebar: var(--rail);
     --sidebar-foreground: var(--foreground);
@@ -459,6 +455,12 @@ html.electron.mac:not([data-marketing-capture]) {
 /* Keep edge-facing scrollbars clear of Electron's native window resize hit zone. */
 html.electron {
   --app-window-resize-edge-inset: 6px;
+}
+
+/* That strip at the window's right edge continues the frame beside the title
+   row and the canvas beside the work panel, so neither ends in a stripe. */
+html.electron body {
+  background: linear-gradient(var(--frame) var(--app-titlebar-height), var(--background) 0);
 }
 
 body {

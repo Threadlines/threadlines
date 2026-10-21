@@ -1,8 +1,9 @@
-import { useEffect, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, type CSSProperties, type ReactNode } from "react";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 
+import { useAppHistory } from "../appHistory";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { resolveShortcutCommand } from "../keybindings";
@@ -13,10 +14,13 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalSta
 import { buildThreadRouteParams } from "../threadRoutes";
 import { useUiStateStore } from "../uiStateStore";
 import ThreadSidebar from "./Sidebar";
+import { AppTitleBar } from "./sidebar/AppTitleBar";
+import { destinationHasList } from "./sidebar/destinationLists";
 import {
   NAVIGATION_RAIL_WIDTH_PX,
   NavigationRail,
   useRememberThreadsView,
+  useSelectedDestination,
 } from "./sidebar/NavigationRail";
 import { Sidebar, SidebarProvider, SidebarRail, useSidebar } from "./ui/sidebar";
 import {
@@ -25,10 +29,10 @@ import {
 } from "../shortcutModifierState";
 
 const THREAD_SIDEBAR_WIDTH_STORAGE_KEY = "chat_thread_sidebar_width";
-const THREAD_SIDEBAR_MIN_WIDTH = 13 * 16;
-// Chat is the main focus: the sidebar starts at its minimum width and only
-// grows if the user drags it wider (which is then persisted).
-const THREAD_SIDEBAR_DEFAULT_WIDTH = `${THREAD_SIDEBAR_MIN_WIDTH}px`;
+// Room for a row's project, branch and time beside the rail without cutting
+// the project to a few letters; the user can drag it wider (then persisted).
+const THREAD_SIDEBAR_MIN_WIDTH = 15 * 16;
+const THREAD_SIDEBAR_DEFAULT_WIDTH = `${17 * 16}px`;
 const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
 
 /**
@@ -37,9 +41,14 @@ const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
  * inside the sidebar provider, so hiding the list goes through the same
  * toggle the rail's button uses.
  */
-function AppShellCommands() {
+function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
   const navigate = useNavigate();
   const { toggleSidebar } = useSidebar();
+  const appHistory = useAppHistory();
+  // A page with no list (Pull Requests, Usage) has nothing to show or hide.
+  const toggleList = useCallback(() => {
+    if (hasList) toggleSidebar();
+  }, [hasList, toggleSidebar]);
   const keybindings = useServerKeybindings();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread, routeThreadRef } =
     useHandleNewThread();
@@ -63,7 +72,14 @@ function AppShellCommands() {
       if (command === "sidebar.toggle") {
         event.preventDefault();
         event.stopPropagation();
-        toggleSidebar();
+        toggleList();
+        return;
+      }
+      if (command === "navigate.back" || command === "navigate.forward") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (command === "navigate.back") appHistory.back();
+        else appHistory.forward();
         return;
       }
       if (command === "navigate.fleet") {
@@ -76,7 +92,7 @@ function AppShellCommands() {
     return () => {
       window.removeEventListener("keydown", onWindowKeyDown);
     };
-  }, [keybindings, navigate, routeThreadRef, toggleSidebar]);
+  }, [appHistory, keybindings, navigate, routeThreadRef, toggleList]);
 
   useEffect(() => {
     const onMenuAction = window.desktopBridge?.onMenuAction;
@@ -99,7 +115,13 @@ function AppShellCommands() {
           void navigate({ to: "/usage" });
           return;
         case "toggle-sidebar":
-          toggleSidebar();
+          toggleList();
+          return;
+        case "navigate-back":
+          appHistory.back();
+          return;
+        case "navigate-forward":
+          appHistory.forward();
           return;
         case "toggle-command-palette":
           useCommandPaletteStore.getState().toggleOpen();
@@ -136,28 +158,36 @@ function AppShellCommands() {
     activeDraftThread,
     activeThread,
     defaultProjectRef,
+    appHistory,
     handleNewThread,
     navigate,
-    toggleSidebar,
+    toggleList,
   ]);
 
   return null;
 }
 
 /**
- * The app shell on every page but setup: the navigation rail at the window's
- * left edge, the thread list beside it (hidden and shown from the rail, and
- * remembered across launches), then the page.
+ * The app shell on every page but setup. A frame in one color wraps the
+ * window's top-left: the title row (window controls, the list toggle, back
+ * and forward, the app's name) and the navigation rail under it. Beside the
+ * rail, one work panel with a rounded top-left corner holds the page's list
+ * (the thread inbox, General chats, Computers, Settings; see destinationLists)
+ * and the page. Hiding the list moves only the page's left edge; the list's
+ * state is remembered across launches, and pages without a list ignore it.
  */
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const sidebarListOpen = useUiStateStore((store) => store.sidebarListOpen);
   const setSidebarListOpen = useUiStateStore((store) => store.setSidebarListOpen);
+  const hasList = destinationHasList(useSelectedDestination());
+  const setListOpen = useCallback(
+    (open: boolean) => {
+      if (hasList) setSidebarListOpen(open);
+    },
+    [hasList, setSidebarListOpen],
+  );
   const sidebarStyle = {
     "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH,
-    // The rail shows on wide screens only (below `md` the list is a sheet),
-    // so the room left for it follows the same breakpoint: see the provider's
-    // class, which sets it to NAVIGATION_RAIL_WIDTH_PX from `md` up.
-    "--sidebar-rail-width": "var(--app-navigation-rail-width)",
   } as CSSProperties;
 
   useEffect(() => {
@@ -184,33 +214,45 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
 
   return (
     <SidebarProvider
-      className="h-dvh! min-h-0! [--app-navigation-rail-width:0px] md:[--app-navigation-rail-width:52px]"
-      open={sidebarListOpen}
-      onOpenChange={setSidebarListOpen}
+      className="h-dvh! min-h-0! flex-col bg-frame"
+      open={sidebarListOpen && hasList}
+      onOpenChange={setListOpen}
       style={sidebarStyle}
     >
-      <AppShellCommands />
-      <NavigationRail />
-      <Sidebar
-        side="left"
-        // Hiding slides the list away beneath the rail; the rail stays and
-        // keeps every destination, and the counts that need the user.
-        collapsible="offcanvas"
-        className="border-r border-border bg-rail text-foreground"
-        resizable={{
-          minWidth: THREAD_SIDEBAR_MIN_WIDTH,
-          // The main pane keeps its minimum beside both the rail and the list.
-          shouldAcceptWidth: ({ nextWidth, wrapper }) =>
-            wrapper.clientWidth - NAVIGATION_RAIL_WIDTH_PX - nextWidth >=
-            THREAD_MAIN_CONTENT_MIN_WIDTH,
-          storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
-        }}
-      >
-        <ThreadSidebar />
-        {/* The drag handle on the pane's edge; it resizes while open. */}
-        <SidebarRail />
-      </Sidebar>
-      {children}
+      <AppShellCommands hasList={hasList} />
+      <AppTitleBar />
+      <div className="flex min-h-0 flex-1">
+        <NavigationRail />
+        <div
+          data-slot="app-panel"
+          data-testid="app-panel"
+          className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background md:rounded-tl-3xl md:border-t md:border-l md:border-border"
+        >
+          <Sidebar
+            side="left"
+            // Hiding slides the list away inside the panel; the rail and the
+            // title row stay where they are.
+            collapsible="offcanvas"
+            // The list shares the panel's canvas, split from the page by a hairline.
+            className="border-r border-border bg-background text-foreground [--sidebar:var(--background)]"
+            resizable={{
+              minWidth: THREAD_SIDEBAR_MIN_WIDTH,
+              // The page keeps its minimum beside the list.
+              shouldAcceptWidth: ({ nextWidth, sidebarRoot, wrapper }) =>
+                (sidebarRoot.parentElement?.clientWidth ??
+                  wrapper.clientWidth - NAVIGATION_RAIL_WIDTH_PX) -
+                  nextWidth >=
+                THREAD_MAIN_CONTENT_MIN_WIDTH,
+              storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
+            }}
+          >
+            <ThreadSidebar />
+            {/* The drag handle on the pane's edge; it resizes while open. */}
+            <SidebarRail />
+          </Sidebar>
+          {children}
+        </div>
+      </div>
     </SidebarProvider>
   );
 }

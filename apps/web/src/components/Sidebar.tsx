@@ -1,5 +1,4 @@
 import { ChevronDownIcon, ChevronsUpIcon, CloudIcon, MonitorIcon, SearchIcon } from "lucide-react";
-import { ThreadlinesGlyph } from "./Icons";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { type ScopedProjectRef, type ScopedThreadRef, ThreadId } from "@threadlines/contracts";
@@ -10,14 +9,12 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@threadlines/client-runtime";
-import { Link, useLocation, useNavigate, useParams } from "@tanstack/react-router";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import type { EnvironmentId } from "@threadlines/contracts";
-import { isElectron } from "../env";
-import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
-import { sortThreads, toSortableTimestamp } from "../lib/threadSort";
+import { toSortableTimestamp } from "../lib/threadSort";
 import {
   markThreadDoneByKey,
   markThreadUnreadByKey,
@@ -59,7 +56,6 @@ import {
   resolveThreadRouteTarget,
 } from "../threadRoutes";
 import { stackedThreadToast, toastManager } from "./ui/toast";
-import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import { Kbd } from "./ui/kbd";
 import { Skeleton } from "./ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -96,7 +92,6 @@ import {
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
   sortDoneThreads,
-  THREAD_STATUS_DOT_CLASSES,
   sortInboxThreads,
   summarizeChildThreads,
   windowInboxDoneRows,
@@ -127,7 +122,12 @@ import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
-import { SidebarDestinationRow } from "./sidebar/NavigationRail";
+import { SidebarDestinationRow, useSelectedDestination } from "./sidebar/NavigationRail";
+import { AppWordmark } from "./sidebar/AppWordmark";
+import { DESTINATION_LISTS } from "./sidebar/destinationLists";
+import { useListNewThreadStore } from "./sidebar/listNewThreadStore";
+import { useGeneralChats } from "./chats/useGeneralChats";
+import { AttentionCounts } from "./sidebar/AttentionCounts";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { isRoom } from "../rooms";
 import {
@@ -147,7 +147,6 @@ import { readEnvironmentApi } from "../environmentApi";
 import { useRoomsEnabled } from "~/hooks/useRoomsEnabled";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
-import { SIDEBAR_LIST_HEADER_ROW_CLASS } from "../desktopChrome";
 import { derivePhysicalProjectKey, selectProjectGroupingSettings } from "../logicalProject";
 import {
   useSavedEnvironmentRegistryStore,
@@ -395,32 +394,8 @@ function InboxGroupHeader({
         <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground transition-colors group-hover/inbox-group:text-foreground">
           {label}
         </span>
-        {/* Counts as dots and numbers, in the rail's colors: the name keeps
-            the room a narrow list has. */}
-        <span className="ms-auto flex shrink-0 items-center gap-2 font-mono text-[10px] text-muted-foreground tabular-nums">
-          {needsYou > 0 ? (
-            <span
-              className="flex items-center gap-1"
-              title={needsYou === 1 ? "1 needs you" : `${needsYou} need you`}
-            >
-              <span
-                aria-hidden="true"
-                className={cn("size-1.5 rounded-full", THREAD_STATUS_DOT_CLASSES.amber)}
-              />
-              {needsYou}
-              <span className="sr-only">{needsYou === 1 ? " needs you" : " need you"}</span>
-            </span>
-          ) : null}
-          {working > 0 ? (
-            <span className="flex items-center gap-1" title={`${working} working`}>
-              <span
-                aria-hidden="true"
-                className={cn("size-1.5 rounded-full", THREAD_STATUS_DOT_CLASSES.blue)}
-              />
-              {working}
-              <span className="sr-only"> working</span>
-            </span>
-          ) : null}
+        <span className="ms-auto flex shrink-0">
+          <AttentionCounts needsYou={needsYou} working={working} />
         </span>
         <ChevronDownIcon
           aria-hidden="true"
@@ -434,52 +409,20 @@ function InboxGroupHeader({
   );
 }
 
-const SidebarChromeHeader = memo(function SidebarChromeHeader({
-  isElectron,
-}: {
-  isElectron: boolean;
-}) {
-  const wordmark = (
-    <div className="flex min-w-0 items-center gap-2">
-      <SidebarTrigger
-        className="size-7 shrink-0 text-muted-foreground/60 hover:text-foreground md:hidden"
-        tooltip="Collapse sidebar"
-      />
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Link
-              aria-label={`Go to ${APP_BASE_NAME} home`}
-              className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md text-foreground outline-hidden transition-opacity hover:opacity-85 focus-ring"
-              to="/"
-            >
-              <ThreadlinesGlyph aria-hidden="true" className="h-3 w-auto shrink-0" />
-              <span className="truncate text-sm font-semibold tracking-tight">{APP_BASE_NAME}</span>
-            </Link>
-          }
+/**
+ * The phone sheet's top row: close the sheet, then the app's name. A wide
+ * screen carries the name in the title row instead, and the list starts with
+ * its search.
+ */
+const SidebarChromeHeader = memo(function SidebarChromeHeader() {
+  return (
+    <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3">
+      <div className="flex min-w-0 items-center gap-2">
+        <SidebarTrigger
+          className="size-7 shrink-0 text-muted-foreground/60 hover:text-foreground"
+          tooltip="Collapse sidebar"
         />
-        <TooltipPopup side="bottom" sideOffset={2}>
-          <div className="flex flex-col gap-0.5">
-            <span>Home</span>
-            <span className="text-[10px] text-muted-foreground">
-              {APP_STAGE_LABEL} · Version {APP_VERSION}
-            </span>
-          </div>
-        </TooltipPopup>
-      </Tooltip>
-    </div>
-  );
-
-  // On wide screens the row is a top bar's height, beside the rail; on macOS
-  // it starts past the traffic lights, which reach over the rail.
-  return isElectron ? (
-    <SidebarHeader className="drag-region shrink-0 gap-0 px-0 py-0">
-      <div className={SIDEBAR_LIST_HEADER_ROW_CLASS}>{wordmark}</div>
-    </SidebarHeader>
-  ) : (
-    <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3 md:shrink-0 md:gap-0 md:px-0 md:py-0">
-      <div className="min-w-0 md:flex md:h-[var(--workspace-topbar-height)] md:min-h-[var(--workspace-topbar-height)] md:items-center md:pr-3 md:pl-[var(--sidebar-list-header-left)]">
-        {wordmark}
+        <AppWordmark />
       </div>
     </SidebarHeader>
   );
@@ -546,8 +489,7 @@ export default function Sidebar() {
   const collapsedInboxGroups = useUiStateStore((store) => store.collapsedInboxGroups);
   const setInboxGroupCollapsed = useUiStateStore((store) => store.setInboxGroupCollapsed);
   const navigate = useNavigate();
-  const pathname = useLocation({ select: (loc) => loc.pathname });
-  const isOnSettings = pathname.startsWith("/settings");
+  const selectedDestination = useSelectedDestination();
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
   const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
@@ -1250,19 +1192,16 @@ export default function Sidebar() {
     ],
     [liveSections, renderedDoneEntries],
   );
-  // The general chats in the General Chats page's order. They never join the
+  // The general chats in the General Chats list's order. They never join the
   // inbox, so while one is open previous/next walk these instead: chat to
-  // chat, the way the page lists them.
+  // chat, the way the list shows them.
+  const { chats: generalChats } = useGeneralChats();
   const generalChatThreadKeys = useMemo(
     () =>
-      sortThreads(
-        sidebarThreads.filter(
-          (thread) =>
-            thread.archivedAt === null &&
-            generalChatProjectKeys.has(resolveThreadProjectKey(thread)),
-        ),
-      ).map((thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
-    [generalChatProjectKeys, resolveThreadProjectKey, sidebarThreads],
+      generalChats.map((thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      ),
+    [generalChats],
   );
   const traversalThreadKeys =
     routeThreadKey !== null && generalChatThreadKeys.includes(routeThreadKey)
@@ -1783,6 +1722,14 @@ export default function Sidebar() {
     sidebarProjectByKey,
   ]);
 
+  // The rail's New thread is this button on a wide screen, where the list
+  // header no longer draws its own.
+  const setListNewThread = useListNewThreadStore((store) => store.setStart);
+  useEffect(() => {
+    setListNewThread(handleComposeClick);
+    return () => setListNewThread(null);
+  }, [handleComposeClick, setListNewThread]);
+
   const handleScopeChange = useCallback(
     (projectKey: string | null) => {
       setInboxProjectScope(projectKey);
@@ -1984,17 +1931,35 @@ export default function Sidebar() {
     };
   }, [clearSelection]);
 
+  // What the list shows: the destination's own list on a wide screen (see
+  // destinationLists), the threads in a phone's sheet. This component stays
+  // mounted either way, so the thread shortcuts work on every page.
+  const destinationList = isMobile
+    ? DESTINATION_LISTS.threads
+    : DESTINATION_LISTS[selectedDestination];
+  const PageListBody =
+    destinationList !== null && destinationList.body !== "inbox" ? destinationList.body : null;
+
   return (
     <>
-      <SidebarChromeHeader isElectron={isElectron} />
-      {/* A phone has no rail: its destinations are a row under the header. */}
+      {/* A phone has no title row and no rail: the sheet carries the name,
+          and its destinations are a row under it. */}
+      {isMobile ? <SidebarChromeHeader /> : null}
       {isMobile ? <SidebarDestinationRow /> : null}
 
-      {isOnSettings && !isMobile ? (
-        // Desktop only: mobile keeps the thread list in the sheet and gets a
-        // full-page section index at /settings instead of a sidebar nav swap.
-        <SettingsSidebarNav pathname={pathname} />
-      ) : (
+      {PageListBody !== null ? (
+        // A wide screen's page with a list of its own (General chats,
+        // Computers, Settings). The phone's sheet always holds the threads.
+        <>
+          <PageListBody />
+          {destinationList?.ownFooter ? null : (
+            <>
+              <SidebarSeparator />
+              <SidebarChromeFooter />
+            </>
+          )}
+        </>
+      ) : destinationList === null ? null : (
         <>
           <SidebarHoverCardGroup>
             <ThreadHoverCardProvider>
@@ -2042,7 +2007,7 @@ export default function Sidebar() {
                     grouping={sidebarGrouping}
                     onGroupingChange={handleGroupingChange}
                     onAddProject={() => openAddProjectCommandPalette()}
-                    onNewThread={handleComposeClick}
+                    onNewThread={isMobile ? handleComposeClick : null}
                     newThreadShortcutLabel={newThreadShortcutLabel}
                   />
 
