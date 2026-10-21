@@ -998,6 +998,23 @@ describe("ChatMarkdown", () => {
       await screen.unmount();
     }
   });
+
+  it("centers the copy button on a one-line code block", async () => {
+    const screen = await render(<ChatMarkdown text={"```\nOne line\n```"} cwd="/repo/project" />);
+
+    try {
+      const copyButton = page.getByRole("button", { name: "Copy code block" });
+      await expect.element(copyButton).toBeVisible();
+      const block = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre")!;
+      const blockRect = block.getBoundingClientRect();
+      const buttonRect = copyButton.element().getBoundingClientRect();
+      const blockMiddle = blockRect.top + blockRect.height / 2;
+      const buttonMiddle = buttonRect.top + buttonRect.height / 2;
+      expect(Math.abs(buttonMiddle - blockMiddle)).toBeLessThan(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
 });
 
 /**
@@ -1172,6 +1189,25 @@ describe("ChatMarkdown code block commands", () => {
         mode: "insert",
         source: { kind: "message", messageId: REPLY },
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("finds a command in a block that names no shell, and skips a title", async () => {
+    const actions: CommandRunActions = { ...actionsWith(), dialect: "powershell" };
+    const screen = await renderReply(
+      "Push it:\n\n```\ngit push -u origin feat/board\n```\n\nTitle:\n\n```\nOne Board field per card\n```\n",
+      actions,
+    );
+    try {
+      await page.getByRole("button", { name: "Put in terminal" }).click();
+      expect(actions.startRun).toHaveBeenCalledWith({
+        command: "git push -u origin feat/board",
+        mode: "insert",
+        source: { kind: "message", messageId: REPLY },
+      });
+      expect(document.querySelectorAll(".chat-markdown-run-button")).toHaveLength(1);
     } finally {
       await screen.unmount();
     }

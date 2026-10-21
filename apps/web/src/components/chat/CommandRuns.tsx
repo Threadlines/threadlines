@@ -273,23 +273,21 @@ function insertReason(assessment: ShellCommandAssessment): string | undefined {
 }
 
 /**
- * A shell code block in a settled agent reply: what its button would send,
- * and the latest run of it. Null when the block is not a command this chat
- * can run (not a shell fence, the other shell's dialect, a session transcript).
+ * A command code block in a settled agent reply: what its button would send,
+ * and the latest run of it. Null when the block is not a command this chat's
+ * terminal can run (not a command, written for the other shell, a session
+ * transcript).
  */
 function useCodeBlockCommand(code: string, language: string | undefined) {
   const actions = use(CommandRunActionsContext);
   const scope = use(CodeBlockRunScopeContext);
-  const prepared = useMemo(() => prepareShellCommand(code, language), [code, language]);
-  if (
-    actions === null ||
-    !actions.supported ||
-    scope === null ||
-    prepared === null ||
-    prepared.dialect !== actions.dialect
-  ) {
-    return null;
-  }
+  // A reply still streaming has no scope, so its blocks skip the parse.
+  const dialect = actions?.supported && scope !== null ? actions.dialect : null;
+  const prepared = useMemo(
+    () => (dialect === null ? null : prepareShellCommand(code, language, dialect)),
+    [code, dialect, language],
+  );
+  if (actions === null || scope === null || prepared === null) return null;
   const run = latestRun(
     actions.runs,
     (entry) =>

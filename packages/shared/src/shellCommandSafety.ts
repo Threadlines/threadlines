@@ -2,7 +2,9 @@
  * Decides how a chat button may hand a shell command to the user's terminal.
  *
  * Agents suggest commands in code blocks and through the `ask_user_to_run`
- * tool. A command with no caution may run with one click; anything that
+ * tool. A code block counts when it is fenced as the terminal's shell, or when
+ * it names no shell but calls a known program in a way both shells read the
+ * same. A command with no caution may run with one click; anything that
  * deletes, overwrites, publishes, reveals secrets, runs downloaded code, needs
  * filling in or spans lines only goes into the terminal for the user to press
  * Enter; a command with hidden characters never reaches the terminal at all.
@@ -65,7 +67,6 @@ export interface ShellCommandAssessment {
 export interface PreparedShellCommand extends ShellCommandAssessment {
   /** What goes to the terminal: prompts, comment lines and blank lines removed. */
   readonly text: string;
-  readonly dialect: ShellDialect;
 }
 
 export const MAX_SHELL_COMMAND_LENGTH = 8_000;
@@ -95,12 +96,139 @@ const SESSION_FENCES: ReadonlySet<string> = new Set([
   "terminal",
 ]);
 
+/** Fences that name no language; agents often put a command in one. */
+const UNNAMED_FENCES: ReadonlySet<string> = new Set(["", "text", "txt", "plaintext", "plain"]);
+
+const PROMPTS: Readonly<Record<ShellDialect, RegExp>> = {
+  posix: /^\s*\$ /,
+  powershell: /^\s*PS(?:\s[^>]*)?>\s/,
+};
+const ANY_PROMPT = /^\s*(?:\$ |PS(?:\s[^>]*)?>\s)/;
+
 /** The dialect a code fence's language names, or null when it isn't a shell. */
 export function shellDialectOfFence(language: string | null | undefined): ShellDialect | null {
   const normalized = language?.trim().toLowerCase() ?? "";
   if (POSIX_FENCES.has(normalized)) return "posix";
   if (POWERSHELL_FENCES.has(normalized)) return "powershell";
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Commands both shells read the same way.
+// ---------------------------------------------------------------------------
+
+/**
+ * Programs that take the same arguments from a POSIX shell and from
+ * PowerShell. Shell built-ins and the names PowerShell gives its own cmdlets
+ * (`ls`, `rm`, `cat`, `curl`, `cd`) are left out, because there the two
+ * shells run different things.
+ */
+const PORTABLE_PROGRAMS: ReadonlySet<string> = new Set([
+  "git",
+  "gh",
+  "glab",
+  "node",
+  "npm",
+  "npx",
+  "pnpm",
+  "pnpx",
+  "yarn",
+  "bun",
+  "bunx",
+  "deno",
+  "corepack",
+  "vp",
+  "tsc",
+  "tsx",
+  "vite",
+  "vitest",
+  "turbo",
+  "nx",
+  "python",
+  "python3",
+  "py",
+  "pip",
+  "pip3",
+  "pipx",
+  "uv",
+  "uvx",
+  "poetry",
+  "pytest",
+  "ruff",
+  "cargo",
+  "rustup",
+  "go",
+  "dotnet",
+  "mvn",
+  "gradle",
+  "composer",
+  "php",
+  "ruby",
+  "gem",
+  "bundle",
+  "rails",
+  "mix",
+  "flutter",
+  "dart",
+  "docker",
+  "podman",
+  "kubectl",
+  "helm",
+  "terraform",
+  "aws",
+  "az",
+  "gcloud",
+  "firebase",
+  "vercel",
+  "netlify",
+  "wrangler",
+  "supabase",
+  "fly",
+  "flyctl",
+  "heroku",
+  "claude",
+  "codex",
+  "code",
+  "cursor",
+]);
+
+/**
+ * An argument both shells pass on unchanged:
+ * - a plain word, not starting with `@` (PowerShell splatting);
+ * - an option without `.`, `:` or `%` (PowerShell splits `-Dfoo.bar`, reads
+ *   `-name:value`, and stops parsing at `--%`). A bare `--` is left out too:
+ *   PowerShell drops it before a `.ps1` shim like npm's sees it;
+ * - one quoted string holding nothing either shell expands or escapes, never
+ *   empty (Windows PowerShell drops an empty argument).
+ */
+const PORTABLE_WORD = /^(?:[\w./:%+=][\w./:%+=@-]*|-(?!-$)[\w+=/@-]*|'[^'"\\]+'|"[^"$`\\!]+")$/;
+
+/**
+ * Whether a command means the same in a POSIX shell and in PowerShell: each
+ * line calls a known program with plain arguments, and nothing on it is
+ * syntax (pipes, `&&`, redirects, variables, globs, escapes) either shell
+ * reads its own way. Only printable ASCII, since PowerShell also reads curly
+ * quotes and long dashes as syntax.
+ */
+function isPortableCommand(text: string): boolean {
+  if (!/^[\x20-\x7e\n]*$/.test(text)) return false;
+  return text.split("\n").every((line) => {
+    // A word, then the spaces after it or the end of the line: a quote glued
+    // to a word, or one left open, stops the scan.
+    const token = /('[^']*'|"[^"]*"|[^\s'"]+)(?: +|$)/y;
+    const trimmed = line.trim();
+    const words: string[] = [];
+    while (token.lastIndex < trimmed.length) {
+      const match = token.exec(trimmed);
+      if (match === null) return false;
+      words.push(match[1]!);
+    }
+    return (
+      words.length > 0 &&
+      PORTABLE_PROGRAMS.has(words[0]!) &&
+      words.every((word) => PORTABLE_WORD.test(word))
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1540,20 +1668,25 @@ export function assessShellCommand(text: string, dialect: ShellDialect): ShellCo
 }
 
 /**
- * Turns a code block into the command a button would send, or null when the
- * block isn't a command to run: not a shell fence, empty, or a session that
- * mixes `$ ` prompts with their output. A `$ ` prompt on every line is
- * removed, and so are comment lines and blank lines the shell would skip.
+ * Turns a code block into the command a button would send to a terminal that
+ * speaks `terminal`, or null when the block isn't a command to run there. A
+ * block fenced as that shell counts as written. A block that names no
+ * language, or the other shell, counts only when it means the same in both
+ * (isPortableCommand), so a title or a path in a bare block gets no button.
+ * A prompt on every line is removed, and so are comment lines and blank lines
+ * the shell would skip; a session that mixes prompts with output is skipped.
  */
 export function prepareShellCommand(
   code: string,
   language: string | null | undefined,
+  terminal: ShellDialect,
 ): PreparedShellCommand | null {
-  const dialect = shellDialectOfFence(language);
-  if (dialect === null) return null;
+  const fence = language?.trim().toLowerCase() ?? "";
+  const written = shellDialectOfFence(fence);
+  if (written === null && !UNNAMED_FENCES.has(fence)) return null;
   let lines = code.replace(/\r\n?/g, "\n").replace(/\n+$/, "").split("\n");
 
-  const prompt = dialect === "posix" ? /^\s*\$ / : /^\s*PS(?:\s[^>]*)?>\s/;
+  const prompt = written === null ? ANY_PROMPT : PROMPTS[written];
   const filled = lines.filter((line) => line.trim().length > 0);
   if (filled.length === 0) return null;
   const prompted = filled.filter((line) => prompt.test(line));
@@ -1561,12 +1694,12 @@ export function prepareShellCommand(
     lines = lines.map((line) => line.replace(prompt, ""));
   } else if (prompted.length > 0) {
     return null;
-  } else if (SESSION_FENCES.has(language?.trim().toLowerCase() ?? "")) {
+  } else if (SESSION_FENCES.has(fence)) {
     // A session block with no prompt is output, not a command.
     return null;
   }
 
-  const lexed = lexShell(lines.join("\n"), dialect);
+  const lexed = lexShell(lines.join("\n"), written ?? terminal);
   const kept: string[] = [];
   lines.forEach((line, index) => {
     if (lexed.lineStartsTopLevel[index] !== true) {
@@ -1579,8 +1712,9 @@ export function prepareShellCommand(
   });
   const text = kept.join("\n").trim();
   if (text.length === 0) return null;
+  if (written !== terminal && !isPortableCommand(text)) return null;
 
-  return { ...assessShellCommand(text, dialect), text, dialect };
+  return { ...assessShellCommand(text, terminal), text };
 }
 
 /**
@@ -1617,12 +1751,15 @@ function parseFenceOpening(
 }
 
 /**
- * The commands a reply's shell code blocks would send, as prepareShellCommand
- * makes them: what the server compares a code block's Run against, so it only
- * ever runs a block the reply shows. Reads fences at any indent, in lists and
- * in block quotes.
+ * The commands a reply's code blocks would send to a `terminal` shell, as
+ * prepareShellCommand makes them: what the server compares a code block's Run
+ * against, so it only ever runs a block the reply shows. Reads fences at any
+ * indent, in lists and in block quotes.
  */
-export function shellCommandsInMarkdown(markdown: string): PreparedShellCommand[] {
+export function shellCommandsInMarkdown(
+  markdown: string,
+  terminal: ShellDialect,
+): PreparedShellCommand[] {
   const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
   const found: PreparedShellCommand[] = [];
   let index = 0;
@@ -1648,7 +1785,7 @@ export function shellCommandsInMarkdown(markdown: string): PreparedShellCommand[
       index += 1;
     }
     index += 1;
-    const prepared = prepareShellCommand(body.join("\n"), language);
+    const prepared = prepareShellCommand(body.join("\n"), language, terminal);
     if (prepared !== null) found.push(prepared);
   }
   return found;

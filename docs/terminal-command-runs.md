@@ -7,10 +7,15 @@ it from the chat instead, in the built-in terminal.
 
 There are two ways a command reaches you:
 
-- **A shell code block in an agent's reply** gets a "Run in terminal" button
+- **A command code block in an agent's reply** gets a "Run in terminal" button
   next to its copy button (shown when you hover the block, always on touch
-  screens). Only blocks fenced as a shell (`bash`, `sh`, `zsh`, `shell`,
-  `console`, or `powershell` on Windows) in a finished reply get one.
+  screens), once the reply has finished. A block fenced as your terminal's
+  shell (`bash`, `sh`, `zsh`, `shell`, `console`, or `powershell` on Windows)
+  gets one. So does a block with no language, or one written for the other
+  shell, when it calls a well-known program (`git`, `npm`, `pnpm`, `python`,
+  `docker` and the like) with plain arguments that both shells read the same
+  way. Anything with pipes, `&&`, variables, wildcards or escapes in such a
+  block is left for you to copy.
 - **A command card**: the agent calls `ask_user_to_run` with the command and a
   one-sentence reason. The card offers Run, Put in terminal and Skip. Skip
   folds it to one line you can undo.
@@ -104,8 +109,9 @@ Every run is in the thread's folder (its worktree when it
 has one), with the same environment the terminal drawer gives any tab. On
 macOS and Linux a command written for bash or zsh runs in your shell when it
 is one of those, or in zsh, bash or sh otherwise, and the tab then carries on
-in your own shell. On Windows only PowerShell commands run; others can be
-copied.
+in your own shell. On Windows commands run in PowerShell: a block written for
+bash runs there only when it means the same in both shells, and can be copied
+otherwise.
 
 ## Turning it off
 
