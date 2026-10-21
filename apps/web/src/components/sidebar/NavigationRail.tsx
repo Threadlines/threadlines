@@ -18,7 +18,7 @@ import {
   SquarePenIcon,
   WaypointsIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
@@ -53,6 +53,7 @@ import {
 } from "../Sidebar.logic";
 import { ChromeIconButton, ChromeTooltip } from "./ChromeIconButton";
 import { useListNewThreadStore } from "./listNewThreadStore";
+import { RailUpdateButton } from "./RailUpdateButton";
 import { useSidebar } from "../ui/sidebar";
 import {
   NAVIGATION_DESTINATION_LABELS,
@@ -428,10 +429,13 @@ function DestinationTooltip({ destination }: { readonly destination: NavigationD
 function DestinationButton({
   destination,
   side,
+  glide = false,
   onSelect,
 }: {
   readonly destination: NavigationDestination;
   readonly side: "right" | "bottom";
+  /** In the rail: the rail's sliding highlight marks the selection. */
+  readonly glide?: boolean;
   readonly onSelect: (id: NavigationDestinationId) => void;
 }) {
   const Icon = destination.icon;
@@ -451,6 +455,7 @@ function DestinationButton({
         label={label}
         tooltip={<DestinationTooltip destination={destination} />}
         selected={destination.selected}
+        glide={glide}
         side={side}
         testId={`rail-${destination.id}`}
         onClick={() => onSelect(destination.id)}
@@ -479,9 +484,68 @@ function DestinationButton({
  * beside it hides or shows, so what needs the user is always one glance
  * away. A phone has no rail: its sheet carries a row of the same buttons.
  */
+/**
+ * The rail's selection: one soft fill that slides to the selected button (a
+ * transform, so the rail never repaints for it). The first placement, and any
+ * after nothing was selected, snaps into place instead of sweeping in from the
+ * top. It re-measures when the rail resizes or its buttons change (a working
+ * count appearing, the update button showing), so it never sits on a stale
+ * spot.
+ */
+function RailSelectionHighlight({
+  rail,
+  selectedKey,
+}: {
+  // The element itself, not a ref: a child's layout effect runs before its
+  // parent's ref is attached, so a ref would still be empty on the first pass.
+  readonly rail: HTMLElement | null;
+  readonly selectedKey: string | null;
+}) {
+  const [place, setPlace] = useState<{ readonly y: number; readonly animate: boolean } | null>(
+    null,
+  );
+  useLayoutEffect(() => {
+    if (!rail) return;
+    const measure = () => {
+      const target = rail.querySelector<HTMLElement>("[data-glide][data-selected]");
+      if (!target) {
+        setPlace(null);
+        return;
+      }
+      const y = Math.round(target.getBoundingClientRect().top - rail.getBoundingClientRect().top);
+      setPlace((current) =>
+        current !== null && current.y === y ? current : { y, animate: current !== null },
+      );
+    };
+    measure();
+    const resizeObserver = new ResizeObserver(measure);
+    resizeObserver.observe(rail);
+    const mutationObserver = new MutationObserver(measure);
+    mutationObserver.observe(rail, { childList: true, subtree: true });
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, [rail, selectedKey]);
+  if (place === null) return null;
+  return (
+    <span
+      aria-hidden="true"
+      data-testid="rail-selection"
+      className={cn(
+        "pointer-events-none absolute top-0 left-[7px] size-[34px] rounded-lg bg-sidebar-accent",
+        place.animate &&
+          "transition-transform duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none",
+      )}
+      style={{ transform: `translateY(${place.y}px)` }}
+    />
+  );
+}
+
 export function NavigationRail() {
   const { open, isMobile } = useSidebar();
   const { destinations, select } = useNavigationDestinations({ listOpen: open });
+  const [railElement, setRailElement] = useState<HTMLElement | null>(null);
   const keybindings = useServerKeybindings();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
@@ -496,14 +560,17 @@ export function NavigationRail() {
   if (isMobile) return null;
   const main = destinations.filter((destination) => destination.id !== "settings");
   const settings = destinations.find((destination) => destination.id === "settings") ?? null;
+  const selectedKey = destinations.find((destination) => destination.selected)?.id ?? null;
 
   return (
     <nav
+      ref={setRailElement}
       aria-label="Main"
       data-slot="navigation-rail"
       data-testid="navigation-rail"
       className="relative z-20 flex w-12 shrink-0 flex-col items-center gap-1 bg-frame pt-3 pb-2"
     >
+      <RailSelectionHighlight rail={railElement} selectedKey={selectedKey} />
       <ChromeIconButton
         size="rail"
         label="New thread"
@@ -531,12 +598,14 @@ export function NavigationRail() {
           key={destination.id}
           destination={destination}
           side="right"
+          glide
           onSelect={select}
         />
       ))}
       <div className="min-h-2 flex-1" />
+      <RailUpdateButton />
       {settings ? (
-        <DestinationButton destination={settings} side="right" onSelect={select} />
+        <DestinationButton destination={settings} side="right" glide onSelect={select} />
       ) : null}
     </nav>
   );

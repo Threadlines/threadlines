@@ -1,4 +1,12 @@
-import { useCallback, useEffect, type CSSProperties, type ReactNode } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
@@ -176,10 +184,33 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
  * and the page. Hiding the list moves only the page's left edge; the list's
  * state is remembered across launches, and pages without a list ignore it.
  */
+/**
+ * A quick cross-fade (0.14s, opacity only) when the rail's destination
+ * changes: Threads to Fleet, say. Moving between threads, or anything else
+ * inside one destination, never fades. Nothing runs under reduced motion.
+ */
+function usePageCrossFade(panelRef: RefObject<HTMLDivElement | null>, destination: string) {
+  const previous = useRef(destination);
+  useLayoutEffect(() => {
+    if (previous.current === destination) return;
+    previous.current = destination;
+    const panel = panelRef.current;
+    if (!panel || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    for (const child of panel.children) {
+      if (child instanceof HTMLElement && typeof child.animate === "function") {
+        child.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 140, easing: "ease-out" });
+      }
+    }
+  }, [destination, panelRef]);
+}
+
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const sidebarListOpen = useUiStateStore((store) => store.sidebarListOpen);
   const setSidebarListOpen = useUiStateStore((store) => store.setSidebarListOpen);
-  const hasList = destinationHasList(useSelectedDestination());
+  const selectedDestination = useSelectedDestination();
+  const hasList = destinationHasList(selectedDestination);
+  const panelRef = useRef<HTMLDivElement>(null);
+  usePageCrossFade(panelRef, selectedDestination);
   const setListOpen = useCallback(
     (open: boolean) => {
       if (hasList) setSidebarListOpen(open);
@@ -224,6 +255,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       <div className="flex min-h-0 flex-1">
         <NavigationRail />
         <div
+          ref={panelRef}
           data-slot="app-panel"
           data-testid="app-panel"
           className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background md:rounded-tl-3xl md:border-t md:border-l md:border-border"

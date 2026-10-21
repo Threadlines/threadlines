@@ -15,6 +15,7 @@ export function ChromeIconButton({
   tooltip,
   size,
   selected = false,
+  glide = false,
   disabled = false,
   side,
   onClick,
@@ -26,6 +27,11 @@ export function ChromeIconButton({
   readonly tooltip: ReactNode;
   readonly size: "rail" | "titlebar";
   readonly selected?: boolean;
+  /**
+   * Selection is drawn by a highlight its container slides between buttons
+   * (the rail), so a selected button paints no fill of its own.
+   */
+  readonly glide?: boolean;
   readonly disabled?: boolean;
   readonly side: "right" | "bottom";
   readonly onClick: () => void;
@@ -48,13 +54,14 @@ export function ChromeIconButton({
             aria-disabled={disabled ? true : undefined}
             data-testid={testId}
             data-selected={selected ? "" : undefined}
+            data-glide={glide ? "" : undefined}
             className={cn(
               "relative inline-flex shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors select-none focus-ring [-webkit-app-region:no-drag]",
               size === "rail" ? "size-[34px] [&_svg]:size-4" : "size-[30px] [&_svg]:size-4",
               disabled
                 ? "cursor-default text-muted-foreground opacity-64"
                 : selected
-                  ? "bg-sidebar-accent text-foreground"
+                  ? cn("text-foreground", !glide && "bg-sidebar-accent")
                   : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground active:bg-sidebar-accent/80",
               className,
             )}
@@ -66,7 +73,7 @@ export function ChromeIconButton({
       >
         {children}
       </TooltipTrigger>
-      <TooltipPopup side={side} sideOffset={6}>
+      <TooltipPopup side={side} sideOffset={6} className="duration-[80ms]">
         {tooltip}
       </TooltipPopup>
     </Tooltip>
