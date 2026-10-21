@@ -6,10 +6,12 @@
  * this entry checks the version first and only then loads the server. Keep its
  * own imports small and free of newer Node APIs.
  */
+// Before the server loads: the server must see the user's environment as it
+// was (see the module).
+import "./process/startupEnvironment.ts";
 import packageJson from "../package.json" with { type: "json" };
 import { enableServerCompileCache } from "./compileCache.ts";
 import { unsupportedNodeMessage } from "./nodeVersionCheck.ts";
-import { stopWorkingFolderCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 
 // The desktop app runs this entry on the Node inside Electron, which ships
 // with the app; the check is for Node installed by the user.
@@ -21,9 +23,6 @@ if (problem) {
   process.stderr.write(`${problem}\n`);
   process.exitCode = 1;
 } else {
-  // Before the server loads: the Claude SDK sets the same variable while it
-  // loads, and the server must see the user's environment as it was.
-  stopWorkingFolderCommandLookup();
   // Before the import below: Node only caches code compiled after this.
   enableServerCompileCache({ version: packageJson.version, entryUrl: import.meta.url });
   // A promise chain, not top-level await: the server chunk can import shared
