@@ -16,7 +16,12 @@ import { Button } from "../ui/button";
 import { SidebarContent, useSidebar } from "../ui/sidebar";
 import { describeComputerLocation, type FleetComputer } from "./fleet.logic";
 import { FLEET_CONNECTION_DOT_CLASS, FLEET_GLYPH_ICONS } from "./FleetGraph";
-import { type FleetDirectoryEntry, FLEET_DEVICE_KEY_PREFIX } from "./fleetLinks.logic";
+import {
+  FLEET_DEVICE_ENTRY_STATUS,
+  FLEET_DEVICE_KEY_PREFIX,
+  type FleetDirectoryEntry,
+  isFleetDeviceEntry,
+} from "./fleetLinks.logic";
 import { useFleetPageStore } from "./fleetPageStore";
 
 function ComputerRow({
@@ -164,8 +169,8 @@ export function FleetComputersList() {
             const pairing = relay?.pendingRequest ?? null;
             const meta = pairing
               ? `Waiting for approval${pairing.matchNumber ? ` · ${pairing.matchNumber}` : ""}`
-              : entry.kind === "waiting"
-                ? "Waiting to hear from it"
+              : isFleetDeviceEntry(entry)
+                ? FLEET_DEVICE_ENTRY_STATUS[entry.kind]
                 : computer
                   ? describeComputerLocation(computer, nowMs) || null
                   : null;

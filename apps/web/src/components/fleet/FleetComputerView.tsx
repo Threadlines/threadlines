@@ -34,10 +34,12 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { ComputerConnectionGroup } from "./ComputerConnectionGroup";
 import { describeComputerLocation, type FleetComputer, type FleetGlyph } from "./fleet.logic";
 import {
+  FLEET_DEVICE_ENTRY_STATUS,
   FLEET_DEVICE_KEY_PREFIX,
   type FleetDirectoryEntry,
   type FleetLinkReach,
   type FleetPair,
+  isFleetDeviceEntry,
   resolveFleetPair,
 } from "./fleetLinks.logic";
 import { useFleetData } from "./FleetLayout";
@@ -152,9 +154,10 @@ function RemoveFromAppSection({
 }
 
 /**
- * A linked computer that hasn't said which computer it is yet, on the
- * computer it linked to: its agents' settings there, and Unlink, which
- * removes that link and stops what it started.
+ * A link known only by its device (its computer hasn't said which it is
+ * yet, or can't be confirmed), on the computer it linked to: its agents'
+ * settings there, and Unlink, which removes that link and stops what it
+ * started.
  */
 function WaitingLinkGroup({
   entry,
@@ -244,7 +247,9 @@ function WaitingLinkGroup({
           {holder.label}&apos;s agents can start work on {entry.label}
         </p>
         <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-          This way can be linked once {entry.label} says which computer it is.
+          {entry.kind === "unconfirmed"
+            ? "Unlink, then link the two computers again to set this way up too."
+            : `This way can be linked once ${entry.label} says which computer it is.`}
         </p>
       </div>
       <AlertDialog open={confirmOpen} onOpenChange={(next) => !removing && setConfirmOpen(next)}>
@@ -328,7 +333,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
     selfReach === null
       ? []
       : directory.flatMap((other) => {
-          if (other.kind !== "waiting" || other.holderEnvironmentId !== selfReach.environmentId) {
+          if (!isFleetDeviceEntry(other) || other.holderEnvironmentId !== selfReach.environmentId) {
             return [];
           }
           const inbound = selfReach.links?.snapshot.inbound.find(
@@ -365,8 +370,8 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
   const location =
     entry.kind === "linked"
       ? "Not connected to this app"
-      : entry.kind === "waiting"
-        ? "Waiting to hear from it"
+      : isFleetDeviceEntry(entry)
+        ? FLEET_DEVICE_ENTRY_STATUS[entry.kind]
         : computer
           ? describeComputerLocation(computer, nowMs)
           : "";
@@ -396,7 +401,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
         </div>
       </SettingsGroup>
     );
-  } else if (entry.kind === "waiting") {
+  } else if (isFleetDeviceEntry(entry)) {
     workingNow = null;
   } else if (computer && computer.connection !== "connected" && entry.kind === "saved") {
     workingNow = (
@@ -421,7 +426,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
   }
 
   const holder =
-    entry.kind === "waiting" && entry.holderEnvironmentId !== null
+    isFleetDeviceEntry(entry) && entry.holderEnvironmentId !== null
       ? (reach.get(entry.holderEnvironmentId) ?? null)
       : null;
   const waitingInbound =
@@ -467,16 +472,20 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
                 }
               />
             </SettingsSection>
-          ) : entry.kind === "waiting" && holder !== null ? (
+          ) : isFleetDeviceEntry(entry) && holder !== null ? (
             <SettingsSection title="Connection">
               <SettingsRow
-                title="Waiting to hear from it"
-                description={`${entry.label} linked to ${holder.label} and hasn't said which computer it is yet. It does the next time it reaches ${holder.label}.`}
+                title={FLEET_DEVICE_ENTRY_STATUS[entry.kind]}
+                description={
+                  entry.kind === "unconfirmed"
+                    ? `${holder.label} can't confirm which computer this is. Unlink it, then link that computer again from Fleet.`
+                    : `${entry.label} linked to ${holder.label} and hasn't said which computer it is yet. It does the next time it reaches ${holder.label}.`
+                }
               />
             </SettingsSection>
           ) : null}
 
-          {entry.kind === "waiting" ? (
+          {isFleetDeviceEntry(entry) ? (
             holder !== null && waitingInbound !== null ? (
               <section className="flex flex-col gap-2">
                 <h2 className="px-1 text-[15px] leading-5 font-semibold text-foreground">

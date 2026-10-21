@@ -55,6 +55,7 @@ import {
   type FleetGraphEdge,
   type FleetLinkReach,
   type FleetLinksByEnvironment,
+  trustedOriginEnvironment,
 } from "./fleetLinks.logic";
 
 /** Every thread's model, by scoped thread key; references are stable, so a shallow compare holds. */
@@ -250,6 +251,10 @@ export function useFleetModel(): FleetData {
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
       const origin = thread.remoteOrigin ?? null;
+      const asker =
+        origin === null
+          ? null
+          : trustedOriginEnvironment(origin, links[thread.environmentId] ?? null);
       return [
         {
           threadKey,
@@ -281,7 +286,8 @@ export function useFleetModel(): FleetData {
           startedByComputer:
             origin === null
               ? null
-              : (labelOfEnvironment.get(origin.environmentId) ?? origin.environmentLabel),
+              : ((asker === null ? undefined : labelOfEnvironment.get(asker)) ??
+                origin.environmentLabel),
         },
       ];
     });
@@ -355,9 +361,14 @@ export function useFleetModel(): FleetData {
     for (const thread of threads) {
       if (thread.archivedAt !== null) continue;
       const origin = thread.remoteOrigin ?? null;
-      if (origin !== null) {
+      // Work over a link whose computer isn't confirmed is drawn to no computer.
+      const asker =
+        origin === null
+          ? null
+          : trustedOriginEnvironment(origin, links[thread.environmentId] ?? null);
+      if (asker !== null) {
         real.push({
-          askerEnvironmentId: origin.environmentId,
+          askerEnvironmentId: asker,
           workerEnvironmentId: thread.environmentId,
           threadId: thread.id,
           attention:
@@ -383,7 +394,7 @@ export function useFleetModel(): FleetData {
       }
     }
     return [...real, ...remembered];
-  }, [model, threads]);
+  }, [links, model, threads]);
 
   const edges = useMemo(
     () =>

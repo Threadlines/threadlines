@@ -17,8 +17,10 @@ import {
   type FleetLinkReach,
   type FleetLinksByEnvironment,
   planFleetUnlink,
+  resolveFleetDirection,
   resolveFleetPair,
   resolveFleetUnlinkOutcomes,
+  trustedOriginEnvironment,
 } from "./fleetLinks.logic";
 
 const MAC = EnvironmentId.make("env-mac");
@@ -55,6 +57,8 @@ function inbound(
   return {
     deviceId: `device-${from ?? label}`,
     environmentId: from,
+    // As the app links computers: the invite named the computer it was for.
+    environmentPinned: from !== null,
     label,
     platform: null,
     sessionId: AuthSessionId.make(`session-${from ?? label}`),
@@ -136,6 +140,44 @@ describe("buildFleetDirectory", () => {
       [MAC, "this"],
       [MINI, "linked"],
     ]);
+  });
+
+  it("keeps a link whose computer isn't confirmed apart from the computer it says it is", () => {
+    // A link made without naming its computer says it is Windows PC.
+    const posing = inbound(WINDOWS, "Windows PC", {
+      deviceId: "device-posing",
+      environmentPinned: false,
+    });
+    const links: FleetLinksByEnvironment = {
+      [MAC]: { live: true, snapshot: snapshot({ inbound: [posing] }) },
+    };
+    const directory = buildFleetDirectory({
+      primary: { environmentId: MAC, label: "Mac" },
+      saved: [{ environmentId: WINDOWS, label: "Windows PC" }],
+      links,
+    });
+    expect(directory.map((entry) => [entry.key, entry.kind])).toEqual([
+      [MAC, "this"],
+      [WINDOWS, "saved"],
+      ["device:device-posing", "unconfirmed"],
+    ]);
+    // Windows PC's pair with Mac doesn't take it as Windows PC's link.
+    const direction = resolveFleetDirection(
+      reach(WINDOWS, "Windows PC"),
+      reach(MAC, "Mac", { links: links[MAC]! }),
+    );
+    expect(direction.allInbound).toEqual([]);
+    expect(direction.status).toBe("none");
+    // Work it started on Mac isn't Windows PC's.
+    const origin = { linkDeviceId: "device-posing", environmentId: WINDOWS };
+    expect(trustedOriginEnvironment(origin, links[MAC]!)).toBeNull();
+    const pinned = inbound(WINDOWS, "Windows PC", { deviceId: "device-pinned" });
+    expect(
+      trustedOriginEnvironment(
+        { linkDeviceId: "device-pinned", environmentId: WINDOWS },
+        { live: true, snapshot: snapshot({ inbound: [pinned] }) },
+      ),
+    ).toBe(WINDOWS);
   });
 });
 

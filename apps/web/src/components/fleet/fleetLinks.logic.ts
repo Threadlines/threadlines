@@ -41,22 +41,63 @@ export const COMPUTER_LINK_ACCESS_LABELS: Record<ComputerLinkAccess, string> = {
 
 // ── The list of computers (R4.1) ────────────────────────────────────
 
-/** Key prefix of a computer that is linked but hasn't introduced itself yet. */
+/** Key prefix of a linked computer known only by its device on the computer it linked to. */
 export const FLEET_DEVICE_KEY_PREFIX = "device:";
 
 /**
  * Who a list row is: this computer, a computer this app connects to
- * (`saved`), a computer only known through a link (`linked`), or a linked
- * computer that hasn't said who it is yet (`waiting`, keyed by its device).
+ * (`saved`), a computer only known through a link (`linked`), or a link
+ * known only by its device (keyed by it): one whose computer hasn't said who
+ * it is yet (`waiting`), or one whose computer can't be confirmed
+ * (`unconfirmed`, see confirmedInboundEnvironment).
  */
-export type FleetEntryKind = "this" | "saved" | "linked" | "waiting";
+export type FleetEntryKind = "this" | "saved" | "linked" | "waiting" | "unconfirmed";
+
+/**
+ * The computer an inbound link is for, when that is confirmed: its id was
+ * pinned by the invite made for it. Only then is the link treated as that
+ * computer's (merged with a saved computer, listed in their pair, drawn to
+ * it). Any other link stands on its own, under its device: what a computer
+ * says about itself could name any other.
+ */
+export function confirmedInboundEnvironment(link: InboundComputerLink): EnvironmentId | null {
+  return link.environmentPinned === true ? link.environmentId : null;
+}
+
+/**
+ * The computer that asked for a thread another computer started, when that
+ * can be trusted: the link it came over (on the computer it runs on) is
+ * confirmed, or isn't listed there any more (a thread outlives its link).
+ */
+export function trustedOriginEnvironment(
+  origin: { readonly linkDeviceId: string; readonly environmentId: EnvironmentId },
+  workerLinks: FleetLinksEntry | null,
+): EnvironmentId | null {
+  const link = workerLinks?.snapshot.inbound.find(
+    (candidate) => candidate.deviceId === origin.linkDeviceId,
+  );
+  return link === undefined ? origin.environmentId : confirmedInboundEnvironment(link);
+}
+
+/** What a list row known only by its device says where its computer is. */
+export const FLEET_DEVICE_ENTRY_STATUS = {
+  waiting: "Waiting to hear from it",
+  unconfirmed: "Not confirmed",
+} as const;
+
+/** A link known only by its device: its computer is new or can't be confirmed. */
+export function isFleetDeviceEntry(
+  entry: Pick<FleetDirectoryEntry, "kind">,
+): entry is FleetDirectoryEntry & { readonly kind: "waiting" | "unconfirmed" } {
+  return entry.kind === "waiting" || entry.kind === "unconfirmed";
+}
 
 export interface FleetDirectoryEntry {
-  /** The environment id, or `device:<deviceId>` for a waiting entry. */
+  /** The environment id, or `device:<deviceId>` for an entry known by its device. */
   readonly key: string;
   readonly kind: FleetEntryKind;
   readonly environmentId: EnvironmentId | null;
-  /** Waiting entries: its device on `holderEnvironmentId` (the computer it linked to). */
+  /** Device entries: its device on `holderEnvironmentId` (the computer it linked to). */
   readonly deviceId: string | null;
   readonly holderEnvironmentId: EnvironmentId | null;
   readonly label: string;
@@ -78,8 +119,9 @@ function compareByLabel(left: { readonly label: string }, right: { readonly labe
  * computer (when the app has its own server), every saved computer, and
  * every computer any of them is linked with that this app doesn't save. A
  * saved computer and a link to it are one entry under its saved name. An
- * inbound link whose computer hasn't introduced itself yet stands as its own
- * entry until it does, then folds into that computer's.
+ * inbound link whose computer isn't confirmed stands as its own entry: one
+ * that hasn't introduced itself yet folds into its computer's once it does
+ * (its id was pinned when it was made); one made without that never does.
  */
 export function buildFleetDirectory(input: {
   readonly primary: NamedComputer | null;
@@ -129,11 +171,12 @@ export function buildFleetDirectory(input: {
   }
   for (const [holder, entry] of holders) {
     for (const link of entry.snapshot.inbound) {
-      if (link.environmentId === null) {
+      const confirmed = confirmedInboundEnvironment(link);
+      if (confirmed === null) {
         const key = `${FLEET_DEVICE_KEY_PREFIX}${link.deviceId}`;
         byKey.set(key, {
           key,
-          kind: "waiting",
+          kind: link.environmentId === null ? "waiting" : "unconfirmed",
           environmentId: null,
           deviceId: link.deviceId,
           holderEnvironmentId: holder as EnvironmentId,
@@ -142,8 +185,8 @@ export function buildFleetDirectory(input: {
         });
         continue;
       }
-      if (link.environmentId === holder) continue;
-      linkedLabel(link.environmentId, link.label, holder);
+      if (confirmed === holder) continue;
+      linkedLabel(confirmed, link.label, holder);
     }
   }
 
@@ -248,7 +291,7 @@ export function resolveFleetDirection(
   );
   const allInbound = newestFirst(
     (worker.links?.snapshot.inbound ?? []).filter(
-      (link) => link.environmentId === asker.environmentId,
+      (link) => confirmedInboundEnvironment(link) === asker.environmentId,
     ),
   );
   // The link the asker uses is its newest that still works, as its server picks it.
@@ -640,7 +683,8 @@ export function buildFleetGraphEdges(input: {
       notePair(holder, link.remoteEnvironmentId, entry.live ? link : null);
     }
     for (const link of entry.snapshot.inbound) {
-      if (link.environmentId !== null) notePair(holder, link.environmentId, null);
+      const confirmed = confirmedInboundEnvironment(link);
+      if (confirmed !== null) notePair(holder, confirmed, null);
     }
   }
 

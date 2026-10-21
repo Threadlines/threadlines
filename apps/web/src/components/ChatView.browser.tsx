@@ -1065,7 +1065,10 @@ function fleetOutboundLink(
   };
 }
 
-/** `from`'s link to the computer whose snapshot holds it (null: it hasn't said who it is). */
+/**
+ * `from`'s link to the computer whose snapshot holds it, pinned to `from` as
+ * the app's own links are (null: it hasn't said who it is).
+ */
 function fleetInboundLink(
   from: EnvironmentId | null,
   label: string,
@@ -1074,6 +1077,7 @@ function fleetInboundLink(
   return {
     deviceId: `device-${from ?? label}`,
     environmentId: from,
+    environmentPinned: from !== null,
     label,
     platform: null,
     sessionId: AuthSessionId.make(`session-${from ?? label}`),
