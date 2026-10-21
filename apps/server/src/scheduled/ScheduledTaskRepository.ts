@@ -81,6 +81,11 @@ export const ScheduledRunLaunch = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   target: ScheduledTaskTarget,
+  /**
+   * The project's folder when the run was claimed: a launch (or a resumed
+   * one) whose project moved since is refused rather than run elsewhere.
+   */
+  projectRoot: Schema.NullOr(Schema.String),
 });
 export type ScheduledRunLaunch = typeof ScheduledRunLaunch.Type;
 
@@ -260,12 +265,17 @@ export interface ScheduledTaskRepositoryShape {
     readonly run: ScheduledRunClaim | { readonly slotUtc: string; readonly skipReason: string };
     readonly now: string;
   }) => Effect.Effect<Option.Option<ScheduledRunRow>, ScheduledTaskRepositoryError>;
-  /** Records a run asked for by hand (Run now, or an agent): skipped too when overlap says so. */
+  /**
+   * Records a run asked for by hand (Run now): skipped too when overlap says
+   * so. None when the task is gone or moved past `expectedRevision` (deleted
+   * or edited since it was read), so no launch outlives its task.
+   */
   readonly claimManualRun: (input: {
     readonly taskId: ScheduledTaskId;
+    readonly expectedRevision: number;
     readonly run: ScheduledRunClaim;
     readonly now: string;
-  }) => Effect.Effect<ScheduledRunRow, ScheduledTaskRepositoryError>;
+  }) => Effect.Effect<Option.Option<ScheduledRunRow>, ScheduledTaskRepositoryError>;
   /**
    * Sets a task's next slot, status and error (an error found at a tick),
    * only while it is still at `expectedRevision`.
@@ -617,10 +627,14 @@ const make = Effect.gen(function* () {
     }).pipe(sql.withTransaction, wrap("claimSlot"));
 
   const claimManualRun: ScheduledTaskRepositoryShape["claimManualRun"] = (input) =>
-    insertDecidedRun(input.taskId, input.run, input.now).pipe(
-      sql.withTransaction,
-      wrap("claimManualRun"),
-    );
+    Effect.gen(function* () {
+      const current = yield* sql<{ readonly id: string }>`
+        SELECT task_id AS "id" FROM scheduled_tasks
+        WHERE task_id = ${input.taskId} AND revision = ${input.expectedRevision}
+      `;
+      if (current.length === 0) return Option.none();
+      return Option.some(yield* insertDecidedRun(input.taskId, input.run, input.now));
+    }).pipe(sql.withTransaction, wrap("claimManualRun"));
 
   const setTaskSchedule: ScheduledTaskRepositoryShape["setTaskSchedule"] = (input) =>
     sql`

@@ -421,6 +421,18 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
         // A tick read the task, then the user changed its instructions.
         const read = Option.getOrThrow(yield* computer.repo.getTask(task.id));
         yield* service.update({ id: task.id, prompt: "Only look at the release branch." });
+        const staleLaunch = {
+          taskName: read.name,
+          prompt: read.prompt,
+          projectId: read.projectId,
+          checkout: read.checkout,
+          workspace: null,
+          modelSelection: read.modelSelection,
+          runtimeMode: read.runtimeMode,
+          interactionMode: read.interactionMode,
+          target: read.target,
+          projectRoot: null,
+        };
         const stale = yield* computer.repo.claimSlot({
           taskId: task.id,
           expectedRevision: read.revision,
@@ -429,29 +441,73 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
           done: false,
           waitWhenBusy: false,
           missed: null,
-          run: {
-            slotUtc: read.nextSlotUtc!,
-            trigger: "schedule",
-            launch: {
-              taskName: read.name,
-              prompt: read.prompt,
-              projectId: read.projectId,
-              checkout: read.checkout,
-              workspace: null,
-              modelSelection: read.modelSelection,
-              runtimeMode: read.runtimeMode,
-              interactionMode: read.interactionMode,
-              target: read.target,
-            },
-          },
+          run: { slotUtc: read.nextSlotUtc!, trigger: "schedule", launch: staleLaunch },
           now: "2026-10-20T09:00:05.000Z",
         });
         assert.isTrue(Option.isNone(stale));
+        // Run now from the same old read is refused too.
+        const manual = (expectedRevision: number) =>
+          computer.repo.claimManualRun({
+            taskId: task.id,
+            expectedRevision,
+            run: { slotUtc: "2026-10-20T09:00:06.000Z", trigger: "manual", launch: staleLaunch },
+            now: "2026-10-20T09:00:06.000Z",
+          });
+        assert.isTrue(Option.isNone(yield* manual(read.revision)));
 
         yield* service.tick;
         const run = (yield* computer.runs(task.id))[0];
         assert.equal(run?.launch?.prompt, "Only look at the release branch.");
+
+        // Deleted: nothing can be claimed for it, so no launch outlives it.
+        const last = Option.getOrThrow(yield* computer.repo.getTask(task.id));
+        yield* service.remove({ id: task.id, archiveRunThreads: false });
+        assert.isTrue(Option.isNone(yield* manual(last.revision)));
+        assert.match((yield* service.runNow({ id: task.id }).pipe(Effect.flip)).detail, /deleted/);
       }),
+  );
+
+  it.effect("a launch whose project moved since its run was planned is refused", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      // The first process dies before the run's thread is created.
+      const dying = yield* computer.boot({
+        bootstrap: {
+          startChild: (input) =>
+            computer.bootstrap.startChild({
+              ...input,
+              checkpoint: (stage) =>
+                stage === "create"
+                  ? Effect.interrupt
+                  : (input.checkpoint?.(stage) ?? Effect.succeed(true)),
+            }),
+        },
+      });
+      const task = yield* dying.create(draft({ cadence: { kind: "manual" } }));
+      const run = yield* dying.runNow({ id: task.id });
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.launch?.workspace != null)),
+        "the launch got as far as its workspace",
+      );
+      const moved = fs.mkdtempSync(path.join(os.tmpdir(), "scheduled-tasks-moved-"));
+      yield* computer.engine.dispatch({
+        type: "project.meta.update",
+        commandId: CommandId.make("project-moved"),
+        projectId: PROJECT,
+        workspaceRoot: moved,
+      });
+
+      const restarted = yield* computer.boot();
+      yield* restarted.tick;
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "failed")),
+        "the resumed launch was refused",
+      );
+      const ended = (yield* computer.runs(task.id))[0];
+      assert.match(ended?.reason ?? "", /moved/);
+      assert.isUndefined(yield* computer.thread(scheduledRunThreadId(task.id, run.slotUtc)));
+    }),
   );
 
   it.effect("skips a slot while the task's last run works, and past 3 working runs", () =>
@@ -749,6 +805,37 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
         assert.equal((yield* computer.runs(cut.id))[0]?.status, "interrupted");
         assert.equal((yield* computer.runs(done.id))[0]?.status, "finished");
       }),
+  );
+
+  it.effect("after a restart, a run that ended unseen never makes the overdue slot skip", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const before = yield* computer.boot();
+      const task = yield* before.create(draft({ cadence: { kind: "hourly", minute: 0 } }));
+      yield* setClock("2026-10-20T09:00:05.000Z");
+      yield* before.tick;
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+        "the 9:00 run started",
+      );
+      const thread = scheduledRunThreadId(task.id, "2026-10-20T09:00:00.000Z");
+      // Its turn ended, then the process stopped before it heard so.
+      yield* computer.turnRuns(thread, TurnId.make("nine-turn"));
+      yield* computer.turnCompletes(thread, TurnId.make("nine-turn"));
+
+      // Back after 10:00: the 9:00 run is settled first, so 10:00 runs.
+      yield* setClock("2026-10-20T10:00:30.000Z");
+      const after = yield* computer.boot();
+      yield* after.tick;
+      assert.deepEqual(
+        (yield* computer.runs(task.id)).map((row) => [row.slotUtc, row.status === "skipped"]),
+        [
+          ["2026-10-20T09:00:00.000Z", false],
+          ["2026-10-20T10:00:00.000Z", false],
+        ],
+      );
+    }),
   );
 
   it.effect("a run whose turn never started fails, in the provider's own plain words", () =>

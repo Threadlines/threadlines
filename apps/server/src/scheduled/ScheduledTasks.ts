@@ -228,7 +228,7 @@ export interface ScheduledTasksShape {
     readonly summary: string | null;
   }) => Effect.Effect<"recorded" | "not_a_run" | "not_this_turn" | "already_ended">;
   readonly onTurnEnd: ScheduledRunTurnEndsShape["onTurnEnd"];
-  /** One scheduler pass now: due slots, then runs that ended. */
+  /** One scheduler pass now: runs that ended, then due slots, then launches to resume. */
   readonly tick: Effect.Effect<void>;
   /** Settle what the previous process left, then tick every 30 seconds. */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
@@ -336,7 +336,7 @@ const toTask = (
   updatedAt: row.updatedAt,
 });
 
-const launchOf = (task: ScheduledTaskRow): ScheduledRunLaunch => ({
+const launchOf = (task: ScheduledTaskRow, projectRoot: string | null): ScheduledRunLaunch => ({
   taskName: task.name,
   prompt: task.prompt,
   projectId: task.projectId,
@@ -346,6 +346,7 @@ const launchOf = (task: ScheduledTaskRow): ScheduledRunLaunch => ({
   runtimeMode: task.runtimeMode,
   interactionMode: task.interactionMode,
   target: task.target,
+  projectRoot,
 });
 
 /** The first message of a new-thread run: a short note, then the task's own words. */
@@ -927,6 +928,8 @@ const make = Effect.gen(function* () {
       const tooLate = lateness > SCHEDULED_TASK_CATCH_UP_WINDOW_MS;
       // A one-time task has had its one slot.
       const done = Result.isSuccess(after) && after.success === null;
+      // Where it runs, as of now: a launch later checks it still is.
+      const projectRoot = (yield* readProject(task.projectId))?.workspaceRoot ?? null;
       const claimed = yield* repo.claimSlot({
         taskId: task.id,
         // Claimed from the task as this tick read it: an edit since wins,
@@ -951,7 +954,7 @@ const make = Effect.gen(function* () {
           : {
               slotUtc: latest.toISOString(),
               trigger: lateness <= SCHEDULED_TASK_ON_TIME_MS ? "schedule" : "catch_up",
-              launch: launchOf(task),
+              launch: launchOf(task, projectRoot),
             },
         now: at,
       });
@@ -1052,6 +1055,13 @@ const make = Effect.gen(function* () {
       const project = yield* readProject(initial.projectId);
       if (project === undefined) {
         return yield* failLaunch(row, "Its project isn't on this computer any more.");
+      }
+      // Never somewhere other than where it was planned to run.
+      if (initial.projectRoot !== null && project.workspaceRoot !== initial.projectRoot) {
+        return yield* failLaunch(
+          row,
+          "Its project moved to another folder since this run was planned.",
+        );
       }
       let launch = initial;
       if (launch.workspace === null) {
@@ -1259,19 +1269,33 @@ const make = Effect.gen(function* () {
 
   const runNow: ScheduledTasksShape["runNow"] = (input) =>
     Effect.gen(function* () {
-      const found = yield* repo
-        .getTask(input.id)
-        .pipe(Effect.mapError(storageError("read the task")));
-      if (Option.isNone(found)) return yield* taskError("That task was deleted.");
-      const task = found.value;
-      const now = yield* nowIso;
-      const row = yield* repo
-        .claimManualRun({
-          taskId: task.id,
-          run: { slotUtc: now, trigger: "manual", launch: launchOf(task) },
-          now,
-        })
-        .pipe(Effect.mapError(storageError("start the run")));
+      // Claimed only from the task as it is: one deleted or edited since it
+      // was read is read again (or is gone), never launched from the old read.
+      for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt += 1) {
+        const found = yield* repo
+          .getTask(input.id)
+          .pipe(Effect.mapError(storageError("read the task")));
+        if (Option.isNone(found)) return yield* taskError("That task was deleted.");
+        const task = found.value;
+        const projectRoot = (yield* readProject(task.projectId))?.workspaceRoot ?? null;
+        const now = yield* nowIso;
+        const claimed = yield* repo
+          .claimManualRun({
+            taskId: task.id,
+            expectedRevision: task.revision,
+            run: { slotUtc: now, trigger: "manual", launch: launchOf(task, projectRoot) },
+            now,
+          })
+          .pipe(Effect.mapError(storageError("start the run")));
+        if (Option.isNone(claimed)) continue;
+        return yield* startedManually(claimed.value);
+      }
+      return yield* taskError(KEPT_CHANGING);
+    });
+
+  /** A run claimed by hand: launched unless overlap skipped it. */
+  const startedManually = (row: ScheduledRunRow) =>
+    Effect.gen(function* () {
       yield* changedRuns;
       if (row.status === "launching") yield* launchRun(row).pipe(Effect.forkDetach);
       return toRun(row);
@@ -1556,6 +1580,10 @@ const make = Effect.gen(function* () {
   });
 
   const tick: ScheduledTasksShape["tick"] = Effect.gen(function* () {
+    // Runs whose turns ended (one the previous process never saw end, say)
+    // are settled first, so they never count against overlap or the cap of
+    // the slots claimed next.
+    yield* sweepRuns;
     const now = yield* nowMillis;
     const tasks = yield* repo.listTasks.pipe(Effect.orElseSucceed(() => []));
     let claimedAny = false;
@@ -1573,7 +1601,6 @@ const make = Effect.gen(function* () {
       if (claimed.status === "launching") yield* launchRun(claimed).pipe(Effect.forkDetach);
     }
     if (claimedAny) yield* changedRuns;
-    yield* sweepRuns;
     yield* resumeLaunches;
     yield* expireRequests;
   });
