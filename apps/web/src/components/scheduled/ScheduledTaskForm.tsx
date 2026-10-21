@@ -8,6 +8,7 @@ import {
   type ServerProvider,
   type ThreadId,
 } from "@threadlines/contracts";
+import { roomAgentKey } from "@threadlines/shared/threadParticipants";
 import { useMemo, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -53,7 +54,12 @@ import {
   viewerTimeZone,
   WEEKDAY_LABELS,
 } from "./scheduled.logic";
-import { type LocatedTask, taskRef, useScheduledNavigation } from "./useScheduledPage";
+import {
+  type LocatedTask,
+  taskRef,
+  useContinuedAgents,
+  useScheduledNavigation,
+} from "./useScheduledPage";
 
 const CADENCE_KINDS: readonly CadenceKind[] = [
   "manual",
@@ -253,8 +259,16 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       })
     : null;
 
+  // In a room, which of its agents gets each run.
+  const continuedAgents = useContinuedAgents(
+    form.environmentId,
+    form.target === "thread" ? form.threadId : null,
+    form.threadParticipantId,
+  );
+  const goesTo = continuedAgents.find((agent) => agent.id === form.threadParticipantId);
+
   const now = new Date();
-  const problems = formProblems(form, now, editing?.task);
+  const problems = formProblems(form, now, editing?.task, goesTo?.left === true);
   const shownProblems = submitted ? problems : {};
   const upcoming = form.cadenceKind === "manual" ? [] : previewRuns(form, now, 3);
 
@@ -492,6 +506,44 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             </Select>
           ) : null}
         </FieldRow>
+        {form.target === "thread" && continuedAgents.length > 0 ? (
+          <FieldRow
+            label="Goes to"
+            hint="Which agent in that thread gets each run."
+            problem={shownProblems.goesTo ?? (goesTo?.left === true ? problems.goesTo : undefined)}
+          >
+            <Select
+              value={roomAgentKey(form.threadParticipantId)}
+              onValueChange={(value) => {
+                const agent = continuedAgents.find((entry) => roomAgentKey(entry.id) === value);
+                if (agent === undefined || agent.left) return;
+                // Its runs start from that agent's model.
+                update({ threadParticipantId: agent.id, modelSelection: agent.modelSelection });
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Goes to">
+                <SelectValue>
+                  {goesTo === undefined
+                    ? "Choose an agent"
+                    : goesTo.left
+                      ? `${goesTo.name} (left the thread)`
+                      : goesTo.name}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {continuedAgents.map((agent) => (
+                  <SelectItem
+                    key={roomAgentKey(agent.id)}
+                    value={roomAgentKey(agent.id)}
+                    disabled={agent.left}
+                  >
+                    {agent.left ? `${agent.name} (left the thread)` : agent.name}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          </FieldRow>
+        ) : null}
         {form.target === "new_thread" && !isGeneralChats ? (
           <FieldRow
             label="Runs in"

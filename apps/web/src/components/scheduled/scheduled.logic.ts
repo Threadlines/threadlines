@@ -556,18 +556,23 @@ export function parseClockInput(value: string): ScheduledTaskClock | null {
 }
 
 export type FormProblems = Partial<
-  Record<"name" | "prompt" | "computer" | "project" | "agent" | "schedule" | "thread", string>
+  Record<
+    "name" | "prompt" | "computer" | "project" | "agent" | "schedule" | "thread" | "goesTo",
+    string
+  >
 >;
 
 /**
  * What keeps the form from saving, field by field. Editing `saved`, a
  * schedule left as it was isn't checked again: a one-time task that ran can
- * be renamed without a new time.
+ * be renamed without a new time. `agentLeft`: the room agent the continued
+ * thread's runs go to has left it.
  */
 export function formProblems(
   form: ScheduledTaskForm,
   now: Date,
   saved?: Pick<ScheduledTask, "cadence" | "timeZone">,
+  agentLeft = false,
 ): FormProblems {
   const problems: Record<string, string> = {};
   if (form.name.trim().length === 0) problems.name = "Give the task a name.";
@@ -577,6 +582,9 @@ export function formProblems(
   if (form.modelSelection === null) problems.agent = "Choose an agent.";
   if (form.target === "thread" && form.threadId === null) {
     problems.thread = "Choose the thread each run continues.";
+  }
+  if (form.target === "thread" && agentLeft) {
+    problems.goesTo = "Its agent left the thread. Pick another agent.";
   }
   const unchanged =
     saved !== undefined &&

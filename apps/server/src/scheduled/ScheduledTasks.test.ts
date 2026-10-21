@@ -1101,6 +1101,91 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
     }),
   );
 
+  it.effect("a task whose room agent left stops until it is pointed at another agent", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const target = yield* roomToContinue(computer, service);
+      const task = yield* service.create(
+        draft({
+          name: "Hourly for B",
+          cadence: { kind: "hourly", minute: 0 },
+          target: { kind: "thread", threadId: target, participantId: AGENT_B },
+        }),
+      );
+      // The 9:00 run waits behind the thread's own agent, then B leaves.
+      yield* sessionHeldBy(computer, target, null, TurnId.make("own-turn"));
+      yield* setClock("2026-10-20T09:00:05.000Z");
+      yield* service.tick;
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "queued")),
+        "the 9:00 run was queued",
+      );
+      yield* sessionHeldBy(computer, target, null, null);
+      yield* computer.engine.dispatch({
+        type: "thread.participant.remove",
+        commandId: CommandId.make("remove-agent-b"),
+        threadId: target,
+        participantId: AGENT_B,
+        createdAt: "2026-10-20T09:00:30.000Z",
+      });
+      yield* service.tick;
+      assert.equal((yield* computer.runs(task.id))[0]?.reason, "Its agent left the thread.");
+      const stopped = yield* service.getTask(task.id);
+      assert.equal(stopped?.status, "error");
+      assert.equal(
+        stopped?.error,
+        "Its agent left the thread. Pick another agent or remove the task.",
+      );
+      assert.equal(stopped?.nextRunAt, null);
+
+      // It stops firing.
+      yield* setClock("2026-10-20T10:00:05.000Z");
+      yield* service.tick;
+      assert.equal((yield* computer.runs(task.id)).length, 1);
+
+      // An agent can't start it again into the same agent, even with agents
+      // on auto, and anything else it asks of the stopped task is the user's call.
+      const agentAsks = (
+        requestId: string,
+        input: { readonly name?: string; readonly status?: "paused" },
+      ) =>
+        service.propose({
+          requestId,
+          threadId: target,
+          participantId: null,
+          mode: Effect.succeed("auto"),
+          callerRuntimeMode: "full-access",
+          change: { kind: "update", input: { id: task.id, ...input } },
+        });
+      const renamed = yield* agentAsks("rename", { name: "Renamed" }).pipe(Effect.flip);
+      assert.equal(
+        renamed.message,
+        "Its agent left the thread. Pick another agent or remove the task.",
+      );
+      assert.equal((yield* agentAsks("pause", { status: "paused" })).outcome, "asked_user");
+      assert.equal((yield* service.getTask(task.id))?.status, "error");
+
+      // Nor can the user save it pointed at the agent that left; pointing it
+      // at the thread's own agent starts it again.
+      const sameAgent = yield* service
+        .update({
+          id: task.id,
+          target: { kind: "thread", threadId: target, participantId: AGENT_B },
+        })
+        .pipe(Effect.flip);
+      assert.include(sameAgent.message, "Its agent left the thread.");
+      const repointed = yield* service.update({
+        id: task.id,
+        target: { kind: "thread", threadId: target },
+      });
+      assert.equal(repointed.status, "active");
+      assert.equal(repointed.error, null);
+      assert.equal(repointed.nextRunAt, "2026-10-20T11:00:00.000Z");
+    }),
+  );
+
   it.effect("a launch cut off between stages resumes after a restart and makes one thread", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;

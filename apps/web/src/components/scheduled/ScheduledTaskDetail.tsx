@@ -36,6 +36,7 @@ import {
   taskRef,
   useAccessLabel,
   useAgentLabels,
+  useContinuedAgents,
   useProjectNames,
   useScheduledNavigation,
 } from "./useScheduledPage";
@@ -200,6 +201,14 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
     task.target.kind === "thread" ? task.target.threadId : null,
   );
   const originTitle = useThreadTitle(environment.environmentId, task.originThreadId);
+  // In a room, the agent its runs go to (none named: the thread's own).
+  const continuedParticipantId =
+    task.target.kind === "thread" ? (task.target.participantId ?? null) : null;
+  const goesTo = useContinuedAgents(
+    environment.environmentId,
+    task.target.kind === "thread" ? task.target.threadId : null,
+    continuedParticipantId,
+  ).find((agent) => continuedParticipantId !== null && agent.id === continuedParticipantId);
   const openThread = (threadId: ThreadId) =>
     void navigate({
       to: "/$environmentId/$threadId",
@@ -331,7 +340,7 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
         </div>
         {task.status === "error" && task.error ? (
           <p className="rounded-lg bg-destructive/8 px-3 py-2 text-[12.5px] text-destructive-foreground">
-            It stopped running: {task.error} Edit it to fix the schedule.
+            It stopped running: {task.error}
           </p>
         ) : null}
       </header>
@@ -366,6 +375,13 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
               >
                 {continuedTitle ?? "its thread"}
               </button>
+              {goesTo !== undefined ? (
+                <span className="text-muted-foreground">
+                  {" "}
+                  · for {goesTo.name}
+                  {goesTo.left ? ", who left it" : ""}
+                </span>
+              ) : null}
             </span>
           )}
         </DetailRow>

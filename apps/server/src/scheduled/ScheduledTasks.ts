@@ -135,6 +135,12 @@ export const SKIP_REASON_MISSED = "The computer was off or asleep.";
 /** Why a run for a room agent that left the thread never ran. */
 const AGENT_LEFT = "Its agent left the thread.";
 
+/** Why a task for a room agent that left stopped, and what the user does about it. */
+const AGENT_LEFT_TASK = "Its agent left the thread. Pick another agent or remove the task.";
+
+/** What the user does about a task whose schedule stopped making sense. */
+const FIX_SCHEDULE = "Edit it to fix the schedule.";
+
 /** Whether a run's target names a room agent that is no longer in the thread. */
 const agentLeft = (thread: OrchestrationThread, target: ScheduledTaskTarget) =>
   target.kind === "thread" &&
@@ -505,6 +511,7 @@ const make = Effect.gen(function* () {
             "A thread another computer started can't be continued on a schedule.",
           );
         }
+        if (agentLeft(thread, task.target)) return yield* taskError(AGENT_LEFT_TASK);
       }
     });
 
@@ -582,7 +589,10 @@ const make = Effect.gen(function* () {
         updatedAt: new Date(now).toISOString(),
       };
       const settingsChanged = Object.values(fields).some((value) => value !== undefined);
-      if (settingsChanged) yield* checkDraft(edited);
+      // Checked when it changes, and when it starts running again: a task
+      // never resumes into a thread or an agent that is gone.
+      const resumes = edited.status === "active" && current.status !== "active";
+      if (settingsChanged || resumes) yield* checkDraft(edited);
       // The next slot is worked out again when the schedule or the status
       // changed; otherwise it stays, so a rename never skips a due slot.
       const scheduleChanged =
@@ -699,19 +709,26 @@ const make = Effect.gen(function* () {
         const now = yield* nowMillis;
         const { current, row } = yield* prepareUpdate(change.input, now);
         // Pausing only takes work away; anything else on a task with more
-        // access than the agent asking is the user's call.
+        // access than the agent asking is the user's call. So is any change
+        // to a task that stopped: the user sees why it stopped, and how it
+        // gets going again.
         const aboveCaller =
           exceedsRuntimeMode(current.runtimeMode, input.callerRuntimeMode) &&
           !isPauseOnly(change.input);
+        const stopped = current.status === "error";
         const mode = yield* input.mode;
         if (mode === "off") return { outcome: "off" as const };
-        if (mode === "ask" || aboveCaller) {
+        if (mode === "ask" || aboveCaller || stopped) {
           const details = updateDetails(current, row);
           return yield* askUser(
             input,
             {
               name: row.name,
-              details: aboveCaller ? [...details, ABOVE_CALLER_DETAIL] : details,
+              details: [
+                ...(stopped && current.error !== null ? [`It stopped: ${current.error}`] : []),
+                ...details,
+                ...(aboveCaller ? [ABOVE_CALLER_DETAIL] : []),
+              ],
               taskId: row.id,
             },
             now,
@@ -903,7 +920,10 @@ const make = Effect.gen(function* () {
   // Claiming slots
   // ---------------------------------------------------------------------------
 
-  /** Marks a task errored with the reason: it stops running until it is saved again. */
+  /**
+   * Marks a task errored with the reason, which says what to do about it: it
+   * stops running until it is saved again.
+   */
   const failTask = (
     task: ScheduledTaskRow,
     reason: string,
@@ -926,13 +946,29 @@ const make = Effect.gen(function* () {
       yield* notify;
     }).pipe(Effect.ignore);
 
+  /**
+   * Stops a task whose run found its room agent gone, while the task still
+   * points at that agent: it would only fail again at every slot. A task
+   * already pointed elsewhere, or not running, is left as it is.
+   */
+  const stopTaskForLeftAgent = (taskId: ScheduledTaskId) =>
+    Effect.gen(function* () {
+      const found = yield* repo.getTask(taskId);
+      if (Option.isNone(found)) return;
+      const task = found.value;
+      if (task.status !== "active" || task.target.kind !== "thread") return;
+      const thread = yield* readThread(task.target.threadId);
+      if (thread === undefined || !agentLeft(thread, task.target)) return;
+      yield* failTask(task, AGENT_LEFT_TASK);
+    }).pipe(Effect.ignore);
+
   /** Claims the task's due slot, if it has one; returns the run to launch. */
   const claimDue = (task: ScheduledTaskRow, now: number) =>
     Effect.gen(function* () {
       if (task.status !== "active" || task.nextSlotUtc === null) return null;
       const compiled = compileCadence(task.cadence, task.timeZone);
       if (Result.isFailure(compiled)) {
-        yield* failTask(task, compiled.failure);
+        yield* failTask(task, `${compiled.failure} ${FIX_SCHEDULE}`);
         return null;
       }
       const schedule = compiled.success;
@@ -950,7 +986,7 @@ const make = Effect.gen(function* () {
       }
       const due = dueSlots(schedule, new Date(task.nextSlotUtc), new Date(now));
       if (Result.isFailure(due)) {
-        yield* failTask(task, due.failure);
+        yield* failTask(task, `${due.failure} ${FIX_SCHEDULE}`);
         return null;
       }
       if (due.success === null) return null;
@@ -993,7 +1029,11 @@ const make = Effect.gen(function* () {
         now: at,
       });
       if (Option.isSome(claimed) && Result.isFailure(after)) {
-        yield* failTask(task, "This schedule doesn't run again.", task.revision + 1);
+        yield* failTask(
+          task,
+          `This schedule doesn't run again. ${FIX_SCHEDULE}`,
+          task.revision + 1,
+        );
       }
       return Option.getOrNull(claimed);
     });
@@ -1240,7 +1280,10 @@ const make = Effect.gen(function* () {
         (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
       if (!alreadySent) {
         // In a room, the agent that set the task up, never handed to another.
-        if (agentLeft(thread, launch.target)) return yield* failLaunch(row, AGENT_LEFT);
+        if (agentLeft(thread, launch.target)) {
+          yield* failLaunch(row, AGENT_LEFT);
+          return yield* stopTaskForLeftAgent(row.taskId);
+        }
         const sent = yield* engine
           .dispatch({
             type: "thread.follow-up.submit",
@@ -1554,15 +1597,16 @@ const make = Effect.gen(function* () {
       if (!sent) {
         if (run.status === "queued") {
           // Delivered, then neither waiting nor sent: its agent left the
-          // room (which takes back what waited for it), or the user took it
-          // back.
+          // room (which takes back what waited for it, and stops the task
+          // while it still points there), or the user took it back.
+          if (run.launch !== null && agentLeft(thread, run.launch.target)) {
+            yield* endRun(run, { turnId: null, outcome: "failed", reason: AGENT_LEFT });
+            return yield* stopTaskForLeftAgent(run.taskId);
+          }
           return yield* endRun(run, {
             turnId: null,
             outcome: "failed",
-            reason:
-              run.launch !== null && agentLeft(thread, run.launch.target)
-                ? AGENT_LEFT
-                : "Its message was taken back before it ran.",
+            reason: "Its message was taken back before it ran.",
           });
         }
         return;
