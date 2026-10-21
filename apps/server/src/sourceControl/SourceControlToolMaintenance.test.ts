@@ -6,7 +6,12 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { VcsProcessExitError, VcsProcessTimeoutError } from "@threadlines/contracts";
+import {
+  SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE,
+  SourceControlToolUpdateError,
+  VcsProcessExitError,
+  VcsProcessTimeoutError,
+} from "@threadlines/contracts";
 
 import { ServerConfig } from "../config.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -530,4 +535,88 @@ it.effect(
         );
       }).pipe(Effect.provide(layer));
     }),
+);
+
+it.effect(
+  "shows the job as queued while the caller checks it, and frees the slot if that fails",
+  () => {
+    let installs = 0;
+    const layer = Layer.effect(
+      SourceControlToolMaintenance.SourceControlToolMaintenance,
+      SourceControlToolMaintenance.make({
+        platform: "win32",
+        commandAvailable: (command) => command === "winget",
+      }),
+    ).pipe(
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "source-tool-update-test-" })),
+      Layer.provide(
+        Layer.mock(VcsProcess.VcsProcess)({
+          run: () => {
+            installs += 1;
+            return Effect.succeed(processOutput);
+          },
+        }),
+      ),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const maintenance = yield* SourceControlToolMaintenance.SourceControlToolMaintenance;
+      const checking = yield* Deferred.make<void>();
+      const verdict = yield* Deferred.make<boolean>();
+      const preflight = Deferred.succeed(checking, undefined).pipe(
+        Effect.andThen(Deferred.await(verdict)),
+        Effect.flatMap((offered) =>
+          offered
+            ? Effect.void
+            : Effect.fail(
+                new SourceControlToolUpdateError({ target: "github-cli", reason: "Not offered." }),
+              ),
+        ),
+      );
+
+      const refused = yield* maintenance
+        .update({ target: "github-cli" }, { preflight })
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(checking);
+      // A setup poll during the caller's check already sees the job.
+      assert.deepStrictEqual(yield* maintenance.getState, [
+        {
+          target: "github-cli",
+          operation: "update",
+          status: "queued",
+          message: SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE,
+        },
+      ]);
+
+      yield* Deferred.succeed(verdict, false);
+      const result = yield* Fiber.join(refused);
+      assert.strictEqual(result._tag, "Failure");
+      assert.deepStrictEqual(yield* maintenance.getState, []);
+
+      // The caller leaving mid-check frees the slot too.
+      const abandonedCheck = yield* Deferred.make<void>();
+      const abandoned = yield* maintenance
+        .update(
+          { target: "github-cli" },
+          {
+            preflight: Deferred.succeed(abandonedCheck, undefined).pipe(
+              Effect.andThen(Effect.never),
+            ),
+          },
+        )
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(abandonedCheck);
+      yield* Fiber.interrupt(abandoned);
+      assert.deepStrictEqual(yield* maintenance.getState, []);
+      assert.strictEqual(installs, 0);
+
+      yield* maintenance.update({ target: "github-cli" }, { preflight: Effect.void });
+      assert.deepStrictEqual(
+        (yield* maintenance.getState).map((state) => state.status),
+        ["succeeded"],
+      );
+      assert.strictEqual(installs, 1);
+    }).pipe(Effect.scoped, Effect.provide(layer));
+  },
 );
