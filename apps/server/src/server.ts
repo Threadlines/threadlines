@@ -18,6 +18,20 @@ import { scheduleServerCompileCacheFlush } from "./compileCache.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import { relayDirectRouteLayer } from "./relay/directRoute.ts";
+import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionThreads.ts";
+import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
+import { ComputerLinkClientLive } from "./links/ComputerLinkClient.ts";
+import { ComputerLinkRepositoryLive } from "./links/ComputerLinkRepository.ts";
+import { ComputerLinksLive } from "./links/ComputerLinks.ts";
+import { LinkRequestRepositoryLive } from "./links/LinkRequestRepository.ts";
+import {
+  LinkRequestsLive,
+  RemoteRequestGateLive,
+  RemoteRequestTurnEndsLive,
+} from "./links/LinkRequests.ts";
+import { peerRpcRouteLayer } from "./links/peerRoute.ts";
+import { RemoteChildReactorLive } from "./links/RemoteChildReactor.ts";
+import { ComputerLinkReactorsLive } from "./links/ComputerLinkReactors.ts";
 import * as ChildEnvironment from "./process/childEnvironment.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
@@ -235,10 +249,26 @@ const PlatformServicesLive = ChildEnvironment.layer.pipe(
   ),
 );
 
+// Computer links (docs/design/fleet.md): this server's links to other
+// computers and what it does for computers linked to it. Each side's reactor
+// starts with the orchestration reactor; runtime ingestion hands turns that
+// end in a linked computer's thread to the ledger (RemoteRequestTurnEnds).
+const ComputerLinksLayerLive = Layer.mergeAll(ComputerLinkReactorsLive, ComputerLinksLive).pipe(
+  Layer.provideMerge(RemoteChildReactorLive),
+  Layer.provideMerge(LinkRequestsLive),
+  Layer.provideMerge(ComputerLinkClientLive),
+  Layer.provideMerge(Layer.mergeAll(ComputerLinkRepositoryLive, LinkRequestRepositoryLive)),
+  Layer.provide(Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadRepositoryLive)),
+  Layer.provide(ServerSecretStoreLive),
+);
+
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
+  // Both reactors above take these (optionally), so they come after them.
+  Layer.provideMerge(Layer.mergeAll(RemoteRequestTurnEndsLive, RemoteRequestGateLive)),
+  Layer.provideMerge(ComputerLinksLayerLive),
   Layer.provideMerge(ChildThreadReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
@@ -376,7 +406,7 @@ const AuthLayerLive = ServerAuthLive.pipe(
 // "Connect a device": the server's end of the relay. Needs persistence, the
 // session service, and its own secret-store handle for the host secret.
 const RelayLayerLive = RelayHostLive.pipe(
-  Layer.provide(RelayDeviceRepositoryLive),
+  Layer.provideMerge(RelayDeviceRepositoryLive),
   Layer.provide(ServerSecretStoreLive),
 );
 
@@ -516,6 +546,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   serverEnvironmentRouteLayer,
   staticAndDevRouteLayer,
   websocketRpcRouteLayer,
+  peerRpcRouteLayer,
   relayDirectRouteLayer,
 ).pipe(
   Layer.provide(browserApiCorsLayer),

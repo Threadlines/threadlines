@@ -88,6 +88,12 @@ import { DictationLive } from "./dictation/DictationService.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { answerRequestsWhileStarting, makeRoutesLayer } from "./server.ts";
 import { RelayHost, type RelayHostShape } from "./relay/RelayHost.ts";
+import {
+  RelayDeviceRepository,
+  type RelayDeviceRepositoryShape,
+} from "./relay/RelayDeviceRepository.ts";
+import { ComputerLinks, type ComputerLinksShape } from "./links/ComputerLinks.ts";
+import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
   CheckpointDiffQuery,
@@ -509,6 +515,9 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     threadSearch?: Partial<ThreadSearchShape>;
     relayHost?: Partial<RelayHostShape>;
+    relayDeviceRepository?: Partial<RelayDeviceRepositoryShape>;
+    computerLinks?: Partial<ComputerLinksShape>;
+    linkRequests?: Partial<LinkRequestsShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
     checkpointRevert?: Partial<CheckpointRevertShape>;
     browserTraceCollector?: Partial<BrowserTraceCollectorShape>;
@@ -802,7 +811,24 @@ const buildAppUnderTest = (options?: {
             admitDirect: () => null,
             acceptDirect: () => Effect.succeed(null),
             directRoutes: () => Effect.succeed([]),
+            isRevokedDevice: () => Effect.succeed(false),
             ...options?.layers?.relayHost,
+          }),
+          Layer.mock(RelayDeviceRepository)({
+            getDevice: () => Effect.succeed(Option.none()),
+            getDeviceBySession: () => Effect.succeed(Option.none()),
+            listDevices: Effect.succeed([]),
+            ...options?.layers?.relayDeviceRepository,
+          }),
+          Layer.mock(ComputerLinks)({
+            snapshot: Effect.succeed({ outbound: [], inbound: [], pending: [] }),
+            changes: Stream.make({ outbound: [], inbound: [], pending: [] }),
+            ...options?.layers?.computerLinks,
+          }),
+          Layer.mock(LinkRequests)({
+            pending: Effect.succeed([]),
+            pendingChanges: Stream.empty,
+            ...options?.layers?.linkRequests,
           }),
           Layer.mock(ThreadSearch)({
             search: () => Effect.succeed({ matches: [], truncated: false }),
@@ -1727,6 +1753,30 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(typeof wsTokenBody.token, "string");
       assert.isTrue(wsTokenBody.token.length > 0);
       assert.equal(typeof wsTokenBody.expiresAt, "string");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("keeps a client app's session off /peer, the linked computers' socket", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const bearerToken = yield* getAuthenticatedBearerSessionToken();
+      const wsTokenUrl = yield* getHttpServerUrl("/api/auth/ws-token");
+      const wsTokenBody = (yield* Effect.promise(() =>
+        fetch(wsTokenUrl, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearerToken}` },
+        }).then((response) => response.json()),
+      )) as { readonly token: string };
+      const peerUrl = yield* getHttpServerUrl("/peer");
+
+      const withOwnerToken = yield* Effect.promise(() =>
+        fetch(`${peerUrl}?wsToken=${encodeURIComponent(wsTokenBody.token)}`),
+      );
+      const withoutToken = yield* Effect.promise(() => fetch(peerUrl));
+
+      assert.equal(withOwnerToken.status, 403);
+      assert.equal(withoutToken.status, 401);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

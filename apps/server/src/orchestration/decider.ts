@@ -76,6 +76,10 @@ import {
   childrenArchivedWith,
   decideChildDeliveriesStop,
   decideChildNotesDelivered,
+  decideRemoteCancelsDelivered,
+  decideRemoteChildUpdate,
+  decideRemoteRequestQueue,
+  remoteCancelEvents,
   decideChildRequestSettle,
   decideChildRequestUpdate,
   decideChildRespond,
@@ -607,6 +611,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           });
         }
       }
+      // A thread another computer's agent started here has no family here.
+      if (command.remoteOrigin !== undefined && parentThreadId !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A thread is started either by a thread here or by one on a linked computer.",
+        });
+      }
       // A thread set up as a room before its first message starts with its
       // agents: all of them are checked before any is recorded.
       const startingAgents = command.participants ?? [];
@@ -656,6 +667,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 attachedToParent: command.attachedToParent === true,
               }
             : {}),
+          ...(command.remoteOrigin !== undefined ? { remoteOrigin: command.remoteOrigin } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -880,13 +892,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Child threads: its family is separated (or deleted with it), and a
       // child's parent stops waiting on it.
       const withChildren = command.withChildren === true;
-      const familyEvents = childDeletionEvents(
-        readModel,
-        thread,
-        childEventBase(command, occurredAt),
-        occurredAt,
-        withChildren,
-      );
+      const familyEvents = [
+        ...childDeletionEvents(
+          readModel,
+          thread,
+          childEventBase(command, occurredAt),
+          occurredAt,
+          withChildren,
+        ),
+        // Threads it asked for on linked computers: their requests are dropped
+        // there; the threads keep running, like separated children here.
+        ...remoteCancelEvents(
+          childEventBase(command, occurredAt),
+          thread,
+          thread.childRequests.open,
+          occurredAt,
+          false,
+        ),
+      ];
       // Only the children the user was shown: the ones not archived. An
       // archived child is separated instead and lives on in the archive.
       const childDeletes = withChildren
@@ -1509,7 +1532,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     case "thread.child.send":
     case "thread.child-request.update":
     case "thread.child-request.settle":
-    case "thread.child-notes.delivered": {
+    case "thread.child-notes.delivered":
+    case "thread.remote-child.update":
+    case "thread.remote-cancels.delivered":
+    case "thread.remote-request.queue": {
       const thread = yield* requireThread({
         readModel,
         command,
@@ -1528,7 +1554,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 ? decideChildRequestUpdate(thread, command, baseFor)
                 : command.type === "thread.child-request.settle"
                   ? decideChildRequestSettle(readModel, thread, command, baseFor)
-                  : decideChildNotesDelivered(thread, command, baseFor),
+                  : command.type === "thread.remote-child.update"
+                    ? decideRemoteChildUpdate(thread, command, baseFor)
+                    : command.type === "thread.remote-cancels.delivered"
+                      ? decideRemoteCancelsDelivered(thread, command, baseFor)
+                      : command.type === "thread.remote-request.queue"
+                        ? decideRemoteRequestQueue(thread, command, baseFor)
+                        : decideChildNotesDelivered(thread, command, baseFor),
       );
     }
 
@@ -1786,21 +1818,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       // Child threads: what it asked of its threads has nobody to go back to.
       const leavingBase = childEventBase(command, command.createdAt);
+      const leavingRequests = thread.childRequests.open.filter(
+        (request) => request.from.participantId === participant.id,
+      );
       const childEvents: ReadonlyArray<PlannedOrchestrationEvent> = [
-        ...thread.childRequests.open
-          .filter((request) => request.from.participantId === participant.id)
-          .map((request): PlannedOrchestrationEvent => ({
-            ...leavingBase(thread.id),
-            type: "thread.child-request-settled",
-            payload: {
-              threadId: thread.id,
-              requestId: request.requestId,
-              childThreadId: request.childThreadId,
-              outcome: "cancelled",
-              error: "The agent that asked left the room.",
-              settledAt: command.createdAt,
-            },
-          })),
+        ...remoteCancelEvents(leavingBase, thread, leavingRequests, command.createdAt, false),
+        ...leavingRequests.map((request): PlannedOrchestrationEvent => ({
+          ...leavingBase(thread.id),
+          type: "thread.child-request-settled",
+          payload: {
+            threadId: thread.id,
+            requestId: request.requestId,
+            childThreadId: request.childThreadId,
+            outcome: "cancelled",
+            error: "The agent that asked left the room.",
+            settledAt: command.createdAt,
+          },
+        })),
         ...(thread.queuedFollowUps ?? [])
           .filter(
             (queued) =>
@@ -2264,7 +2298,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // now running there.
       const origin = command.fromThread;
       const parentForRequest =
-        origin?.kind === "request"
+        origin?.kind === "request" && origin.environmentId === undefined
           ? readModel.threads.find((entry) => entry.id === origin.threadId)
           : undefined;
       const answeredRequest = parentForRequest?.childRequests.open.find(

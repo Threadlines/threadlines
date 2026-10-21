@@ -136,6 +136,7 @@ import { GitAuthRemediationService } from "./git/GitAuthRemediationService.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
+import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput.ts";
@@ -213,6 +214,9 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.child-notes-delivered"
       | "thread.child-deliveries-cancelled"
       | "thread.child-requests-reset"
+      | "thread.remote-child-updated"
+      | "thread.remote-cancel-queued"
+      | "thread.remote-cancels-delivered"
       | "thread.handed-back"
       | "thread.parent-attachment-set";
   }
@@ -233,6 +237,9 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.child-notes-delivered" ||
     event.type === "thread.child-deliveries-cancelled" ||
     event.type === "thread.child-requests-reset" ||
+    event.type === "thread.remote-child-updated" ||
+    event.type === "thread.remote-cancel-queued" ||
+    event.type === "thread.remote-cancels-delivered" ||
     event.type === "thread.handed-back" ||
     event.type === "thread.parent-attachment-set" ||
     event.type === "thread.message-sent" ||
@@ -349,6 +356,7 @@ const makeWsRpcLayer = (currentSession: {
           ? Effect.void
           : Effect.fail(new WsOwnerRequiredError({ method }));
       const relayHost = yield* RelayHost;
+      const computerLinks = yield* ComputerLinks;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const agentPages = yield* AgentPages;
       const mcpApps = yield* McpApps;
@@ -2557,6 +2565,38 @@ const makeWsRpcLayer = (currentSession: {
             relayHost.directRoutes(currentSessionId).pipe(Effect.map((routes) => ({ routes }))),
             { "rpc.aggregate": "auth" },
           ),
+        // Computer links (docs/design/fleet.md): open to owner and client
+        // sessions alike. A remote client links the computer it is on to
+        // another one in one click, and it can already run commands here; a
+        // linked computer's own session is narrower still and never reaches /ws.
+        [WS_METHODS.linksList]: (_input) =>
+          observeRpcEffect(WS_METHODS.linksList, computerLinks.snapshot, {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksSubscribe]: (_input) =>
+          observeRpcStream(WS_METHODS.linksSubscribe, computerLinks.changes, {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksCreateInvite]: (_input) =>
+          observeRpcEffect(WS_METHODS.linksCreateInvite, computerLinks.createInvite, {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksAccept]: (input) =>
+          observeRpcEffect(WS_METHODS.linksAccept, computerLinks.accept(input.invite), {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksSetAccess]: (input) =>
+          observeRpcEffect(WS_METHODS.linksSetAccess, computerLinks.setAccess(input), {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksRemove]: (input) =>
+          observeRpcEffect(WS_METHODS.linksRemove, computerLinks.remove(input), {
+            "rpc.aggregate": "links",
+          }),
+        [WS_METHODS.linksRespondRequest]: (input) =>
+          observeRpcEffect(WS_METHODS.linksRespondRequest, computerLinks.respondRequest(input), {
+            "rpc.aggregate": "links",
+          }),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,

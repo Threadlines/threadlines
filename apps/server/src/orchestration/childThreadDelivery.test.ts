@@ -93,7 +93,7 @@ describe("childDeliveryForTurnEnd", () => {
 
   it("gives a turn's answer to the request its message started, not an older one waiting on background work", () => {
     const delivery = childDeliveryForTurnEnd({
-      parent,
+      owned: parent.childRequests.open,
       child: thread(CHILD),
       end: { turnId: TurnId.make("turn-b"), outcome: "completed" },
       pendingMessageId: later.childMessageId,
@@ -104,7 +104,7 @@ describe("childDeliveryForTurnEnd", () => {
 
   it("lets only a turn no message started continue a request waiting on background work", () => {
     const continuation = childDeliveryForTurnEnd({
-      parent,
+      owned: parent.childRequests.open,
       child: thread(CHILD),
       end: { turnId: TurnId.make("turn-continued"), outcome: "completed" },
       pendingMessageId: null,
@@ -113,7 +113,7 @@ describe("childDeliveryForTurnEnd", () => {
     expect(continuation?.requestId).toBe(waiting.requestId);
 
     const userTurn = childDeliveryForTurnEnd({
-      parent,
+      owned: parent.childRequests.open,
       child: thread(CHILD),
       end: { turnId: TurnId.make("turn-user"), outcome: "completed" },
       pendingMessageId: MessageId.make("user-message"),

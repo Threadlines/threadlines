@@ -17,7 +17,7 @@ import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import type { SessionRole } from "./SessionCredentialService.ts";
+import type { ClientSessionRole, SessionRole } from "./SessionCredentialService.ts";
 
 export interface AuthenticatedSession {
   readonly sessionId: AuthSessionId;
@@ -25,6 +25,16 @@ export interface AuthenticatedSession {
   readonly method: ServerAuthSessionMethod;
   readonly role: SessionRole;
   readonly expiresAt?: DateTime.DateTime;
+}
+
+/** A session of a client app (the owner's or a paired one): never a linked computer's. */
+export interface ClientAuthenticatedSession extends AuthenticatedSession {
+  readonly role: Exclude<SessionRole, "peer">;
+}
+
+/** A linked computer's server, signed in for the `/peer` endpoint only. */
+export interface PeerAuthenticatedSession extends AuthenticatedSession {
+  readonly role: "peer";
 }
 
 export class AuthError extends Data.TaggedError("AuthError")<{
@@ -54,7 +64,7 @@ export interface ServerAuthShape {
   ) => Effect.Effect<AuthBearerBootstrapResult, AuthError>;
   readonly issuePairingCredential: (
     input?: AuthCreatePairingCredentialInput & {
-      readonly role?: SessionRole;
+      readonly role?: ClientSessionRole;
     },
   ) => Effect.Effect<AuthPairingCredentialResult, AuthError>;
   readonly listPairingLinks: () => Effect.Effect<ReadonlyArray<AuthPairingLink>, AuthError>;
@@ -69,12 +79,18 @@ export interface ServerAuthShape {
   readonly revokeOtherClientSessions: (
     currentSessionId: AuthSessionId,
   ) => Effect.Effect<number, AuthError>;
+  /** Any client app's request. A linked computer's (`peer`) session is refused. */
   readonly authenticateHttpRequest: (
     request: HttpServerRequest.HttpServerRequest,
-  ) => Effect.Effect<AuthenticatedSession, AuthError>;
+  ) => Effect.Effect<ClientAuthenticatedSession, AuthError>;
+  /** `/ws`: a client app's socket. A linked computer's (`peer`) session is refused. */
   readonly authenticateWebSocketUpgrade: (
     request: HttpServerRequest.HttpServerRequest,
-  ) => Effect.Effect<AuthenticatedSession, AuthError>;
+  ) => Effect.Effect<ClientAuthenticatedSession, AuthError>;
+  /** `/peer`: a linked computer's socket, by WebSocket token only. Every other role is refused. */
+  readonly authenticatePeerUpgrade: (
+    request: HttpServerRequest.HttpServerRequest,
+  ) => Effect.Effect<PeerAuthenticatedSession, AuthError>;
   readonly issueWebSocketToken: (
     session: AuthenticatedSession,
   ) => Effect.Effect<AuthWebSocketTokenResult, AuthError>;

@@ -43,6 +43,14 @@
       "types": "./src/relaySecure.ts",
       "import": "./src/relaySecure.ts"
     },
+    "./relaySecureSocket": {
+      "types": "./src/relaySecureSocket.ts",
+      "import": "./src/relaySecureSocket.ts"
+    },
+    "./relayJoin": {
+      "types": "./src/relayJoin.ts",
+      "import": "./src/relayJoin.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"

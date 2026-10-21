@@ -30,6 +30,10 @@ import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { ComputerLinkClient } from "../links/ComputerLinkClient.ts";
+import { ComputerLinkRepository } from "../links/ComputerLinkRepository.ts";
+import { makeThreadToolLinks } from "../links/threadToolLinks.ts";
+import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import {
   MCP_ROOM_ROUTE_PATH,
   normalizeMcpHttpResponse,
@@ -79,6 +83,18 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
     const providerService = yield* ProviderService;
     const git = yield* GitVcsDriver;
     const settings = yield* ServerSettingsService;
+    // Linked computers, when this server has them (docs/design/fleet.md).
+    const linkClient = yield* Effect.serviceOption(ComputerLinkClient);
+    const linkRepo = yield* Effect.serviceOption(ComputerLinkRepository);
+    const identities = yield* Effect.serviceOption(RepositoryIdentityResolver);
+    const links =
+      Option.isSome(linkClient) && Option.isSome(linkRepo) && Option.isSome(identities)
+        ? makeThreadToolLinks({
+            client: linkClient.value,
+            repo: linkRepo.value,
+            identities: identities.value,
+          })
+        : undefined;
     // Requests outlive the HTTP calls waiting on them; they end with the server.
     const requests = makeRoomRequestRegistry(yield* Effect.scope);
     const readThread = (threadId: ThreadId) =>
@@ -150,6 +166,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       ),
       git,
       requests,
+      ...(links !== undefined ? { links } : {}),
     });
     const caller = Effect.service(McpRoomInvocation);
     return {

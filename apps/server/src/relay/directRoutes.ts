@@ -10,22 +10,19 @@ export function directRoutePath(deviceId: string): string {
 }
 
 /**
- * Where a "Connect a device" device can reach this server without the relay:
- * every external IPv4 address when the server listens on all interfaces
- * (Same network on), the explicit address it was started on, and the
- * Tailscale HTTPS name when Tailscale Serve is on. A loopback-only server
- * offers just Tailscale. Routes are hints: the end-to-end handshake decides
- * whether the far end is really this computer.
+ * The origins (`ws://address:port`, Tailscale `wss://name`) this server can
+ * be reached at without the relay: every external IPv4 address when the
+ * server listens on all interfaces (Same network on), the explicit address it
+ * was started on, and the Tailscale HTTPS name when Tailscale Serve is on. A
+ * loopback-only server offers just Tailscale.
  */
-export function computeDirectRoutes(input: {
+export function computeDirectOrigins(input: {
   readonly bindHost: string | undefined;
   readonly port: number;
-  readonly deviceId: string;
   readonly tailscaleHttpsBaseUrl: string | null;
   readonly interfaces?: NetworkInterfacesMap;
 }): ReadonlyArray<string> {
-  const path = directRoutePath(input.deviceId);
-  const routes: Array<string> = [];
+  const origins: Array<string> = [];
   if (input.bindHost === undefined || isWildcardHost(input.bindHost)) {
     const interfaces = input.interfaces ?? networkInterfaces();
     for (const entries of Object.values(interfaces)) {
@@ -34,17 +31,38 @@ export function computeDirectRoutes(input: {
         const family = String(entry.family);
         if (entry.internal || (family !== "IPv4" && family !== "4")) continue;
         if (entry.address.startsWith("169.254.")) continue;
-        routes.push(`ws://${entry.address}:${input.port}${path}`);
+        origins.push(`ws://${entry.address}:${input.port}`);
       }
     }
   } else if (!isLoopbackHost(input.bindHost)) {
-    routes.push(`ws://${formatHostForUrl(input.bindHost)}:${input.port}${path}`);
+    origins.push(`ws://${formatHostForUrl(input.bindHost)}:${input.port}`);
   }
   if (input.tailscaleHttpsBaseUrl) {
     const url = new URL(input.tailscaleHttpsBaseUrl);
     url.protocol = "wss:";
-    url.pathname = path;
-    routes.push(url.toString());
+    origins.push(url.origin);
   }
-  return [...new Set(routes)];
+  return [...new Set(origins)];
+}
+
+/** A device's direct route at one of the origins above. */
+export function directRouteAt(origin: string, deviceId: string): string {
+  const url = new URL(origin);
+  url.pathname = directRoutePath(deviceId);
+  return url.toString();
+}
+
+/**
+ * Where a "Connect a device" device can reach this server without the relay
+ * (see computeDirectOrigins). Routes are hints: the end-to-end handshake
+ * decides whether the far end is really this computer.
+ */
+export function computeDirectRoutes(input: {
+  readonly bindHost: string | undefined;
+  readonly port: number;
+  readonly deviceId: string;
+  readonly tailscaleHttpsBaseUrl: string | null;
+  readonly interfaces?: NetworkInterfacesMap;
+}): ReadonlyArray<string> {
+  return computeDirectOrigins(input).map((origin) => directRouteAt(origin, input.deviceId));
 }

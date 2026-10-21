@@ -90,6 +90,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       browserLoopbackTunnel: true,
       browserScreenshotTypes: true,
       commandRuns: true,
+      computerLinks: true,
     },
   };
 

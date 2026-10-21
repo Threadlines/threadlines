@@ -32,7 +32,8 @@ export interface SecurePipeHandle {
   readonly receive: (data: unknown) => void;
   /** Call when the device side closed. */
   readonly closed: () => void;
-  readonly close: (reason?: string) => void;
+  /** Ends the connection; `code` tells the device why (RELAY_CLOSE_CODE_ACCESS_REMOVED). */
+  readonly close: (reason?: string, code?: number) => void;
 }
 
 /** App frames buffered while the loopback socket opens. */
@@ -249,6 +250,6 @@ export function openSecurePipe(input: {
   return {
     receive,
     closed: () => close("The device disconnected."),
-    close: (reason) => close(reason),
+    close: (reason, code) => close(reason, code),
   };
 }

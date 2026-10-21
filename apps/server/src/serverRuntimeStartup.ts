@@ -29,6 +29,7 @@ import { ensureGeneralChatsProject } from "./orchestration/generalChats.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
+import { ComputerLinkReactors } from "./links/ComputerLinkReactors.ts";
 import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
 import { PullRequestAutomationWatcher } from "./orchestration/Services/PullRequestAutomationWatcher.ts";
 import { ThreadPullRequestLinker } from "./orchestration/Services/ThreadPullRequestLinker.ts";
@@ -331,6 +332,8 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
   const keybindings = yield* Keybindings;
   const orchestrationReactor = yield* OrchestrationReactor;
+  // Computer links, when this server has them (docs/design/fleet.md).
+  const computerLinkReactors = yield* Effect.serviceOption(ComputerLinkReactors);
   const providerSessionReaper = yield* ProviderSessionReaper;
   const threadAutoArchiveSweeper = yield* ThreadAutoArchiveSweeper;
   const pullRequestAutomationWatcher = yield* PullRequestAutomationWatcher;
@@ -392,6 +395,9 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
       "reactors.start",
       Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
+        if (Option.isSome(computerLinkReactors)) {
+          yield* computerLinkReactors.value.start().pipe(Scope.provide(reactorScope));
+        }
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
         yield* threadAutoArchiveSweeper.start().pipe(Scope.provide(reactorScope));
         yield* pullRequestAutomationWatcher.start().pipe(Scope.provide(reactorScope));

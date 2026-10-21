@@ -1,0 +1,492 @@
+# Fleet: linked computers, the rail, Fleet page and Scheduled tasks
+
+Status: plan rev 3 (Oct 20 2026). GPT-6.1 Sol reviewed rev 1 (18 findings) and rev 2 (8 of those partly open, 15 new). I checked every finding against the code; all held. Rev 2 and rev 3 fix them (see "Rev 2 changes" and "Rev 3 changes"). One decision is open for Will (see "Open decision").
+
+Mockups (approved by Will in chat, Oct 20): the Fleet graph with traveling dots, the threads-by-computer list, the Links section, and the sidebar rail (open, and hidden down to the rail). The visual rules from those mockups are written out below, so this doc stands on its own.
+
+## Why
+
+A T3 Code power user's review (x.com/tenobrus, Oct 19 2026) praised T3 for linking several computers and phones, agents starting and messaging threads, and multiple subscriptions. His big letdown: threads on different computers can't reach each other. T3 is building that now in open PRs (#21670-21673, #21824-21826). Nothing of it is merged. He also disliked T3's sidebar ("no good way to organize") and its auto-filing of quiet threads ("settling", our Wrapped).
+
+Threadlines has the same gap. Our server only knows itself (`environment/Services/ServerEnvironment.ts`). Saved computers and their secrets live only in the client. The thread tools are scoped to the caller's project on one server.
+
+This push makes your computers work as one fleet:
+
+1. **Computer links.** A computer's server keeps its own credential for another computer and talks to it directly, with no client in the middle.
+2. **Agents across computers.** `thread_start` and friends can target a linked computer. Reports come back into the parent like local ones.
+3. **Move a thread to another computer** (issue #48), over the same link.
+4. **The rail and the Fleet page.** A vertical icon rail replaces the top of the sidebar. Hiding the sidebar leaves the rail. A new Fleet page shows computers, providers and running work as a graph.
+5. **Sidebar organization.** Optional grouping by project or computer, and a switch to stop the 2-idle-day auto-wrap.
+6. **Scheduled tasks.** A Scheduled page and a per-computer scheduler that starts threads at set times, matching Claude Desktop scheduled tasks and Codex automations, for every agent.
+7. **Issue #38.** The working row says what is starting and where ("Starting Codex on Mac mini").
+
+Out of scope for this push (agreed with Will): rooms whose agents live on different computers.
+
+## Decisions already made by Will
+
+- Build all of it in this push, Scheduled included.
+- Fleet graph look:
+  - This computer sits in the center, and each computer is a node with a connection dot.
+  - Provider nodes hang off each computer, with a running count.
+  - Lines carry status (below), and a glowing dot travels along working lines.
+- The full icon rail: Threads, General Chats, Pull Requests, Fleet, Scheduled, Usage; Settings at the bottom.
+- Hide the sidebar = keep the rail. The rail shows needs-you and working counts.
+
+## Background running on Windows and Linux (decided Oct 20: opt-in setting, built in PR 3)
+
+**Keep running when the window closes, on Windows and Linux.** Closing the last window quits Threadlines on Windows and Linux (DesktopLifecycle.ts:369-378), and that stops the server. So links and scheduled tasks to a Windows computer only work while its app is open. macOS already keeps running.
+
+My recommendation: an opt-in setting, "Keep running in the background when the window closes", default off so today's behavior stays. When on:
+
+- closing the window hides it to the tray;
+- the tray menu gets Quit;
+- the quit prompts count background work.
+
+Claude Desktop's local scheduled tasks have the same limit ("only fires while the app is open"), so parity doesn't require it. Will chose the opt-in setting. User-facing copy for links and schedules says "while Threadlines is running on that computer". Settings › General gets the switch on Windows and Linux only.
+
+Quit prompts already count work by computer (PR #492), and they count background work and active schedules too. Quitting from the tray stops the server as today.
+
+## Rev 2 changes (from Sol's review)
+
+1. **Link authority is the host's, persisted before any session.** The invite's purpose is stored with the invite, then copied into the device row before a session is issued. Restart recovery uses that copy. The joiner's claimed `kind` never decides access.
+2. **Real fence.** Link-started threads get no Threadlines agent tools at all, and their ownership is carried in trusted events. The existing depth rule was not enough, since attached children can list and read other threads in their project.
+3. **Reactor ownership is partitioned.** Local child machinery skips remote requests; `RemoteChildReactor` owns them, including the cancellation checks that today treat a missing local child as cancelled.
+4. **B keeps a durable request ledger.** It records each incoming start and send, binds it to its message and turn, and reconciles at startup.
+5. **Durable cancellation** keyed by the request id, with tombstones on B and terminal outcomes for every request on the watch stream.
+6. **Windowless operation** is an open decision for Will (above), not an assumption.
+7. **Scheduler runs** are recorded as launch intents, inserted in the same transaction that advances the slot, then launched in resumable stages, with startup reconciliation.
+8. **Move** gets a freeze, prepare, commit and abort protocol with a transfer id, resumable on both sides.
+9. **Move's git manifest** is exact: HEAD SHA, bundle prerequisites, untracked files, a binary diff, and branch-collision rules.
+10. **Import** carries attachments and turn origins. Checkpoint reverts stop at the move boundary.
+11. **Agents are resolved on the destination** (B-local instance ids) for remote starts and moves.
+12. **Scheduled continuations** use `thread.follow-up.submit`. Runs are bound to their own message and turn, and never wrap newer work.
+13. **Run tools** attach to run threads on their own, and only where the driver supports Threadlines tools. Run status otherwise comes from turn events.
+14. **Cron** takes 5 fields (minute resolution) and must have a next occurrence when saved. Each task's errors stay with that task. Slots are UTC instants. DST and time-zone rules are written down.
+15. **#38 gets a real launch signal** from the one place the reactor actually starts a session. `starting` alone also covers warm sessions.
+16. **Rail geometry** is specified for macOS traffic lights, the fixed-position sidebar, Windows overlay controls and the phone.
+17. **Families stay with their parent.** Lineage keys are environment-scoped, and the machine filter can show a remote child on its own.
+18. **Waves re-planned** so no two parallel builders share a file. Every new UI is gated by server capabilities.
+
+## Rev 3 changes (Sol's re-check of rev 2)
+
+These override anything below that disagrees.
+
+1. **Moves go through the link's authority.**
+   - `off` refuses the move, `ask` waits for Allow on B ("Windows PC wants to move a thread here"), and `allowed` accepts it.
+   - The imported thread's runtime mode is capped at `link_max_runtime_mode`.
+   - An imported thread never starts a turn by itself: only a person using B sends its next message. That's why it can be an ordinary B thread once committed.
+2. **Move commit is atomic and the two outcomes exclude each other.**
+   - B imports into a hidden _prepared_ thread: the decider refuses every command on it, and clients never list it. One event (`thread.move.imported`) makes it visible.
+   - B persists the transfer as `prepared | committed | aborted`. Abort is refused after commit, and commit is refused after abort. An abort leaves a tombstone, so a late prepare or chunk is refused.
+   - A unfreezes only after B durably confirms the abort. When B can't be reached, A stays frozen with "Waiting for Mac mini".
+   - "Keep it here" is offered only once B confirms the abort, or once the link is removed. The second case warns that a copy may exist on B.
+3. **The B ledger stores the full request.** Each row holds the immutable payload: prompt or send text, launch config, parent metadata, and ids reserved at acceptance. Every pre-turn stage (create, worktree, setup, deliver) resumes idempotently from that row after a crash, approvals included.
+4. **The decider validates remote reports remotely.** `isStaleReport` (childThreadDecisions.ts:940-952), and every other report or request check that looks up a local child, takes the remote branch when `origin.environmentId` is set. That branch checks the parent's remote-child record and its epochs, at queue time, send time and restart.
+5. **A keeps remote children after their requests settle.** The parent's child state gains `remoteChildren: [{ environmentId, threadId, handle, title, attachmentEpoch, cachedStatus, updatedAt }]`, separate from `open` (settling removes open entries, childThreads.ts:292-302). `thread_read`, `thread_send`, `thread_stop`, family rows and report validation use it.
+6. **Cancels overtake.** Recording a cancel deletes any unsent start or send for that request from the outbox. The cancel is then sent at once, not queued behind an in-flight start. B serializes work per request id and re-checks the tombstone before every bootstrap stage.
+7. **Remote sends keep their origin, and turns bind explicitly.**
+   - B delivers a remote send with a new internal command `thread.remote-request.queue`, the child-side half of `thread.child.send`. It writes `message-sent` and `follow-up-queued` with a `fromThread` that carries `environmentId`. `thread.follow-up.submit` has no origin field (contracts orchestration.ts:2433), so it isn't used.
+   - The ledger binds the request's `turn_id` from `follow-up.send-queued`: the steered turn id when it steered, the new turn otherwise.
+   - Scheduled continuations bind the same way.
+8. **Move requires zero background tasks of both kinds.** `childHasLiveWork` lets `pendingBackgroundTaskCount: 1` through when `awaitedBackgroundTaskCount` is 0 (childThreadDecisions.ts:653). The move check requires both counts to be zero, and the decider checks it in the same decision as the freeze.
+9. **A scheduled run's intent snapshots its launch config** (prompt, project id and cwd, workspace, agent, modes, target) in the run row. Resuming reads only the snapshot, never the edited task.
+10. **Overlap counts every unfinished run.** The slot transaction counts the task's runs in `launching`, `queued` or `started` with a live turn, for the per-task rule and for the per-computer cap of 3.
+11. **Any checked-out branch is occupied.** On B, a branch checked out in any worktree, or existing at another SHA, is taken. The move picks `<branch>-from-<computer>`, with a number suffix when needed, and saves the choice in the transfer row so retries reuse it.
+12. **`startupPhase` clears when the wrapped `startSession` effect completes or fails**, guarded by a launch generation number. Codex signals readiness with `session/ready` → `session.state.changed` (CodexSessionRuntime.ts:2802), not `session.started`, so a per-event rule would miss it.
+13. **DST follows Effect.** Effect's cron resolves times compatibly (.repos/effect/packages/effect/src/internal/dateTime.ts:774,859). A nonexistent 02:30 becomes 03:30, and an ambiguous time takes the earlier instant. The docs and UI say exactly that.
+14. **The resize budget includes the rail.** The guard at AppSidebarLayout.tsx:123 subtracts the rail width as well, so the main pane keeps its 40 rem minimum.
+15. **Cross-computer lineage moves to PR 5.** PR 2 does grouping and the machine filter over today's local lineage, and makes keys environment-scoped where the data already exists. Remote parents and children in the sidebar are PR 5, after PR 1 ships the fields.
+
+## Part 1: Computer links
+
+### Model
+
+A link **A → B** means A's server is a paired device of B's server, with a new auth role `peer`. It lets agents on A use B, under B's per-link access setting. Links are directional. The client's single "Link" action creates both directions when it can.
+
+We reuse relay-v2 device pairing (`apps/server/src/relay/RelayHost.ts`) instead of building a new auth system:
+
+- B can already mint an invite, auto-approve a QR-style claim (RelayHost.ts:628-651) and issue a revocable 90-day sliding session.
+- It already pins keys, and it already accepts both the direct route (`/relay/direct/:deviceId`, LAN or Tailscale) and the relay fallback.
+- The Noise KK code in `packages/shared/src/relaySecure.ts` uses only `crypto.subtle` and runs in Node (`securePipe.test.ts`).
+- Links show up in B's device list, and revoking one there cuts it everywhere (RelayHost.ts:1238-1250).
+
+### Creating a link (one click)
+
+The client is connected to both A and B.
+
+1. Client → B: `links.createInvite`. B mints a `computer-link` invite (single use, 10 min TTL, auto-approve claim) and returns `{ hostId, relayOrigin, inviteId, inviteSecret, hostPublicKey, directRoutes, environmentId, label, expiresAt }`. B registers with the relay first if it never has.
+2. Client → A: `links.accept(invite)`. A's server claims it as a device (Node joiner, below). It stores its device keys in `ServerSecretStore` under `computer-link-<linkId>`, inserts a `computer_links` row, and connects once to confirm.
+3. The client repeats with roles swapped for B → A. If one direction fails, the UI says which and offers Retry.
+
+**Who may mint a link invite on B.** Today `relay.createInvite` is owner-only (ws.ts:2509-2514). A remote client (Will's Windows app connected to the Mac) is role `client` on B, so owner-only would make one-click linking impossible. `links.createInvite` is allowed for `owner` and `client`:
+
+- A `client` session can already run terminals and commands on B, and a `peer` session is strictly narrower.
+- The invite is single use with a 10-minute TTL.
+- A new inbound link defaults to **Ask first**, notifies B's owner clients, and appears in B's Fleet page and Connections device list with Remove.
+
+**Authority is the host's.**
+
+- Today the in-memory `localInvites` map (RelayHost.ts:243-257) holds the invite, and recovery calls `finishApproval` from a device row whose `kind` came from the joiner (RelayHost.ts:785-797, 935).
+- New: the invite record is persisted, with `purpose: device | computer-link` set by the host. `approveVerified` copies `grant: client | peer` from the verified invite into the device row in the same insert, before any session exists. `finishApproval` and restart recovery issue the session role from `row.grant` only.
+- Test: crash between inserting the device row and issuing its session, then restart → the session has the invite's role.
+
+### Server pieces (A side, outbound)
+
+- **Node joiner.** Move `openLink` and the socket core of `SecureRelaySocket` (apps/web/src/rpc/secureRelaySocket.ts) into `packages/shared`, with no DOM types (`CloseEvent`, `DOMException`, `location`). Keep a thin web wrapper. Also move the claim half of `startInviteClaim` (apps/web/src/environments/runtime/relayJoins.ts:303-343) into shared. Web keeps using the same code.
+- **Table `computer_links`** (new migration): `link_id, remote_environment_id, remote_label, remote_platform, relay_origin, host_id, device_id, host_public_key, direct_routes_json, state (active|revoked|failed), created_at, last_connected_at, last_error`.
+- **`ComputerLinkClient` service.**
+  - `withPeer(environmentId, effect)` opens or reuses a secure connection: direct routes first with the same 1.5 s race, then the relay.
+  - It builds an Effect RPC client for `PeerRpcGroup` over that connection. This is the plain-Effect core of apps/web/src/rpc/protocol.ts: `RpcClient.make` + `makeProtocolSocket`.
+  - Connections close after 2 minutes idle, and stay open while follow-up work is pending: open remote requests, unacked reports, and outbox items.
+  - Reconnects use capped exponential back-off.
+  - A status stream feeds `links.subscribe`.
+- **Revocation.** A peer connection refused with auth errors marks the link `revoked`. The UI shows it and offers Link again.
+
+### Server pieces (B side, inbound)
+
+- **Role `peer`.** Extend `AuthSessionRole` (contracts/auth.ts:73) to `owner | client | peer`, along with the signed claims (SessionCredentialService.ts:41-50) and `auth_sessions.role`.
+- **Separate endpoint.**
+  - `openDeviceSession` (RelayHost.ts:1028-1041) splices peer devices to a new loopback `/peer` WebSocket that serves **only** `PeerRpcGroup`.
+  - `/ws` refuses role `peer`, `/peer` refuses every other role, and every HTTP route (auth/http.ts, orchestration/http.ts and any other `/api`) refuses `peer`.
+  - The allowlist exists by construction, not by per-method checks.
+- **Per-link settings** live on the device row:
+  - `link_access`: `off | ask | allowed`, default `ask`.
+  - `link_max_runtime_mode`: defaults to B's default for new threads.
+- **Fence.**
+  - A thread started over a link carries `remoteOrigin { linkDeviceId, environmentId, environmentLabel, threadId, threadTitle }` in its `thread.create` event. Only the peer handler can set it; the Normalizer refuses it from clients, like the lineage fields today (Normalizer.ts:156-175).
+  - Threads with `remoteOrigin` get **no Threadlines agent tools**: no thread, room, schedule or invite tools. Tool attachment (ProviderCommandReactor.ts:994-1003) checks it. That closes the relay-through-a-child path: attached children can list and read other threads in their project (threadToolHandlers.ts:776, 822).
+  - A peer can only send to, stop, read and watch threads whose `remoteOrigin.linkDeviceId` is its own link.
+  - The runtime mode is the lower of what A asked for and `link_max_runtime_mode`.
+  - Honest limit: the fence governs Threadlines' own tools. What the agent can do on B's disk is governed by that runtime mode, which B controls.
+
+### `PeerRpcGroup` (packages/contracts/src/peerRpc.ts)
+
+| Method                | Does                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `peer.describe`       | B's descriptor, its ready agents with **B-local instance ids** (the `thread_agents` shape, usage summary included) and its projects (name, `RepositoryIdentity.canonicalKey`).                                                                                                                                                                       |
+| `peer.request.start`  | `{ requestId, parent: { environmentId, environmentLabel, threadId, threadTitle, handle }, projectKey, workspace: { kind: worktree, branch? } \| { kind: local }, title?, prompt, agent: { instanceId, model? }, runtimeMode, interactionMode, reportBack }` → `{ status: started \| awaiting_approval \| refused \| cancelled, threadId?, reason? }` |
+| `peer.request.send`   | `{ requestId, threadId, text }` → `{ status: queued \| refused \| cancelled }`                                                                                                                                                                                                                                                                       |
+| `peer.request.cancel` | `{ requestId }`. Works before the thread exists.                                                                                                                                                                                                                                                                                                     |
+| `peer.thread.stop`    | Stops the thread's session and detaches it from the remote parent.                                                                                                                                                                                                                                                                                   |
+| `peer.thread.read`    | Same output shape as `thread_read`.                                                                                                                                                                                                                                                                                                                  |
+| `peer.thread.list`    | Threads this link started, with status.                                                                                                                                                                                                                                                                                                              |
+| `peer.watch`          | A stream of request status changes, every terminal outcome (answered, failed, cancelled, denied, expired), and pending reports. On connect it replays everything not yet acked.                                                                                                                                                                      |
+| `peer.report.ack`     | `{ reportId }`: A has durably recorded the report.                                                                                                                                                                                                                                                                                                   |
+| `peer.move.*`         | The move protocol (Part 3).                                                                                                                                                                                                                                                                                                                          |
+| `peer.unlink`         | When A removes its outbound link, this revokes A's own session on B.                                                                                                                                                                                                                                                                                 |
+
+Every mutating method is idempotent by `(linkDeviceId, requestId)` or `(linkDeviceId, transferId)`.
+
+### Links RPC for clients (`WsRpcGroup`)
+
+`links.list`, `links.subscribe` (outbound links with state; inbound links with access and last use; pending incoming requests), `links.createInvite`, `links.accept`, `links.setAccess`, `links.remove`, `links.respondRequest`.
+
+### Capabilities
+
+The environment descriptor's `capabilities` gains `computerLinks`, `scheduledTasks` and `threadMove`. Clients hide link, schedule and move UI for servers that lack them. An older server on another computer keeps working as today.
+
+## Part 2: Agents across computers
+
+### Tools (A)
+
+- `thread_agents` adds `computers: [{ name, environmentId, reachable, agents: [{ instanceId, provider, models }] }]`, from cached `peer.describe` (5 min TTL, refreshed on use).
+- `thread_start` gains an optional `computer` (name or id).
+  - Unknown names are refused with the list of linked computers.
+  - The agent must name one of that computer's `instanceId`s. The default is the computer's default instance for the caller's provider kind, or else its default agent.
+  - The caller's own instance id is never sent: it means nothing on B (ProviderCommandReactor.ts:1048-1059).
+- `thread_list` includes remote children with their computer.
+- `thread_read`, `thread_send` and `thread_stop` work on remote children through the link. `thread_read` fails with a plain message when the computer is offline.
+- **Workspace on B.** B finds the project by A's `canonicalKey`, or refuses with "Mac mini doesn't have this project". For a worktree, B fetches and starts from `branch` when A's HEAD is pushed (A checks its upstream). Otherwise it starts from B's default branch, and the tool result says the caller's unpushed changes are not there.
+
+### Records and reactors on A (the parent's computer)
+
+- `ChildThreadLaunch` gains `target?: { environmentId, label }`. `OrchestrationChildRequest` gains `remote?: { environmentId, label, threadId: ThreadId \| null, status, cancelRequested: boolean }`. `ThreadMessageOrigin` gains optional `environmentId`; absent means this computer.
+- **Decider.** Remote variants of `thread.child.start`, `thread.child.send`, `thread.child-request.settle` and children-stop write **only the parent aggregate**. Today several of these write parent and child in one transaction (childThreadDecisions.ts:330-413, 457-539, 666-723).
+- **Ownership is partitioned.**
+  - `ChildThreadReactor` skips requests with `remote`. Today it sets up every `starting` request, and it cancels requests whose child is missing locally (ChildThreadReactor.ts:331-340, 448).
+  - `ProviderRuntimeIngestion.routeChildReport` ignores remote requests.
+  - The report-delivery cancellation check `isReportDeliveryCancelled` (ProviderCommandReactor.ts:830-846) uses the parent's remote request state for remote reports, not a local child lookup. It covers queued delivery and restart recovery too.
+- **`RemoteChildReactor`** owns remote requests:
+  1. **Outbox, in order per link.** Starts, sends and cancels are dispatched as `peer.request.*` in the order they were recorded, and each retries with its own requestId until B answers. A start's answer records `remote.threadId` and status.
+  2. **Watch.** While any remote request is open, or any report is unacked, `peer.watch` stays open. A report becomes the remote settle with the report text (`fromThread` origin with `environmentId`), then `peer.report.ack`. If the decider says that report id is already recorded, that counts as success, and the reactor acks it. Unacked reports are tracked even after the parent request closed.
+  3. **Terminal outcomes** (denied, expired, failed, cancelled) settle the parent request with a plain reply ("Mac mini didn't allow it").
+  4. **Stop and wrap.** Stopping or wrapping the parent raises the delivery epoch as today. It also records `cancelRequested` on every attached remote request and enqueues `peer.request.cancel`, plus `peer.thread.stop` once a thread id exists. An in-flight start that lands after Stop is cancelled by B's tombstone (below).
+  5. **Restart.** The reactor reloads open remote requests and the outbox, then re-attaches watches.
+
+### Records on B (the child's computer)
+
+- **Request ledger** `link_requests`: `link_device_id, request_id, kind (start|send), thread_id, message_id, turn_id, status (received|awaiting_approval|queued|running|awaiting_background|answered|failed|cancelled|denied|expired), report_id, report_text, delivered_at, created_at, updated_at`, unique on `(link_device_id, request_id)`.
+  - Inserting the row is the dedupe.
+  - A cancel that arrives first writes a `cancelled` tombstone, so a late start or send is refused.
+  - Incoming sends become `thread.follow-up.submit` with `fromThread` origin and the ledger's `message_id`. The answering turn is bound by message id, the way local children bind with `pendingMessageId` (childThreadDelivery.ts:101-170).
+  - Turn end (same rules as local children, including the 15 s background quiet period) writes `report_text` and `answered` **in the same transaction**. `peer.watch` emits it until acked.
+  - **Startup reconcile:** requests whose turn ended get their report; a request whose turn was cut off by the restart becomes `failed` with "interrupted by a restart on Mac mini"; `awaiting_approval` past 24 h becomes `expired`.
+- Start runs the staged `ThreadBootstrap` path (ThreadBootstrap.ts:461-709), with ids derived from `(linkDeviceId, requestId)`.
+- **Ask first.** A start under `ask` waits in the ledger as `awaiting_approval`. B's clients show it as a card on the Fleet page and a row in B's sidebar inbox: "Windows PC wants to start a thread: <title>", Allow / Deny. A shows "Waiting for Mac mini to allow it" in the parent's child list.
+- The child row on B reads "Started by <title> on Windows PC".
+
+### Client
+
+- The parent's child list (the option B family line) includes remote children. When the client is connected to B, the row is B's real thread and opens it. Otherwise it shows A's cached status.
+- Fleet draws cross-computer work on the line between the two computers.
+
+## Part 3: Move a thread (issue #48, v1)
+
+"Move to another computer" in the thread menu and the command palette lists the computers this computer links to. A dialog picks the computer and, when the thread's agent isn't available there, one of that computer's agents.
+
+**Who may move.** v1 refuses threads in a room, threads with attached children (local or remote), and threads with any live work. Live work uses the predicate behind `childHasLiveWork` (childThreadDecisions.ts:635): a running turn, queued messages, side turns, background work, pending approvals or questions.
+
+**Protocol** (transfer id `T`, resumable on both sides):
+
+1. **Freeze on A.** `thread.move.started { transferId, target, sourceSequence }`. From here the decider refuses turns, follow-ups, side turns, child operations and edits on that thread. The UI shows "Moving to Mac mini…" with Cancel.
+2. **Export on A.** A builds a manifest and bundle for the thread state at `sourceSequence`.
+   - Meta and messages, with each message's attachments (bytes and metadata) and turn and origin ids.
+   - The last N tool-activity summaries.
+   - **Git:**
+     - The exact `headSha` and branch name, or detached.
+     - A `git bundle` of `headSha` with its prerequisites, the merge base with the remote's default branch, or with its upstream when one exists.
+     - A tarball of untracked, non-ignored files.
+     - `git diff --binary HEAD` of tracked changes.
+     - Staged versus unstaged is not preserved: everything lands as working-tree changes, and the dialog says so.
+     - Refused: changed submodules, and changed Git LFS files.
+3. **Transfer.** `peer.move.prepare { T, manifest }`, then `peer.move.chunk { T, index, bytes }` in 256 KiB chunks (the relay caps messages at 1 MiB). B stages the chunks under its state folder, keyed by `T`. Chunks are idempotent, and resending after a reconnect continues from the last chunk B has.
+4. **Import on B.**
+   - Match the project by `canonicalKey`, or abort.
+   - Fetch the bundle and verify the prerequisites exist; abort if not.
+   - Create a new worktree at `headSha`. The branch is named after the source, or `<branch>-from-<computer>` when B already has that branch pointing elsewhere; a detached HEAD gets `moved/<thread-slug>`. Then apply the diff and unpack the untracked files.
+   - Import the thread with a new internal `thread.import` command:
+     - messages with remapped attachment ids, turn and origin ids, and deterministic event ids from `T`;
+     - the agent B resolved;
+     - `historySeedOwed: true`, so the next turn starts a **seeded** session (`ThreadContextSeedBuilder`), never A's resume cursor;
+     - `movedFrom { environmentId, label, threadId }`.
+   - The seed mentions the attachments by name, since seed entries are text only (contracts/provider.ts:85).
+5. **Commit.** B records `thread.move.imported { T }` and answers `committed`. A then records `thread.moved-away { T, environmentId, threadId }`. The thread is read-only on A, enforced by the decider, with a "Moved to Mac mini" banner and Open; the sidebar row points at the new location. A keeps its worktree until the user cleans it up.
+6. **Abort.** Cancel before commit, or any refusal, sends `peer.move.abort { T }`. B deletes the staging data and any half-made worktree; A records `thread.move.aborted` and unfreezes.
+7. **Recovery.** At startup:
+   - A resumes a frozen move: it re-sends from the last acked chunk, asks B for status, and commits or aborts.
+   - B resumes an import of a fully staged transfer, and deletes staging data older than 24 h that never committed.
+
+**Checkpoints.** Revert refs are local to A's repo, so turns from before the move can't be reverted on B. The thread shows a "Moved here" boundary in the timeline, and revert controls stop at it.
+
+v2 (carrying the provider's own session files) stays open on #48.
+
+## Part 4: The rail and the Fleet page
+
+### Rail
+
+- **Layout.** `AppSidebarLayout` gets a rail column (52 px wide, `--app-chrome-background`, a hairline `--border` on its right) to the left of the thread list.
+  - The list's fixed container (`ui/sidebar.tsx:299`, `fixed inset-y-0 left-0`) and its gap element move right by the rail width (a `--sidebar-rail-width` variable used by both).
+  - The list keeps `collapsible="offcanvas"`. Hiding it slides the list away, and the rail stays.
+- **macOS.** The traffic lights span about x 16-70 px at y 18, wider than the rail. The top `--workspace-topbar-height` strip stays a drag region across rail and list, and the rail's first button starts below it. `--workspace-controls-left` keeps the horizontal clearance for the list header row.
+- **Windows and Linux.** The overlay controls sit at the top right, so the rail starts at the top. The floating `SidebarControl` toggle moves into the rail's top slot on every platform.
+- **Order:** Threads (inbox), General Chats, Pull Requests (hidden when no environment supports PRs, as today), Fleet, Scheduled, Usage, then a spacer, then Settings. Fleet and Scheduled are hidden when no connected server has the capability.
+- **Buttons.** 34 px plain buttons (the toolbar rule). Selected is a soft `--sidebar-accent` fill with a foreground icon. Each has a tooltip with its name and shortcut.
+- **Threads badge.** An amber count of needs-you threads. When the list is hidden, a blue dot with the working count sits under the Threads icon, and a New thread button sits at the top.
+- **Moved out of the list:** General Chats and Pull Requests rows leave the list, so threads start higher. The Usage meter leaves the footer, and Settings moves to the rail. Update pills and the version tag stay in the list footer.
+- **Collapse state** persists in `uiStateStore`. Today it never does: the `sidebar_state` cookie is never read. New keybinding command `sidebar.toggle`, default mod+B unless taken (check `packages/shared/src/keybindings.ts`).
+- **Phone.** The Sheet keeps today's layout, and the destinations become one horizontal row of the same icons under the sheet header. `PageTitlebar` and the other sheet triggers are unchanged.
+- **Settings route.** The list column shows `SettingsSidebarNav` as today, and the rail shows Settings selected.
+- Update the "Exceptions" in `docs/design/design-language.md`: the rail is part of the sidebar, and the inbox list itself keeps its design.
+
+### Fleet page (`/fleet`)
+
+- Page title "Fleet", with a one-line summary ("3 working and 1 needs you, on 2 computers. Mac mini is offline.").
+- **Graph**, in a quiet group (`--group` fill, 10 px radius):
+  - **Nodes.** This computer sits in the center. Connected computers and this computer's linked phones and tablets go around it, placed deterministically by label. Provider nodes fan outward from each computer, one per provider with live threads. At most 8 computers are drawn; more go into the list only.
+  - **Computer node.**
+    - A device glyph (laptop, monitor, server, phone).
+    - A dot for **connection**: `--success` connected, `--warning` reconnecting, `--muted-foreground` offline.
+    - A ring for **work**: dot blue `--primary-graph` working, amber needs you, neutral otherwise.
+    - A name, and a mono sub-line ("This computer", "On your network", "Through the relay", "Offline · 2h ago").
+  - **Provider node.** The provider's own mark, with a count badge (blue working, amber needs you).
+  - **Line styles.** Working is a blue dotted line plus a traveling dot. Needs you is amber solid and still. Connected is grey solid. Reconnecting is amber dashed. Offline is grey dashed and faint.
+  - **Line meaning.**
+    - Center → computer is this app's connection. It counts as working when that computer has running threads.
+    - A line between two other computers is a link between them (added in PR 5).
+    - Cross-computer work (a parent on one computer, its child on another) makes the line between those two computers working, with dots traveling from the asker to the worker.
+- **Traveling dots, built for performance** (measured, see Appendix):
+  - The dots are HTML elements over the SVG. They animate only `transform` and `opacity` with CSS keyframes, with the curve pre-sampled into about 18 translate keyframes at ease-in-out spacing.
+  - The glow is a static radial gradient. The trail is two delayed copies at lower opacity and scale. The arrival ring is scale plus opacity.
+  - Never animate SVG attributes, dash offsets, filters, shadows or motion paths.
+  - Lines take turns with staggered delays: a 3.2 s cycle, travelling for 50 % of it.
+  - Animations pause (`animation-play-state`) when the window is unfocused or the document hidden. There is none at all under reduced motion, and at most 8 lines move at once.
+  - When a child's report arrives, one dot travels back from the worker to the asker, once.
+- **Below the graph: threads by computer.** Each computer shows its name, mono location and counts. Rows show a status dot, title, project, the provider mark with the model, and status. Idle and offline computers are summed up in one muted line. Clicking a computer in the graph filters the list.
+- **Links section** (PR 5). One row per known computer: its name, "Linked Oct 20 · on your network" or "Not linked", the inbound access dropdown (Allowed / Ask first / Off), and Link and Remove. Pending incoming requests show here as cards with Allow / Deny.
+- **One computer.** The graph shows this computer and its providers, with a line under it, "Link another computer or your phone to see them here", and a Connect button that opens the existing Connect dialog.
+- **Data:**
+  - saved computers and their connection state: `useSavedEnvironmentRegistryStore` / `useSavedEnvironmentRuntimeStore` (catalog.ts:121,351);
+  - the primary descriptor;
+  - `environmentStateById` thread summaries (store.ts), `resolveThreadStatusPill` and lineage;
+  - `links.subscribe` per environment (PR 5);
+  - linked devices from `subscribeAuthAccess`, lifted out of ConnectionsSettings.tsx:1935-1975 into a shared hook (owner only, hidden for non-owners).
+
+### Entry points (every one)
+
+- **Command palette:** Fleet, Scheduled, General Chats (missing today), and Move to another computer (PR 4).
+- **Keybindings:** `navigate.fleet`, `navigate.scheduled`, `sidebar.toggle`.
+- **Desktop:** Fleet and Scheduled in the application menu ("Go") and the tray menu.
+- **The rail.**
+
+## Part 5: Sidebar organization
+
+- **Lineage keys are environment-scoped.** A parent and its child may live on different computers. `attachedParentKeyOf` (Sidebar.tsx:255-262) assumes the parent shares the child's environment, so it takes the parent's environment from `remoteOrigin` / `remote`.
+- **Families stay with their parent.** A child on another computer is nested under its parent with a small computer glyph.
+- **Machine filter.** When it hides the parent's computer but shows the child's, the child appears as its own row with "from <parent> on <computer>". Group counts include nested children.
+- **Group by.** A client setting `sidebarGrouping: none | project | computer`, default `none`, picked in the scope menu (ProjectScopeMenu) under a "Group" section.
+  - Families are grouped by their parent's project or computer, after families are built (Sidebar.tsx:1011-1051).
+  - Groups get header rows (project favicon or computer glyph, name, live counts), collapsible and remembered in `uiStateStore`.
+  - Pins sort first inside their group, and Wrapped stays one flat section.
+- **Wrap up idle threads.** A client setting `wrapUpIdleThreads`, default on, shown as a row in Settings › Threads › "When a thread is done", next to "Wrap up merged threads". Off passes `autoDoneAfterDays: null` (Sidebar.tsx:776; Sidebar.logic.ts:813 already handles null). Restore defaults lists it.
+
+## Part 6: Scheduled tasks
+
+Parity sources: Claude Desktop scheduled tasks (code.claude.com/docs/en/desktop-scheduled-tasks) and Codex automations (learn.chatgpt.com/docs/automations). Ours adds the choice of computer and works with every agent.
+
+### Model (server, per computer)
+
+Schedules are configuration, not thread history, so they live in their own tables with a repository, RPC and a stream, like settings. Runs create ordinary threads through orchestration commands. Exactly-once comes from the run table and staged launches, not from the event store.
+
+- **`scheduled_tasks`:** `id, name, prompt, project_id, workspace (local|worktree), agent_json ({instanceId, model}), runtime_mode, interaction_mode, cadence_json, timezone, target_json ({kind:new_thread} | {kind:thread, threadId}), status (active|paused|error), error, created_at, updated_at, next_slot_utc`.
+- **`scheduled_runs`:** `task_id, slot_utc, status (launching|started|skipped|failed|interrupted|finished|nothing_to_report), stage, reason, thread_id, message_id, turn_id, catch_up, created_at`, unique on `(task_id, slot_utc)`.
+- **Cadence:** `manual | hourly | daily{time} | weekdays{time} | weekly{weekday,time} | custom{cron}`.
+  - Presets compile to 5-field cron. Custom accepts 5 fields only (minute resolution), refusing the seconds field `effect/Cron` would allow.
+  - Saving requires `Cron.next` to find an occurrence within 366 days. Parse and next both run in a `try` at save time and at every tick, so one bad task can only fail itself (status `error` with the reason).
+- **Time.**
+  - A slot is the UTC instant of a cron occurrence evaluated in the task's `timezone`. The timezone is stored on the task: the computer's zone at creation, editable.
+  - A wall time that doesn't exist on a DST spring-forward day fires at the next valid minute; a repeated fall-back time fires once (the first).
+  - If the computer's zone changes, tasks keep their stored zone, and the UI names it when it differs from the viewer's.
+
+### Scheduler (`ScheduledTaskReactor`)
+
+- **Tick** every 30 s (`Schedule.spaced`), wired like `ThreadAutoArchiveSweeper`.
+- **Due slots.** For each active task with `next_slot_utc` ≤ now, one transaction inserts the `scheduled_runs` row (`launching`, or `skipped` with its reason) and advances `next_slot_utc`. When several slots passed, only the most recent is considered, which is the catch-up rule.
+  - Skip reason "the previous run is still working": the task's last run's turn is still live.
+  - Skip reason "3 scheduled runs were already working": over the per-computer cap of 3.
+- **Launch.** Each `launching` row runs the staged `ThreadBootstrap` sequence (create, worktree, setup, turn), with command ids derived from `(taskId, slotUtc, stage)`, and records `stage` after each step. "Once" means one launch per slot.
+  - The run thread's first message carries a short preamble: the task name, and, where the run tool exists, "If there is nothing to report, call scheduled_run_finish with nothing_to_report".
+- **Continue in a thread.** `thread.follow-up.submit` on the target thread, which steers or queues like any follow-up (decider.ts:331). The run records its `message_id`, and its turn is bound when that message's turn starts.
+- **Startup reconcile.** `launching` rows resume from their stage. A started run whose turn was cut off by the restart becomes `interrupted`. A run whose turn ended becomes `finished`.
+- **Missed runs.** At startup, and when a tick sees a gap over 90 s (sleep), every task with missed slots in the last 7 days gets one catch-up run for the most recent missed slot (`catch_up: true`). The older slots are recorded as one `skipped` row: "the computer was off or asleep".
+- **Approvals.** Runs use the task's access level. A run that needs approval waits in the inbox like any thread ("needs you").
+
+### Agent tools
+
+- **`scheduled_run_finish { nothing_to_report: boolean, summary? }`.**
+  - It is attached to run threads on its own, whatever the "Agents can start threads" setting, and only for drivers that take Threadlines tools.
+  - ACP agents get it only when they declare HTTP MCP support (AcpAdapter.ts:1519). Each driver records its decision in the PR.
+  - It is accepted only from the run's own turn.
+  - `nothing_to_report` marks the run. It wraps and marks the thread seen only for new-thread runs, never a continued thread.
+  - Without the tool, a run's status comes from its turn ending (`finished` or `failed`).
+- **`schedule_list`, `schedule_create`, `schedule_update`** (pause and resume included) follow the "Agents can start threads" setting:
+  - off hides them;
+  - ask shows an approval card in the thread (the child-thread approval card gains a schedule kind);
+  - auto applies them.
+
+  Threads with `remoteOrigin` never get them.
+
+### UI
+
+- **`/scheduled` page.** Tasks from every connected computer that has `scheduledTasks`, grouped by computer. Each row shows the name, cadence ("Weekdays at 9:00"), project, agent, next run, last run status and an Active switch. "New task" is the page's one primary button.
+- **Form:**
+  - Name and Instructions.
+  - Computer, which decides the server the task lives on.
+  - Project, and "Runs in": Local checkout or New worktree.
+  - Agent, model and reasoning, using the existing model picker against that computer's agents.
+  - Access, using the composer's access levels.
+  - Schedule: Manual, Hourly, Daily, Weekdays, Weekly or Custom, with time and day pickers, and a cron field plus a "next runs" preview for Custom.
+  - Each run: New thread or Continue in a thread.
+- **Detail view.**
+  - Run history: started, skipped with the reason, nothing to report, interrupted, each with a link to its thread.
+  - Run now, Edit and Pause.
+  - Delete, with "Also archive its run threads".
+- **Inbox.** Run threads are ordinary inbox threads, with a clock glyph and "Scheduled · <task>" on their top line.
+- **Keep awake.** A desktop setting, "Keep this computer awake for scheduled tasks" (default off). Electron's `powerSaveBlocker` `prevent-app-suspension` holds while this computer has an active task that isn't manual.
+
+## Part 7: Startup label (#38)
+
+`starting` alone isn't enough. The decider sets it on every turn whose session isn't `running`, including warm `ready` sessions (decider.ts:2179-2215), and the reactor then reuses the live runtime (ProviderCommandReactor.ts:1373-1383).
+
+- **Launch signal.** The reactor's one start path, `startProviderSession` (ProviderCommandReactor.ts:1162-1195), runs only when a session is actually started or restarted. There it records `thread.session-set` with a new optional `startupPhase: "launching"` and the instance id. The phase clears on `session.started` or an error. This covers every driver, ACP included, from one place.
+- **Working row.** It says "Starting <instance display name>" during `launching` and "Preparing turn" otherwise. For a thread on another computer: "Starting Codex on Mac mini".
+- **30 s notice.** It names the phase: "Codex is taking a while to start", or the current "Preparing this turn is taking longer than usual."
+- **Tests:** a cold first turn, a warm turn (no launching), a resume after restart, and a provider switch.
+
+## Pull requests, waves and file ownership
+
+| PR  | Branch                 | Contents                                                                                                                                                                                                                                                                       | Needs merged first                                 |
+| --- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| 1   | `feat/computer-links`  | Parts 1-2: shared secure socket and joiner, persisted invite purpose, the `peer` role and endpoint, `computer_links`, `ComputerLinkClient`, `PeerRpcGroup` (minus move), links RPC, capability flags, remote requests on both sides, the B ledger, tool changes and the fence. | none                                               |
+| 2   | `feat/fleet-rail`      | Parts 4-5 minus the Links section and minus cross-computer lineage. The graph uses client connections and today's local lineage only.                                                                                                                                          | none                                               |
+| 3   | `feat/scheduled-tasks` | Part 6, plus the Windows/Linux "keep running in the background" setting.                                                                                                                                                                                                       | 1, 2                                               |
+| 5   | `feat/fleet-links-ui`  | The Links section, incoming-request cards and inbox rows, link lines between computers, cross-computer lineage in the sidebar (remote parents and children, the family line, machine-filter orphans, grouping placement) and cross-computer work lines in the graph.           | 1, 2                                               |
+| 4   | `feat/move-thread`     | Part 3.                                                                                                                                                                                                                                                                        | 1, and 3 if both touch `ProviderCommandReactor.ts` |
+| 6   | `fix/startup-label`    | Part 7.                                                                                                                                                                                                                                                                        | 4                                                  |
+
+- **Wave 1:** PRs 1 and 2 in parallel. PR 1 owns `apps/server`, `packages/contracts` (except `settings.ts` and `keybindings.ts`), `packages/shared/src/relay*` and the new secure socket, plus `apps/web/src/rpc/secureRelaySocket.ts` and `relayJoins.ts`. PR 2 owns `apps/web/src/components/**` and routes, `packages/contracts/src/settings.ts` and `keybindings.ts`, `packages/shared/src/keybindings.ts`, `apps/desktop` menus, and `docs/design/design-language.md`.
+- **Wave 2:** PRs 3 and 5. PR 3 owns its new server files, `ProviderCommandReactor.ts` (tool attachment) and `McpRoomServer.ts`, the Scheduled page, and its palette, rail and settings entries. PR 5 owns `apps/web/src/components/fleet/**` and the sidebar family and inbox files. Where both need the same file, the PR that is second edits it after the first merges.
+- **Wave 3:** PR 4, then PR 6 (both touch `ProviderCommandReactor.ts`).
+
+## Tests (focused)
+
+- **Peer role and authority.**
+  - A `peer` session is refused on `/ws` and on HTTP; `/peer` serves only peer methods; a client session is refused on `/peer`.
+  - A crash between the device insert and session issue keeps the invite's grant.
+- **Links.** Create and accept end to end between two in-process servers over the direct route. Revoking on B makes A's link `revoked`.
+- **Fence.**
+  - A peer can't read, send to or stop a thread its link didn't start.
+  - A thread with `remoteOrigin` gets no Threadlines tools.
+  - Runtime mode is capped at `link_max_runtime_mode`.
+- **Remote requests.**
+  - Start is idempotent by requestId.
+  - A send binds to its own turn.
+  - B restarts mid-turn → `failed` report.
+  - B restarts after the turn → the report is still delivered.
+  - A restarts after recording but before acking → no duplicate, ack sent.
+  - Cancel before start, or while awaiting approval → B refuses the late start.
+  - A stale epoch drops the report.
+  - Stop reaches B.
+  - Denied and expired requests settle the parent.
+- **Move.**
+  - Round trip with commits not on the remote, untracked files, a binary change and a branch collision.
+  - Freeze refuses new turns.
+  - Abort unfreezes.
+  - A crash at each stage resumes or aborts cleanly.
+  - B's next turn is seeded.
+  - Revert stops at the boundary.
+- **Scheduler.**
+  - Next slot per preset and zone, including both DST edges.
+  - Custom cron with seconds is refused, and one with no next occurrence is refused.
+  - Exactly one run per slot across a crash at each stage.
+  - Skip reasons; one catch-up for many missed slots.
+  - `scheduled_run_finish` is refused from a newer turn; continuation runs never wrap.
+- **Startup label.** Cold, warm, resume and provider switch.
+- **Web.**
+  - The rail renders, collapses to the rail with counts, and clears the macOS lights (geometry asserted).
+  - Group by project and by computer, with a cross-computer family.
+  - The wrap-idle switch.
+  - Fleet statuses from fixture stores.
+  - Capability gating hides Fleet and Scheduled items for old servers.
+  - Scheduled form validation.
+
+## Verification before calling it done
+
+- `vp fmt`, `vp lint`, `vp run typecheck`, the tests of each touched package, and the web browser suite for PRs 2, 3 and 5.
+- **Live:**
+  - Two throwaway servers in temp homes (the `threadlines-isolated-verify-stack` recipe), linked over the direct route and over a local relay. A Codex parent on one starts a child on the other, gets the report, sends a follow-up and stops it. Kill each server mid-request once.
+  - A scheduled run with a 1-minute custom cron; a sleep simulated with a clock jump.
+- **Fleet animation cost in the real Electron app:** GPU process CPU via `app.getAppMetrics()` with the Fleet page open vs closed, on a 120 Hz screen.
+- Light and dark screenshots of the rail, Fleet and Scheduled.
+
+## Appendix: animation cost
+
+Measured Oct 20 in headless Chromium at 60 fps, with 3 moving lines.
+
+| Style                                       | Raster tasks / s | Main-thread ms / s |
+| ------------------------------------------- | ---------------- | ------------------ |
+| Nothing moving                              | 0                | 0.2                |
+| HTML overlay, transform + opacity keyframes | 0                | 1.1                |
+| SVG dash offset, `steps(6)`                 | 5                | 21                 |
+| SVG dash offset, smooth                     | 60               | 31                 |
+| rAF script moving SVG circles               | 60               | 35                 |
+| CSS `offset-path` / `offset-distance`       | 60               | 38                 |

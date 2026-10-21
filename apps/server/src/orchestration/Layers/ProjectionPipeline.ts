@@ -572,6 +572,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             parentThreadId: event.payload.parentThreadId ?? null,
             parentTurnId: event.payload.parentTurnId ?? null,
             attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
+            remoteOrigin: event.payload.remoteOrigin ?? null,
             effectiveCwd: null,
             effectiveCwdSource: null,
             goal: null,
@@ -809,7 +810,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.child-request-settled":
         case "thread.child-notes-delivered":
         case "thread.child-deliveries-cancelled":
-        case "thread.child-requests-reset": {
+        case "thread.child-requests-reset":
+        case "thread.remote-child-updated":
+        case "thread.remote-cancel-queued":
+        case "thread.remote-cancels-delivered": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
@@ -828,7 +832,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     ? childRequestStateOn.notesDelivered(state, event.payload.requestIds)
                     : event.type === "thread.child-deliveries-cancelled"
                       ? childRequestStateOn.deliveriesCancelled(state, event.payload.deliveryEpoch)
-                      : childRequestStateOn.reset(state);
+                      : event.type === "thread.remote-child-updated"
+                        ? childRequestStateOn.remoteChildUpdated(state, event.payload.child)
+                        : event.type === "thread.remote-cancel-queued"
+                          ? childRequestStateOn.remoteCancelQueued(state, event.payload.cancel)
+                          : event.type === "thread.remote-cancels-delivered"
+                            ? childRequestStateOn.remoteCancelsDelivered(
+                                state,
+                                event.payload.requestIds,
+                              )
+                            : childRequestStateOn.reset(state);
           if (childRequests !== state) {
             yield* projectionThreadRepository.upsert({ ...existingRow.value, childRequests });
           }

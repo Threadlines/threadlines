@@ -70,8 +70,18 @@ export const ServerAuthSessionMethod = Schema.Literals([
 ]);
 export type ServerAuthSessionMethod = typeof ServerAuthSessionMethod.Type;
 
-export const AuthSessionRole = Schema.Literals(["owner", "client"]);
+/**
+ * Who a session belongs to: the computer's `owner`, a paired `client` app,
+ * or a `peer`, another computer's Threadlines server linked to this one
+ * (docs/design/fleet.md). A peer session only ever reaches the `/peer`
+ * endpoint; `/ws` and every HTTP route refuse it.
+ */
+export const AuthSessionRole = Schema.Literals(["owner", "client", "peer"]);
 export type AuthSessionRole = typeof AuthSessionRole.Type;
+
+/** The roles a client app session can have: never `peer`. */
+export const AuthClientRole = Schema.Literals(["owner", "client"]);
+export type AuthClientRole = typeof AuthClientRole.Type;
 
 /**
  * Server-advertised auth capabilities for a specific execution environment.
@@ -110,7 +120,7 @@ const AuthIsoDateTime = Schema.DateTimeUtcFromString;
 
 export const AuthBootstrapResult = Schema.Struct({
   authenticated: Schema.Literal(true),
-  role: AuthSessionRole,
+  role: AuthClientRole,
   sessionMethod: ServerAuthSessionMethod,
   expiresAt: AuthIsoDateTime,
 });
@@ -118,7 +128,7 @@ export type AuthBootstrapResult = typeof AuthBootstrapResult.Type;
 
 export const AuthBearerBootstrapResult = Schema.Struct({
   authenticated: Schema.Literal(true),
-  role: AuthSessionRole,
+  role: AuthClientRole,
   sessionMethod: Schema.Literal("bearer-session-token"),
   expiresAt: AuthIsoDateTime,
   sessionToken: TrimmedNonEmptyString,
@@ -142,7 +152,7 @@ export type AuthPairingCredentialResult = typeof AuthPairingCredentialResult.Typ
 export const AuthPairingLink = Schema.Struct({
   id: TrimmedNonEmptyString,
   credential: TrimmedNonEmptyString,
-  role: AuthSessionRole,
+  role: AuthClientRole,
   subject: TrimmedNonEmptyString,
   label: Schema.optionalKey(TrimmedNonEmptyString),
   createdAt: AuthIsoDateTime,
@@ -262,7 +272,7 @@ export type AuthCreatePairingCredentialInput = typeof AuthCreatePairingCredentia
 export const AuthSessionState = Schema.Struct({
   authenticated: Schema.Boolean,
   auth: ServerAuthDescriptor,
-  role: Schema.optionalKey(AuthSessionRole),
+  role: Schema.optionalKey(AuthClientRole),
   sessionMethod: Schema.optionalKey(ServerAuthSessionMethod),
   expiresAt: Schema.optionalKey(AuthIsoDateTime),
 });

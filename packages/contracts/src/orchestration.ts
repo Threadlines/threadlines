@@ -16,6 +16,7 @@ import {
   CommandId,
   CommandRequestId,
   CommandRunId,
+  EnvironmentId,
   EventId,
   IsoDateTime,
   MessageId,
@@ -575,8 +576,29 @@ export const ThreadMessageOrigin = Schema.Struct({
   kind: Schema.Literals(["request", "report"]),
   deliveryEpoch: Schema.optional(NonNegativeInt),
   attachmentEpoch: Schema.optional(NonNegativeInt),
+  /**
+   * The computer `threadId` lives on, when it is another one (a linked
+   * computer, docs/design/fleet.md). Absent: this computer.
+   */
+  environmentId: Schema.optional(EnvironmentId),
 });
 export type ThreadMessageOrigin = typeof ThreadMessageOrigin.Type;
+
+/**
+ * A thread another computer's agent started here over a computer link
+ * (docs/design/fleet.md, "Fence"): which link asked, and the asking thread on
+ * that computer. Set once, at creation, and only by the server's link
+ * handler; such a thread gets no Threadlines agent tools.
+ */
+export const ThreadRemoteOrigin = Schema.Struct({
+  /** The asking computer's device id on this server (its link). */
+  linkDeviceId: TrimmedNonEmptyString,
+  environmentId: EnvironmentId,
+  environmentLabel: TrimmedNonEmptyString,
+  threadId: ThreadId,
+  threadTitle: TrimmedNonEmptyString,
+});
+export type ThreadRemoteOrigin = typeof ThreadRemoteOrigin.Type;
 
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
@@ -1568,8 +1590,27 @@ export const ChildThreadWorkspace = Schema.Union([
     baseRef: TrimmedNonEmptyString,
   }),
   Schema.Struct({ kind: Schema.Literal("project_folder") }),
+  /**
+   * A child on a linked computer (ChildThreadLaunch.target): that computer
+   * finds the project by `projectKey` (RepositoryIdentity.canonicalKey) and
+   * works in a new worktree, starting from `branch` when that computer can
+   * fetch it, or in its project folder.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("remote"),
+    projectKey: TrimmedNonEmptyString,
+    checkout: Schema.Literals(["worktree", "local"]),
+    branch: Schema.optional(TrimmedNonEmptyString),
+  }),
 ]);
 export type ChildThreadWorkspace = typeof ChildThreadWorkspace.Type;
+
+/** The linked computer a child runs on (docs/design/fleet.md, Part 2). */
+export const ChildThreadTarget = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+});
+export type ChildThreadTarget = typeof ChildThreadTarget.Type;
 
 /**
  * Everything it takes to set up a child, saved with its request when it is
@@ -1586,8 +1627,77 @@ export const ChildThreadLaunch = Schema.Struct({
   reportBack: Schema.Boolean,
   runSetup: Schema.Boolean,
   workspace: ChildThreadWorkspace,
+  /**
+   * A linked computer to start it on, instead of this one. `modelSelection`
+   * then names one of that computer's own agents (its instance id).
+   */
+  target: Schema.optional(ChildThreadTarget),
 });
 export type ChildThreadLaunch = typeof ChildThreadLaunch.Type;
+
+/**
+ * A request whose child is on a linked computer: how far that computer has
+ * it. `sending` until it recorded the request (the outbox resends it until
+ * then), `accepted` once it did, `awaiting_approval` while its user decides
+ * (its link is set to ask first). Stop or a wrap settles the request here at
+ * once; the cancel that computer is still owed waits in
+ * OrchestrationChildRequestState.remoteCancels.
+ */
+export const RemoteChildRequestStatus = Schema.Literals([
+  "sending",
+  "accepted",
+  "awaiting_approval",
+]);
+export type RemoteChildRequestStatus = typeof RemoteChildRequestStatus.Type;
+
+export const RemoteChildRequest = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+  /** The thread on that computer, once it said so (a send names it from the start). */
+  threadId: Schema.NullOr(ThreadId),
+  status: RemoteChildRequestStatus,
+});
+export type RemoteChildRequest = typeof RemoteChildRequest.Type;
+
+/**
+ * A child on a linked computer, kept on its parent after its requests settle
+ * (settling removes open requests): thread_read, thread_send, thread_stop and
+ * report checks use it. `attachmentEpoch` moves when the parent stops it, so
+ * an answer it gave before is never delivered. `cachedStatus` is the last
+ * status that computer reported, for when it can't be reached.
+ */
+export const RemoteChildThread = Schema.Struct({
+  environmentId: EnvironmentId,
+  /** The computer's name, as last known. */
+  label: TrimmedNonEmptyString,
+  threadId: ThreadId,
+  /** The asking agent's name, as that computer shows it ("Started by Codex"). */
+  handle: TrimmedNonEmptyString,
+  title: TrimmedNonEmptyString,
+  attachmentEpoch: NonNegativeInt,
+  cachedStatus: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+export type RemoteChildThread = typeof RemoteChildThread.Type;
+
+/**
+ * Something still owed to a linked computer, in the parent's outbox: drop a
+ * request (`cancelRequest`, Stop, a wrap, thread_stop), stop a child's
+ * session there (`stopThread`), or both. Recorded in the same decision that
+ * gave up on the request, removed once that computer confirmed it. A stop
+ * with no request to cancel is keyed by a `stop:` id. With both, that
+ * computer finds the thread from the request, so the stop holds even when
+ * `threadId` is still null here (the start's answer never arrived).
+ */
+export const RemoteChildCancel = Schema.Struct({
+  requestId: ChildRequestId,
+  environmentId: EnvironmentId,
+  threadId: Schema.NullOr(ThreadId),
+  cancelRequest: Schema.Boolean,
+  stopThread: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+export type RemoteChildCancel = typeof RemoteChildCancel.Type;
 
 export const OrchestrationChildRequest = Schema.Struct({
   requestId: ChildRequestId,
@@ -1607,6 +1717,14 @@ export const OrchestrationChildRequest = Schema.Struct({
   launch: Schema.optional(ChildThreadLaunch),
   /** `awaiting_background`: the finished turn whose last answer stands so far. */
   candidateTurnId: Schema.optional(TurnId),
+  /** The child is on a linked computer: see RemoteChildRequest. */
+  remote: Schema.optional(RemoteChildRequest),
+  /**
+   * A `send` to a child on a linked computer: the message itself, kept so it
+   * can go out again until that computer has it (a local send writes it
+   * into the child instead).
+   */
+  text: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
 export type OrchestrationChildRequest = typeof OrchestrationChildRequest.Type;
@@ -1636,6 +1754,10 @@ export const OrchestrationChildRequestState = Schema.Struct({
   startsSinceUser: NonNegativeInt,
   sendsSinceUser: NonNegativeInt,
   pendingNotes: Schema.Array(ChildRequestNote),
+  /** Children on linked computers, kept after their requests settle. Absent: none. */
+  remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
+  /** Cancels still owed to linked computers, oldest first. Absent: none. */
+  remoteCancels: Schema.optional(Schema.Array(RemoteChildCancel)),
 });
 export type OrchestrationChildRequestState = typeof OrchestrationChildRequestState.Type;
 
@@ -1774,6 +1896,8 @@ export const OrchestrationThread = Schema.Struct({
   archivedWithParentAt: Schema.NullOr(IsoDateTime).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** See OrchestrationThreadShell.remoteOrigin. */
+  remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
   /** Child threads this thread started: open requests, limits and notes. */
   childRequests: OrchestrationChildRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_CHILD_REQUEST_STATE)),
@@ -1958,6 +2082,11 @@ export const OrchestrationThreadShell = Schema.Struct({
   /** On a parent: threads its agent asked to start are waiting for the user's yes. */
   pendingChildApproval: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
+   * Started by an agent on a linked computer (ThreadRemoteOrigin): "Started
+   * by <thread> on <computer>". Absent or null: started here.
+   */
+  remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /**
    * The user's last explicit Mark done / Reopen for this thread, or null if
    * they never gave one. Deliberately does not move `updatedAt`: the inbox
    * weighs this stamp against real work activity, so filing a thread must not
@@ -2141,6 +2270,8 @@ const ThreadCreateLineageFields = {
   /** The parent's turn whose agent started it. */
   parentTurnId: Schema.optional(TurnId),
   attachedToParent: Schema.optional(Schema.Boolean),
+  /** Started over a computer link: see ThreadRemoteOrigin. Only the link handler sets it. */
+  remoteOrigin: Schema.optional(ThreadRemoteOrigin),
 };
 // The normalizer refuses these on commands that arrive from a client.
 
@@ -3367,6 +3498,47 @@ const ThreadChildRequestUpdateCommand = Schema.Struct({
   requestId: ChildRequestId,
   status: ChildRequestStatus,
   candidateTurnId: Schema.optional(TurnId),
+  /** A child on a linked computer: what that computer last said about it. */
+  remote: Schema.optional(RemoteChildRequest),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Linked computers: the parent's record of a child on another computer, new
+ * or changed (its thread started, its status moved). Upserted by
+ * environment and thread.
+ */
+const ThreadRemoteChildUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.remote-child.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  child: RemoteChildThread,
+  createdAt: IsoDateTime,
+});
+
+/** Linked computers: the computer confirmed these cancels; they leave the outbox. */
+const ThreadRemoteCancelsDeliveredCommand = Schema.Struct({
+  type: Schema.Literal("thread.remote-cancels.delivered"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestIds: Schema.Array(ChildRequestId),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Linked computers, on the child's computer: a message the parent's agent on
+ * another computer sent this thread, written and queued like
+ * `thread.child.send` writes into a local child. `fromThread` names the
+ * parent and its computer. Only the link handler dispatches it, and only for
+ * a thread its link started.
+ */
+const ThreadRemoteRequestQueueCommand = Schema.Struct({
+  type: Schema.Literal("thread.remote-request.queue"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: TrimmedNonEmptyString,
+  fromThread: ThreadMessageOrigin,
   createdAt: IsoDateTime,
 });
 
@@ -3392,6 +3564,11 @@ const ThreadChildRequestSettleCommand = Schema.Struct({
   ),
   note: Schema.optional(TrimmedNonEmptyString),
   error: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * A request to a linked computer: the thread its report names there,
+   * recorded in the same decision that settles the request.
+   */
+  remoteChild: Schema.optional(RemoteChildThread),
   createdAt: IsoDateTime,
 });
 
@@ -3410,6 +3587,9 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadChildRequestUpdateCommand,
   ThreadChildRequestSettleCommand,
   ThreadChildNotesDeliveredCommand,
+  ThreadRemoteChildUpdateCommand,
+  ThreadRemoteCancelsDeliveredCommand,
+  ThreadRemoteRequestQueueCommand,
   ThreadSessionSetCommand,
   ThreadRealtimeStateSetCommand,
   ThreadEffectiveCwdSetCommand,
@@ -3487,6 +3667,9 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.child-notes-delivered",
   "thread.child-deliveries-cancelled",
   "thread.child-requests-reset",
+  "thread.remote-child-updated",
+  "thread.remote-cancel-queued",
+  "thread.remote-cancels-delivered",
   "thread.handed-back",
   "thread.parent-attachment-set",
   "thread.meta-updated",
@@ -3578,6 +3761,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   parentThreadId: Schema.optional(ThreadId),
   parentTurnId: Schema.optional(TurnId),
   attachedToParent: Schema.optional(Schema.Boolean),
+  /** See OrchestrationThreadShell.remoteOrigin. */
+  remoteOrigin: Schema.optional(ThreadRemoteOrigin),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -3757,6 +3942,8 @@ export const ThreadChildRequestUpdatedPayload = Schema.Struct({
   requestId: ChildRequestId,
   status: ChildRequestStatus,
   candidateTurnId: Schema.optional(TurnId),
+  /** See OrchestrationChildRequest.remote; replaces it when present. */
+  remote: Schema.optional(RemoteChildRequest),
   updatedAt: IsoDateTime,
 });
 
@@ -3769,6 +3956,27 @@ export const ThreadChildRequestSettledPayload = Schema.Struct({
   error: Schema.optional(TrimmedNonEmptyString),
   note: Schema.optional(ChildRequestNote),
   settledAt: IsoDateTime,
+});
+
+/** Linked computers: a cancel or stop went into the parent's outbox (see RemoteChildCancel). */
+export const ThreadRemoteCancelQueuedPayload = Schema.Struct({
+  threadId: ThreadId,
+  cancel: RemoteChildCancel,
+  createdAt: IsoDateTime,
+});
+
+/** Linked computers: see OrchestrationChildRequestState.remoteChildren. */
+export const ThreadRemoteChildUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  child: RemoteChildThread,
+  updatedAt: IsoDateTime,
+});
+
+/** Linked computers: these cancels reached their computer. */
+export const ThreadRemoteCancelsDeliveredPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestIds: Schema.Array(ChildRequestId),
+  createdAt: IsoDateTime,
 });
 
 export const ThreadChildNotesDeliveredPayload = Schema.Struct({
@@ -4334,6 +4542,21 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.child-requests-reset"),
     payload: ThreadChildRequestsResetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.remote-child-updated"),
+    payload: ThreadRemoteChildUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.remote-cancels-delivered"),
+    payload: ThreadRemoteCancelsDeliveredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.remote-cancel-queued"),
+    payload: ThreadRemoteCancelQueuedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

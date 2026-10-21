@@ -5,6 +5,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EMPTY_AGENT_REQUEST_STATE,
+  EnvironmentId,
   EMPTY_CHILD_REQUEST_STATE,
   MessageId,
   type OrchestrationCommand,
@@ -766,5 +767,239 @@ describe("decider child threads", () => {
     expect(
       parent.messages.find((message) => message.id === childReportMessageId(REQUEST))?.text,
     ).toContain("waiting on them");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Children on a linked computer (docs/design/fleet.md, Part 2)
+// ---------------------------------------------------------------------------
+
+const MAC_MINI = EnvironmentId.make("env-mac-mini");
+const REMOTE_CHILD = ThreadId.make("remote-child");
+const remoteTarget = {
+  environmentId: MAC_MINI,
+  label: "Mac mini",
+  threadId: REMOTE_CHILD,
+  status: "accepted" as const,
+};
+
+/** A parent whose child on a linked computer has started and is working. */
+async function familyWithRemoteChild() {
+  const started = await run(readModel([thread(PARENT, { session: session(PARENT) })]), {
+    ...startCommand("auto"),
+    children: [
+      {
+        requestId: REQUEST,
+        childThreadId: REMOTE_CHILD,
+        childMessageId: CHILD_MESSAGE,
+        launch: launch({
+          workspace: { kind: "remote", projectKey: "github.com/x/y", checkout: "worktree" },
+          target: { environmentId: MAC_MINI, label: "Mac mini" },
+        }),
+      },
+    ],
+  });
+  const accepted = await run(started.model, {
+    type: "thread.child-request.update",
+    commandId: CommandId.make("remote-accepted"),
+    threadId: PARENT,
+    requestId: REQUEST,
+    status: "running",
+    remote: remoteTarget,
+    createdAt: at(2),
+  });
+  const recorded = await run(accepted.model, {
+    type: "thread.remote-child.update",
+    commandId: CommandId.make("remote-child"),
+    threadId: PARENT,
+    child: {
+      environmentId: MAC_MINI,
+      label: "Mac mini",
+      threadId: REMOTE_CHILD,
+      handle: "Claude",
+      title: "Write the changelog",
+      attachmentEpoch: 0,
+      cachedStatus: "working",
+      updatedAt: at(2),
+    },
+    createdAt: at(2),
+  });
+  return { started, model: recorded.model };
+}
+
+describe("decider child threads on a linked computer", () => {
+  it("keeps a start for a linked computer on the parent only, waiting to be sent", async () => {
+    const { started, model: family } = await familyWithRemoteChild();
+    expect(new Set(started.events.map((event) => event.aggregateId))).toEqual(new Set([PARENT]));
+    expect(started.events[0]?.payload).toMatchObject({
+      request: { remote: { environmentId: MAC_MINI, status: "sending", threadId: null } },
+    });
+    expect(family.threads.some((entry) => entry.id === REMOTE_CHILD)).toBe(false);
+    expect(threadIn(family, PARENT).childRequests.remoteChildren?.[0]?.threadId).toBe(REMOTE_CHILD);
+  });
+
+  it("delivers a linked computer's answer as a report from that computer, writing nothing else", async () => {
+    const { model: family } = await familyWithRemoteChild();
+    const delivered = await run(family, settleAnswered());
+    expect(delivered.events.map((event) => event.type)).toEqual([
+      "thread.child-request-settled",
+      "thread.message-sent",
+      "thread.follow-up-queued",
+    ]);
+    const parent = threadIn(delivered.model, PARENT);
+    const report = parent.messages.find((message) => message.id === childReportMessageId(REQUEST));
+    expect(report?.fromThread).toMatchObject({
+      threadId: REMOTE_CHILD,
+      kind: "report",
+      environmentId: MAC_MINI,
+      attachmentEpoch: 0,
+    });
+    // The child record outlives the request, for thread_read and thread_send.
+    expect(parent.childRequests.open).toEqual([]);
+    expect(parent.childRequests.remoteChildren?.map((child) => child.threadId)).toEqual([
+      REMOTE_CHILD,
+    ]);
+  });
+
+  it("drops a linked computer's report whose epoch went stale before it was sent", async () => {
+    const { model: family } = await familyWithRemoteChild();
+    const delivered = await run(family, settleAnswered());
+    const moved: OrchestrationReadModel = {
+      ...delivered.model,
+      threads: delivered.model.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              childRequests: { ...entry.childRequests, deliveryEpoch: 1 },
+            }
+          : entry,
+      ),
+    };
+    const sent = await run(moved, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("send-report"),
+      threadId: PARENT,
+      messageId: childReportMessageId(REQUEST),
+      createdAt: at(12),
+    });
+    expect(sent.events.map((event) => event.type)).toEqual(["thread.follow-up-unqueued"]);
+    expect(sent.events[0]?.payload).toMatchObject({ reason: "cancelled" });
+  });
+
+  it("Stop in the parent settles the request and owes the linked computer a cancel that stops it there", async () => {
+    const { model: family } = await familyWithRemoteChild();
+    const stopped = await run(family, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop"),
+      threadId: PARENT,
+      createdAt: at(5),
+    });
+    const parent = threadIn(stopped.model, PARENT);
+    expect(parent.childRequests.open).toEqual([]);
+    expect(parent.childRequests.remoteCancels).toEqual([
+      {
+        requestId: REQUEST,
+        environmentId: MAC_MINI,
+        threadId: REMOTE_CHILD,
+        cancelRequest: true,
+        stopThread: true,
+        createdAt: at(5),
+      },
+    ]);
+    // Its answer, arriving after Stop, comes back to no one.
+    expect(await refused(stopped.model, settleAnswered())).toBe(true);
+    // Once the linked computer confirmed, the cancel leaves the outbox.
+    const confirmed = await run(stopped.model, {
+      type: "thread.remote-cancels.delivered",
+      commandId: CommandId.make("cancels-delivered"),
+      threadId: PARENT,
+      requestIds: [REQUEST],
+      createdAt: at(6),
+    });
+    expect(threadIn(confirmed.model, PARENT).childRequests.remoteCancels).toEqual([]);
+  });
+
+  it("thread_stop on a child there cuts off its answers and owes that computer a stop", async () => {
+    const { model: family } = await familyWithRemoteChild();
+    const stopped = await run(family, {
+      type: "thread.children.stop",
+      commandId: CommandId.make("children-stop"),
+      threadId: PARENT,
+      childThreadIds: [REMOTE_CHILD],
+      createdAt: at(5),
+    });
+    // Nothing is stopped here: the child isn't here.
+    expect(stopped.events.some((event) => event.type === "thread.session-stop-requested")).toBe(
+      false,
+    );
+    const parent = threadIn(stopped.model, PARENT);
+    expect(parent.childRequests.open).toEqual([]);
+    expect(parent.childRequests.remoteChildren?.[0]?.attachmentEpoch).toBe(1);
+    expect(parent.childRequests.remoteCancels?.[0]).toMatchObject({
+      requestId: REQUEST,
+      stopThread: true,
+      threadId: REMOTE_CHILD,
+    });
+  });
+
+  it("keeps a message to a child there on the parent, with its text, until that computer has it", async () => {
+    const { model: family } = await familyWithRemoteChild();
+    const answered = await run(family, settleAnswered());
+    const SEND = ChildRequestId.make("send-1");
+    const sent = await run(answered.model, {
+      type: "thread.child.send",
+      commandId: CommandId.make("send"),
+      threadId: PARENT,
+      requestId: SEND,
+      from: PRIMARY,
+      callerTurnId: CALLER_TURN,
+      childThreadId: REMOTE_CHILD,
+      childMessageId: MessageId.make("send-message-1"),
+      text: "Add the security fixes too.",
+      createdAt: at(13),
+    });
+    expect(new Set(sent.events.map((event) => event.aggregateId))).toEqual(new Set([PARENT]));
+    expect(threadIn(sent.model, PARENT).childRequests.open[0]).toMatchObject({
+      requestId: SEND,
+      kind: "send",
+      status: "queued",
+      text: "Add the security fixes too.",
+      remote: { environmentId: MAC_MINI, threadId: REMOTE_CHILD, status: "sending" },
+    });
+  });
+
+  it("only the thread a link started takes that computer's message, and keeps where it came from", async () => {
+    const origin = {
+      linkDeviceId: "device-windows",
+      environmentId: EnvironmentId.make("env-windows"),
+      environmentLabel: "Windows PC",
+      threadId: ThreadId.make("windows-parent"),
+      threadTitle: "Ship the 0.6 release",
+    };
+    const queue = (threadId: ThreadId): OrchestrationCommand => ({
+      type: "thread.remote-request.queue",
+      commandId: CommandId.make(`queue-${threadId}`),
+      threadId,
+      messageId: MessageId.make("remote-message-1"),
+      text: "Add the security fixes too.",
+      fromThread: {
+        threadId: origin.threadId,
+        requestId: ChildRequestId.make("send-1"),
+        kind: "request",
+        environmentId: origin.environmentId,
+      },
+      createdAt: at(1),
+    });
+    const current = readModel([thread(CHILD, { remoteOrigin: origin }), thread(PARENT)]);
+    expect(await refused(current, queue(PARENT))).toBe(true);
+    const queued = await run(current, queue(CHILD));
+    expect(queued.events.map((event) => event.type)).toEqual([
+      "thread.message-sent",
+      "thread.follow-up-queued",
+    ]);
+    expect(threadIn(queued.model, CHILD).queuedFollowUps?.[0]?.fromThread).toMatchObject({
+      environmentId: origin.environmentId,
+      kind: "request",
+    });
   });
 });

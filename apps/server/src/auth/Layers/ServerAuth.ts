@@ -24,6 +24,8 @@ import {
   ServerAuth,
   type AuthenticatedSession,
   AuthError,
+  type ClientAuthenticatedSession,
+  type PeerAuthenticatedSession,
   type ServerAuthShape,
 } from "../Services/ServerAuth.ts";
 import {
@@ -145,6 +147,23 @@ function toAuthenticatedSession(session: VerifiedSession): AuthenticatedSession 
   };
 }
 
+/**
+ * Client endpoints (`/ws` and every HTTP route) refuse a linked computer's
+ * session: it may only use `/peer`. Checked here, where every client
+ * authentication goes through, so no route can forget it.
+ */
+const asClientSession = (
+  session: AuthenticatedSession,
+): Effect.Effect<ClientAuthenticatedSession, AuthError> =>
+  session.role === "peer"
+    ? Effect.fail(
+        new AuthError({
+          message: "A linked computer's session can't use this endpoint.",
+          status: 403,
+        }),
+      )
+    : Effect.succeed({ ...session, role: session.role });
+
 function toUnauthorizedAuthError(cause: SessionCredentialError): AuthError {
   return new AuthError({
     message: "Unauthorized request.",
@@ -233,14 +252,16 @@ export const makeServerAuth = Effect.gen(function* () {
       Effect.mapError(toUnauthorizedAuthError),
     );
 
-  const authenticateRequest = (request: HttpServerRequest.HttpServerRequest) => {
+  const authenticateRequest = (
+    request: HttpServerRequest.HttpServerRequest,
+  ): Effect.Effect<ClientAuthenticatedSession, AuthError> => {
     const trustedDevRequest = isTrustedLoopbackBrowserDevRequest(request);
     const cookieToken = request.cookies[sessions.cookieName];
     const bearerToken = parseBearerToken(request);
     const credential = cookieToken ?? bearerToken;
     if (!credential) {
       if (trustedDevRequest) {
-        return getTrustedLoopbackBrowserDevSession;
+        return getTrustedLoopbackBrowserDevSession.pipe(Effect.flatMap(asClientSession));
       }
       return Effect.fail(
         new AuthError({
@@ -249,9 +270,13 @@ export const makeServerAuth = Effect.gen(function* () {
         }),
       );
     }
-    return trustedDevRequest
-      ? verifySessionToken(credential).pipe(Effect.catch(() => getTrustedLoopbackBrowserDevSession))
-      : authenticateToken(credential);
+    return (
+      trustedDevRequest
+        ? verifySessionToken(credential).pipe(
+            Effect.catch(() => getTrustedLoopbackBrowserDevSession),
+          )
+        : authenticateToken(credential)
+    ).pipe(Effect.flatMap(asClientSession));
   };
 
   const getSessionState: ServerAuthShape["getSessionState"] = (request) =>
@@ -292,6 +317,8 @@ export const makeServerAuth = Effect.gen(function* () {
             },
           })
           .pipe(
+            // A bootstrap credential only ever grants a client app's role.
+            Effect.map((session) => ({ ...session, role: grant.role })),
             Effect.mapError(
               (cause) =>
                 new AuthError({
@@ -331,6 +358,7 @@ export const makeServerAuth = Effect.gen(function* () {
               },
             })
             .pipe(
+              Effect.map((session) => ({ ...session, role: grant.role })),
               Effect.mapError(
                 (cause) =>
                   new AuthError({
@@ -511,13 +539,7 @@ export const makeServerAuth = Effect.gen(function* () {
         const websocketToken = requestUrl.value.searchParams.get(WEBSOCKET_TOKEN_QUERY_PARAM);
         if (websocketToken && websocketToken.trim().length > 0) {
           return yield* sessions.verifyWebSocketToken(websocketToken).pipe(
-            Effect.map((session) => ({
-              sessionId: session.sessionId,
-              subject: session.subject,
-              method: session.method,
-              role: session.role,
-              ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}),
-            })),
+            Effect.map(toAuthenticatedSession),
             Effect.mapError(
               (cause) =>
                 new AuthError({
@@ -526,11 +548,36 @@ export const makeServerAuth = Effect.gen(function* () {
                   cause,
                 }),
             ),
+            Effect.flatMap(asClientSession),
           );
         }
       }
 
       return yield* authenticateRequest(request);
+    });
+
+  const authenticatePeerUpgrade: ServerAuthShape["authenticatePeerUpgrade"] = (request) =>
+    Effect.gen(function* () {
+      const requestUrl = HttpServerRequest.toURL(request);
+      const websocketToken = Option.isSome(requestUrl)
+        ? requestUrl.value.searchParams.get(WEBSOCKET_TOKEN_QUERY_PARAM)?.trim()
+        : undefined;
+      if (!websocketToken) {
+        return yield* new AuthError({ message: "Authentication required.", status: 401 });
+      }
+      const session = yield* sessions.verifyWebSocketToken(websocketToken).pipe(
+        Effect.map(toAuthenticatedSession),
+        Effect.mapError(
+          (cause) => new AuthError({ message: "Unauthorized request.", status: 401, cause }),
+        ),
+      );
+      if (session.role !== "peer") {
+        return yield* new AuthError({
+          message: "Only a linked computer can use this endpoint.",
+          status: 403,
+        });
+      }
+      return { ...session, role: session.role } satisfies PeerAuthenticatedSession;
     });
 
   return {
@@ -546,6 +593,7 @@ export const makeServerAuth = Effect.gen(function* () {
     revokeOtherClientSessions,
     authenticateHttpRequest: authenticateRequest,
     authenticateWebSocketUpgrade,
+    authenticatePeerUpgrade,
     issueWebSocketToken,
     issueStartupPairingUrl,
   } satisfies ServerAuthShape;
