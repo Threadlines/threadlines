@@ -8,7 +8,6 @@ import { useThreadTitle } from "../../childThreads";
 import { readEnvironmentConnection } from "../../environments/runtime";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { cn } from "../../lib/utils";
-import { runtimeModeConfig } from "../../runtimeModeOptions";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { SETTINGS_GROUP_ROW_CLASS, SettingsSection } from "../settings/settingsLayout";
 import {
@@ -35,6 +34,7 @@ import { setTaskActive } from "./ScheduledView";
 import {
   type LocatedTask,
   taskRef,
+  useAccessLabel,
   useAgentLabels,
   useProjectNames,
   useScheduledNavigation,
@@ -183,6 +183,7 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
   const navigate = useNavigate();
   const projectName = useProjectNames();
   const agentLabels = useAgentLabels();
+  const accessLabel = useAccessLabel();
   const { environment, task } = located;
   const labels = agentLabels(environment.environmentId, task.modelSelection);
   const continuedTitle = useThreadTitle(
@@ -372,7 +373,9 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
             </span>
           </span>
         </DetailRow>
-        <DetailRow label="Access">{runtimeModeConfig[task.runtimeMode].label}</DetailRow>
+        <DetailRow label="Access">
+          {accessLabel(environment.environmentId, task.modelSelection, task.runtimeMode)}
+        </DetailRow>
         <DetailRow label="Time zone">{task.timeZone}</DetailRow>
         {task.originThreadId !== null ? (
           <DetailRow label="Set up by">

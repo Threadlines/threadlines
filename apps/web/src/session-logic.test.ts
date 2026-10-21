@@ -3907,9 +3907,9 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
-  it("keeps what an MCP call answered, from Codex's item or Claude's tool_result", () => {
+  it("keeps what an MCP call answered, from Codex's item, Claude's tool_result or an ACP agent's output", () => {
     const answer = { outcome: "started", threads: [{ threadId: "thread-a", title: "A" }] };
-    const [codex, claude] = deriveWorkLogEntries([
+    const [codex, claude, acp] = deriveWorkLogEntries([
       makeActivity({
         id: "codex-start",
         sequence: 1,
@@ -3946,10 +3946,25 @@ describe("deriveWorkLogEntries", () => {
           },
         },
       }),
+      makeActivity({
+        id: "acp-start",
+        sequence: 3,
+        kind: "tool.completed",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "mcp__threadlines_room__thread_start",
+          data: {
+            toolCallId: "call-1",
+            kind: "other",
+            content: [{ type: "content", content: { type: "text", text: JSON.stringify(answer) } }],
+          },
+        },
+      }),
     ]);
 
     expect(JSON.parse(codex!.toolResult!)).toEqual(answer);
     expect(JSON.parse(claude!.toolResult!)).toEqual(answer);
+    expect(JSON.parse(acp!.toolResult!)).toEqual(answer);
   });
 
   it("keeps a long Claude call to one step, without its stored still-running pings", () => {

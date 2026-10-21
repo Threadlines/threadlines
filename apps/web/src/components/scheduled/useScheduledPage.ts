@@ -3,6 +3,7 @@ import type {
   ModelSelection,
   ProjectId,
   ProviderDriverKind,
+  RuntimeMode,
   ScheduledTask,
   ScheduledTaskId,
 } from "@threadlines/contracts";
@@ -16,6 +17,7 @@ import {
   useScheduledTaskGroups,
 } from "../../lib/scheduledTasksState";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
+import { deriveAccessLevel, runtimeModeConfig } from "../../runtimeModeOptions";
 import { selectProjectsAcrossEnvironments, useStore } from "../../store";
 import {
   parseScheduledSearch,
@@ -95,6 +97,39 @@ export function useProjectNames(): (environmentId: EnvironmentId, projectId: Pro
 }
 
 /** "Codex · GPT-6 Astra": the agent and model, as the task's computer names them. */
+/**
+ * A task's access level as the composer shows it for its agent: the level
+ * it was set to, or the one the agent falls back to when it lacks that one.
+ */
+export function useAccessLabel(): (
+  environmentId: EnvironmentId,
+  selection: ModelSelection,
+  mode: RuntimeMode,
+) => string {
+  const providersOn = useEnvironmentProviders();
+  return useCallback(
+    (environmentId, selection, mode) => {
+      const providers = providersOn(environmentId);
+      const entry = deriveProviderInstanceEntries(providers).find(
+        (candidate) => candidate.instanceId === selection.instanceId,
+      );
+      const shown =
+        entry === undefined
+          ? mode
+          : deriveAccessLevel({
+              providers,
+              provider: entry.driverKind,
+              snapshot: entry.snapshot,
+              models: entry.models,
+              model: selection.model,
+              mode,
+            }).shown;
+      return runtimeModeConfig[shown].label;
+    },
+    [providersOn],
+  );
+}
+
 export function useAgentLabels(): (
   environmentId: EnvironmentId,
   selection: ModelSelection,

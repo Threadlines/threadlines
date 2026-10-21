@@ -360,10 +360,13 @@ export function describeScheduleCall(input: {
     : quoted === null
       ? "Asked to change a scheduled task"
       : `Asked to change ${quoted}`;
+  // A one-time task's schedule is its next run; say it once.
   const when =
     task === null
       ? null
-      : `${describeTaskSchedule(task, input.timeZone)} · ${describeNextRun(task, input.nowMs, input.timeZone)}`;
+      : task.cadence.kind === "once"
+        ? describeNextRun(task, input.nowMs, input.timeZone)
+        : `${describeTaskSchedule(task, input.timeZone)} · ${describeNextRun(task, input.nowMs, input.timeZone)}`;
   if (!input.followed) {
     return { heading: result.outcome === "asked_user" ? asked : done, outcome: null, open: null };
   }

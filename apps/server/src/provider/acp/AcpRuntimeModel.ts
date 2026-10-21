@@ -459,10 +459,13 @@ function makeToolCallState(
       })
     : undefined;
   const status = normalizeToolCallStatus(input.status, options?.fallbackStatus);
+  // Output alone never names a call: an update that carries only its result
+  // (ACP sends unchanged fields at will) keeps the name the call started with.
+  const named = title !== undefined || kind !== undefined || command !== undefined;
   return {
     toolCallId,
     ...(kind ? { kind } : {}),
-    ...(presentation?.summary ? { title: presentation.summary } : {}),
+    ...(presentation?.summary && named ? { title: presentation.summary } : {}),
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
     ...(presentation?.detail ? { detail: presentation.detail } : {}),
