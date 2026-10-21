@@ -56,8 +56,16 @@ function createBrowserLocalApi(resolveRpcClient?: () => WsRpcClient | null): Loc
       },
     },
     shell: {
-      openInEditor: (cwd, editor) =>
-        withClient((client) => client.shell.openInEditor({ cwd, editor })),
+      openInEditor: (target, editor, workspaceRoot) =>
+        withClient((client) =>
+          client.shell.openInEditor({
+            cwd: target,
+            editor,
+            // Some callers have no project and hold an empty folder, which
+            // the server would reject as a whole request.
+            ...(workspaceRoot?.trim() ? { workspaceRoot } : {}),
+          }),
+        ),
       openExternal: async (url) => {
         if (window.desktopBridge) {
           const opened = await window.desktopBridge.openExternal(url);

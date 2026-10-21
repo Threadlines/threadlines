@@ -1789,7 +1789,7 @@ export default function GitActionsControl({
         return;
       }
       const target = resolvePathLinkTarget(filePath, gitCwd);
-      void openInPreferredEditor(api, target).catch((error) => {
+      void openInPreferredEditor(api, target, gitCwd).catch((error) => {
         toastManager.add(
           stackedThreadToast({
             type: "error",

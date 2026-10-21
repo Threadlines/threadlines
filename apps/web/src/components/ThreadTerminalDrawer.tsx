@@ -646,7 +646,7 @@ export function TerminalViewport({
               }
 
               const target = resolvePathLinkTarget(match.text, cwd);
-              void openInPreferredEditor(localApi, target).catch((error) => {
+              void openInPreferredEditor(localApi, target, cwd).catch((error) => {
                 writeSystemMessage(
                   latestTerminal,
                   error instanceof Error ? error.message : "Unable to open path",
@@ -740,7 +740,7 @@ export function TerminalViewport({
           position,
         );
         if (clicked === "open-editor") {
-          await openInPreferredEditor(localApi, target).catch((error) => {
+          await openInPreferredEditor(localApi, target, cwd).catch((error) => {
             const activeTerminal = terminalRef.current;
             if (!activeTerminal) return;
             writeSystemMessage(

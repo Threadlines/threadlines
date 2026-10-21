@@ -37,10 +37,19 @@ export function resolveAndPersistPreferredEditor(
   return editor ?? null;
 }
 
-export async function openInPreferredEditor(api: LocalApi, targetPath: string): Promise<EditorId> {
+/**
+ * Opens a path in the user's editor. Give the project folder for a file that
+ * belongs to one, so the editor shows the file inside that project rather
+ * than on its own.
+ */
+export async function openInPreferredEditor(
+  api: LocalApi,
+  targetPath: string,
+  workspaceRoot?: string,
+): Promise<EditorId> {
   const { availableEditors } = await api.server.getConfig();
   const editor = resolveAndPersistPreferredEditor(availableEditors);
   if (!editor) throw new Error("No available editors found.");
-  await api.shell.openInEditor(targetPath, editor);
+  await api.shell.openInEditor(targetPath, editor, workspaceRoot);
   return editor;
 }
