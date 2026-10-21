@@ -264,10 +264,12 @@ export const remoteChildOf = (
   (state.remoteChildren ?? []).find((entry) => entry.threadId === threadId);
 
 /**
- * Starts asked of linked computers that have no thread there yet (sending,
- * or waiting for that computer's user): the parent's family shows them before
- * the child exists. The thread shell carries them, and the web store derives
- * them the same way from a loaded thread.
+ * Starts asked of linked computers whose thread hasn't started there yet
+ * (sending, or waiting for that computer's user): the parent's family shows
+ * them until the child does. A start waiting for an Allow may already carry
+ * the id its thread will have; it counts until the parent records the child.
+ * The thread shell carries these, and the web store derives them the same
+ * way from a loaded thread.
  */
 export const remoteChildStartsOf = (
   state: OrchestrationChildRequestState,
@@ -275,7 +277,12 @@ export const remoteChildStartsOf = (
   state.open.flatMap((request): RemoteChildStart[] =>
     request.kind === "start" &&
     request.remote !== undefined &&
-    request.remote.threadId === null &&
+    (request.remote.threadId === null ||
+      !(state.remoteChildren ?? []).some(
+        (child) =>
+          child.environmentId === request.remote?.environmentId &&
+          child.threadId === request.remote.threadId,
+      )) &&
     request.launch !== undefined
       ? [
           {
