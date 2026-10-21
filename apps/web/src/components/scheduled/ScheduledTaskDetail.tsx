@@ -200,7 +200,9 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
   );
   const [busy, setBusy] = useState<"run" | "active" | "delete" | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [archiveRunThreads, setArchiveRunThreads] = useState(true);
+  const [archiveRunThreads, setArchiveRunThreads] = useState(false);
+  // Archiving a run thread stops it, as archiving any thread does.
+  const archivesRunThreads = archiveRunThreads && task.target.kind === "new_thread";
 
   const client = () => readEnvironmentConnection(environment.environmentId)?.client ?? null;
 
@@ -239,7 +241,10 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
     }
     setBusy("delete");
     try {
-      await connection.scheduledTasks.remove({ id: task.id, archiveRunThreads });
+      await connection.scheduledTasks.remove({
+        id: task.id,
+        archiveRunThreads: archivesRunThreads,
+      });
       setDeleteOpen(false);
       navigation.showAll({ replace: true });
     } catch (error) {
@@ -387,7 +392,11 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
             <AlertDialogTitle>Delete &ldquo;{task.name}&rdquo;?</AlertDialogTitle>
             <AlertDialogDescription>
               It stops running and its run history goes with it.
-              {task.workingRuns > 0 ? " Runs at work now keep going as ordinary threads." : ""}
+              {task.workingRuns === 0
+                ? ""
+                : archivesRunThreads
+                  ? " Runs at work now stop."
+                  : " Runs at work now keep going as ordinary threads."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {task.target.kind === "new_thread" ? (
