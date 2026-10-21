@@ -4399,6 +4399,7 @@ describe("ClaudeAdapterLive", () => {
           parent_tool_use_id: "tool-task-live",
           message: {
             id: "subagent-message-1",
+            model: "claude-opus-5-5",
             content: [{ type: "text", text: "Scanning the database layer now." }],
           },
         } as unknown as SDKMessage);
@@ -4450,6 +4451,20 @@ describe("ClaudeAdapterLive", () => {
           },
         } as unknown as SDKMessage);
 
+        // A message the CLI wrote itself still streams, but its placeholder
+        // model is not the agent's.
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-subagent-live",
+          uuid: "assistant-subagent-live-3",
+          parent_tool_use_id: "tool-task-live",
+          message: {
+            id: "subagent-message-3",
+            model: "<synthetic>",
+            content: [{ type: "text", text: "You've hit your weekly limit" }],
+          },
+        } as unknown as SDKMessage);
+
         harness.query.emit({
           type: "result",
           subtype: "success",
@@ -4470,9 +4485,15 @@ describe("ClaudeAdapterLive", () => {
             ? [{ event, liveText: data.subagentLiveText }]
             : [];
         });
-        assert.equal(liveUpdates.length, 2);
+        assert.equal(liveUpdates.length, 3);
         assert.equal(liveUpdates[0]?.liveText, "Scanning the database layer now.");
         assert.equal(liveUpdates[1]?.liveText?.length, 4_000);
+        assert.equal(liveUpdates[2]?.liveText, "You've hit your weekly limit");
+        const subagentModels = liveUpdates.map(
+          (update) =>
+            (update.event.payload as { data?: { subagentModel?: unknown } }).data?.subagentModel,
+        );
+        assert.deepStrictEqual(subagentModels, ["claude-opus-5-5", undefined, undefined]);
         for (const update of liveUpdates) {
           assert.equal(String(update.event.itemId), "tool-task-live");
           assert.equal(

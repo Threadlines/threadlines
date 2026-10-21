@@ -370,6 +370,65 @@ describe("projectSubagentActivity", () => {
     expect(finished[0]?.status).toBe("completed");
   });
 
+  it("keeps a settled agent settled, and still resumable, when its last message lands late", () => {
+    const taskId = "a12bbf4fee5d91d9c";
+    const lateMessage = (id: string, createdAt: string) =>
+      claudeSpawnActivity({
+        id,
+        kind: "tool.updated",
+        status: "inProgress",
+        createdAt,
+        data: { subagentLiveText: "You've hit your weekly limit", subagentModel: "<synthetic>" },
+      });
+    let roster = projectSubagentActivity(
+      [],
+      claudeSpawnActivity({
+        id: "a1",
+        kind: "tool.started",
+        status: "inProgress",
+        turnId: TURN_ID,
+      }),
+    );
+    for (const next of [
+      activity({
+        id: "a2",
+        kind: "task.started",
+        createdAt: "2026-08-15T00:00:01.000Z",
+        payload: { taskId, toolUseId: SPAWN_TOOL_USE_ID, taskType: "local_agent" },
+      }),
+      lateMessage("a3", "2026-08-15T00:05:00.000Z"),
+      activity({
+        id: "a4",
+        kind: "task.completed",
+        createdAt: "2026-08-15T00:05:00.010Z",
+        payload: { taskId, status: "failed", toolUseId: SPAWN_TOOL_USE_ID },
+      }),
+      // The CLI forwards the agent's last message again after the task failed.
+      lateMessage("a5", "2026-08-15T00:05:10.000Z"),
+    ]) {
+      roster = projectSubagentActivity(roster, next);
+    }
+    expect(roster[0]?.status).toBe("failed");
+    expect(roster[0]?.transcriptAgentId).toBe(taskId);
+    // The CLI wrote that message itself; its placeholder is no model.
+    expect(roster[0]?.resolvedModel).toBeNull();
+
+    // Resumed under another call, the task id is all that names the agent.
+    const resumed = projectSubagentActivity(
+      roster,
+      activity({
+        id: "a6",
+        kind: "task.started",
+        turnId: RESUME_TURN_ID,
+        createdAt: "2026-08-15T00:10:00.000Z",
+        payload: { taskId, toolUseId: "toolu_01PNYsWHdC5EomunSJNzszXS", taskType: "local_agent" },
+      }),
+    );
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]?.status).toBe("running");
+    expect(resumed[0]?.turnId).toBe(RESUME_TURN_ID);
+  });
+
   it("projects a failed Claude agent as failed, not running", () => {
     const roster = projectSubagentActivity(
       [],

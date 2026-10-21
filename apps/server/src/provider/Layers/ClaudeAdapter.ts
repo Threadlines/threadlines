@@ -28,6 +28,7 @@ import {
   type SDKUserMessage,
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { CLAUDE_SYNTHETIC_MODEL } from "@threadlines/shared/claudeSubagentActivity";
 import { parseCliArgs } from "@threadlines/shared/cliArgs";
 import { effectiveRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { compareSemverVersions } from "@threadlines/shared/semver";
@@ -7597,8 +7598,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
     // A spawn names its model as an alias, or not at all when the agent
     // inherits. The agent's own messages state the resolved id, which is the
-    // only place the exact model appears while it runs.
-    const subagentModel = nonEmptyString((message.message as { model?: unknown }).model);
+    // only place the exact model appears while it runs. A message the CLI
+    // wrote itself (an API error, say) names a placeholder instead.
+    const messageModel = nonEmptyString((message.message as { model?: unknown }).model);
+    const subagentModel = messageModel === CLAUDE_SYNTHETIC_MODEL ? undefined : messageModel;
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
       type: "item.updated",

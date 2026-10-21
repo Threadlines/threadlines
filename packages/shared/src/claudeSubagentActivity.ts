@@ -23,6 +23,10 @@ function asTrimmedString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/** The model the CLI stamps on messages it writes itself rather than receives
+ *  from a model: API errors, interrupt notices. It names no agent's model. */
+export const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
+
 export function normalizeStatusToken(value: string | null): string {
   return (
     value
@@ -266,9 +270,11 @@ export function claudeSubagentActivityItem(
     asTrimmedString(input.payload.detail);
   // A spawn only names a model when the parent overrides one, and names it as
   // an alias ("opus"). The agent's own forwarded messages state the resolved
-  // id, which is what the UI should prefer.
+  // id, which is what the UI should prefer. Saved rows from before the adapter
+  // dropped the CLI's placeholder can still carry it.
   const model = asTrimmedString(toolInput?.model);
-  const resolvedModel = asTrimmedString(input.data?.subagentModel);
+  const forwardedModel = asTrimmedString(input.data?.subagentModel);
+  const resolvedModel = forwardedModel === CLAUDE_SYNTHETIC_MODEL ? null : forwardedModel;
   const reasoningEffort =
     asTrimmedString(toolInput?.effort) ?? asTrimmedString(toolInput?.reasoning_effort);
 

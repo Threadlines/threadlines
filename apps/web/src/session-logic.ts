@@ -2029,8 +2029,9 @@ function collectSubagentActivityRecords(
     }
 
     const data = asRecord(payload?.data);
+    const nativeItem = asRecord(data?.item);
     const item =
-      asRecord(data?.item) ??
+      nativeItem ??
       claudeSubagentActivityItem({
         activityId: activity.id,
         activityKind: activity.kind,
@@ -2118,11 +2119,23 @@ function collectSubagentActivityRecords(
       const state = agentStates.get(agentId) ?? null;
       const stateStatus = state?.status ?? null;
       const stateMessage = state?.message ?? null;
-      const status = normalizeSubagentProgressStatus({
+      const reportedStatus = normalizeSubagentProgressStatus({
         tool,
         itemStatus,
         stateStatus,
       });
+      // A forwarded message says the agent spoke, not that it runs: Claude
+      // keeps forwarding an agent's messages under its spawn call after the
+      // run settles. Only its task stream can revive a settled agent
+      // (applySubagentTaskRun). Mirrors the server roster.
+      const status =
+        nativeItem === null &&
+        asTrimmedString(data?.subagentLiveText) !== null &&
+        previous !== undefined &&
+        !isActiveSubagentStatus(previous.status) &&
+        isActiveSubagentStatus(reportedStatus)
+          ? previous.status
+          : reportedStatus;
       const parsedObjective = parseSubagentObjective(prompt);
       const pathMetadata = deriveSubagentPathMetadata(
         asTrimmedString(item.agentPath) ?? previous?.agentPath ?? null,
