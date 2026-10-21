@@ -64,6 +64,8 @@ export interface FleetThreadInput {
 /** An agent with live threads on one computer. */
 export interface FleetProvider {
   readonly key: string;
+  /** The computer it runs on: instance ids only mean something there. */
+  readonly environmentId: EnvironmentId | null;
   readonly instanceId: ProviderInstanceId | null;
   readonly driverKind: string;
   readonly working: number;
@@ -88,6 +90,78 @@ export interface FleetModel {
   readonly others: readonly FleetComputer[];
   readonly working: number;
   readonly needsYou: number;
+}
+
+/** The device a session belongs to, as the Fleet page needs it. */
+export interface LinkedDeviceSession {
+  readonly sessionId: string;
+  readonly subject: string;
+  readonly current: boolean;
+  readonly connected: boolean;
+  readonly lastConnectedAt: string | null;
+  readonly client: {
+    readonly label?: string | undefined;
+    readonly deviceType: string;
+    readonly os?: string | undefined;
+    readonly browser?: string | undefined;
+  };
+}
+
+function deviceLabel(session: LinkedDeviceSession): string {
+  return (
+    session.client.label ??
+    ([session.client.os, session.client.browser].filter(Boolean).join(" · ") ||
+      (session.client.deviceType === "tablet" ? "Tablet" : "Phone"))
+  );
+}
+
+/**
+ * The phones and tablets with access to this computer, a node per session.
+ * Sessions carry no device identity, so two sessions are two devices even
+ * when they share a name: two unnamed iPhones must not read as one.
+ */
+export function linkedDeviceInputs(
+  sessions: ReadonlyArray<LinkedDeviceSession>,
+  relaySubject: string,
+): FleetComputerInput[] {
+  return sessions.flatMap((session): FleetComputerInput[] => {
+    if (session.current) return [];
+    if (session.client.deviceType !== "mobile" && session.client.deviceType !== "tablet") {
+      return [];
+    }
+    return [
+      {
+        id: `device:${session.sessionId}`,
+        environmentId: null,
+        kind: "device",
+        label: deviceLabel(session),
+        glyph: session.client.deviceType === "tablet" ? "tablet" : "phone",
+        connection: session.connected ? "connected" : "offline",
+        route: session.subject === relaySubject ? "relay" : "network",
+        lastSeenAt: session.lastConnectedAt,
+      },
+    ];
+  });
+}
+
+/**
+ * This computer's connection, from the app's link to its own server (the
+ * state the connection banner shows). Never connected yet reads as
+ * reconnecting: the app is still trying.
+ */
+export function primaryConnectionFrom(
+  linkState: "connected" | "connecting" | "error" | "offline" | "reconnecting",
+): FleetConnection {
+  switch (linkState) {
+    case "connected":
+      return "connected";
+    case "connecting":
+    case "reconnecting":
+      return "reconnecting";
+    case "error":
+    case "offline":
+      return "offline";
+  }
 }
 
 function workOf(counts: { readonly working: number; readonly needsYou: number }): FleetWork {
@@ -118,6 +192,7 @@ function buildComputer(
     const key = thread.provider.instanceId ?? thread.provider.driverKind;
     const current = providersByKey.get(key) ?? {
       key,
+      environmentId: input.environmentId,
       instanceId: thread.provider.instanceId,
       driverKind: thread.provider.driverKind,
       working: 0,
@@ -168,8 +243,15 @@ function lastSeenPhrase(lastSeenAt: string, nowMs: number): string {
 
 /** The mono line under a computer's name: where it is, or how long it has been gone. */
 export function describeComputerLocation(computer: FleetComputerInput, nowMs: number): string {
-  // The phone app's center is the device in hand, whose name says so already.
-  if (computer.kind === "this") return computer.environmentId === null ? "" : "This computer";
+  if (computer.kind === "this") {
+    // The phone app's center is the device in hand, whose name says so already.
+    if (computer.environmentId === null) return "";
+    return computer.connection === "connected"
+      ? "This computer"
+      : computer.connection === "reconnecting"
+        ? "This computer · Reconnecting"
+        : "This computer · Offline";
+  }
   switch (computer.connection) {
     case "reconnecting":
       return "Reconnecting";

@@ -1,21 +1,23 @@
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import {
-  type ModelSelection,
+  type EnvironmentId,
   PROVIDER_DISPLAY_NAMES,
   type ProviderDriverKind,
 } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useState } from "react";
 
+import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
 import { useIsMobile } from "../../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { cn } from "../../lib/utils";
-import { deriveProviderInstanceEntries } from "../../providerInstances";
-import { useServerConfig } from "../../rpc/serverState";
+import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../../providerInstances";
+import { useServerConfig, useServerProviders } from "../../rpc/serverState";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import type { SidebarThreadSummary } from "../../types";
 import { getPickerModelName } from "../chat/providerIconUtils";
-import { ProviderGlyph, useKnownServerProviders } from "../chat/ProviderInstanceIcon";
+import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { PageTitlebar } from "../PageTitlebar";
 import { ConnectDeviceDialog } from "../settings/connections/ConnectDeviceDialog";
 import { useRelayAccess } from "../settings/connections/useRelayAccess";
@@ -47,6 +49,40 @@ function describeComputerCounts(computer: FleetComputer): string {
   ]
     .filter((part): part is string => part !== null)
     .join(" · ");
+}
+
+const NO_PROVIDER_ENTRIES: ReadonlyArray<ProviderInstanceEntry> = [];
+
+/**
+ * Each computer's own agents, looked up by computer: instance ids are named
+ * per computer, so the same id can be a different agent elsewhere.
+ */
+function useProviderEntriesByComputer(): (
+  environmentId: EnvironmentId | null,
+) => ReadonlyArray<ProviderInstanceEntry> {
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const primaryProviders = useServerProviders();
+  const savedRuntime = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const byEnvironmentId = useMemo(() => {
+    const entries = new Map<EnvironmentId, ReadonlyArray<ProviderInstanceEntry>>();
+    for (const [environmentId, runtime] of Object.entries(savedRuntime) as Array<
+      [EnvironmentId, (typeof savedRuntime)[EnvironmentId]]
+    >) {
+      const providers = runtime?.serverConfig?.providers;
+      if (providers) entries.set(environmentId, deriveProviderInstanceEntries(providers));
+    }
+    if (primaryEnvironmentId !== null) {
+      entries.set(primaryEnvironmentId, deriveProviderInstanceEntries(primaryProviders));
+    }
+    return entries;
+  }, [primaryEnvironmentId, primaryProviders, savedRuntime]);
+  return useCallback(
+    (environmentId) =>
+      environmentId === null
+        ? NO_PROVIDER_ENTRIES
+        : (byEnvironmentId.get(environmentId) ?? NO_PROVIDER_ENTRIES),
+    [byEnvironmentId],
+  );
 }
 
 /**
@@ -148,40 +184,38 @@ export function FleetView() {
   const isMobile = useIsMobile();
   const nowMs = useRelativeTimeTick(30_000);
   const { model, summaryByThreadKey, isOwner } = useFleetModel();
-  const knownProviders = useKnownServerProviders();
-  const providerEntries = useMemo(
-    () => deriveProviderInstanceEntries(knownProviders),
-    [knownProviders],
-  );
+  const providerEntriesFor = useProviderEntriesByComputer();
   const hostLabel = useServerConfig()?.environment.label ?? "This computer";
   const [selectedComputerId, setSelectedComputerId] = useState<string | null>(null);
   const [connectOpen, setConnectOpen] = useState(false);
 
   const providerLabel = useCallback(
     (provider: FleetProvider) => {
+      const entries = providerEntriesFor(provider.environmentId);
       const entry =
         (provider.instanceId === null
           ? undefined
-          : providerEntries.find((candidate) => candidate.instanceId === provider.instanceId)) ??
-        providerEntries.find((candidate) => candidate.driverKind === provider.driverKind);
+          : entries.find((candidate) => candidate.instanceId === provider.instanceId)) ??
+        entries.find((candidate) => candidate.driverKind === provider.driverKind);
       return (
         entry?.displayName ??
         PROVIDER_DISPLAY_NAMES[provider.driverKind as ProviderDriverKind] ??
         provider.driverKind
       );
     },
-    [providerEntries],
+    [providerEntriesFor],
   );
   const modelNameOf = useCallback(
-    (selection: ModelSelection | null) => {
+    (thread: FleetThreadInput) => {
+      const selection = thread.modelSelection;
       if (selection === null) return null;
-      const entry = providerEntries.find(
+      const entry = providerEntriesFor(thread.environmentId).find(
         (candidate) => candidate.instanceId === selection.instanceId,
       );
       const model = entry?.models.find((candidate) => candidate.slug === selection.model);
       return entry && model ? getPickerModelName(model, entry.driverKind) : selection.model;
     },
-    [providerEntries],
+    [providerEntriesFor],
   );
 
   const computers = useMemo(() => [model.center, ...model.others], [model]);
@@ -303,7 +337,7 @@ export function FleetView() {
                       key={thread.threadKey}
                       thread={thread}
                       summary={summaryByThreadKey.get(thread.threadKey)}
-                      modelName={modelNameOf(thread.modelSelection)}
+                      modelName={modelNameOf(thread)}
                       onOpen={() => {
                         void navigate({
                           to: "/$environmentId/$threadId",

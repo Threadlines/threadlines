@@ -25,13 +25,13 @@ import {
 import { useAuthAccess, usePrimarySessionAccess } from "../../hooks/useAuthAccess";
 import { useIsMobile } from "../../hooks/useMediaQuery";
 import { useThreadSeenSources } from "../../lib/threadInboxSync";
+import { getWsConnectionUiState, useWsConnectionStatus } from "../../rpc/wsConnectionState";
 import {
   type AppState,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../../store";
-import type { ServerClientSessionRecord } from "../../environments/primary";
 import type { SidebarThreadSummary } from "../../types";
 import { resolveSeenThreadStatus, resolveThreadAttention } from "../Sidebar.logic";
 import {
@@ -41,6 +41,8 @@ import {
   type FleetGlyph,
   type FleetModel,
   type FleetThreadInput,
+  linkedDeviceInputs,
+  primaryConnectionFrom,
 } from "./fleet.logic";
 
 function glyphForPlatform(descriptor: ExecutionEnvironmentDescriptor | null): FleetGlyph {
@@ -84,43 +86,6 @@ function savedComputerInput(
   };
 }
 
-function deviceLabel(session: ServerClientSessionRecord): string {
-  return (
-    session.client.label ??
-    ([session.client.os, session.client.browser].filter(Boolean).join(" · ") ||
-      (session.client.deviceType === "tablet" ? "Tablet" : "Phone"))
-  );
-}
-
-/**
- * The phones and tablets linked to this computer, one node each: a device
- * that paired more than once shows once, as its most recent session.
- */
-function linkedDeviceInputs(
-  sessions: ReadonlyArray<ServerClientSessionRecord>,
-): FleetComputerInput[] {
-  const byLabel = new Map<string, FleetComputerInput>();
-  for (const session of sessions) {
-    if (session.current) continue;
-    if (session.client.deviceType !== "mobile" && session.client.deviceType !== "tablet") continue;
-    const label = deviceLabel(session);
-    const existing = byLabel.get(label);
-    // Sessions arrive connected first, then newest first: keep the first seen.
-    if (existing) continue;
-    byLabel.set(label, {
-      id: `device:${session.sessionId}`,
-      environmentId: null,
-      kind: "device",
-      label,
-      glyph: session.client.deviceType === "tablet" ? "tablet" : "phone",
-      connection: session.connected ? "connected" : "offline",
-      route: session.subject === RELAY_DEVICE_SESSION_SUBJECT ? "relay" : "network",
-      lastSeenAt: session.lastConnectedAt,
-    });
-  }
-  return [...byLabel.values()];
-}
-
 /** Every thread's model, by scoped thread key; references are stable, so a shallow compare holds. */
 function selectThreadModelSelections(state: AppState): Record<string, ModelSelection> {
   const byKey: Record<string, ModelSelection> = {};
@@ -158,6 +123,10 @@ export function useFleetModel(): {
   const modelSelections = useStore(useShallow(selectThreadModelSelections));
   const seenSources = useThreadSeenSources();
   const isMobile = useIsMobile();
+  // This computer's own link: the state the connection banner shows.
+  const wsStatus = useWsConnectionStatus();
+  const primaryConnection = primaryConnectionFrom(getWsConnectionUiState(wsStatus));
+  const primaryLastSeenAt = wsStatus.disconnectedAt;
 
   const model = useMemo(() => {
     const projectByKey = new Map(
@@ -225,9 +194,9 @@ export function useFleetModel(): {
             kind: "this",
             label: primaryDescriptor?.label ?? "This computer",
             glyph: glyphForPlatform(primaryDescriptor),
-            connection: "connected",
+            connection: primaryConnection,
             route: null,
-            lastSeenAt: null,
+            lastSeenAt: primaryConnection === "connected" ? null : primaryLastSeenAt,
           }
         : {
             // The phone app has no server of its own: it is the device in
@@ -246,15 +215,20 @@ export function useFleetModel(): {
       .map((record) => savedComputerInput(record, savedRuntime[record.environmentId]));
     return buildFleetModel({
       center,
-      others: [...savedComputers, ...linkedDeviceInputs(clientSessions)],
+      others: [
+        ...savedComputers,
+        ...linkedDeviceInputs(clientSessions, RELAY_DEVICE_SESSION_SUBJECT),
+      ],
       threads: threadInputs,
     });
   }, [
     clientSessions,
     isMobile,
     modelSelections,
+    primaryConnection,
     primaryDescriptor,
     primaryEnvironmentId,
+    primaryLastSeenAt,
     projects,
     savedRecords,
     savedRuntime,

@@ -8,6 +8,9 @@ import {
   describeQuietComputers,
   type FleetComputerInput,
   type FleetThreadInput,
+  type LinkedDeviceSession,
+  linkedDeviceInputs,
+  primaryConnectionFrom,
   resolveConnectionLineState,
   resolveProviderLineState,
 } from "./fleet.logic";
@@ -134,5 +137,69 @@ describe("buildFleetModel", () => {
     expect(resolveProviderLineState(windows!, windowsClaude)).toBe("needs-you");
     const reconnecting = { ...windows!, connection: "reconnecting" as const };
     expect(resolveConnectionLineState(reconnecting)).toBe("reconnecting");
+  });
+
+  it("shows this computer down when the app loses its own link, with no dots to its agents", () => {
+    const down = buildFleetModel({
+      center: computer({
+        id: MACBOOK,
+        label: "MacBook Pro",
+        kind: "this",
+        route: null,
+        connection: primaryConnectionFrom("reconnecting"),
+      }),
+      others: [],
+      threads: [thread("charges", MACBOOK, { attention: "working", sessionLive: true })],
+    });
+    expect(describeComputerLocation(down.center, NOW_MS)).toBe("This computer · Reconnecting");
+    expect(resolveProviderLineState(down.center, down.center.providers[0]!)).toBe("offline");
+    expect(primaryConnectionFrom("error")).toBe("offline");
+  });
+});
+
+describe("linkedDeviceInputs", () => {
+  function session(sessionId: string, overrides: Partial<LinkedDeviceSession> = {}) {
+    return {
+      sessionId,
+      subject: "relay-device",
+      current: false,
+      connected: true,
+      lastConnectedAt: null,
+      client: { deviceType: "mobile", os: "iOS", browser: "Safari" },
+      ...overrides,
+    } satisfies LinkedDeviceSession;
+  }
+
+  it("draws each phone and tablet session, even two with the same name", () => {
+    const devices = linkedDeviceInputs(
+      [
+        session("first-iphone"),
+        session("second-iphone"),
+        // This window, and a desktop browser, are not linked devices.
+        session("this-window", { current: true }),
+        session("laptop", { client: { deviceType: "desktop" } }),
+        session("ipad", {
+          subject: "owner",
+          connected: false,
+          client: { deviceType: "tablet", label: "Studio iPad" },
+        }),
+      ],
+      "relay-device",
+    );
+    expect(devices.map((device) => [device.id, device.label, device.route])).toEqual([
+      ["device:first-iphone", "iOS · Safari", "relay"],
+      ["device:second-iphone", "iOS · Safari", "relay"],
+      ["device:ipad", "Studio iPad", "network"],
+    ]);
+    const model = buildFleetModel({
+      center: computer({ id: MACBOOK, label: "MacBook Pro", kind: "this", route: null }),
+      others: devices,
+      threads: [],
+    });
+    expect(model.others.map((other) => other.label)).toEqual([
+      "iOS · Safari",
+      "iOS · Safari",
+      "Studio iPad",
+    ]);
   });
 });

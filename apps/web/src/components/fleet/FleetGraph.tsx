@@ -287,8 +287,12 @@ function ProviderNode({
         {count > 0 ? (
           <span
             className={cn(
-              "absolute -top-1.5 -right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-[10px] leading-none font-semibold text-white tabular-nums",
-              provider.needsYou > 0 ? "bg-amber-500" : "bg-primary-graph",
+              "absolute -top-1.5 -right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-[10px] leading-none font-semibold tabular-nums",
+              // Dark text on the amber and on dark mode's light blue: white
+              // would fall under 4.5:1 on both.
+              provider.needsYou > 0
+                ? "bg-amber-500 text-amber-950"
+                : "bg-primary-graph text-white dark:text-background",
             )}
           >
             {count}

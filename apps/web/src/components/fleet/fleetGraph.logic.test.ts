@@ -2,7 +2,9 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildTravelingDotKeyframes,
+  FLEET_COMPUTER_NODE_RADIUS,
   FLEET_GRAPH_MAX_COMPUTERS,
+  FLEET_PROVIDER_NODE_RADIUS,
   layoutFleetGraph,
   travelingDotDelaySeconds,
 } from "./fleetGraph.logic";
@@ -37,7 +39,59 @@ describe("layoutFleetGraph", () => {
       expect(provider.y).toBeLessThan(layout.center.y);
     }
   });
+
+  it("keeps two agents of another computer apart on a phone-width stage", () => {
+    // The stage's edge used to push both onto the same spot above their computer.
+    const layout = layoutFleetGraph({
+      width: 300,
+      height: 270,
+      centerProviderCount: 2,
+      otherProviderCounts: [2],
+    });
+    expect(touchingNodes(layout)).toEqual([]);
+  });
+
+  it("keeps every node apart with eight computers of four agents each", () => {
+    const layout = layoutFleetGraph({
+      width: 880,
+      height: 300,
+      centerProviderCount: 4,
+      otherProviderCounts: Array.from({ length: FLEET_GRAPH_MAX_COMPUTERS }, () => 4),
+    });
+    expect(layout.otherProviders.flat()).toHaveLength(FLEET_GRAPH_MAX_COMPUTERS * 4);
+    expect(touchingNodes(layout)).toEqual([]);
+  });
 });
+
+/** Every pair of nodes whose circles overlap, as readable labels. */
+function touchingNodes(layout: ReturnType<typeof layoutFleetGraph>): string[] {
+  const nodes = [
+    { name: "this computer", point: layout.center, radius: FLEET_COMPUTER_NODE_RADIUS },
+    ...layout.others.map((point, index) => ({
+      name: `computer ${index}`,
+      point,
+      radius: FLEET_COMPUTER_NODE_RADIUS,
+    })),
+    ...layout.centerProviders.map((point, index) => ({
+      name: `this computer's agent ${index}`,
+      point,
+      radius: FLEET_PROVIDER_NODE_RADIUS,
+    })),
+    ...layout.otherProviders.flatMap((points, computer) =>
+      points.map((point, index) => ({
+        name: `computer ${computer}'s agent ${index}`,
+        point,
+        radius: FLEET_PROVIDER_NODE_RADIUS,
+      })),
+    ),
+  ];
+  return nodes.flatMap((a, index) =>
+    nodes
+      .slice(index + 1)
+      .filter((b) => Math.hypot(a.point.x - b.point.x, a.point.y - b.point.y) < a.radius + b.radius)
+      .map((b) => `${a.name} / ${b.name}`),
+  );
+}
 
 describe("buildTravelingDotKeyframes", () => {
   it("moves the dot with transform and opacity only, edge to edge, in half the cycle", () => {

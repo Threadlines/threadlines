@@ -41,7 +41,7 @@ export function providerInstanceBadgeLetters(label: string): string {
  * connected computer's, so a thread that lives on another computer still
  * finds its agent's icon.
  */
-export function useKnownServerProviders(): ReadonlyArray<ServerProvider> {
+function useKnownServerProviders(): ReadonlyArray<ServerProvider> {
   const local = useServerProviders();
   const savedEnvironments = useSavedEnvironmentRuntimeStore((state) => state.byId);
   return useMemo(() => {
