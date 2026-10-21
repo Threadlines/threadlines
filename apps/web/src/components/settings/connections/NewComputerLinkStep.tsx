@@ -30,6 +30,8 @@ interface LinkPartner extends ComputerLinkTarget {}
 export function useNewComputerLinkPartners(newComputer: ComputerLinkTarget): {
   readonly ready: boolean;
   readonly partners: ReadonlyArray<LinkPartner>;
+  /** No server of its own (hosted app, phone): the user picks which computer to link with. */
+  readonly choosePartner: boolean;
 } {
   const primary = usePrimaryEnvironmentDescriptor();
   const primaryConnected =
@@ -39,11 +41,12 @@ export function useNewComputerLinkPartners(newComputer: ComputerLinkTarget): {
   const links = useComputerLinksStore((state) => state.byEnvironmentId);
   return useMemo(() => {
     const runtime = savedRuntime[newComputer.environmentId];
+    const choosePartner = primary === null;
     if (runtime?.connectionState !== "connected" || runtime.descriptor === null) {
-      return { ready: false, partners: [] };
+      return { ready: false, partners: [], choosePartner };
     }
     if (runtime.descriptor.capabilities.computerLinks !== true) {
-      return { ready: true, partners: [] };
+      return { ready: true, partners: [], choosePartner };
     }
     const candidates: LinkPartner[] =
       primary !== null
@@ -66,7 +69,7 @@ export function useNewComputerLinkPartners(newComputer: ComputerLinkTarget): {
     const partners = candidates.filter(
       (partner) => missingDirections(partner, newComputer, links).length > 0,
     );
-    return { ready: true, partners };
+    return { ready: true, partners, choosePartner };
   }, [links, newComputer, primary, primaryConnected, savedRecords, savedRuntime]);
 }
 
@@ -94,11 +97,14 @@ function missingDirections(
 export function NewComputerLinkStep({
   newComputer,
   partners,
+  choosePartner,
   connectedNote,
   onClose,
 }: {
   readonly newComputer: ComputerLinkTarget;
   readonly partners: ReadonlyArray<LinkPartner>;
+  /** Show which computer it links with ("Link with: Mac"), and let the user pick. */
+  readonly choosePartner: boolean;
   /** The line saying the computer is connected, above the question. */
   readonly connectedNote: string;
   readonly onClose: () => void;
@@ -152,7 +158,7 @@ export function NewComputerLinkStep({
             Each thread one starts on the other waits for you to allow it. You can change this in
             Fleet.
           </p>
-          {partners.length > 1 ? (
+          {choosePartner || partners.length > 1 ? (
             <div className="flex items-center gap-2 pt-1">
               <span className="text-xs text-muted-foreground">Link with</span>
               <Select

@@ -16,6 +16,7 @@ import {
   useRelayJoinStore,
   useSavedEnvironmentRuntimeStore,
 } from "~/environments/runtime";
+import { isHostedStaticApp } from "~/hostedPairing";
 import { RelayRequestError } from "~/relayDevice";
 import { cn } from "~/lib/utils";
 import { NewComputerLinkStep, useNewComputerLinkPartners } from "./NewComputerLinkStep";
@@ -197,12 +198,13 @@ function ConnectedStep({
   readonly plainNote: ReactNode;
   readonly onClose: () => void;
 }) {
-  const { ready, partners } = useNewComputerLinkPartners(computer);
+  const { ready, partners, choosePartner } = useNewComputerLinkPartners(computer);
   if (ready && partners.length > 0) {
     return (
       <NewComputerLinkStep
         newComputer={computer}
         partners={partners}
+        choosePartner={choosePartner}
         connectedNote={connectedNote}
         onClose={onClose}
       />
@@ -241,7 +243,7 @@ export function JoinComputerDialog(props: {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   // The hosted app and the phone have no server of their own: no SSH, and
   // code joins go straight to the relay.
-  const hosted = primaryEnvironmentId === null;
+  const hosted = isHostedStaticApp();
   const desktopBridge = window.desktopBridge;
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
