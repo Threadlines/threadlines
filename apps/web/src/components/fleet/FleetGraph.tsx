@@ -446,7 +446,9 @@ export function FleetGraph({
       `.${scope} .fleet-dot.trail-1>i{transform:scale(.7);opacity:.45}`,
       `.${scope} .fleet-dot.trail-2>i{transform:scale(.5);opacity:.2}`,
       `.${scope} .fleet-ring>i{position:absolute;border-radius:50%;box-shadow:0 0 0 1.5px var(--primary-graph)}`,
-      `.${scope}[data-paused] .fleet-dot,.${scope}[data-paused] .fleet-ring{animation-play-state:paused}`,
+      // Important: each dot's inline `animation` shorthand also sets the
+      // play state (to running), and an inline style beats a plain rule.
+      `.${scope}[data-paused] .fleet-dot,.${scope}[data-paused] .fleet-ring{animation-play-state:paused!important}`,
       keyframes,
     ].join("\n");
   }, [moving, scope]);
