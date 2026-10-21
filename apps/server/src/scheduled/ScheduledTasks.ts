@@ -28,6 +28,7 @@ import {
   type ChildThreadLaunch,
   type ChildThreadWorkspace,
   type OrchestrationEvent,
+  type OrchestrationSession,
   type ProjectId,
   type RuntimeMode,
   type ScheduledRun,
@@ -610,65 +611,29 @@ const make = Effect.gen(function* () {
   const requestTaskId = (requestId: string) =>
     ScheduledTaskId.make(derivedUuid("scheduled-task-request", requestId));
 
-  /** Saves an agent's change (from a thread's agent), checked again now. */
-  const applyChange = (requestId: string, change: ScheduledTaskChange, origin: ThreadId) =>
+  /** Saves an agent's new task (from a thread's agent), checked again now: one per request. */
+  const applyCreate = (requestId: string, draft: ScheduledTaskCreateInput, origin: ThreadId) =>
     Effect.gen(function* () {
-      const now = yield* nowMillis;
-      if (change.kind === "create") {
-        const id = requestTaskId(requestId);
-        const existing = yield* repo
-          .getTask(id)
-          .pipe(Effect.mapError(storageError("read the task")));
-        if (Option.isSome(existing)) return toTask(existing.value, undefined);
-        const row = yield* prepareCreate(change.draft, now, { id, origin });
-        yield* repo.insertTask(row).pipe(Effect.mapError(storageError("save the task")));
-        yield* notify;
-        return toTask(row, undefined);
-      }
-      return yield* update(change.input);
+      const id = requestTaskId(requestId);
+      const existing = yield* repo.getTask(id).pipe(Effect.mapError(storageError("read the task")));
+      if (Option.isSome(existing)) return toTask(existing.value, undefined);
+      const row = yield* prepareCreate(draft, yield* nowMillis, { id, origin });
+      yield* repo.insertTask(row).pipe(Effect.mapError(storageError("save the task")));
+      yield* notify;
+      return toTask(row, undefined);
     });
 
-  const propose: ScheduledTasksShape["propose"] = (input) =>
+  /** Records an agent's change for the user to answer from a card. */
+  const askUser = (
+    input: Parameters<ScheduledTasksShape["propose"]>[0],
+    preview: {
+      readonly name: string;
+      readonly details: ReadonlyArray<string>;
+      readonly taskId: ScheduledTaskId | null;
+    },
+    now: number,
+  ) =>
     Effect.gen(function* () {
-      const now = yield* nowMillis;
-      const { change } = input;
-      if (
-        change.kind === "create" &&
-        exceedsRuntimeMode(change.draft.runtimeMode, input.callerRuntimeMode)
-      ) {
-        return yield* taskError("A task can't run with more access than the agent setting it up.");
-      }
-      // Checked before anyone is asked: the user only sees changes that can be made.
-      const preview =
-        change.kind === "create"
-          ? yield* prepareCreate(change.draft, now).pipe(
-              Effect.map((row) => ({
-                name: row.name,
-                details: createDetails(row),
-                taskId: null,
-                aboveCaller: false,
-              })),
-            )
-          : yield* prepareUpdate(change.input, now).pipe(
-              Effect.map(({ current, row }) => ({
-                name: row.name,
-                details: updateDetails(current, row),
-                taskId: row.id,
-                // Pausing only takes work away; anything else on a task with
-                // more access than the agent asking is the user's call.
-                aboveCaller:
-                  exceedsRuntimeMode(current.runtimeMode, input.callerRuntimeMode) &&
-                  !isPauseOnly(change.input),
-              })),
-            );
-      const mode = yield* input.mode;
-      if (mode === "off") return { outcome: "off" as const };
-      if (mode === "auto" && !preview.aboveCaller) {
-        return {
-          outcome: "applied" as const,
-          task: yield* applyChange(input.requestId, input.change, input.threadId),
-        };
-      }
       yield* repo
         .insertRequest({
           requestId: input.requestId,
@@ -676,13 +641,7 @@ const make = Effect.gen(function* () {
           participantId: input.participantId,
           action: input.change.kind,
           taskId: preview.taskId,
-          payload: {
-            change: input.change,
-            name: preview.name,
-            details: preview.aboveCaller
-              ? [...preview.details, ABOVE_CALLER_DETAIL]
-              : preview.details,
-          },
+          payload: { change: input.change, name: preview.name, details: preview.details },
           createdAt: new Date(now).toISOString(),
         })
         .pipe(Effect.mapError(storageError("record the request")));
@@ -693,6 +652,68 @@ const make = Effect.gen(function* () {
         taskId: preview.taskId ?? requestTaskId(input.requestId),
         name: preview.name,
       };
+    });
+
+  const propose: ScheduledTasksShape["propose"] = (input) =>
+    Effect.gen(function* () {
+      const { change } = input;
+      if (change.kind === "create") {
+        if (exceedsRuntimeMode(change.draft.runtimeMode, input.callerRuntimeMode)) {
+          return yield* taskError(
+            "A task can't run with more access than the agent setting it up.",
+          );
+        }
+        const now = yield* nowMillis;
+        // Checked before anyone is asked: the user only sees changes that can be made.
+        const row = yield* prepareCreate(change.draft, now);
+        const mode = yield* input.mode;
+        if (mode === "off") return { outcome: "off" as const };
+        if (mode === "auto") {
+          return {
+            outcome: "applied" as const,
+            task: yield* applyCreate(input.requestId, change.draft, input.threadId),
+          };
+        }
+        return yield* askUser(
+          input,
+          { name: row.name, details: createDetails(row), taskId: null },
+          now,
+        );
+      }
+      // An edit is checked, and decided, against the very task its save
+      // writes over: a task whose access went up since an earlier read, or
+      // a setting turned off, is seen here, never after the save.
+      for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt += 1) {
+        const now = yield* nowMillis;
+        const { current, row } = yield* prepareUpdate(change.input, now);
+        // Pausing only takes work away; anything else on a task with more
+        // access than the agent asking is the user's call.
+        const aboveCaller =
+          exceedsRuntimeMode(current.runtimeMode, input.callerRuntimeMode) &&
+          !isPauseOnly(change.input);
+        const mode = yield* input.mode;
+        if (mode === "off") return { outcome: "off" as const };
+        if (mode === "ask" || aboveCaller) {
+          const details = updateDetails(current, row);
+          return yield* askUser(
+            input,
+            {
+              name: row.name,
+              details: aboveCaller ? [...details, ABOVE_CALLER_DETAIL] : details,
+              taskId: row.id,
+            },
+            now,
+          );
+        }
+        const saved = yield* repo
+          .saveTask(row)
+          .pipe(Effect.mapError(storageError("save the task")));
+        if (!saved) continue;
+        yield* notify;
+        const summaries = yield* repo.runSummaries.pipe(Effect.orElseSucceed(() => new Map()));
+        return { outcome: "applied" as const, task: toTask(row, summaries.get(row.id)) };
+      }
+      return yield* taskError(KEPT_CHANGING);
     });
 
   /** What allowing an agent's request writes, checked from now: the new task or the edit. */
@@ -1012,6 +1033,25 @@ const make = Effect.gen(function* () {
         : ({ kind: "worktree", projectCwd, baseRef: head } satisfies ChildThreadWorkspace);
     });
 
+  /**
+   * The run's project, still where the run was planned to work: a launch
+   * (or one resumed after a restart) never goes somewhere else. A run stored
+   * before the folder was recorded isn't checked.
+   */
+  const plannedProject = (launch: ScheduledRunLaunch) =>
+    Effect.gen(function* () {
+      const project = yield* readProject(launch.projectId);
+      if (project === undefined) {
+        return { refusal: "Its project isn't on this computer any more." } as const;
+      }
+      if (launch.projectRoot != null && project.workspaceRoot !== launch.projectRoot) {
+        return {
+          refusal: "Its project moved to another folder since this run was planned.",
+        } as const;
+      }
+      return { project } as const;
+    });
+
   /** Ends a run that couldn't launch, unless something ended it first. */
   const failLaunch = (run: ScheduledRunRow, reason: string) =>
     Effect.gen(function* () {
@@ -1053,17 +1093,9 @@ const make = Effect.gen(function* () {
   /** A new thread for the run, set up in stages by ThreadBootstrap. */
   const launchNewThread = (row: ScheduledRunRow, initial: ScheduledRunLaunch) =>
     Effect.gen(function* () {
-      const project = yield* readProject(initial.projectId);
-      if (project === undefined) {
-        return yield* failLaunch(row, "Its project isn't on this computer any more.");
-      }
-      // Never somewhere other than where it was planned to run.
-      if (initial.projectRoot !== null && project.workspaceRoot !== initial.projectRoot) {
-        return yield* failLaunch(
-          row,
-          "Its project moved to another folder since this run was planned.",
-        );
-      }
+      const planned = yield* plannedProject(initial);
+      if ("refusal" in planned) return yield* failLaunch(row, planned.refusal);
+      const { project } = planned;
       let launch = initial;
       if (launch.workspace === null) {
         if (!(yield* stillLaunching(row, "workspace"))) return;
@@ -1173,6 +1205,8 @@ const make = Effect.gen(function* () {
     },
   ) =>
     Effect.gen(function* () {
+      const planned = yield* plannedProject(launch);
+      if ("refusal" in planned) return yield* failLaunch(row, planned.refusal);
       const threadId = launch.target.threadId;
       const thread = yield* readThread(threadId);
       if (thread === undefined || thread.deletedAt !== null || thread.archivedAt !== null) {
@@ -1204,11 +1238,13 @@ const make = Effect.gen(function* () {
               TurnId.make(`scheduled-run:${scheduledRunKey(row.taskId, row.slotUtc)}`),
             message: { messageId, role: "user", text: launch.prompt, attachments: [] },
             delivery: "queue",
-            // The task's saved settings, never more access than the task
-            // has, nor than the thread has now (its user may have lowered it).
+            // The task's saved model, and never more access than the task
+            // has, nor than the thread has when the turn starts: the decider
+            // clamps a scheduled run's message again when it leaves the
+            // queue. The thread keeps its own interaction mode.
             modelSelection: launch.modelSelection,
             runtimeMode: saferRuntimeMode(launch.runtimeMode, thread.runtimeMode),
-            interactionMode: launch.interactionMode,
+            scheduledTaskId: row.taskId,
             // In a room, for the agent that set the task up.
             ...(launch.target.kind === "thread" && launch.target.participantId !== undefined
               ? { participantId: launch.target.participantId }
@@ -1350,13 +1386,15 @@ const make = Effect.gen(function* () {
         status === "nothing_to_report" &&
         run.launch?.target.kind === "new_thread" &&
         run.threadId !== null &&
+        run.messageId !== null &&
         end.turnId !== null &&
         // A card waiting there needs the user; the thread stays in front.
         !(yield* waitingThreadIds).has(run.threadId)
       ) {
         const threadId = run.threadId;
-        // Wrapped and seen in one step, only while the run's own turn is
-        // still the last thing in the thread.
+        const messageId = run.messageId;
+        // Wrapped and seen in one step, only while the run's own turn and
+        // message are still the last thing in the thread.
         yield* engine
           .dispatch({
             type: "thread.done-override.set",
@@ -1364,7 +1402,7 @@ const make = Effect.gen(function* () {
             threadId,
             state: "done",
             at,
-            whileLatestTurnId: end.turnId,
+            whileQuietAfter: { turnId: end.turnId, messageId },
           })
           .pipe(
             Effect.catch((error) =>
@@ -1408,8 +1446,60 @@ const make = Effect.gen(function* () {
    * message's turn when there is one, else a thread that's gone, a message
    * taken back, or a turn that never started.
    */
+  /**
+   * How a run ends, from the turn its message started, once that turn ended;
+   * null while it hasn't.
+   */
+  const endFromTurn = (
+    turn: { readonly turnId: TurnId | null; readonly state: string },
+    session: OrchestrationSession | null,
+  ) => {
+    if (turn.turnId === null) return null;
+    switch (turn.state) {
+      case "completed":
+        return { turnId: turn.turnId, outcome: "completed" as const, reason: null };
+      case "error":
+        return {
+          turnId: turn.turnId,
+          outcome: "failed" as const,
+          reason: plainRunError(session?.lastError, "Its turn failed."),
+        };
+      case "interrupted":
+        return {
+          turnId: turn.turnId,
+          outcome: "interrupted" as const,
+          reason:
+            session?.status === "interrupted"
+              ? "A restart cut its turn off."
+              : "Its turn was stopped before it finished.",
+        };
+      default:
+        return null;
+    }
+  };
+
+  /**
+   * A run still marked launching whose message the previous process already
+   * delivered, and whose turn already ended: settled now, so it never counts
+   * against the slots claimed next. One not delivered is left to
+   * resumeLaunches.
+   */
+  const settleDeliveredLaunch = (run: ScheduledRunRow) =>
+    Effect.gen(function* () {
+      if (launching.has(runKey(run))) return;
+      if (run.threadId === null || run.messageId === null) return;
+      const thread = yield* readThread(run.threadId);
+      if (thread === undefined) return;
+      const messageId = run.messageId;
+      const threadTurns = yield* turns.listByThreadId({ threadId: thread.id });
+      const turn = threadTurns.find((entry) => entry.pendingMessageId === messageId);
+      const end = turn === undefined ? null : endFromTurn(turn, thread.session);
+      if (end !== null) yield* endRun(run, end);
+    });
+
   const settleRun = (run: ScheduledRunRow, now: number) =>
     Effect.gen(function* () {
+      if (run.status === "launching") return yield* settleDeliveredLaunch(run);
       if (run.status !== "queued" && run.status !== "started") return;
       if (run.threadId === null || run.messageId === null) return;
       const thread = yield* readThread(run.threadId);
@@ -1425,38 +1515,19 @@ const make = Effect.gen(function* () {
       const threadTurns = yield* turns.listByThreadId({ threadId: thread.id });
       const turn = threadTurns.find((entry) => entry.pendingMessageId === messageId);
       if (turn !== undefined && turn.turnId !== null) {
-        switch (turn.state) {
-          case "pending":
-          case "running":
-            if (run.status === "queued") {
-              yield* repo.updateRun({
-                taskId: run.taskId,
-                slotUtc: run.slotUtc,
-                from: ["queued"],
-                status: "started",
-                now: new Date(now).toISOString(),
-              });
-              yield* changedRuns;
-            }
-            return;
-          case "completed":
-            return yield* endRun(run, { turnId: turn.turnId, outcome: "completed", reason: null });
-          case "error":
-            return yield* endRun(run, {
-              turnId: turn.turnId,
-              outcome: "failed",
-              reason: plainRunError(thread.session?.lastError, "Its turn failed."),
-            });
-          case "interrupted":
-            return yield* endRun(run, {
-              turnId: turn.turnId,
-              outcome: "interrupted",
-              reason:
-                thread.session?.status === "interrupted"
-                  ? "A restart cut its turn off."
-                  : "Its turn was stopped before it finished.",
-            });
+        const end = endFromTurn(turn, thread.session);
+        if (end !== null) return yield* endRun(run, end);
+        if (run.status === "queued") {
+          yield* repo.updateRun({
+            taskId: run.taskId,
+            slotUtc: run.slotUtc,
+            from: ["queued"],
+            status: "started",
+            now: new Date(now).toISOString(),
+          });
+          yield* changedRuns;
         }
+        return;
       }
       if (thread.archivedAt !== null) {
         return yield* endRun(run, {
@@ -1563,7 +1634,10 @@ const make = Effect.gen(function* () {
     }
   });
 
-  /** Queued and started runs, checked against their threads. */
+  /**
+   * Working runs checked against their threads, launching ones from a
+   * previous process included.
+   */
   const sweepRuns = Effect.gen(function* () {
     const now = yield* nowMillis;
     const working = yield* repo.listWorkingRuns.pipe(Effect.orElseSucceed(() => []));

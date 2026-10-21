@@ -84,8 +84,9 @@ export const ScheduledRunLaunch = Schema.Struct({
   /**
    * The project's folder when the run was claimed: a launch (or a resumed
    * one) whose project moved since is refused rather than run elsewhere.
+   * Absent on a run stored before it was recorded: not checked.
    */
-  projectRoot: Schema.NullOr(Schema.String),
+  projectRoot: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type ScheduledRunLaunch = typeof ScheduledRunLaunch.Type;
 

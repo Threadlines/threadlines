@@ -207,6 +207,7 @@ const makeComputer = Effect.gen(function* () {
   return {
     engine,
     repo,
+    workspaceRoot,
     boot,
     thread,
     runs,
@@ -467,6 +468,110 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       }),
   );
 
+  it.effect("a continuation claimed before a restart is refused if its project moved", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const before = yield* computer.boot();
+      // The thread it continues: a run of another task, so it exists.
+      const opener = yield* before.create(draft({ name: "Opener", cadence: { kind: "manual" } }));
+      const opened = yield* before.runNow({ id: opener.id });
+      const target = scheduledRunThreadId(opener.id, opened.slotUtc);
+      yield* eventually(
+        computer.thread(target).pipe(Effect.map((thread) => thread !== undefined)),
+        "the thread exists",
+      );
+      const follow = yield* before.create(
+        draft({
+          name: "Follow-up",
+          cadence: { kind: "manual" },
+          target: { kind: "thread", threadId: target },
+        }),
+      );
+      const read = Option.getOrThrow(yield* computer.repo.getTask(follow.id));
+      const launch = {
+        taskName: read.name,
+        prompt: read.prompt,
+        projectId: read.projectId,
+        checkout: read.checkout,
+        workspace: null,
+        modelSelection: read.modelSelection,
+        runtimeMode: read.runtimeMode,
+        interactionMode: read.interactionMode,
+        target: read.target,
+        projectRoot: computer.workspaceRoot,
+      };
+      // Claimed, then the process stopped before its message went anywhere.
+      const slotUtc = "2026-10-20T08:01:00.000Z";
+      const claimed = yield* computer.repo.claimManualRun({
+        taskId: follow.id,
+        expectedRevision: read.revision,
+        run: { slotUtc, trigger: "manual", launch },
+        now: slotUtc,
+      });
+      assert.equal(Option.getOrThrow(claimed).status, "launching");
+      yield* computer.engine.dispatch({
+        type: "project.meta.update",
+        commandId: CommandId.make("project-moved-under-continuation"),
+        projectId: PROJECT,
+        workspaceRoot: fs.mkdtempSync(path.join(os.tmpdir(), "scheduled-tasks-moved-")),
+      });
+
+      const restarted = yield* computer.boot();
+      yield* restarted.tick;
+      yield* eventually(
+        computer.runs(follow.id).pipe(Effect.map((rows) => rows[0]?.status === "failed")),
+        "the resumed continuation was refused",
+      );
+      assert.match((yield* computer.runs(follow.id))[0]?.reason ?? "", /moved/);
+      const messageId = scheduledRunMessageId(follow.id, slotUtc);
+      const thread = (yield* computer.thread(target))!;
+      assert.isFalse(thread.messages.some((message) => message.id === messageId));
+      assert.isFalse(
+        (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId),
+      );
+    }),
+  );
+
+  it.effect("a run stored before its project folder was recorded still reads, unchecked", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+      const read = Option.getOrThrow(yield* computer.repo.getTask(task.id));
+      // As an older build stored it: no projectRoot at all.
+      yield* computer.repo.claimManualRun({
+        taskId: task.id,
+        expectedRevision: read.revision,
+        run: {
+          slotUtc: "2026-10-20T08:00:00.000Z",
+          trigger: "manual",
+          launch: {
+            taskName: read.name,
+            prompt: read.prompt,
+            projectId: read.projectId,
+            checkout: read.checkout,
+            workspace: null,
+            modelSelection: read.modelSelection,
+            runtimeMode: read.runtimeMode,
+            interactionMode: read.interactionMode,
+            target: read.target,
+          },
+        },
+        now: "2026-10-20T08:00:00.000Z",
+      });
+      const rows = yield* computer.runs(task.id);
+      assert.equal(rows.length, 1);
+      assert.isUndefined(rows[0]?.launch?.projectRoot);
+      yield* service.tick;
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((runs) => runs[0]?.status === "started")),
+        "the old run launched",
+      );
+    }),
+  );
+
   it.effect("a launch whose project moved since its run was planned is refused", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;
@@ -640,6 +745,52 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
     }),
   );
 
+  it.effect("a quiet run never wraps a thread whose user just wrote, before that turn starts", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+      const run = yield* service.runNow({ id: task.id });
+      const threadId = scheduledRunThreadId(task.id, run.slotUtc);
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+        "the run started",
+      );
+      const turnId = TurnId.make("run-turn");
+      yield* computer.turnRuns(threadId, turnId);
+      yield* service.recordFinish({ threadId, turnId, nothingToReport: true, summary: null });
+      yield* computer.turnCompletes(threadId, turnId);
+      // The thread is idle; the user's message is accepted, its turn not yet
+      // begun, when the run's end is handled.
+      yield* computer.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("user-writes"),
+        threadId,
+        message: {
+          messageId: MessageId.make("user-message"),
+          role: "user",
+          text: "Now look at the release branch.",
+          attachments: [],
+        },
+        runtimeMode: "auto",
+        interactionMode: "default",
+        createdAt: "2026-10-20T08:00:40.000Z",
+      });
+      yield* service.onTurnEnd({
+        threadId,
+        turnId,
+        outcome: "completed",
+        error: undefined,
+        pendingMessageId: scheduledRunMessageId(task.id, run.slotUtc),
+      });
+      assert.equal((yield* computer.runs(task.id))[0]?.status, "nothing_to_report");
+      const thread = (yield* computer.thread(threadId))!;
+      assert.notEqual(thread.doneOverride?.state, "done");
+      assert.isNull(thread.lastSeenAt);
+    }),
+  );
+
   it.effect("a run that continues a thread queues its message there and never wraps it", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;
@@ -665,13 +816,14 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       });
 
       yield* setClock("2026-10-20T08:05:00.000Z");
-      // Saved with less access than the thread has: each run keeps to it.
+      // Saved with more access than the thread has: runs never go above the
+      // thread's own.
       const follow = yield* service.create(
         draft({
           name: "Follow-up",
           cadence: { kind: "manual" },
           target: { kind: "thread", threadId: target },
-          runtimeMode: "approval-required",
+          runtimeMode: "full-access",
           modelSelection: { instanceId: CODEX, model: "gpt-6-astra" },
         }),
       );
@@ -687,9 +839,47 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       );
       const thread = (yield* computer.thread(target))!;
       const queued = (thread.queuedFollowUps ?? []).find((entry) => entry.messageId === messageId);
-      assert.equal(queued?.runtimeMode, "approval-required");
+      assert.equal(queued?.runtimeMode, "auto");
       assert.deepEqual(queued?.modelSelection, { instanceId: CODEX, model: "gpt-6-astra" });
-      assert.equal(queued?.interactionMode, "default");
+
+      // While it waits, the user lowers the thread's access and switches it
+      // to plan mode: its turn starts at the lower access, still planning.
+      yield* computer.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("user-lowers-access"),
+        threadId: target,
+        runtimeMode: "approval-required",
+        createdAt: "2026-10-20T08:05:30.000Z",
+      });
+      yield* computer.engine.dispatch({
+        type: "thread.interaction-mode.set",
+        commandId: CommandId.make("user-plans"),
+        threadId: target,
+        interactionMode: "plan",
+        createdAt: "2026-10-20T08:05:31.000Z",
+      });
+      yield* computer.engine.dispatch({
+        type: "thread.follow-up.send-queued",
+        commandId: CommandId.make("send-scheduled-follow-up"),
+        threadId: target,
+        messageId,
+        createdAt: "2026-10-20T08:05:40.000Z",
+      });
+      const started = (yield* computer.thread(target))!;
+      assert.equal(started.runtimeMode, "approval-required");
+      assert.equal(started.interactionMode, "plan");
+      const turnRequests = (yield* computer.events).filter(
+        (event) =>
+          event.type === "thread.turn-start-requested" &&
+          event.payload.threadId === target &&
+          event.payload.messageId === messageId,
+      );
+      assert.equal(turnRequests.length, 1);
+      const request = turnRequests[0]!;
+      if (request.type === "thread.turn-start-requested") {
+        assert.equal(request.payload.runtimeMode, "approval-required");
+        assert.equal(request.payload.interactionMode, "plan");
+      }
       // The tool's word is taken only from a thread a run started for itself.
       const turnId = TurnId.make("follow-turn");
       assert.equal(
@@ -836,6 +1026,48 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
         ],
       );
     }),
+  );
+
+  it.effect(
+    "after a restart, a run still marked launching whose turn ended never makes the overdue slot skip",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        // The first process stops right after its run's turn was asked for,
+        // before it marked the run started.
+        const before = yield* computer.boot({
+          bootstrap: {
+            startChild: (input) =>
+              computer.bootstrap.startChild(input).pipe(Effect.andThen(Effect.interrupt)),
+          },
+        });
+        const task = yield* before.create(draft({ cadence: { kind: "hourly", minute: 0 } }));
+        yield* setClock("2026-10-20T09:00:05.000Z");
+        yield* before.tick;
+        const thread = scheduledRunThreadId(task.id, "2026-10-20T09:00:00.000Z");
+        yield* eventually(
+          computer
+            .thread(thread)
+            .pipe(Effect.map((detail) => detail?.messages.some((m) => m.role === "user") === true)),
+          "the 9:00 run's message was delivered",
+        );
+        // Its turn ran and ended while the run was still marked launching.
+        yield* computer.turnRuns(thread, TurnId.make("nine-turn"));
+        yield* computer.turnCompletes(thread, TurnId.make("nine-turn"));
+        assert.equal((yield* computer.runs(task.id))[0]?.status, "launching");
+
+        yield* setClock("2026-10-20T10:00:30.000Z");
+        const after = yield* computer.boot();
+        yield* after.tick;
+        assert.deepEqual(
+          (yield* computer.runs(task.id)).map((row) => [row.slotUtc, row.status]),
+          [
+            ["2026-10-20T09:00:00.000Z", "finished"],
+            ["2026-10-20T10:00:00.000Z", "launching"],
+          ],
+        );
+      }),
   );
 
   it.effect("a run whose turn never started fails, in the provider's own plain words", () =>

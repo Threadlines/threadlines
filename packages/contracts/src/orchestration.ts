@@ -1412,6 +1412,12 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
   fromThread: Schema.optional(ThreadMessageOrigin),
   /** See MessageComposer: kept so the message is written with it when sent. */
   composer: Schema.optional(MessageComposer),
+  /**
+   * Queued by a scheduled task's run (docs/design/fleet.md, Part 6). When it
+   * starts its turn it may lower the thread's access but never raise it, and
+   * it runs in the thread's own interaction mode.
+   */
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
@@ -2445,11 +2451,12 @@ const ThreadDoneOverrideSetCommand = Schema.Struct({
   at: IsoDateTime,
   /**
    * Server only (a scheduled run with nothing to report): wrap only while
-   * this turn is still the thread's latest, nothing runs and nothing waits
-   * behind it, and mark the thread seen as of `at` in the same step. Any
-   * newer work leaves the thread as it is.
+   * the run's turn is still the thread's latest, nothing else runs, starts
+   * or waits, and the run's message is still the last one written to the
+   * thread; and mark the thread seen as of `at` in the same step. Any newer
+   * work leaves the thread as it is.
    */
-  whileLatestTurnId: Schema.optional(TurnId),
+  whileQuietAfter: Schema.optional(Schema.Struct({ turnId: TurnId, messageId: MessageId })),
 });
 
 /**
@@ -2645,6 +2652,8 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionMode),
   /** See MessageComposer (server only: set from the client route). */
   composer: Schema.optional(MessageComposer),
+  /** Server only: a scheduled task's run (see OrchestrationQueuedFollowUp). */
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
   createdAt: IsoDateTime,
 });
 
