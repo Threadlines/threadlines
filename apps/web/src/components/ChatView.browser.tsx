@@ -3188,7 +3188,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("goes to Usage from the rail, and Threads brings back the thread it left", async () => {
+  it("goes to Usage from the rail, sliding the selection there, and Threads brings back the thread it left", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -3198,10 +3198,24 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
+      // The rail's one selection fill slides to whichever button is chosen.
+      const selectionSitsOn = (testId: string) =>
+        expect
+          .poll(() => {
+            const fill = document
+              .querySelector('[data-testid="rail-selection"]')
+              ?.getBoundingClientRect();
+            const target = document
+              .querySelector(`[data-testid="${testId}"]`)
+              ?.getBoundingClientRect();
+            return fill && target ? Math.round(Math.abs(fill.top - target.top)) : null;
+          })
+          .toBe(0);
       const initialPathname = mounted.router.state.location.pathname;
       await expect
         .element(page.getByTestId("rail-threads"))
         .toHaveAttribute("aria-current", "page");
+      await selectionSitsOn("rail-threads");
       await page.getByTestId("rail-usage").click();
       await waitForURL(
         mounted.router,
@@ -3209,6 +3223,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Expected the Usage route.",
       );
       await expect.element(page.getByTestId("rail-usage")).toHaveAttribute("aria-current", "page");
+      await selectionSitsOn("rail-usage");
 
       await page.getByTestId("rail-threads").click();
       await waitForURL(

@@ -45,6 +45,7 @@ import { readLocalApi } from "../localApi";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../hooks/useRelativeTimeTick";
 import {
   prewarmThreadJumpTargets,
@@ -430,17 +431,22 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader() {
 });
 
 /**
- * The list's footer: update notices and the version. Usage and Settings moved
- * into the rail (and the phone's row of destinations).
+ * The list's footer: agent-update progress and the Intel-build warning, each
+ * only while it has something to say, so the footer is usually gone. The
+ * app's own version and updates live in the rail's update button; where the
+ * rail is hidden (a phone, a narrow window) the version tag stays here.
  */
 const SidebarChromeFooter = memo(function SidebarChromeFooter() {
+  const isMobile = useIsMobile();
   return (
-    <SidebarFooter className="p-2">
+    <SidebarFooter className="p-2 empty:hidden">
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
-      <div className="flex min-h-6 items-center justify-end px-1">
-        <SidebarVersionTag />
-      </div>
+      {isMobile ? (
+        <div className="flex min-h-6 items-center justify-end px-1">
+          <SidebarVersionTag />
+        </div>
+      ) : null}
     </SidebarFooter>
   );
 });

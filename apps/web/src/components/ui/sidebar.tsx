@@ -278,7 +278,8 @@ function Sidebar({
         <div
           className={cn(
             "relative w-(--sidebar-width) bg-transparent",
-            animateLayout && "transition-[width] duration-200 ease-linear",
+            animateLayout &&
+              "transition-[width] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none",
             "group-data-[collapsible=offcanvas]:w-0",
             "group-data-[side=right]:rotate-180",
             variant === "floating" || variant === "inset"
@@ -293,7 +294,8 @@ function Sidebar({
         <div
           className={cn(
             "absolute inset-y-0 z-10 hidden w-(--sidebar-width) md:flex",
-            animateLayout && "transition-[left,right,width] duration-200 ease-linear",
+            animateLayout &&
+              "transition-[left,right,width,opacity] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] group-data-[collapsible=offcanvas]:opacity-0 motion-reduce:transition-none",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
