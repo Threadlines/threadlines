@@ -26,6 +26,9 @@ import type {
   OrchestrationChildRequestState,
   OrchestrationSideTurn,
   OrchestrationThreadParticipant,
+  RemoteChildStart,
+  RemoteChildThread,
+  ThreadRemoteOrigin,
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
@@ -227,6 +230,8 @@ export interface Thread {
   awaitedChildThreadCount?: number;
   /** On a parent: threads its agent asked to start wait for the user's yes. */
   pendingChildApproval?: boolean;
+  /** See ThreadShell.remoteOrigin. */
+  remoteOrigin?: ThreadRemoteOrigin | null;
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -322,6 +327,15 @@ export interface ThreadShell {
   /** On a parent: threads its agent asked to start wait for the user's yes. */
   pendingChildApproval?: boolean;
   /**
+   * Started by an agent on a linked computer: which computer and thread.
+   * Absent or null: started on this thread's own computer.
+   */
+  remoteOrigin?: ThreadRemoteOrigin | null;
+  /** On a parent: its children on linked computers, with their last known status. */
+  remoteChildren?: ReadonlyArray<RemoteChildThread>;
+  /** On a parent: starts asked of linked computers with no thread there yet. */
+  remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
+  /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.
    */
@@ -407,6 +421,12 @@ export interface SidebarThreadSummary {
   awaitedChildThreadCount?: number;
   /** See ThreadShell.pendingChildApproval. */
   pendingChildApproval?: boolean;
+  /** See ThreadShell.remoteOrigin: nested under its parent on the other computer. */
+  remoteOrigin?: ThreadRemoteOrigin | null;
+  /** See ThreadShell.remoteChildren. */
+  remoteChildren?: ReadonlyArray<RemoteChildThread>;
+  /** See ThreadShell.remoteChildStarts. */
+  remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
   /** Messages queued behind the running turn; a child with any is not finished. */
   queuedFollowUpCount?: number;
   /** See Thread.checkBacks. */

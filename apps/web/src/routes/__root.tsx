@@ -87,6 +87,7 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
+import { startComputerLinksSync } from "../environments/links/computerLinks";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
   ensurePrimaryEnvironmentReady,
@@ -609,12 +610,16 @@ function EnvironmentConnectionManagerBootstrap() {
     });
     // Joins waiting for a host's Allow survive restarts; pick them back up.
     const stopRelayJoins = startRelayJoinWatchers();
+    // Each connected computer's links, for Fleet, the inbox's link requests
+    // and Settings' linked computers.
+    const stopComputerLinks = startComputerLinksSync();
     // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
     // rather than by the sidebar, which on a phone unmounts the moment a tap
     // closes it, mid-prewarm.
     const unbindRowIntent = bindThreadRowIntentPrewarm(document);
     return () => {
       unbindRowIntent();
+      stopComputerLinks();
       stopRelayJoins();
       stopConnections();
     };

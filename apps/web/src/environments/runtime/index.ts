@@ -25,6 +25,7 @@ export {
   disconnectSavedEnvironmentByUser,
   ensureEnvironmentConnectionBootstrapped,
   getPrimaryEnvironmentConnection,
+  listEnvironmentConnections,
   markRelaySavedEnvironmentLinkExpired,
   readBackendEnvironmentConnection,
   readEnvironmentConnection,

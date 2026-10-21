@@ -382,6 +382,18 @@ export interface WsRpcClient {
     readonly submitJoin: RpcUnaryMethod<typeof WS_METHODS.relaySubmitJoin>;
     readonly directRoutes: RpcUnaryNoArgMethod<typeof WS_METHODS.relayDirectRoutes>;
   };
+  /**
+   * Computer links (docs/design/fleet.md): owner and client sessions alike,
+   * on servers whose descriptor reports `computerLinks`.
+   */
+  readonly links: {
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.linksSubscribe>;
+    readonly createInvite: RpcUnaryNoArgMethod<typeof WS_METHODS.linksCreateInvite>;
+    readonly accept: RpcUnaryMethod<typeof WS_METHODS.linksAccept>;
+    readonly setAccess: RpcUnaryMethod<typeof WS_METHODS.linksSetAccess>;
+    readonly remove: RpcUnaryMethod<typeof WS_METHODS.linksRemove>;
+    readonly respondRequest: RpcUnaryMethod<typeof WS_METHODS.linksRespondRequest>;
+  };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
     readonly warmUpTurn: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.warmUpTurn>;
@@ -1038,6 +1050,19 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       submitJoin: (input) =>
         transport.request((client) => client[WS_METHODS.relaySubmitJoin](input)),
       directRoutes: () => transport.request((client) => client[WS_METHODS.relayDirectRoutes]({})),
+    },
+    links: {
+      subscribe: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.linksSubscribe]({}), listener, {
+          ...options,
+          tag: WS_METHODS.linksSubscribe,
+        }),
+      createInvite: () => transport.request((client) => client[WS_METHODS.linksCreateInvite]({})),
+      accept: (input) => transport.request((client) => client[WS_METHODS.linksAccept](input)),
+      setAccess: (input) => transport.request((client) => client[WS_METHODS.linksSetAccess](input)),
+      remove: (input) => transport.request((client) => client[WS_METHODS.linksRemove](input)),
+      respondRequest: (input) =>
+        transport.request((client) => client[WS_METHODS.linksRespondRequest](input)),
     },
     orchestration: {
       // Commands are deduped server-side by commandId receipts, so re-sending
