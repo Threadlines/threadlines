@@ -111,6 +111,7 @@ import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { RemoteRequestGate } from "../Services/RemoteRequestGate.ts";
 import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
@@ -172,8 +173,11 @@ type ReactorWork =
   | {
       readonly type: "continue";
       /** Failures are logged and dropped by the worker. */
-      readonly run: Effect.Effect<void, Error, FileSystem.FileSystem | Path.Path | Scope.Scope>;
+      readonly run: ContinueWork;
     };
+
+/** Work an event started elsewhere, finished in its thread's worker. */
+type ContinueWork = Effect.Effect<void, Error, FileSystem.FileSystem | Path.Path | Scope.Scope>;
 
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -439,6 +443,10 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  // Computer links, when this server has them: see RemoteRequestGate.
+  const remoteRequestGate = yield* Effect.serviceOption(RemoteRequestGate);
+  /** The scope start() runs in: timers for held turns live there. */
+  let reactorScope: Scope.Scope | undefined;
   const providerService = yield* ProviderService;
   const seedBuilder = yield* ThreadContextSeedBuilder;
   const checkpointStore = yield* CheckpointStore;
@@ -2334,31 +2342,84 @@ const make = Effect.gen(function* () {
         threadId: event.payload.threadId,
         messageId: event.payload.messageId,
       });
-      // The session is settled only while this turn is still the thread's
-      // latest start. A turn that waited to take over can be dropped after a
-      // newer one started, and that one's session is left alone.
-      const stillLatestStart = yield* projectionTurnRepository
-        .getPendingTurnStartByThreadId({ threadId: event.payload.threadId })
-        .pipe(
-          Effect.map(
-            (pending) =>
-              Option.isSome(pending) && pending.value.messageId === event.payload.messageId,
-          ),
-          Effect.orElseSucceed(() => false),
-        );
-      if (stillLatestStart) {
-        yield* setThreadSessionErrorOnTurnStartFailure({
-          threadId: event.payload.threadId,
-          detail: "Stopped before the turn started.",
-          createdAt: yield* nowIso,
-        });
-      }
+      yield* dropStart("Stopped before the turn started.");
       return true;
     });
 
+    /** Whether this turn is still the thread's latest start (a newer one replaces it). */
+    const stillLatestStart = projectionTurnRepository
+      .getPendingTurnStartByThreadId({ threadId: event.payload.threadId })
+      .pipe(
+        Effect.map(
+          (pending) =>
+            Option.isSome(pending) && pending.value.messageId === event.payload.messageId,
+        ),
+      );
+
+    /**
+     * This turn won't be sent. The session is settled only while it is still
+     * the thread's latest start: a turn that waited to take over can be
+     * dropped after a newer one started, and that one's session is left alone.
+     */
+    const dropStart = (detail: string) =>
+      Effect.gen(function* () {
+        if (yield* stillLatestStart.pipe(Effect.orElseSucceed(() => false))) {
+          yield* setThreadSessionErrorOnTurnStartFailure({
+            threadId: event.payload.threadId,
+            detail,
+            createdAt: yield* nowIso,
+          });
+        }
+      });
+
+    /**
+     * A turn answering a linked computer's request (see remoteRequestVerdict):
+     * taken back there, it is dropped; while the record can't be read, it is
+     * held and tried again, as long as it is still the thread's latest start
+     * and its session wasn't stopped meanwhile. True when it must not go now.
+     */
+    const remoteTurnHeld: Effect.Effect<boolean, Error> = Effect.gen(function* () {
+      const verdict = yield* remoteRequestVerdict(
+        event.payload.threadId,
+        event.payload.messageId,
+        event.payload.fromThread,
+      );
+      if (verdict === "none") {
+        return false;
+      }
+      if (verdict === "unknown") {
+        yield* holdRemoteTurn(event.payload.threadId, retryHeldStart);
+        return true;
+      }
+      yield* releaseRemoteHold(event.payload.threadId);
+      if (verdict === "run") {
+        return false;
+      }
+      yield* Effect.logInfo("linked computer's turn not sent: its request was taken back", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+      });
+      yield* dropStart("The other computer took this request back before it started.");
+      return true;
+    });
+
+    const retryHeldStart = (token: symbol): ContinueWork =>
+      Effect.gen(function* () {
+        const latest = yield* resolveThread(event.payload.threadId);
+        if (
+          latest === undefined ||
+          latest.session?.status === "stopped" ||
+          !(yield* stillLatestStart)
+        ) {
+          yield* releaseRemoteHold(event.payload.threadId, token);
+          return;
+        }
+        yield* prepareAndSend;
+      });
+
     // Preparing the session and sending the turn, in this thread's worker.
-    const prepareAndSend = Effect.gen(function* () {
-      if (yield* stoppedSinceRequested) {
+    const prepareAndSend: ContinueWork = Effect.gen(function* () {
+      if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld)) {
         return;
       }
       const sendTurnRequest = yield* buildSendTurnRequestForThread({
@@ -2435,8 +2496,9 @@ const make = Effect.gen(function* () {
       } = sendTurnRequest.value;
 
       // Stop pressed while this turn was being prepared waited behind it in
-      // this worker, but has already raised the chain epoch.
-      if (yield* stoppedSinceRequested) {
+      // this worker, but has already raised the chain epoch. A linked
+      // computer may have taken the request back meanwhile too.
+      if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld)) {
         return;
       }
       // The turn request already recorded the model it expected to go out.
@@ -3904,29 +3966,182 @@ const make = Effect.gen(function* () {
     }
   });
 
-  /** Starts a queued message's turn. Losing a race with Remove is fine. */
+  /**
+   * Computer links (docs/design/fleet.md). A linked computer's request runs
+   * here only as a turn sent to the provider: a start's first turn, or a
+   * queued message the link delivered (`fromThread.kind === "request"` with
+   * an `environmentId`). Right before such a turn goes, and before such a
+   * queued message is sent, the link ledger has the last word, through this
+   * one check: a request that computer took back never runs, even if its
+   * command landed after the cancel (an RPC cut off mid-call lets go of its
+   * request while the engine still runs what it had queued) or its first
+   * turn was already asked for. `none`: not a linked computer's request.
+   */
+  const remoteRequestVerdict = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+    origin: ThreadMessageOrigin | undefined,
+  ) {
+    if (
+      Option.isNone(remoteRequestGate) ||
+      origin?.kind !== "request" ||
+      origin.environmentId === undefined
+    ) {
+      return "none" as const;
+    }
+    return yield* remoteRequestGate.value.messageVerdict({ threadId, messageId });
+  });
+
+  /**
+   * A thread whose turn waits on an unreadable link record: one owned retry
+   * per thread. A newer hold replaces an older one; a timer acts, or clears
+   * the entry, only while it still owns it.
+   */
+  const heldRemoteTurns = new Map<ThreadId, { readonly token: symbol; readonly tries: number }>();
+
+  /** The thread's hold is over (a verdict came, or there is nothing left to try). */
+  const releaseRemoteHold = (threadId: ThreadId, token?: symbol) =>
+    Effect.sync(() => {
+      const held = heldRemoteTurns.get(threadId);
+      if (held !== undefined && (token === undefined || held.token === token)) {
+        heldRemoteTurns.delete(threadId);
+      }
+    });
+
+  /**
+   * Holds a thread's turn and tries `attempt` again later (a second,
+   * doubling, at most a minute), in the thread's worker so it runs in order
+   * with the thread's events. An attempt whose reads fail tries again the
+   * same way. Timers live in the reactor's own scope.
+   */
+  const holdRemoteTurn = (threadId: ThreadId, attempt: (token: symbol) => ContinueWork) =>
+    Effect.suspend((): Effect.Effect<void> => {
+      const scope = reactorScope;
+      if (scope === undefined) {
+        return Effect.void;
+      }
+      const tries = heldRemoteTurns.get(threadId)?.tries ?? 0;
+      const token = Symbol(threadId);
+      heldRemoteTurns.set(threadId, { token, tries: tries + 1 });
+      const owns = () => heldRemoteTurns.get(threadId)?.token === token;
+      const run: ContinueWork = attempt(token).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logInfo("provider command reactor will retry a held turn", {
+                threadId,
+                cause: Cause.pretty(cause),
+              }).pipe(
+                Effect.andThen(
+                  Effect.suspend(() => (owns() ? holdRemoteTurn(threadId, attempt) : Effect.void)),
+                ),
+              ),
+        ),
+      );
+      return Effect.sleep(Duration.millis(Math.min(60_000, 1_000 * 2 ** tries))).pipe(
+        Effect.andThen(
+          Effect.suspend(() =>
+            owns()
+              ? worker.enqueue(String(threadId), { type: "continue", run }).pipe(Effect.asVoid)
+              : Effect.void,
+          ),
+        ),
+        Effect.forkIn(scope),
+        Effect.asVoid,
+      );
+    });
+
+  /**
+   * A held queued message tried again: unless by then Stop holds the queue,
+   * a turn runs (its end sends the queue), or nothing is queued.
+   */
+  const retryHeldQueue =
+    (threadId: ThreadId) =>
+    (token: symbol): ContinueWork =>
+      Effect.gen(function* () {
+        const thread = yield* resolveThread(threadId);
+        const next = thread ? nextQueuedFollowUp(thread) : undefined;
+        const session = thread?.session ?? null;
+        if (
+          thread === undefined ||
+          next === undefined ||
+          queueHeldByStop.has(threadId) ||
+          session?.status === "running" ||
+          session?.status === "starting" ||
+          (session?.activeTurnId ?? null) !== null
+        ) {
+          yield* releaseRemoteHold(threadId, token);
+          return;
+        }
+        yield* sendQueuedFollowUpWhenFree(threadId, next.messageId, yield* nowIso);
+      });
+
+  /**
+   * Starts a queued message's turn. Losing a race with Remove is fine. A
+   * linked computer's message taken back there leaves the queue unsent and
+   * the next one goes instead (see remoteRequestVerdict).
+   */
   const sendQueuedFollowUp = Effect.fnUntraced(function* (
     threadId: ThreadId,
     messageId: MessageId,
     createdAt: string,
   ) {
-    yield* orchestrationEngine
-      .dispatch({
-        type: "thread.follow-up.send-queued",
-        commandId: serverCommandId("follow-up-send-queued"),
-        threadId,
-        messageId,
-        createdAt,
-      })
-      .pipe(
-        Effect.catch((error) =>
-          Effect.logInfo("provider command reactor could not send a queued follow-up", {
+    let candidate: MessageId | undefined = messageId;
+    while (candidate !== undefined) {
+      const current: MessageId = candidate;
+      const thread = yield* resolveThread(threadId);
+      const origin = thread?.queuedFollowUps?.find(
+        (entry) => entry.messageId === current,
+      )?.fromThread;
+      const verdict = yield* remoteRequestVerdict(threadId, current, origin);
+      if (verdict === "unknown") {
+        yield* holdRemoteTurn(threadId, retryHeldQueue(threadId));
+        return;
+      }
+      if (verdict !== "none") {
+        yield* releaseRemoteHold(threadId);
+      }
+      if (verdict === "run" || verdict === "none") {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.follow-up.send-queued",
+            commandId: serverCommandId("follow-up-send-queued"),
             threadId,
-            messageId,
-            detail: String(error),
-          }),
-        ),
-      );
+            messageId: current,
+            createdAt,
+          })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logInfo("provider command reactor could not send a queued follow-up", {
+                threadId,
+                messageId: current,
+                detail: String(error),
+              }),
+            ),
+          );
+        return;
+      }
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.follow-up.unqueue",
+          commandId: serverCommandId("follow-up-remote-taken-back"),
+          threadId,
+          messageId: current,
+          createdAt,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor could not take back a cancelled message", {
+              threadId,
+              messageId: current,
+              detail: String(error),
+            }),
+          ),
+        );
+      const latest = yield* resolveThread(threadId);
+      const next = latest ? nextQueuedFollowUp(latest) : undefined;
+      candidate = next !== undefined && next.messageId !== current ? next.messageId : undefined;
+    }
   });
 
   /**
@@ -4981,6 +5196,7 @@ const make = Effect.gen(function* () {
   );
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
+    reactorScope = yield* Effect.scope;
     yield* settleWorkflowRunsFromPreviousProcess().pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning(

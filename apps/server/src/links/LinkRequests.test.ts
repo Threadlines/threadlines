@@ -23,11 +23,13 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Duration from "effect/Duration";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 
 import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
@@ -54,6 +56,10 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionThreadRepositoryLive } from "../persistence/Layers/ProjectionThreads.ts";
 import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
+import {
+  ProjectionTurnRepository,
+  type ProjectionTurnRepositoryShape,
+} from "../persistence/Services/ProjectionTurns.ts";
 import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
@@ -200,6 +206,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
     const ledger = Context.get(context, LinkRequestRepository);
     const devices = Context.get(context, RelayDeviceRepository);
     const realBootstrap = Context.get(context, ThreadBootstrap);
+    const turnsRepo = Context.get(context, ProjectionTurnRepository);
 
     yield* engine.dispatch({
       type: "project.create",
@@ -242,6 +249,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
         readonly bootstrap?: Partial<ThreadBootstrapShape>;
         readonly engine?: Partial<OrchestrationEngineShape>;
         readonly snapshots?: Partial<ProjectionSnapshotQueryShape>;
+        readonly turns?: Partial<ProjectionTurnRepositoryShape>;
       } = {},
     ) =>
       Effect.gen(function* () {
@@ -252,6 +260,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
               Layer.succeed(ThreadBootstrap, { ...realBootstrap, ...patch.bootstrap }),
               Layer.succeed(OrchestrationEngineService, { ...engine, ...patch.engine }),
               Layer.succeed(ProjectionSnapshotQuery, { ...snapshots, ...patch.snapshots }),
+              Layer.succeed(ProjectionTurnRepository, { ...turnsRepo, ...patch.turns }),
               Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([PROVIDER]) }),
               Layer.mock(GitVcsDriver)({
                 execute: () =>
@@ -297,6 +306,9 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
       ledger,
       devices,
       bootstrap: realBootstrap,
+      snapshots,
+      turns: turnsRepo,
+
       addLink,
       boot,
       thread,
@@ -625,7 +637,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
   );
 
   it.effect(
-    "a send cut off after its command was queued keeps the request until it lands, so a cancel takes it back",
+    "a send whose queue command lands after its cancel is held back from the provider by the gate",
     () =>
       Effect.gen(function* () {
         const computer = yield* makeComputer();
@@ -656,16 +668,12 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
           }),
         );
         yield* Deferred.await(taken);
-        // The asking computer went away mid-call, then took the send back.
-        const interrupting = yield* Effect.forkChild(Fiber.interrupt(sending));
-        const cancelling = yield* Effect.forkChild(
-          service.cancel(link(), ChildRequestId.make("send-1")),
-        );
-        yield* wallClockSleep(50);
+        // The asking computer went away mid-call (its request is let go of),
+        // then took the send back; only then does the queued command land.
+        yield* Fiber.interrupt(sending);
+        const cancelled = yield* service.cancel(link(), ChildRequestId.make("send-1"));
+        assert.equal(cancelled.status, "cancelled");
         yield* Deferred.succeed(land, undefined);
-        yield* Fiber.join(interrupting);
-        const cancelled = yield* Fiber.join(cancelling);
-        // The command landed (it was queued before the call was cut off).
         yield* eventually(
           Effect.map(
             computer.engine.getCommandReceipt(
@@ -676,12 +684,14 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
           "the queued command lands",
         );
 
-        assert.equal(cancelled.status, "cancelled");
+        // It sits in the queue, but the provider reactor's gate takes it back
+        // unsent (ProviderCommandReactor's test covers that side).
         const messageId = linkMessageId(DEVICE, "send-1");
         const child = yield* computer.thread(threadId);
-        assert.isFalse(
+        assert.isTrue(
           (child?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId),
         );
+        assert.equal(yield* service.messageVerdict({ threadId, messageId }), "taken-back");
       }),
   );
 
@@ -804,6 +814,249 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
       const stop = yield* Effect.flip(unreadable.stopThread(link(), threadId));
       assert.equal(stop._tag, "PeerRpcError");
     }),
+  );
+
+  it.effect(
+    "a cancel's clean-up that fails at startup is tried again until it lands, and its message can't run meanwhile",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const { service, threadId } = yield* startedChild(computer, "request-1");
+        yield* service.send(link(), {
+          requestId: ChildRequestId.make("send-1"),
+          threadId,
+          text: "Add the security fixes too.",
+        });
+        const messageId = linkMessageId(DEVICE, "send-1");
+        const isQueued = Effect.map(computer.thread(threadId), (child) =>
+          (child?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId),
+        );
+        let unreadable = true;
+        const reads = {
+          getThreadDetailById: (id: ThreadId) =>
+            unreadable
+              ? Effect.fail(
+                  new PersistenceSqlError({ operation: "getThreadDetailById", detail: "busy" }),
+                )
+              : computer.snapshots.getThreadDetailById(id),
+        };
+        const dying = yield* computer.boot({ snapshots: reads });
+        yield* Effect.flip(dying.cancel(link(), ChildRequestId.make("send-1")));
+        // Its clean-up didn't land, yet its message may not run.
+        assert.isTrue(yield* isQueued);
+        assert.equal(yield* dying.messageVerdict({ threadId, messageId }), "taken-back");
+
+        const restarted = yield* computer.boot({ snapshots: reads });
+        yield* restarted.startReactor();
+        assert.isTrue(yield* isQueued);
+        unreadable = false;
+        yield* TestClock.adjust(Duration.seconds(2));
+        yield* eventually(
+          Effect.map(isQueued, (queued) => !queued),
+          "the message is taken back",
+        );
+        assert.isNull((yield* computer.request("send-1")).cleanup);
+      }),
+  );
+
+  it.effect(
+    "restart recovery judges each request by its own turn, not by other work on its thread",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        // A start whose first turn was running when the process stopped, and
+        // a send to the same thread, delivered and still waiting there.
+        const { service, threadId } = yield* startedChild(computer, "request-1");
+        yield* service.send(link(), {
+          requestId: ChildRequestId.make("send-1"),
+          threadId,
+          text: "Add the security fixes too.",
+        });
+        const restarted = yield* computer.boot();
+        // Since the restart the waiting send was started: live work, on the
+        // same thread as the cut-off start.
+        yield* computer.engine.dispatch({
+          type: "thread.follow-up.send-queued",
+          commandId: CommandId.make("provider-sends-it"),
+          threadId,
+          messageId: linkMessageId(DEVICE, "send-1"),
+          createdAt: AT,
+        });
+        yield* restarted.startReactor();
+
+        const start = yield* computer.request("request-1");
+        assert.equal(start.status, "failed");
+        assert.include(start.reportText ?? "", "interrupted by a restart on Mac mini");
+        const send = yield* computer.request("send-1");
+        assert.isNull(send.reportId);
+      }),
+  );
+
+  it.effect("restart recovery classifies nothing until it knows where this process started", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed");
+      yield* startedChild(computer, "request-1");
+      let unreadable = true;
+      const restarted = yield* computer.boot({
+        snapshots: {
+          getSnapshotSequence: () =>
+            unreadable
+              ? Effect.fail(
+                  new PersistenceSqlError({ operation: "getSnapshotSequence", detail: "busy" }),
+                )
+              : computer.snapshots.getSnapshotSequence(),
+        },
+      });
+      yield* restarted.startReactor();
+      yield* TestClock.adjust(Duration.seconds(2));
+      yield* wallClockSleep(100);
+      // Still unknown: nothing was judged.
+      assert.equal((yield* computer.request("request-1")).status, "queued");
+      unreadable = false;
+      yield* TestClock.adjust(Duration.seconds(4));
+      yield* eventually(
+        Effect.map(computer.request("request-1"), (row) => row.status === "failed"),
+        "the cut-off turn is reported",
+      );
+    }),
+  );
+
+  it.effect(
+    "a start that reports nothing back, settled as soon as it is set up, is still taken back by a cancel",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const service = yield* computer.boot();
+        yield* service.start(link(), { ...startInput("request-1"), reportBack: false });
+        yield* eventually(
+          Effect.map(computer.request("request-1"), (row) => row.status === "answered"),
+          "it is settled once set up",
+        );
+        const threadId = linkThreadId(DEVICE, "request-1");
+        const firstMessage = linkMessageId(DEVICE, "request-1");
+        assert.equal(yield* service.messageVerdict({ threadId, messageId: firstMessage }), "run");
+        // Taken back while its provider is still starting: the report stays
+        // as it was, but the turn must not run.
+        const cancelled = yield* service.cancel(link(), ChildRequestId.make("request-1"));
+        assert.equal(cancelled.status, "already_settled");
+        assert.equal((yield* computer.request("request-1")).status, "answered");
+        assert.equal(
+          yield* service.messageVerdict({ threadId, messageId: firstMessage }),
+          "taken-back",
+        );
+      }),
+  );
+
+  it.effect("a start cancelled after its first turn was asked for is taken back at the gate", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed");
+      const { service, threadId } = yield* startedChild(computer, "request-1");
+      const firstMessage = linkMessageId(DEVICE, "request-1");
+      assert.equal(yield* service.messageVerdict({ threadId, messageId: firstMessage }), "run");
+      yield* service.cancel(link(), ChildRequestId.make("request-1"));
+      // The provider reactor asks right before the turn goes (its own test
+      // covers that side): this one never reaches the provider.
+      assert.equal(
+        yield* service.messageVerdict({ threadId, messageId: firstMessage }),
+        "taken-back",
+      );
+    }),
+  );
+
+  it.effect("a restart's settling whose write fails is tried again until it is written", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed");
+      // A start whose first turn was running when the process stopped.
+      yield* startedChild(computer, "request-1");
+      let unwritable = true;
+      const restarted = yield* computer.boot({
+        ledger: {
+          settle: (input) =>
+            unwritable
+              ? Effect.fail(new LinkRequestRepositoryError({ operation: "settle", cause: "busy" }))
+              : computer.ledger.settle(input),
+        },
+      });
+      yield* restarted.startReactor();
+      assert.equal((yield* computer.request("request-1")).status, "queued");
+      unwritable = false;
+      yield* TestClock.adjust(Duration.seconds(2));
+      yield* eventually(
+        Effect.map(computer.request("request-1"), (row) => row.status === "failed"),
+        "the cut-off turn is reported",
+      );
+      assert.include(
+        (yield* computer.request("request-1")).reportText ?? "",
+        "interrupted by a restart on Mac mini",
+      );
+    }),
+  );
+
+  it.effect(
+    "a send delivered again after a restart and started at once is live work, not cut off",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const { threadId } = yield* startedChild(computer, "request-1");
+        // The process died right after recording the send.
+        const recorded = yield* Deferred.make<void>();
+        const dying = yield* computer.boot({
+          ledger: {
+            insert: (input) =>
+              computer.ledger
+                .insert(input)
+                .pipe(
+                  Effect.tap(() =>
+                    input.payload.kind === "send"
+                      ? Deferred.succeed(recorded, undefined).pipe(Effect.andThen(Effect.never))
+                      : Effect.void,
+                  ),
+                ),
+          },
+        });
+        yield* Effect.forkDetach(
+          dying.send(link(), {
+            requestId: ChildRequestId.make("send-1"),
+            threadId,
+            text: "Add the security fixes too.",
+          }),
+        );
+        yield* Deferred.await(recorded);
+
+        // After the restart its delivery lands and the thread, idle, starts it
+        // at once (what the provider reactor does), before recovery looks.
+        const restarted = yield* computer.boot({
+          engine: {
+            dispatch: (command) =>
+              command.type !== "thread.remote-request.queue"
+                ? computer.engine.dispatch(command)
+                : computer.engine.dispatch(command).pipe(
+                    Effect.tap(() =>
+                      computer.engine.dispatch({
+                        type: "thread.follow-up.send-queued",
+                        commandId: CommandId.make("provider-sends-it"),
+                        threadId: command.threadId,
+                        messageId: command.messageId,
+                        createdAt: command.createdAt,
+                      }),
+                    ),
+                  ),
+          },
+        });
+        yield* restarted.startReactor();
+        yield* wallClockSleep(100);
+
+        const send = yield* computer.request("send-1");
+        assert.isNull(send.reportId);
+        assert.notEqual(send.status, "failed");
+      }),
   );
 
   it.effect("answers a send with the turn its own message started, not another", () =>

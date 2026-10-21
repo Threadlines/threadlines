@@ -24,7 +24,11 @@ import { ComputerLinkClientLive } from "./links/ComputerLinkClient.ts";
 import { ComputerLinkRepositoryLive } from "./links/ComputerLinkRepository.ts";
 import { ComputerLinksLive } from "./links/ComputerLinks.ts";
 import { LinkRequestRepositoryLive } from "./links/LinkRequestRepository.ts";
-import { LinkRequestsLive, RemoteRequestTurnEndsLive } from "./links/LinkRequests.ts";
+import {
+  LinkRequestsLive,
+  RemoteRequestGateLive,
+  RemoteRequestTurnEndsLive,
+} from "./links/LinkRequests.ts";
 import { peerRpcRouteLayer } from "./links/peerRoute.ts";
 import { RemoteChildReactorLive } from "./links/RemoteChildReactor.ts";
 import { ComputerLinkReactorsLive } from "./links/ComputerLinkReactors.ts";
@@ -261,9 +265,10 @@ const ComputerLinksLayerLive = Layer.mergeAll(ComputerLinkReactorsLive, Computer
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
-  Layer.provideMerge(RemoteRequestTurnEndsLive),
-  Layer.provideMerge(ComputerLinksLayerLive),
   Layer.provideMerge(ProviderCommandReactorLive),
+  // Both reactors above take these (optionally), so they come after them.
+  Layer.provideMerge(Layer.mergeAll(RemoteRequestTurnEndsLive, RemoteRequestGateLive)),
+  Layer.provideMerge(ComputerLinksLayerLive),
   Layer.provideMerge(ChildThreadReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),

@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  ChildRequestId,
   CommandRequestId,
   CommandRunId,
+  EnvironmentId,
   ModelSelection,
   type OrchestrationCommand,
   type OrchestrationSession,
@@ -84,7 +86,9 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { RemoteRequestGate, type RemoteRequestGateShape } from "../Services/RemoteRequestGate.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -199,6 +203,10 @@ describe("ProviderCommandReactor", () => {
     readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
     /** Instances that are no longer configured (an account was removed). */
     readonly removedInstanceIds?: ReadonlyArray<string>;
+    /** Computer links' check on a linked computer's queued messages. */
+    readonly remoteRequestGate?: RemoteRequestGateShape;
+    /** The reactor's reads of a thread fail while this says so. */
+    readonly failThreadRead?: (threadId: ThreadId) => boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -553,10 +561,39 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderCommandReactorLive.pipe(
+      Layer.provideMerge(
+        input?.remoteRequestGate !== undefined
+          ? Layer.succeed(RemoteRequestGate, input.remoteRequestGate)
+          : Layer.empty,
+      ),
       // No checkpoint reactor here to report captures done: hand over at once.
       Layer.provideMerge(Layer.succeed(HandoverCaptureWait, Duration.zero)),
       Layer.provideMerge(orchestrationLayer),
-      Layer.provideMerge(projectionSnapshotLayer),
+      Layer.provideMerge(
+        input?.failThreadRead === undefined
+          ? projectionSnapshotLayer
+          : Layer.effect(
+              ProjectionSnapshotQuery,
+              Effect.gen(function* () {
+                const real = yield* ProjectionSnapshotQuery;
+                const failThreadRead = input.failThreadRead!;
+                return {
+                  ...real,
+                  getThreadDetailById: (threadId: ThreadId) =>
+                    Effect.suspend(() =>
+                      failThreadRead(threadId)
+                        ? Effect.fail(
+                            new PersistenceSqlError({
+                              operation: "getThreadDetailById",
+                              detail: "busy",
+                            }),
+                          )
+                        : real.getThreadDetailById(threadId),
+                    ),
+                };
+              }),
+            ).pipe(Layer.provide(projectionSnapshotLayer)),
+      ),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       // Return a deterministic seed so handoff tests can assert it reaches
       // `startSession`. `build` is only invoked on seeded handoffs (and to pay
@@ -3585,6 +3622,59 @@ describe("ProviderCommandReactor", () => {
     const readThread = async (harness: Awaited<ReturnType<typeof createHarness>>) =>
       (await harness.readModel()).threads.find((entry) => entry.id === threadId);
 
+    const createRemoteThread = async (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      id: string,
+    ) => {
+      const remoteThread = ThreadId.make(id);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`cmd-create-${id}`),
+          threadId: remoteThread,
+          projectId: asProjectId("project-1"),
+          title: "Write the changelog",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          remoteOrigin: {
+            linkDeviceId: "device-windows",
+            environmentId: EnvironmentId.make("env-windows"),
+            environmentLabel: "Windows PC",
+            threadId: ThreadId.make("windows-parent"),
+            threadTitle: "Ship the release",
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      return remoteThread;
+    };
+
+    /** A linked computer's message written into its thread's queue. */
+    const queueRemote = (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      remoteThread: ThreadId,
+      messageId: MessageId,
+    ) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.remote-request.queue",
+          commandId: CommandId.make(`cmd-queue-${messageId}`),
+          threadId: remoteThread,
+          messageId,
+          text: `message ${messageId}`,
+          fromThread: {
+            threadId: ThreadId.make("windows-parent"),
+            requestId: ChildRequestId.make(`request-${messageId}`),
+            kind: "request",
+            environmentId: EnvironmentId.make("env-windows"),
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+
     it("sends a queued message as the next turn once the running turn completes", async () => {
       const harness = await createHarness();
       const first = asMessageId("queued-first");
@@ -3614,6 +3704,295 @@ describe("ProviderCommandReactor", () => {
         role: "user",
         text: "then write tests",
       });
+    });
+
+    it("takes back a linked computer's queued message whose request was cancelled, and sends the next", async () => {
+      const takenBack = asMessageId("remote-taken-back");
+      const kept = asMessageId("remote-kept");
+      const harness = await createHarness({
+        remoteRequestGate: {
+          messageVerdict: ({ messageId }) =>
+            Effect.succeed(messageId === takenBack ? "taken-back" : "run"),
+        },
+      });
+      const remoteThread = ThreadId.make("remote-thread");
+      const origin = {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      };
+      const dispatch = (command: OrchestrationCommand) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-remote-thread-create"),
+        threadId: remoteThread,
+        projectId: asProjectId("project-1"),
+        title: "Write the changelog",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        remoteOrigin: origin,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const setRemoteSession = (status: "running" | "ready", at: string) =>
+        dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-remote-session-${status}-${at}`),
+          threadId: remoteThread,
+          session: {
+            threadId: remoteThread,
+            status,
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: status === "running" ? turnId : null,
+            pendingBackgroundTaskCount: 0,
+            lastError: null,
+            updatedAt: at,
+          },
+          createdAt: at,
+        });
+      await setRemoteSession("running", "2026-01-01T00:00:01.000Z");
+      // The linked computer sent two; it took the first back, but the clean-up
+      // that would unqueue it hasn't landed.
+      for (const messageId of [takenBack, kept]) {
+        await dispatch({
+          type: "thread.remote-request.queue",
+          commandId: CommandId.make(`cmd-remote-queue-${messageId}`),
+          threadId: remoteThread,
+          messageId,
+          text: `message ${messageId}`,
+          fromThread: {
+            threadId: origin.threadId,
+            requestId: ChildRequestId.make(`request-${messageId}`),
+            kind: "request",
+            environmentId: origin.environmentId,
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+      }
+
+      await setRemoteSession("ready", "2026-01-01T00:00:03.000Z");
+
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.drain();
+      // Only the one still asked for ran; the other left the queue unsent.
+      expect(harness.sendTurn.mock.calls.map((call) => call[0])).toMatchObject([
+        { threadId: remoteThread, messageId: kept },
+      ]);
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === remoteThread);
+      expect(thread?.queuedFollowUps ?? []).toEqual([]);
+    });
+
+    it("holds a linked computer's queued message while its record can't be read, then sends it", async () => {
+      const messageId = asMessageId("remote-held");
+      const verdicts: Array<"run" | "unknown"> = ["unknown"];
+      const asked: Array<MessageId> = [];
+      const harness = await createHarness({
+        remoteRequestGate: {
+          messageVerdict: (input) =>
+            Effect.sync(() => {
+              asked.push(input.messageId);
+              return verdicts.shift() ?? "run";
+            }),
+        },
+      });
+      const remoteThread = ThreadId.make("remote-thread-held");
+      const origin = {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      };
+      const dispatch = (command: OrchestrationCommand) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-remote-held-create"),
+        threadId: remoteThread,
+        projectId: asProjectId("project-1"),
+        title: "Write the changelog",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        remoteOrigin: origin,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      // Queued on an idle thread: it would go at once, but its record can't be read.
+      await dispatch({
+        type: "thread.remote-request.queue",
+        commandId: CommandId.make("cmd-remote-held-queue"),
+        threadId: remoteThread,
+        messageId,
+        text: "Add the security fixes too.",
+        fromThread: {
+          threadId: origin.threadId,
+          requestId: ChildRequestId.make("request-held"),
+          kind: "request",
+          environmentId: origin.environmentId,
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      await waitFor(() => asked.length === 1);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+
+      // Once it can be read (the next try, a second later), the message goes.
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1, 5_000);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        threadId: remoteThread,
+        messageId,
+      });
+      // Asked again right before the turn went to the provider.
+      expect(asked.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(asked)).toEqual(new Set([messageId]));
+    });
+
+    it("never sends a linked computer's turn whose request was taken back after it was asked for", async () => {
+      const harness = await createHarness({
+        remoteRequestGate: { messageVerdict: () => Effect.succeed("taken-back") },
+      });
+      const remoteThread = await createRemoteThread(harness, "remote-thread-start");
+      // A start's first turn, asked for by its setup before the cancel landed.
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-remote-first-turn"),
+          threadId: remoteThread,
+          message: {
+            messageId: asMessageId("remote-first-message"),
+            role: "user",
+            text: "Write the changelog.",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          fromThread: {
+            threadId: ThreadId.make("windows-parent"),
+            requestId: ChildRequestId.make("request-start"),
+            kind: "request",
+            environmentId: EnvironmentId.make("env-windows"),
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      await waitFor(async () => {
+        const thread = (await harness.readModel()).threads.find(
+          (entry) => entry.id === remoteThread,
+        );
+        return (
+          thread?.session?.lastError ===
+          "The other computer took this request back before it started."
+        );
+      });
+      await harness.drain();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === remoteThread);
+      expect(thread?.session?.status).not.toBe("starting");
+    });
+
+    it("checks a linked computer's turn again right before sending it, after its session started", async () => {
+      // Allowed when the turn was asked for; taken back while the provider
+      // was still starting.
+      const verdicts: Array<"run" | "taken-back"> = ["run", "taken-back"];
+      const harness = await createHarness({
+        remoteRequestGate: {
+          messageVerdict: () => Effect.sync(() => verdicts.shift() ?? "taken-back"),
+        },
+      });
+      const remoteThread = await createRemoteThread(harness, "remote-thread-late-cancel");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-remote-late-cancel"),
+          threadId: remoteThread,
+          message: {
+            messageId: asMessageId("remote-late-cancel-message"),
+            role: "user",
+            text: "Write the changelog.",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          fromThread: {
+            threadId: ThreadId.make("windows-parent"),
+            requestId: ChildRequestId.make("request-late-cancel"),
+            kind: "request",
+            environmentId: EnvironmentId.make("env-windows"),
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      await waitFor(async () => {
+        const thread = (await harness.readModel()).threads.find(
+          (entry) => entry.id === remoteThread,
+        );
+        return (
+          thread?.session?.lastError ===
+          "The other computer took this request back before it started."
+        );
+      });
+      await harness.drain();
+      expect(harness.startSession).toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    });
+
+    it("keeps one retry per thread: a newer unknown replaces the older one", async () => {
+      const first = asMessageId("remote-overlap-first");
+      const second = asMessageId("remote-overlap-second");
+      const verdicts: Array<"run" | "unknown"> = ["unknown", "unknown"];
+      const asked: Array<MessageId> = [];
+      const harness = await createHarness({
+        remoteRequestGate: {
+          messageVerdict: (input) =>
+            Effect.sync(() => {
+              asked.push(input.messageId);
+              return verdicts.shift() ?? "run";
+            }),
+        },
+      });
+      const remoteThread = await createRemoteThread(harness, "remote-thread-overlap");
+      await queueRemote(harness, remoteThread, first);
+      await waitFor(() => asked.length === 1);
+      // Another message before the first retry: its hold replaces the first.
+      await queueRemote(harness, remoteThread, second);
+      await waitFor(() => asked.length === 2);
+      // The first timer (a second) finds it no longer owns the hold.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      expect(asked.length).toBe(2);
+      // The replacement (two seconds after the second hold) sends the queue.
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1, 5_000);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ messageId: first });
+    });
+
+    it("tries a held turn again when reading its thread fails during the retry", async () => {
+      const messageId = asMessageId("remote-read-fails");
+      const verdicts: Array<"run" | "unknown"> = ["unknown"];
+      let failReadsUntil = 0;
+      const remoteThread = ThreadId.make("remote-thread-read-fails");
+      const harness = await createHarness({
+        failThreadRead: (threadId) => threadId === remoteThread && Date.now() < failReadsUntil,
+        remoteRequestGate: {
+          messageVerdict: () =>
+            Effect.sync(() => {
+              const verdict = verdicts.shift() ?? "run";
+              // Reading the thread fails through the first retry (a second later).
+              if (verdict === "unknown") failReadsUntil = Date.now() + 1_300;
+              return verdict;
+            }),
+        },
+      });
+      await createRemoteThread(harness, "remote-thread-read-fails");
+      await queueRemote(harness, remoteThread, messageId);
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1, 6_000);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ messageId });
     });
 
     it("keeps queued messages waiting after the turn is interrupted", async () => {
