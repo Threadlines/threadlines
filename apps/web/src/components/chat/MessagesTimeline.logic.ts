@@ -18,6 +18,7 @@ import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../..
 import { type RoomAgentNames, roomAgentKey, roomTurnOwners } from "../../rooms";
 import {
   type OrchestrationAgentPage,
+  type OrchestrationAgentRequest,
   type OrchestrationCommandRequest,
   type MessageAgentModel,
   type MessageId,
@@ -39,12 +40,14 @@ import {
   liveActivityLabel,
   liveThoughtText,
   OPEN_TAIL_LINES,
+  threadlinesRoomToolOf,
 } from "./activitySteps";
 import {
   breaksWithin,
   isSideRow,
   placeSideExchanges,
   planSideExchanges,
+  sideAnswerLiveWork,
   sideExchangeBreaks,
   type SideAnswerView,
 } from "./sideAnswers";
@@ -285,6 +288,9 @@ export type MessagesTimelineRow = TimelineRowPlacement &
          *  show the answer being written. */
         compact: boolean;
         expanded: boolean;
+        /** The step the answer is on (sideAnswerLiveWork); null between
+         *  steps, and while the working row names it instead. */
+        liveStep: string | null;
       }
   );
 
@@ -457,6 +463,10 @@ export function deriveMessagesTimelineRows(input: {
   sideAnswers?: ReadonlyArray<SideAnswerView> | undefined;
   /** Side answers whose one-line status was opened to watch the answer. */
   expandedSideTurnIds?: ReadonlySet<SideTurnId> | undefined;
+  /** The room's open requests, by the message that made them: an agent's
+   *  ask its call stopped waiting for (`replyAsMessage`) is no longer what
+   *  the call is on. */
+  openAgentRequestByMessageId?: ReadonlyMap<MessageId, OrchestrationAgentRequest> | undefined;
   /** The agent holding the thread: it owns work no message names yet. Null
    *  (the default) for the thread's own. */
   workingParticipantId?: ThreadParticipantId | null | undefined;
@@ -721,22 +731,21 @@ export function deriveMessagesTimelineRows(input: {
     input.isWorking || liveAgentCount > 0
       ? takeLiveAgentTrackers(settledRows, input.liveAgentTrackerKeys ?? NO_LIVE_AGENT_TRACKER_KEYS)
       : { rows: settledRows, tracker: NO_TAKEN_TRACKER };
+  // The side answer the working row narrates, if any: its own line leaves the
+  // step to the working row.
+  let narratedSideTurnId: SideTurnId | null = null;
   if (input.isWorking) {
     // The working row is the turn's one fixed anchor: it renders for the whole
     // turn, whatever the tail is, so the live node, the timer, and the agent
     // tracker never teleport between homes. Its word is the step running now.
+    const { narrates, ...anchor } = resolveLiveAnchor(nextRows, visibleTimelineEntries, input);
+    narratedSideTurnId = narrates;
     rows.push({
       ...UNPLACED,
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
-      label: resolveLiveAnchorLabel(
-        nextRows,
-        visibleTimelineEntries,
-        input.activeStatusLabel,
-        input.roomAgentNames,
-      ),
-      thought: resolveLiveThought(visibleTimelineEntries),
+      ...anchor,
       command: resolveLiveCommand(visibleTimelineEntries),
       ...tracker,
     });
@@ -794,7 +803,10 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return placeRows(
-    placeSideExchanges(foldFinishedStretches(rows, input.isWorking), sidePlans),
+    placeSideExchanges(foldFinishedStretches(rows, input.isWorking), sidePlans, {
+      roomAgentNames: input.roomAgentNames ?? null,
+      narratedSideTurnId,
+    }),
     input.isWorking,
     input.workingParticipantId ?? null,
   );
@@ -1665,33 +1677,111 @@ function resolveWorkingAnchorLabel(
 }
 
 /**
- * What the working row says: a specific state when there is one ("Waiting for
- * approval", "Thinking"), else the step running right now in the active
- * exchange ("Reading service.ts"), else "Working".
+ * What the working row says, and the thought under it: a specific state when
+ * there is one ("Waiting for approval", "Thinking"), else the step running
+ * right now in the active exchange ("Reading service.ts"), else "Working".
+ * While the agent's one running step is an ask or review another agent is
+ * still answering, the row says what that agent is doing instead (`narrates`
+ * names that answer): the call itself has nothing new to say until the
+ * answer comes back.
  */
-function resolveLiveAnchorLabel(
+function resolveLiveAnchor(
   rows: ReadonlyArray<MessagesTimelineRow>,
   visibleTimelineEntries: ReadonlyArray<TimelineEntry>,
-  activeStatusLabel: string | undefined,
-  roomAgentNames: RoomAgentNames | null | undefined,
-): string {
-  const label = resolveWorkingAnchorLabel(visibleTimelineEntries, activeStatusLabel);
+  input: Pick<
+    Parameters<typeof deriveMessagesTimelineRows>[0],
+    "activeStatusLabel" | "roomAgentNames" | "sideAnswers" | "openAgentRequestByMessageId"
+  >,
+): {
+  readonly label: string;
+  readonly thought: string | null;
+  readonly narrates: SideTurnId | null;
+} {
+  const { roomAgentNames } = input;
+  const thought = resolveLiveThought(visibleTimelineEntries);
+  const label = resolveWorkingAnchorLabel(visibleTimelineEntries, input.activeStatusLabel);
   if (label !== "Working") {
-    return label;
+    return { label, thought, narrates: null };
   }
   const lastUserIndex = rows.findLastIndex(
     (row) => row.kind === "message" && startsExchange(row.message),
   );
-  const runningSteps = rows.slice(lastUserIndex + 1).flatMap((row) =>
+  const running = rows.slice(lastUserIndex + 1).flatMap((row) =>
     row.kind === "work"
       ? row.groupedEntries.flatMap((entry) => {
           if (entry.executionState !== "running") return [];
           const step = activityStepFromWorkLogEntry(entry, { roomAgentNames });
-          return step ? [step] : [];
+          return step ? [{ entry, step }] : [];
         })
       : [],
   );
-  return liveActivityLabel(runningSteps) ?? label;
+  const waitedOn =
+    running.length === 1
+      ? sideAnswerAwaitedBy(running[0]!.entry, input.sideAnswers, input.openAgentRequestByMessageId)
+      : null;
+  const narrated = waitedOn ? narrateSideAnswer(waitedOn, roomAgentNames) : null;
+  if (waitedOn && narrated) {
+    return { ...narrated, narrates: waitedOn.sideTurnId };
+  }
+  return {
+    label: liveActivityLabel(running.map(({ step }) => step)) ?? label,
+    thought,
+    narrates: null,
+  };
+}
+
+/**
+ * The side answer a running `room_ask` or `room_review` call waits on: one
+ * an agent asked for, of the call's kind, still being written, whose call
+ * has not stopped waiting for it. One side answer runs at a time, so there
+ * is at most one; one a call stopped waiting for can still be running when
+ * the agent makes its next call, which is not waiting on it.
+ */
+function sideAnswerAwaitedBy(
+  call: WorkLogEntry,
+  sideAnswers: ReadonlyArray<SideAnswerView> | undefined,
+  openAgentRequestByMessageId: ReadonlyMap<MessageId, OrchestrationAgentRequest> | undefined,
+): SideAnswerView | null {
+  const tool = threadlinesRoomToolOf(call);
+  if (tool !== "room_ask" && tool !== "room_review") {
+    return null;
+  }
+  const kind = tool === "room_review" ? "review" : "ask";
+  return (
+    sideAnswers?.find(
+      (view) =>
+        view.askedBy !== null &&
+        view.kind === kind &&
+        (view.state === "answering" || view.state === "stopping") &&
+        openAgentRequestByMessageId?.get(view.question.id)?.replyAsMessage !== true,
+    ) ?? null
+  );
+}
+
+/**
+ * A side answer in the working row's words: the agent's name and the step it
+ * is running ("GPT-6.1-Sol: Reading service.ts"), else that it is still at it
+ * ("GPT-6.1-Sol is reviewing"), with the newest words of a thought it is
+ * having. Null when the room has no name for the agent.
+ */
+function narrateSideAnswer(
+  view: SideAnswerView,
+  roomAgentNames: RoomAgentNames | null | undefined,
+): { readonly label: string; readonly thought: string | null } | null {
+  const name = roomAgentNames?.get(roomAgentKey(view.participantId));
+  if (name === undefined) {
+    return null;
+  }
+  const { step, thought } = sideAnswerLiveWork(view, roomAgentNames);
+  return {
+    label:
+      view.state === "stopping"
+        ? `${name} is stopping`
+        : step !== null
+          ? `${name}: ${step}`
+          : `${name} is ${view.kind === "review" ? "reviewing" : "answering"}`,
+    thought,
+  };
 }
 
 /** The newest words of the thought running right now, when the newest step in
@@ -2151,7 +2241,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.question === bs.question &&
         a.answerMessageId === bs.answerMessageId &&
         a.compact === bs.compact &&
-        a.expanded === bs.expanded
+        a.expanded === bs.expanded &&
+        a.liveStep === bs.liveStep
       );
     }
 

@@ -1,6 +1,12 @@
 import "../../index.css";
 
-import { EnvironmentId, MessageId, TurnId } from "@threadlines/contracts";
+import {
+  EnvironmentId,
+  MessageId,
+  SideTurnId,
+  ThreadParticipantId,
+  TurnId,
+} from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
@@ -90,6 +96,7 @@ vi.mock("@legendapp/list/react", async () => {
 });
 
 import { MessagesTimeline } from "./MessagesTimeline";
+import type { SideAnswerView } from "./sideAnswers";
 import { TIMELINE_ENTRANCE_ANIMATION_ID } from "./timelineEntrance";
 
 const MESSAGE_CREATED_AT = "2026-04-13T12:00:00.000Z";
@@ -483,6 +490,88 @@ describe("MessagesTimeline", () => {
       await expect.element(page.getByText("Running tests")).toBeVisible();
       const output = document.querySelector<HTMLElement>("[data-turn-working-output='true']");
       expect(output?.textContent).toBe("✓ src/a.test.ts (3 tests)");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("names the step a side answer is on, on its one line, without moving Stop", async () => {
+    const astra = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const sideTurnId = SideTurnId.make("side-live");
+    const roomAgents = new Map([
+      [
+        astra as string,
+        {
+          name: "GPT-6-Astra",
+          modelName: "GPT-6-Astra",
+          role: null,
+          left: false,
+          guest: false,
+          reasoning: null,
+          entry: undefined,
+        },
+      ],
+    ]);
+    const reading = (file: string): SideAnswerView => ({
+      sideTurnId,
+      participantId: astra,
+      kind: "ask",
+      askedBy: null,
+      question: {
+        id: MessageId.make("side-question"),
+        role: "user",
+        text: "Is the lock released on every path?",
+        participantId: astra,
+        sideTurnId,
+        createdAt: MESSAGE_CREATED_AT,
+        streaming: false,
+      },
+      answer: null,
+      steps: [
+        {
+          id: "astra-read",
+          createdAt: MESSAGE_CREATED_AT,
+          label: "Read file",
+          tone: "tool",
+          itemType: "dynamic_tool_call",
+          toolTitle: "Read file",
+          detail: `src/${file}`,
+          executionState: "running",
+        },
+      ],
+      state: "answering",
+      error: null,
+    });
+    const timeline = (sideAnswer: SideAnswerView) => (
+      <div className="w-[420px]">
+        <MessagesTimeline
+          {...buildProps()}
+          isWorking
+          activeTurnStartedAt={MESSAGE_CREATED_AT}
+          roomAgents={roomAgents}
+          sideAnswers={[sideAnswer]}
+          onStopSideAnswer={vi.fn()}
+          timelineEntries={[buildUserTimelineEntry("Fix the lock.")]}
+        />
+      </div>
+    );
+    const screen = await renderTimeline(timeline(reading("lock.ts")));
+
+    try {
+      const line = () =>
+        document.querySelector<HTMLElement>('[data-side-answer-status="answering"] > div')!;
+      const stop = () => page.getByRole("button", { name: "Stop" }).element();
+      await expect.element(page.getByText("GPT-6-Astra · Reading lock.ts")).toBeVisible();
+      const stopAt = stop().getBoundingClientRect();
+
+      // A step too long for the line truncates: Stop stays where it was, on
+      // the same single line, and the timer stays in view.
+      await screen.rerender(timeline(reading(`${"retry".repeat(30)}.ts`)));
+      await expect.element(page.getByText(/GPT-6-Astra · Reading retryretry/u)).toBeVisible();
+      expect(line().getBoundingClientRect().height).toBeLessThanOrEqual(20);
+      expect(stop().getBoundingClientRect().right).toBe(stopAt.right);
+      expect(stop().getBoundingClientRect().top).toBe(stopAt.top);
+      expect(line().textContent).toMatch(/· \d+[smh]/u);
     } finally {
       await screen.unmount();
     }

@@ -26,8 +26,10 @@ import {
   type ThreadParticipantId,
 } from "@threadlines/contracts";
 
+import type { RoomAgentNames } from "../../rooms";
 import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import type { ChatMessage } from "../../types";
+import { activityStepFromWorkLogEntry, liveActivityLabel, liveThoughtText } from "./activitySteps";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
 
 export interface SideAnswerView {
@@ -116,6 +118,35 @@ export function deriveSideAnswers(input: {
     });
   }
   return views;
+}
+
+/**
+ * What a side answer is doing right now: the step it is running, in the
+ * words the chat uses for a step still running ("Reading service.ts"), and
+ * the newest words of a thought it is having. Its steps never draw a step
+ * still running, so the line that narrates the answer says it instead: the
+ * working row while the agent that asked waits on it, else the answer's own
+ * line. A thought it keeps private (how Codex's arrive) reads "Thinking"
+ * while it is the newest thing the agent did. Both null between steps.
+ */
+export function sideAnswerLiveWork(
+  view: SideAnswerView,
+  roomAgentNames: RoomAgentNames | null | undefined,
+): { readonly step: string | null; readonly thought: string | null } {
+  if (view.state !== "answering" && view.state !== "stopping") {
+    return { step: null, thought: null };
+  }
+  const newest = view.steps.findLast((entry) => !entry.providerLifecyclePhase);
+  const thinking = newest?.tone === "thinking" && newest.executionState === "running";
+  const step =
+    liveActivityLabel(
+      view.steps.flatMap((entry) => {
+        if (entry.executionState !== "running") return [];
+        const running = activityStepFromWorkLogEntry(entry, { roomAgentNames });
+        return running ? [running] : [];
+      }),
+    ) ?? (thinking ? "Thinking" : null);
+  return { step, thought: newest ? liveThoughtText(newest) : null };
 }
 
 /** Where one side exchange goes in the chat. */
@@ -236,12 +267,31 @@ const messageRow = (
 });
 
 /**
+ * What a side answer's line needs to name the step it is on: the room's
+ * names, and the answer the working row already narrates, if any (each live
+ * answer's step shows on one line: the working row while the agent that
+ * asked waits on it, else the answer's own).
+ */
+export interface SideExchangeWording {
+  readonly roomAgentNames: RoomAgentNames | null;
+  readonly narratedSideTurnId: SideTurnId | null;
+}
+
+const NO_SIDE_EXCHANGE_WORDING: SideExchangeWording = {
+  roomAgentNames: null,
+  narratedSideTurnId: null,
+};
+
+/**
  * The rows one side exchange draws: where it was asked (`asked`), and, for
  * the user's answered side question, what is posted when it was done
  * (`published`). The user's question keeps one line under it the whole way,
  * answering and then leading to the answer, so finishing moves nothing.
  */
-export function sideExchangeRows(plan: SideExchangePlan): {
+export function sideExchangeRows(
+  plan: SideExchangePlan,
+  wording: SideExchangeWording = NO_SIDE_EXCHANGE_WORDING,
+): {
   readonly asked: MessagesTimelineRow[];
   readonly published: MessagesTimelineRow[];
 } {
@@ -292,6 +342,10 @@ export function sideExchangeRows(plan: SideExchangePlan): {
     error: view.error,
     compact,
     expanded: compact && expanded,
+    liveStep:
+      state === "answering" && view.sideTurnId !== wording.narratedSideTurnId
+        ? sideAnswerLiveWork(view, wording.roomAgentNames).step
+        : null,
     padTop: false,
   });
   const lineId = `side-status:${view.sideTurnId}`;
@@ -367,6 +421,7 @@ export function sideExchangeRows(plan: SideExchangePlan): {
 export function placeSideExchanges(
   rows: ReadonlyArray<MessagesTimelineRow>,
   plans: ReadonlyArray<SideExchangePlan>,
+  wording: SideExchangeWording = NO_SIDE_EXCHANGE_WORDING,
 ): MessagesTimelineRow[] {
   if (plans.length === 0) {
     return [...rows];
@@ -395,7 +450,7 @@ export function placeSideExchanges(
   };
   const inserts: Array<{ index: number; time: number; rows: MessagesTimelineRow[] }> = [];
   for (const plan of plans) {
-    const parts = sideExchangeRows(plan);
+    const parts = sideExchangeRows(plan, wording);
     inserts.push({ index: indexAt(plan.askedAtMs), time: plan.askedAtMs, rows: parts.asked });
     if (plan.publishedAtMs !== null && parts.published.length > 0) {
       inserts.push({
