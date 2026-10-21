@@ -502,7 +502,7 @@ export function NavigationRail() {
       aria-label="Main"
       data-slot="navigation-rail"
       data-testid="navigation-rail"
-      className="relative z-20 flex w-12 shrink-0 flex-col items-center gap-1 bg-frame pt-1 pb-2"
+      className="relative z-20 flex w-12 shrink-0 flex-col items-center gap-1 bg-frame pt-3 pb-2"
     >
       <ChromeIconButton
         size="rail"

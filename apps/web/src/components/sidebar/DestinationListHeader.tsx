@@ -13,7 +13,7 @@ export function DestinationListHeader({
   readonly action?: ReactNode;
 }) {
   return (
-    <div className="flex h-11 shrink-0 items-center gap-2 ps-4 pe-2 pt-1">
+    <div className="flex h-14 shrink-0 items-center gap-2 ps-4 pe-3">
       <h2 className="min-w-0 flex-1 truncate text-[13px] leading-5 font-semibold text-foreground">
         {title}
       </h2>
