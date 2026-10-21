@@ -4116,14 +4116,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
       ]);
       __setComputerLinksClientForTests(FLEET_REMOTE_ENVIRONMENT_ID, windowsLinks.client);
-      useComputerLinksStore
-        .getState()
-        .put(
-          FLEET_REMOTE_ENVIRONMENT_ID,
-          fleetLinksSnapshot({
-            inbound: [fleetInboundLink(LOCAL_ENVIRONMENT_ID, "Local environment")],
-          }),
-        );
+      useComputerLinksStore.getState().put(
+        FLEET_REMOTE_ENVIRONMENT_ID,
+        fleetLinksSnapshot({
+          inbound: [fleetInboundLink(LOCAL_ENVIRONMENT_ID, "Local environment")],
+        }),
+      );
 
       const pair = page.getByTestId(`fleet-pair-${LOCAL_ENVIRONMENT_ID}`);
       // On Windows PC's page, "outward" is Windows PC's agents on this computer.

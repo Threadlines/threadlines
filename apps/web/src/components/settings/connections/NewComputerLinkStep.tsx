@@ -155,8 +155,7 @@ export function NewComputerLinkStep({
             Let agents on these computers start work on each other?
           </p>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Each thread one starts on the other waits for you to allow it. You can change this in
-            Fleet.
+            With Ask first, you allow each thread before it starts. You can change this in Fleet.
           </p>
           {choosePartner || partners.length > 1 ? (
             <div className="flex items-center gap-2 pt-1">

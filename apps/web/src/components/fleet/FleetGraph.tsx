@@ -106,6 +106,8 @@ interface GraphLine {
   readonly fromRadius: number;
   readonly toRadius: number;
   readonly state: FleetLineState;
+  /** Between two other computers: bows away from this one. */
+  readonly awayFrom?: Point | undefined;
 }
 
 /** A line's look by state: what each one means is in the legend. */
@@ -392,6 +394,10 @@ export function FleetGraph({
       fromRadius: FLEET_COMPUTER_NODE_RADIUS,
       toRadius: FLEET_COMPUTER_NODE_RADIUS,
       state: edge.state,
+      awayFrom:
+        indexById.get(edge.fromId)! >= 0 && indexById.get(edge.toId)! >= 0
+          ? layout.center
+          : undefined,
     }));
     centerProviders.forEach((provider, index) => {
       result.push({
@@ -462,7 +468,11 @@ export function FleetGraph({
             viewBox={`0 0 ${width ?? 0} ${height}`}
           >
             {lines.map((line) => (
-              <FleetLinePath key={line.key} d={curvePath(line.from, line.to)} state={line.state} />
+              <FleetLinePath
+                key={line.key}
+                d={curvePath(line.from, line.to, line.awayFrom)}
+                state={line.state}
+              />
             ))}
           </svg>
           {moving.length > 0 ? (

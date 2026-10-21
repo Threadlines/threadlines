@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildTravelingDotKeyframes,
+  curveControlPoint,
   FLEET_COMPUTER_NODE_RADIUS,
   FLEET_GRAPH_MAX_COMPUTERS,
   FLEET_PROVIDER_NODE_RADIUS,
@@ -112,5 +113,18 @@ describe("buildTravelingDotKeyframes", () => {
     // Lines take turns: no two of the first four start together.
     const delays = [0, 1, 2, 3].map(travelingDotDelaySeconds);
     expect(new Set(delays).size).toBe(4);
+  });
+
+  it("bows a line between two other computers away from this one, whichever way it runs", () => {
+    const center = { x: 300, y: 100 };
+    const left = { x: 100, y: 200 };
+    const right = { x: 500, y: 200 };
+    for (const [from, to] of [
+      [left, right],
+      [right, left],
+    ] as const) {
+      // This computer is above the line: it bows below.
+      expect(curveControlPoint(from, to, center).y).toBeGreaterThan(200);
+    }
   });
 });

@@ -115,10 +115,12 @@ export function ComputerConnectionGroup({
           : isWaitingToReconnect
             ? "Not answering"
             : "Not connected";
-  const route =
-    relayLink && runtime?.route === "direct"
+  // How this app reaches it while connected, as the page's header says it.
+  const route = !isConnected
+    ? null
+    : runtime?.route === "direct"
       ? "On your network"
-      : relayLink && runtime?.route === "relay"
+      : runtime?.route === "relay"
         ? "Through the relay"
         : record.relay && !relayLink
           ? "Old phone link"

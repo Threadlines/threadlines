@@ -192,14 +192,15 @@ function DirectionLine({
   readonly onLink: () => void;
 }) {
   const showSettings = direction.status === "linked" && direction.inbound !== null;
+  const linkable = offerLink && canOfferLink(direction);
   const note =
     linkError ??
     direction.note ??
     (direction.status === "linked" ? direction.settingsNote : null) ??
     (direction.status === "linked" && direction.inbound === null
       ? `Linked. Its settings are on ${direction.worker.label}.`
-      : null);
-  const linkable = offerLink && canOfferLink(direction);
+      : null) ??
+    (linkable ? linkBlockedReason : null);
   return (
     <div
       className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5")}
@@ -341,27 +342,31 @@ function PairRow({
             />
           )}
         </div>
-        {!pair.linked && pair.linkBlockedReason !== null ? (
-          <p className="mt-1 ps-6.5 text-[12.5px] leading-[18px] text-muted-foreground">
-            {pair.linkBlockedReason}
+        {!pair.linked && Object.keys(linkErrors).length === 0 ? (
+          <p className="mt-0.5 ps-6.5 text-[12.5px] leading-[18px] text-muted-foreground">
+            {pair.linkBlockedReason ?? "Not linked"}
           </p>
         ) : null}
       </div>
       {pending.map((request) => (
         <LinkRequestRow key={request.requestId} request={request} worker={targetOf(pair.self)} />
       ))}
-      {directions.map(([name, direction]) => (
-        <DirectionLine
-          key={name}
-          direction={direction}
-          testId={`${testId}-${name}`}
-          offerLink={linkedEither || linkErrors[name] !== undefined}
-          linkBlockedReason={pair.linkBlockedReason}
-          linking={linking.has(name)}
-          linkError={linkErrors[name] ?? null}
-          onLink={() => void link([name])}
-        />
-      ))}
+      {/* Neither way linked: the one Link above covers both, and the lines
+          show only to say what failed. */}
+      {(pair.linked || Object.keys(linkErrors).length > 0 ? directions : []).map(
+        ([name, direction]) => (
+          <DirectionLine
+            key={name}
+            direction={direction}
+            testId={`${testId}-${name}`}
+            offerLink={linkedEither || linkErrors[name] !== undefined}
+            linkBlockedReason={pair.linkBlockedReason}
+            linking={linking.has(name)}
+            linkError={linkErrors[name] ?? null}
+            onLink={() => void link([name])}
+          />
+        ),
+      )}
       {unlinkOpen ? (
         <UnlinkDialog
           pair={pair}
