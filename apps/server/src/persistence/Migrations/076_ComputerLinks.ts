@@ -105,12 +105,6 @@ export default Effect.gen(function* () {
       PRIMARY KEY (link_device_id, request_id)
     )
   `;
-  const requestColumns = yield* sql<{
-    readonly name: string;
-  }>`SELECT name FROM pragma_table_info('link_requests')`;
-  if (!requestColumns.some((entry) => entry.name === "cleanup")) {
-    yield* sql`ALTER TABLE link_requests ADD COLUMN cleanup TEXT`;
-  }
   yield* sql`
     CREATE INDEX IF NOT EXISTS idx_link_requests_thread
     ON link_requests(thread_id)
