@@ -116,6 +116,21 @@ const NATIVE_TOOL_DRIVERS: ReadonlySet<string> = new Set([
 ]);
 
 export const SKIP_REASON_MISSED = "The computer was off or asleep.";
+
+/**
+ * A session's error as one plain sentence for the run's history: its first
+ * line, without the error class and call-site prefixes a provider adds
+ * ("ProviderValidationError: ... startSession: Provider instance 'codex' is
+ * disabled" reads "Provider instance 'codex' is disabled").
+ */
+export const plainRunError = (error: string | null | undefined, fallback: string): string => {
+  const firstLine = error?.split("\n")[0]?.trim() ?? "";
+  if (firstLine.length === 0) return fallback;
+  const parts = firstLine.split(": ");
+  const last = parts.at(-1)?.trim() ?? "";
+  const plain = last.length >= 12 ? last : firstLine;
+  return plain.length > 300 ? `${plain.slice(0, 297)}...` : plain;
+};
 const missedReason = (count: number) =>
   count === 1 ? SKIP_REASON_MISSED : `Missed ${count} runs while the computer was off or asleep.`;
 
@@ -1116,7 +1131,7 @@ const make = Effect.gen(function* () {
           outcome: input.outcome,
           reason:
             input.outcome === "failed"
-              ? (input.error ?? "Its turn failed.")
+              ? plainRunError(input.error, "Its turn failed.")
               : input.outcome === "interrupted"
                 ? "Its turn was stopped before it finished."
                 : null,
@@ -1172,7 +1187,7 @@ const make = Effect.gen(function* () {
             return yield* endRun(run, {
               turnId: turn.turnId,
               outcome: "failed",
-              reason: thread.session?.lastError ?? "Its turn failed.",
+              reason: plainRunError(thread.session?.lastError, "Its turn failed."),
             });
           case "interrupted":
             return yield* endRun(run, {
@@ -1228,7 +1243,7 @@ const make = Effect.gen(function* () {
         reason:
           session?.status === "interrupted"
             ? "A restart cut it off before its turn started."
-            : (session?.lastError ?? "Its turn never started."),
+            : plainRunError(session?.lastError, "Its turn never started."),
       });
     });
 
@@ -1352,6 +1367,7 @@ const make = Effect.gen(function* () {
 
   const start: ScheduledTasksShape["start"] = () =>
     Effect.gen(function* () {
+      yield* Effect.logInfo("scheduled tasks: scheduler started");
       const domainEvents = yield* engine.subscribeDomainEvents;
       yield* refreshWorkingThreads;
       yield* Effect.forkScoped(

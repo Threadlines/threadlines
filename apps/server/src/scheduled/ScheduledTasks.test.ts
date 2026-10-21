@@ -552,6 +552,47 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       }),
   );
 
+  it.effect("a run whose turn never started fails, in the provider's own plain words", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+      const run = yield* service.runNow({ id: task.id });
+      const threadId = scheduledRunThreadId(task.id, run.slotUtc);
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+        "the run started",
+      );
+      // The provider refused to start a session: the thread sits idle with its error.
+      yield* computer.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("session-refused"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: CODEX,
+          runtimeMode: "auto",
+          activeTurnId: null,
+          lastError:
+            "ProviderValidationError: Provider validation failed in ProviderService.startSession: Provider instance 'codex' is disabled in Threadlines settings.\n    at toValidationError (ProviderService.ts:141:10)",
+          updatedAt: AT,
+        },
+        createdAt: AT,
+      });
+      yield* service.tick;
+      assert.equal((yield* computer.runs(task.id))[0]?.status, "started");
+      // A minute later it is no longer just slow to start.
+      yield* setClock("2026-10-20T08:01:30.000Z");
+      yield* service.tick;
+      const ended = (yield* computer.runs(task.id))[0];
+      assert.equal(ended?.status, "failed");
+      assert.equal(ended?.reason, "Provider instance 'codex' is disabled in Threadlines settings.");
+    }),
+  );
+
   it.effect("refuses a schedule with a seconds field, and one that never runs", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;
