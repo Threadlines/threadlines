@@ -420,6 +420,7 @@ function SidebarRail({
         setLocalStorageItem(resolvedResizable.storageKey, resizeState.width, Schema.Finite);
       }
       resolvedResizable?.onResize?.(resizeState.width);
+      delete resizeState.wrapper.dataset.sidebarResizing;
       resizeStateRef.current = null;
       if (resizeState.rail.hasPointerCapture(pointerId)) {
         resizeState.rail.releasePointerCapture(pointerId);
@@ -476,6 +477,9 @@ function SidebarRail({
         wrapper,
       };
       wrapper.style.setProperty("--sidebar-width", `${initialWidth}px`);
+      // Anything that follows the width with its own transition (the title
+      // row's page slot) follows a drag at once instead.
+      wrapper.dataset.sidebarResizing = "";
       event.currentTarget.setPointerCapture(event.pointerId);
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
@@ -613,6 +617,7 @@ function SidebarRail({
       resizeState?.transitionTargets.forEach((element) => {
         element.style.removeProperty("transition-duration");
       });
+      if (resizeState) delete resizeState.wrapper.dataset.sidebarResizing;
       document.body.style.removeProperty("cursor");
       document.body.style.removeProperty("user-select");
     };

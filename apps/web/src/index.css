@@ -17,10 +17,10 @@
 :root {
   --workspace-topbar-height: 52px;
   /* Measured bottom edge of the chat header (see useChatHeaderBottomVarRef in
-     rightPanelLayout.ts); portal overlays use it to start below the header, and
-     the collapsed rail aligns its top edge to it. Defaults to the titlebar
-     height so the rail is still inset before any header has mounted. */
-  --chat-header-bottom: var(--workspace-topbar-height);
+     rightPanelLayout.ts); portal overlays use it to start below the header. On
+     a wide screen the header sits in the window's title row, so this is the
+     row's bottom; that is also the value before any header has mounted. */
+  --chat-header-bottom: var(--app-titlebar-height);
   --workspace-controls-top: 0px;
   --workspace-controls-left: calc(env(safe-area-inset-left) + 0.75rem);
   --workspace-controls-right: calc(env(safe-area-inset-right) + 0.75rem);
@@ -34,6 +34,8 @@
   /* Where the title row's first button starts: centered over the 48px rail,
      or past the window controls where they sit at the left (below). */
   --app-titlebar-leading: 9px;
+  /* The navigation rail's width (NAVIGATION_RAIL_WIDTH_PX). */
+  --app-rail-width: 48px;
 }
 
 .wco {
@@ -518,7 +520,9 @@ code {
 .drag-region input,
 .drag-region textarea,
 .drag-region select,
-.drag-region a {
+.drag-region a,
+.drag-region [role="button"],
+.drag-region [contenteditable="true"] {
   -webkit-app-region: no-drag;
 }
 
