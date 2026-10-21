@@ -507,6 +507,31 @@ code {
   font-size-adjust: none;
 }
 
+/* The list's width as the window's title row sees it (AppTitleBar). It is a
+   registered length so it can transition itself: the page slot's start is
+   clamped against the row's own buttons on every frame, so the slot keeps
+   pace with the content column through the list's slide and stops where it
+   meets them. A resize drag moves it at once. */
+@property --titlebar-list-width {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+[data-titlebar-slides] {
+  transition: --titlebar-list-width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+[data-sidebar-resizing] [data-titlebar-slides] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-titlebar-slides] {
+    transition: none;
+  }
+}
+
 /* Window drag region (frameless titlebar) */
 .drag-region {
   -webkit-app-region: drag;

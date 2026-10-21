@@ -3499,9 +3499,24 @@ describe("ChatView timeline estimator parity (full app)", () => {
         ).toBeLessThanOrEqual(1);
       });
 
+      // Mid-slide the slot keeps pace with the content column: the clamp
+      // applies to every frame of the list's slide, not just its two ends.
+      useUiStateStore.getState().setSidebarListOpen(false);
+      const slide = await vi.waitFor(() => {
+        expect(titleRow.getAnimations()).not.toHaveLength(0);
+        return document.getAnimations().filter((animation) => animation instanceof CSSTransition);
+      });
+      for (const animation of slide) {
+        animation.pause();
+        animation.currentTime = 15;
+      }
+      expect(
+        Math.abs(slot.getBoundingClientRect().left - (thread().getBoundingClientRect().left + 20)),
+      ).toBeLessThanOrEqual(1);
+      for (const animation of slide) animation.finish();
+
       // List hidden: the content column starts under the title row's own
       // buttons, so the slot starts just past them instead.
-      useUiStateStore.getState().setSidebarListOpen(false);
       await vi.waitFor(() => {
         expect(
           Math.abs(
@@ -3546,6 +3561,23 @@ describe("ChatView timeline estimator parity (full app)", () => {
         document.querySelector('[data-testid="titlebar-slot"]')!.getBoundingClientRect().right,
       ).toBeLessThanOrEqual(controlsStart + 0.5);
       expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
+
+      // A list dragged wide before the window narrowed leaves the header
+      // less room than it needs: what doesn't fit is cut at the slot's end,
+      // never drawn under the controls.
+      const wrapper = document.querySelector<HTMLElement>('[data-slot="sidebar-wrapper"]')!;
+      const slot = document.querySelector<HTMLElement>('[data-testid="titlebar-slot"]')!;
+      const listWidth = wrapper.style.getPropertyValue("--sidebar-width");
+      wrapper.style.setProperty("--sidebar-width", `${window.innerWidth - 300}px`);
+      await vi.waitFor(() => {
+        expect(slotControlsEnd()).toBeGreaterThan(slot.getBoundingClientRect().right);
+      });
+      expect(slot.getBoundingClientRect().right).toBeLessThanOrEqual(controlsStart + 0.5);
+      expect(getComputedStyle(slot).overflowX).toBe("clip");
+      wrapper.style.setProperty("--sidebar-width", listWidth);
+      await vi.waitFor(() => {
+        expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
+      });
 
       // A full page's controls go up there too, as clear of them.
       await mounted.router.navigate({ to: "/settings/general" });

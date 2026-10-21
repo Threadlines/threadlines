@@ -4,7 +4,6 @@ import { type CSSProperties, useCallback, useState } from "react";
 import { useAppHistory } from "../../appHistory";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { useServerKeybindings } from "../../rpc/serverState";
-import { cn } from "../../lib/utils";
 import { useSidebar } from "../ui/sidebar";
 import { AppWordmark } from "./AppWordmark";
 import { ChromeIconButton, ChromeTooltip } from "./ChromeIconButton";
@@ -16,8 +15,9 @@ import { NAVIGATION_DESTINATION_LABELS } from "./navigationRail.logic";
  * Where the open page's slot starts, from the title row's left edge: over the
  * page's content column (past the rail, the work panel's hairline, the list
  * while it shows, and a header's own 20px padding), and never nearer the
- * buttons on its left than 12px. It moves with the list's slide, on the same
- * curve, because both are CSS.
+ * buttons on its left than 12px. `--titlebar-list-width` transitions on the
+ * list's own curve (index.css), and the clamp applies on every frame, so the
+ * slot travels with the content column until it meets those buttons.
  */
 const SLOT_START =
   "max(12px, calc(var(--app-rail-width) + 1px + var(--titlebar-list-width) + 20px - var(--titlebar-cluster-end)))";
@@ -78,6 +78,7 @@ export function AppTitleBar({
   return (
     <div
       data-testid="app-titlebar"
+      data-titlebar-slides={slotSlides ? "" : undefined}
       className="drag-region flex h-(--app-titlebar-height) shrink-0 items-center bg-frame ps-(--app-titlebar-leading) pe-(--workspace-controls-right)"
       style={
         {
@@ -147,11 +148,10 @@ export function AppTitleBar({
       <div
         ref={slotRef}
         data-testid="titlebar-slot"
-        className={cn(
-          "flex h-full min-w-0 flex-1 items-center",
-          slotSlides &&
-            "transition-[margin] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none [[data-sidebar-resizing]_&]:transition-none",
-        )}
+        // A header wider than the slot (a wide list in a narrow window) is
+        // cut at the slot's end rather than running under the window
+        // controls; the clip margin keeps focus rings whole.
+        className="flex h-full min-w-0 flex-1 items-center overflow-clip [overflow-clip-margin:4px]"
         style={{ marginInlineStart: SLOT_START }}
       />
     </div>
