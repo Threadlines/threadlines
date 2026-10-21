@@ -12,7 +12,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../../environments/runtime";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
-import { formatElapsedDurationLabel } from "../../timestampFormat";
+import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
 import { resolveServerConfigVersionMismatch } from "../../versionSkew";
 import {
   ConnectionStatusDot,
@@ -24,6 +24,12 @@ import { SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
+/** "Connected for 3m", or "Connected just now" in its first seconds. */
+function connectedForLabel(since: string, nowMs: number): string {
+  const elapsed = formatElapsedDurationLabel(since, nowMs);
+  return elapsed === "just now" ? "Connected just now" : `Connected for ${elapsed}`;
+}
+
 function statusTooltip(
   runtime: SavedEnvironmentRuntimeState | null,
   record: SavedEnvironmentRecord,
@@ -32,7 +38,7 @@ function statusTooltip(
   const connectionState = runtime?.connectionState ?? "disconnected";
   if (connectionState === "connected") {
     const connectedAt = runtime?.connectedAt ?? record.lastConnectedAt;
-    return connectedAt ? `Connected for ${formatElapsedDurationLabel(connectedAt, nowMs)}` : null;
+    return connectedAt ? connectedForLabel(connectedAt, nowMs) : null;
   }
   if (connectionState === "connecting") return null;
   if (connectionState === "error") {
@@ -126,7 +132,7 @@ export function ComputerConnectionGroup({
           ? "Old phone link"
           : null;
   const lastConnected = record.lastConnectedAt
-    ? `Last connected ${formatElapsedDurationLabel(record.lastConnectedAt, nowMs)} ago`
+    ? `Last connected ${formatRelativeTimeLabel(record.lastConnectedAt, nowMs)}`
     : "Not connected yet";
   const description = pending
     ? pending.matchNumber
@@ -137,7 +143,7 @@ export function ComputerConnectionGroup({
       : [
           isConnected
             ? runtime?.connectedAt
-              ? `Connected for ${formatElapsedDurationLabel(runtime.connectedAt, nowMs)}`
+              ? connectedForLabel(runtime.connectedAt, nowMs)
               : "Connected now"
             : lastConnected,
           route,

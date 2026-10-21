@@ -26,7 +26,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { isClipboardCopySupported } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
-import { formatElapsedDurationLabel, formatExpiresInLabel } from "../../timestampFormat";
+import { formatExpiresInLabel, formatRelativeTimeLabel } from "../../timestampFormat";
 import { COMPUTER_LINK_ACCESS_LABELS } from "../fleet/fleetLinks.logic";
 import { ConnectDeviceDialog } from "./connections/ConnectDeviceDialog";
 import { ConnectionStatusDot, formatAccessTimestamp } from "./connections/ConnectionStatusDot";
@@ -628,7 +628,7 @@ const DeviceAccessRow = memo(function DeviceAccessRow({
   const statusText = isLive
     ? "Connected now"
     : lastConnectedAt
-      ? `Last connected ${formatElapsedDurationLabel(lastConnectedAt, nowMs)} ago`
+      ? `Last connected ${formatRelativeTimeLabel(lastConnectedAt, nowMs)}`
       : "Not connected yet";
   const KindIcon =
     clientSession.client.deviceType === "mobile" || clientSession.client.deviceType === "tablet"
@@ -702,7 +702,7 @@ function LinkedComputerAccessRow({
   const statusText = clientSession.connected
     ? "Connected now"
     : lastConnectedAt
-      ? `Last connected ${formatElapsedDurationLabel(lastConnectedAt, nowMs)} ago`
+      ? `Last connected ${formatRelativeTimeLabel(lastConnectedAt, nowMs)}`
       : "Not connected yet";
   const meta = [
     link === null
