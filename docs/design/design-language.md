@@ -56,6 +56,13 @@ The elevation ladder in `index.css` (deepest to highest; dark / light):
   panels (diff, source control, browser, tasks) sit edge to edge inside it,
   joined by one `--border` line. No floating rounded panes, no gaps between
   regions.
+- **Headers in the panel end in a fade, not a rule.** A page or thread header
+  has no bottom border; content scrolling under it passes into a short, light
+  fade (`HeaderEdgeFade`), the same way the thread list's rows pass under its
+  search row. On a thread the fade sits on the conversation itself, never on
+  the browser or side panels docked beside it. A rule there would meet the list's divider in a square T, so
+  the divider runs as one clean line from the panel's top to its bottom.
+  (The phone header, with no list beside it, keeps its rule.)
 - **Each destination brings its own list** (`destinationLists.tsx`): the
   thread inbox on Threads, your chats on General Chats, computers on Fleet,
   the sections on Settings. Pull Requests and Usage have none and take the
