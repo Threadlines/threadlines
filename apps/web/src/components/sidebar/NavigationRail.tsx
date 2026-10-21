@@ -14,16 +14,13 @@ import {
   InboxIcon,
   type LucideIcon,
   MessagesSquareIcon,
-  PanelLeftCloseIcon,
-  PanelLeftIcon,
   SettingsIcon,
   SquarePenIcon,
   WaypointsIcon,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { isElectron } from "../../env";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
 import { startNewThreadFromContext } from "../../lib/chatThreadActions";
 import {
@@ -32,7 +29,8 @@ import {
 } from "../../lib/pullRequestsReactQuery";
 import { useThreadSeenSources } from "../../lib/threadInboxSync";
 import { usageTodayQueryOptions, useUsageEnvironmentTargets } from "../../lib/usageReactQuery";
-import { cn } from "../../lib/utils";
+import { isElectron } from "../../env";
+import { cn, isMacPlatform } from "../../lib/utils";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { useComposerDraftStore, type DraftId } from "../../composerDraftStore";
 import { useServerKeybindings } from "../../rpc/serverState";
@@ -53,25 +51,18 @@ import {
   type ThreadAttention,
   type ThreadAttentionCounts,
 } from "../Sidebar.logic";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ChromeIconButton, ChromeTooltip } from "./ChromeIconButton";
+import { useListNewThreadStore } from "./listNewThreadStore";
 import { useSidebar } from "../ui/sidebar";
 import {
+  NAVIGATION_DESTINATION_LABELS,
   NAVIGATION_DESTINATION_ORDER,
   type NavigationDestinationId,
   resolveSelectedDestination,
 } from "./navigationRail.logic";
 
-/** The rail's width; the thread list starts past it and slides away beneath it. */
-export const NAVIGATION_RAIL_WIDTH_PX = 52;
-
-const DESTINATION_LABELS: Record<NavigationDestinationId, string> = {
-  threads: "Threads",
-  chats: "General Chats",
-  "pull-requests": "Pull Requests",
-  fleet: "Fleet",
-  usage: "Usage",
-  settings: "Settings",
-};
+/** The rail's width: a 34px button and its margins. */
+export const NAVIGATION_RAIL_WIDTH_PX = 48;
 
 const DESTINATION_ICONS: Record<NavigationDestinationId, LucideIcon> = {
   threads: InboxIcon,
@@ -149,12 +140,19 @@ function useOpenThreadIsGeneralChat(): boolean {
   });
 }
 
+/** The destination on screen: what the rail shows selected, and whose list is beside it. */
+export function useSelectedDestination(): NavigationDestinationId {
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const openThreadIsGeneralChat = useOpenThreadIsGeneralChat();
+  return resolveSelectedDestination({ pathname, openThreadIsGeneralChat });
+}
+
 /**
  * The shortcut context the main view is in, for the labels the rail shows:
  * whether the open thread's terminal is showing, as the shortcut handlers
  * read it. Focus is never in a terminal while the pointer is on the rail.
  */
-function useRouteShortcutContext(): {
+export function useRouteShortcutContext(): {
   readonly terminalFocus: boolean;
   readonly terminalOpen: boolean;
 } {
@@ -176,10 +174,7 @@ function useRouteShortcutContext(): {
  */
 export function useRememberThreadsView(): void {
   const href = useLocation({ select: (location) => location.href });
-  const pathname = useLocation({ select: (location) => location.pathname });
-  const openThreadIsGeneralChat = useOpenThreadIsGeneralChat();
-  const onThreadsView =
-    resolveSelectedDestination({ pathname, openThreadIsGeneralChat }) === "threads";
+  const onThreadsView = useSelectedDestination() === "threads";
   useEffect(() => {
     if (onThreadsView) {
       lastThreadsViewHref = href;
@@ -257,9 +252,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
 } {
   const navigate = useNavigate();
   const router = useRouter();
-  const pathname = useLocation({ select: (location) => location.pathname });
-  const openThreadIsGeneralChat = useOpenThreadIsGeneralChat();
-  const selected = resolveSelectedDestination({ pathname, openThreadIsGeneralChat });
+  const selected = useSelectedDestination();
   const attention = useDestinationAttention();
   const keybindings = useServerKeybindings();
   // The same listing the inbox reads for its row badges: one poll for both.
@@ -286,7 +279,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
       return [
         {
           id,
-          label: DESTINATION_LABELS[id],
+          label: NAVIGATION_DESTINATION_LABELS[id],
           icon: DESTINATION_ICONS[id],
           selected: selected === id,
           needsYou: id === "pull-requests" ? pullRequestsNeedingYou : (counts?.needsYou ?? 0),
@@ -296,7 +289,12 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           showWorking: id === "chats" || (id === "threads" && !options.listOpen),
           shortcutLabel: command
             ? shortcutLabelForCommand(keybindings, command, shortcutOptions)
-            : null,
+            : // Settings opens from the desktop app's own menu shortcut.
+              id === "settings" && isElectron
+              ? isMacPlatform(platform)
+                ? "⌘,"
+                : "Ctrl+,"
+              : null,
           detail:
             id === "threads" || id === "chats"
               ? joinDetails(
@@ -401,56 +399,6 @@ function CornerMarks({
   );
 }
 
-/** A plain toolbar button for the rail: no fill until hover, a soft fill while selected. */
-function RailIconButton({
-  label,
-  tooltip,
-  selected = false,
-  side,
-  onClick,
-  children,
-  testId,
-  className,
-}: {
-  readonly label: string;
-  readonly tooltip: ReactNode;
-  readonly selected?: boolean;
-  readonly side: "right" | "bottom";
-  readonly onClick: () => void;
-  readonly children: ReactNode;
-  readonly testId?: string;
-  readonly className?: string;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            aria-label={label}
-            aria-current={selected ? "page" : undefined}
-            data-testid={testId}
-            data-selected={selected ? "" : undefined}
-            className={cn(
-              "relative inline-flex size-[34px] shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors select-none focus-ring [-webkit-app-region:no-drag] [&_svg]:size-4",
-              selected
-                ? "bg-sidebar-accent text-foreground"
-                : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
-              className,
-            )}
-            onClick={onClick}
-          />
-        }
-      >
-        {children}
-      </TooltipTrigger>
-      <TooltipPopup side={side} sideOffset={6}>
-        {tooltip}
-      </TooltipPopup>
-    </Tooltip>
-  );
-}
-
 function DestinationTooltip({ destination }: { readonly destination: NavigationDestination }) {
   return (
     <span className="flex items-center gap-2 whitespace-nowrap">
@@ -498,7 +446,8 @@ function DestinationButton({
     .join(", ");
   return (
     <div className="flex flex-col items-center">
-      <RailIconButton
+      <ChromeIconButton
+        size="rail"
         label={label}
         tooltip={<DestinationTooltip destination={destination} />}
         selected={destination.selected}
@@ -508,7 +457,7 @@ function DestinationButton({
       >
         <Icon aria-hidden="true" />
         <CornerMarks needsYou={destination.needsYou} unread={destination.unread} />
-      </RailIconButton>
+      </ChromeIconButton>
       {working > 0 ? (
         <span
           data-testid={`rail-${destination.id}-working`}
@@ -524,24 +473,27 @@ function DestinationButton({
 }
 
 /**
- * The column of destinations at the window's left edge on wide screens:
- * Threads, General Chats, Pull Requests, Fleet and Usage, Settings at the
- * bottom. It stays when the thread list beside it is hidden, so what needs
- * the user is always one glance away. The list's toggle sits at its top,
- * and a New thread button joins it while the list is hidden.
+ * The column at the window's left edge on wide screens, on the frame's own
+ * color: New thread first, then Threads, General Chats, Pull Requests, Fleet
+ * and Usage, Settings at the bottom. Nothing in it moves when the list
+ * beside it hides or shows, so what needs the user is always one glance
+ * away. A phone has no rail: its sheet carries a row of the same buttons.
  */
 export function NavigationRail() {
-  const { open, toggleSidebar } = useSidebar();
+  const { open, isMobile } = useSidebar();
   const { destinations, select } = useNavigationDestinations({ listOpen: open });
   const keybindings = useServerKeybindings();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
+  // The thread list's own New thread, which starts in the project the list
+  // is narrowed to; the open thread's project while the list is not there.
+  const listNewThread = useListNewThreadStore((store) => store.start);
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   const shortcutOptions = { platform, context: useRouteShortcutContext() };
-  const toggleShortcut = shortcutLabelForCommand(keybindings, "sidebar.toggle", shortcutOptions);
   const newThreadShortcut =
     shortcutLabelForCommand(keybindings, "chat.newLocal", shortcutOptions) ??
     shortcutLabelForCommand(keybindings, "chat.new", shortcutOptions);
+  if (isMobile) return null;
   const main = destinations.filter((destination) => destination.id !== "settings");
   const settings = destinations.find((destination) => destination.id === "settings") ?? null;
 
@@ -550,78 +502,39 @@ export function NavigationRail() {
       aria-label="Main"
       data-slot="navigation-rail"
       data-testid="navigation-rail"
-      className="relative z-20 hidden w-(--sidebar-rail-width) shrink-0 flex-col items-center border-r border-border bg-[var(--app-chrome-background)] pb-3 md:flex"
+      className="relative z-20 flex w-12 shrink-0 flex-col items-center gap-1 bg-frame pt-1 pb-2"
     >
-      {/* Window controls own this strip on macOS (the traffic lights reach
-          over the rail); it is empty, and moves the window. */}
-      <div
-        aria-hidden="true"
-        className="drag-region h-(--sidebar-rail-top-inset) w-full shrink-0"
-      />
-      <div
-        className={cn(
-          "flex h-(--workspace-topbar-height) w-full shrink-0 items-center justify-center",
-          isElectron && "drag-region",
-        )}
+      <ChromeIconButton
+        size="rail"
+        label="New thread"
+        testId="new-thread-button"
+        side="right"
+        tooltip={<ChromeTooltip label="New thread" shortcut={newThreadShortcut} />}
+        onClick={() => {
+          if (listNewThread) {
+            listNewThread();
+            return;
+          }
+          void startNewThreadFromContext({
+            activeDraftThread,
+            activeThread,
+            defaultProjectRef,
+            handleNewThread,
+          });
+        }}
       >
-        <RailIconButton
-          label={open ? "Hide sidebar" : "Show sidebar"}
-          testId="rail-sidebar-toggle"
+        <SquarePenIcon aria-hidden="true" />
+      </ChromeIconButton>
+      <span aria-hidden="true" className="my-1 h-px w-5 shrink-0 bg-border" />
+      {main.map((destination) => (
+        <DestinationButton
+          key={destination.id}
+          destination={destination}
           side="right"
-          tooltip={
-            <span className="flex items-center gap-2 whitespace-nowrap">
-              {open ? "Hide sidebar" : "Show sidebar"}
-              {toggleShortcut ? (
-                <span className="font-mono text-[10.5px] text-muted-foreground">
-                  {toggleShortcut}
-                </span>
-              ) : null}
-            </span>
-          }
-          onClick={toggleSidebar}
-        >
-          {open ? <PanelLeftCloseIcon aria-hidden="true" /> : <PanelLeftIcon aria-hidden="true" />}
-        </RailIconButton>
-      </div>
-      {open ? null : (
-        <RailIconButton
-          label="New thread"
-          testId="rail-new-thread"
-          side="right"
-          tooltip={
-            <span className="flex items-center gap-2 whitespace-nowrap">
-              New thread
-              {newThreadShortcut ? (
-                <span className="font-mono text-[10.5px] text-muted-foreground">
-                  {newThreadShortcut}
-                </span>
-              ) : null}
-            </span>
-          }
-          onClick={() => {
-            void startNewThreadFromContext({
-              activeDraftThread,
-              activeThread,
-              defaultProjectRef,
-              handleNewThread,
-            });
-          }}
-        >
-          <SquarePenIcon aria-hidden="true" />
-        </RailIconButton>
-      )}
-      <span aria-hidden="true" className="my-2 h-px w-6 shrink-0 bg-border" />
-      <div className="flex flex-col items-center gap-1.5">
-        {main.map((destination) => (
-          <DestinationButton
-            key={destination.id}
-            destination={destination}
-            side="right"
-            onSelect={select}
-          />
-        ))}
-      </div>
-      <div className="min-h-3 flex-1" />
+          onSelect={select}
+        />
+      ))}
+      <div className="min-h-2 flex-1" />
       {settings ? (
         <DestinationButton destination={settings} side="right" onSelect={select} />
       ) : null}

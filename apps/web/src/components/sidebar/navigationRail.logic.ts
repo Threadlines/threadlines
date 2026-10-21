@@ -11,6 +11,16 @@ export type NavigationDestinationId =
   | "usage"
   | "settings";
 
+/** Each destination's name, as its button's tooltip and accessible name say it. */
+export const NAVIGATION_DESTINATION_LABELS: Record<NavigationDestinationId, string> = {
+  threads: "Threads",
+  chats: "General Chats",
+  "pull-requests": "Pull Requests",
+  fleet: "Fleet",
+  usage: "Usage",
+  settings: "Settings",
+};
+
 /** Top to bottom in the rail, left to right on a phone. Settings sits apart, at the end. */
 export const NAVIGATION_DESTINATION_ORDER: readonly NavigationDestinationId[] = [
   "threads",

@@ -3,17 +3,15 @@ import type { ReactNode } from "react";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
-import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 import { SidebarOpenTrigger } from "./ui/sidebar";
 
 /**
  * The strip across the top of a full-page surface (General chats, Pull
- * requests, Usage, Settings).
+ * requests, Usage, Settings, Fleet).
  *
- * On desktop the window controls overlay the top of the content area, so every
- * page needs a draggable strip of titlebar height above its scroll container --
- * otherwise the page's scrollbar runs underneath the minimize/close buttons and
- * there is nothing to grab to move the window.
+ * In the desktop app it is the page's top bar, the height of a thread's
+ * header, inside the work panel below the window's title row; it also moves
+ * the window.
  *
  * On the web below the `md` breakpoint the sidebar is a sheet, and the only
  * way to reach it is a trigger in the page itself. A thread carries one in its
@@ -51,9 +49,8 @@ export function PageTitlebar({
   return (
     <div
       className={cn(
-        "drag-region flex shrink-0 items-center gap-2 border-b border-border px-5 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
+        "drag-region flex shrink-0 items-center gap-2 border-b border-border px-5",
         ELECTRON_HEADER_HEIGHT_CLASS,
-        COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
       )}
     >
       <SidebarOpenTrigger className="size-7 shrink-0" />

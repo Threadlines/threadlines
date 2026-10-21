@@ -2669,10 +2669,9 @@ async function waitForNewThreadShortcutLabel(): Promise<void> {
   const newThreadButton = page.getByTestId("new-thread-button");
   await expect.element(newThreadButton).toBeInTheDocument();
   await newThreadButton.hover();
-  const shortcutLabel = isMacPlatform(navigator.platform)
-    ? "New thread (⇧⌘O)"
-    : "New thread (Ctrl+Shift+O)";
-  await expect.element(page.getByText(shortcutLabel)).toBeInTheDocument();
+  // The rail's tooltip names the button, then its shortcut.
+  const shortcutLabel = isMacPlatform(navigator.platform) ? "⇧⌘O" : "Ctrl+Shift+O";
+  await expect.element(page.getByText(shortcutLabel, { exact: true })).toBeInTheDocument();
 }
 
 async function waitForCommandPaletteShortcutLabel(): Promise<void> {
@@ -3023,6 +3022,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     await __resetLocalApiForTests();
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
+    // Each spec is a fresh window: session storage would otherwise carry the
+    // previous spec's history (like a reload does) into this one.
+    sessionStorage.clear();
     // A computer that has finished setup: these specs exercise empty drafts
     // and threads, which a first run would leave for the setup screen.
     dismissFirstRunSetup(LOCAL_ENVIRONMENT_ID);
@@ -3087,7 +3089,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot,
-      initialPath: "/usage",
+      initialPath: "/",
       waitForBootstrap: false,
     });
 
@@ -3219,7 +3221,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("hides the thread list down to the rail, which keeps what needs you in view", async () => {
+  it("hides the thread list inside the panel, moving no button, and keeps what needs you on the rail", async () => {
     const askingThreadId = "thread-rail-asking" as ThreadId;
     const workingThreadId = "thread-rail-working" as ThreadId;
     const mounted = await mountChatView({
@@ -3252,11 +3254,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .toHaveTextContent("1");
       // While the list shows, it says what is working; the rail stays quiet.
       expect(document.querySelector('[data-testid="rail-threads-working"]')).toBeNull();
-      const rail = document.querySelector('[data-testid="navigation-rail"]')!;
+      const panel = document.querySelector('[data-testid="app-panel"]')!;
       const list = document.querySelector('[data-slot="sidebar-container"]')!;
-      expect(list.getBoundingClientRect().left).toBe(rail.getBoundingClientRect().right);
+      // The list opens the work panel, just inside its hairline edge.
+      expect(
+        Math.abs(list.getBoundingClientRect().left - panel.getBoundingClientRect().left),
+      ).toBeLessThanOrEqual(1);
+      const frameButtons = ["titlebar-sidebar-toggle", "new-thread-button", "rail-threads"];
+      const placeOf = (testId: string) => {
+        const rect = document.querySelector(`[data-testid="${testId}"]`)!.getBoundingClientRect();
+        return { left: rect.left, top: rect.top };
+      };
+      const placesBefore = frameButtons.map(placeOf);
 
-      await page.getByTestId("rail-sidebar-toggle").click();
+      await page.getByTestId("titlebar-sidebar-toggle").click();
       await vi.waitFor(() => {
         expect(useUiStateStore.getState().sidebarListOpen).toBe(false);
         expect(
@@ -3266,11 +3277,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         ).toBe("collapsed");
       });
       await expect.element(page.getByTestId("rail-threads-working")).toHaveTextContent("1");
-      await expect.element(page.getByTestId("rail-new-thread")).toBeVisible();
-      // The thread's own header starts where the rail ends.
+      // Hiding the list moves no button in the frame; only the page's edge moves.
+      expect(frameButtons.map(placeOf)).toEqual(placesBefore);
       await vi.waitFor(() => {
         const header = document.querySelector('header[data-find-region="chat"]')!;
-        expect(header.getBoundingClientRect().left).toBe(rail.getBoundingClientRect().right);
+        expect(
+          Math.abs(header.getBoundingClientRect().left - panel.getBoundingClientRect().left),
+        ).toBeLessThanOrEqual(1);
       });
 
       // Mod+B brings the list back.
@@ -3287,7 +3300,30 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await vi.waitFor(() => {
         expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
       });
-      expect(document.querySelector('[data-testid="rail-new-thread"]')).toBeNull();
+
+      // Usage has no list: it takes the panel, and the toggle stays, disabled,
+      // with the user's choice kept for the pages that have one.
+      await mounted.router.navigate({ to: "/usage" });
+      await vi.waitFor(() => {
+        expect(
+          document
+            .querySelector('[data-slot="sidebar-wrapper"]')
+            ?.getAttribute("data-sidebar-state"),
+        ).toBe("collapsed");
+      });
+      await expect
+        .element(page.getByTestId("titlebar-sidebar-toggle"))
+        .toHaveAttribute("aria-disabled", "true");
+      document.querySelector<HTMLElement>('[data-testid="titlebar-sidebar-toggle"]')!.click();
+      expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+      await mounted.router.navigate({ href: serverThreadPath(THREAD_ID) });
+      await vi.waitFor(() => {
+        expect(
+          document
+            .querySelector('[data-slot="sidebar-wrapper"]')
+            ?.getAttribute("data-sidebar-state"),
+        ).toBe("expanded");
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -3335,7 +3371,80 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("starts the rail's buttons below the macOS window controls, and clears them with the list hidden", async () => {
+  it("goes back and forward through the app's pages from the title row and the shortcuts", async () => {
+    const historyKeybinding = (command: "navigate.back" | "navigate.forward", key: string) =>
+      ({
+        command,
+        shortcut: {
+          key,
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+          modKey: true,
+        },
+        whenAst: { type: "not", node: { type: "identifier", name: "terminalFocus" } },
+      }) as const;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-app-history" as MessageId,
+        targetText: "app history",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            historyKeybinding("navigate.back", "["),
+            historyKeybinding("navigate.forward", "]"),
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const back = page.getByTestId("titlebar-back");
+      const forward = page.getByTestId("titlebar-forward");
+      // The page the window opened on has nowhere to go back or forward to.
+      await expect.element(back).toHaveAttribute("aria-disabled", "true");
+      await expect.element(forward).toHaveAttribute("aria-disabled", "true");
+
+      await page.getByTestId("rail-usage").click();
+      await waitForURL(mounted.router, (pathname) => pathname === "/usage", "Usage should open.");
+      await expect.element(back).not.toHaveAttribute("aria-disabled");
+      await back.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === serverThreadPath(THREAD_ID),
+        "Back should return to the thread.",
+      );
+      await expect.element(forward).not.toHaveAttribute("aria-disabled");
+
+      // Mod+] goes forward again, and then there is nothing ahead.
+      const useMetaForMod = isMacPlatform(navigator.platform);
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "]",
+          code: "BracketRight",
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/usage",
+        "Forward should return to Usage.",
+      );
+      await expect.element(forward).toHaveAttribute("aria-disabled", "true");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("puts the title row's buttons past the macOS window controls, and the rail under them", async () => {
     const root = document.documentElement;
     root.classList.add("electron", "mac");
     const mounted = await mountChatView({
@@ -3348,20 +3457,24 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       const toggle = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-testid="rail-sidebar-toggle"]'),
-        "Unable to find the rail's sidebar toggle.",
+        () => document.querySelector<HTMLElement>('[data-testid="titlebar-sidebar-toggle"]'),
+        "Unable to find the title row's sidebar toggle.",
       );
-      // The traffic lights sit at x 16-68, y 18-30: the strip above the
-      // rail's first button is theirs.
-      expect(toggle.getBoundingClientRect().top).toBeGreaterThanOrEqual(52);
-      useUiStateStore.getState().setSidebarListOpen(false);
-      await vi.waitFor(() => {
-        const header = document.querySelector<HTMLElement>('header[data-find-region="chat"]')!;
-        const contentLeft =
-          header.getBoundingClientRect().left +
-          Number.parseFloat(getComputedStyle(header).paddingLeft);
-        expect(contentLeft).toBeGreaterThanOrEqual(88);
-      });
+      const titleRow = document
+        .querySelector('[data-testid="app-titlebar"]')!
+        .getBoundingClientRect();
+      // The traffic lights sit at x 16-68, centered in the 38px title row:
+      // the row's buttons start past them, in the same row.
+      expect(titleRow.top).toBe(0);
+      expect(titleRow.height).toBe(38);
+      expect(toggle.getBoundingClientRect().left).toBeGreaterThanOrEqual(76);
+      expect(toggle.getBoundingClientRect().bottom).toBeLessThanOrEqual(titleRow.bottom);
+      // The rail and the work panel start under the row.
+      const newThread = document.querySelector('[data-testid="new-thread-button"]')!;
+      expect(newThread.getBoundingClientRect().top).toBeGreaterThanOrEqual(titleRow.bottom);
+      expect(document.querySelector('[data-testid="app-panel"]')!.getBoundingClientRect().top).toBe(
+        titleRow.bottom,
+      );
     } finally {
       await mounted.cleanup();
       root.classList.remove("electron", "mac");
@@ -3436,7 +3549,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .element(page.getByTestId(`fleet-thread-${workingThreadId}`))
         .not.toBeInTheDocument();
       await expect.element(page.getByTestId(`fleet-thread-${remoteThreadId}`)).toBeVisible();
+      // The list of computers beside the rail follows the graph.
+      await expect
+        .element(page.getByTestId(`fleet-list-computer-${FLEET_REMOTE_ENVIRONMENT_ID}`))
+        .toHaveAttribute("aria-pressed", "true");
       await page.getByTestId("fleet-show-all").click();
+      await expect.element(page.getByTestId(`fleet-thread-${workingThreadId}`)).toBeVisible();
+
+      // And narrows the page the same way: once to narrow, All computers to undo.
+      await page.getByTestId(`fleet-list-computer-${FLEET_REMOTE_ENVIRONMENT_ID}`).click();
+      await expect
+        .element(page.getByTestId(`fleet-thread-${workingThreadId}`))
+        .not.toBeInTheDocument();
+      await expect.element(page.getByTestId("fleet-show-all")).toBeVisible();
+      await page.getByTestId("fleet-list-all").click();
       await expect.element(page.getByTestId(`fleet-thread-${workingThreadId}`)).toBeVisible();
 
       await page.getByTestId(`fleet-thread-${remoteThreadId}`).click();
@@ -8044,16 +8170,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
         (pathname) => pathname === "/chats",
         "General Chats should open the chats page.",
       );
+      // The chats are the list beside the rail; the page offers to start one.
+      await expect.element(page.getByTestId("chats-view-new-chat")).toBeVisible();
       await expect
         .element(
           page
-            .getByTestId("chats-view-row")
+            .getByTestId("chats-list-row")
             .filter({ hasText: "Best way to store passkeys" })
-            .getByTestId("chats-view-row-status"),
+            .getByTestId("chats-list-row-status"),
         )
         .toHaveTextContent(/^working/);
 
-      await page.getByTestId("chats-view-row").filter({ hasText: "Draft reply" }).click();
+      await page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }).click();
       await waitForURL(
         mounted.router,
         (pathname) => pathname.endsWith(`/${askingChatId}`),
@@ -8063,6 +8191,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(
         document.querySelector('[data-testid="rail-threads"]')?.getAttribute("aria-current"),
       ).toBeNull();
+      // The open chat stays listed beside it, marked as the one on screen.
+      await expect
+        .element(page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }))
+        .toHaveAttribute("aria-current", "page");
     } finally {
       await mounted.cleanup();
     }
@@ -9052,7 +9184,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     return range.getBoundingClientRect().width <= element.getBoundingClientRect().width + 0.01;
   };
 
-  it("keeps a room's working agent, state and clock whole at the default width", async () => {
+  it("keeps a room's working agent, state, clock and project whole at the default width", async () => {
     const { mounted, line, name, state, clock, project } = await mountRoomWorkingRow({
       model: "Opus 5.5",
     });
@@ -9063,9 +9195,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
           line.getBoundingClientRect().right + 0.5,
         );
       }
-      // The project name stays in the row; it is what gave way.
+      // The list starts wide enough beside the rail for a short project name
+      // too; it is the first thing to give way when it has to (below).
       expect(project).toBeDefined();
-      expect(showsWholeText(project!)).toBe(false);
+      expect(showsWholeText(project!)).toBe(true);
     } finally {
       await mounted.cleanup();
     }

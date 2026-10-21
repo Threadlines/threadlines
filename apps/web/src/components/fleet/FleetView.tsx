@@ -5,7 +5,7 @@ import {
   type ProviderDriverKind,
 } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
 import { useIsMobile } from "../../hooks/useMediaQuery";
@@ -24,6 +24,7 @@ import { SettingsGroup } from "../settings/settingsLayout";
 import { ThreadStatusText } from "../sidebar/InboxRows";
 import { Button } from "../ui/button";
 import {
+  describeComputerCounts,
   describeComputerLocation,
   describeFleetSummary,
   describeQuietComputers,
@@ -32,23 +33,13 @@ import {
   type FleetThreadInput,
 } from "./fleet.logic";
 import { FleetGraph, FleetGraphLegend } from "./FleetGraph";
+import { useFleetPageStore } from "./fleetPageStore";
 import { useFleetModel } from "./useFleetModel";
 
 /** Graph heights: room for the arc of computers, or just this one and its agents. */
 const GRAPH_HEIGHT = 300;
 const GRAPH_HEIGHT_PHONE = 270;
 const GRAPH_HEIGHT_ONE_COMPUTER = 210;
-
-function describeComputerCounts(computer: FleetComputer): string {
-  return [
-    computer.working > 0 ? `${computer.working} working` : null,
-    computer.needsYou > 0
-      ? `${computer.needsYou} ${computer.needsYou === 1 ? "needs" : "need"} you`
-      : null,
-  ]
-    .filter((part): part is string => part !== null)
-    .join(" · ");
-}
 
 const NO_PROVIDER_ENTRIES: ReadonlyArray<ProviderInstanceEntry> = [];
 
@@ -183,7 +174,15 @@ export function FleetView() {
   const computers = useMemo(() => [model.center, ...model.others], [model]);
   const providerEntriesFor = useProviderEntriesByComputer(computers);
   const hostLabel = useServerConfig()?.environment.label ?? "This computer";
-  const [selectedComputerId, setSelectedComputerId] = useState<string | null>(null);
+  // Shared with the list of computers beside the rail: either one narrows the page.
+  const selectedComputerId = useFleetPageStore((state) => state.selectedComputerId);
+  const toggleComputer = useFleetPageStore((state) => state.toggle);
+  const selectComputer = useFleetPageStore((state) => state.select);
+  const publishModel = useFleetPageStore((state) => state.publish);
+  useEffect(() => {
+    publishModel(model);
+  }, [model, publishModel]);
+  useEffect(() => () => publishModel(null), [publishModel]);
   const [connectOpen, setConnectOpen] = useState(false);
 
   const providerLabel = useCallback(
@@ -233,9 +232,6 @@ export function FleetView() {
       ? GRAPH_HEIGHT_PHONE
       : GRAPH_HEIGHT;
 
-  const toggleComputer = useCallback((computerId: string) => {
-    setSelectedComputerId((current) => (current === computerId ? null : computerId));
-  }, []);
   const openConnect = useCallback(() => {
     if (isOwner) {
       setConnectOpen(true);
@@ -301,7 +297,7 @@ export function FleetView() {
               <button
                 type="button"
                 className="cursor-pointer text-foreground underline-offset-2 hover:underline focus-ring"
-                onClick={() => setSelectedComputerId(null)}
+                onClick={() => selectComputer(null)}
                 data-testid="fleet-show-all"
               >
                 Show all

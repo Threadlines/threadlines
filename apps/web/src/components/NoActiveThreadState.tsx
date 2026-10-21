@@ -43,7 +43,6 @@ import {
 } from "./ui/menu";
 import { SidebarInset, SidebarOpenTrigger } from "./ui/sidebar";
 import { cn } from "~/lib/utils";
-import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 
 export function NoActiveThreadState() {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread, orderedProjects } =
@@ -95,26 +94,20 @@ export function NoActiveThreadState() {
   const headerLabel = "No active thread";
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
         <header
           className={cn(
             "border-b border-border px-3 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5",
             isElectron
-              ? cn(
-                  "drag-region flex items-center wco:h-[env(titlebar-area-height)]",
-                  ELECTRON_HEADER_HEIGHT_CLASS,
-                )
+              ? cn("drag-region flex items-center", ELECTRON_HEADER_HEIGHT_CLASS)
               : "py-2 sm:py-3",
-            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
           )}
         >
           {isElectron ? (
             <div className="flex items-center gap-2">
               <SidebarOpenTrigger className="size-7 shrink-0" />
-              <span className="text-xs text-muted-foreground/50 wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-                {headerLabel}
-              </span>
+              <span className="text-xs text-muted-foreground/50">{headerLabel}</span>
             </div>
           ) : (
             <div className="flex items-center gap-2">
