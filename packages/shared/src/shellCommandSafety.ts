@@ -192,21 +192,33 @@ const PORTABLE_PROGRAMS: ReadonlySet<string> = new Set([
   "cursor",
 ]);
 
+/** A plain word: can't start with `@` (PowerShell splatting) or hold `=`. */
+const PORTABLE_PLAIN = /^[\w./:+][\w./:+@-]*$/;
+/**
+ * An option: no `.` or `:` (PowerShell splits `-Dfoo.bar` and reads
+ * `-name:value`), and not a bare `--`, which PowerShell drops before a
+ * `.ps1` shim like npm's sees it. `--name=value` keeps its `=`: split there,
+ * it still reads as `--name value`.
+ */
+const PORTABLE_OPTION = /^-(?!-$)[\w+=/@-]*$/;
+/**
+ * A quoted string: only letters, digits, spaces and `./:+=@#,-`, never
+ * starting with `-` (PowerShell still reads `'--%'`), never empty (Windows
+ * PowerShell drops an empty argument).
+ */
+const PORTABLE_QUOTED = /^(?:'(?!-)[\w ./:+=@#,-]+'|"(?!-)[\w ./:+=@#,'-]+")$/;
+
 /**
  * An argument both shells pass on unchanged. On Windows many of these
  * programs start through a `.cmd` launcher, so cmd.exe reads the arguments
- * too, and PowerShell hands it a quoted word with no spaces unquoted. No word
- * may hold anything cmd.exe acts on (`&|<>^%()!`), and:
- * - a plain word can't start with `@` (PowerShell splatting);
- * - an option can't hold `.` or `:` (PowerShell splits `-Dfoo.bar` and reads
- *   `-name:value`). A bare `--` is left out too: PowerShell drops it before a
- *   `.ps1` shim like npm's sees it;
- * - a quoted string holds only letters, digits, spaces and `./:+=@#,-`, never
- *   starts with `-` (PowerShell still reads `'--%'`), and is never empty
- *   (Windows PowerShell drops an empty argument).
+ * too: no word may hold anything it acts on (`&|<>^%()!`). PowerShell quotes a
+ * string for the launcher only when it holds a space, and a launcher reading
+ * its arguments one by one splits an unquoted word at `=` and `,`.
  */
-const PORTABLE_WORD =
-  /^(?:[\w./:+=][\w./:+=@-]*|-(?!-$)[\w+=/@-]*|'(?!-)[\w ./:+=@#,-]+'|"(?!-)[\w ./:+=@#,'-]+")$/;
+function isPortableWord(word: string): boolean {
+  if (PORTABLE_PLAIN.test(word) || PORTABLE_OPTION.test(word)) return true;
+  return PORTABLE_QUOTED.test(word) && (word.includes(" ") || !/[=,]/.test(word));
+}
 
 /**
  * Whether a command means the same in a POSIX shell and in PowerShell: each
@@ -228,11 +240,7 @@ function isPortableCommand(text: string): boolean {
       if (match === null) return false;
       words.push(match[1]!);
     }
-    return (
-      words.length > 0 &&
-      PORTABLE_PROGRAMS.has(words[0]!) &&
-      words.every((word) => PORTABLE_WORD.test(word))
-    );
+    return words.length > 0 && PORTABLE_PROGRAMS.has(words[0]!) && words.every(isPortableWord);
   });
 }
 

@@ -159,6 +159,12 @@ describe("prepareShellCommand", () => {
       "pnpm install\npnpm test",
     );
     for (const command of [
+      'git commit -m "Fix the header, and the footer"',
+      "pnpm --filter=web build",
+    ]) {
+      expect(prepareShellCommand(command, "bash", "powershell")?.text, command).toBe(command);
+    }
+    for (const command of [
       "ls -la", // PowerShell's ls is Get-ChildItem
       "export FOO=1 && pnpm dev",
       "pnpm install | tee install.log",
@@ -173,6 +179,10 @@ describe("prepareShellCommand", () => {
       "code 'notes&whoami'",
       'git commit -m "50% done"',
       "npm install foo%USERNAME%",
+      // A launcher reading its arguments one by one splits these at = and ,.
+      "mvn -f 'pom=ci.xml' validate",
+      "mvn -f pom=ci.xml validate",
+      "code 'a,b'",
       // PowerShell reads `--%` even quoted.
       "git log '--%' HEAD",
     ]) {
