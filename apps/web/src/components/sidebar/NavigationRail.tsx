@@ -116,8 +116,14 @@ export interface NavigationDestination {
  */
 let lastThreadsViewHref: string | null = null;
 
-/** Whether the thread or draft open in the main view is a general chat. */
-function useOpenThreadIsGeneralChat(): boolean {
+/**
+ * What the main view has open: no thread (home, a page), a thread or draft
+ * in a project, a general chat, or a thread whose project this app hasn't
+ * loaded yet (a chat just created, before its shell arrives).
+ */
+type OpenThreadKind = "none" | "project" | "general-chat" | "unknown";
+
+function useOpenThreadKind(): OpenThreadKind {
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -132,27 +138,29 @@ function useOpenThreadIsGeneralChat(): boolean {
     draftId === null ? null : (store.getDraftSession(draftId)?.projectId ?? null),
   );
   const threadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
-  return useStore((state) => {
+  return useStore((state): OpenThreadKind => {
+    if (routeTarget === null || routeTarget === undefined) return "none";
     const environmentId = threadRef?.environmentId ?? draftEnvironmentId;
-    if (environmentId === null) return false;
+    if (environmentId === null) return "unknown";
     const environment = state.environmentStateById[environmentId];
-    if (!environment) return false;
+    if (!environment) return "unknown";
     const projectId =
       threadRef !== null
         ? environment.threadShellById[threadRef.threadId]?.projectId
         : draftProjectId;
-    return (
-      projectId !== undefined &&
-      projectId !== null &&
-      environment.projectById[projectId]?.kind === "general-chat"
-    );
+    const project =
+      projectId === undefined || projectId === null
+        ? undefined
+        : environment.projectById[projectId];
+    if (!project) return "unknown";
+    return project.kind === "general-chat" ? "general-chat" : "project";
   });
 }
 
 /** The destination on screen: what the rail shows selected, and whose list is beside it. */
 export function useSelectedDestination(): NavigationDestinationId {
   const pathname = useLocation({ select: (location) => location.pathname });
-  const openThreadIsGeneralChat = useOpenThreadIsGeneralChat();
+  const openThreadIsGeneralChat = useOpenThreadKind() === "general-chat";
   return resolveSelectedDestination({ pathname, openThreadIsGeneralChat });
 }
 
@@ -177,18 +185,39 @@ export function useRouteShortcutContext(): {
   return useMemo(() => ({ terminalFocus: false, terminalOpen }), [terminalOpen]);
 }
 
+/** Where a thread view lives: the thread's or draft's own path, or home. */
+function threadViewPathOf(target: ReturnType<typeof resolveThreadRouteTarget>): string {
+  if (target?.kind === "server") {
+    return `/${target.threadRef.environmentId}/${target.threadRef.threadId}`;
+  }
+  if (target?.kind === "draft") return `/draft/${target.draftId}`;
+  return "/";
+}
+
 /**
  * Remembers the thread view the user is on, for the Threads button. Mounted
  * once, with the app shell.
  */
 export function useRememberThreadsView(): void {
   const href = useLocation({ select: (location) => location.href });
+  const pathname = useLocation({ select: (location) => location.pathname });
+  // The path the open thread or draft lives at; "/" for home.
+  const threadViewPath = useParams({
+    strict: false,
+    select: (params) => threadViewPathOf(resolveThreadRouteTarget(params)),
+  });
   const onThreadsView = useSelectedDestination() === "threads";
+  const openThread = useOpenThreadKind();
   useEffect(() => {
-    if (onThreadsView) {
+    // While a navigation settles, the address can already be the next page's
+    // while the open thread is still the last one's, and a thread whose
+    // project hasn't loaded reads as Threads for a moment. Either way a
+    // general chat could become the Threads button's target, so only an
+    // address that matches a known thread view is remembered.
+    if (onThreadsView && openThread !== "unknown" && pathname === threadViewPath) {
       lastThreadsViewHref = href;
     }
-  }, [href, onThreadsView]);
+  }, [href, onThreadsView, openThread, pathname, threadViewPath]);
 }
 
 /**

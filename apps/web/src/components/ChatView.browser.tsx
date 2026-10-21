@@ -3236,6 +3236,61 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("brings Threads back to the last thread in a project, never to a general chat opened since", async () => {
+    const chatId = "thread-general-chat-visited" as ThreadId;
+    const base = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-visited-chat" as MessageId,
+        targetText: "visited chat",
+      }),
+      chatId,
+    );
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: base.threads.map((thread) =>
+          thread.id === chatId
+            ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Test hello" }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const projectThreadPath = mounted.router.state.location.pathname;
+      // While the page changes, the address is the chat's a moment before
+      // the open thread is: that moment must not count as a Threads view.
+      await mounted.router.navigate({ href: `/${LOCAL_ENVIRONMENT_ID}/${chatId}` });
+      await expect.element(page.getByTestId("rail-chats")).toHaveAttribute("aria-current", "page");
+
+      await page.getByTestId("rail-usage").click();
+      await waitForURL(mounted.router, (pathname) => pathname === "/usage", "Usage should open.");
+      await page.getByTestId("rail-threads").click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === projectThreadPath,
+        "Threads should return to the last thread in a project, not the chat.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("hides the thread list inside the panel, moving no button, and keeps what needs you on the rail", async () => {
     const askingThreadId = "thread-rail-asking" as ThreadId;
     const workingThreadId = "thread-rail-working" as ThreadId;
