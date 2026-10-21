@@ -42,31 +42,36 @@ const makeLayer = (platform: NodeJS.Platform, calls: Calls) => {
 };
 
 describe("DesktopBackground", () => {
-  it.effect("keeps the computer awake only while it is asked to and a schedule is active", () => {
-    const calls: Calls = { started: [], stopped: [], tray: [] };
-    return Effect.gen(function* () {
-      const background = yield* DesktopBackground.DesktopBackground;
-      yield* background.configure;
-      // A schedule, but nobody asked to keep awake.
-      yield* background.setActiveScheduledTaskCount(2);
-      assert.deepEqual(calls.started, []);
+  it.effect(
+    "keeps the computer awake only while it is asked to and a schedule is active or a run works",
+    () => {
+      const calls: Calls = { started: [], stopped: [], tray: [] };
+      return Effect.gen(function* () {
+        const background = yield* DesktopBackground.DesktopBackground;
+        yield* background.configure;
+        // A schedule, but nobody asked to keep awake.
+        yield* background.setScheduledWork({ activeTasks: 2, workingRuns: 0 });
+        assert.deepEqual(calls.started, []);
 
-      yield* background.setOptions({ keepAwakeForScheduledTasks: true });
-      assert.deepEqual(calls.started, [1]);
-      // Another report while held takes no second blocker.
-      yield* background.setActiveScheduledTaskCount(3);
-      assert.deepEqual(calls.started, [1]);
+        yield* background.setOptions({ keepAwakeForScheduledTasks: true });
+        assert.deepEqual(calls.started, [1]);
+        // Another report while held takes no second blocker.
+        yield* background.setScheduledWork({ activeTasks: 3, workingRuns: 0 });
+        assert.deepEqual(calls.started, [1]);
 
-      // The last schedule paused: let it sleep.
-      yield* background.setActiveScheduledTaskCount(0);
-      assert.deepEqual(calls.stopped, [1]);
+        // The last schedule paused: let it sleep.
+        yield* background.setScheduledWork({ activeTasks: 0, workingRuns: 0 });
+        assert.deepEqual(calls.stopped, [1]);
 
-      yield* background.setActiveScheduledTaskCount(1);
-      yield* background.setOptions({ keepAwakeForScheduledTasks: false });
-      assert.deepEqual(calls.started, [1, 2]);
-      assert.deepEqual(calls.stopped, [1, 2]);
-    }).pipe(Effect.provide(makeLayer("win32", calls)));
-  });
+        // A one-time task that ran has no schedule left, but its run still
+        // works: stay awake for it.
+        yield* background.setScheduledWork({ activeTasks: 0, workingRuns: 1 });
+        assert.deepEqual(calls.started, [1, 2]);
+        yield* background.setOptions({ keepAwakeForScheduledTasks: false });
+        assert.deepEqual(calls.stopped, [1, 2]);
+      }).pipe(Effect.provide(makeLayer("win32", calls)));
+    },
+  );
 
   it.effect("hides to the tray on Windows when asked, and never on macOS", () => {
     const windows: Calls = { started: [], stopped: [], tray: [] };

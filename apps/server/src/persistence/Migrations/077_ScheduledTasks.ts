@@ -7,7 +7,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * - `scheduled_tasks`: each task's settings, its status and the next slot it
  *   runs at (`next_slot_utc`, a UTC instant; null for manual, paused,
  *   errored and done tasks), and the thread whose agent set it up
- *   (`origin_thread_id`, null for one a person made).
+ *   (`origin_thread_id`, null for one a person made). `revision` goes up
+ *   with every write, so a write made from an older read of the task (an
+ *   edit, a slot claim) is refused instead of undoing the other.
  * - `scheduled_runs`: one row per slot a task was due at, unique on
  *   `(task_id, slot_utc)` and inserted in the same transaction that advances
  *   the task's next slot, so a slot runs at most once. A run that launches
@@ -43,6 +45,7 @@ export default Effect.gen(function* () {
       error TEXT,
       next_slot_utc TEXT,
       origin_thread_id TEXT,
+      revision INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )

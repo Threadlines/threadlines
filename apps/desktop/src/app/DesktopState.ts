@@ -18,6 +18,8 @@ export interface DesktopStateShape {
    * for that, and quitting stops them.
    */
   readonly activeScheduledTaskCount: Ref.Ref<number>;
+  /** Scheduled runs working on this computer's own server, as the page last reported. */
+  readonly workingScheduledRunCount: Ref.Ref<number>;
   /**
    * Windows and Linux: closing the window hides it to the tray instead of
    * quitting (Settings › General, "Keep running in the background").
@@ -36,6 +38,7 @@ export const layer = Layer.effect(
     quitting: Ref.make(false),
     localRunningThreadCount: Ref.make(0),
     activeScheduledTaskCount: Ref.make(0),
+    workingScheduledRunCount: Ref.make(0),
     runInBackground: Ref.make(false),
   }),
 );

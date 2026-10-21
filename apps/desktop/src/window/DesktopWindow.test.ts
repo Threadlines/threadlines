@@ -239,6 +239,7 @@ function makeTestLayer(input: {
             quitting: Ref.make(false),
             localRunningThreadCount: Ref.make(input.initialRunningThreadCount),
             activeScheduledTaskCount: Ref.make(0),
+            workingScheduledRunCount: Ref.make(0),
             runInBackground: Ref.make(false),
           }),
         );

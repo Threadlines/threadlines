@@ -36,9 +36,15 @@ export interface DesktopBackgroundShape {
   readonly setOptions: (
     patch: DesktopBackgroundOptionsPatch,
   ) => Effect.Effect<DesktopBackgroundOptions, DesktopAppSettings.DesktopSettingsWriteError>;
-  /** The page reported this computer's active scheduled tasks. */
-  readonly setActiveScheduledTaskCount: (count: number) => Effect.Effect<void>;
+  /** The page reported this computer's active scheduled tasks and its runs at work. */
+  readonly setScheduledWork: (work: {
+    readonly activeTasks: number;
+    readonly workingRuns: number;
+  }) => Effect.Effect<void>;
 }
+
+/** A count as the page reported it, or none. */
+const wholeCount = (count: number) => (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0);
 
 export class DesktopBackground extends Context.Service<DesktopBackground, DesktopBackgroundShape>()(
   "threadlines/desktop/Background",
@@ -62,11 +68,15 @@ const make = Effect.gen(function* () {
   });
   yield* Effect.addFinalizer(() => releaseBlocker);
 
-  /** Holds the blocker exactly while it is wanted and there is a schedule to keep. */
+  /**
+   * Holds the blocker exactly while it is wanted and there is a schedule to
+   * keep or a scheduled run at work.
+   */
   const reconcileKeepAwake = Effect.gen(function* () {
     const current = yield* settings.get;
     const active = yield* Ref.get(state.activeScheduledTaskCount);
-    const wanted = current.keepAwakeForScheduledTasks && active > 0;
+    const working = yield* Ref.get(state.workingScheduledRunCount);
+    const wanted = current.keepAwakeForScheduledTasks && (active > 0 || working > 0);
     if (wanted && blockerId === null) {
       blockerId = yield* powerSaveBlocker.preventAppSuspension;
     } else if (!wanted) {
@@ -103,13 +113,11 @@ const make = Effect.gen(function* () {
           return yield* options;
         }),
       ),
-    setActiveScheduledTaskCount: (count) =>
+    setScheduledWork: (work) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
-          yield* Ref.set(
-            state.activeScheduledTaskCount,
-            Number.isFinite(count) && count > 0 ? Math.floor(count) : 0,
-          );
+          yield* Ref.set(state.activeScheduledTaskCount, wholeCount(work.activeTasks));
+          yield* Ref.set(state.workingScheduledRunCount, wholeCount(work.workingRuns));
           yield* reconcileKeepAwake;
         }),
       ),

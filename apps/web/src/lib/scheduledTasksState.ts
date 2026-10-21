@@ -195,6 +195,11 @@ export function countActiveScheduledTasks(snapshot: ScheduledTasksSnapshot | und
   ).length;
 }
 
+/** Scheduled runs at work on this computer: they keep it awake too. */
+export function countWorkingScheduledRuns(snapshot: ScheduledTasksSnapshot | undefined): number {
+  return (snapshot?.tasks ?? []).reduce((count, task) => count + task.workingRuns, 0);
+}
+
 /**
  * A run thread's task name as it is now (the task may have been renamed
  * since), or as it was when the run started when the task is gone or its

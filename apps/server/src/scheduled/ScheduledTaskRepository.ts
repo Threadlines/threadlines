@@ -3,6 +3,7 @@ import {
   IsoDateTime,
   MessageId,
   ModelSelection,
+  NonNegativeInt,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -57,6 +58,8 @@ export const ScheduledTaskRow = Schema.Struct({
   nextSlotUtc: Schema.NullOr(IsoDateTime),
   /** The thread whose agent set it up; null for a task a person made. Set once. */
   originThreadId: Schema.NullOr(ThreadId),
+  /** Goes up with every write; a write from an older read is refused. */
+  revision: NonNegativeInt,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -213,24 +216,46 @@ export interface ScheduledTaskRepositoryShape {
     id: ScheduledTaskId,
   ) => Effect.Effect<Option.Option<ScheduledTaskRow>, ScheduledTaskRepositoryError>;
   readonly insertTask: (row: ScheduledTaskRow) => Effect.Effect<void, ScheduledTaskRepositoryError>;
-  /** Writes the whole task over the stored one. */
-  readonly saveTask: (row: ScheduledTaskRow) => Effect.Effect<void, ScheduledTaskRepositoryError>;
+  /**
+   * Writes the whole task over the stored one, only while the stored one is
+   * still at `row.revision`; false when another write came first.
+   */
+  readonly saveTask: (
+    row: ScheduledTaskRow,
+  ) => Effect.Effect<boolean, ScheduledTaskRepositoryError>;
+  /**
+   * Allows an agent's waiting request and makes its change in one go: the
+   * new task inserted, or the edited one saved (only at its revision).
+   * `answered`: someone answered it first, and nothing changed; `changed`:
+   * the task moved on since `write` was worked out, and nothing changed.
+   */
+  readonly allowRequest: (input: {
+    readonly requestId: string;
+    readonly write:
+      | { readonly kind: "insert"; readonly row: ScheduledTaskRow }
+      | { readonly kind: "save"; readonly row: ScheduledTaskRow };
+    readonly now: string;
+  }) => Effect.Effect<"allowed" | "answered" | "changed", ScheduledTaskRepositoryError>;
   /** Deletes the task and its run history; returns the runs it had. */
   readonly deleteTask: (
     id: ScheduledTaskId,
   ) => Effect.Effect<ReadonlyArray<ScheduledRunRow>, ScheduledTaskRepositoryError>;
   /**
-   * Claims a task's due slot: only while its next slot is still
-   * `expectedNextSlotUtc` (and it is active), moves it to `nextSlotUtc` (and
-   * to `done` when that was its last slot), records the slots it missed as
-   * one skipped row, and records the run. None when the task moved on
-   * meanwhile (edited, paused, deleted).
+   * Claims a task's due slot: only while the task is still active at
+   * `expectedRevision` with its next slot at `expectedNextSlotUtc`, moves it
+   * to `nextSlotUtc` (and to `done` when that was its last slot), records the
+   * slots it missed as one skipped row, and records the run. None when the
+   * task moved on meanwhile (edited, paused, deleted), and with
+   * `waitWhenBusy`, when overlap would skip the run: the slot stays due.
    */
   readonly claimSlot: (input: {
     readonly taskId: ScheduledTaskId;
+    readonly expectedRevision: number;
     readonly expectedNextSlotUtc: string;
     readonly nextSlotUtc: string | null;
     readonly done: boolean;
+    /** A one-time task's only run waits for room rather than being skipped. */
+    readonly waitWhenBusy: boolean;
     readonly missed: { readonly slotUtc: string; readonly reason: string } | null;
     readonly run: ScheduledRunClaim | { readonly slotUtc: string; readonly skipReason: string };
     readonly now: string;
@@ -241,9 +266,13 @@ export interface ScheduledTaskRepositoryShape {
     readonly run: ScheduledRunClaim;
     readonly now: string;
   }) => Effect.Effect<ScheduledRunRow, ScheduledTaskRepositoryError>;
-  /** Sets a task's next slot, status and error (an error found at a tick). */
+  /**
+   * Sets a task's next slot, status and error (an error found at a tick),
+   * only while it is still at `expectedRevision`.
+   */
   readonly setTaskSchedule: (input: {
     readonly taskId: ScheduledTaskId;
+    readonly expectedRevision: number;
     readonly status: ScheduledTaskRow["status"];
     readonly error: string | null;
     readonly nextSlotUtc: string | null;
@@ -354,6 +383,7 @@ const make = Effect.gen(function* () {
       error AS "error",
       next_slot_utc AS "nextSlotUtc",
       origin_thread_id AS "originThreadId",
+      revision AS "revision",
       created_at AS "createdAt",
       updated_at AS "updatedAt"
     FROM scheduled_tasks
@@ -418,30 +448,63 @@ const make = Effect.gen(function* () {
     row.nextSlotUtc,
   ];
 
-  const insertTask: ScheduledTaskRepositoryShape["insertTask"] = (row) =>
-    sql
-      .unsafe(
-        `INSERT INTO scheduled_tasks (
-           task_id, name, prompt, project_id, checkout, model_selection_json, runtime_mode,
-           interaction_mode, cadence_json, time_zone, target_json, status, error, next_slot_utc,
-           origin_thread_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(task_id) DO NOTHING`,
-        [row.id, ...taskValues(row), row.originThreadId, row.createdAt, row.updatedAt],
-      )
-      .pipe(Effect.asVoid, wrap("insertTask"));
+  const insertTaskRow = (row: ScheduledTaskRow) =>
+    sql.unsafe(
+      `INSERT INTO scheduled_tasks (
+         task_id, name, prompt, project_id, checkout, model_selection_json, runtime_mode,
+         interaction_mode, cadence_json, time_zone, target_json, status, error, next_slot_utc,
+         origin_thread_id, revision, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(task_id) DO NOTHING`,
+      [row.id, ...taskValues(row), row.originThreadId, row.revision, row.createdAt, row.updatedAt],
+    );
 
-  const saveTask: ScheduledTaskRepositoryShape["saveTask"] = (row) =>
+  const insertTask: ScheduledTaskRepositoryShape["insertTask"] = (row) =>
+    insertTaskRow(row).pipe(Effect.asVoid, wrap("insertTask"));
+
+  /** The whole row over the stored one at `row.revision`; true when it was still there. */
+  const saveTaskRow = (row: ScheduledTaskRow) =>
     sql
-      .unsafe(
+      .unsafe<{ readonly id: string }>(
         `UPDATE scheduled_tasks SET
            name = ?, prompt = ?, project_id = ?, checkout = ?, model_selection_json = ?,
            runtime_mode = ?, interaction_mode = ?, cadence_json = ?, time_zone = ?,
-           target_json = ?, status = ?, error = ?, next_slot_utc = ?, updated_at = ?
-         WHERE task_id = ?`,
-        [...taskValues(row), row.updatedAt, row.id],
+           target_json = ?, status = ?, error = ?, next_slot_utc = ?, updated_at = ?,
+           revision = revision + 1
+         WHERE task_id = ? AND revision = ?
+         RETURNING task_id AS "id"`,
+        [...taskValues(row), row.updatedAt, row.id, row.revision],
       )
-      .pipe(Effect.asVoid, wrap("saveTask"));
+      .pipe(Effect.map((rows) => rows.length > 0));
+
+  const saveTask: ScheduledTaskRepositoryShape["saveTask"] = (row) =>
+    saveTaskRow(row).pipe(wrap("saveTask"));
+
+  /** Ends a transaction that must not commit: nothing it did is kept. */
+  class RolledBack extends Data.TaggedError("RolledBack")<{
+    readonly outcome: "answered" | "changed";
+  }> {}
+
+  const allowRequest: ScheduledTaskRepositoryShape["allowRequest"] = (input) =>
+    Effect.gen(function* () {
+      const answered = yield* sql<{ readonly id: string }>`
+        UPDATE scheduled_task_requests
+        SET status = 'allowed', detail = NULL, decided_at = ${input.now}
+        WHERE request_id = ${input.requestId} AND status = 'waiting'
+        RETURNING request_id AS "id"
+      `;
+      if (answered.length === 0) return yield* new RolledBack({ outcome: "answered" });
+      if (input.write.kind === "insert") {
+        yield* insertTaskRow(input.write.row);
+      } else if (!(yield* saveTaskRow(input.write.row))) {
+        return yield* new RolledBack({ outcome: "changed" });
+      }
+      return "allowed" as const;
+    }).pipe(
+      sql.withTransaction,
+      Effect.catchTag("RolledBack", (rolledBack) => Effect.succeed(rolledBack.outcome)),
+      wrap("allowRequest"),
+    );
 
   const deleteTask: ScheduledTaskRepositoryShape["deleteTask"] = (id) =>
     Effect.gen(function* () {
@@ -475,7 +538,8 @@ const make = Effect.gen(function* () {
    * while the task's own previous run works, or the computer's cap is full.
    * Call inside a transaction.
    */
-  const insertDecidedRun = (taskId: string, run: ScheduledRunClaim, now: string) =>
+  /** Why a new run of the task would be skipped now (overlap, or the cap); null if it wouldn't. */
+  const busyReason = (taskId: string) =>
     Effect.gen(function* () {
       const counts = yield* sql<{ readonly task: number | null; readonly all: number }>`
         SELECT
@@ -486,12 +550,16 @@ const make = Effect.gen(function* () {
       `;
       const taskWorking = Number(counts[0]?.task ?? 0);
       const allWorking = Number(counts[0]?.all ?? 0);
-      const skipReason =
-        taskWorking > 0
-          ? SKIP_REASON_PREVIOUS_WORKING
-          : allWorking >= SCHEDULED_TASK_RUN_CAP
-            ? SKIP_REASON_CAP
-            : null;
+      return taskWorking > 0
+        ? SKIP_REASON_PREVIOUS_WORKING
+        : allWorking >= SCHEDULED_TASK_RUN_CAP
+          ? SKIP_REASON_CAP
+          : null;
+    });
+
+  const insertDecidedRun = (taskId: string, run: ScheduledRunClaim, now: string) =>
+    Effect.gen(function* () {
+      const skipReason = yield* busyReason(taskId);
       if (skipReason !== null) {
         yield* insertSkipped(taskId, run.trigger, run.slotUtc, skipReason, now);
       } else {
@@ -510,13 +578,18 @@ const make = Effect.gen(function* () {
 
   const claimSlot: ScheduledTaskRepositoryShape["claimSlot"] = (input) =>
     Effect.gen(function* () {
+      if (input.waitWhenBusy && !("skipReason" in input.run)) {
+        if ((yield* busyReason(input.taskId)) !== null) return Option.none();
+      }
       const moved = yield* sql<{ readonly id: string }>`
         UPDATE scheduled_tasks SET
           next_slot_utc = ${input.nextSlotUtc},
           status = ${input.done ? "done" : "active"},
+          revision = revision + 1,
           updated_at = ${input.now}
         WHERE task_id = ${input.taskId}
           AND status = 'active'
+          AND revision = ${input.expectedRevision}
           AND next_slot_utc = ${input.expectedNextSlotUtc}
         RETURNING task_id AS "id"
       `;
@@ -555,8 +628,9 @@ const make = Effect.gen(function* () {
         status = ${input.status},
         error = ${input.error},
         next_slot_utc = ${input.nextSlotUtc},
+        revision = revision + 1,
         updated_at = ${input.now}
-      WHERE task_id = ${input.taskId}
+      WHERE task_id = ${input.taskId} AND revision = ${input.expectedRevision}
     `.pipe(Effect.asVoid, wrap("setTaskSchedule"));
 
   const getRun: ScheduledTaskRepositoryShape["getRun"] = (input) =>
@@ -718,6 +792,7 @@ const make = Effect.gen(function* () {
     listUnnotedRequests,
     markRequestsNoted,
     decideRequest,
+    allowRequest,
     listTasks,
     getTask,
     insertTask,

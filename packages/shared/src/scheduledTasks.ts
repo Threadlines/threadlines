@@ -288,6 +288,23 @@ export function dueSlots(
   return Result.succeed({ latest, earlier, firstEarlier });
 }
 
+/** "2026-10-22 09:00, Thursday": an instant's wall time in `timeZone`, for agents to read. */
+export function formatWallTime(instant: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    weekday: "long",
+  }).formatToParts(instant);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((entry) => entry.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}, ${part("weekday")}`;
+}
+
 /** "9:00" for a clock; callers pass their own formatter for the viewer's locale. */
 export const formatClock24 = (clock: ScheduledTaskClock): string =>
   `${clock.hour}:${String(clock.minute).padStart(2, "0")}`;

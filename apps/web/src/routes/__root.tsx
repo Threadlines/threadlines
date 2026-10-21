@@ -45,6 +45,7 @@ import {
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import {
   countActiveScheduledTasks,
+  countWorkingScheduledRuns,
   ScheduledTasksSync,
   useScheduledTasksStore,
 } from "../lib/scheduledTasksState";
@@ -286,6 +287,12 @@ function DesktopTaskbarStatusSync() {
       ? 0
       : countActiveScheduledTasks(state.byEnvironment[primaryEnvironmentId]),
   );
+  // Its scheduled runs at work keep it awake too, a one-time task's included.
+  const workingScheduledRunCount = useScheduledTasksStore((state) =>
+    primaryEnvironmentId === null
+      ? 0
+      : countWorkingScheduledRuns(state.byEnvironment[primaryEnvironmentId]),
+  );
   const hadRunningThreadRef = useRef(false);
   const completionShownRef = useRef(false);
   const completionSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -300,7 +307,11 @@ function DesktopTaskbarStatusSync() {
     if (!bridge?.setTaskbarStatus) {
       return;
     }
-    const input: DesktopTaskbarStatusInput = { ...status, activeScheduledTaskCount };
+    const input: DesktopTaskbarStatusInput = {
+      ...status,
+      activeScheduledTaskCount,
+      workingScheduledRunCount,
+    };
 
     const threadsKey = (input.threads ?? [])
       .map(
@@ -308,7 +319,7 @@ function DesktopTaskbarStatusSync() {
           `${taskbarThreadKey(thread)}:${thread.state}:${thread.waitingOn ?? ""}:${thread.title}`,
       )
       .join("|");
-    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.localRunningThreadCount ?? ""}:${input.completedThreadCount ?? ""}:${input.activeScheduledTaskCount ?? ""}:${threadsKey}`;
+    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.localRunningThreadCount ?? ""}:${input.completedThreadCount ?? ""}:${input.activeScheduledTaskCount ?? ""}:${input.workingScheduledRunCount ?? ""}:${threadsKey}`;
     if (lastStatusKeyRef.current === statusKey) {
       return;
     }
@@ -415,7 +426,12 @@ function DesktopTaskbarStatusSync() {
 
   useEffect(() => {
     syncTaskbarStatus();
-  }, [activeScheduledTaskCount, primaryEnvironmentId, runningThreadsSignature]);
+  }, [
+    activeScheduledTaskCount,
+    primaryEnvironmentId,
+    runningThreadsSignature,
+    workingScheduledRunCount,
+  ]);
 
   useEffect(() => {
     const handleFocus = () => {

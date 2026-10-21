@@ -454,6 +454,7 @@ describe("DesktopBackendManager", () => {
           quitting,
           localRunningThreadCount: runningThreadCount,
           activeScheduledTaskCount: yield* Ref.make(0),
+          workingScheduledRunCount: yield* Ref.make(0),
           runInBackground: yield* Ref.make(false),
         },
         desktopWindow: {

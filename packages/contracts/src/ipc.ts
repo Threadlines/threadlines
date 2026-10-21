@@ -457,11 +457,16 @@ export interface DesktopTaskbarStatusInput {
   /** Unseen-completed and running threads, in display order for the status item menu. */
   threads?: readonly DesktopTaskbarThreadSummary[];
   /**
-   * Active scheduled tasks with a schedule (not manual) on this computer's own
+   * Active scheduled tasks that run again on their own on this computer's own
    * server: they keep it awake when the user asked for that, and quitting
    * stops them until Threadlines runs again.
    */
   activeScheduledTaskCount?: number;
+  /**
+   * Scheduled runs still working on this computer's own server: they keep it
+   * awake too, a one-time task's last run included.
+   */
+  workingScheduledRunCount?: number;
 }
 
 export interface DesktopQuitConfirmationRequest {
@@ -507,6 +512,7 @@ export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   completedThreadCount: Schema.optionalKey(Schema.Number),
   threads: Schema.optionalKey(Schema.Array(DesktopTaskbarThreadSummarySchema)),
   activeScheduledTaskCount: Schema.optionalKey(Schema.Number),
+  workingScheduledRunCount: Schema.optionalKey(Schema.Number),
 });
 
 /** Optional structured payload accompanying a desktop menu action. */

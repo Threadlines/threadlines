@@ -199,6 +199,8 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       git,
       requests,
     });
+    // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
+    const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
     const threadHandlers = makeThreadToolHandlers({
       engine,
       readThread,
@@ -223,9 +225,10 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       git,
       requests,
       ...(links !== undefined ? { links } : {}),
+      ...(Option.isSome(scheduledTasks)
+        ? { scheduleAnswerWaiting: scheduledTasks.value.waitingThreadIds }
+        : {}),
     });
-    // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
-    const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
     const scheduleHandlers = makeScheduleToolHandlers({
       scheduledTasks: Option.getOrUndefined(scheduledTasks),
       readThread,

@@ -344,6 +344,89 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
     }),
   );
 
+  it.effect("a one-time task's only run waits for room instead of being skipped", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(
+        draft({ cadence: { kind: "once", date: "2026-10-20", time: { hour: 9, minute: 0 } } }),
+      );
+      // Its own run, started by hand, still works at its time.
+      const manual = yield* service.runNow({ id: task.id });
+      const manualThread = scheduledRunThreadId(task.id, manual.slotUtc);
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+        "the manual run started",
+      );
+      yield* setClock("2026-10-20T09:00:05.000Z");
+      yield* service.tick;
+      assert.equal((yield* computer.runs(task.id)).length, 1);
+      assert.equal((yield* service.getTask(task.id))?.nextRunAt, "2026-10-20T09:00:00.000Z");
+
+      // Once that run ends, it runs: late, so as a catch-up.
+      const turnId = TurnId.make("manual-turn");
+      yield* computer.turnRuns(manualThread, turnId);
+      yield* computer.turnCompletes(manualThread, turnId);
+      yield* setClock("2026-10-20T09:10:00.000Z");
+      yield* service.tick;
+      yield* service.tick;
+      assert.deepEqual(
+        (yield* computer.runs(task.id)).map((row) => [row.trigger, row.status === "skipped"]),
+        [
+          ["manual", false],
+          ["catch_up", false],
+        ],
+      );
+      assert.equal((yield* service.getTask(task.id))?.status, "done");
+    }),
+  );
+
+  it.effect(
+    "a slot claimed from a read older than an edit is refused; the next tick runs the edit",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        const service = yield* computer.boot();
+        const task = yield* service.create(draft({ cadence: { kind: "hourly", minute: 0 } }));
+        yield* setClock("2026-10-20T09:00:05.000Z");
+        // A tick read the task, then the user changed its instructions.
+        const read = Option.getOrThrow(yield* computer.repo.getTask(task.id));
+        yield* service.update({ id: task.id, prompt: "Only look at the release branch." });
+        const stale = yield* computer.repo.claimSlot({
+          taskId: task.id,
+          expectedRevision: read.revision,
+          expectedNextSlotUtc: read.nextSlotUtc!,
+          nextSlotUtc: "2026-10-20T10:00:00.000Z",
+          done: false,
+          waitWhenBusy: false,
+          missed: null,
+          run: {
+            slotUtc: read.nextSlotUtc!,
+            trigger: "schedule",
+            launch: {
+              taskName: read.name,
+              prompt: read.prompt,
+              projectId: read.projectId,
+              checkout: read.checkout,
+              workspace: null,
+              modelSelection: read.modelSelection,
+              runtimeMode: read.runtimeMode,
+              interactionMode: read.interactionMode,
+              target: read.target,
+            },
+          },
+          now: "2026-10-20T09:00:05.000Z",
+        });
+        assert.isTrue(Option.isNone(stale));
+
+        yield* service.tick;
+        const run = (yield* computer.runs(task.id))[0];
+        assert.equal(run?.launch?.prompt, "Only look at the release branch.");
+      }),
+  );
+
   it.effect("skips a slot while the task's last run works, and past 3 working runs", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;
@@ -768,6 +851,66 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
           })).outcome,
           "not_allowed",
         );
+      }),
+  );
+
+  it.effect(
+    "an answer and its change are one write: an answer that came first leaves the tasks alone",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        const service = yield* computer.boot();
+        const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+        const run = yield* service.runNow({ id: task.id });
+        const threadId = scheduledRunThreadId(task.id, run.slotUtc);
+        yield* eventually(
+          computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+          "the run started",
+        );
+        yield* computer.turnRuns(threadId, TurnId.make("run-turn"));
+        const tools = makeScheduleToolHandlers({
+          scheduledTasks: service,
+          readThread: (threadId) => computer.thread(threadId).pipe(Effect.orDie),
+          threadsMode: Effect.succeed("ask"),
+          providers: Effect.succeed([PROVIDER]),
+          localTimeZone: "UTC",
+        });
+        const asked = yield* tools.schedule_create(callerScope(threadId, false), {
+          name: "Dependency audit",
+          prompt: "Check for outdated dependencies.",
+          schedule: { kind: "weekdays", time: { hour: 9, minute: 0 } },
+        });
+        assert.equal(asked.outcome, "asked_user");
+        const requestId = asked.requestId!;
+        const prepared = (yield* computer.repo.getRequest(requestId)).pipe(Option.getOrThrow);
+        assert.equal(prepared.status, "waiting");
+
+        // Not now lands between reading the request and saving its change.
+        yield* computer.repo.decideRequest({
+          requestId,
+          status: "denied",
+          detail: null,
+          now: "2026-10-20T08:00:01.000Z",
+        });
+        const late = yield* service.respondRequest({ requestId, allow: true }).pipe(Effect.flip);
+        assert.match(late.detail, /already answered/);
+        assert.isUndefined(yield* service.getTask(ScheduledTaskId.make(asked.taskId!)));
+        assert.equal(
+          yield* computer.repo.allowRequest({
+            requestId,
+            write: {
+              kind: "insert",
+              row: {
+                ...Option.getOrThrow(yield* computer.repo.getTask(task.id)),
+                id: ScheduledTaskId.make(asked.taskId!),
+              },
+            },
+            now: "2026-10-20T08:00:02.000Z",
+          }),
+          "answered",
+        );
+        assert.isUndefined(yield* service.getTask(ScheduledTaskId.make(asked.taskId!)));
       }),
   );
 

@@ -51,6 +51,7 @@ import {
   compileCadence,
   describeCadence,
   dueSlots,
+  formatWallTime,
   nextSlotOf,
   SCHEDULED_TASK_CATCH_UP_WINDOW_MS,
   SCHEDULED_TASK_ON_TIME_MS,
@@ -92,6 +93,7 @@ import {
   type ScheduledRunRow,
   type ScheduledTaskChange,
   ScheduledTaskRepository,
+  type ScheduledTaskRepositoryShape,
   type ScheduledTaskRequestRow,
   type ScheduledTaskRow,
   WORKING_RUN_STATUSES,
@@ -193,6 +195,8 @@ export interface ScheduledTasksShape {
   readonly pendingNotes: ScheduledTaskNotesShape["pendingFor"];
   /** Those answers went out with a turn the provider took. */
   readonly notesDelivered: ScheduledTaskNotesShape["delivered"];
+  /** The threads whose agent's change waits for the user; none on a failed read. */
+  readonly waitingThreadIds: Effect.Effect<ReadonlySet<ThreadId>>;
   /** The user allows or denies an agent's change. */
   readonly respondRequest: (
     input: ScheduledTaskRespondRequestInput,
@@ -224,6 +228,10 @@ export class ScheduledTasks extends Context.Service<ScheduledTasks, ScheduledTas
 ) {}
 
 const taskError = (detail: string) => new ScheduledTaskError({ detail });
+
+/** Tries at saving an edit over a task other writes keep moving. */
+const SAVE_ATTEMPTS = 3;
+const KEPT_CHANGING = "The task kept changing while it was being saved. Try again.";
 
 const toRun = (row: ScheduledRunRow): ScheduledRun => ({
   taskId: row.taskId,
@@ -496,6 +504,7 @@ const make = Effect.gen(function* () {
         error: null,
         nextSlotUtc: null,
         originThreadId: made?.origin ?? null,
+        revision: 0,
         createdAt: at,
         updatedAt: at,
       };
@@ -547,13 +556,24 @@ const make = Effect.gen(function* () {
       return toTask(row, undefined);
     });
 
+  /**
+   * An edit, saved only over the task it was worked out from: one that lost
+   * to another write (a slot claimed meanwhile) is worked out again from a
+   * fresh read, so neither undoes the other.
+   */
   const update: ScheduledTasksShape["update"] = (input) =>
     Effect.gen(function* () {
-      const { row } = yield* prepareUpdate(input, yield* nowMillis);
-      yield* repo.saveTask(row).pipe(Effect.mapError(storageError("save the task")));
-      yield* notify;
-      const summaries = yield* repo.runSummaries.pipe(Effect.orElseSucceed(() => new Map()));
-      return toTask(row, summaries.get(row.id));
+      for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt += 1) {
+        const { row } = yield* prepareUpdate(input, yield* nowMillis);
+        const saved = yield* repo
+          .saveTask(row)
+          .pipe(Effect.mapError(storageError("save the task")));
+        if (!saved) continue;
+        yield* notify;
+        const summaries = yield* repo.runSummaries.pipe(Effect.orElseSucceed(() => new Map()));
+        return toTask(row, summaries.get(row.id));
+      }
+      return yield* taskError(KEPT_CHANGING);
     });
 
   /** The task an agent's create makes: one per request, whatever retries. */
@@ -620,6 +640,27 @@ const make = Effect.gen(function* () {
       };
     });
 
+  /** What allowing an agent's request writes, checked from now: the new task or the edit. */
+  const allowedWrite = (
+    request: ScheduledTaskRequestRow,
+    now: number,
+  ): Effect.Effect<
+    Parameters<ScheduledTaskRepositoryShape["allowRequest"]>[0]["write"],
+    ScheduledTaskError
+  > =>
+    Effect.gen(function* () {
+      const change = request.payload.change;
+      if (change.kind === "create") {
+        const row = yield* prepareCreate(change.draft, now, {
+          id: requestTaskId(request.requestId),
+          origin: request.threadId,
+        });
+        return { kind: "insert", row };
+      }
+      const { row } = yield* prepareUpdate(change.input, now);
+      return { kind: "save", row };
+    });
+
   const respondRequest: ScheduledTasksShape["respondRequest"] = (input) =>
     Effect.gen(function* () {
       const found = yield* repo
@@ -647,16 +688,30 @@ const make = Effect.gen(function* () {
         yield* decide("denied", detail);
         return yield* taskError(detail);
       }
-      const applied = yield* applyChange(
-        request.requestId,
-        request.payload.change,
-        request.threadId,
-      ).pipe(Effect.result);
-      if (Result.isFailure(applied)) {
-        yield* decide("failed", applied.failure.detail);
-        return yield* Effect.fail(applied.failure);
+      // The answer and the change are one write, so they can never disagree:
+      // an answer that came first (Not now, a day passing) leaves the tasks
+      // as they were, and a change that can't be made is the answer.
+      for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt += 1) {
+        const now = yield* nowMillis;
+        const prepared = yield* allowedWrite(request, now).pipe(Effect.result);
+        if (Result.isFailure(prepared)) {
+          yield* decide("failed", prepared.failure.detail);
+          return yield* Effect.fail(prepared.failure);
+        }
+        const outcome = yield* repo
+          .allowRequest({
+            requestId: request.requestId,
+            write: prepared.success,
+            now: new Date(now).toISOString(),
+          })
+          .pipe(Effect.mapError(storageError("allow the request")));
+        if (outcome === "answered") return yield* taskError("That request was already answered.");
+        if (outcome === "allowed") {
+          yield* notify;
+          return;
+        }
       }
-      yield* decide("allowed", null);
+      return yield* taskError(KEPT_CHANGING);
     });
 
   /** What one answered request tells the agent that asked. */
@@ -671,7 +726,7 @@ const make = Effect.gen(function* () {
         const task = tasks.find((entry) => entry.id === requestTaskId(request.requestId));
         const next =
           task?.status === "active" && task.nextSlotUtc !== null
-            ? `, next run ${task.nextSlotUtc}`
+            ? `, next run ${formatWallTime(new Date(task.nextSlotUtc), task.timeZone)} (${task.timeZone})`
             : "";
         return `The user allowed ${subject}: it's on the Scheduled page (id ${requestTaskId(request.requestId)})${next}.`;
       }
@@ -706,6 +761,11 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       yield* repo.markRequestsNoted({ requestIds, now: yield* nowIso });
     }).pipe(Effect.ignore);
+
+  const waitingThreadIds: ScheduledTasksShape["waitingThreadIds"] = repo.listWaitingRequests.pipe(
+    Effect.map((requests): ReadonlySet<ThreadId> => new Set(requests.map((row) => row.threadId))),
+    Effect.orElseSucceed(() => new Set<ThreadId>()),
+  );
 
   /** Agents' changes nobody answered within a day. */
   const expireRequests = Effect.gen(function* () {
@@ -753,10 +813,16 @@ const make = Effect.gen(function* () {
   // ---------------------------------------------------------------------------
 
   /** Marks a task errored with the reason: it stops running until it is saved again. */
-  const failTask = (task: ScheduledTaskRow, reason: string) =>
+  const failTask = (
+    task: ScheduledTaskRow,
+    reason: string,
+    /** The revision the task is at; an edit since wins. */
+    revision: number = task.revision,
+  ) =>
     Effect.gen(function* () {
       yield* repo.setTaskSchedule({
         taskId: task.id,
+        expectedRevision: revision,
         status: "error",
         error: reason,
         nextSlotUtc: null,
@@ -783,6 +849,7 @@ const make = Effect.gen(function* () {
         // Manual: nothing is due. A stale slot is cleared.
         yield* repo.setTaskSchedule({
           taskId: task.id,
+          expectedRevision: task.revision,
           status: task.status,
           error: null,
           nextSlotUtc: null,
@@ -802,12 +869,19 @@ const make = Effect.gen(function* () {
       const lateness = now - latest.getTime();
       const at = new Date(now).toISOString();
       const tooLate = lateness > SCHEDULED_TASK_CATCH_UP_WINDOW_MS;
+      // A one-time task has had its one slot.
+      const done = Result.isSuccess(after) && after.success === null;
       const claimed = yield* repo.claimSlot({
         taskId: task.id,
+        // Claimed from the task as this tick read it: an edit since wins,
+        // and the next tick claims with the edited settings.
+        expectedRevision: task.revision,
         expectedNextSlotUtc: task.nextSlotUtc,
         nextSlotUtc,
-        // A once task has had its one slot.
-        done: Result.isSuccess(after) && after.success === null,
+        done,
+        // Its only run waits for room (until the catch-up window passes)
+        // rather than being skipped.
+        waitWhenBusy: done,
         // Too late to catch up: every missed slot is one skipped row.
         missed:
           !tooLate && earlier > 0 && firstEarlier !== null
@@ -825,8 +899,8 @@ const make = Effect.gen(function* () {
             },
         now: at,
       });
-      if (Result.isFailure(after)) {
-        yield* failTask(task, "This schedule doesn't run again.");
+      if (Option.isSome(claimed) && Result.isFailure(after)) {
+        yield* failTask(task, "This schedule doesn't run again.", task.revision + 1);
       }
       return Option.getOrNull(claimed);
     });
@@ -1504,6 +1578,7 @@ const make = Effect.gen(function* () {
     propose,
     pendingNotes,
     notesDelivered,
+    waitingThreadIds,
     respondRequest,
     getTask,
     recordFinish,

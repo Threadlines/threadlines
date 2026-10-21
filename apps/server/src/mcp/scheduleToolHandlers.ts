@@ -16,7 +16,7 @@ import type {
   ThreadId,
 } from "@threadlines/contracts";
 import { ProviderInstanceId, ScheduledTaskId } from "@threadlines/contracts";
-import { describeCadence } from "@threadlines/shared/scheduledTasks";
+import { describeCadence, formatWallTime } from "@threadlines/shared/scheduledTasks";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -25,6 +25,7 @@ import { derivedUuid } from "../orchestration/childRequestIds.ts";
 import type { ScheduledTasksShape } from "../scheduled/ScheduledTasks.ts";
 import type { ScheduledTaskChange } from "../scheduled/ScheduledTaskRepository.ts";
 import { latchCallerTurn } from "./callerTurn.ts";
+import { callerModelSelection } from "./threadToolHandlers.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import type { RoomToolName } from "./roomToolAccess.ts";
 import type {
@@ -55,23 +56,6 @@ const GONE = "This thread is gone.";
 const NOT_YOUR_TURN = "Scheduled tasks can only be changed during your own turn.";
 const ASKED_USER =
   "A card in this thread asks the user. The change is made when they allow it: tell the user it waits for their OK. You'll hear their answer at your next turn; don't ask again.";
-
-/** "2026-10-21 14:05, Wednesday": the wall time in `timeZone`. */
-const localTimeIn = (millis: number, timeZone: string): string => {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    weekday: "long",
-  }).formatToParts(new Date(millis));
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((entry) => entry.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}, ${part("weekday")}`;
-};
 
 /** A task as an agent reads it. */
 const forAgent = (task: ScheduledTask, callerThreadId: ThreadId): AgentScheduledTask => ({
@@ -165,7 +149,10 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
       return {
         outcome: "ok" as const,
         tasks: tasks.success.map((task) => forAgent(task, scope.threadId)),
-        now: { localTime: localTimeIn(now, deps.localTimeZone), timeZone: deps.localTimeZone },
+        now: {
+          localTime: formatWallTime(new Date(now), deps.localTimeZone),
+          timeZone: deps.localTimeZone,
+        },
       };
     });
 
@@ -262,13 +249,14 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
           prompt,
           projectId: thread.projectId,
           checkout: input.runs_in ?? "local",
+          // In a room, the calling agent's own model, not the thread's.
           modelSelection:
             input.agent !== undefined
               ? {
                   instanceId: ProviderInstanceId.make(input.agent.instanceId),
                   model: input.agent.model,
                 }
-              : thread.modelSelection,
+              : callerModelSelection(thread, scope.participantId),
           // Never more access than the thread asking for it has.
           runtimeMode: thread.runtimeMode,
           interactionMode: "default",

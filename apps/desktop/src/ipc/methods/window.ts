@@ -137,7 +137,10 @@ export const setTaskbarStatus = makeIpcMethod({
     const statusIndicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
     const background = yield* DesktopBackground.DesktopBackground;
     yield* statusIndicator.setStatus(input);
-    yield* background.setActiveScheduledTaskCount(input.activeScheduledTaskCount ?? 0);
+    yield* background.setScheduledWork({
+      activeTasks: input.activeScheduledTaskCount ?? 0,
+      workingRuns: input.workingScheduledRunCount ?? 0,
+    });
   }),
 });
 
