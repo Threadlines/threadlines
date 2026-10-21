@@ -3,16 +3,20 @@ import type { ReactNode } from "react";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
-import { SidebarOpenTrigger } from "./ui/sidebar";
+import { SidebarOpenTrigger, useSidebar } from "./ui/sidebar";
 import { HeaderEdgeFade } from "./HeaderEdgeFade";
 
 /**
  * The strip across the top of a full-page surface (General chats, Pull
  * requests, Usage, Settings, Fleet).
  *
- * In the desktop app it is the page's top bar, the height of a thread's
- * header, inside the work panel below the window's title row; it also moves
- * the window.
+ * In the desktop app at full width there is no strip by default: the window's
+ * title row above the work panel already carries the sidebar toggle, back,
+ * forward and the app's name, and each of these pages draws its own title. A
+ * page that has controls for the whole page (Settings' Restore defaults)
+ * still gets the strip, holding just those controls. In a desktop window too
+ * narrow for the rail, the title row hides, so the strip comes back as the
+ * row with the sidebar trigger and the page name, like a phone's.
  *
  * On the web below the `md` breakpoint the sidebar is a sheet, and the only
  * way to reach it is a trigger in the page itself. A thread carries one in its
@@ -33,6 +37,7 @@ export function PageTitlebar({
   /** Optional extra content, laid out after the label. */
   readonly children?: ReactNode;
 }) {
+  const { isMobile } = useSidebar();
   if (!isElectron) {
     if (mobile === "none") {
       return null;
@@ -47,6 +52,20 @@ export function PageTitlebar({
       </header>
     );
   }
+  if (!isMobile) {
+    if (!children) return null;
+    return (
+      <div
+        className={cn(
+          "drag-region relative flex shrink-0 items-center gap-2 px-5",
+          ELECTRON_HEADER_HEIGHT_CLASS,
+        )}
+      >
+        {children}
+        <HeaderEdgeFade at="below" />
+      </div>
+    );
+  }
   return (
     <div
       className={cn(
@@ -55,9 +74,7 @@ export function PageTitlebar({
       )}
     >
       <SidebarOpenTrigger className="size-7 shrink-0" />
-      {label ? (
-        <span className="text-xs font-medium tracking-wide text-muted-foreground/70">{label}</span>
-      ) : null}
+      {label ? <span className="text-xs font-medium text-muted-foreground">{label}</span> : null}
       {children}
       <HeaderEdgeFade at="below" />
     </div>
