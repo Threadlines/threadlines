@@ -526,7 +526,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
                   {goesTo === undefined
                     ? "Choose an agent"
                     : goesTo.left
-                      ? `${goesTo.name} (left the thread)`
+                      ? `${goesTo.name} (left)`
                       : goesTo.name}
                 </SelectValue>
               </SelectTrigger>

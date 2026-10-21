@@ -939,7 +939,7 @@ const make = Effect.gen(function* () {
         nextSlotUtc: null,
         now: yield* nowIso,
       });
-      yield* Effect.logWarning("a scheduled task stopped: its schedule failed", {
+      yield* Effect.logWarning("a scheduled task stopped", {
         taskId: task.id,
         reason,
       });
