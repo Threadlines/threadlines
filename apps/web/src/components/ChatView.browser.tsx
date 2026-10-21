@@ -3022,6 +3022,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
     await __resetLocalApiForTests();
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
+    // Each spec is a fresh window: session storage would otherwise carry the
+    // previous spec's history (like a reload does) into this one.
+    sessionStorage.clear();
     // A computer that has finished setup: these specs exercise empty drafts
     // and threads, which a first run would leave for the setup screen.
     dismissFirstRunSetup(LOCAL_ENVIRONMENT_ID);
