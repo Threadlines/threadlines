@@ -9,7 +9,13 @@ const DEFAULT_POLL_SECONDS = 30;
 const MAX_CONSECUTIVE_POLL_ERRORS = 8;
 const DEFAULT_STAPLE_ATTEMPTS = 4;
 const STAPLE_RETRY_SECONDS = 30;
-const STAPLER_NETWORK_FAILURE = /NSURLErrorDomain/u;
+// NSURLErrors that mean no answer came back at all: timed out (-1001), host not
+// found (-1003), could not connect (-1004), connection lost (-1005), offline
+// (-1009). Others, such as a bad server response (-1011), mean Apple answered.
+const STAPLER_CONNECTION_ERROR =
+  /Error Domain=NSURLErrorDomain Code=-(1001|1003|1004|1005|1009)\b/u;
+const STAPLER_NETWORK_VERDICT = /action failed! Error 68\b/u;
+const STAPLER_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const NON_RETRYABLE_SUBMIT_PATTERNS = [
   /HTTP status code:\s*(401|403)\b/u,
   /A required agreement is missing or has expired/u,
@@ -204,30 +210,40 @@ function waitForAccepted(submissionId) {
 
 /**
  * Runs `xcrun stapler <action>`, echoing its output to the build log. A failure
- * carries that output as `error.output`, so callers can tell a dropped
- * connection to Apple from a real answer about the app.
+ * carries that output as `error.output`, plus `status` and `signal`, so callers
+ * can tell a dropped connection to Apple from a real answer about the app.
  */
 function runStapler(action, appPath) {
-  const result = spawnSync("xcrun", ["stapler", action, appPath], { encoding: "utf8" });
+  const result = spawnSync("xcrun", ["stapler", action, appPath], {
+    encoding: "utf8",
+    maxBuffer: STAPLER_MAX_OUTPUT_BYTES,
+  });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    const error = new Error(`xcrun stapler ${action} failed with exit code ${result.status}.`);
+    const how = result.signal
+      ? `was stopped by ${result.signal}`
+      : `failed with exit code ${result.status}`;
+    const error = new Error(`xcrun stapler ${action} ${how}.`);
     error.output = `${result.stdout || ""}${result.stderr || ""}`;
+    error.status = result.status;
+    error.signal = result.signal;
     throw error;
   }
 }
 
 /**
- * True when stapler failed only because the connection to Apple's ticket
- * service broke (it prints an NSURLError such as -1005, "The network connection
- * was lost", and exits with Error 68). Such a failure says nothing about the app.
+ * True when stapler exited on its own after never getting an answer from
+ * Apple's ticket service: it printed a connection-level NSURLError (timed out,
+ * host not found, could not connect, connection lost, offline) and its own
+ * Error 68 verdict. Such a failure says nothing about the app.
  */
 function isStaplerNetworkFailure(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  const output = error && typeof error.output === "string" ? error.output : "";
-  return STAPLER_NETWORK_FAILURE.test(`${message}\n${output}`);
+  if (!error || typeof error.output !== "string" || typeof error.status !== "number") {
+    return false;
+  }
+  return STAPLER_CONNECTION_ERROR.test(error.output) && STAPLER_NETWORK_VERDICT.test(error.output);
 }
 
 /**
@@ -262,7 +278,8 @@ function runStaplerWithRetries(action, appPath, options) {
  */
 function validateStapledTicket(appPath, options) {
   const { run = runStapler } = options;
-  let answeredWithFailure = false;
+  let lastFailure;
+  let realAnswer;
   try {
     runStaplerWithRetries("validate", appPath, {
       ...options,
@@ -270,13 +287,17 @@ function validateStapledTicket(appPath, options) {
         try {
           run(action, target);
         } catch (error) {
-          if (!isStaplerNetworkFailure(error)) answeredWithFailure = true;
+          lastFailure = error;
+          if (!realAnswer && !isStaplerNetworkFailure(error)) realAnswer = error;
           throw error;
         }
       },
     });
   } catch (error) {
-    if (answeredWithFailure) throw error;
+    // Only the last stapler attempt's own failure can be excused here. A failed
+    // wait between attempts, or any attempt that got a real answer, fails the build.
+    if (realAnswer) throw realAnswer;
+    if (error !== lastFailure) throw error;
     console.warn(
       `[threadlines-notary] stapler validate could not reach Apple on any of ${options.attempts} attempts. ` +
         "The staple step already validated the ticket, so the build continues.",
@@ -316,3 +337,4 @@ module.exports.formatNonRetryableSubmitFailure = formatNonRetryableSubmitFailure
 module.exports.redactNotarySecrets = redactNotarySecrets;
 module.exports.runStaplerWithRetries = runStaplerWithRetries;
 module.exports.validateStapledTicket = validateStapledTicket;
+module.exports.isStaplerNetworkFailure = isStaplerNetworkFailure;
