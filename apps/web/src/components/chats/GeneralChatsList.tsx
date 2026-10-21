@@ -1,0 +1,164 @@
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
+import { useNavigate, useParams } from "@tanstack/react-router";
+import { MessageCirclePlusIcon } from "lucide-react";
+
+import { useThreadSeenSources } from "../../lib/threadInboxSync";
+import { cn } from "../../lib/utils";
+import { buildThreadRouteParams, resolveThreadRouteRef } from "../../threadRoutes";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
+import type { SidebarThreadSummary } from "../../types";
+import {
+  isUnreadResultStatus,
+  resolveSeenThreadStatus,
+  type ThreadStatusPill,
+} from "../Sidebar.logic";
+import { DestinationListHeader } from "../sidebar/DestinationListHeader";
+import { SidebarHoverCardGroup } from "../sidebar/hoverCard";
+import { ThreadStatusText } from "../sidebar/InboxRows";
+import { ThreadHoverCard, ThreadHoverCardProvider } from "../sidebar/ThreadHoverCard";
+import { ChromeIconButton, ChromeTooltip } from "../sidebar/ChromeIconButton";
+import { SidebarContent } from "../ui/sidebar";
+import {
+  CHAT_GROUP_LABELS,
+  chatActivityAt,
+  useGeneralChatGroups,
+  useGeneralChats,
+} from "./useGeneralChats";
+
+function GeneralChatRow({
+  thread,
+  status,
+  active,
+  onOpen,
+}: {
+  readonly thread: SidebarThreadSummary;
+  readonly status: ThreadStatusPill | null;
+  readonly active: boolean;
+  readonly onOpen: () => void;
+}) {
+  // An answer nobody has read keeps the title bright, as in the inbox.
+  const unread = isUnreadResultStatus(status);
+  return (
+    <li>
+      <ThreadHoverCard thread={thread} status={status}>
+        <button
+          type="button"
+          data-testid="chats-list-row"
+          data-unread={unread ? "" : undefined}
+          aria-current={active ? "page" : undefined}
+          className={cn(
+            "flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors select-none focus-ring",
+            active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60 active:bg-sidebar-accent/80",
+          )}
+          onClick={onOpen}
+        >
+          <span
+            aria-label={status?.label}
+            className={cn("size-[7px] shrink-0 rounded-full", status?.dotClass)}
+          />
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-[13.5px] leading-[19px] font-medium",
+              unread || active ? "text-foreground" : "text-foreground/90",
+            )}
+          >
+            {thread.title}
+          </span>
+          <ThreadStatusText
+            thread={thread}
+            status={status}
+            testId="chats-list-row-status"
+            resting={formatRelativeTimeLabel(chatActivityAt(thread))}
+            restingClassName="text-muted-foreground"
+          />
+        </button>
+      </ThreadHoverCard>
+    </li>
+  );
+}
+
+/**
+ * The General Chats list beside the rail: every general chat, newest first in
+ * the same buckets as the phone's chats page, what each is doing, and a New
+ * chat button. The open chat shows in the main view beside it.
+ */
+export function GeneralChatsList() {
+  const navigate = useNavigate();
+  const seenSources = useThreadSeenSources();
+  const { chats, startChat } = useGeneralChats();
+  const groups = useGeneralChatGroups(chats);
+  const routeThreadRef = useParams({
+    strict: false,
+    select: (params) => resolveThreadRouteRef(params),
+  });
+  const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+
+  return (
+    <ThreadHoverCardProvider>
+      <DestinationListHeader
+        title="General chats"
+        action={
+          <ChromeIconButton
+            size="titlebar"
+            side="bottom"
+            label="New chat"
+            testId="chats-list-new-chat"
+            disabled={startChat === null}
+            tooltip={
+              <ChromeTooltip
+                label="New chat"
+                detail={startChat === null ? "No computer is connected yet." : null}
+              />
+            }
+            onClick={() => startChat?.()}
+          >
+            <MessageCirclePlusIcon aria-hidden="true" />
+          </ChromeIconButton>
+        }
+      />
+      <SidebarContent className="px-2 pb-3">
+        {chats.length === 0 ? (
+          <div className="flex flex-col gap-1 px-2 py-2">
+            <p className="text-[12.5px] text-muted-foreground">No general chats yet.</p>
+            <p className="text-[12px] text-muted-foreground">
+              Start one for anything that doesn&apos;t belong to a project.
+            </p>
+          </div>
+        ) : (
+          <SidebarHoverCardGroup>
+            {groups.map((group) => (
+              <section key={group.id} className="mt-3 first:mt-1">
+                <h3 className="px-2 pb-1 font-mono text-[10px] tracking-wider text-muted-foreground uppercase select-none">
+                  {CHAT_GROUP_LABELS[group.id]}
+                </h3>
+                <ul className="flex flex-col gap-px" data-testid="chats-list">
+                  {group.chats.map((thread) => {
+                    const threadKey = scopedThreadKey(
+                      scopeThreadRef(thread.environmentId, thread.id),
+                    );
+                    return (
+                      <GeneralChatRow
+                        key={threadKey}
+                        thread={thread}
+                        status={resolveSeenThreadStatus(thread, threadKey, seenSources).status}
+                        active={threadKey === routeThreadKey}
+                        onOpen={() => {
+                          void navigate({
+                            to: "/$environmentId/$threadId",
+                            params: buildThreadRouteParams(
+                              scopeThreadRef(thread.environmentId, thread.id),
+                            ),
+                          });
+                        }}
+                      />
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+          </SidebarHoverCardGroup>
+        )}
+      </SidebarContent>
+    </ThreadHoverCardProvider>
+  );
+}

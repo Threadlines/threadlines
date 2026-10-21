@@ -12,8 +12,6 @@ import {
 } from "lucide-react";
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
-  type AuthClientSession,
-  type AuthPairingLink,
   type AdvertisedEndpoint,
   type DesktopDiscoveredSshHost,
   type DesktopSshEnvironmentTarget,
@@ -21,8 +19,8 @@ import {
   type EnvironmentId,
   RELAY_DEVICE_SESSION_SUBJECT as RELAY_DEVICE_SUBJECT,
 } from "@threadlines/contracts";
-import * as DateTime from "effect/DateTime";
 
+import { useAuthAccess, usePrimarySessionAccess } from "../../hooks/useAuthAccess";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { isClipboardCopySupported } from "../../lib/clipboard";
@@ -84,7 +82,6 @@ import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "../../pairingUrl";
 import { readHostedPairingRequest } from "../../hostedPairing";
 import {
   createServerPairingCredential,
-  fetchSessionState,
   revokeOtherServerClientSessions,
   revokeServerClientSession,
   revokeServerPairingLink,
@@ -92,7 +89,6 @@ import {
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
 } from "~/environments/primary";
-import type { WsRpcClient } from "~/rpc/wsRpcClient";
 import {
   type SavedEnvironmentRecord,
   type SavedEnvironmentRuntimeState,
@@ -334,6 +330,7 @@ function formatDesktopSshConnectionError(error: unknown): string {
 
 /** A row directly in a settings group: the group's inset divider and row padding. */
 const ITEM_ROW_CLASSNAME = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-3");
+const NO_ADVERTISED_ENDPOINTS: ReadonlyArray<AdvertisedEndpoint> = [];
 const ENDPOINT_ROW_CLASSNAME = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5");
 
 const ITEM_ROW_INNER_CLASSNAME =
@@ -351,83 +348,6 @@ function endpointRowClassName(presentation: AccessSectionPresentation, isAvailab
   }
 
   return cn(ENDPOINT_ROW_CLASSNAME, !isAvailable && "bg-muted/24");
-}
-
-function sortDesktopPairingLinks(links: ReadonlyArray<ServerPairingLinkRecord>) {
-  return [...links].toSorted(
-    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
-  );
-}
-
-function sortDesktopClientSessions(sessions: ReadonlyArray<ServerClientSessionRecord>) {
-  return [...sessions].toSorted((left, right) => {
-    if (left.current !== right.current) {
-      return left.current ? -1 : 1;
-    }
-    if (left.connected !== right.connected) {
-      return left.connected ? -1 : 1;
-    }
-    return new Date(right.issuedAt).getTime() - new Date(left.issuedAt).getTime();
-  });
-}
-
-function toDesktopPairingLinkRecord(pairingLink: AuthPairingLink): ServerPairingLinkRecord {
-  return {
-    ...pairingLink,
-    createdAt: DateTime.formatIso(pairingLink.createdAt),
-    expiresAt: DateTime.formatIso(pairingLink.expiresAt),
-  };
-}
-
-function toDesktopClientSessionRecord(clientSession: AuthClientSession): ServerClientSessionRecord {
-  return {
-    ...clientSession,
-    issuedAt: DateTime.formatIso(clientSession.issuedAt),
-    expiresAt: DateTime.formatIso(clientSession.expiresAt),
-    lastConnectedAt:
-      clientSession.lastConnectedAt === null
-        ? null
-        : DateTime.formatIso(clientSession.lastConnectedAt),
-  };
-}
-
-function upsertDesktopPairingLink(
-  current: ReadonlyArray<ServerPairingLinkRecord>,
-  next: ServerPairingLinkRecord,
-) {
-  const existingIndex = current.findIndex((pairingLink) => pairingLink.id === next.id);
-  if (existingIndex === -1) {
-    return sortDesktopPairingLinks([...current, next]);
-  }
-  const updated = [...current];
-  updated[existingIndex] = next;
-  return sortDesktopPairingLinks(updated);
-}
-
-function removeDesktopPairingLink(current: ReadonlyArray<ServerPairingLinkRecord>, id: string) {
-  return current.filter((pairingLink) => pairingLink.id !== id);
-}
-
-function upsertDesktopClientSession(
-  current: ReadonlyArray<ServerClientSessionRecord>,
-  next: ServerClientSessionRecord,
-) {
-  const existingIndex = current.findIndex(
-    (clientSession) => clientSession.sessionId === next.sessionId,
-  );
-  if (existingIndex === -1) {
-    return sortDesktopClientSessions([...current, next]);
-  }
-  const updated = [...current];
-  updated[existingIndex] = next;
-  return sortDesktopClientSessions(updated);
-}
-
-function removeDesktopClientSession(
-  current: ReadonlyArray<ServerClientSessionRecord>,
-  sessionId: ServerClientSessionRecord["sessionId"],
-) {
-  return current.filter((clientSession) => clientSession.sessionId !== sessionId);
 }
 
 function selectPairingEndpoint(
@@ -1362,12 +1282,8 @@ const DesktopSshHostRow = memo(function DesktopSshHostRow({
 export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "phone" }) {
   const isPhoneSurface = surface === "phone";
   const desktopBridge = window.desktopBridge;
-  const [currentSessionRole, setCurrentSessionRole] = useState<"owner" | "client" | null>(
-    desktopBridge ? "owner" : null,
-  );
-  const [currentAuthPolicy, setCurrentAuthPolicy] = useState<
-    "desktop-managed-local" | "loopback-browser" | "remote-reachable" | "unsafe-no-auth" | null
-  >(null);
+  const { role: currentSessionRole, authPolicy: currentAuthPolicy } =
+    usePrimarySessionAccess(!isPhoneSurface);
   const savedEnvironmentsById = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedEnvironmentIds = useMemo(
     () =>
@@ -1407,22 +1323,22 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
   const [discoveredSshHostsError, setDiscoveredSshHostsError] = useState<string | null>(null);
   const [connectingSshHostAlias, setConnectingSshHostAlias] = useState<string | null>(null);
 
-  const [desktopServerExposureState, setDesktopServerExposureState] =
+  const [storedServerExposureState, setDesktopServerExposureState] =
     useState<DesktopServerExposureState | null>(null);
-  const [desktopAdvertisedEndpoints, setDesktopAdvertisedEndpoints] = useState<
+  const [storedAdvertisedEndpoints, setDesktopAdvertisedEndpoints] = useState<
     ReadonlyArray<AdvertisedEndpoint>
   >([]);
-  const [desktopServerExposureError, setDesktopServerExposureError] = useState<string | null>(null);
-  const [desktopPairingLinks, setDesktopPairingLinks] = useState<
-    ReadonlyArray<ServerPairingLinkRecord>
-  >([]);
-  const [desktopClientSessions, setDesktopClientSessions] = useState<
-    ReadonlyArray<ServerClientSessionRecord>
-  >([]);
+  const [storedServerExposureError, setDesktopServerExposureError] = useState<string | null>(null);
   const [desktopAccessManagementError, setDesktopAccessManagementError] = useState<string | null>(
     null,
   );
-  const [isLoadingDesktopAccessManagement, setIsLoadingDesktopAccessManagement] = useState(false);
+  const authAccess = useAuthAccess(!isPhoneSurface && currentSessionRole === "owner", {
+    // Any fresh word from the server clears the message a failed removal left.
+    onEvent: () => setDesktopAccessManagementError(null),
+  });
+  const desktopPairingLinks = authAccess.pairingLinks;
+  const desktopClientSessions = authAccess.clientSessions;
+  const isLoadingDesktopAccessManagement = authAccess.isLoading;
   const [revokingDesktopPairingLinkId, setRevokingDesktopPairingLinkId] = useState<string | null>(
     null,
   );
@@ -1487,6 +1403,13 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     (state) => state.setDefaultAdvertisedEndpointKey,
   );
   const canManageLocalBackend = currentSessionRole === "owner";
+  // How this computer is reachable is its owner's business, on the desktop app.
+  const showsServerExposure = !isPhoneSurface && canManageLocalBackend && Boolean(desktopBridge);
+  const desktopServerExposureState = showsServerExposure ? storedServerExposureState : null;
+  const desktopAdvertisedEndpoints = showsServerExposure
+    ? storedAdvertisedEndpoints
+    : NO_ADVERTISED_ENDPOINTS;
+  const desktopServerExposureError = showsServerExposure ? storedServerExposureError : null;
   const relayAccess = useRelayAccess(!isPhoneSurface && canManageLocalBackend);
   const isLocalBackendNetworkAccessible = desktopBridge
     ? desktopServerExposureState?.mode === "network-accessible"
@@ -1902,148 +1825,43 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     savedBackendMode,
   ]);
 
+  // How this computer is reachable, for its owner on the desktop app. The
+  // devices with access come live from `useAuthAccess` above.
   useEffect(() => {
-    if (isPhoneSurface) {
-      setCurrentSessionRole(null);
-      setCurrentAuthPolicy(null);
-      return;
-    }
-
-    if (desktopBridge) {
-      setCurrentSessionRole("owner");
+    if (!showsServerExposure || !desktopBridge) {
       return;
     }
 
     let cancelled = false;
-    void fetchSessionState()
-      .then((session) => {
+    void desktopBridge
+      .getServerExposureState()
+      .then((state) => {
         if (cancelled) return;
-        setCurrentSessionRole(session.authenticated ? (session.role ?? null) : null);
-        setCurrentAuthPolicy(session.auth.policy);
+        setDesktopServerExposureState(state);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (cancelled) return;
-        setCurrentSessionRole(null);
-        setCurrentAuthPolicy(null);
+        const message =
+          error instanceof Error ? error.message : "Failed to load device access settings.";
+        setDesktopServerExposureError(message);
+      });
+    void desktopBridge
+      .getAdvertisedEndpoints()
+      .then((endpoints) => {
+        if (cancelled) return;
+        setDesktopAdvertisedEndpoints(endpoints);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const message =
+          error instanceof Error ? error.message : "Failed to load connection addresses.";
+        setDesktopServerExposureError(message);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [desktopBridge, isPhoneSurface]);
-
-  useEffect(() => {
-    if (isPhoneSurface || !canManageLocalBackend) return;
-
-    let cancelled = false;
-    setIsLoadingDesktopAccessManagement(true);
-    type AuthAccessEvent = Parameters<
-      Parameters<WsRpcClient["server"]["subscribeAuthAccess"]>[0]
-    >[0];
-    const unsubscribeAuthAccess =
-      getPrimaryEnvironmentConnection().client.server.subscribeAuthAccess(
-        (event: AuthAccessEvent) => {
-          if (cancelled) {
-            return;
-          }
-
-          switch (event.type) {
-            case "snapshot":
-              setDesktopPairingLinks(
-                sortDesktopPairingLinks(
-                  event.payload.pairingLinks.map((pairingLink: AuthPairingLink) =>
-                    toDesktopPairingLinkRecord(pairingLink),
-                  ),
-                ),
-              );
-              setDesktopClientSessions(
-                sortDesktopClientSessions(
-                  event.payload.clientSessions.map((clientSession: AuthClientSession) =>
-                    toDesktopClientSessionRecord(clientSession),
-                  ),
-                ),
-              );
-              break;
-            case "pairingLinkUpserted":
-              setDesktopPairingLinks((current) =>
-                upsertDesktopPairingLink(current, toDesktopPairingLinkRecord(event.payload)),
-              );
-              break;
-            case "pairingLinkRemoved":
-              setDesktopPairingLinks((current) =>
-                removeDesktopPairingLink(current, event.payload.id),
-              );
-              break;
-            case "clientUpserted":
-              setDesktopClientSessions((current) =>
-                upsertDesktopClientSession(current, toDesktopClientSessionRecord(event.payload)),
-              );
-              break;
-            case "clientRemoved":
-              setDesktopClientSessions((current) =>
-                removeDesktopClientSession(current, event.payload.sessionId),
-              );
-              break;
-          }
-
-          setDesktopAccessManagementError(null);
-          setIsLoadingDesktopAccessManagement(false);
-        },
-        {
-          onResubscribe: () => {
-            if (!cancelled) {
-              setIsLoadingDesktopAccessManagement(true);
-            }
-          },
-        },
-      );
-    if (desktopBridge) {
-      void desktopBridge
-        .getServerExposureState()
-        .then((state) => {
-          if (cancelled) return;
-          setDesktopServerExposureState(state);
-        })
-        .catch((error: unknown) => {
-          if (cancelled) return;
-          const message =
-            error instanceof Error ? error.message : "Failed to load device access settings.";
-          setDesktopServerExposureError(message);
-        });
-      void desktopBridge
-        .getAdvertisedEndpoints()
-        .then((endpoints) => {
-          if (cancelled) return;
-          setDesktopAdvertisedEndpoints(endpoints);
-        })
-        .catch((error: unknown) => {
-          if (cancelled) return;
-          const message =
-            error instanceof Error ? error.message : "Failed to load connection addresses.";
-          setDesktopServerExposureError(message);
-        });
-    } else {
-      setDesktopServerExposureState(null);
-      setDesktopAdvertisedEndpoints([]);
-      setDesktopServerExposureError(null);
-    }
-
-    return () => {
-      cancelled = true;
-      unsubscribeAuthAccess();
-    };
-  }, [canManageLocalBackend, desktopBridge, isPhoneSurface]);
-
-  useEffect(() => {
-    if (canManageLocalBackend) return;
-    setIsLoadingDesktopAccessManagement(false);
-    setDesktopPairingLinks([]);
-    setDesktopClientSessions([]);
-    setDesktopAccessManagementError(null);
-    setDesktopServerExposureState(null);
-    setDesktopAdvertisedEndpoints([]);
-    setDesktopServerExposureError(null);
-  }, [canManageLocalBackend, isPhoneSurface]);
+  }, [desktopBridge, showsServerExposure]);
 
   const visibleDesktopPairingLinks = useMemo(
     () => desktopPairingLinks.filter((pairingLink) => pairingLink.role === "client"),

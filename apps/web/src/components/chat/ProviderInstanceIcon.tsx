@@ -1,5 +1,6 @@
 import { type CSSProperties, memo, type ReactNode, useMemo } from "react";
 import {
+  type EnvironmentId,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
@@ -7,6 +8,7 @@ import {
 import { BotIcon } from "lucide-react";
 
 import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
+import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
 import { useServerProviders } from "../../rpc/serverState";
 import {
   PROVIDER_ICON_BY_PROVIDER,
@@ -37,19 +39,25 @@ export function providerInstanceBadgeLetters(label: string): string {
 }
 
 /**
- * Every provider snapshot the app holds: this computer's first, then each
- * connected computer's, so a thread that lives on another computer still
- * finds its agent's icon.
+ * The provider snapshots a glyph looks in. Given its computer, that
+ * computer's alone, so an instance id another computer uses for a different
+ * agent never lends it the wrong icon. Without one, every snapshot the app
+ * holds: this computer's first, then each connected computer's, so a thread
+ * that lives on another computer still finds its agent's icon.
  */
-function useKnownServerProviders(): ReadonlyArray<ServerProvider> {
+function useKnownServerProviders(
+  environmentId: EnvironmentId | null | undefined,
+): ReadonlyArray<ServerProvider> {
   const local = useServerProviders();
   const savedEnvironments = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const providersOn = useEnvironmentProviders();
   return useMemo(() => {
+    if (environmentId) return providersOn(environmentId);
     const remote = Object.values(savedEnvironments).flatMap(
       (environment) => environment.serverConfig?.providers ?? [],
     );
     return remote.length === 0 ? local : [...local, ...remote];
-  }, [local, savedEnvironments]);
+  }, [environmentId, local, providersOn, savedEnvironments]);
 }
 
 /**
@@ -68,6 +76,11 @@ export const ProviderGlyph = memo(function ProviderGlyph(props: {
   /** A driver kind, or a raw driver label off the wire. */
   driverKind: string | null | undefined;
   /**
+   * The computer the instance runs on, where the caller knows it: the
+   * instance is looked up there only. Instance ids are per computer.
+   */
+  environmentId?: EnvironmentId | null | undefined;
+  /**
    * A registry icon to draw when there is no instance to read it from: an
    * agent in the community list that isn't installed yet.
    */
@@ -76,7 +89,7 @@ export const ProviderGlyph = memo(function ProviderGlyph(props: {
   /** Drawn instead of the generic glyph when the provider has no mark of its own. */
   fallback?: ReactNode;
 }) {
-  const providers = useKnownServerProviders();
+  const providers = useKnownServerProviders(props.environmentId);
   const glyph = useMemo(
     () =>
       resolveProviderGlyph({

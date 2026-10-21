@@ -25,8 +25,6 @@ import {
 } from "~/hooks/useLocalStorage";
 import * as Schema from "effect/Schema";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
-const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "16rem";
 // Runtime CSS string: tailwind functions like --spacing() don't exist here,
 // so the 12px edge inset is spelled out as a plain length.
@@ -108,26 +106,19 @@ function SidebarProvider({
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
 
-  // This is the internal state of the sidebar.
-  // We use openProp and setOpenProp for control from outside the component.
+  // This is the internal state of the sidebar. A caller that keeps the state
+  // somewhere lasting (the app's thread list remembers it across launches)
+  // passes `open` and `onOpenChange` instead.
   const [_open, _setOpen] = React.useState(defaultOpen);
   const open = openProp ?? _open;
   const setOpen = React.useCallback(
-    async (value: boolean | ((value: boolean) => boolean)) => {
+    (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value;
       if (setOpenProp) {
         setOpenProp(openState);
       } else {
         _setOpen(openState);
       }
-
-      // This sets the cookie to keep the sidebar state.
-      await cookieStore.set({
-        expires: Date.now() + SIDEBAR_COOKIE_MAX_AGE * 1000,
-        name: SIDEBAR_COOKIE_NAME,
-        path: "/",
-        value: String(openState),
-      });
     },
     [setOpenProp, open],
   );
@@ -296,9 +287,12 @@ function Sidebar({
           )}
           data-slot="sidebar-gap"
         />
+        {/* Placed in the nearest positioned ancestor: the app's work panel,
+            which clips it as it slides away, so a sidebar never covers the
+            window's title row or the rail. */}
         <div
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
+            "absolute inset-y-0 z-10 hidden w-(--sidebar-width) md:flex",
             animateLayout && "transition-[left,right,width] duration-200 ease-linear",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
@@ -366,7 +360,7 @@ function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTrigge
 
 /**
  * Header-local sidebar trigger for mobile sheet layouts. Desktop uses the
- * shared fixed titlebar control from AppSidebarLayout.
+ * toggle in the window's title row (AppTitleBar).
  */
 function SidebarOpenTrigger({ className, style, ...props }: React.ComponentProps<typeof Button>) {
   return <SidebarTrigger className={cn(className, "md:hidden")} style={style} {...props} />;

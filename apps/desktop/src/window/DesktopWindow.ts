@@ -50,7 +50,11 @@ import {
 } from "../preview/signInPopups.ts";
 import { makeWindowOpenBudget } from "../preview/windowOpenBudget.ts";
 
-const TITLEBAR_HEIGHT = 40;
+/**
+ * The app's title row (`--app-titlebar-height` in the web app's index.css):
+ * Windows and Linux draw their window controls this tall, in that row.
+ */
+const TITLEBAR_HEIGHT = 38;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
 const TITLEBAR_LIGHT_SYMBOL_COLOR = "#1f2937";
 const TITLEBAR_DARK_SYMBOL_COLOR = "#f8fafc";
@@ -80,6 +84,13 @@ export const MARKETING_CAPTURE_CONTENT_SIZE = {
 const PRINT_SCREEN_ACCELERATOR = "PrintScreen";
 const PRINT_SCREEN_KEYS = new Set(["print", "printscreen"]);
 export const OPEN_SCREEN_CLIP_MENU_ACTION = "open-screen-clip";
+/** Renderer actions the Go menu and the tray send; the app shell navigates on them. */
+export const OPEN_FLEET_MENU_ACTION = "open-fleet";
+export const OPEN_GENERAL_CHATS_MENU_ACTION = "open-general-chats";
+export const OPEN_USAGE_MENU_ACTION = "open-usage";
+export const TOGGLE_SIDEBAR_MENU_ACTION = "toggle-sidebar";
+export const NAVIGATE_BACK_MENU_ACTION = "navigate-back";
+export const NAVIGATE_FORWARD_MENU_ACTION = "navigate-forward";
 
 type WindowTitleBarOptions = Pick<
   Electron.BrowserWindowConstructorOptions,
@@ -242,7 +253,9 @@ function getWindowTitleBarOptions(
   if (process.platform === "darwin") {
     return {
       titleBarStyle: "hiddenInset",
-      trafficLightPosition: { x: 16, y: 18 },
+      // Centered in the app's 38px title row, the buttons after them start at
+      // the web app's --app-titlebar-leading.
+      trafficLightPosition: { x: 16, y: 12 },
     };
   }
 

@@ -43,8 +43,6 @@ import {
 } from "../../environments/runtime";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
-import { SidebarProvider } from "../ui/sidebar";
-import { SidebarUsageMeter } from "../sidebar/SidebarUsageMeter";
 import { UsageView } from "./UsageView";
 
 const REPORTING_ENVIRONMENT_ID = EnvironmentId.make("env-studio");
@@ -643,46 +641,6 @@ describe("UsageView", () => {
     const stats = page.getByTestId("usage-stat").elements();
     expect(stats[0]?.textContent).toBe("Hourly average1.5M2 of 24 hours active");
     expect(stats[4]?.textContent).toBe("vs previous 24 hours+100%1.5M in the 24 hours before");
-  });
-});
-
-describe("SidebarUsageMeter", () => {
-  it("names itself and carries today's compact total once it arrives", async () => {
-    const summary = vi.fn(async (input: UsageSummaryInput) =>
-      summaryFor(input, (days) =>
-        days.map((day) =>
-          bucket({
-            day,
-            provider: "claude",
-            model: "claude-fable-5",
-            costUsd: 3,
-            totalTokens: 2_400_000,
-          }),
-        ),
-      ),
-    );
-    registerEnvironments(summary);
-
-    renderWithProviders(
-      <SidebarProvider>
-        <SidebarUsageMeter />
-      </SidebarProvider>,
-    );
-
-    // Compact form: trailing zeros are table alignment, not chip copy.
-    await expect
-      .element(page.getByTestId("sidebar-usage-meter"))
-      .toHaveTextContent("Usage2.4M today");
-  });
-
-  it("stays the plain label when no environment answers", async () => {
-    renderWithProviders(
-      <SidebarProvider>
-        <SidebarUsageMeter />
-      </SidebarProvider>,
-    );
-
-    await expect.element(page.getByTestId("sidebar-usage-meter")).toHaveTextContent("Usage");
   });
 });
 

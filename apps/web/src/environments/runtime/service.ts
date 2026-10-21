@@ -1378,6 +1378,8 @@ function createSavedEnvironmentClient(
             });
       },
       {
+        // Its state lives in the saved environment runtime, not the app's own link.
+        reportsAppConnection: false,
         getConnectionLabel: () => getSavedEnvironmentRecord(environmentId)?.label ?? null,
         getVersionMismatchHint: () =>
           resolveServerConfigVersionMismatch(
@@ -2058,6 +2060,8 @@ async function addRelaySavedEnvironment(input: {
     new WsTransport(
       input.target.wsBaseUrl,
       {
+        // Pairing with another computer says nothing about this one's link.
+        reportsAppConnection: false,
         getConnectionLabel: () => input.label.trim() || "Desktop app",
       },
       {

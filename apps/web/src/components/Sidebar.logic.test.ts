@@ -15,7 +15,6 @@ import {
   THREAD_STATUS_DOT_CLASSES,
   resolveSeenThreadStatus,
   resolveThreadStatusPill,
-  selectGeneralChatLines,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
@@ -24,7 +23,11 @@ import {
   buildInboxSections,
   buildProjectScopeOptions,
   childThreadsSummaryText,
+  countInboxRowAttention,
+  countThreadAttention,
+  groupInboxLiveRows,
   INBOX_AUTO_DONE_AFTER_DAYS,
+  resolveThreadAttention,
   inboxLiveRowHasAttention,
   inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
@@ -1613,6 +1616,72 @@ describe("child thread families", () => {
     expect(summarizeChildThreads(many).dots).toHaveLength(8);
     expect(summarizeChildThreads(many).hiddenDotCount).toBe(3);
   });
+
+  it("groups families where their parent goes, keeping list order and counting children", () => {
+    const groupOf: Record<string, string> = {
+      pinned: "mac",
+      release: "mac",
+      paste: "windows",
+      hero: "mac",
+    };
+    const live = sections([
+      entry("pinned"),
+      entry("paste", { status: status("Awaiting Input") }),
+      entry("release"),
+      // Children follow their parent into its group, wherever they would go.
+      entry("flake", { parent: "release", status: status("Working") }),
+      entry("notes", { parent: "release", status: status("Pending Approval") }),
+      entry("old", { parent: "release", status: status("Working"), done: true }),
+      entry("hero", { status: status("Working") }),
+    ]).live;
+
+    const groups = groupInboxLiveRows(live, (row) => groupOf[row.entry.threadKey]!);
+    // Each group sits where its first row stood, and keeps the rows' order,
+    // so a pin that led the list still leads its group.
+    expect(groups.map((group) => group.key)).toEqual(["mac", "windows"]);
+    expect(groups[0]!.rows.map((row) => row.entry.threadKey)).toEqual([
+      "pinned",
+      "release",
+      "hero",
+    ]);
+    // A wrapped child no longer counts; a live one does, under its parent.
+    expect(countInboxRowAttention(groups[0]!.rows)).toEqual({ needsYou: 1, working: 2 });
+    expect(countInboxRowAttention(groups[1]!.rows)).toEqual({ needsYou: 1, working: 0 });
+  });
+});
+
+describe("thread attention", () => {
+  const failedThread = (lastVisitedAt?: string) => ({
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default" as const,
+    latestTurn: makeLatestTurn(),
+    latestUserMessageAt: null,
+    session: {
+      provider: ProviderDriverKind.make("codex"),
+      status: "error" as const,
+      orchestrationStatus: "error" as const,
+      createdAt: "2026-03-09T10:00:00.000Z",
+      updatedAt: "2026-03-09T10:06:00.000Z",
+    },
+    ...(lastVisitedAt ? { lastVisitedAt } : {}),
+  });
+
+  it("counts what needs the user and what is working, and lets a seen failure go", () => {
+    const unseen = failedThread();
+    const seen = failedThread("2026-03-09T10:07:00.000Z");
+    const pill = (thread: ReturnType<typeof failedThread>) => resolveThreadStatusPill({ thread });
+
+    expect(pill(unseen)?.label).toBe("Failed");
+    expect(resolveThreadAttention(unseen, pill(unseen))).toBe("needs-you");
+    // Still red in its row, but the user has looked: no badge nags about it.
+    expect(resolveThreadAttention(seen, pill(seen))).toBeNull();
+    expect(countThreadAttention(["needs-you", "working", null, "working"])).toEqual({
+      needsYou: 1,
+      working: 2,
+    });
+  });
 });
 
 describe("child thread status and wrap-up", () => {
@@ -1756,63 +1825,7 @@ describe("child thread status and wrap-up", () => {
   });
 });
 
-describe("general chat lines", () => {
-  const pill = (label: ThreadStatusPill["label"]): ThreadStatusPill => ({
-    label,
-    colorClass: "",
-    dotClass: "",
-    pulse: false,
-  });
-  const chat = (key: string, status: ThreadStatusPill | null, createdAt: string) => ({
-    threadKey: key,
-    thread: { id: ThreadId.make(key), createdAt },
-    status,
-  });
-
-  it("draws live chats and the open one, most urgent first", () => {
-    const { lines, hiddenCount } = selectGeneralChatLines({
-      chats: [
-        chat("quiet", null, "2026-10-08T09:00:00.000Z"),
-        chat("open", null, "2026-10-08T08:00:00.000Z"),
-        chat("unread", pill("Completed"), "2026-10-08T10:00:00.000Z"),
-        chat("older-working", pill("Working"), "2026-10-08T07:00:00.000Z"),
-        chat("newer-working", pill("Waiting"), "2026-10-08T11:00:00.000Z"),
-        chat("asking", pill("Awaiting Input"), "2026-10-08T06:00:00.000Z"),
-      ],
-      activeThreadKey: "open",
-      limit: 10,
-    });
-
-    // A quiet chat nobody has open has nothing to say, so it gets no line.
-    expect(lines.map((line) => line.threadKey)).toEqual([
-      "asking",
-      "newer-working",
-      "older-working",
-      "unread",
-      "open",
-    ]);
-    expect(hiddenCount).toBe(0);
-  });
-
-  it("folds the overflow but never a chat waiting on the user or the open one", () => {
-    const { lines, hiddenCount } = selectGeneralChatLines({
-      chats: [
-        chat("working-1", pill("Working"), "2026-10-08T12:00:00.000Z"),
-        chat("working-2", pill("Working"), "2026-10-08T11:00:00.000Z"),
-        chat("approval", pill("Pending Approval"), "2026-10-08T10:00:00.000Z"),
-        chat("input", pill("Awaiting Input"), "2026-10-08T09:00:00.000Z"),
-        chat("open", null, "2026-10-08T08:00:00.000Z"),
-      ],
-      activeThreadKey: "open",
-      limit: 3,
-    });
-
-    // Three seats, all taken by chats that must stay in view: the work in
-    // flight folds behind "2 more" rather than hiding a question.
-    expect(lines.map((line) => line.threadKey)).toEqual(["approval", "input", "open"]);
-    expect(hiddenCount).toBe(2);
-  });
-
+describe("seen-aware status", () => {
   it("reads a finished chat as new only until it has been seen", () => {
     const thread = {
       hasActionableProposedPlan: false,

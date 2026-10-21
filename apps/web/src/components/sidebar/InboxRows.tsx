@@ -580,6 +580,11 @@ export interface InboxThreadRowProps {
   status: ThreadStatusPill | null;
   /** Null while the list is scoped to one project: the label is implied. */
   projectLabel: string | null;
+  /**
+   * Whether the row draws its project's mark. Off under a project group's
+   * header, which already names the project. Default on.
+   */
+  showProjectMark?: boolean | undefined;
   isActive: boolean;
   jumpLabel: string | null;
   /** False while the thread is moving, blocked, or pinned: live work can't be
@@ -650,6 +655,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     thread,
     status,
     projectLabel,
+    showProjectMark = true,
     isActive,
     jumpLabel,
     canMarkDone,
@@ -869,7 +875,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   <PinIcon className="size-2.5" />
                 </span>
               ) : null}
-              {threadProject ? (
+              {threadProject && showProjectMark ? (
                 <ProjectFavicon
                   cwd={threadProject.cwd}
                   environmentId={thread.environmentId}

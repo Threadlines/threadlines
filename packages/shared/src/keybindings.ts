@@ -32,6 +32,12 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+shift+m", command: "modelPicker.toggle", when: "!terminalFocus" },
   { key: "mod+s", command: "composer.stash", when: "!terminalFocus" },
   { key: "mod+o", command: "editor.openFavorite" },
+  // Ctrl+B belongs to the shell (and tmux) while a terminal has focus.
+  { key: "mod+b", command: "sidebar.toggle", when: "!terminalFocus" },
+  { key: "mod+shift+f", command: "navigate.fleet", when: "!terminalFocus" },
+  // Ctrl+[ is Escape to a shell, so these stay out of a focused terminal.
+  { key: "mod+[", command: "navigate.back", when: "!terminalFocus" },
+  { key: "mod+]", command: "navigate.forward", when: "!terminalFocus" },
   { key: "mod+shift+[", command: "thread.previous" },
   { key: "mod+shift+]", command: "thread.next" },
   ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({

@@ -181,7 +181,6 @@ import { CommandRunActionsContext } from "./chat/CommandRuns";
 import { useCommandRunActions } from "./chat/useCommandRunActions";
 import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
-import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
@@ -840,7 +839,6 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
-      reserveTitleBarControlInset?: boolean;
       composerFocusRequest?: number;
       /**
        * The thread's pull requests, resolved by the route that owns the Pull
@@ -854,7 +852,6 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
-      reserveTitleBarControlInset?: boolean;
       composerFocusRequest?: number;
       routeKind: "draft";
       draftId: DraftId;
@@ -1134,14 +1131,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
 });
 
 export default function ChatView(props: ChatViewProps) {
-  const {
-    environmentId,
-    threadId,
-    routeKind,
-    onDiffPanelOpen,
-    reserveTitleBarControlInset = true,
-    composerFocusRequest = 0,
-  } = props;
+  const { environmentId, threadId, routeKind, onDiffPanelOpen, composerFocusRequest = 0 } = props;
   const composerPullRequests =
     routeKind === "server"
       ? (props.composerPullRequests ?? NO_COMPOSER_PULL_REQUESTS)
@@ -7522,14 +7512,8 @@ export default function ChatView(props: ChatViewProps) {
         className={cn(
           "border-b border-border transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
           isElectron
-            ? cn(
-                "drag-region flex items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
-                ELECTRON_HEADER_HEIGHT_CLASS,
-                reserveTitleBarControlInset &&
-                  "wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
-              )
+            ? cn("drag-region flex items-center px-3 sm:px-5", ELECTRON_HEADER_HEIGHT_CLASS)
             : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
-          COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
       >
         <ChatHeader
