@@ -94,6 +94,7 @@ const link = (patch: Partial<PeerLink> = {}): PeerLink => ({
   deviceId: DEVICE,
   label: "Windows PC",
   environmentId: WINDOWS,
+  environmentPinned: false,
   access: "allowed",
   maxRuntimeMode: "auto",
   ...patch,
@@ -223,6 +224,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
       deviceId: string,
       access: "off" | "ask" | "allowed",
       state: "active" | "revoked" = "active",
+      pinnedTo: EnvironmentId | null = null,
     ) =>
       Effect.gen(function* () {
         yield* devices.insertApproving({
@@ -234,6 +236,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
           platform: null,
           devicePublicKey: "key",
           grant: "peer",
+          linkEnvironmentId: pinnedTo,
           now: AT,
         });
         yield* devices.transition({ deviceId, from: ["approving"], to: "active", now: AT });
@@ -365,6 +368,41 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
       // Never more access than the link allows.
       assert.equal(child?.runtimeMode, "auto");
     }),
+  );
+
+  it.effect(
+    "a link made for one computer refuses a start that says it comes from another, and keeps its name",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed", "active", WINDOWS);
+        const pinned = link({ environmentPinned: true });
+        const service = yield* computer.boot();
+        const linux = EnvironmentId.make("env-linux");
+        const input = startInput("request-1");
+
+        const posing = yield* service.start(pinned, {
+          ...input,
+          parent: { ...input.parent, environmentId: linux, environmentLabel: "Linux box" },
+        });
+        assert.deepEqual(posing, {
+          status: "refused",
+          reason: "This link was made for a different computer.",
+        });
+        // Nothing recorded, nothing started.
+        assert.isTrue(
+          Option.isNone(yield* computer.ledger.get(DEVICE, ChildRequestId.make("request-1"))),
+        );
+        // What it says about itself never replaces the computer it was made for.
+        yield* computer.devices.touchLink({ deviceId: DEVICE, environmentId: linux, now: AT });
+        const row = Option.getOrThrow(yield* computer.devices.getDevice(DEVICE));
+        assert.equal(row.linkEnvironmentId, WINDOWS);
+        assert.isTrue(row.linkEnvironmentPinned);
+
+        // Its own computer's start goes ahead.
+        const own = yield* service.start(pinned, startInput("request-2"));
+        assert.equal(own.status, "started");
+      }),
   );
 
   it.effect("refuses a start that comes after its cancel, and a late Allow finds nothing", () =>

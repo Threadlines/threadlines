@@ -53,6 +53,11 @@ export const RelayDeviceRow = Schema.Struct({
   ),
   /** The linked computer's environment id, once it introduced itself. */
   linkEnvironmentId: Schema.NullOr(Schema.String),
+  /**
+   * `linkEnvironmentId` came from the invite this server made for that
+   * computer, so it is fixed; otherwise it is only what the computer said.
+   */
+  linkEnvironmentPinned: Schema.BooleanFromBit,
   linkLastUsedAt: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String,
@@ -66,6 +71,8 @@ export const RelayInviteRow = Schema.Struct({
   expiresAt: Schema.String,
   claimedBy: Schema.NullOr(Schema.String),
   approved: Schema.Boolean,
+  /** Computer-link invites: the computer it was made for. */
+  joinerEnvironmentId: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
 });
 export type RelayInviteRow = typeof RelayInviteRow.Type;
@@ -117,7 +124,8 @@ export interface RelayDeviceRepositoryShape {
   /**
    * Inserts an `approving` row unless one exists for the request; returns the
    * stored row. `grant` comes from the verified invite, in the same insert,
-   * before any session exists.
+   * before any session exists, and so does `linkEnvironmentId` (pinned) when
+   * the invite named the computer it was for.
    */
   readonly insertApproving: (input: {
     readonly deviceId: string;
@@ -128,6 +136,7 @@ export interface RelayDeviceRepositoryShape {
     readonly platform: string | null;
     readonly devicePublicKey: string;
     readonly grant: RelayDeviceGrant;
+    readonly linkEnvironmentId?: string | null;
     readonly now: string;
   }) => Effect.Effect<RelayDeviceRow, RelayRepositoryError>;
   /** An inbound link's settings; only the fields given change. */
@@ -137,7 +146,10 @@ export interface RelayDeviceRepositoryShape {
     readonly maxRuntimeMode?: NonNullable<RelayDeviceRow["linkMaxRuntimeMode"]>;
     readonly now: string;
   }) => Effect.Effect<void, RelayRepositoryError>;
-  /** What a linked computer said about itself, and when it last called. */
+  /**
+   * What a linked computer said about itself (ignored once its id is
+   * pinned), and when it last called.
+   */
   readonly touchLink: (input: {
     readonly deviceId: string;
     readonly environmentId?: string;
@@ -220,6 +232,7 @@ const make = Effect.gen(function* () {
       link_access AS "linkAccess",
       link_max_runtime_mode AS "linkMaxRuntimeMode",
       link_environment_id AS "linkEnvironmentId",
+      link_environment_pinned AS "linkEnvironmentPinned",
       link_last_used_at AS "linkLastUsedAt",
       created_at AS "createdAt",
       updated_at AS "updatedAt"
@@ -293,14 +306,17 @@ const make = Effect.gen(function* () {
 
   const insertApproving: RelayDeviceRepositoryShape["insertApproving"] = (input) =>
     Effect.gen(function* () {
+      const pinned = input.linkEnvironmentId != null;
       yield* sql`
         INSERT INTO relay_devices (
           device_id, request_id, relay_origin, session_id, state, label, kind, platform,
-          device_public_key, access_grant, created_at, updated_at
+          device_public_key, access_grant, link_environment_id, link_environment_pinned,
+          created_at, updated_at
         ) VALUES (
           ${input.deviceId}, ${input.requestId}, ${input.relayOrigin}, NULL, 'approving',
           ${input.label}, ${input.kind}, ${input.platform}, ${input.devicePublicKey},
-          ${input.grant}, ${input.now}, ${input.now}
+          ${input.grant}, ${input.linkEnvironmentId ?? null}, ${pinned ? 1 : 0},
+          ${input.now}, ${input.now}
         )
         ON CONFLICT(request_id) DO NOTHING
       `;
@@ -320,17 +336,22 @@ const make = Effect.gen(function* () {
   const touchLink: RelayDeviceRepositoryShape["touchLink"] = (input) =>
     sql`
       UPDATE relay_devices SET
-        link_environment_id = COALESCE(${input.environmentId ?? null}, link_environment_id),
+        link_environment_id = CASE
+          WHEN link_environment_pinned = 1 THEN link_environment_id
+          ELSE COALESCE(${input.environmentId ?? null}, link_environment_id)
+        END,
         link_last_used_at = ${input.now}
       WHERE device_id = ${input.deviceId}
     `.pipe(Effect.asVoid, wrap("touchLink"));
 
   const insertInvite: RelayDeviceRepositoryShape["insertInvite"] = (row) =>
     sql`
-      INSERT INTO relay_invites (invite_id, purpose, expires_at, claimed_by, approved, created_at)
+      INSERT INTO relay_invites (
+        invite_id, purpose, expires_at, claimed_by, approved, joiner_environment_id, created_at
+      )
       VALUES (
         ${row.inviteId}, ${row.purpose}, ${row.expiresAt}, ${row.claimedBy},
-        ${row.approved ? 1 : 0}, ${row.createdAt}
+        ${row.approved ? 1 : 0}, ${row.joinerEnvironmentId}, ${row.createdAt}
       )
       ON CONFLICT(invite_id) DO NOTHING
     `.pipe(Effect.asVoid, wrap("insertInvite"));
@@ -346,6 +367,7 @@ const make = Effect.gen(function* () {
           expires_at AS "expiresAt",
           claimed_by AS "claimedBy",
           approved AS "approved",
+          joiner_environment_id AS "joinerEnvironmentId",
           created_at AS "createdAt"
         FROM relay_invites WHERE invite_id = ${id}
       `,

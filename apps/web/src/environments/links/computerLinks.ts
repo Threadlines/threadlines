@@ -214,8 +214,9 @@ export async function respondToComputerLinkRequest(
 
 /**
  * Links one direction: `asker`'s agents may then start work on `worker`. The
- * worker makes a single-use invite and the asker's server claims it; the new
- * link starts at the worker's default access (Ask first).
+ * worker makes a single-use invite for the asker only (its link there is
+ * recorded as the asker's for good) and the asker's server claims it; the
+ * new link starts at the worker's default access (Ask first).
  */
 export async function linkComputer(input: {
   readonly asker: ComputerLinkTarget;
@@ -223,7 +224,9 @@ export async function linkComputer(input: {
 }): Promise<OutboundComputerLink> {
   const askerClient = requireClient(input.asker.environmentId, input.asker.label);
   const workerClient = requireClient(input.worker.environmentId, input.worker.label);
-  const invite = await workerClient.createInvite();
+  const invite = await workerClient.createInvite({
+    joinerEnvironmentId: input.asker.environmentId,
+  });
   return askerClient.accept({ invite });
 }
 

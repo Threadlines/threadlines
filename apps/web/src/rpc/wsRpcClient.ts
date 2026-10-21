@@ -388,7 +388,7 @@ export interface WsRpcClient {
    */
   readonly links: {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.linksSubscribe>;
-    readonly createInvite: RpcUnaryNoArgMethod<typeof WS_METHODS.linksCreateInvite>;
+    readonly createInvite: RpcUnaryMethod<typeof WS_METHODS.linksCreateInvite>;
     readonly accept: RpcUnaryMethod<typeof WS_METHODS.linksAccept>;
     readonly setAccess: RpcUnaryMethod<typeof WS_METHODS.linksSetAccess>;
     readonly remove: RpcUnaryMethod<typeof WS_METHODS.linksRemove>;
@@ -1057,7 +1057,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           ...options,
           tag: WS_METHODS.linksSubscribe,
         }),
-      createInvite: () => transport.request((client) => client[WS_METHODS.linksCreateInvite]({})),
+      createInvite: (input) =>
+        transport.request((client) => client[WS_METHODS.linksCreateInvite](input)),
       accept: (input) => transport.request((client) => client[WS_METHODS.linksAccept](input)),
       setAccess: (input) => transport.request((client) => client[WS_METHODS.linksSetAccess](input)),
       remove: (input) => transport.request((client) => client[WS_METHODS.linksRemove](input)),

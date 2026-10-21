@@ -38,7 +38,12 @@ import { RelayHost } from "../relay/RelayHost.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { isLoopbackHost } from "../startupAccess.ts";
 import { ComputerLinks } from "./ComputerLinks.ts";
-import { LinkRequests, PEER_LINK_REMOVED, peerLinkOf } from "./LinkRequests.ts";
+import {
+  LinkRequests,
+  linkIdentityRefusal,
+  PEER_LINK_REMOVED,
+  peerLinkOf,
+} from "./LinkRequests.ts";
 
 const PLATFORM_NAMES: Record<string, string> = {
   darwin: "macOS",
@@ -93,6 +98,15 @@ export const makePeerRpcLayer = (input: {
       const describe = (caller: PeerCaller) =>
         Effect.gen(function* () {
           const link = yield* currentLink;
+          // A link made for one computer never records another's name.
+          const impostor = linkIdentityRefusal(link, caller.environmentId);
+          if (impostor !== null) {
+            yield* Effect.logWarning("links.identity-mismatch", {
+              deviceId: link.deviceId,
+              claimed: caller.environmentId,
+            });
+            return yield* failed(impostor);
+          }
           yield* devices
             .touchLink({
               deviceId: link.deviceId,

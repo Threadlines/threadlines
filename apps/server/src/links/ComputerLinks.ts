@@ -18,6 +18,7 @@ import {
   type ComputerLinksSnapshot,
   EnvironmentId,
   type InboundComputerLink,
+  type LinksCreateInviteInput,
   type LinksRemoveInput,
   type LinksRemoveResult,
   type LinksRespondRequestInput,
@@ -90,7 +91,10 @@ const PLATFORM_NAMES: Record<string, string> = {
 };
 
 export interface ComputerLinksShape {
-  readonly createInvite: Effect.Effect<ComputerLinkInvite, ComputerLinkError>;
+  /** An invite for `joinerEnvironmentId` only: its link here is recorded as that computer's. */
+  readonly createInvite: (
+    input: LinksCreateInviteInput,
+  ) => Effect.Effect<ComputerLinkInvite, ComputerLinkError>;
   readonly accept: (
     invite: ComputerLinkInvite,
   ) => Effect.Effect<OutboundComputerLink, ComputerLinkError>;
@@ -169,6 +173,7 @@ const make = Effect.gen(function* () {
       label: row.label,
       platform: row.platform,
       sessionId: row.sessionId,
+      environmentPinned: row.linkEnvironmentPinned,
       access: link.access,
       maxRuntimeMode: link.maxRuntimeMode,
       createdAt: row.createdAt,
@@ -206,20 +211,26 @@ const make = Effect.gen(function* () {
     Stream.mapEffect(() => snapshot),
   );
 
-  const createInvite: ComputerLinksShape["createInvite"] = relayHost.createLinkInvite.pipe(
-    Effect.map((made): ComputerLinkInvite => ({
-      hostId: made.invite.hostId,
-      relayOrigin: made.invite.relayOrigin,
-      inviteId: made.invite.inviteId,
-      inviteSecret: made.invite.inviteSecret,
-      hostPublicKey: made.invite.hostPublicKey,
-      directOrigins: [...made.directOrigins],
-      environmentId: descriptor.environmentId,
-      label: descriptor.label,
-      expiresAt: made.invite.expiresAt,
-    })),
-    Effect.mapError((error: RelayAccessError) => linkError(error.detail)),
-  );
+  const createInvite: ComputerLinksShape["createInvite"] = (input) =>
+    Effect.gen(function* () {
+      if (input.joinerEnvironmentId === descriptor.environmentId) {
+        return yield* linkError("A computer can't link to itself.");
+      }
+      const made = yield* relayHost
+        .createLinkInvite(input.joinerEnvironmentId)
+        .pipe(Effect.mapError((error: RelayAccessError) => linkError(error.detail)));
+      return {
+        hostId: made.invite.hostId,
+        relayOrigin: made.invite.relayOrigin,
+        inviteId: made.invite.inviteId,
+        inviteSecret: made.invite.inviteSecret,
+        hostPublicKey: made.invite.hostPublicKey,
+        directOrigins: [...made.directOrigins],
+        environmentId: descriptor.environmentId,
+        label: descriptor.label,
+        expiresAt: made.invite.expiresAt,
+      } satisfies ComputerLinkInvite;
+    });
 
   /** Waits for the other computer to approve this server's claim (it does so on its own). */
   const awaitApproval = (input: {
