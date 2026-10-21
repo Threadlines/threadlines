@@ -52,12 +52,25 @@ The elevation ladder in `index.css` (deepest to highest; dark / light):
   panel, never a black stripe; in light mode it is the soft grey around the
   near-white canvas. Muted text on the frame keeps 4.5:1 in both (5.4:1 dark,
   5.2:1 light).
+- **The title row's right part belongs to the open page**, the way Mail,
+  Notes and Finder put their toolbars in the title bar. After the frame's own
+  buttons and the app's name, a page puts its header there
+  (`TitleBarContent`): a thread's project, title and actions, Settings'
+  Restore defaults. It starts over the page's content column (past the list
+  while it shows, plus a header's 20px), never nearer the frame's buttons
+  than 12px, and slides with the list on the list's own curve. It ends 12px
+  from the window's edge on macOS and clear of the Windows and Linux window
+  controls. Pages with no controls of their own (Fleet, Pull Requests,
+  Usage) leave it empty. The work panel then has no header row at all on a
+  wide screen; a window too narrow for the title row, and a phone, keep the
+  page's own header with the sidebar trigger. Empty space in the row moves
+  the window; its controls never do.
 - **The work panel is continuous.** The list, the page and the docked side
   panels (diff, source control, browser, tasks) sit edge to edge inside it,
   joined by one `--border` line. No floating rounded panes, no gaps between
   regions.
-- **Headers in the panel end in a fade, not a rule.** A page or thread header
-  has no bottom border; content scrolling under it passes into a short, light
+- **Headers in the panel end in a fade, not a rule.** Where a page keeps a
+  header in the panel (a narrow window), it has no bottom border; content scrolling under it passes into a short, light
   fade (`HeaderEdgeFade`), the same way the thread list's rows pass under its
   search row. On a thread the fade sits on the conversation itself, never on
   the browser or side panels docked beside it. A rule there would meet the list's divider in a square T, so
