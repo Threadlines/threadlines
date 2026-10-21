@@ -166,6 +166,12 @@ There is no Rename today, and Rev 4 doesn't add one.
   - When one side is unreachable, the dialog says so up front and offers "Unlink on Mac now. Windows PC finishes when it's back."
   - The reachable side records a pending unlink, and the other side applies it on its next contact. The peer refuses a revoked link's requests, so nothing new starts meanwhile.
   - The outbound path never reports success for the remote half it couldn't confirm.
+- **As built.**
+  - An offline computer hears the unlink over the other computer's link to it. When there is none (only its own agents worked on the other computer), the dialog promises only what happens: "Mac mini is offline. It can't start work on Mac after this, but it still lists the link until you unlink again while it's online."
+  - Stops are owed until done. The receiving computer turns the link off, records the owed stops (`link_stops_owed`), drains, ends the session, and drains again. The record goes only when a pass finds nothing the link started still at work; otherwise it is tried again every minute and after a restart. A `peer.unlink` runs detached from its call, so ending the session (which closes the connection the call came over) can't cut it off.
+  - A start or send that lands while its link is being removed ends at once: the link is read again right after the request is recorded. The send gate also refuses a request whose link is off or gone.
+  - The reverse cleanup asks about each link back on its own and drops only the ones the other computer refuses.
+  - One live link per direction. A computer makes its links to another computer one at a time, and finishes an earlier unlink of it before claiming a new invite. The receiving computer ends that computer's older links once it first uses the newest (`peer.describe` or a start over a pinned link). Outbound links report `remoteDeviceId`, so Fleet edits the other half of the link in use.
 
 **Working now.** For a saved, connected computer, its threads in the same rows as the All computers list. Cross-computer children read "Started by <title> on <computer>".
 
