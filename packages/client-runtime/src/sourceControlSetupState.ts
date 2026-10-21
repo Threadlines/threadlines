@@ -1,4 +1,8 @@
-import type { SourceControlSetupState, SourceControlToolUpdateInput } from "@threadlines/contracts";
+import {
+  SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE,
+  type SourceControlSetupState,
+  type SourceControlToolUpdateInput,
+} from "@threadlines/contracts";
 import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
 export const EMPTY_SOURCE_CONTROL_SETUP: SourceControlSetupState = {
@@ -128,7 +132,7 @@ export function createSourceControlSetupManager(config: {
           target: input.target,
           operation: input.operation ?? "update",
           status: "queued",
-          message: "Checking availability before starting…",
+          message: SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE,
         },
       ],
     });

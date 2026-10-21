@@ -1,4 +1,5 @@
 import {
+  SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE,
   SourceControlToolUpdateError,
   type SourceControlDiscoveryResult,
   type SourceControlToolUpdateInput,
@@ -10,6 +11,7 @@ import { isCommandAvailable, refreshWindowsPath } from "@threadlines/shared/shel
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -33,11 +35,31 @@ const isSourceControlToolUpdateError = Schema.is(SourceControlToolUpdateError);
 const UPDATE_TIMEOUT_MS = 5 * 60_000;
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
 
+type ToolStates = ReadonlyMap<SourceControlToolUpdateTarget, SourceControlToolMaintenanceState>;
+
+/** Whether an update took the tool's slot, and the entry it replaced. */
+interface UpdateSlot {
+  readonly acquired: boolean;
+  readonly previous: SourceControlToolMaintenanceState | undefined;
+}
+
+/** The caller's checks around one install or update. */
+export interface SourceControlToolUpdateChecks {
+  /**
+   * Runs once the tool's slot is taken, so setup polls already show the job
+   * as queued while the caller confirms it may run. A failure, or the caller
+   * leaving, gives the slot back.
+   */
+  readonly preflight?: Effect.Effect<void, SourceControlToolUpdateError>;
+  /** Runs after the installer, before the job is marked finished. */
+  readonly verify?: () => Effect.Effect<void, SourceControlToolUpdateError>;
+}
+
 export interface SourceControlToolMaintenanceShape {
   readonly getState: Effect.Effect<ReadonlyArray<SourceControlToolMaintenanceState>>;
   readonly update: (
     input: SourceControlToolUpdateInput,
-    verify?: () => Effect.Effect<void, SourceControlToolUpdateError>,
+    checks?: SourceControlToolUpdateChecks,
   ) => Effect.Effect<SourceControlToolMaintenanceResult, SourceControlToolUpdateError>;
 }
 
@@ -168,15 +190,13 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
     options?.commandAvailable ?? ((command: string) => isCommandAvailable(command, { platform }));
   const scope = yield* Effect.scope;
   const installerLock = yield* Semaphore.make(1);
-  const states = yield* Ref.make<
-    ReadonlyMap<SourceControlToolUpdateTarget, SourceControlToolMaintenanceState>
-  >(new Map());
+  const states = yield* Ref.make<ToolStates>(new Map());
   const setState = (state: SourceControlToolMaintenanceState) =>
     Ref.update(states, (current) => new Map(current).set(state.target, state));
 
   const update: SourceControlToolMaintenanceShape["update"] = Effect.fn(
     "SourceControlToolMaintenance.update",
-  )(function* (input, verify) {
+  )(function* (input, checks) {
     const { target } = input;
     const operation = input.operation ?? "update";
     const useGitForWindowsUpdater =
@@ -212,24 +232,45 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
 
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        const acquired = yield* Ref.modify(states, (current) => {
+        const waiting = {
+          target,
+          operation,
+          status: "queued",
+          message: "Waiting for another install to finish.",
+        } satisfies SourceControlToolMaintenanceState;
+        const slot = yield* Ref.modify(states, (current): readonly [UpdateSlot, ToolStates] => {
           const existing = current.get(target);
           if (existing && ["queued", "running", "checking"].includes(existing.status))
-            return [false, current] as const;
+            return [{ acquired: false, previous: existing }, current];
           return [
-            true,
-            new Map(current).set(target, {
+            { acquired: true, previous: existing },
+            new Map(current).set(
               target,
-              operation,
-              status: "queued",
-              message: "Waiting for another install to finish.",
-            } satisfies SourceControlToolMaintenanceState),
-          ] as const;
+              checks?.preflight
+                ? { ...waiting, message: SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE }
+                : waiting,
+            ),
+          ];
         });
-        if (!acquired) {
+        if (!slot.acquired) {
           return yield* updateError(
             target,
             "This tool already has an install or update in progress.",
+          );
+        }
+
+        if (checks?.preflight) {
+          yield* restore(checks.preflight).pipe(
+            Effect.onExit((exit) =>
+              Exit.isSuccess(exit)
+                ? setState(waiting)
+                : Ref.update(states, (current) => {
+                    const next = new Map(current);
+                    if (slot.previous) next.set(target, slot.previous);
+                    else next.delete(target);
+                    return next;
+                  }),
+            ),
           );
         }
 
@@ -297,7 +338,7 @@ export const make = Effect.fn("makeSourceControlToolMaintenance")(function* (
             status: "checking",
             message: "Checking installation.",
           });
-          if (verify) yield* verify();
+          if (checks?.verify) yield* checks.verify();
           yield* setState({
             target,
             operation,

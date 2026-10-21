@@ -2,6 +2,7 @@
 import NodePath from "node:path";
 
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -49,6 +50,7 @@ import {
   ProviderSubagentTranscriptError,
   ThreadId,
   type TerminalEvent,
+  type SourceControlDiscoveryResult,
   SourceControlToolUpdateError,
   WS_METHODS,
   WsRpcGroup,
@@ -1305,60 +1307,69 @@ const makeWsRpcLayer = (currentSession: {
             WS_METHODS.serverUpdateSourceControlTool,
             Effect.gen(function* () {
               const operation = input.operation ?? "update";
-              const before = yield* sourceControlDiscovery.discover;
-              if (
-                !SourceControlToolMaintenance.hasVerifiedSourceControlToolUpdateAction(
-                  before,
-                  input.target,
-                  operation,
-                )
-              ) {
-                return yield* new SourceControlToolUpdateError({
-                  target: input.target,
-                  reason:
-                    "Threadlines could not verify an available install or update action for this tool. Rescan the server environment and try again.",
-                });
-              }
-              const previousVersion = SourceControlToolMaintenance.currentSourceControlToolVersion(
-                before,
-                input.target,
-              );
+              const before = yield* Deferred.make<SourceControlDiscoveryResult>();
 
               const maintenanceResult = yield* sourceControlToolMaintenance.update(
                 {
                   ...input,
                   operation,
                 },
-                () =>
-                  sourceControlDiscovery.discover.pipe(
-                    Effect.flatMap((after) =>
-                      SourceControlToolMaintenance.currentSourceControlToolVersion(
-                        after,
+                {
+                  // Discovery runs with the job already queued, so setup polls
+                  // in the meantime never read the tool as idle.
+                  preflight: sourceControlDiscovery.discover.pipe(
+                    Effect.flatMap((discovery) =>
+                      SourceControlToolMaintenance.hasVerifiedSourceControlToolUpdateAction(
+                        discovery,
                         input.target,
-                      ) !== null
-                        ? Effect.void
+                        operation,
+                      )
+                        ? Deferred.succeed(before, discovery)
                         : Effect.fail(
                             new SourceControlToolUpdateError({
                               target: input.target,
                               reason:
-                                "The installer finished, but the tool could not be found. Check the installer, then rescan or retry.",
+                                "Threadlines could not verify an available install or update action for this tool. Rescan the server environment and try again.",
                             }),
                           ),
                     ),
-                    Effect.andThen(() =>
-                      input.target === "git" && operation === "install"
-                        ? githubAuth.configureGit.pipe(
-                            Effect.mapError(
-                              (error) =>
-                                new SourceControlToolUpdateError({
-                                  target: input.target,
-                                  reason: error.detail,
-                                }),
-                            ),
-                          )
-                        : Effect.void,
-                    ),
+                    Effect.asVoid,
                   ),
+                  verify: () =>
+                    sourceControlDiscovery.discover.pipe(
+                      Effect.flatMap((after) =>
+                        SourceControlToolMaintenance.currentSourceControlToolVersion(
+                          after,
+                          input.target,
+                        ) !== null
+                          ? Effect.void
+                          : Effect.fail(
+                              new SourceControlToolUpdateError({
+                                target: input.target,
+                                reason:
+                                  "The installer finished, but the tool could not be found. Check the installer, then rescan or retry.",
+                              }),
+                            ),
+                      ),
+                      Effect.andThen(() =>
+                        input.target === "git" && operation === "install"
+                          ? githubAuth.configureGit.pipe(
+                              Effect.mapError(
+                                (error) =>
+                                  new SourceControlToolUpdateError({
+                                    target: input.target,
+                                    reason: error.detail,
+                                  }),
+                              ),
+                            )
+                          : Effect.void,
+                      ),
+                    ),
+                },
+              );
+              const previousVersion = SourceControlToolMaintenance.currentSourceControlToolVersion(
+                yield* Deferred.await(before),
+                input.target,
               );
 
               const discovery = yield* sourceControlDiscovery.discover;

@@ -3,6 +3,7 @@ import "../index.css";
 import {
   EnvironmentId,
   type LocalApi,
+  SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE,
   type SourceControlDiscoveryResult,
   type SourceControlSetupState,
   type SourceControlToolUpdateResult,
@@ -163,19 +164,16 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
     const updateSourceControlTool = vi.fn(
       () =>
         new Promise<SourceControlToolUpdateResult>((resolve) => {
-          // Report running as soon as the update is requested. The real
-          // server re-runs discovery first, and a poll in that window reads
-          // idle and slows the app to its 5 s idle cadence. This test does
-          // not cover that window.
+          // Like the server, report the job as queued from the moment it is
+          // asked for, while it checks the tool may update.
           setup = {
             ...IDLE_SETUP,
             tools: [
               {
                 target: "github-cli",
                 operation: "update",
-                status: "running",
-                message:
-                  "Downloading and installing. Windows may ask for permission after the download finishes.",
+                status: "queued",
+                message: SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE,
               },
             ],
           };
@@ -208,6 +206,18 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
     await expect
       .element(page.getByText("GitHub update available"), { timeout: 5_000 })
       .not.toBeInTheDocument();
+    setup = {
+      ...IDLE_SETUP,
+      tools: [
+        {
+          target: "github-cli",
+          operation: "update",
+          status: "running",
+          message:
+            "Downloading and installing. Windows may ask for permission after the download finishes.",
+        },
+      ],
+    };
     await expect
       .element(
         page.getByText(

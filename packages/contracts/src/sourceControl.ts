@@ -172,6 +172,9 @@ export const SourceControlToolMaintenanceState = Schema.Struct({
 });
 export type SourceControlToolMaintenanceState = typeof SourceControlToolMaintenanceState.Type;
 
+/** The queued message from the click until the server has checked the tool may update. */
+export const SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE = "Checking availability before starting…";
+
 export const GitHubAuthState = Schema.Struct({
   status: Schema.Literals(["idle", "running", "succeeded", "failed", "cancelled"]),
   verificationUrl: Schema.NullOr(Schema.String),
