@@ -1,6 +1,6 @@
 import type { EnvironmentId, InboundComputerLink } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 
 import {
   describeComputerLinkFailure,
@@ -34,6 +34,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { ComputerConnectionGroup } from "./ComputerConnectionGroup";
 import { describeComputerLocation, type FleetComputer, type FleetGlyph } from "./fleet.logic";
 import {
+  FLEET_DEVICE_KEY_PREFIX,
   type FleetDirectoryEntry,
   type FleetLinkReach,
   type FleetPair,
@@ -289,6 +290,25 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
   const entry = directory.find((candidate) => candidate.key === entryKey) ?? null;
   const computer: FleetComputer | null =
     computers.find((candidate) => candidate.id === entryKey) ?? null;
+  // A computer waiting to say which it is just did: its page moves to the
+  // computer's own address, in place.
+  const introducedAs = useMemo(() => {
+    if (entry !== null || !entryKey.startsWith(FLEET_DEVICE_KEY_PREFIX)) return null;
+    const deviceId = entryKey.slice(FLEET_DEVICE_KEY_PREFIX.length);
+    for (const holder of Object.values(data.links)) {
+      const link = holder.snapshot.inbound.find((candidate) => candidate.deviceId === deviceId);
+      if (link?.environmentId) return link.environmentId;
+    }
+    return null;
+  }, [data.links, entry, entryKey]);
+  useEffect(() => {
+    if (introducedAs === null) return;
+    void navigate({
+      to: "/fleet/$environmentId",
+      params: { environmentId: introducedAs },
+      replace: true,
+    });
+  }, [introducedAs, navigate]);
 
   const glyphOf = (environmentId: EnvironmentId): FleetGlyph =>
     computers.find((candidate) => candidate.environmentId === environmentId)?.glyph ?? "monitor";

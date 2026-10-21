@@ -2206,7 +2206,7 @@ describe("GeneralSettingsPanel observability", () => {
     });
     const clientFor = (environmentId: EnvironmentId, label: string) => ({
       createInvite: vi.fn(async () => invite(environmentId, label)),
-      accept: vi.fn(async () => ({})),
+      accept: vi.fn(async () => ({ state: "active" })),
     });
     const macClient = clientFor(mac, "Mac");
     const windowsClient = clientFor(windows, "Windows PC");

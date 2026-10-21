@@ -255,28 +255,33 @@ export async function linkComputerDirections(
   const results = await Promise.allSettled(directions.map((direction) => linkComputer(direction)));
   return directions.map((direction, index) => {
     const result = results[index]!;
+    // A link can be made and still fail its first connection: that is not linked.
     return {
       ...direction,
       error:
-        result.status === "fulfilled"
-          ? null
-          : describeComputerLinkFailure(result.reason, "The link couldn't be made."),
+        result.status === "rejected"
+          ? describeComputerLinkFailure(result.reason, "The link couldn't be made.")
+          : result.value.state === "active"
+            ? null
+            : (result.value.lastError ??
+              `${direction.asker.label} couldn't reach ${direction.worker.label} over the new link.`),
     };
   });
 }
 
 /** A half an unlink removes: on `holder`, for one direction of the pair. */
-export interface ComputerUnlinkStep<D extends string> {
+export interface ComputerUnlinkStep {
   readonly holder: ComputerLinkTarget;
-  readonly direction: D;
+  readonly direction: string;
   readonly input: LinksRemoveInput;
 }
 
-/** How one direction came out: removed, waiting for the other computer, or failed. */
-export interface ComputerUnlinkResult {
-  readonly failed: string | null;
-  /** A computer's half that waits for the other one, by the asking computer's word. */
-  readonly pending: boolean;
+/** What one step answered: its error, or the other computer's half as its computer saw it. */
+export interface ComputerUnlinkStepResult<S extends ComputerUnlinkStep> {
+  /** The step as it was sent (an outbound half loses `otherHalfRemoved` if that removal failed). */
+  readonly step: S;
+  readonly error: string | null;
+  readonly otherComputer: LinksRemoveResult["otherComputer"] | null;
 }
 
 /**
@@ -284,31 +289,26 @@ export interface ComputerUnlinkResult {
  * its other half is gone only if this run removed it or it was already gone:
  * if that removal failed, its computer asks the other one itself.
  */
-export async function runComputerUnlink<D extends string>(
-  steps: ReadonlyArray<ComputerUnlinkStep<D>>,
-): Promise<Map<D, ComputerUnlinkResult>> {
-  const results = new Map<D, ComputerUnlinkResult>();
-  const inboundFailed = new Set<D>();
-  const record = (direction: D, change: Partial<ComputerUnlinkResult>) => {
-    const current = results.get(direction) ?? { failed: null, pending: false };
-    results.set(direction, {
-      failed: change.failed ?? current.failed,
-      pending: change.pending ?? current.pending,
-    });
-  };
-  for (const step of steps) {
-    let input = step.input;
-    if (input.direction === "outbound" && inboundFailed.has(step.direction)) {
-      const { otherHalfRemoved: _dropped, ...rest } = input;
-      input = rest;
+export async function runComputerUnlink<S extends ComputerUnlinkStep>(
+  steps: ReadonlyArray<S>,
+): Promise<Array<ComputerUnlinkStepResult<S>>> {
+  const results: Array<ComputerUnlinkStepResult<S>> = [];
+  const inboundFailed = new Set<string>();
+  for (const original of steps) {
+    let step = original;
+    if (step.input.direction === "outbound" && inboundFailed.has(step.direction)) {
+      const { otherHalfRemoved: _dropped, ...input } = step.input;
+      step = { ...step, input };
     }
     try {
-      const result = await removeComputerLinkHalf(step.holder, input);
-      record(step.direction, { pending: result.otherComputer === "pending" });
+      const result = await removeComputerLinkHalf(step.holder, step.input);
+      results.push({ step, error: null, otherComputer: result.otherComputer });
     } catch (error) {
-      if (input.direction === "inbound") inboundFailed.add(step.direction);
-      record(step.direction, {
-        failed: describeComputerLinkFailure(error, `${step.holder.label} couldn't remove it.`),
+      if (step.input.direction === "inbound") inboundFailed.add(step.direction);
+      results.push({
+        step,
+        error: describeComputerLinkFailure(error, `${step.holder.label} couldn't remove it.`),
+        otherComputer: null,
       });
     }
   }

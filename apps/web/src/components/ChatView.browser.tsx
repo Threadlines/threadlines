@@ -1120,7 +1120,7 @@ function fleetInvite(environmentId: EnvironmentId, label: string): ComputerLinkI
 /** A saved computer's links calls, as its server would take them. */
 function fakeComputerLinksClient() {
   const setAccess = vi.fn(async () => ({}));
-  const accept = vi.fn(async () => ({}));
+  const accept = vi.fn(async () => ({ state: "active" }));
   const remove = vi.fn(async () => ({ otherComputer: "confirmed" as const }));
   const respondRequest = vi.fn(async () => undefined);
   const createInvite = vi.fn(async () => fleetInvite(FLEET_REMOTE_ENVIRONMENT_ID, "Windows PC"));

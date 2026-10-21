@@ -20,6 +20,7 @@ import {
   type FleetPair,
   type FleetUnlinkOutcome,
   planFleetUnlink,
+  resolveFleetUnlinkOutcomes,
 } from "./fleetLinks.logic";
 
 function joinNames(names: readonly string[]): string {
@@ -70,40 +71,11 @@ export function UnlinkDialog({
 
   const unlink = async () => {
     setRunning(true);
-    const results = await runComputerUnlink(
-      plan.steps.map((step) => ({
-        holder: { environmentId: step.holder.environmentId, label: step.holder.label },
-        direction: step.direction,
-        input: step.input,
-      })),
-    );
+    const results = await runComputerUnlink(plan.steps);
     setRunning(false);
-    const finishLater = new Set(plan.finishLater.map((computer) => computer.environmentId));
-    const directionOutcomes = (
-      [
-        ["outward", pair.outward],
-        ["inward", pair.inward],
-      ] as const
-    ).flatMap(([name, direction]): Array<readonly [FleetDirection, FleetUnlinkOutcome]> => {
-      if (direction.outbound === null && direction.inbound === null) return [];
-      const result = results.get(name);
-      if (result?.failed) return [[direction, { kind: "failed", detail: result.failed }]];
-      // Both directions have a half on each computer: while one of them
-      // can't be reached, or the asking computer couldn't reach the other
-      // one yet, that computer finishes later.
-      const waitingFor =
-        [direction.asker, direction.worker].find((computer) =>
-          finishLater.has(computer.environmentId),
-        ) ?? (result?.pending === true ? direction.worker : null);
-      return [
-        [
-          direction,
-          waitingFor === null
-            ? { kind: "done" }
-            : { kind: "pending", waitingFor: waitingFor.label },
-        ],
-      ];
-    });
+    const directionOutcomes = resolveFleetUnlinkOutcomes(pair, plan, results).map(
+      ({ direction, outcome }) => [direction, outcome] as const,
+    );
     if (directionOutcomes.every(([, outcome]) => outcome.kind === "done")) {
       toastManager.add({
         type: "success",

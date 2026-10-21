@@ -18,6 +18,7 @@ import {
   type FleetLinksByEnvironment,
   planFleetUnlink,
   resolveFleetPair,
+  resolveFleetUnlinkOutcomes,
 } from "./fleetLinks.logic";
 
 const MAC = EnvironmentId.make("env-mac");
@@ -279,6 +280,71 @@ describe("planFleetUnlink", () => {
     });
     expect(plan.blocked).toBe(false);
   });
+
+  it("shows the newest half of a re-linked direction and removes every half", () => {
+    const pair = resolveFleetPair(
+      reach(MAC, "Mac"),
+      reach(WINDOWS, "Windows PC", {
+        links: {
+          live: true,
+          snapshot: snapshot({
+            inbound: [
+              inbound(MAC, "Mac", { deviceId: "device-old", access: "off" }),
+              inbound(MAC, "Mac", {
+                deviceId: "device-new",
+                access: "allowed",
+                createdAt: "2026-10-21T13:00:00.000Z",
+              }),
+            ],
+          }),
+        },
+      }),
+    );
+    expect(pair.outward.inbound?.deviceId).toBe("device-new");
+    expect(pair.outward.inbound?.access).toBe("allowed");
+    expect(
+      planFleetUnlink(pair).steps.map((step) =>
+        step.input.direction === "inbound" ? step.input.deviceId : null,
+      ),
+    ).toEqual(["device-new", "device-old"]);
+  });
+
+  it("reports a half done only when its computer, or the other one, confirmed it", () => {
+    // This app can't reach Windows PC, but Mac can.
+    const pair = linkedPair(false);
+    const plan = planFleetUnlink(pair);
+    const answered = (otherComputer: "confirmed" | "pending") =>
+      resolveFleetUnlinkOutcomes(
+        pair,
+        plan,
+        plan.steps.map((step) => ({
+          step,
+          error: null,
+          otherComputer: step.input.direction === "outbound" ? otherComputer : "not_asked",
+        })),
+      ).map(({ direction, outcome }) => [direction.asker.label, outcome]);
+    expect(answered("confirmed")).toEqual([
+      ["Mac", { kind: "done" }],
+      ["Windows PC", { kind: "done" }],
+    ]);
+    expect(answered("pending")).toEqual([
+      ["Mac", { kind: "pending", waitingFor: "Windows PC" }],
+      ["Windows PC", { kind: "pending", waitingFor: "Windows PC" }],
+    ]);
+    const failed = resolveFleetUnlinkOutcomes(pair, plan, [
+      {
+        step: plan.steps[0]!,
+        error: "Mac couldn't stop everything the link started.",
+        otherComputer: null,
+      },
+    ]);
+    expect(failed.find(({ direction }) => direction.asker.label === "Windows PC")?.outcome).toEqual(
+      {
+        kind: "failed",
+        detail: "Mac couldn't stop everything the link started.",
+      },
+    );
+  });
 });
 
 describe("cross-computer work in the graph", () => {
@@ -342,6 +408,15 @@ describe("cross-computer work in the graph", () => {
     const quiet = buildFleetGraphEdges({ model, links, crossWork: [] });
     expect(quiet.find((edge) => edge.key.startsWith("link:"))).toMatchObject({
       state: "connected",
+    });
+    // What Windows PC said before it went away is no connection now.
+    const stale = buildFleetGraphEdges({
+      model,
+      links: { [WINDOWS]: { ...links[WINDOWS]!, live: false } },
+      crossWork: [],
+    });
+    expect(stale.find((edge) => edge.key.startsWith("link:"))).toMatchObject({
+      state: "offline",
     });
     const working = buildFleetGraphEdges({
       model,

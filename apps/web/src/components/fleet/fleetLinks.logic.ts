@@ -194,10 +194,16 @@ export type FleetDirectionStatus =
 export interface FleetDirection {
   readonly asker: FleetLinkReach;
   readonly worker: FleetLinkReach;
-  /** The asker's own link, from its snapshot. */
+  /** The asker's own link in use (the newest that still works), from its snapshot. */
   readonly outbound: OutboundComputerLink | null;
-  /** The worker's setting for it, from its snapshot. */
+  /** The worker's setting for it (the newest), from its snapshot. */
   readonly inbound: InboundComputerLink | null;
+  /**
+   * Every half of this direction either computer reports: re-linking can
+   * leave an older one behind, and Unlink removes them all.
+   */
+  readonly allOutbound: ReadonlyArray<OutboundComputerLink>;
+  readonly allInbound: ReadonlyArray<InboundComputerLink>;
   readonly status: FleetDirectionStatus;
   /** The settings can be changed now: the worker is reachable and current. */
   readonly settingsEditable: boolean;
@@ -233,13 +239,24 @@ export function resolveFleetDirection(
   asker: FleetLinkReach,
   worker: FleetLinkReach,
 ): FleetDirection {
-  const outbound =
-    asker.links?.snapshot.outbound.find(
+  const newestFirst = <T extends { readonly createdAt: string }>(links: ReadonlyArray<T>) =>
+    links.toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const allOutbound = newestFirst(
+    (asker.links?.snapshot.outbound ?? []).filter(
       (link) => link.remoteEnvironmentId === worker.environmentId,
-    ) ?? null;
-  const inbound =
-    worker.links?.snapshot.inbound.find((link) => link.environmentId === asker.environmentId) ??
+    ),
+  );
+  const allInbound = newestFirst(
+    (worker.links?.snapshot.inbound ?? []).filter(
+      (link) => link.environmentId === asker.environmentId,
+    ),
+  );
+  // The link the asker uses is its newest that still works, as its server picks it.
+  const outbound =
+    allOutbound.find((link) => link.state === "active" || link.state === "failed") ??
+    allOutbound[0] ??
     null;
+  const inbound = allInbound[0] ?? null;
   // Only what the worker says now: Allow and Deny go to it.
   const pending =
     inbound === null || worker.links?.live !== true || !worker.reachable
@@ -289,6 +306,8 @@ export function resolveFleetDirection(
     worker,
     outbound,
     inbound,
+    allOutbound,
+    allInbound,
     status,
     settingsEditable,
     settingsNote,
@@ -321,7 +340,7 @@ export function resolveFleetPair(self: FleetLinkReach, other: FleetLinkReach): F
     inward,
     linkBlockedReason: linkBlockedReason(self, other),
     linked: [outward, inward].some(
-      (direction) => direction.outbound !== null || direction.inbound !== null,
+      (direction) => direction.allOutbound.length > 0 || direction.allInbound.length > 0,
     ),
   };
 }
@@ -371,8 +390,8 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
     ["outward", pair.outward],
     ["inward", pair.inward],
   ] as const) {
-    const { asker, worker, inbound, outbound } = direction;
-    if (inbound !== null) {
+    const { asker, worker, allInbound, allOutbound } = direction;
+    for (const inbound of allInbound) {
       if (worker.reachable) {
         inboundSteps.push({
           holder: worker,
@@ -383,10 +402,10 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
         finishLater.set(worker.environmentId, worker);
       }
     }
-    if (outbound !== null) {
+    for (const outbound of allOutbound) {
       if (asker.reachable) {
         const otherHalfRemoved =
-          worker.reachable && (inbound !== null || worker.links?.live === true);
+          worker.reachable && (allInbound.length > 0 || worker.links?.live === true);
         outboundSteps.push({
           holder: asker,
           direction: name,
@@ -413,6 +432,79 @@ export type FleetUnlinkOutcome =
   | { readonly kind: "done" }
   | { readonly kind: "pending"; readonly waitingFor: string }
   | { readonly kind: "failed"; readonly detail: string };
+
+/** What one step of an unlink answered. */
+export interface FleetUnlinkStepResult {
+  readonly step: FleetUnlinkStep;
+  /** Null when its computer did its part. */
+  readonly error: string | null;
+  /** An outbound removal's word on the other computer's half. */
+  readonly otherComputer: "confirmed" | "pending" | "not_asked" | null;
+}
+
+/**
+ * How each direction came out, from what each computer answered. A half is
+ * done when its computer removed it, or when the other computer confirmed
+ * hearing the unlink (it removes its own halves then: its access setting at
+ * once, its link back once refused); it waits for a computer this app
+ * couldn't reach otherwise. Never done on a guess.
+ */
+export function resolveFleetUnlinkOutcomes(
+  pair: FleetPair,
+  plan: FleetUnlinkPlan,
+  results: ReadonlyArray<FleetUnlinkStepResult>,
+): Array<{ readonly direction: FleetDirection; readonly outcome: FleetUnlinkOutcome }> {
+  const finishLater = new Set(plan.finishLater.map((computer) => computer.environmentId));
+  const resultsOf = (name: "outward" | "inward") =>
+    results.filter((result) => result.step.direction === name);
+  /** The direction's asking computer heard from the other one that the unlink is done there. */
+  const confirmedBy = (name: "outward" | "inward") =>
+    resultsOf(name).some(
+      (result) =>
+        result.step.input.direction === "outbound" &&
+        result.error === null &&
+        result.otherComputer === "confirmed" &&
+        result.step.input.otherHalfRemoved !== true,
+    );
+  return (
+    [
+      ["outward", pair.outward],
+      ["inward", pair.inward],
+    ] as const
+  ).flatMap(
+    ([name, direction]): Array<{
+      readonly direction: FleetDirection;
+      readonly outcome: FleetUnlinkOutcome;
+    }> => {
+      if (direction.allOutbound.length === 0 && direction.allInbound.length === 0) return [];
+      const failed = resultsOf(name).find((result) => result.error !== null);
+      if (failed !== undefined) {
+        return [{ direction, outcome: { kind: "failed", detail: failed.error! } }];
+      }
+      const other = name === "outward" ? "inward" : "outward";
+      const askerWaits =
+        !direction.asker.reachable &&
+        finishLater.has(direction.asker.environmentId) &&
+        // Its link back goes once the other computer heard the unlink.
+        !confirmedBy(other);
+      const workerWaits =
+        (!direction.worker.reachable &&
+          finishLater.has(direction.worker.environmentId) &&
+          !confirmedBy(name)) ||
+        resultsOf(name).some((result) => result.otherComputer === "pending");
+      const waitingFor = askerWaits ? direction.asker : workerWaits ? direction.worker : null;
+      return [
+        {
+          direction,
+          outcome:
+            waitingFor === null
+              ? { kind: "done" }
+              : { kind: "pending", waitingFor: waitingFor.label },
+        },
+      ];
+    },
+  );
+}
 
 // ── Work across computers ────────────────────────────────────────────
 
@@ -487,8 +579,9 @@ export interface FleetGraphEdge {
   readonly state: FleetLineState;
 }
 
+/** A link line's state from what its asking computers report now; none known reads offline. */
 function linkConnectionState(links: ReadonlyArray<OutboundComputerLink>): FleetLineState {
-  if (links.length === 0) return "connected";
+  if (links.length === 0) return "offline";
   if (links.some((link) => link.state === "active" && link.connection === "connected")) {
     return "connected";
   }
@@ -533,6 +626,7 @@ export function buildFleetGraphEdges(input: {
   const centerEnvironmentId = model.center.environmentId;
 
   // Links between drawn computers, with what their asking sides report.
+  // Only what the asking computers say now: a stale snapshot is no connection.
   const linkHalves = new Map<string, { a: string; b: string; outbound: OutboundComputerLink[] }>();
   const notePair = (left: string, right: string, outbound: OutboundComputerLink | null) => {
     if (left === right || !idByEnvironment.has(left) || !idByEnvironment.has(right)) return;
@@ -542,7 +636,9 @@ export function buildFleetGraphEdges(input: {
     linkHalves.set(key, current);
   };
   for (const [holder, entry] of Object.entries(input.links)) {
-    for (const link of entry.snapshot.outbound) notePair(holder, link.remoteEnvironmentId, link);
+    for (const link of entry.snapshot.outbound) {
+      notePair(holder, link.remoteEnvironmentId, entry.live ? link : null);
+    }
     for (const link of entry.snapshot.inbound) {
       if (link.environmentId !== null) notePair(holder, link.environmentId, null);
     }
