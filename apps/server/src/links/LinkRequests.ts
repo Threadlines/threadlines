@@ -195,15 +195,16 @@ export interface LinkRequestsShape {
     options?: { readonly stopRunning?: boolean },
   ) => Effect.Effect<void, ComputerLinkError>;
   /**
-   * An unlink of this link owes stops: from now on everything it started
-   * must stop, until `stopsDone` with the generation this returns. Recorded
-   * durably, so a pass that falls short (or a restart part way) is tried
-   * again every minute until one finds nothing left at work. Call again
-   * when a pass falls short.
+   * An unlink of this link (its access already off) owes a full pass over
+   * what it started (`dropLink` with `stopRunning`), until `drainDone` with
+   * the generation this returns. Recorded durably, so a pass that falls
+   * short (or a restart part way) is tried again every minute. Call again
+   * when a pass falls short. Each thread a pass finds at work is owed its
+   * stop on its own, until it is seen stopped.
    */
-  readonly oweStops: (deviceId: string, error?: string) => Effect.Effect<number, ComputerLinkError>;
-  /** A pass after the link's session ended found nothing it started still at work. */
-  readonly stopsDone: (deviceId: string, generation: number) => Effect.Effect<void>;
+  readonly oweDrain: (deviceId: string, error?: string) => Effect.Effect<number, ComputerLinkError>;
+  /** A pass after the link's session ended got through. */
+  readonly drainDone: (deviceId: string, generation: number) => Effect.Effect<void>;
   readonly onTurnEnd: RemoteRequestTurnEndsShape["onTurnEnd"];
   /** See RemoteRequestGate. */
   readonly messageVerdict: RemoteRequestGateShape["messageVerdict"];
@@ -1087,15 +1088,24 @@ const make = Effect.gen(function* () {
     );
   };
 
-  /** Stops a link's thread if it is still working; fails if the stop wasn't recorded. */
-  const stopIfWorking = (deviceId: string, thread: OrchestrationThread) =>
+  /** Which turn a thread is at, for telling "still at it" from "moved on". */
+  const turnKeyOf = (thread: OrchestrationThread) => thread.latestTurn?.turnId ?? "none";
+
+  /**
+   * Stops a link's thread if it is still working; fails if the stop wasn't
+   * recorded. `retry` makes it a new stop (the first one, already recorded,
+   * didn't take), not a replay of the first.
+   */
+  const stopIfWorking = (deviceId: string, thread: OrchestrationThread, retry?: string) =>
     Effect.gen(function* () {
       if (!isWorking(thread)) return "not_running" as const;
       yield* mustDispatch(
         {
           type: "thread.session.stop",
           commandId: CommandId.make(
-            `server:link-stop:${deviceId}:${thread.id}:${thread.latestTurn?.turnId ?? "none"}`,
+            `server:link-stop:${deviceId}:${thread.id}:${turnKeyOf(thread)}${
+              retry === undefined ? "" : `:retry:${retry}`
+            }`,
           ),
           threadId: thread.id,
           createdAt: yield* nowIso,
@@ -1375,6 +1385,15 @@ const make = Effect.gen(function* () {
             const thread = yield* readThreadOrFail(threadId);
             if (thread === undefined || thread.deletedAt !== null) return;
             if (thread.remoteOrigin?.linkDeviceId !== deviceId) return;
+            if (!isWorking(thread)) return;
+            // Owed before it is asked for: a stop that doesn't take is asked
+            // for again until the thread is seen stopped.
+            yield* ledger.oweThreadStop({
+              linkDeviceId: deviceId,
+              threadId,
+              turnKey: turnKeyOf(thread),
+              now: yield* nowIso,
+            });
             yield* stopIfWorking(deviceId, thread);
           }).pipe(
             Effect.catchCause((cause) =>
@@ -1395,9 +1414,9 @@ const make = Effect.gen(function* () {
       }
     });
 
-  const oweStops: LinkRequestsShape["oweStops"] = (deviceId, error) =>
+  const oweDrain: LinkRequestsShape["oweDrain"] = (deviceId, error) =>
     Effect.gen(function* () {
-      return yield* ledger.oweStops({
+      return yield* ledger.oweDrain({
         linkDeviceId: deviceId,
         ...(error !== undefined ? { error } : {}),
         now: yield* nowIso,
@@ -1409,44 +1428,75 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const stopsDone: LinkRequestsShape["stopsDone"] = (deviceId, generation) =>
-    ledger.clearStopsOwed({ linkDeviceId: deviceId, generation }).pipe(
+  const drainDone: LinkRequestsShape["drainDone"] = (deviceId, generation) =>
+    ledger.clearDrainOwed({ linkDeviceId: deviceId, generation }).pipe(
       Effect.catch((error) =>
-        // Left owed: the next pass finds nothing at work and clears it.
-        Effect.logWarning("link requests could not clear an unlink's stops", {
+        // Left owed: the next pass gets through and clears it.
+        Effect.logWarning("link requests could not clear an unlink's pass", {
           detail: String(error),
         }),
       ),
     );
 
   /**
-   * One pass over unlinks that still owe stops (a pass fell short, or the
-   * process stopped part way): each link's work is stopped again, and the
-   * obligation goes once a pass finds nothing left. A link that is back in
-   * use (on again: its unlink was given up) owes nothing any more.
+   * One pass over what unlinks still owe (a pass fell short, a stop didn't
+   * take, or the process stopped part way). A link owing a full pass gets
+   * one, unless it is on again (its unlink was given up). A thread owing its
+   * stop is asked again while it is still at work on the turn it was at,
+   * and is done once it is stopped or has moved on to a later turn (which
+   * its link, off by then, couldn't have started).
    */
   const finishOwedStops = Effect.gen(function* () {
-    const owed = yield* ledger.listStopsOwed.pipe(Effect.option);
-    if (Option.isNone(owed)) {
-      yield* Effect.logWarning("link requests could not list unlinks that owe stops");
+    // Stops asked for on an earlier pass first: ones a pass below asks for
+    // get their minute to take.
+    const stops = yield* ledger.listThreadStopsOwed.pipe(Effect.option);
+    if (Option.isNone(stops)) {
+      yield* Effect.logWarning("link requests could not list threads that owe a stop");
+    } else {
+      const attempt = yield* nowIso;
+      for (const owed of stops.value) {
+        yield* Effect.gen(function* () {
+          const thread = yield* readThreadOrFail(owed.threadId);
+          if (
+            thread === undefined ||
+            thread.deletedAt !== null ||
+            !isWorking(thread) ||
+            turnKeyOf(thread) !== owed.turnKey
+          ) {
+            yield* ledger.clearThreadStopOwed(owed);
+            yield* Effect.logInfo("link requests saw an unlinked link's thread stop", {
+              threadId: owed.threadId,
+            });
+            return;
+          }
+          yield* stopIfWorking(owed.linkDeviceId, thread, attempt);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("link requests could not stop an unlinked link's thread", {
+                  threadId: owed.threadId,
+                  cause: Cause.pretty(cause),
+                }),
+          ),
+        );
+      }
+    }
+    const drains = yield* ledger.listDrainsOwed.pipe(Effect.option);
+    if (Option.isNone(drains)) {
+      yield* Effect.logWarning("link requests could not list unlinks that owe a pass");
       return;
     }
-    for (const { linkDeviceId, generation } of owed.value) {
+    for (const { linkDeviceId, generation } of drains.value) {
       const authority = yield* linkAuthority(linkDeviceId);
       if (authority.ok) {
-        yield* stopsDone(linkDeviceId, generation);
+        yield* drainDone(linkDeviceId, generation);
         continue;
       }
       if (authority.outcome === "failed") continue;
       const pass = yield* dropLink(linkDeviceId, { stopRunning: true }).pipe(Effect.result);
-      if (pass._tag === "Success") {
-        yield* stopsDone(linkDeviceId, generation);
-        yield* Effect.logInfo("link requests stopped what an unlinked link started", {
-          linkDeviceId,
-        });
-      } else {
-        yield* oweStops(linkDeviceId, pass.failure.detail).pipe(Effect.ignore);
-      }
+      if (pass._tag === "Success") yield* drainDone(linkDeviceId, generation);
+      else yield* oweDrain(linkDeviceId, pass.failure.detail).pipe(Effect.ignore);
     }
   });
 
@@ -2004,8 +2054,8 @@ const make = Effect.gen(function* () {
     pending,
     pendingChanges: Stream.fromPubSub(pendingHub),
     dropLink,
-    oweStops,
-    stopsDone,
+    oweDrain,
+    drainDone,
     onTurnEnd,
     messageVerdict,
     startReactor,

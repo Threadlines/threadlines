@@ -198,24 +198,46 @@ export interface LinkRequestRepositoryShape {
     readonly deliveredBefore: string;
   }) => Effect.Effect<void, LinkRequestRepositoryError>;
   /**
-   * An unlink owes stops: everything its link started must stop. Kept until
-   * cleared, whatever happens in between (a failed stop, a restart). Each
-   * call (a retry that fell short, too) makes a new generation, returned.
+   * An unlink owes a full pass over what its link started (cancel what is
+   * open, stop what is at work). Kept until cleared, whatever happens in
+   * between (a failed pass, a restart). Each call (a pass that fell short,
+   * too) makes a new generation, returned.
    */
-  readonly oweStops: (input: {
+  readonly oweDrain: (input: {
     readonly linkDeviceId: string;
     readonly error?: string;
     readonly now: string;
   }) => Effect.Effect<number, LinkRequestRepositoryError>;
-  /** Links whose unlink still owes stops, with their generation, oldest first. */
-  readonly listStopsOwed: Effect.Effect<
+  /** Links whose unlink still owes a pass, with their generation, oldest first. */
+  readonly listDrainsOwed: Effect.Effect<
     ReadonlyArray<{ readonly linkDeviceId: string; readonly generation: number }>,
     LinkRequestRepositoryError
   >;
-  /** Nothing more is owed, unless a newer generation was recorded since `generation`. */
-  readonly clearStopsOwed: (input: {
+  /** The pass is done, unless a newer generation was recorded since `generation`. */
+  readonly clearDrainOwed: (input: {
     readonly linkDeviceId: string;
     readonly generation: number;
+  }) => Effect.Effect<void, LinkRequestRepositoryError>;
+  /** A thread a pass found at work on `turnKey`: owed until it is seen stopped. */
+  readonly oweThreadStop: (input: {
+    readonly linkDeviceId: string;
+    readonly threadId: ThreadId;
+    readonly turnKey: string;
+    readonly now: string;
+  }) => Effect.Effect<void, LinkRequestRepositoryError>;
+  readonly listThreadStopsOwed: Effect.Effect<
+    ReadonlyArray<{
+      readonly linkDeviceId: string;
+      readonly threadId: ThreadId;
+      readonly turnKey: string;
+    }>,
+    LinkRequestRepositoryError
+  >;
+  /** The thread stopped (on that turn): unless a pass since found it at work on another. */
+  readonly clearThreadStopOwed: (input: {
+    readonly linkDeviceId: string;
+    readonly threadId: ThreadId;
+    readonly turnKey: string;
   }) => Effect.Effect<void, LinkRequestRepositoryError>;
 }
 
@@ -443,9 +465,9 @@ const make = Effect.gen(function* () {
         OR link_device_id NOT IN (SELECT device_id FROM relay_devices)
     `.pipe(Effect.asVoid, wrap("prune"));
 
-  const oweStops: LinkRequestRepositoryShape["oweStops"] = (input) =>
+  const oweDrain: LinkRequestRepositoryShape["oweDrain"] = (input) =>
     sql<{ readonly generation: number }>`
-      INSERT INTO link_stops_owed (link_device_id, generation, created_at, last_error)
+      INSERT INTO link_drains_owed (link_device_id, generation, created_at, last_error)
       VALUES (${input.linkDeviceId}, 0, ${input.now}, ${input.error?.slice(0, 300) ?? null})
       ON CONFLICT(link_device_id) DO UPDATE SET
         generation = generation + 1,
@@ -453,30 +475,63 @@ const make = Effect.gen(function* () {
       RETURNING generation AS "generation"
     `.pipe(
       Effect.map((rows) => rows[0]?.generation ?? 0),
-      wrap("oweStops"),
+      wrap("oweDrain"),
     );
 
-  const listStopsOwed: LinkRequestRepositoryShape["listStopsOwed"] = sql<{
+  const listDrainsOwed: LinkRequestRepositoryShape["listDrainsOwed"] = sql<{
     readonly linkDeviceId: string;
     readonly generation: number;
   }>`
-    SELECT link_device_id AS "linkDeviceId", generation AS "generation" FROM link_stops_owed
+    SELECT link_device_id AS "linkDeviceId", generation AS "generation" FROM link_drains_owed
     ORDER BY created_at, link_device_id
   `.pipe(
     Effect.map((rows) => rows.map((row) => ({ ...row }))),
-    wrap("listStopsOwed"),
+    wrap("listDrainsOwed"),
   );
 
-  const clearStopsOwed: LinkRequestRepositoryShape["clearStopsOwed"] = (input) =>
+  const clearDrainOwed: LinkRequestRepositoryShape["clearDrainOwed"] = (input) =>
     sql`
-      DELETE FROM link_stops_owed
+      DELETE FROM link_drains_owed
       WHERE link_device_id = ${input.linkDeviceId} AND generation = ${input.generation}
-    `.pipe(Effect.asVoid, wrap("clearStopsOwed"));
+    `.pipe(Effect.asVoid, wrap("clearDrainOwed"));
+
+  const oweThreadStop: LinkRequestRepositoryShape["oweThreadStop"] = (input) =>
+    sql`
+      INSERT INTO link_thread_stops_owed (link_device_id, thread_id, turn_key, created_at)
+      VALUES (${input.linkDeviceId}, ${input.threadId}, ${input.turnKey}, ${input.now})
+      ON CONFLICT(link_device_id, thread_id) DO UPDATE SET turn_key = excluded.turn_key
+    `.pipe(Effect.asVoid, wrap("oweThreadStop"));
+
+  const listThreadStopsOwed: LinkRequestRepositoryShape["listThreadStopsOwed"] = sql<{
+    readonly linkDeviceId: string;
+    readonly threadId: string;
+    readonly turnKey: string;
+  }>`
+    SELECT
+      link_device_id AS "linkDeviceId",
+      thread_id AS "threadId",
+      turn_key AS "turnKey"
+    FROM link_thread_stops_owed
+    ORDER BY created_at, link_device_id, thread_id
+  `.pipe(
+    Effect.map((rows) => rows.map((row) => ({ ...row, threadId: ThreadId.make(row.threadId) }))),
+    wrap("listThreadStopsOwed"),
+  );
+
+  const clearThreadStopOwed: LinkRequestRepositoryShape["clearThreadStopOwed"] = (input) =>
+    sql`
+      DELETE FROM link_thread_stops_owed
+      WHERE link_device_id = ${input.linkDeviceId} AND thread_id = ${input.threadId}
+        AND turn_key = ${input.turnKey}
+    `.pipe(Effect.asVoid, wrap("clearThreadStopOwed"));
 
   return LinkRequestRepository.of({
-    oweStops,
-    listStopsOwed,
-    clearStopsOwed,
+    oweDrain,
+    listDrainsOwed,
+    clearDrainOwed,
+    oweThreadStop,
+    listThreadStopsOwed,
+    clearThreadStopOwed,
     insert,
     get,
     listOpen,
