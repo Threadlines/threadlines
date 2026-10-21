@@ -88,6 +88,7 @@ import {
 } from "../ui/alert-dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import { DesktopBackgroundRows } from "./DesktopBackgroundRows";
 import {
   type ArchivedThreadItem,
   type ArchivedThreadProject,
@@ -978,6 +979,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         {isPhoneSurface ? <AssistantStreamingRow /> : null}
 
         <PreventSleepRow />
+        {isElectron && !isPhoneSurface ? <DesktopBackgroundRows /> : null}
 
         {!isPhoneSurface ? (
           <SettingsRow

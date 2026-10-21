@@ -82,6 +82,8 @@ const runHarness = (
 
 const runConfirmHarness = (input: {
   readonly runningThreadCount: number;
+  readonly activeScheduledTaskCount?: number;
+  readonly runInBackground?: boolean;
   readonly quitting?: boolean;
   readonly styledResponse?: boolean;
   readonly styledFailure?: { readonly windowOpen: boolean };
@@ -97,6 +99,8 @@ const runConfirmHarness = (input: {
   return Effect.gen(function* () {
     const state = yield* DesktopState.DesktopState;
     yield* Ref.set(state.localRunningThreadCount, input.runningThreadCount);
+    yield* Ref.set(state.activeScheduledTaskCount, input.activeScheduledTaskCount ?? 0);
+    yield* Ref.set(state.runInBackground, input.runInBackground ?? false);
     yield* Ref.set(state.quitting, input.quitting ?? false);
     const shouldQuit = yield* confirmQuitWithRunningAgentSessions();
     yield* input.body(shouldQuit, styledCalls, dialogCalls);
@@ -176,6 +180,37 @@ describe("requestDesktopShutdownAndWaitWithFailsafe", () => {
 });
 
 describe("confirmQuitWithRunningAgentSessions", () => {
+  it.effect("asks about scheduled tasks only where the app keeps running in the background", () =>
+    Effect.gen(function* () {
+      // An active schedule alone is no reason to ask at every quit.
+      yield* runConfirmHarness({
+        runningThreadCount: 0,
+        activeScheduledTaskCount: 2,
+        body: (shouldQuit, styledCalls) =>
+          Effect.sync(() => {
+            assert.equal(shouldQuit, true);
+            assert.deepEqual(styledCalls, []);
+          }),
+      });
+      // Kept running in the tray, quitting is a deliberate stop of them.
+      yield* runConfirmHarness({
+        runningThreadCount: 0,
+        activeScheduledTaskCount: 2,
+        runInBackground: true,
+        styledFailure: { windowOpen: false },
+        nativeResponse: 0,
+        body: (shouldQuit, _styledCalls, dialogCalls) =>
+          Effect.sync(() => {
+            assert.equal(shouldQuit, false);
+            assert.include(
+              String(dialogCalls[0]?.message),
+              "2 scheduled tasks won't run until you open Threadlines again.",
+            );
+          }),
+      });
+    }),
+  );
+
   it.effect("allows idle quit without showing a dialog", () =>
     runConfirmHarness({
       runningThreadCount: 0,

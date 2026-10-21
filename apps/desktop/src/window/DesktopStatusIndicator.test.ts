@@ -11,6 +11,7 @@ import type { DesktopMenuActionPayload } from "@threadlines/contracts";
 import type * as Electron from "electron";
 
 import * as DesktopConfig from "../app/DesktopConfig.ts";
+import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -104,6 +105,7 @@ const makeElectronTrayLayer = (calls: TrayCalls) =>
         calls.createTemplateImages.push(representations);
         return Option.some({ representations } as unknown as Electron.NativeImage);
       }),
+    createImageFromPath: () => Effect.succeed(Option.none()),
     create: (initialImage) =>
       Effect.succeed({
         setContextMenu: (menu: Electron.Menu) => calls.contextMenu.push(menu),
@@ -173,6 +175,12 @@ function makeTestLayer(input: {
 }) {
   return DesktopStatusIndicator.layer.pipe(
     Layer.provideMerge(DesktopState.layer),
+    Layer.provideMerge(
+      Layer.succeed(DesktopAssets.DesktopAssets, {
+        iconPaths: Effect.succeed({ ico: Option.none(), icns: Option.none(), png: Option.none() }),
+        resolveResourcePath: () => Effect.succeed(Option.none()),
+      }),
+    ),
     Layer.provideMerge(makeElectronAppLayer(input.appCalls)),
     Layer.provideMerge(makeElectronTrayLayer(input.trayCalls)),
     Layer.provideMerge(makeElectronWindowLayer(input.window)),

@@ -86,6 +86,7 @@ const PRINT_SCREEN_KEYS = new Set(["print", "printscreen"]);
 export const OPEN_SCREEN_CLIP_MENU_ACTION = "open-screen-clip";
 /** Renderer actions the Go menu and the tray send; the app shell navigates on them. */
 export const OPEN_FLEET_MENU_ACTION = "open-fleet";
+export const OPEN_SCHEDULED_MENU_ACTION = "open-scheduled";
 export const OPEN_GENERAL_CHATS_MENU_ACTION = "open-general-chats";
 export const OPEN_USAGE_MENU_ACTION = "open-usage";
 export const TOGGLE_SIDEBAR_MENU_ACTION = "toggle-sidebar";
@@ -177,6 +178,8 @@ export interface DesktopWindowShape {
    */
   readonly requestQuitConfirmation: (
     runningThreadCount: number,
+    /** This computer's active scheduled tasks, which stop while the app is closed. */
+    activeScheduledTaskCount?: number,
   ) => Effect.Effect<boolean, DesktopWindowQuitConfirmationError>;
   /** The page has the question it was sent. */
   readonly quitConfirmationShown: (requestId: string) => Effect.Effect<void>;
@@ -672,17 +675,21 @@ const make = Effect.gen(function* () {
         return;
       }
       const closingForQuit = mainWindowCloseAllowed || Effect.runSync(Ref.get(state.quitting));
-      if (environment.platform === "darwin" && !closingForQuit) {
-        // On macOS closing the window hides it and the page keeps running, so
-        // the menu bar count, the Dock badge when work finishes, the quit
-        // question and the browser panel agents drive all stay live. The page
-        // goes away only when the app quits.
+      // Windows and Linux keep running in the tray when the user asked for it
+      // ("Keep running in the background"); macOS always does.
+      const hideToBackground =
+        environment.platform === "darwin" || Effect.runSync(Ref.get(state.runInBackground));
+      if (hideToBackground && !closingForQuit) {
+        // Closing the window hides it and the page keeps running, so the
+        // status item's count, the badge when work finishes, the quit
+        // question, scheduled tasks and the browser panel agents drive all
+        // stay live. The page goes away only when the app quits.
         event.preventDefault();
         hiddenByClose = true;
         hideMainWindow(window);
         void runPromise(muteGuestsWhileHidden);
       } else if (
-        environment.platform !== "darwin" &&
+        !hideToBackground &&
         !closingForQuit &&
         Effect.runSync(Ref.get(state.localRunningThreadCount)) > 0
       ) {
@@ -1276,6 +1283,7 @@ const make = Effect.gen(function* () {
   // caller asks natively.
   const requestQuitConfirmation = Effect.fn("desktop.window.requestQuitConfirmation")(function* (
     runningThreadCount: number,
+    activeScheduledTaskCount = 0,
   ) {
     const existingWindow = yield* electronWindow.currentMainOrFirst;
     if (Option.isNone(existingWindow) || existingWindow.value.isDestroyed()) {
@@ -1327,6 +1335,7 @@ const make = Effect.gen(function* () {
           window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, {
             requestId: delivery.requestId,
             runningThreadCount,
+            ...(activeScheduledTaskCount > 0 ? { activeScheduledTaskCount } : {}),
           });
         },
         catch: (cause) => new DesktopWindowQuitConfirmationError({ cause, windowOpen: true }),

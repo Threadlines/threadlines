@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import * as DesktopBackground from "../../app/DesktopBackground.ts";
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as DesktopScreenCapture from "../../screenCapture/DesktopScreenCapture.ts";
@@ -134,7 +135,9 @@ export const setTaskbarStatus = makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.window.setTaskbarStatus")(function* (input) {
     const statusIndicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+    const background = yield* DesktopBackground.DesktopBackground;
     yield* statusIndicator.setStatus(input);
+    yield* background.setActiveScheduledTaskCount(input.activeScheduledTaskCount ?? 0);
   }),
 });
 

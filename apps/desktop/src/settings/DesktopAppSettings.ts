@@ -1,4 +1,5 @@
 import {
+  type DesktopBackgroundOptionsPatch,
   DesktopServerExposureModeSchema,
   DesktopUpdateChannelSchema,
   type DesktopServerExposureMode,
@@ -26,6 +27,10 @@ export interface DesktopSettings {
   readonly tailscaleServePort: number;
   readonly updateChannel: DesktopUpdateChannel;
   readonly updateChannelConfiguredByUser: boolean;
+  /** Keep this computer awake while it has an active scheduled task. */
+  readonly keepAwakeForScheduledTasks: boolean;
+  /** Windows and Linux: closing the window hides it to the tray instead of quitting. */
+  readonly runInBackground: boolean;
 }
 
 export interface DesktopSettingsChange {
@@ -41,6 +46,8 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   tailscaleServePort: DEFAULT_TAILSCALE_SERVE_PORT,
   updateChannel: "latest",
   updateChannelConfiguredByUser: false,
+  keepAwakeForScheduledTasks: false,
+  runInBackground: false,
 };
 
 const DesktopSettingsDocument = Schema.Struct({
@@ -49,6 +56,8 @@ const DesktopSettingsDocument = Schema.Struct({
   tailscaleServePort: Schema.optionalKey(Schema.Number),
   updateChannel: Schema.optionalKey(DesktopUpdateChannelSchema),
   updateChannelConfiguredByUser: Schema.optionalKey(Schema.Boolean),
+  keepAwakeForScheduledTasks: Schema.optionalKey(Schema.Boolean),
+  runInBackground: Schema.optionalKey(Schema.Boolean),
 });
 
 type DesktopSettingsDocument = typeof DesktopSettingsDocument.Type;
@@ -83,6 +92,9 @@ export interface DesktopAppSettingsShape {
   }) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
   readonly setUpdateChannel: (
     channel: DesktopUpdateChannel,
+  ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
+  readonly setBackgroundOptions: (
+    patch: DesktopBackgroundOptionsPatch,
   ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
 }
 
@@ -124,6 +136,8 @@ function normalizeDesktopSettingsDocument(
       ? Option.getOrElse(parsedUpdateChannel, () => defaultSettings.updateChannel)
       : defaultSettings.updateChannel,
     updateChannelConfiguredByUser,
+    keepAwakeForScheduledTasks: parsed.keepAwakeForScheduledTasks === true,
+    runInBackground: parsed.runInBackground === true,
   };
 }
 
@@ -147,6 +161,12 @@ function toDesktopSettingsDocument(
   }
   if (settings.updateChannelConfiguredByUser !== defaults.updateChannelConfiguredByUser) {
     document.updateChannelConfiguredByUser = settings.updateChannelConfiguredByUser;
+  }
+  if (settings.keepAwakeForScheduledTasks !== defaults.keepAwakeForScheduledTasks) {
+    document.keepAwakeForScheduledTasks = settings.keepAwakeForScheduledTasks;
+  }
+  if (settings.runInBackground !== defaults.runInBackground) {
+    document.runInBackground = settings.runInBackground;
   }
 
   return document;
@@ -192,6 +212,18 @@ function setUpdateChannel(
         updateChannel: requestedChannel,
         updateChannelConfiguredByUser: true,
       };
+}
+
+function setBackgroundOptions(
+  settings: DesktopSettings,
+  patch: DesktopBackgroundOptionsPatch,
+): DesktopSettings {
+  const keepAwake = patch.keepAwakeForScheduledTasks ?? settings.keepAwakeForScheduledTasks;
+  const runInBackground = patch.runInBackground ?? settings.runInBackground;
+  return keepAwake === settings.keepAwakeForScheduledTasks &&
+    runInBackground === settings.runInBackground
+    ? settings
+    : { ...settings, keepAwakeForScheduledTasks: keepAwake, runInBackground };
 }
 
 function readSettings(
@@ -285,6 +317,10 @@ export const layer = Layer.effect(
         persist((settings) => setUpdateChannel(settings, channel)).pipe(
           Effect.withSpan("desktop.settings.setUpdateChannel", { attributes: { channel } }),
         ),
+      setBackgroundOptions: (patch) =>
+        persist((settings) => setBackgroundOptions(settings, patch)).pipe(
+          Effect.withSpan("desktop.settings.setBackgroundOptions", { attributes: patch }),
+        ),
     });
   }),
 );
@@ -313,6 +349,8 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
           update((settings) => setServerExposureMode(settings, mode)),
         setTailscaleServe: (input) => update((settings) => setTailscaleServe(settings, input)),
         setUpdateChannel: (channel) => update((settings) => setUpdateChannel(settings, channel)),
+        setBackgroundOptions: (patch) =>
+          update((settings) => setBackgroundOptions(settings, patch)),
       });
     }),
   );

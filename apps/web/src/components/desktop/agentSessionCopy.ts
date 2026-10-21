@@ -12,6 +12,17 @@ export function describeRunningAgentSessions(count: number, onThisComputer = fal
 }
 
 /**
+ * What quitting does to this computer's scheduled tasks, or null when it has
+ * none: they run only while Threadlines is running here.
+ */
+export function describeStoppedScheduledTasks(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1
+    ? "This computer's scheduled task won't run until you open Threadlines again."
+    : `This computer's ${count} scheduled tasks won't run until you open Threadlines again.`;
+}
+
+/**
  * Says that work on other computers outlives closing this app, or null when no
  * other computer has any. Machines are named when there are at most two and
  * every name is known; otherwise the sentence stays general.

@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 
 import * as DesktopIpc from "./DesktopIpc.ts";
+import { getBackgroundOptions, setBackgroundOptions } from "./methods/background.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import {
   getSavedEnvironmentRegistry,
@@ -149,6 +150,8 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(captureScreenshot);
   yield* ipc.handle(setTheme);
   yield* ipc.handle(setTaskbarStatus);
+  yield* ipc.handle(getBackgroundOptions);
+  yield* ipc.handle(setBackgroundOptions);
   yield* ipc.handle(quitConfirmationShown);
   yield* ipc.handle(resolveQuitConfirmation);
   yield* ipc.handle(showContextMenu);
