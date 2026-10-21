@@ -7,7 +7,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
  * A plain icon button for the window's frame: the rail (34px) and the title
  * row (30px). No fill until hover; pressed is a step darker than hover and
  * selected a full soft fill, so the three never look alike. A disabled button
- * stays focusable and keeps its tooltip, which says why.
+ * stays focusable and keeps its tooltip, which says why. Tooltips show with no
+ * delay.
  */
 export function ChromeIconButton({
   label,
@@ -35,6 +36,10 @@ export function ChromeIconButton({
   return (
     <Tooltip>
       <TooltipTrigger
+        // Labels come up at once: the rail is icons only, so its names are
+        // read by hovering, often across several buttons in a row.
+        delay={0}
+        closeDelay={0}
         render={
           <button
             type="button"

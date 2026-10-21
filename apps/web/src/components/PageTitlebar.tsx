@@ -59,7 +59,7 @@ export function PageTitlebar({
         <span className="text-xs font-medium tracking-wide text-muted-foreground/70">{label}</span>
       ) : null}
       {children}
-      <HeaderEdgeFade />
+      <HeaderEdgeFade at="below" />
     </div>
   );
 }
