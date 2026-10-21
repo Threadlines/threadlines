@@ -21,6 +21,7 @@ import type {
 import { scopeProjectRef } from "@threadlines/client-runtime";
 
 import { cn, newCommandId } from "../../lib/utils";
+import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebarListField";
 import { readLocalApi } from "../../localApi";
 import { readEnvironmentApi } from "../../environmentApi";
 import { useComposerDraftStore } from "../../composerDraftStore";
@@ -523,14 +524,13 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
 
   return (
     <>
-      <div className="flex items-center gap-1 px-2 py-1">
+      <div className="flex items-center gap-1 px-3 pt-2 pb-2">
         <Menu>
           <MenuTrigger
             data-testid="inbox-scope-trigger"
-            // Dressed as an input surface at rest -- hairline border, faint
-            // fill, paired chevrons -- so it reads as a picker before hover,
-            // unlike the flat icon buttons beside it.
-            className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-1.5 text-xs text-muted-foreground/80 transition-colors select-none hover:bg-sidebar-accent/60 hover:text-foreground focus-ring dark:bg-input/32"
+            // The same quiet surface as the search bar above it (paired
+            // chevrons say it is a picker), unlike the flat icon buttons beside it.
+            className={cn(SIDEBAR_LIST_FIELD_CLASS, "flex-1 text-xs")}
             // Right-clicking the trigger addresses the project you are already
             // scoped to, so the menu is not the only way in.
             onContextMenu={(event: React.MouseEvent) => {

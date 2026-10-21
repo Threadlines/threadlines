@@ -14,6 +14,7 @@ import { usePrimaryEnvironmentId } from "../environments/primary";
 import type { EnvironmentId } from "@threadlines/contracts";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
+import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebar/sidebarListField";
 import { toSortableTimestamp } from "../lib/threadSort";
 import {
   markThreadDoneByKey,
@@ -1965,13 +1966,13 @@ export default function Sidebar() {
             <ThreadHoverCardProvider>
               {/* Outside the scroll container: search and compose are chrome, and
                 chrome does not scroll away. The list clips beneath the rule. */}
-              <SidebarGroup className="shrink-0 bg-sidebar px-2 pt-2 pb-1.5">
+              <SidebarGroup className="shrink-0 bg-sidebar px-3 pt-3 pb-1">
                 <CommandDialogTrigger
                   render={
                     <button
                       type="button"
                       data-testid="command-palette-trigger"
-                      className="flex h-7 w-full min-w-0 cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-1 text-muted-foreground/70 transition-colors select-none hover:border-border hover:bg-muted/50 hover:text-foreground focus-ring"
+                      className={SIDEBAR_LIST_FIELD_CLASS}
                     />
                   }
                 >
