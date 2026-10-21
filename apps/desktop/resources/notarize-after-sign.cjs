@@ -9,6 +9,7 @@ const DEFAULT_POLL_SECONDS = 30;
 const MAX_CONSECUTIVE_POLL_ERRORS = 8;
 const DEFAULT_STAPLE_ATTEMPTS = 4;
 const STAPLE_RETRY_SECONDS = 30;
+const STAPLER_NETWORK_FAILURE = /NSURLErrorDomain/u;
 const NON_RETRYABLE_SUBMIT_PATTERNS = [
   /HTTP status code:\s*(401|403)\b/u,
   /A required agreement is missing or has expired/u,
@@ -201,8 +202,32 @@ function waitForAccepted(submissionId) {
   );
 }
 
+/**
+ * Runs `xcrun stapler <action>`, echoing its output to the build log. A failure
+ * carries that output as `error.output`, so callers can tell a dropped
+ * connection to Apple from a real answer about the app.
+ */
 function runStapler(action, appPath) {
-  execFileSync("xcrun", ["stapler", action, appPath], { stdio: "inherit" });
+  const result = spawnSync("xcrun", ["stapler", action, appPath], { encoding: "utf8" });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const error = new Error(`xcrun stapler ${action} failed with exit code ${result.status}.`);
+    error.output = `${result.stdout || ""}${result.stderr || ""}`;
+    throw error;
+  }
+}
+
+/**
+ * True when stapler failed only because the connection to Apple's ticket
+ * service broke (it prints an NSURLError such as -1005, "The network connection
+ * was lost", and exits with Error 68). Such a failure says nothing about the app.
+ */
+function isStaplerNetworkFailure(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const output = error && typeof error.output === "string" ? error.output : "";
+  return STAPLER_NETWORK_FAILURE.test(`${message}\n${output}`);
 }
 
 /**
@@ -228,6 +253,37 @@ function runStaplerWithRetries(action, appPath, options) {
   }
 }
 
+/**
+ * Confirms the stapled ticket with Apple once `staple` has succeeded. `staple`
+ * already validates what it attached, so this is a second opinion: an answer
+ * that something is wrong still fails the build, but a check that never reached
+ * Apple on any attempt only warns. Those dropped connections failed whole
+ * release runs whose apps were notarized and stapled correctly.
+ */
+function validateStapledTicket(appPath, options) {
+  const { run = runStapler } = options;
+  let answeredWithFailure = false;
+  try {
+    runStaplerWithRetries("validate", appPath, {
+      ...options,
+      run: (action, target) => {
+        try {
+          run(action, target);
+        } catch (error) {
+          if (!isStaplerNetworkFailure(error)) answeredWithFailure = true;
+          throw error;
+        }
+      },
+    });
+  } catch (error) {
+    if (answeredWithFailure) throw error;
+    console.warn(
+      `[threadlines-notary] stapler validate could not reach Apple on any of ${options.attempts} attempts. ` +
+        "The staple step already validated the ticket, so the build continues.",
+    );
+  }
+}
+
 function staple(appPath) {
   const attempts = readPositiveIntEnv(
     "THREADLINES_NOTARY_STAPLE_ATTEMPTS",
@@ -235,7 +291,7 @@ function staple(appPath) {
   );
   console.log(`[threadlines-notary] Stapling ${appPath}...`);
   runStaplerWithRetries("staple", appPath, { attempts });
-  runStaplerWithRetries("validate", appPath, { attempts });
+  validateStapledTicket(appPath, { attempts });
 }
 
 module.exports = async function notarizeAfterSign(context) {
@@ -259,3 +315,4 @@ module.exports.isNonRetryableSubmitError = isNonRetryableSubmitError;
 module.exports.formatNonRetryableSubmitFailure = formatNonRetryableSubmitFailure;
 module.exports.redactNotarySecrets = redactNotarySecrets;
 module.exports.runStaplerWithRetries = runStaplerWithRetries;
+module.exports.validateStapledTicket = validateStapledTicket;

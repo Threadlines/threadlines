@@ -15,9 +15,63 @@ const notarizeAfterSign = require("../apps/desktop/resources/notarize-after-sign
       wait: (seconds: number) => void;
     },
   ): void;
+  validateStapledTicket(
+    appPath: string,
+    options: {
+      attempts: number;
+      run: (action: string, appPath: string) => void;
+      wait: (seconds: number) => void;
+    },
+  ): void;
 };
 
 const staplerDrop = () => new Error("Command failed: xcrun stapler validate (Error 68)");
+
+// What stapler printed when Apple's ticket service dropped the connection
+// during the first 0.7.0 release run.
+const connectionLost = () =>
+  Object.assign(new Error("xcrun stapler validate failed with exit code 68."), {
+    output:
+      'error is Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."\n' +
+      "CloudKit's response is inconsistent with expections: (null)\n" +
+      "The validate action failed! Error 68.\n",
+  });
+
+const noTicket = () =>
+  Object.assign(new Error("xcrun stapler validate failed with exit code 65."), {
+    output: "Threadlines.app does not have a ticket stapled to it.\n",
+  });
+
+it("lets the build continue when validate never reaches Apple", () => {
+  let calls = 0;
+
+  notarizeAfterSign.validateStapledTicket("/tmp/Threadlines.app", {
+    attempts: 4,
+    run: () => {
+      calls += 1;
+      throw connectionLost();
+    },
+    wait: () => {},
+  });
+
+  expect(calls).toBe(4);
+});
+
+it("still fails the build when Apple answers that the ticket is wrong", () => {
+  let calls = 0;
+
+  expect(() =>
+    notarizeAfterSign.validateStapledTicket("/tmp/Threadlines.app", {
+      attempts: 4,
+      run: () => {
+        calls += 1;
+        throw calls === 1 ? connectionLost() : noTicket();
+      },
+      wait: () => {},
+    }),
+  ).toThrow(/exit code 65/u);
+  expect(calls).toBe(4);
+});
 
 it("retries a stapler action until Apple's lookup answers", () => {
   const calls: string[] = [];
