@@ -390,6 +390,7 @@ import {
   AlertDialogTitle,
 } from "./ui/alert-dialog";
 import { Checkbox } from "./ui/checkbox";
+import { HeaderEdgeFade } from "./HeaderEdgeFade";
 import {
   canRequestProviderRateLimitResetCredit,
   isProviderUsageLimitErrorMessage,
@@ -7510,7 +7511,7 @@ export default function ChatView(props: ChatViewProps) {
         ref={chatHeaderBottomVarRef}
         data-find-region="chat"
         className={cn(
-          "border-b border-border transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
+          "relative transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
           isElectron
             ? cn("drag-region flex items-center px-3 sm:px-5", ELECTRON_HEADER_HEIGHT_CLASS)
             : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
@@ -7586,6 +7587,7 @@ export default function ChatView(props: ChatViewProps) {
           }
           continueInProjectDisabledReason={continueInProjectDisabledReason}
         />
+        <HeaderEdgeFade />
       </header>
 
       {threadErrorRateLimitResetCreditDialog}

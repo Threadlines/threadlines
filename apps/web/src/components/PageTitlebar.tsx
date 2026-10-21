@@ -4,6 +4,7 @@ import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { SidebarOpenTrigger } from "./ui/sidebar";
+import { HeaderEdgeFade } from "./HeaderEdgeFade";
 
 /**
  * The strip across the top of a full-page surface (General chats, Pull
@@ -49,7 +50,7 @@ export function PageTitlebar({
   return (
     <div
       className={cn(
-        "drag-region flex shrink-0 items-center gap-2 border-b border-border px-5",
+        "drag-region relative flex shrink-0 items-center gap-2 px-5",
         ELECTRON_HEADER_HEIGHT_CLASS,
       )}
     >
@@ -58,6 +59,7 @@ export function PageTitlebar({
         <span className="text-xs font-medium tracking-wide text-muted-foreground/70">{label}</span>
       ) : null}
       {children}
+      <HeaderEdgeFade />
     </div>
   );
 }
