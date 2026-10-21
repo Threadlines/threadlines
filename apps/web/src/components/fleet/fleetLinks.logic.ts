@@ -239,7 +239,10 @@ export interface FleetDirection {
   readonly worker: FleetLinkReach;
   /** The asker's own link in use (the newest that still works), from its snapshot. */
   readonly outbound: OutboundComputerLink | null;
-  /** The worker's setting for it (the newest), from its snapshot. */
+  /**
+   * The worker's setting for that link: its other half (by the device the
+   * asker's link reports), else the newest when the asker's side is unknown.
+   */
   readonly inbound: InboundComputerLink | null;
   /**
    * Every half of this direction either computer reports: re-linking can
@@ -299,7 +302,12 @@ export function resolveFleetDirection(
     allOutbound.find((link) => link.state === "active" || link.state === "failed") ??
     allOutbound[0] ??
     null;
-  const inbound = allInbound[0] ?? null;
+  // The setting in effect is that link's own other half; another half the
+  // worker still lists (an older link not ended yet, one being made) isn't.
+  const inbound =
+    outbound?.remoteDeviceId !== undefined
+      ? (allInbound.find((link) => link.deviceId === outbound.remoteDeviceId) ?? null)
+      : (allInbound[0] ?? null);
   // Only what the worker says now: Allow and Deny go to it.
   const pending =
     inbound === null || worker.links?.live !== true || !worker.reachable

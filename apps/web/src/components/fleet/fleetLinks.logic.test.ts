@@ -90,6 +90,43 @@ function reach(
   };
 }
 
+describe("resolveFleetDirection", () => {
+  it("shows and changes the worker's setting for the link the asker uses, not another half", () => {
+    const inUse = inbound(MAC, "Mac", {
+      deviceId: "device-in-use",
+      access: "allowed",
+      createdAt: "2026-10-21T10:00:00.000Z",
+    });
+    // A newer half the worker still lists: a link being made that Mac doesn't use yet.
+    const stray = inbound(MAC, "Mac", {
+      deviceId: "device-stray",
+      access: "ask",
+      createdAt: "2026-10-21T11:00:00.000Z",
+    });
+    const direction = resolveFleetDirection(
+      reach(MAC, "Mac", {
+        links: {
+          live: true,
+          snapshot: snapshot({
+            outbound: [outbound(WINDOWS, "Windows PC", { remoteDeviceId: "device-in-use" })],
+          }),
+        },
+      }),
+      reach(WINDOWS, "Windows PC", {
+        links: { live: true, snapshot: snapshot({ inbound: [stray, inUse] }) },
+      }),
+    );
+    expect(direction.inbound?.deviceId).toBe("device-in-use");
+    expect(direction.status).toBe("linked");
+    expect(direction.settingsEditable).toBe(true);
+    // Unlink still removes every half.
+    expect(direction.allInbound.map((link) => link.deviceId)).toEqual([
+      "device-stray",
+      "device-in-use",
+    ]);
+  });
+});
+
 describe("buildFleetDirectory", () => {
   it("lists this computer first, saved computers, and linked computers this app doesn't save, once each", () => {
     const links: FleetLinksByEnvironment = {
