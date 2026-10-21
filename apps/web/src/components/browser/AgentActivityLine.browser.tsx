@@ -80,7 +80,7 @@ describe("BrowserPanel new tabs a page asked for", () => {
     try {
       await expect
         .element(page.getByTestId("browser-approval-bar"))
-        .toHaveTextContent("localhost wants to open docs.example.org in a new tab");
+        .toMatchTextContent("localhost wants to open docs.example.org in a new tab");
       await page.getByTestId("browser-approval-allow").click();
 
       const state = useBrowserPanelStore.getState();
@@ -133,7 +133,7 @@ describe("BrowserPanel untrusted local certificate", () => {
     try {
       await expect
         .element(page.getByTestId("browser-approval-bar"))
-        .toHaveTextContent("localhost uses a certificate this browser doesn't trust");
+        .toMatchTextContent("localhost uses a certificate this browser doesn't trust");
       // A certificate is trusted one at a time; there is no "every site" for it.
       expect(document.querySelector('[data-testid="browser-approval-allow-all"]')).toBeNull();
       await page.getByTestId("browser-approval-allow").click();

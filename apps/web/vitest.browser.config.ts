@@ -29,6 +29,9 @@ export default mergeConfig(
       strictPort: false,
     },
     test: {
+      api: {
+        strictPort: false,
+      },
       include: ["src/**/*.browser.tsx"],
       // Locally, cap parallel browser tabs at half the cores. Each tab is a
       // full Chromium renderer; saturating every core pages out low-memory
@@ -49,9 +52,11 @@ export default mergeConfig(
           },
         ],
         headless: true,
-        api: {
-          strictPort: false,
-        },
+        // The specs were written for Vitest 4, where text locators match part
+        // of an element's text. Vitest 5 matches the whole text by default,
+        // which would quietly weaken checks that a fragment is absent, such
+        // as `getByText("#< CLIXML")` against raw command output.
+        locators: { exact: false },
       },
       testTimeout: 30_000,
       hookTimeout: 30_000,

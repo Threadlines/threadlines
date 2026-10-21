@@ -163,11 +163,19 @@ export default defineConfig({
     tasks: {
       // Defined as a task (not a package.json script) so vp can cache it.
       // Browser specs regenerate gitignored design-preview PNGs under src/,
-      // and a task that reads-and-writes an input is never cacheable —
-      // exclude those artifacts from the input fingerprint.
+      // and Vitest writes failure screenshots under .vitest/. A task that
+      // reads-and-writes an input is never cacheable, so exclude those
+      // artifacts from the input fingerprint.
       "test:browser": {
         command: "vp exec vp test run --config vitest.browser.config.ts",
-        input: [{ auto: true }, "!src/**/preview-output/**", "!src/**/__screenshots__/**"],
+        cache: {
+          input: [
+            { auto: true },
+            "!src/**/preview-output/**",
+            "!src/**/__screenshots__/**",
+            "!.vitest/**",
+          ],
+        },
       },
     },
   },

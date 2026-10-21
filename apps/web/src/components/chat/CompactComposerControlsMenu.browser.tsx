@@ -337,10 +337,10 @@ describe("CompactComposerControlsMenu", () => {
 
     await expect
       .element(page.getByRole("menuitemradio", { name: /Ultrafast/ }))
-      .toHaveTextContent("8x speed, increased usage");
+      .toMatchTextContent("8x speed, increased usage");
     await expect
       .element(page.getByRole("menuitemradio", { name: /Fast/ }).first())
-      .toHaveTextContent("2x speed, increased usage");
+      .toMatchTextContent("2x speed, increased usage");
     expect(document.body.textContent ?? "").not.toContain("Faster, lighter reasoning.");
   });
 

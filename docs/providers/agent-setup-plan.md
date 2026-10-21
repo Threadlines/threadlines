@@ -155,7 +155,7 @@ New shared module pair under `apps/web/src/components/providers/`:
 
 - `agentStatus.ts` (logic, unit tested): derives, from a provider entry +
   snapshot + live flow state, one of `notInstalled | installing | checking |
-needsSignIn | signingIn | ready | problem | off(found|notFound|unknown)`,
+  needsSignIn | signingIn | ready | problem | off(found|notFound|unknown)`,
   the status line, and the single next action. Absorbs and replaces
   `firstRunSetup.ts`'s row derivation; language stays shared with
   `getProviderSummary` and `getModelPickerProviderAvailability`.

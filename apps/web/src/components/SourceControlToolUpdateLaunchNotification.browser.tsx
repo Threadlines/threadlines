@@ -159,13 +159,29 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
 
   it("starts outside Settings and keeps progress across pages without opening Source Control", async () => {
     let resolveUpdate!: (result: SourceControlToolUpdateResult) => void;
+    let setup = IDLE_SETUP;
     const updateSourceControlTool = vi.fn(
       () =>
         new Promise<SourceControlToolUpdateResult>((resolve) => {
+          // Report running as soon as the update is requested. The real
+          // server re-runs discovery first, and a poll in that window reads
+          // idle and slows the app to its 5 s idle cadence. This test does
+          // not cover that window.
+          setup = {
+            ...IDLE_SETUP,
+            tools: [
+              {
+                target: "github-cli",
+                operation: "update",
+                status: "running",
+                message:
+                  "Downloading and installing. Windows may ask for permission after the download finishes.",
+              },
+            ],
+          };
           resolveUpdate = resolve;
         }),
     );
-    let setup = IDLE_SETUP;
     window.nativeApi = {
       server: {
         discoverSourceControl: async () => BEHIND_LATEST,
@@ -192,18 +208,6 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
     await expect
       .element(page.getByText("GitHub update available"), { timeout: 5_000 })
       .not.toBeInTheDocument();
-    setup = {
-      ...IDLE_SETUP,
-      tools: [
-        {
-          target: "github-cli",
-          operation: "update",
-          status: "running",
-          message:
-            "Downloading and installing. Windows may ask for permission after the download finishes.",
-        },
-      ],
-    };
     await expect
       .element(
         page.getByText(

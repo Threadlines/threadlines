@@ -155,7 +155,7 @@ the plan card with "Implement". Leaving plan mode moves the session back to a no
   - Empty `model/list` while signed out is expected; signed in, it lists Meta's models with
     their reasoning tiers (`variants`, `defaultReasoningEffort`).
 - Sign in (one click): in-app device code via experimental `account/loginStart
-{type:"deviceCode"}` on a short-lived host (shows the code, opens Meta's page, waits for
+  {type:"deviceCode"}` on a short-lived host (shows the code, opens Meta's page, waits for
   `account/loginCompleted`). Fallback: `muse login` in the sign-in terminal. No sign-out:
   Muse's login is shared with the user's terminal (Will's rule for shared logins).
 - Install (one click): Meta's installer, never a bundled binary (terms §10):
@@ -165,7 +165,7 @@ the plan card with "Implement". Leaving plan mode moves the session back to a no
   binary is looked up on PATH, then `~/.local/bin` / `%LOCALAPPDATA%\Programs\muse`, so it
   works without a restart.
 - Update (one click): the launcher's own synchronous update (`MUSE_SYNC_UPDATE=1
-MUSE_UPDATE_INTERVAL_SECONDS=0 MUSE_NO_AUTO_UPDATE=0 <launcher> --version`); Homebrew
+  MUSE_UPDATE_INTERVAL_SECONDS=0 MUSE_NO_AUTO_UPDATE=0 <launcher> --version`); Homebrew
   cask installs: `brew upgrade --cask muse-code`; Windows: re-run the installer. Latest
   version: `https://api.meta.ai/muse-code/channels/<channel>`. Live hosts are recycled
   between turns after an update.
@@ -259,7 +259,7 @@ Extra gates from the review:
   symlinks resolved). Everything else asks.
 - Plan mode never auto-approves anything, including subagent approvals under Full access.
   Plan hosts add `--disable-shell` unless the host reported `sandboxAvailability:
-"available"` (absent or unknown counts as unavailable).
+  "available"` (absent or unknown counts as unavailable).
 - Gap recovery applies paged durable events through the same idempotent handler (items
   replace only at a higher `revision`; terminals deduplicate by turn id), so overlap with
   live events is harmless. A page that fails stops the turn's work (`turn/interrupt`) before

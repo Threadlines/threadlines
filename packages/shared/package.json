@@ -338,7 +338,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vp exec vp test run"
+    "test": "vp exec vp test run --config ../../vite.config.ts"
   },
   "dependencies": {
     "@threadlines/contracts": "workspace:*",

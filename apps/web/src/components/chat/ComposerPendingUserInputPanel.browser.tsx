@@ -86,7 +86,7 @@ describe("ComposerPendingUserInputPanel", () => {
       />,
     );
     await page.getByRole("button", { name: "Submit", exact: true }).click();
-    await expect.element(page.getByRole("alert")).toHaveTextContent("Count is required.");
+    await expect.element(page.getByRole("alert")).toMatchTextContent("Count is required.");
     expect(onRespond).not.toHaveBeenCalled();
     await page.getByRole("spinbutton", { name: "Count" }).fill("2");
     await page.getByRole("button", { name: "No", exact: true }).click();

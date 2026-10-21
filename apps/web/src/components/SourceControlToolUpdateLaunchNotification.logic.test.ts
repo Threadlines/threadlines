@@ -3,7 +3,7 @@ import type {
   SourceControlToolVersionAdvisory,
 } from "@threadlines/contracts";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   collectSourceControlToolUpdateNotices,

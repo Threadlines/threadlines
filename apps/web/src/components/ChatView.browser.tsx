@@ -7600,7 +7600,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await expect.element(line).toBeInTheDocument();
       await expect
         .element(page.getByTestId(`sidebar-general-chat-status-${workingChatId}`))
-        .toHaveTextContent(/^working/);
+        .toMatchTextContent(/^working/);
       expect(
         document.querySelector(`[data-testid="sidebar-general-chat-${quietChatId}"]`),
         "A quiet chat nobody has open has nothing to say, so it gets no line.",
@@ -7632,7 +7632,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
             .filter({ hasText: "Best way to store passkeys" })
             .getByTestId("chats-view-row-status"),
         )
-        .toHaveTextContent(/^working/);
+        .toMatchTextContent(/^working/);
 
       // The chat settles while the pointer is still over the sidebar (it just
       // clicked General Chats): its line holds still rather than pulling the
@@ -7661,7 +7661,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
       await expect
         .element(page.getByTestId(`sidebar-general-chat-status-${workingChatId}`))
-        .not.toHaveTextContent(/^working/);
+        .not.toMatchTextContent(/^working/);
       await expect.element(line).toBeInTheDocument();
       await page.getByTestId("chats-view-row").first().hover();
       await expect.element(line).not.toBeInTheDocument();
@@ -12655,7 +12655,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(document.body.textContent).toContain("The agent keeps working while you answer.");
           await expect
             .element(await waitForComposerEditor(), { timeout: 5_000 })
-            .toHaveTextContent("Keep checking the repository while I sign in.");
+            .toMatchTextContent("Keep checking the repository while I sign in.");
           (await waitForButtonByText("Submit answer")).click();
           await vi.waitFor(() => {
             expect(
