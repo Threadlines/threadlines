@@ -109,7 +109,6 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ThreadContextSeedBuilder } from "../../provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
-import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { RemoteRequestGate } from "../Services/RemoteRequestGate.ts";
@@ -3909,88 +3908,137 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * A queued message a linked computer's agent sent whose request ended
-   * there without it (it was taken back): it never runs, even before the
-   * clean-up that unqueues it lands. Taken out of the queue here; true when
-   * it must not be sent. One whose record can't be read waits.
+   * Computer links (docs/design/fleet.md): this is the one place a message a
+   * linked computer's agent sent (`fromThread.kind === "request"` with an
+   * `environmentId`) is sent as a turn, since requests never steer into a
+   * running turn. So the link ledger's word here is final: a message whose
+   * request ended there without it (a cancel) is taken back unsent, even if
+   * its queue command landed after the cancel (an RPC cut off mid-call lets
+   * go of the request while the engine still runs what it had queued) or
+   * the clean-up that unqueues it hasn't landed yet. A record that can't be
+   * read holds the message, and the thread tries again with backoff.
    */
-  const holdRemoteRequest = Effect.fnUntraced(function* (
-    threadId: ThreadId,
-    messageId: MessageId,
-    createdAt: string,
-  ) {
+  const remoteVerdict = Effect.fnUntraced(function* (threadId: ThreadId, messageId: MessageId) {
     if (Option.isNone(remoteRequestGate)) {
-      return false;
+      return "run" as const;
     }
     const thread = yield* resolveThread(threadId);
     const origin = thread?.queuedFollowUps?.find(
       (entry) => entry.messageId === messageId,
     )?.fromThread;
     if (origin?.kind !== "request" || origin.environmentId === undefined) {
-      return false;
+      return "run" as const;
     }
-    const verdict = yield* remoteRequestGate.value.queuedMessage({ threadId, messageId });
-    if (verdict === "run") {
-      return false;
-    }
-    if (verdict === "taken-back") {
+    return yield* remoteRequestGate.value.queuedMessage({ threadId, messageId });
+  });
+
+  /** Threads whose next message waits on an unreadable link record: tries so far. */
+  const remoteVerdictTries = new Map<ThreadId, number>();
+  const remoteVerdictRetryScheduled = new Set<ThreadId>();
+
+  /**
+   * Tries the thread's queue again later (a second, doubling, at most a
+   * minute), unless by then Stop holds it, a turn runs (its end sends the
+   * queue), or nothing is queued.
+   */
+  const retryRemoteVerdict = (threadId: ThreadId): Effect.Effect<void, never, Scope.Scope> =>
+    Effect.gen(function* () {
+      if (remoteVerdictRetryScheduled.has(threadId)) {
+        return;
+      }
+      remoteVerdictRetryScheduled.add(threadId);
+      const tries = remoteVerdictTries.get(threadId) ?? 0;
+      remoteVerdictTries.set(threadId, tries + 1);
+      yield* Effect.gen(function* () {
+        yield* Effect.sleep(Duration.millis(Math.min(60_000, 1_000 * 2 ** tries)));
+        remoteVerdictRetryScheduled.delete(threadId);
+        const thread = yield* resolveThread(threadId);
+        const next = thread ? nextQueuedFollowUp(thread) : undefined;
+        const session = thread?.session ?? null;
+        if (
+          thread === undefined ||
+          next === undefined ||
+          queueHeldByStop.has(threadId) ||
+          session?.status === "running" ||
+          session?.status === "starting" ||
+          (session?.activeTurnId ?? null) !== null
+        ) {
+          remoteVerdictTries.delete(threadId);
+          return;
+        }
+        yield* sendQueuedFollowUpWhenFree(threadId, next.messageId, yield* nowIso);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => remoteVerdictRetryScheduled.delete(threadId))),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor could not retry a held message", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+        Effect.forkScoped,
+      );
+    });
+
+  /**
+   * Starts a queued message's turn. Losing a race with Remove is fine. A
+   * linked computer's message taken back there leaves the queue unsent and
+   * the next one goes instead (see remoteVerdict).
+   */
+  const sendQueuedFollowUp = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+    createdAt: string,
+  ) {
+    let candidate: MessageId | undefined = messageId;
+    while (candidate !== undefined) {
+      const current: MessageId = candidate;
+      const verdict = yield* remoteVerdict(threadId, current);
+      if (verdict === "unknown") {
+        yield* retryRemoteVerdict(threadId);
+        return;
+      }
+      remoteVerdictTries.delete(threadId);
+      if (verdict === "run") {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.follow-up.send-queued",
+            commandId: serverCommandId("follow-up-send-queued"),
+            threadId,
+            messageId: current,
+            createdAt,
+          })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logInfo("provider command reactor could not send a queued follow-up", {
+                threadId,
+                messageId: current,
+                detail: String(error),
+              }),
+            ),
+          );
+        return;
+      }
       yield* orchestrationEngine
         .dispatch({
           type: "thread.follow-up.unqueue",
           commandId: serverCommandId("follow-up-remote-taken-back"),
           threadId,
-          messageId,
+          messageId: current,
           createdAt,
         })
         .pipe(
           Effect.catch((error) =>
             Effect.logInfo("provider command reactor could not take back a cancelled message", {
               threadId,
-              messageId,
+              messageId: current,
               detail: String(error),
             }),
           ),
         );
-    }
-    return true;
-  });
-
-  /** Starts a queued message's turn. Losing a race with Remove is fine. */
-  const sendQueuedFollowUp: (
-    threadId: ThreadId,
-    messageId: MessageId,
-    createdAt: string,
-  ) => Effect.Effect<void, ProjectionRepositoryError> = Effect.fnUntraced(function* (
-    threadId: ThreadId,
-    messageId: MessageId,
-    createdAt: string,
-  ) {
-    if (yield* holdRemoteRequest(threadId, messageId, createdAt)) {
-      // The next one goes instead, once this one is out of the queue.
       const thread = yield* resolveThread(threadId);
       const next = thread ? nextQueuedFollowUp(thread) : undefined;
-      if (next !== undefined && next.messageId !== messageId) {
-        yield* sendQueuedFollowUp(threadId, next.messageId, createdAt);
-      }
-      return;
+      candidate = next !== undefined && next.messageId !== current ? next.messageId : undefined;
     }
-    yield* orchestrationEngine
-      .dispatch({
-        type: "thread.follow-up.send-queued",
-        commandId: serverCommandId("follow-up-send-queued"),
-        threadId,
-        messageId,
-        createdAt,
-      })
-      .pipe(
-        Effect.catch((error) =>
-          Effect.logInfo("provider command reactor could not send a queued follow-up", {
-            threadId,
-            messageId,
-            detail: String(error),
-          }),
-        ),
-      );
   });
 
   /**

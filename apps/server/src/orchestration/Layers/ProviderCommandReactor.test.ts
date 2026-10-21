@@ -3709,6 +3709,70 @@ describe("ProviderCommandReactor", () => {
       expect(thread?.queuedFollowUps ?? []).toEqual([]);
     });
 
+    it("holds a linked computer's queued message while its record can't be read, then sends it", async () => {
+      const messageId = asMessageId("remote-held");
+      const verdicts: Array<"run" | "unknown"> = ["unknown"];
+      const asked: Array<MessageId> = [];
+      const harness = await createHarness({
+        remoteRequestGate: {
+          queuedMessage: (input) =>
+            Effect.sync(() => {
+              asked.push(input.messageId);
+              return verdicts.shift() ?? "run";
+            }),
+        },
+      });
+      const remoteThread = ThreadId.make("remote-thread-held");
+      const origin = {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      };
+      const dispatch = (command: OrchestrationCommand) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-remote-held-create"),
+        threadId: remoteThread,
+        projectId: asProjectId("project-1"),
+        title: "Write the changelog",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        remoteOrigin: origin,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      // Queued on an idle thread: it would go at once, but its record can't be read.
+      await dispatch({
+        type: "thread.remote-request.queue",
+        commandId: CommandId.make("cmd-remote-held-queue"),
+        threadId: remoteThread,
+        messageId,
+        text: "Add the security fixes too.",
+        fromThread: {
+          threadId: origin.threadId,
+          requestId: ChildRequestId.make("request-held"),
+          kind: "request",
+          environmentId: origin.environmentId,
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      await waitFor(() => asked.length === 1);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+
+      // Once it can be read (the next try, a second later), the message goes.
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1, 5_000);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        threadId: remoteThread,
+        messageId,
+      });
+      expect(asked).toEqual([messageId, messageId]);
+    });
+
     it("keeps queued messages waiting after the turn is interrupted", async () => {
       const harness = await createHarness();
       const queued = asMessageId("queued-after-stop");

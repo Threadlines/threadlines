@@ -94,26 +94,10 @@ export class SideAnswerStartError extends Schema.TaggedError<SideAnswerStartErro
   }
 }
 
-/**
- * The engine stopped (the server is shutting down) before this command ran,
- * and it never will: nothing it would have written was written.
- */
-export class OrchestrationEngineStoppedError extends Schema.TaggedError<OrchestrationEngineStoppedError>()(
-  "OrchestrationEngineStoppedError",
-  {
-    commandType: Schema.String,
-  },
-) {
-  override get message(): string {
-    return `The command ${this.commandType} did not run: the orchestration engine stopped.`;
-  }
-}
-
 export type OrchestrationDispatchError =
   | ProjectionRepositoryError
   | OrchestrationCommandInvariantError
   | OrchestrationCommandPreviouslyRejectedError
-  | OrchestrationEngineStoppedError
   | OrchestrationProjectorDecodeError
   | OrchestrationListenerCallbackError;
 

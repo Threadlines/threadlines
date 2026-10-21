@@ -12,7 +12,6 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
@@ -35,7 +34,6 @@ import {
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
-  OrchestrationEngineStoppedError,
   type OrchestrationProjectorDecodeError,
 } from "../Errors.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
@@ -89,12 +87,6 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
-  /**
-   * Every command accepted and not yet answered, so shutdown can answer the
-   * ones that will never run; `stopped` refuses new ones.
-   */
-  const unanswered = new Set<CommandEnvelope>();
-  let stopped = false;
 
   const projectEventsOntoReadModel = (
     baseReadModel: OrchestrationReadModel,
@@ -295,42 +287,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   yield* projectionPipeline.bootstrap;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
 
-  // A command the worker took always finishes (its caller may be waiting on
-  // it without being interruptible), even while the engine stops.
-  const worker = Effect.forever(
-    Queue.take(commandQueue).pipe(
-      Effect.flatMap((envelope) =>
-        processEnvelope(envelope).pipe(
-          Effect.ensuring(Effect.sync(() => unanswered.delete(envelope))),
-          Effect.uninterruptible,
-        ),
-      ),
-    ),
-  );
-  const workerFiber = yield* Effect.forkScoped(worker);
-  // Stopping: no new commands; the one being processed finishes; every one
-  // still waiting is answered that it did not run, once the worker is gone
-  // and nothing can run it any more.
-  yield* Effect.addFinalizer(() =>
-    Effect.gen(function* () {
-      yield* Effect.sync(() => {
-        stopped = true;
-      });
-      yield* Queue.shutdown(commandQueue);
-      yield* Fiber.interrupt(workerFiber);
-      const leftovers = yield* Effect.sync(() => {
-        const pending = [...unanswered];
-        unanswered.clear();
-        return pending;
-      });
-      for (const envelope of leftovers) {
-        yield* Deferred.fail(
-          envelope.result,
-          new OrchestrationEngineStoppedError({ commandType: envelope.command.type }),
-        );
-      }
-    }),
-  );
+  const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));
+  yield* Effect.forkScoped(worker);
   yield* Effect.logDebug("orchestration engine started").pipe(
     Effect.annotateLogs({ sequence: commandReadModel.snapshotSequence }),
   );
@@ -344,22 +302,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
       const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
-      const envelope: CommandEnvelope = {
+      yield* Queue.offer(commandQueue, {
         command,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
-      };
-      // Recorded (or refused) in one step with the stop flag, so shutdown
-      // answers every command it let in.
-      const accepted = yield* Effect.sync(() => {
-        if (stopped) return false;
-        unanswered.add(envelope);
-        return true;
       });
-      if (!accepted || !(yield* Queue.offer(commandQueue, envelope))) {
-        yield* Effect.sync(() => unanswered.delete(envelope));
-        return yield* new OrchestrationEngineStoppedError({ commandType: command.type });
-      }
       return yield* Deferred.await(result);
     });
 

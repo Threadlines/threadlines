@@ -122,6 +122,8 @@ const QUIET_GRACE = Duration.seconds(15);
 const STOP_GRACE = Duration.seconds(5);
 const GIT_TIMEOUT_MS = 60_000;
 const DELIVERED_RETENTION_MS = 7 * 24 * 60 * 60_000;
+/** How many of a thread's events restart recovery reads at a time. */
+const TURN_EVENTS_PAGE = 500;
 
 export interface LinkRequestsShape {
   readonly start: (link: PeerLink, input: PeerStartInput) => Effect.Effect<PeerStartResult>;
@@ -210,6 +212,21 @@ const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver;
   const environment = yield* ServerEnvironment;
   const ownLabel = (yield* environment.getDescriptor).label;
+  /**
+   * The last event before this process could start any work, read while the
+   * server is still being built (before any reactor runs): a turn asked for
+   * after it is this process's own, live work. Unreadable: none counts as
+   * live, as before this existed.
+   */
+  const startupSequence = yield* snapshots.getSnapshotSequence().pipe(
+    Effect.map((read) => read.snapshotSequence),
+    Effect.retry(Schedule.recurs(3)),
+    Effect.catch((error) =>
+      Effect.logWarning("link requests could not read where this process started", {
+        detail: String(error),
+      }).pipe(Effect.as(Number.MAX_SAFE_INTEGER)),
+    ),
+  );
 
   const watchHub = yield* PubSub.unbounded<{
     readonly deviceId: string;
@@ -322,24 +339,19 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the request.`)));
 
   /**
-   * The engine runs a command once it is queued, even if whoever queued it
-   * goes away; so the wait can't be interrupted, and work holding a
-   * request's lock keeps it until its command has really landed. (A
-   * stopping engine answers every command it won't run, so the wait ends.)
-   * `stopped`: it never ran, because the server is stopping; the work is
-   * left for the next start, not ended.
+   * Dispatches a command; `failed` when the engine refused it or couldn't
+   * write it. A call cut off while its command waits in the engine's queue
+   * lets go of its request before the command lands; for a send that is
+   * harmless: the provider reactor asks this ledger before it sends a
+   * linked computer's message (RemoteRequestGate), and takes back one whose
+   * request was cancelled meanwhile.
    */
   const dispatch = (command: OrchestrationCommand, what: string) =>
     engine.dispatch(command).pipe(
-      Effect.uninterruptible,
       Effect.as("ok" as const),
       Effect.catch((error) =>
         Effect.logInfo(`link requests could not ${what}`, { detail: String(error) }).pipe(
-          Effect.as(
-            (error as { readonly _tag?: string })._tag === "OrchestrationEngineStoppedError"
-              ? ("stopped" as const)
-              : ("failed" as const),
-          ),
+          Effect.as("failed" as const),
         ),
       ),
     );
@@ -409,8 +421,11 @@ const make = Effect.gen(function* () {
       }
     });
 
-  /** Moves an open request on and tells its computer. */
-  const progress = (
+  /**
+   * Moves an open request on and tells its computer: false when it had
+   * already ended or moved on (`from`); fails when the write failed.
+   */
+  const progressOrFail = (
     row: LinkRequestRow,
     patch: {
       readonly status: PeerRequestStatus;
@@ -428,13 +443,20 @@ const make = Effect.gen(function* () {
           ...patch,
           now: yield* nowIso,
         })
-        .pipe(Effect.orElseSucceed(() => false));
+        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't record the request.`)));
       if (moved) yield* publishRow(row.linkDeviceId, row.requestId);
       return moved;
     });
 
-  /** Ends a request with its report, in one write, and tells its computer. */
-  const settle = (
+  /** progressOrFail, where a failed write is left for a later event or restart. */
+  const progress = (row: LinkRequestRow, patch: Parameters<typeof progressOrFail>[1]) =>
+    progressOrFail(row, patch).pipe(Effect.orElseSucceed(() => false));
+
+  /**
+   * Ends a request with its report, in one write, and tells its computer:
+   * false when it had already ended; fails when the write failed.
+   */
+  const settleOrFail = (
     row: Pick<LinkRequestRow, "linkDeviceId" | "requestId">,
     outcome: PeerRequestOutcome,
     text: string,
@@ -451,10 +473,18 @@ const make = Effect.gen(function* () {
           error: options.error,
           now: yield* nowIso,
         })
-        .pipe(Effect.orElseSucceed(() => false));
+        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't record the request's end.`)));
       if (settled) yield* publishRow(row.linkDeviceId, row.requestId);
       return settled;
     });
+
+  /** settleOrFail, where a failed write is left for a later event or restart. */
+  const settle = (
+    row: Pick<LinkRequestRow, "linkDeviceId" | "requestId">,
+    outcome: PeerRequestOutcome,
+    text: string,
+    options: { readonly turnId?: TurnId | null; readonly error?: string } = {},
+  ) => settleOrFail(row, outcome, text, options).pipe(Effect.orElseSucceed(() => false));
 
   const settleDelivery = (row: LinkRequestRow, delivery: ChildDelivery) =>
     delivery.type === "thread.child-request.update"
@@ -693,14 +723,6 @@ const make = Effect.gen(function* () {
               .pipe(Effect.orElseSucceed(Option.none));
             // A cancel, or the link changing, already ended it.
             if (Option.isSome(current) && isTerminalLinkRequest(current.value)) return;
-            // The server is stopping: the next start resumes it.
-            if (
-              Option.isSome(failure) &&
-              (failure.value.cause as { readonly _tag?: string } | undefined)?._tag ===
-                "OrchestrationEngineStoppedError"
-            ) {
-              return;
-            }
             return yield* fail(Option.isSome(failure) ? failure.value.detail : "its setup failed.");
           }
           if (!input.reportBack) {
@@ -827,7 +849,7 @@ const make = Effect.gen(function* () {
       const origin = thread?.remoteOrigin ?? null;
       if (thread === undefined || origin === null || row.messageId === null) {
         const reason = `That thread is gone from ${ownLabel}.`;
-        yield* settle(row, "failed", reason, { error: reason });
+        yield* settleOrFail(row, "failed", reason, { error: reason });
         return { status: "refused", reason } as const;
       }
       const sent = yield* dispatch(
@@ -847,17 +869,13 @@ const make = Effect.gen(function* () {
         },
         "queue a linked computer's message",
       );
-      if (sent === "stopped") {
-        // Still recorded: the next start delivers it.
-        return yield* peerError(`${ownLabel} is shutting down.`);
-      }
       if (sent === "failed") {
         const reason = "The thread couldn't take the message.";
-        yield* settle(row, "failed", reason, { error: reason });
+        yield* settleOrFail(row, "failed", reason, { error: reason });
         return { status: "refused", reason } as const;
       }
       // Its turn may have started already (then it is running): never back.
-      yield* progress(row, { status: "queued", from: ["received"] });
+      yield* progressOrFail(row, { status: "queued", from: ["received"] });
       return { status: "queued" } as const;
     });
 
@@ -870,7 +888,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const authority = yield* linkAuthority(row.linkDeviceId);
       if (!authority.ok) {
-        yield* settle(row, authority.outcome, authority.text);
+        yield* settleOrFail(row, authority.outcome, authority.text);
         return authority.outcome === "cancelled"
           ? ({ status: "cancelled" } as const)
           : ({ status: "refused", reason: authority.text } as const);
@@ -1406,14 +1424,47 @@ const make = Effect.gen(function* () {
     );
 
   /**
+   * The turns asked for in a thread, read from its events (a pending start
+   * included): their messages, and whether any was asked for after
+   * `startupSequence`, which makes it this process's own, live work.
+   */
+  const turnStartsOf = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const messageIds = new Set<string>();
+      let sinceStartup = false;
+      let after = 0;
+      while (true) {
+        const batch = yield* engine
+          .readThreadEvents({
+            threadId,
+            fromSequenceExclusive: after,
+            toSequenceInclusive: Number.MAX_SAFE_INTEGER,
+            limit: TURN_EVENTS_PAGE,
+          })
+          .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the thread's turns.`)));
+        for (const event of batch) {
+          if (event.type !== "thread.turn-start-requested") continue;
+          messageIds.add(event.payload.messageId);
+          if (event.sequence > startupSequence) sinceStartup = true;
+        }
+        const last = batch.at(-1);
+        if (batch.length < TURN_EVENTS_PAGE || last === undefined) {
+          return { messageIds, sinceStartup };
+        }
+        after = last.sequence;
+      }
+    });
+
+  /**
    * One request the previous process left open, read afresh (a retry may
    * come much later). A request this process recorded, or a thread with a
-   * turn requested after `boundary` (when this process started, on the
-   * clock that stamps turns), is live work, which the live path answers; it
-   * is never taken for work the restart cut off. Fails when a read fails,
-   * so the caller tries again.
+   * turn asked for since startup (by event sequence, not by clock: a send
+   * delivered again keeps its first timestamp), is live work, which the
+   * live path answers; it is never taken for work the restart cut off.
+   * Fails when a read or a write fails, so the caller tries again; a
+   * request that had already ended is simply done.
    */
-  const reconcileAfterRestart = (found: LinkRequestRow, boundary: string) =>
+  const reconcileAfterRestart = (found: LinkRequestRow) =>
     Effect.gen(function* () {
       const latest = yield* readRequest(found.linkDeviceId, found.requestId);
       if (Option.isNone(latest) || isTerminalLinkRequest(latest.value)) return;
@@ -1435,7 +1486,7 @@ const make = Effect.gen(function* () {
           return;
         }
         // Its first turn was committed before the restart: past setup.
-        yield* progress(before, { status: "running", from: ["received"] });
+        yield* progressOrFail(before, { status: "running", from: ["received"] });
       }
       if (before.status === "received" && before.kind === "send") {
         yield* withRequestLock(before.linkDeviceId, before.requestId)(resumeSend(before));
@@ -1445,7 +1496,7 @@ const make = Effect.gen(function* () {
       const row = reread.value;
       const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
       if (thread === undefined) {
-        yield* settle(row, "failed", `That thread is gone from ${ownLabel}.`, {
+        yield* settleOrFail(row, "failed", `That thread is gone from ${ownLabel}.`, {
           error: "The thread is gone.",
         });
         return;
@@ -1457,31 +1508,32 @@ const make = Effect.gen(function* () {
       ) {
         return;
       }
-      const request = deliveryRequest(row);
-      const childTurns = yield* turns
-        .listByThreadId({ threadId: thread.id })
-        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the thread's turns.`)));
+      const starts = yield* turnStartsOf(thread.id);
       // The thread has worked since this process started: that is live work.
-      if (childTurns.some((turn) => turn.requestedAt > boundary)) return;
+      if (starts.sinceStartup) return;
       if (
         row.status === "queued" &&
         row.turnId === null &&
-        !childTurns.some((turn) => turn.pendingMessageId === row.messageId)
+        (row.messageId === null || !starts.messageIds.has(row.messageId))
       ) {
         // Delivered, then neither waiting nor started: it was taken back.
-        yield* settle(
+        yield* settleOrFail(
           row,
           "cancelled",
           `Your message to '${thread.title}' never ran on ${ownLabel}.`,
         );
         return;
       }
+      const request = deliveryRequest(row);
+      const childTurns = yield* turns
+        .listByThreadId({ threadId: thread.id })
+        .pipe(Effect.mapError(() => peerError(`${ownLabel} couldn't read the thread's turns.`)));
       const finishedTurnId = finishedTurnAfterRestart(childTurns, {
         ...request,
         status: row.status === "awaiting_background" ? "awaiting_background" : "running",
       });
       const delivery = childDeliveryAfterRestart(thread, request, finishedTurnId);
-      yield* settle(
+      yield* settleOrFail(
         row,
         toOutcome(delivery.type === "thread.child-request.settle" ? delivery.outcome : "failed"),
         delivery.type === "thread.child-request.settle"
@@ -1505,9 +1557,9 @@ const make = Effect.gen(function* () {
    * already committed is past it); a send recorded but never delivered is
    * delivered; an answer that durably finished is delivered; a turn the
    * restart cut off is reported as interrupted. Requests it couldn't settle
-   * stay for the next pass; true once none is left.
+   * (a read or a write failed) stay for the next pass; true once none is left.
    */
-  const makeRecovery = (boundary: string) => {
+  const makeRecovery = () => {
     let left: ReadonlyArray<LinkRequestRow> | null = null;
     return Effect.gen(function* () {
       if (left === null) {
@@ -1520,7 +1572,7 @@ const make = Effect.gen(function* () {
       }
       const unfinished: Array<LinkRequestRow> = [];
       for (const row of left) {
-        yield* reconcileAfterRestart(row, boundary).pipe(
+        yield* reconcileAfterRestart(row).pipe(
           Effect.catch((error) =>
             Effect.logWarning("link requests could not settle a request after a restart", {
               requestId: row.requestId,
@@ -1616,13 +1668,11 @@ const make = Effect.gen(function* () {
 
   const startReactor: LinkRequestsShape["startReactor"] = () =>
     Effect.gen(function* () {
-      // Work after this instant is this process's own, never the previous one's.
-      const boundary = yield* nowIso;
       const events = yield* engine.subscribeDomainEvents;
       // A cancel's message is taken back first; one that fails is tried
       // again until it lands, and the queued-send gate holds it meanwhile.
       yield* untilDone(finishCleanups);
-      yield* untilDone(makeRecovery(boundary));
+      yield* untilDone(makeRecovery());
       yield* Effect.forkScoped(Stream.runForEach(events, onEvent));
       yield* expireWaiting.pipe(
         Effect.catchCause((cause) =>
