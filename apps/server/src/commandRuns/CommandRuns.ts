@@ -401,8 +401,8 @@ const make = Effect.gen(function* () {
         if (message === undefined || message.role !== "assistant" || message.turnId == null) {
           return yield* failWith("That reply is no longer part of this thread.");
         }
-        const shown = shellCommandsInMarkdown(message.text).some(
-          (block) => block.text === input.command && block.dialect === input.dialect,
+        const shown = shellCommandsInMarkdown(message.text, input.dialect).some(
+          (block) => block.text === input.command,
         );
         if (!shown) return yield* failWith("The command doesn't match the reply.");
         origin = { turnId: message.turnId, participantId: message.participantId ?? null };

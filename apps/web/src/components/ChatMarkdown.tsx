@@ -192,7 +192,7 @@ function estimateHighlightedSize(html: string, code: string): number {
 /**
  * A fenced code block: copy button, and in a settled agent reply a shell
  * command also gets a Run (or Put in terminal) button and, under it, how its
- * latest run went (CommandRuns.tsx).
+ * latest run went (CommandRuns.tsx). The buttons sit on the code's first line.
  */
 function MarkdownCodeBlock({
   code,
@@ -206,13 +206,15 @@ function MarkdownCodeBlock({
   return (
     <div className="chat-markdown-codeblock-group">
       <div className="chat-markdown-codeblock leading-snug">
-        <CodeBlockRunButton code={code} language={language} />
-        <MessageCopyButton
-          text={code}
-          ariaLabel="Copy code block"
-          size="icon-xs"
-          className="chat-markdown-copy-button"
-        />
+        <div className="chat-markdown-codeblock-actions" data-chat-find-ignore="">
+          <CodeBlockRunButton code={code} language={language} />
+          <MessageCopyButton
+            text={code}
+            ariaLabel="Copy code block"
+            size="icon-xs"
+            className="chat-markdown-copy-button"
+          />
+        </div>
         {children}
       </div>
       <CodeBlockRunNotes code={code} language={language} />

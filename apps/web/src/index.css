@@ -1029,11 +1029,22 @@ label:has(> select#reasoning-effort) select {
   padding-right: calc(0.9rem + var(--chat-markdown-codeblock-copy-button-space));
 }
 
-.chat-markdown .chat-markdown-copy-button {
+/* The copy and Run buttons sit centered on the code's first line, so a
+   one-line block has them in its middle. The row starts where the pre's text
+   does (its 1px border plus 0.8rem padding) and is one line tall. The pre
+   inherits this font size and line height, so 1lh matches its lines. */
+.chat-markdown .chat-markdown-codeblock-actions {
   position: absolute;
-  top: 0.5rem;
+  top: calc(1px + 0.8rem);
   right: 0.5rem;
   z-index: 1;
+  display: flex;
+  height: 1lh;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.chat-markdown .chat-markdown-copy-button {
   /* A plain row action, with a faint backing so it stays legible over code. */
   background: color-mix(in srgb, var(--background) 75%, transparent);
   color: var(--muted-foreground);
@@ -1042,10 +1053,6 @@ label:has(> select#reasoning-effort) select {
 /* Run in terminal (CommandRuns.tsx): beside the copy button, shown while the
    block is hovered or focused, and always on touch screens. */
 .chat-markdown .chat-markdown-run-button {
-  position: absolute;
-  top: 0.5rem;
-  right: calc(0.5rem + 1.75rem);
-  z-index: 1;
   background: color-mix(in srgb, var(--background) 75%, transparent);
   color: var(--muted-foreground);
   opacity: 0;

@@ -118,36 +118,104 @@ describe("assessShellCommand", () => {
 });
 
 describe("prepareShellCommand", () => {
-  it("only accepts shell fences", () => {
+  it("takes a block fenced as the terminal's shell as written", () => {
     expect(shellDialectOfFence("bash")).toBe("posix");
     expect(shellDialectOfFence("PowerShell")).toBe("powershell");
-    expect(prepareShellCommand("pnpm install", "ts")).toBeNull();
-    expect(prepareShellCommand("pnpm install", undefined)).toBeNull();
+    expect(prepareShellCommand("export FOO=1 && pnpm dev", "bash", "posix")?.text).toBe(
+      "export FOO=1 && pnpm dev",
+    );
+    expect(
+      prepareShellCommand("Get-ChildItem | Select -First 3", "pwsh", "powershell"),
+    ).not.toBeNull();
+    expect(prepareShellCommand("pnpm install", "ts", "posix")).toBeNull();
+  });
+
+  it("finds a command in a block that names no shell, for either terminal", () => {
+    for (const terminal of ["posix", "powershell"] as const) {
+      expect(prepareShellCommand("pnpm install\n", undefined, terminal)).toMatchObject({
+        text: "pnpm install",
+        action: "run",
+      });
+      // Pushing still waits for Enter, wherever the command came from.
+      expect(
+        prepareShellCommand("git push -u origin feat/walkin-board-field", undefined, terminal),
+      ).toMatchObject({ text: "git push -u origin feat/walkin-board-field", action: "insert" });
+    }
+    expect(prepareShellCommand("$ pnpm install", "text", "posix")?.text).toBe("pnpm install");
+    expect(
+      prepareShellCommand('git commit -m "Tidy the header"', undefined, "powershell")?.text,
+    ).toBe('git commit -m "Tidy the header"');
+    // Titles, prose and paths in bare blocks are not commands.
+    expect(
+      prepareShellCommand("Walk-in repair form: one Board field per card", undefined, "posix"),
+    ).toBeNull();
+    expect(prepareShellCommand("The iPad form now matches.", undefined, "posix")).toBeNull();
+    expect(prepareShellCommand("apps/web/src/index.css", undefined, "posix")).toBeNull();
+  });
+
+  it("runs a block written for the other shell only when both read it the same", () => {
+    expect(prepareShellCommand("git status", "bash", "powershell")?.text).toBe("git status");
+    expect(prepareShellCommand("pnpm install\npnpm test", "sh", "powershell")?.text).toBe(
+      "pnpm install\npnpm test",
+    );
+    for (const command of [
+      'git commit -m "Fix the header, and the footer"',
+      "pnpm --filter=web build",
+    ]) {
+      expect(prepareShellCommand(command, "bash", "powershell")?.text, command).toBe(command);
+    }
+    for (const command of [
+      "ls -la", // PowerShell's ls is Get-ChildItem
+      "export FOO=1 && pnpm dev",
+      "pnpm install | tee install.log",
+      'git commit -m "Ship $VERSION"',
+      "git add *.ts",
+      "npm run test -- --watch",
+      "mvn package -Dmaven.test.skip=true",
+      "npx @angular/cli new app",
+      "pnpm build \\\n  --filter web",
+      'git commit -m "Ship it" -m ""',
+      // A `.cmd` launcher hands these to cmd.exe, which would act on them.
+      "code 'notes&whoami'",
+      'git commit -m "50% done"',
+      "npm install foo%USERNAME%",
+      // A launcher reading its arguments one by one splits these at = and ,.
+      "mvn -f 'pom=ci.xml' validate",
+      "mvn -f pom=ci.xml validate",
+      "code 'a,b'",
+      // PowerShell reads `--%` even quoted.
+      "git log '--%' HEAD",
+    ]) {
+      expect(prepareShellCommand(command, "bash", "powershell"), command).toBeNull();
+      expect(prepareShellCommand(command, undefined, "posix"), command).toBeNull();
+    }
+    expect(prepareShellCommand("Get-ChildItem", "powershell", "posix")).toBeNull();
   });
 
   it("drops prompts, comment lines and blank lines the shell would skip", () => {
-    expect(prepareShellCommand("# install deps\n\npnpm install\n", "bash")).toMatchObject({
+    expect(prepareShellCommand("# install deps\n\npnpm install\n", "bash", "posix")).toMatchObject({
       text: "pnpm install",
       action: "run",
     });
-    expect(prepareShellCommand("$ pnpm install\n$ pnpm test", "console")?.text).toBe(
+    expect(prepareShellCommand("$ pnpm install\n$ pnpm test", "console", "posix")?.text).toBe(
       "pnpm install\npnpm test",
     );
-    expect(prepareShellCommand("$HOME/bin/tool --version", "bash")?.text).toBe(
+    expect(prepareShellCommand("$HOME/bin/tool --version", "bash", "posix")?.text).toBe(
       "$HOME/bin/tool --version",
     );
   });
 
   it("keeps lines that are data, not comments", () => {
     const quoted = 'git commit -m "first line\n# not a comment\n"';
-    expect(prepareShellCommand(quoted, "bash")?.text).toBe(quoted);
+    expect(prepareShellCommand(quoted, "bash", "posix")?.text).toBe(quoted);
     const heredoc = "cat <<EOF > notes.md\n# Heading\n\nbody\nEOF";
-    expect(prepareShellCommand(heredoc, "bash")?.text).toBe(heredoc);
+    expect(prepareShellCommand(heredoc, "bash", "posix")?.text).toBe(heredoc);
   });
 
   it("skips sessions that mix commands with their output", () => {
-    expect(prepareShellCommand("$ pnpm test\n 12 passed", "console")).toBeNull();
-    expect(prepareShellCommand("12 passed", "console")).toBeNull();
+    expect(prepareShellCommand("$ pnpm test\n 12 passed", "console", "posix")).toBeNull();
+    expect(prepareShellCommand("12 passed", "console", "posix")).toBeNull();
+    expect(prepareShellCommand("$ git status\nOn branch main", undefined, "posix")).toBeNull();
   });
 });
 
@@ -173,11 +241,20 @@ describe("shellCommandsInMarkdown", () => {
       "```ts",
       "const x = 1;",
       "```",
+      "",
+      "```",
+      "git push -u origin main",
+      "```",
+      "",
+      "```",
+      "Release notes for 1.2",
+      "```",
     ].join("\n");
-    expect(shellCommandsInMarkdown(reply).map((block) => block.text)).toEqual([
+    expect(shellCommandsInMarkdown(reply, "posix").map((block) => block.text)).toEqual([
       "pnpm install",
       "git status",
       "pnpm test",
+      "git push -u origin main",
     ]);
   });
 });
