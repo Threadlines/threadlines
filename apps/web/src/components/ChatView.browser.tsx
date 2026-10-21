@@ -3660,6 +3660,46 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("pauses the fleet's traveling dots while the window is in the background", async () => {
+    const workingThreadId = "thread-fleet-paused" as ThreadId;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-fleet-paused" as MessageId,
+          targetText: "fleet paused",
+        }),
+        workingThreadId,
+      ),
+      initialPath: "/fleet",
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus");
+
+    try {
+      await waitForServerConfigToApply();
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingThreadId, "working", {
+        title: "Double charges at checkout",
+      });
+      const dot = () =>
+        document.querySelector<HTMLElement>('[data-testid="fleet-traveling-dots"] .fleet-dot');
+      hasFocus.mockReturnValue(true);
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => {
+        expect(getComputedStyle(dot()!).animationPlayState).toBe("running");
+      });
+
+      // A window in the background draws no frames for the dots.
+      hasFocus.mockReturnValue(false);
+      window.dispatchEvent(new Event("blur"));
+      await vi.waitFor(() => {
+        expect(getComputedStyle(dot()!).animationPlayState).toBe("paused");
+      });
+    } finally {
+      hasFocus.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
   it("draws the fleet from saved computers and their threads, and narrows the list to one", async () => {
     const workingThreadId = "thread-fleet-working" as ThreadId;
     const remoteThreadId = "thread-fleet-remote" as ThreadId;
