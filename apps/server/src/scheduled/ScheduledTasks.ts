@@ -29,6 +29,7 @@ import {
   type ChildThreadWorkspace,
   type OrchestrationEvent,
   type OrchestrationSession,
+  type OrchestrationThread,
   type ProjectId,
   type RuntimeMode,
   type ScheduledRun,
@@ -42,6 +43,7 @@ import {
   type ScheduledTaskRequest,
   type ScheduledTaskRespondRequestInput,
   type ScheduledTaskRunNowInput,
+  type ScheduledTaskTarget,
   type ScheduledTasksSnapshot,
   type ScheduledTaskUpdateInput,
   type ThreadId,
@@ -50,6 +52,7 @@ import {
 } from "@threadlines/contracts";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { agentThreadsMode } from "@threadlines/shared/serverSettings";
+import { activeParticipants } from "@threadlines/shared/threadParticipants";
 import {
   cadenceSaveRefusal,
   compileCadence,
@@ -128,6 +131,15 @@ const NATIVE_TOOL_DRIVERS: ReadonlySet<string> = new Set([
 ]);
 
 export const SKIP_REASON_MISSED = "The computer was off or asleep.";
+
+/** Why a run for a room agent that left the thread never ran. */
+const AGENT_LEFT = "Its agent left the thread.";
+
+/** Whether a run's target names a room agent that is no longer in the thread. */
+const agentLeft = (thread: OrchestrationThread, target: ScheduledTaskTarget) =>
+  target.kind === "thread" &&
+  target.participantId !== undefined &&
+  !activeParticipants(thread).some((entry) => entry.id === target.participantId);
 
 /**
  * A session's error as one plain sentence for the run's history: its first
@@ -1227,6 +1239,8 @@ const make = Effect.gen(function* () {
         thread.messages.some((message) => message.id === messageId) ||
         (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
       if (!alreadySent) {
+        // In a room, the agent that set the task up, never handed to another.
+        if (agentLeft(thread, launch.target)) return yield* failLaunch(row, AGENT_LEFT);
         const sent = yield* engine
           .dispatch({
             type: "thread.follow-up.submit",
@@ -1245,10 +1259,10 @@ const make = Effect.gen(function* () {
             modelSelection: launch.modelSelection,
             runtimeMode: saferRuntimeMode(launch.runtimeMode, thread.runtimeMode),
             scheduledTaskId: row.taskId,
-            // In a room, for the agent that set the task up.
-            ...(launch.target.kind === "thread" && launch.target.participantId !== undefined
-              ? { participantId: launch.target.participantId }
-              : {}),
+            // In a room, for the agent that set the task up; otherwise the
+            // thread's own agent, named outright (null), so the message never
+            // goes to whichever agent holds the session when it fires.
+            participantId: launch.target.participantId ?? null,
             createdAt: yield* nowIso,
           })
           .pipe(Effect.result);
@@ -1539,11 +1553,16 @@ const make = Effect.gen(function* () {
       const sent = thread.messages.some((message) => message.id === messageId);
       if (!sent) {
         if (run.status === "queued") {
-          // Delivered, then neither waiting nor sent: the user took it back.
+          // Delivered, then neither waiting nor sent: its agent left the
+          // room (which takes back what waited for it), or the user took it
+          // back.
           return yield* endRun(run, {
             turnId: null,
             outcome: "failed",
-            reason: "Its message was taken back before it ran.",
+            reason:
+              run.launch !== null && agentLeft(thread, run.launch.target)
+                ? AGENT_LEFT
+                : "Its message was taken back before it ran.",
           });
         }
         return;
