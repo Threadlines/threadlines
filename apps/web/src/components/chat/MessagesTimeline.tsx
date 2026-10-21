@@ -30,7 +30,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
-  type SyntheticEvent as ReactSyntheticEvent,
   type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -94,7 +93,6 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   Clock3Icon,
-  CopyIcon,
   FileTextIcon,
   GitForkIcon,
   KeyRoundIcon,
@@ -110,7 +108,6 @@ import {
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Textarea } from "../ui/textarea";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
@@ -157,12 +154,10 @@ import {
   PickedElementContextGroupChip,
 } from "./ComposerPendingPickedElementContexts";
 import {
-  handleTranscriptHighlightNoteFormSubmit,
-  handleTranscriptHighlightNoteKeyDown,
   TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME,
   TranscriptHighlightContextCard,
 } from "./TranscriptHighlightContextCard";
-import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
+import { TooltipWrapper } from "../ui/tooltip";
 import { describeCheckBack, formatCheckBackTime, nextCheckBack } from "./checkBacks";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
@@ -204,7 +199,6 @@ import {
 } from "./WorkingAnchorDots";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { formatProviderDriverKindLabel } from "../../providerModels";
-import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useLocalImagePreview } from "~/hooks/useLocalImagePreview";
 import type {
   ParsedTranscriptHighlightContextEntry,
@@ -227,6 +221,7 @@ import {
 import { RoomReviewTag } from "./RoomReviewTag";
 import { foldedAnsweringSideTurnIds, type SideAnswerView } from "./sideAnswers";
 import { ChatFind } from "./chatFind/ChatFind";
+import { TranscriptSelectionLayer } from "./TranscriptSelectionPopover";
 import type { ChatFindRowContext } from "./chatFind/chatFindRows";
 import { useChatFindStore } from "../../chatFindStore";
 import { detailEntranceRef, rowEntranceRef } from "./timelineEntrance";
@@ -377,45 +372,6 @@ const THREAD_SEARCH_TARGET_VIEWPORT_POSITION = 0.28;
 const USER_SCROLL_STICK_LOCK_MS = 450;
 const TIMELINE_MAINTAIN_END_THRESHOLD_RATIO = 0.01;
 const SCROLLBAR_POINTER_GUTTER_PX = 18;
-const TRANSCRIPT_SELECTION_TEXT_MAX_CHARS = 8_000;
-const TRANSCRIPT_SELECTION_COPY_FEEDBACK_MS = 800;
-const TRANSCRIPT_NOTE_HIGHLIGHT_MAX_RECTS = 256;
-const TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX = 320;
-const TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX = 12;
-const TRANSCRIPT_SELECTION_POPOVER_GAP_PX = 8;
-// Room the note form needs when the popover opens below the selection; with
-// less than this left under the selection, the popover flips above it.
-const TRANSCRIPT_SELECTION_POPOVER_MIN_SPACE_BELOW_PX = 224;
-
-// `top` places the popover below the selection; `bottom` places it above,
-// growing upward so the note form never covers the highlighted text.
-type TranscriptSelectionPopoverAnchor = { top: number } | { bottom: number };
-
-// Timeline-container-relative rect painted over one selected line fragment
-// while the note editor holds focus (native selection stops painting then).
-type TranscriptNoteHighlightRect = {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-};
-
-type TranscriptSelectionPopoverState = {
-  sourceMessageId: MessageId;
-  sourceRole: TranscriptHighlightSourceRole;
-  selectedText: string;
-  left: number;
-  anchor: TranscriptSelectionPopoverAnchor;
-  mode: "actions" | "note";
-  note: string;
-};
-
-export function getTranscriptSelectionAfterTimelineScroll(
-  current: TranscriptSelectionPopoverState | null,
-): TranscriptSelectionPopoverState | null {
-  return current?.mode === "note" ? current : null;
-}
-
 const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 4;
 // After a finger lifts, the browser can keep the list moving: momentum, or the
 // bounce at either end. The gesture owns the scroll until that motion has been
@@ -1157,12 +1113,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // The timeline's width, for guessing how tall an undrawn row is. Read on
   // first use, then kept current by the resize observer.
   const timelineWidthRef = useRef(0);
-  const [transcriptSelection, setTranscriptSelection] =
-    useState<TranscriptSelectionPopoverState | null>(null);
-  const transcriptNoteHighlightRangeRef = useRef<Range | null>(null);
-  const [transcriptNoteHighlightRects, setTranscriptNoteHighlightRects] = useState<
-    TranscriptNoteHighlightRect[] | null
-  >(null);
 
   const setAutoStickToBottomState = useCallback((next: boolean) => {
     if (autoStickToBottomRef.current === next) {
@@ -1437,19 +1387,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const stickToBottomRequestPending =
     stickToBottomRequestKey !== lastHandledStickToBottomRequestKeyRef.current;
 
-  const refreshTranscriptNoteHighlightRects = useCallback(() => {
-    const range = transcriptNoteHighlightRangeRef.current;
-    const container = timelineContainerRef.current;
-    if (!range || !container) {
-      return;
-    }
-    setTranscriptNoteHighlightRects(computeTranscriptNoteHighlightRects(range, container));
-  }, []);
-
   const handleScroll = useCallback(
     (event: TimelineScrollEvent) => {
-      setTranscriptSelection(getTranscriptSelectionAfterTimelineScroll);
-      refreshTranscriptNoteHighlightRects();
       scheduleTouchScrollSettle();
       const eventAtEnd = isTimelineScrollEventAtEnd(event);
       const nextIsAtEnd =
@@ -1509,82 +1448,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       listRef,
       markUserScrollIntent,
       onIsAtEndChange,
-      refreshTranscriptNoteHighlightRects,
       scheduleTouchScrollSettle,
       setAutoStickToBottomState,
       stickToBottomRequestPending,
     ],
   );
-
-  const refreshTranscriptSelectionPopover = useCallback(() => {
-    if (!onAddTranscriptHighlightContext) {
-      setTranscriptSelection(null);
-      return;
-    }
-    const nextSelection = readTranscriptSelectionPopoverState(timelineContainerRef.current);
-    setTranscriptSelection(nextSelection);
-  }, [onAddTranscriptHighlightContext]);
-
-  const handleTranscriptSelectionEnd = useCallback(
-    (event: ReactSyntheticEvent<HTMLElement>) => {
-      if (
-        event.target instanceof Element &&
-        event.target.closest("[data-transcript-selection-popover='true']")
-      ) {
-        return;
-      }
-      window.requestAnimationFrame(refreshTranscriptSelectionPopover);
-    },
-    [refreshTranscriptSelectionPopover],
-  );
-
-  const updateTranscriptSelectionNote = useCallback((note: string) => {
-    setTranscriptSelection((current) => (current ? { ...current, note } : current));
-  }, []);
-
-  const openTranscriptSelectionNote = useCallback(() => {
-    const selection = window.getSelection();
-    const container = timelineContainerRef.current;
-    if (selection && selection.rangeCount > 0 && !selection.isCollapsed && container) {
-      const range = selection.getRangeAt(0).cloneRange();
-      transcriptNoteHighlightRangeRef.current = range;
-      setTranscriptNoteHighlightRects(computeTranscriptNoteHighlightRects(range, container));
-    }
-    setTranscriptSelection((current) => (current ? { ...current, mode: "note" } : current));
-  }, []);
-
-  const transcriptNoteHighlightActive = transcriptSelection?.mode === "note";
-  useEffect(() => {
-    if (!transcriptNoteHighlightActive) {
-      return;
-    }
-    return () => {
-      transcriptNoteHighlightRangeRef.current = null;
-      setTranscriptNoteHighlightRects(null);
-    };
-  }, [transcriptNoteHighlightActive]);
-
-  const dismissTranscriptSelection = useCallback(() => {
-    setTranscriptSelection(null);
-  }, []);
-
-  const submitTranscriptSelectionNote = useCallback(() => {
-    if (!transcriptSelection || !onAddTranscriptHighlightContext) {
-      return;
-    }
-    const note = transcriptSelection.note.trim();
-    if (note.length === 0) {
-      return;
-    }
-    onAddTranscriptHighlightContext({
-      sourceMessageId: transcriptSelection.sourceMessageId,
-      sourceRole: transcriptSelection.sourceRole,
-      selectedText: transcriptSelection.selectedText,
-      note,
-    });
-    window.getSelection()?.removeAllRanges();
-    setTranscriptSelection(null);
-  }, [onAddTranscriptHighlightContext, transcriptSelection]);
 
   const handleWheelCapture = useCallback(
     (event: ReactWheelEvent) => {
@@ -2036,12 +1904,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       <TimelineAgentLabelCtx value={resolveAgentLabel}>
         <TimelineRowActivityCtx value={activityState}>
           <div className="relative h-full">
-            <div
-              ref={timelineContainerRef}
-              className="relative h-full"
-              onMouseUpCapture={handleTranscriptSelectionEnd}
-              onKeyUpCapture={handleTranscriptSelectionEnd}
-            >
+            <div ref={timelineContainerRef} className="relative h-full">
               <LegendList<MessagesTimelineRow>
                 key={`${routeThreadKey}:${legendListEpoch}`}
                 ref={assignLegendListRef}
@@ -2089,33 +1952,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
               />
-              {transcriptNoteHighlightRects && transcriptNoteHighlightRects.length > 0 ? (
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 overflow-hidden"
-                >
-                  {transcriptNoteHighlightRects.map((rect) => (
-                    <div
-                      key={`${rect.top}:${rect.left}:${rect.width}`}
-                      className="transcript-note-highlight absolute"
-                      style={{
-                        left: rect.left,
-                        top: rect.top,
-                        width: rect.width,
-                        height: rect.height,
-                      }}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {transcriptSelection && onAddTranscriptHighlightContext ? (
-                <TranscriptSelectionPopover
-                  state={transcriptSelection}
-                  onCopyDismiss={dismissTranscriptSelection}
-                  onOpenNote={openTranscriptSelectionNote}
-                  onNoteChange={updateTranscriptSelectionNote}
-                  onSubmitNote={submitTranscriptSelectionNote}
-                  onCancel={dismissTranscriptSelection}
+              {onAddTranscriptHighlightContext ? (
+                <TranscriptSelectionLayer
+                  containerRef={timelineContainerRef}
+                  onAddHighlight={onAddTranscriptHighlightContext}
                 />
               ) : null}
             </div>
@@ -2137,277 +1977,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     </TimelineRowCtx>
   );
 });
-
-function TranscriptSelectionPopover({
-  state,
-  onCopyDismiss,
-  onOpenNote,
-  onNoteChange,
-  onSubmitNote,
-  onCancel,
-}: {
-  state: TranscriptSelectionPopoverState;
-  onCopyDismiss: () => void;
-  onOpenNote: () => void;
-  onNoteChange: (note: string) => void;
-  onSubmitNote: () => void;
-  onCancel: () => void;
-}) {
-  const noteInputRef = useRef<HTMLTextAreaElement | null>(null);
-  // timeout: 0 keeps the checkmark painted until the delayed dismiss unmounts
-  // the popover, so it never flips back to the copy icon mid-animation.
-  const { copyToClipboard, isCopied } = useCopyToClipboard<void>({ timeout: 0 });
-  const noteIsEmpty = state.note.trim().length === 0;
-
-  useEffect(() => {
-    if (!isCopied) {
-      return;
-    }
-    const timeoutId = window.setTimeout(onCopyDismiss, TRANSCRIPT_SELECTION_COPY_FEEDBACK_MS);
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [isCopied, onCopyDismiss]);
-
-  useEffect(() => {
-    if (state.mode !== "note") {
-      return;
-    }
-    const frameId = window.requestAnimationFrame(() => {
-      noteInputRef.current?.focus();
-    });
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [state.mode]);
-
-  return (
-    <div
-      className="absolute z-40"
-      style={{ left: state.left, width: TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX, ...state.anchor }}
-      data-transcript-selection-popover="true"
-      onMouseDown={(event) => {
-        if (state.mode === "actions") {
-          event.preventDefault();
-        }
-        event.stopPropagation();
-      }}
-    >
-      {state.mode === "actions" ? (
-        <div className="inline-flex items-center gap-1 rounded-lg border border-border/75 bg-popover/96 px-1.5 py-1 text-popover-foreground shadow-lg shadow-black/10 backdrop-blur">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label="Copy selected text"
-                  onClick={() => copyToClipboard(state.selectedText, undefined)}
-                />
-              }
-            >
-              {isCopied ? (
-                <CheckIcon className="copy-check-pop size-3 text-success" />
-              ) : (
-                <CopyIcon className="size-3" />
-              )}
-            </TooltipTrigger>
-            <TooltipPopup side="top">Copy selected text</TooltipPopup>
-          </Tooltip>
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            onClick={onOpenNote}
-            className="h-6 px-2 text-xs"
-          >
-            <SquarePenIcon className="size-3" />
-            Add note
-          </Button>
-        </div>
-      ) : (
-        <form
-          className="rounded-lg border border-border/75 bg-popover/96 p-2 text-popover-foreground shadow-lg shadow-black/10 backdrop-blur"
-          onSubmit={(event) => handleTranscriptHighlightNoteFormSubmit(event, onSubmitNote)}
-        >
-          <p className="mb-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
-            {state.selectedText}
-          </p>
-          <Textarea
-            ref={noteInputRef}
-            size="sm"
-            value={state.note}
-            onChange={(event) => onNoteChange(event.currentTarget.value)}
-            placeholder="Add context for this highlight"
-            className="text-xs"
-            onKeyDown={(event) =>
-              handleTranscriptHighlightNoteKeyDown(event, {
-                onSubmit: onSubmitNote,
-                onCancel,
-              })
-            }
-          />
-          <div className="mt-2 flex justify-end gap-1.5">
-            <Button type="button" variant="ghost" size="xs" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button type="submit" size="xs" disabled={noteIsEmpty}>
-              Add
-            </Button>
-          </div>
-        </form>
-      )}
-    </div>
-  );
-}
-
-function readTranscriptSelectionPopoverState(
-  container: HTMLDivElement | null,
-): TranscriptSelectionPopoverState | null {
-  if (!container || typeof window === "undefined") {
-    return null;
-  }
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-    return null;
-  }
-  const selectedText = selection.toString().trim();
-  if (selectedText.length === 0) {
-    return null;
-  }
-  const range = selection.getRangeAt(0);
-  const startBody = findTranscriptMessageBody(range.startContainer);
-  const endBody = findTranscriptMessageBody(range.endContainer);
-  if (!startBody || startBody !== endBody) {
-    return null;
-  }
-  if (startBody.dataset.transcriptMessageStreaming === "true") {
-    return null;
-  }
-  const sourceMessageId = startBody.dataset.transcriptMessageId;
-  const sourceRole = startBody.dataset.transcriptMessageRole;
-  if (!sourceMessageId || (sourceRole !== "assistant" && sourceRole !== "user")) {
-    return null;
-  }
-
-  const rect = range.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) {
-    return null;
-  }
-  const containerRect = container.getBoundingClientRect();
-  const unclampedLeft =
-    rect.left - containerRect.left + rect.width / 2 - TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX / 2;
-  const maxLeft = Math.max(
-    TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
-    containerRect.width -
-      TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX -
-      TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
-  );
-  const left = Math.min(Math.max(TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX, unclampedLeft), maxLeft);
-  const selectionTop = rect.top - containerRect.top;
-  const selectionBottom = rect.bottom - containerRect.top;
-  const spaceBelow = containerRect.height - selectionBottom;
-  const anchor: TranscriptSelectionPopoverAnchor =
-    spaceBelow >= TRANSCRIPT_SELECTION_POPOVER_MIN_SPACE_BELOW_PX
-      ? {
-          top: Math.max(
-            TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
-            selectionBottom + TRANSCRIPT_SELECTION_POPOVER_GAP_PX,
-          ),
-        }
-      : {
-          bottom: Math.max(
-            TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
-            containerRect.height - selectionTop + TRANSCRIPT_SELECTION_POPOVER_GAP_PX,
-          ),
-        };
-
-  return {
-    sourceMessageId: sourceMessageId as MessageId,
-    sourceRole,
-    selectedText:
-      selectedText.length > TRANSCRIPT_SELECTION_TEXT_MAX_CHARS
-        ? selectedText.slice(0, TRANSCRIPT_SELECTION_TEXT_MAX_CHARS)
-        : selectedText,
-    left,
-    anchor,
-    mode: "actions",
-    note: "",
-  };
-}
-
-// The native selection stops painting once the note textarea takes focus, so
-// the selected range is re-painted as overlay rects while the note is open.
-// CSS ::highlight() can't be used here: Chromium paints custom highlights at
-// the font's ascent/descent height while native selection fills the whole
-// line box, so the two visibly disagree. Expanding each text fragment's rect
-// to its element's line-height reproduces the native selection geometry.
-function collectRangeTextNodes(range: Range): Text[] {
-  const root = range.commonAncestorContainer;
-  if (root instanceof Text) {
-    return [root];
-  }
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: (node) =>
-      range.intersectsNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
-  });
-  const nodes: Text[] = [];
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    nodes.push(node as Text);
-  }
-  return nodes;
-}
-
-function computeTranscriptNoteHighlightRects(
-  range: Range,
-  container: HTMLElement,
-): TranscriptNoteHighlightRect[] {
-  const containerRect = container.getBoundingClientRect();
-  const rects: TranscriptNoteHighlightRect[] = [];
-  for (const textNode of collectRangeTextNodes(range)) {
-    const nodeRange = document.createRange();
-    nodeRange.selectNodeContents(textNode);
-    if (textNode === range.startContainer) {
-      nodeRange.setStart(textNode, range.startOffset);
-    }
-    if (textNode === range.endContainer) {
-      nodeRange.setEnd(textNode, range.endOffset);
-    }
-    const lineHeight = textNode.parentElement
-      ? Number.parseFloat(window.getComputedStyle(textNode.parentElement).lineHeight)
-      : Number.NaN;
-    const fragmentRects = nodeRange.getClientRects();
-    for (let index = 0; index < fragmentRects.length; index += 1) {
-      const rect = fragmentRects[index];
-      if (!rect || rect.width <= 0 || rect.height <= 0) {
-        continue;
-      }
-      const expansion =
-        Number.isFinite(lineHeight) && lineHeight > rect.height
-          ? (lineHeight - rect.height) / 2
-          : 0;
-      rects.push({
-        left: rect.left - containerRect.left,
-        top: rect.top - containerRect.top - expansion,
-        width: rect.width,
-        height: rect.height + expansion * 2,
-      });
-      if (rects.length >= TRANSCRIPT_NOTE_HIGHLIGHT_MAX_RECTS) {
-        return rects;
-      }
-    }
-  }
-  return rects;
-}
-
-function findTranscriptMessageBody(node: Node): HTMLElement | null {
-  const element = node instanceof Element ? node : node.parentNode;
-  if (!(element instanceof Element)) {
-    return null;
-  }
-  return element?.closest<HTMLElement>("[data-transcript-message-body='true']") ?? null;
-}
 
 /**
  * What a chat whose detail has not landed says in place of its messages:
