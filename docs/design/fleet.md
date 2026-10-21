@@ -128,7 +128,7 @@ The client is connected to both A and B.
 
 - Today the in-memory `localInvites` map (RelayHost.ts:243-257) holds the invite, and recovery calls `finishApproval` from a device row whose `kind` came from the joiner (RelayHost.ts:785-797, 935).
 - New: the invite record is persisted, with `purpose: device | computer-link` set by the host. `approveVerified` copies `grant: client | peer` from the verified invite into the device row in the same insert, before any session exists. `finishApproval` and restart recovery issue the session role from `row.grant` only.
-- The invite also pins the joining computer's environment id, as the client that asked for it knows it. `approveVerified` writes it into the device row as `link_environment_id` with `link_environment_pinned = 1`. A pinned link refuses a `peer.describe` or `peer.request.start` that names a different computer, and its id never changes. An unpinned row (from an invite that named no computer) records what the computer says about itself, and clients show it as unconfirmed: never merged with a saved computer of that id.
+- The invite also pins the joining computer's environment id, as the client that asked for it knows it. `approveVerified` writes it into the device row as `link_environment_id` with `link_environment_pinned = 1`. The link refuses a `peer.describe` or `peer.request.start` that names a different computer, and its id never changes. An unpinned row (from an invite that named no computer) keeps the first id the computer gives, and clients show it as unconfirmed: never merged with a saved computer of that id.
 - Test: crash between inserting the device row and issuing its session, then restart → the session has the invite's role.
 
 ### Server pieces (A side, outbound)

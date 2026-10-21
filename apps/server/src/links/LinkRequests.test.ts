@@ -371,7 +371,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
   );
 
   it.effect(
-    "a link made for one computer refuses a start that says it comes from another, and keeps its name",
+    "a link made for one computer refuses a start that says it comes from another, and keeps its id",
     () =>
       Effect.gen(function* () {
         const computer = yield* makeComputer();
@@ -402,6 +402,29 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         // Its own computer's start goes ahead.
         const own = yield* service.start(pinned, startInput("request-2"));
         assert.equal(own.status, "started");
+
+        // A link whose invite named no computer keeps the first one it said
+        // it was, unconfirmed, and refuses any other after that.
+        yield* computer.addLink("device-unpinned", "allowed");
+        yield* computer.devices.touchLink({
+          deviceId: "device-unpinned",
+          environmentId: WINDOWS,
+          now: AT,
+        });
+        yield* computer.devices.touchLink({
+          deviceId: "device-unpinned",
+          environmentId: linux,
+          now: AT,
+        });
+        const unpinned = Option.getOrThrow(yield* computer.devices.getDevice("device-unpinned"));
+        assert.equal(unpinned.linkEnvironmentId, WINDOWS);
+        assert.isFalse(unpinned.linkEnvironmentPinned);
+        const switched = yield* service.start(link({ deviceId: "device-unpinned" }), {
+          ...input,
+          requestId: ChildRequestId.make("request-3"),
+          parent: { ...input.parent, environmentId: linux, environmentLabel: "Linux box" },
+        });
+        assert.equal(switched.status, "refused");
       }),
   );
 

@@ -64,9 +64,9 @@ export const InboundComputerLink = Schema.Struct({
   environmentId: Schema.NullOr(EnvironmentId),
   /**
    * `environmentId` was fixed when this computer made the invite (the app
-   * that asked for it named the computer it was for), so the other computer
-   * can't pass itself off as a different one. False or missing: it is only
-   * what that computer said about itself.
+   * that asked for it named the computer it was for). False or missing: it
+   * is only what that computer first said about itself, unconfirmed. Either
+   * way it never changes, and the link refuses calls that name another.
    */
   environmentPinned: Schema.optional(Schema.Boolean),
   label: TrimmedNonEmptyString,
