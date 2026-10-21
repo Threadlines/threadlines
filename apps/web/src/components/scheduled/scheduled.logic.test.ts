@@ -5,6 +5,7 @@ import {
   type ScheduledTask,
   ScheduledTaskId,
   ThreadId,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -146,13 +147,19 @@ describe("how a task reads", () => {
 describe("an agent's schedule calls in its chat", () => {
   const record = (
     output: string,
-    live: { task?: ScheduledTask | null; waiting?: boolean; followed?: boolean } = {},
+    live: {
+      task?: ScheduledTask | null;
+      waiting?: boolean;
+      followed?: boolean;
+      failed?: boolean;
+    } = {},
   ) =>
     describeScheduleCall({
       tool: "schedule_create",
       result: parseScheduleCallResult(output),
       task: live.task ?? null,
       waiting: live.waiting ?? false,
+      failed: live.failed ?? false,
       followed: live.followed ?? true,
       nowMs: NOW.getTime(),
       timeZone: "UTC",
@@ -182,12 +189,18 @@ describe("an agent's schedule calls in its chat", () => {
     expect(record(asked, { followed: false }).outcome).toBe(null);
   });
 
-  it("names a refusal in the user's words", () => {
+  it("names a refusal in the user's words, and never claims a call that failed or said nothing", () => {
     expect(record('{"outcome":"off","detail":"Turned off."}')).toEqual({
       heading: "Tried to schedule a task",
       outcome: "turned off in Settings",
       open: null,
     });
+    expect(record("", { failed: true })).toEqual({
+      heading: "Tried to schedule a task",
+      outcome: "failed",
+      open: null,
+    });
+    expect(record("").heading).toBe("Asked to schedule a task");
   });
 });
 
@@ -227,6 +240,13 @@ describe("the task form", () => {
     expect(
       formProblems({ ...opened, date: "2026-10-21", time: { hour: 7, minute: 0 } }, NOW).schedule,
     ).toMatch(/already passed/);
+    // One that ran keeps its past time through a rename.
+    const ran = task({
+      status: "done",
+      nextRunAt: null,
+      cadence: { kind: "once", date: "2026-10-20", time: { hour: 8, minute: 30 } },
+    });
+    expect(formProblems({ ...taskForm(ran, ENVIRONMENT), name: "Renamed" }, NOW, ran)).toEqual({});
   });
 
   it("opens an existing task with its cadence's parts", () => {
@@ -237,5 +257,12 @@ describe("the task form", () => {
     expect(opened.cadenceKind).toBe("hourly");
     expect(opened.minute).toBe(15);
     expect(formDraft(opened)?.cadence).toEqual({ kind: "hourly", minute: 15 });
+    // A room agent's continued thread stays that agent's through an edit.
+    const forAgent = {
+      kind: "thread",
+      threadId: ThreadId.make("thread-7"),
+      participantId: ThreadParticipantId.make("room-claude"),
+    } as const;
+    expect(formDraft(taskForm(task({ target: forAgent }), ENVIRONMENT))?.target).toEqual(forAgent);
   });
 });

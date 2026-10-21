@@ -237,7 +237,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     : null;
 
   const now = new Date();
-  const problems = formProblems(form, now);
+  const problems = formProblems(form, now, editing?.task);
   const shownProblems = submitted ? problems : {};
   const upcoming = form.cadenceKind === "manual" ? [] : previewRuns(form, now, 3);
 
@@ -250,6 +250,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       environmentId,
       projectId: project?.id ?? null,
       threadId: null,
+      threadParticipantId: null,
       modelSelection: defaultModelFor(
         providersOn(environmentId),
         environment?.isPrimary === true ? settings.newThreadModelSelection : null,
@@ -394,6 +395,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
               update({
                 projectId: value as ProjectId,
                 threadId: null,
+                threadParticipantId: null,
                 ...(project?.kind === "general-chat" ? { checkout: "local" as const } : {}),
               });
             }}
@@ -437,7 +439,8 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             <Select
               value={form.threadId ?? ""}
               onValueChange={(value) => {
-                if (value) update({ threadId: value as ThreadId });
+                // Another thread: its runs are for that thread's own agent.
+                if (value) update({ threadId: value as ThreadId, threadParticipantId: null });
               }}
             >
               <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Thread">

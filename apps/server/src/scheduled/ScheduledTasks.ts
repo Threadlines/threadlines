@@ -53,6 +53,7 @@ import {
   dueSlots,
   formatWallTime,
   nextSlotOf,
+  sameCadence,
   SCHEDULED_TASK_CATCH_UP_WINDOW_MS,
   SCHEDULED_TASK_ON_TIME_MS,
   upcomingSlots,
@@ -477,6 +478,14 @@ const make = Effect.gen(function* () {
     task: ScheduledTaskRow,
     now: number,
   ): Effect.Effect<ScheduledTaskRow, ScheduledTaskError> => {
+    // One that won't run (paused) needs a schedule that parses, not a next
+    // run: a one-time task whose time passed can still be paused.
+    if (task.status !== "active") {
+      const compiled = compileCadence(task.cadence, task.timeZone);
+      return Result.isFailure(compiled)
+        ? Effect.fail(taskError(compiled.failure))
+        : Effect.succeed({ ...task, error: null, nextSlotUtc: null });
+    }
     const first = firstSlot(task, now);
     if (Result.isFailure(first)) return Effect.fail(taskError(first.failure));
     return Effect.succeed({
@@ -521,6 +530,10 @@ const make = Effect.gen(function* () {
       if (Option.isNone(found)) return yield* taskError("That task was deleted.");
       const current = found.value;
       const { id: _id, status, ...fields } = input;
+      // A schedule sent back as it was (a form sends every field) is no change.
+      const timesChanged =
+        (fields.cadence !== undefined && !sameCadence(fields.cadence, current.cadence)) ||
+        (fields.timeZone !== undefined && fields.timeZone !== current.timeZone);
       const edited: ScheduledTaskRow = {
         ...current,
         ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
@@ -528,9 +541,7 @@ const make = Effect.gen(function* () {
         // resumes it, and so does giving a done one a new schedule.
         status:
           status ??
-          (current.status === "error" ||
-          (current.status === "done" &&
-            (fields.cadence !== undefined || fields.timeZone !== undefined))
+          (current.status === "error" || (current.status === "done" && timesChanged)
             ? "active"
             : current.status),
         updatedAt: new Date(now).toISOString(),
@@ -540,10 +551,7 @@ const make = Effect.gen(function* () {
       // The next slot is worked out again when the schedule or the status
       // changed; otherwise it stays, so a rename never skips a due slot.
       const scheduleChanged =
-        input.cadence !== undefined ||
-        input.timeZone !== undefined ||
-        edited.status !== current.status ||
-        current.status === "error";
+        timesChanged || edited.status !== current.status || current.status === "error";
       const row = scheduleChanged ? yield* scheduled(edited, now) : edited;
       return { current, row };
     });
@@ -1137,6 +1145,10 @@ const make = Effect.gen(function* () {
               TurnId.make(`scheduled-run:${scheduledRunKey(row.taskId, row.slotUtc)}`),
             message: { messageId, role: "user", text: launch.prompt, attachments: [] },
             delivery: "queue",
+            // In a room, for the agent that set the task up.
+            ...(launch.target.kind === "thread" && launch.target.participantId !== undefined
+              ? { participantId: launch.target.participantId }
+              : {}),
             createdAt: yield* nowIso,
           })
           .pipe(Effect.result);

@@ -7,6 +7,7 @@ import {
   ProjectId,
   ScheduledTaskId,
   ThreadId,
+  ThreadParticipantId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ModelSelection, ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
@@ -65,10 +66,18 @@ export type ScheduledTaskCadenceKind = ScheduledTaskCadence["kind"];
 export const ScheduledTaskCheckout = Schema.Literals(["local", "worktree"]);
 export type ScheduledTaskCheckout = typeof ScheduledTaskCheckout.Type;
 
-/** What each run does: start a new thread, or send the prompt to one thread as a follow-up. */
+/**
+ * What each run does: start a new thread, or send the prompt to one thread
+ * as a follow-up. In a room, `participantId` is the agent the follow-up is
+ * for (the one that set the task up); absent, the thread's own.
+ */
 export const ScheduledTaskTarget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("new_thread") }),
-  Schema.Struct({ kind: Schema.Literal("thread"), threadId: ThreadId }),
+  Schema.Struct({
+    kind: Schema.Literal("thread"),
+    threadId: ThreadId,
+    participantId: Schema.optional(ThreadParticipantId),
+  }),
 ]);
 export type ScheduledTaskTarget = typeof ScheduledTaskTarget.Type;
 

@@ -262,9 +262,14 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
           interactionMode: "default",
           cadence: input.schedule,
           timeZone: input.time_zone ?? deps.localTimeZone,
+          // In a room, each run's message is for the agent that set it up.
           target:
             input.each_run === "this_thread"
-              ? { kind: "thread", threadId: thread.id }
+              ? {
+                  kind: "thread",
+                  threadId: thread.id,
+                  ...(scope.participantId !== null ? { participantId: scope.participantId } : {}),
+                }
               : { kind: "new_thread" },
         },
       });

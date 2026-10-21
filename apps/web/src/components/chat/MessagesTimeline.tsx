@@ -4471,6 +4471,7 @@ function ScheduleCallRecordLine({ entry }: { entry: TimelineWorkEntry }) {
     waiting:
       result.requestId !== null &&
       (snapshot?.requests.some((request) => request.requestId === result.requestId) ?? false),
+    failed: entry.executionState === "failed",
     followed: snapshot !== undefined,
     nowMs,
   });

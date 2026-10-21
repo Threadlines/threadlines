@@ -256,15 +256,26 @@ describe("AcpRuntimeModel", () => {
       title: "mcp__threadlines_room__schedule_create",
       status: "in_progress",
     });
-    const finished = toolCallOf({
-      sessionUpdate: "tool_call_update",
-      toolCallId: "tool-2",
-      status: "completed",
-      content: [{ type: "content", content: { type: "text", text: '{"outcome":"asked_user"}' } }],
-    });
-    expect(mergeToolCallState(started, finished).title).toBe(
-      "mcp__threadlines_room__schedule_create",
-    );
+    const result = [
+      {
+        type: "content" as const,
+        content: { type: "text" as const, text: '{"outcome":"asked_user"}' },
+      },
+    ];
+    // With only its result, or its kind repeated too.
+    for (const update of [
+      { status: "completed" as const, content: result },
+      { status: "completed" as const, kind: "other" as const, content: result },
+    ]) {
+      const finished = toolCallOf({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-2",
+        ...update,
+      });
+      expect(mergeToolCallState(started, finished).title).toBe(
+        "mcp__threadlines_room__schedule_create",
+      );
+    }
   });
 
   it("trims padded current mode updates before emitting a mode change", () => {

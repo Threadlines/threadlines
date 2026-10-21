@@ -325,8 +325,17 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       assert.equal(done?.status, "done");
       assert.equal(done?.nextRunAt, null);
 
-      // A rename leaves it done; a new date makes it active again.
-      assert.equal((yield* service.update({ id: task.id, name: "Release check" })).status, "done");
+      // A rename leaves it done, its unchanged schedule sent along as the
+      // form sends it; a new date makes it active again.
+      assert.equal(
+        (yield* service.update({
+          id: task.id,
+          name: "Release check",
+          cadence: { kind: "once", date: "2026-10-21", time: { hour: 7, minute: 30 } },
+          timeZone: "UTC",
+        })).status,
+        "done",
+      );
       const again = yield* service.update({
         id: task.id,
         cadence: { kind: "once", date: "2026-10-23", time: { hour: 7, minute: 30 } },
@@ -341,6 +350,23 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
         })
         .pipe(Effect.flip);
       assert.match(past.detail, /already passed/);
+    }),
+  );
+
+  it.effect("a one-time task whose time passed unseen can still be paused", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(
+        draft({ cadence: { kind: "once", date: "2026-10-20", time: { hour: 9, minute: 0 } } }),
+      );
+      // Asleep through its time, and paused before the scheduler looked.
+      yield* setClock("2026-10-20T10:00:00.000Z");
+      const paused = yield* service.update({ id: task.id, status: "paused" });
+      assert.equal(paused.status, "paused");
+      yield* service.tick;
+      assert.deepEqual(yield* computer.runs(task.id), []);
     }),
   );
 

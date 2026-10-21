@@ -103,6 +103,18 @@ export function cadenceCronExpression(cadence: ScheduledTaskCadence): string | n
   }
 }
 
+/**
+ * Whether two cadences run at the same times: an edit that sends a task's
+ * schedule back unchanged (a form always sends it) changes nothing.
+ */
+export function sameCadence(left: ScheduledTaskCadence, right: ScheduledTaskCadence): boolean {
+  const key = (cadence: ScheduledTaskCadence) =>
+    cadence.kind === "once"
+      ? `once ${cadence.date} ${cadence.time.hour}:${cadence.time.minute}`
+      : `${cadence.kind} ${cadenceCronExpression(cadence) ?? ""}`;
+  return key(left) === key(right);
+}
+
 /** Whether `timeZone` is an IANA zone this runtime knows. */
 export function isKnownTimeZone(timeZone: string): boolean {
   return Option.isSome(DateTime.zoneMakeNamed(timeZone));

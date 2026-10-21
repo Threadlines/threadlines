@@ -18,10 +18,12 @@ import type {
   ScheduledTaskDraft,
   ScheduledTaskId,
   ThreadId,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 import {
   cadenceSaveRefusal,
   describeCadence,
+  sameCadence,
   upcomingSlots,
 } from "@threadlines/shared/scheduledTasks";
 import * as Result from "effect/Result";
@@ -312,7 +314,7 @@ const SCHEDULE_REFUSAL_WORDS: Readonly<Record<string, string>> = {
   off: "turned off in Settings",
   not_allowed: "not allowed from this thread",
   refused: "refused",
-  failed: "refused",
+  failed: "failed",
 };
 
 /**
@@ -326,6 +328,8 @@ export function describeScheduleCall(input: {
   readonly task: ScheduledTask | null;
   /** Whether the call's card still waits for the user. */
   readonly waiting: boolean;
+  /** The call itself failed (the tool never answered, or answered with an error). */
+  readonly failed: boolean;
   /**
    * Whether this client follows the computer's tasks yet: until then (or
    * for one that doesn't run them) the line says only what the call did.
@@ -336,7 +340,12 @@ export function describeScheduleCall(input: {
 }): ScheduleCallRecord {
   const { tool, result, task } = input;
   const creating = tool === "schedule_create";
-  const refusal = result.outcome === null ? null : (SCHEDULE_REFUSAL_WORDS[result.outcome] ?? null);
+  const refusal =
+    result.outcome === null
+      ? input.failed
+        ? "failed"
+        : null
+      : (SCHEDULE_REFUSAL_WORDS[result.outcome] ?? null);
   if (refusal !== null) {
     return {
       heading: creating ? "Tried to schedule a task" : "Tried to change a scheduled task",
@@ -367,6 +376,10 @@ export function describeScheduleCall(input: {
       : task.cadence.kind === "once"
         ? describeNextRun(task, input.nowMs, input.timeZone)
         : `${describeTaskSchedule(task, input.timeZone)} · ${describeNextRun(task, input.nowMs, input.timeZone)}`;
+  // What it answered is unknown (the provider kept no result): only that it asked.
+  if (result.outcome === null) {
+    return { heading: asked, outcome: null, open: task?.id ?? null };
+  }
   if (!input.followed) {
     return { heading: result.outcome === "asked_user" ? asked : done, outcome: null, open: null };
   }
@@ -381,7 +394,7 @@ export function describeScheduleCall(input: {
     return { heading: asked, outcome: null, open: task?.id ?? null };
   }
   return task === null
-    ? { heading: done, outcome: result.outcome === null ? null : "deleted since", open: null }
+    ? { heading: done, outcome: "deleted since", open: null }
     : { heading: done, outcome: when, open: task.id };
 }
 
@@ -430,6 +443,8 @@ export interface ScheduledTaskForm {
   readonly timeZone: string;
   readonly target: "new_thread" | "thread";
   readonly threadId: ThreadId | null;
+  /** In a room, the agent the continued thread's runs are for; kept until another thread is chosen. */
+  readonly threadParticipantId: ThreadParticipantId | null;
 }
 
 /** The calendar day after `now` in `timeZone`, "2026-10-22". */
@@ -466,6 +481,7 @@ export function emptyTaskForm(input: {
     timeZone: input.timeZone,
     target: "new_thread",
     threadId: null,
+    threadParticipantId: null,
   };
 }
 
@@ -497,6 +513,7 @@ export function taskForm(task: ScheduledTask, environmentId: EnvironmentId): Sch
     ...(cadence.kind === "custom" ? { cron: cadence.cron } : {}),
     target: task.target.kind,
     threadId: task.target.kind === "thread" ? task.target.threadId : null,
+    threadParticipantId: task.target.kind === "thread" ? (task.target.participantId ?? null) : null,
   };
 }
 
@@ -535,8 +552,16 @@ export type FormProblems = Partial<
   Record<"name" | "prompt" | "computer" | "project" | "agent" | "schedule" | "thread", string>
 >;
 
-/** What keeps the form from saving, field by field. */
-export function formProblems(form: ScheduledTaskForm, now: Date): FormProblems {
+/**
+ * What keeps the form from saving, field by field. Editing `saved`, a
+ * schedule left as it was isn't checked again: a one-time task that ran can
+ * be renamed without a new time.
+ */
+export function formProblems(
+  form: ScheduledTaskForm,
+  now: Date,
+  saved?: Pick<ScheduledTask, "cadence" | "timeZone">,
+): FormProblems {
   const problems: Record<string, string> = {};
   if (form.name.trim().length === 0) problems.name = "Give the task a name.";
   if (form.prompt.trim().length === 0) problems.prompt = "Say what each run should do.";
@@ -546,9 +571,13 @@ export function formProblems(form: ScheduledTaskForm, now: Date): FormProblems {
   if (form.target === "thread" && form.threadId === null) {
     problems.thread = "Choose the thread each run continues.";
   }
+  const unchanged =
+    saved !== undefined &&
+    saved.timeZone === form.timeZone &&
+    sameCadence(saved.cadence, formCadence(form));
   if (form.cadenceKind === "custom" && form.cron.trim().length === 0) {
     problems.schedule = "Write a cron expression.";
-  } else {
+  } else if (!unchanged) {
     const refusal = cadenceSaveRefusal(formCadence(form), form.timeZone, now);
     if (refusal !== null) problems.schedule = refusal;
   }
@@ -577,7 +606,13 @@ export function formDraft(form: ScheduledTaskForm): ScheduledTaskDraft | null {
     timeZone: form.timeZone,
     target:
       form.target === "thread" && form.threadId !== null
-        ? { kind: "thread", threadId: form.threadId }
+        ? {
+            kind: "thread",
+            threadId: form.threadId,
+            ...(form.threadParticipantId !== null
+              ? { participantId: form.threadParticipantId }
+              : {}),
+          }
         : { kind: "new_thread" },
   };
 }
