@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { nextHistoryPosition } from "./appHistory";
+import { initialHistoryPosition, nextHistoryPosition } from "./appHistory";
 
 describe("nextHistoryPosition", () => {
   it("keeps the way forward after going back, and drops it on a new page", () => {
@@ -13,5 +13,16 @@ describe("nextHistoryPosition", () => {
     expect(nextHistoryPosition(wentBack, "REPLACE", 1)).toEqual({ index: 1, furthest: 2 });
     // Opening somewhere new from there: nothing ahead any more.
     expect(nextHistoryPosition(wentBack, "PUSH", 2)).toEqual({ index: 2, furthest: 2 });
+  });
+});
+
+describe("initialHistoryPosition", () => {
+  it("keeps the way forward across a reload made after going back", () => {
+    // Three pages in, back to the second, then the window reloads there.
+    expect(initialHistoryPosition(1, 2)).toEqual({ index: 1, furthest: 2 });
+    // A fresh window has nothing stored and nothing ahead.
+    expect(initialHistoryPosition(0, null)).toEqual({ index: 0, furthest: 0 });
+    // A stored value behind the current entry never limits it.
+    expect(initialHistoryPosition(3, 1)).toEqual({ index: 3, furthest: 3 });
   });
 });

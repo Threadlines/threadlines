@@ -25,6 +25,18 @@ export function nextHistoryPosition(
   return { index, furthest: Math.max(position.furthest, index) };
 }
 
+/**
+ * Where the app stands when it starts on the entry at `index`: after a reload,
+ * the furthest entry the previous page load reached (kept in session storage)
+ * is still there to go forward to.
+ */
+export function initialHistoryPosition(
+  index: number,
+  storedFurthest: number | null,
+): HistoryPosition {
+  return { index, furthest: Math.max(index, storedFurthest ?? index) };
+}
+
 interface HistoryTracker {
   readonly read: () => HistoryPosition;
   readonly subscribe: (listener: () => void) => () => void;
@@ -34,19 +46,44 @@ function indexOf(history: RouterHistory): number {
   return history.location.state.__TSR_index ?? 0;
 }
 
+// The furthest entry survives a reload in session storage, which lives
+// exactly as long as the browser history it describes (one tab or window).
+const FURTHEST_STORAGE_KEY = "threadlines:app-history-furthest";
+
+function readStoredFurthest(): number | null {
+  try {
+    const raw = globalThis.sessionStorage?.getItem(FURTHEST_STORAGE_KEY);
+    const value = raw == null ? Number.NaN : Number(raw);
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeFurthest(furthest: number): void {
+  try {
+    globalThis.sessionStorage?.setItem(FURTHEST_STORAGE_KEY, String(furthest));
+  } catch {
+    // Storage can be unavailable (private modes); forward then resets on reload.
+  }
+}
+
 // One per history, kept for its life: the first reader starts it, so it has
-// seen every move since the window opened.
+// seen every move since the window opened (and, through session storage,
+// how far forward the entries went before a reload).
 const trackers = new WeakMap<RouterHistory, HistoryTracker>();
 
 function trackerFor(history: RouterHistory): HistoryTracker {
   const existing = trackers.get(history);
   if (existing) return existing;
-  let position: HistoryPosition = { index: indexOf(history), furthest: indexOf(history) };
+  let position = initialHistoryPosition(indexOf(history), readStoredFurthest());
+  storeFurthest(position.furthest);
   const listeners = new Set<() => void>();
   history.subscribe(({ action }) => {
     const next = nextHistoryPosition(position, action.type, indexOf(history));
     if (next.index === position.index && next.furthest === position.furthest) return;
     position = next;
+    storeFurthest(position.furthest);
     for (const listener of listeners) listener();
   });
   const tracker: HistoryTracker = {
