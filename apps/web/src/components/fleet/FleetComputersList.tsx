@@ -13,7 +13,7 @@ import { AttentionCounts } from "../sidebar/AttentionCounts";
 import { ChromeIconButton, ChromeTooltip } from "../sidebar/ChromeIconButton";
 import { DestinationListHeader } from "../sidebar/DestinationListHeader";
 import { Button } from "../ui/button";
-import { SidebarContent } from "../ui/sidebar";
+import { SidebarContent, useSidebar } from "../ui/sidebar";
 import { describeComputerLocation, type FleetComputer } from "./fleet.logic";
 import { FLEET_CONNECTION_DOT_CLASS, FLEET_GLYPH_ICONS } from "./FleetGraph";
 import { type FleetDirectoryEntry, FLEET_DEVICE_KEY_PREFIX } from "./fleetLinks.logic";
@@ -108,6 +108,12 @@ export function fleetEntryRoute(entry: Pick<FleetDirectoryEntry, "environmentId"
  */
 export function FleetComputersList() {
   const navigate = useNavigate();
+  const { isMobile, setOpenMobile } = useSidebar();
+  // On a phone the list is a sheet over the page: choosing a row closes it.
+  const go = (navigateTo: () => void) => {
+    if (isMobile) setOpenMobile(false);
+    navigateTo();
+  };
   const pathname = useLocation({ select: (location) => location.pathname });
   const nowMs = useRelativeTimeTick(30_000);
   const data = useFleetPageStore((state) => state.data);
@@ -148,7 +154,7 @@ export function FleetComputersList() {
             meta={null}
             needsYou={data?.model.needsYou ?? 0}
             working={data?.model.working ?? 0}
-            onSelect={() => void navigate({ to: "/fleet" })}
+            onSelect={() => go(() => void navigate({ to: "/fleet" }))}
           />
           {(data?.directory ?? []).map((entry) => {
             const computer = computerById.get(entry.key) ?? null;
@@ -173,7 +179,7 @@ export function FleetComputersList() {
                 meta={meta}
                 needsYou={computer?.needsYou ?? 0}
                 working={computer?.working ?? 0}
-                onSelect={() => void navigate(fleetEntryRoute(entry))}
+                onSelect={() => go(() => void navigate(fleetEntryRoute(entry)))}
                 action={
                   pairing && entry.environmentId !== null ? (
                     <Button

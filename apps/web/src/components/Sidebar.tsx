@@ -2023,11 +2023,13 @@ export default function Sidebar() {
   }, [clearSelection]);
 
   // What the list shows: the destination's own list on a wide screen (see
-  // destinationLists), the threads in a phone's sheet. This component stays
-  // mounted either way, so the thread shortcuts work on every page.
-  const destinationList = isMobile
-    ? DESTINATION_LISTS.threads
-    : DESTINATION_LISTS[selectedDestination];
+  // destinationLists), the threads in a phone's sheet unless the page's list
+  // belongs there (Fleet's computers). This component stays mounted either
+  // way, so the thread shortcuts work on every page.
+  const destinationList =
+    isMobile && DESTINATION_LISTS[selectedDestination]?.inPhoneSheet !== true
+      ? DESTINATION_LISTS.threads
+      : DESTINATION_LISTS[selectedDestination];
   const PageListBody =
     destinationList !== null && destinationList.body !== "inbox" ? destinationList.body : null;
 
@@ -2039,8 +2041,8 @@ export default function Sidebar() {
       {isMobile ? <SidebarDestinationRow /> : null}
 
       {PageListBody !== null ? (
-        // A wide screen's page with a list of its own (General chats,
-        // Computers, Settings). The phone's sheet always holds the threads.
+        // A page with a list of its own (General chats, Computers, Settings)
+        // on a wide screen; on a phone, only one whose list is in the sheet.
         <>
           <PageListBody />
           {destinationList?.ownFooter ? null : (
