@@ -3,12 +3,14 @@ import {
   AuthSessionId,
   ComputerLinkId,
   EnvironmentId,
+  type PeerDescriptor,
   PeerRpcError,
   PeerRpcGroup,
   type PeerUnlinkInput,
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -121,12 +123,24 @@ const makeComputer = Effect.gen(function* () {
   );
 
   const answers = new Map<string, Answer>();
+  /** Whether a computer, asked over this computer's own link, still takes it. */
+  const takesLinkBack = new Map<string, boolean>();
   const told: Array<{ readonly linkId: string; readonly input: PeerUnlinkInput }> = [];
   const dropped: Array<{ readonly deviceId: string; readonly stopRunning: boolean }> = [];
   const revoked: Array<string> = [];
 
   const client = {
     ...realClient,
+    describe: (environmentId: EnvironmentId) =>
+      takesLinkBack.get(environmentId) === true
+        ? Effect.succeed({} as PeerDescriptor)
+        : Effect.fail(
+            new ComputerLinkUnavailableError({
+              environmentId,
+              detail: "It removed this computer's link.",
+              revoked: true,
+            }),
+          ),
     unlinkPeer: (linkId: ComputerLinkId, input: PeerUnlinkInput) =>
       Effect.suspend((): Effect.Effect<void, PeerRpcError | ComputerLinkUnavailableError> => {
         told.push({ linkId, input });
@@ -195,6 +209,7 @@ const makeComputer = Effect.gen(function* () {
     repo,
     devices,
     answers,
+    takesLinkBack,
     told,
     dropped,
     revoked,
@@ -326,7 +341,7 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
   );
 
   it.effect(
-    "peer.unlink with reverse stops what the link started and forgets this computer's own link back",
+    "peer.unlink with reverse stops what the link started, and drops the link back only once that computer refuses it",
     () =>
       Effect.gen(function* () {
         const computer = yield* makeComputer;
@@ -363,9 +378,12 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
           now: AT,
         });
         const back = outboundLink("link-back", windowsId, "Windows PC");
-        const other = outboundLink("link-linux", EnvironmentId.make("env-linux"), "Linux box");
+        const linuxId = EnvironmentId.make("env-linux");
+        const other = outboundLink("link-linux", linuxId, "Linux box");
         yield* computer.addLink(back);
         yield* computer.addLink(other);
+        // Linux box still takes this computer's link: a peer naming it can't end that.
+        computer.takesLinkBack.set(linuxId, true);
         // Settings tells this link's row by its session, never by its name.
         assert.equal((yield* links.snapshot).inbound[0]?.sessionId, session);
 
@@ -387,13 +405,44 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
         );
         yield* peer["peer.unlink"]({ stopRunning: true, reverse: true });
 
-        assert.deepEqual(computer.dropped, [{ deviceId: "device-windows", stopRunning: true }]);
-        assert.isFalse(yield* computer.hasLink(back.linkId));
+        // Its access went off before the drain, and a second drain after its
+        // session ended catches work that got past the first.
+        assert.deepEqual(computer.dropped, [
+          { deviceId: "device-windows", stopRunning: true },
+          { deviceId: "device-windows", stopRunning: true },
+        ]);
+        const device = yield* computer.devices.getDevice("device-windows");
+        assert.equal(Option.getOrThrow(device).linkAccess, "off");
+        assert.deepEqual(computer.revoked, [session]);
+        // Windows PC refuses this computer's link back: it goes, keys and all.
+        yield* eventually(
+          Effect.map(computer.hasLink(back.linkId), (has) => !has),
+          "the link back to Windows PC is dropped",
+        );
         assert.isFalse(yield* computer.hasKeys(back.linkId));
         assert.isTrue(yield* computer.hasLink(other.linkId));
-        assert.deepEqual(computer.revoked, [session]);
         // Windows PC's side is gone already: nothing was sent back.
         assert.deepEqual(computer.told, []);
+
+        // A peer claiming to be Linux box can't make this computer drop its
+        // link there: Linux box still takes it.
+        yield* computer.devices.touchLink({
+          deviceId: "device-windows",
+          environmentId: linuxId,
+          now: AT,
+        });
+        yield* links
+          .unlinkedByPeer({
+            deviceId: "device-windows",
+            sessionId: session,
+            stopRunning: false,
+            reverseTo: linuxId,
+          })
+          .pipe(Effect.ignore);
+        yield* wallClockSleep(100);
+        yield* TestClock.adjust(Duration.seconds(5));
+        yield* wallClockSleep(100);
+        assert.isTrue(yield* computer.hasLink(other.linkId));
       }),
   );
 });

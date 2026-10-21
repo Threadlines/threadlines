@@ -177,7 +177,7 @@ export interface LinkRequestsShape {
   readonly dropLink: (
     deviceId: string,
     options?: { readonly stopRunning?: boolean },
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, ComputerLinkError>;
   readonly onTurnEnd: RemoteRequestTurnEndsShape["onTurnEnd"];
   /** See RemoteRequestGate. */
   readonly messageVerdict: RemoteRequestGateShape["messageVerdict"];
@@ -1247,7 +1247,23 @@ const make = Effect.gen(function* () {
   const dropLink: LinkRequestsShape["dropLink"] = (deviceId, options) =>
     Effect.gen(function* () {
       const stopRunning = options?.stopRunning === true;
-      const open = yield* ledger.listOpen.pipe(Effect.orElseSucceed(() => []));
+      // An unlink must not claim its work stopped when some of it didn't:
+      // it fails, the link stays, and the unlink is tried again.
+      let incomplete = false;
+      const open = yield* ledger.listOpen.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("link requests could not list a removed link's requests", {
+            detail: String(error),
+          }).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                incomplete = true;
+                return [] as ReadonlyArray<LinkRequestRow>;
+              }),
+            ),
+          ),
+        ),
+      );
       for (const row of open) {
         if (row.linkDeviceId !== deviceId) continue;
         yield* cancelRequest(
@@ -1259,36 +1275,49 @@ const make = Effect.gen(function* () {
           Effect.catch((error) =>
             Effect.logWarning("link requests could not cancel a removed link's request", {
               detail: error.detail,
-            }),
+            }).pipe(Effect.andThen(Effect.sync(() => (incomplete = true)))),
           ),
         );
       }
-      if (!stopRunning) return;
-      // Its threads whose requests already settled can still be at work
-      // (a follow-up, a background task): an unlink stops them too.
-      const threadIds = yield* threadRows.listIdsByRemoteLink({ linkDeviceId: deviceId }).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("link requests could not list a removed link's threads", {
-            detail: String(error),
-          }).pipe(Effect.as([] as ReadonlyArray<ThreadId>)),
-        ),
-      );
-      for (const threadId of threadIds) {
-        yield* Effect.gen(function* () {
-          const thread = yield* readThreadOrFail(threadId);
-          if (thread === undefined || thread.deletedAt !== null) return;
-          if (thread.remoteOrigin?.linkDeviceId !== deviceId) return;
-          yield* stopIfWorking(deviceId, thread);
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.interrupt
-              : Effect.logWarning("link requests could not stop a removed link's thread", {
-                  threadId,
-                  cause: Cause.pretty(cause),
+      if (stopRunning) {
+        // Its threads whose requests already settled can still be at work
+        // (a follow-up, a background task): an unlink stops them too.
+        const threadIds = yield* threadRows.listIdsByRemoteLink({ linkDeviceId: deviceId }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("link requests could not list a removed link's threads", {
+              detail: String(error),
+            }).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  incomplete = true;
+                  return [] as ReadonlyArray<ThreadId>;
                 }),
+              ),
+            ),
           ),
         );
+        for (const threadId of threadIds) {
+          yield* Effect.gen(function* () {
+            const thread = yield* readThreadOrFail(threadId);
+            if (thread === undefined || thread.deletedAt !== null) return;
+            if (thread.remoteOrigin?.linkDeviceId !== deviceId) return;
+            yield* stopIfWorking(deviceId, thread);
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("link requests could not stop a removed link's thread", {
+                    threadId,
+                    cause: Cause.pretty(cause),
+                  }).pipe(Effect.andThen(Effect.sync(() => (incomplete = true)))),
+            ),
+          );
+        }
+      }
+      if (stopRunning && incomplete) {
+        return yield* new ComputerLinkError({
+          detail: `${ownLabel} couldn't stop everything the link started. Try again.`,
+        });
       }
     });
 

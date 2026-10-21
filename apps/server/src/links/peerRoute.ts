@@ -57,7 +57,6 @@ export const makePeerRpcLayer = (input: {
       const computerLinks = yield* ComputerLinks;
       const devices = yield* RelayDeviceRepository;
       const relayHost = yield* RelayHost;
-      const sessions = yield* SessionCredentialService;
       const environment = yield* ServerEnvironment;
       const providers = yield* ProviderRegistry;
       const settings = yield* ServerSettingsService;
@@ -168,15 +167,17 @@ export const makePeerRpcLayer = (input: {
           guarded(
             Effect.gen(function* () {
               const link = yield* currentLink;
-              yield* linkRequests.dropLink(link.deviceId, {
-                stopRunning: payload.stopRunning === true,
-              });
-              if (payload.reverse === true && link.environmentId !== null) {
-                yield* computerLinks
-                  .forgetLinksTo(EnvironmentId.make(link.environmentId))
-                  .pipe(Effect.mapError((error) => failed(error.detail)));
-              }
-              yield* sessions.revoke(input.sessionId).pipe(Effect.ignore);
+              yield* computerLinks
+                .unlinkedByPeer({
+                  deviceId: link.deviceId,
+                  sessionId: input.sessionId,
+                  stopRunning: payload.stopRunning === true,
+                  reverseTo:
+                    payload.reverse === true && link.environmentId !== null
+                      ? EnvironmentId.make(link.environmentId)
+                      : null,
+                })
+                .pipe(Effect.mapError((error) => failed(error.detail)));
             }),
           ),
       });
