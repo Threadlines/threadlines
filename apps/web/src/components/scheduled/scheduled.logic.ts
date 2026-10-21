@@ -441,6 +441,11 @@ export interface ScheduledTaskForm {
   readonly weekday: number;
   readonly cron: string;
   readonly timeZone: string;
+  /**
+   * The user picked the zone (or the task already had one): until then a
+   * new task follows the chosen computer's own zone.
+   */
+  readonly timeZoneChosen: boolean;
   readonly target: "new_thread" | "thread";
   readonly threadId: ThreadId | null;
   /** In a room, the agent the continued thread's runs are for; kept until another thread is chosen. */
@@ -479,6 +484,7 @@ export function emptyTaskForm(input: {
     weekday: 1,
     cron: "0 9 * * 1-5",
     timeZone: input.timeZone,
+    timeZoneChosen: false,
     target: "new_thread",
     threadId: null,
     threadParticipantId: null,
@@ -511,6 +517,7 @@ export function taskForm(task: ScheduledTask, environmentId: EnvironmentId): Sch
     ...(cadence.kind === "hourly" ? { minute: cadence.minute } : {}),
     ...(cadence.kind === "weekly" ? { weekday: cadence.weekday } : {}),
     ...(cadence.kind === "custom" ? { cron: cadence.cron } : {}),
+    timeZoneChosen: true,
     target: task.target.kind,
     threadId: task.target.kind === "thread" ? task.target.threadId : null,
     threadParticipantId: task.target.kind === "thread" ? (task.target.participantId ?? null) : null,

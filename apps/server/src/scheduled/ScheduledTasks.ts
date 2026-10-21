@@ -413,6 +413,7 @@ const make = Effect.gen(function* () {
     return {
       tasks: tasks.map((task) => toTask(task, summaries.get(task.id))),
       requests: requests.map(toRequest),
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
   }).pipe(Effect.mapError(storageError("read the scheduled tasks")));
 

@@ -828,8 +828,8 @@ const buildAppUnderTest = (options?: {
             ...options?.layers?.computerLinks,
           }),
           Layer.mock(ScheduledTasks)({
-            snapshot: Effect.succeed({ tasks: [], requests: [] }),
-            changes: Stream.make({ tasks: [], requests: [] }),
+            snapshot: Effect.succeed({ tasks: [], requests: [], timeZone: "UTC" }),
+            changes: Stream.make({ tasks: [], requests: [], timeZone: "UTC" }),
             ...options?.layers?.scheduledTasks,
           }),
           Layer.mock(LinkRequests)({

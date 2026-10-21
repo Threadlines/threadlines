@@ -1,5 +1,5 @@
 import type { ScheduledRun, ThreadId } from "@threadlines/contracts";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronLeftIcon } from "lucide-react";
 import { useState } from "react";
@@ -104,20 +104,27 @@ function RunRow({
 /** The task's runs, newest first; follows the task as its runs move. */
 function RunHistory({ located }: { readonly located: LocatedTask }) {
   const nowMs = useRelativeTimeTick(30_000);
-  const [limit, setLimit] = useState(RUN_PAGE);
   const { environment, task } = located;
   // Read again whenever the task's last run moves or a run starts or ends.
   const version = `${task.lastRun?.slotUtc ?? ""}:${task.lastRun?.status ?? ""}:${task.lastRun?.updatedAt ?? ""}:${task.workingRuns}`;
-  const runs = useQuery({
-    queryKey: ["scheduledTasks", "runs", environment.environmentId, task.id, limit, version],
-    queryFn: async () => {
+  // A page at a time, each picking up below the oldest run shown, so Show
+  // more reaches the very first run however long the history is.
+  const runs = useInfiniteQuery({
+    queryKey: ["scheduledTasks", "runs", environment.environmentId, task.id, version],
+    queryFn: async ({ pageParam }) => {
       const connection = readEnvironmentConnection(environment.environmentId);
       if (!connection) throw new Error(`${environment.label} isn't connected.`);
-      return connection.client.scheduledTasks.listRuns({ id: task.id, limit });
+      return connection.client.scheduledTasks.listRuns({
+        id: task.id,
+        limit: RUN_PAGE,
+        ...(pageParam !== null ? { before: pageParam } : {}),
+      });
     },
-    placeholderData: (previous) => previous,
+    initialPageParam: null as string | null,
+    getNextPageParam: (page) => (page.hasMore ? (page.runs.at(-1)?.slotUtc ?? null) : null),
+    placeholderData: keepPreviousData,
   });
-  const list = runs.data?.runs ?? [];
+  const list = runs.data?.pages.flatMap((page) => page.runs) ?? [];
 
   return (
     <SettingsSection title="Runs" bare={list.length === 0} data-testid="scheduled-run-history">
@@ -141,12 +148,14 @@ function RunHistory({ located }: { readonly located: LocatedTask }) {
               />
             ))}
           </ul>
-          {runs.data?.hasMore ? (
+          {runs.hasNextPage ? (
             <div className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2")}>
               <Button
                 size="xs"
                 variant="ghost"
-                onClick={() => setLimit((current) => current + RUN_PAGE)}
+                disabled={runs.isFetchingNextPage}
+                onClick={() => void runs.fetchNextPage()}
+                data-testid="scheduled-run-history-more"
               >
                 Show more
               </Button>

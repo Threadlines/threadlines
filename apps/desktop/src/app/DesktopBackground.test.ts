@@ -73,28 +73,31 @@ describe("DesktopBackground", () => {
     },
   );
 
-  it.effect("hides to the tray on Windows when asked, and never on macOS", () => {
-    const windows: Calls = { started: [], stopped: [], tray: [] };
-    const mac: Calls = { started: [], stopped: [], tray: [] };
-    return Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const background = yield* DesktopBackground.DesktopBackground;
-        const state = yield* DesktopState.DesktopState;
-        const options = yield* background.setOptions({ runInBackground: true });
-        assert.isTrue(options.runInBackground);
-        assert.isTrue(yield* Ref.get(state.runInBackground));
-        yield* background.setOptions({ runInBackground: false });
-        assert.isFalse(yield* Ref.get(state.runInBackground));
-      }).pipe(Effect.provide(makeLayer("win32", windows)));
-      assert.deepEqual(windows.tray, [true, false]);
+  it.effect(
+    "turns background running and its tray on and off on Windows, and offers neither on macOS",
+    () => {
+      const windows: Calls = { started: [], stopped: [], tray: [] };
+      const mac: Calls = { started: [], stopped: [], tray: [] };
+      return Effect.gen(function* () {
+        yield* Effect.gen(function* () {
+          const background = yield* DesktopBackground.DesktopBackground;
+          const state = yield* DesktopState.DesktopState;
+          const options = yield* background.setOptions({ runInBackground: true });
+          assert.isTrue(options.runInBackground);
+          assert.isTrue(yield* Ref.get(state.runInBackground));
+          yield* background.setOptions({ runInBackground: false });
+          assert.isFalse(yield* Ref.get(state.runInBackground));
+        }).pipe(Effect.provide(makeLayer("win32", windows)));
+        assert.deepEqual(windows.tray, [true, false]);
 
-      yield* Effect.gen(function* () {
-        const background = yield* DesktopBackground.DesktopBackground;
-        const options = yield* background.setOptions({ runInBackground: true });
-        assert.isFalse(options.runInBackgroundSupported);
-        assert.isFalse(options.runInBackground);
-      }).pipe(Effect.provide(makeLayer("darwin", mac)));
-      assert.deepEqual(mac.tray, [false]);
-    });
-  });
+        yield* Effect.gen(function* () {
+          const background = yield* DesktopBackground.DesktopBackground;
+          const options = yield* background.setOptions({ runInBackground: true });
+          assert.isFalse(options.runInBackgroundSupported);
+          assert.isFalse(options.runInBackground);
+        }).pipe(Effect.provide(makeLayer("darwin", mac)));
+        assert.deepEqual(mac.tray, [false]);
+      });
+    },
+  );
 });

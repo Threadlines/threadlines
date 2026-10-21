@@ -14,7 +14,10 @@ import { useShallow } from "zustand/react/shallow";
 import { readEnvironmentConnection } from "../../environments/runtime";
 import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
 import { useSettings } from "../../hooks/useSettings";
-import { useScheduledTaskEnvironments } from "../../lib/scheduledTasksState";
+import {
+  useScheduledTaskEnvironments,
+  useScheduledTasksStore,
+} from "../../lib/scheduledTasksState";
 import { cn } from "../../lib/utils";
 import {
   deriveProviderInstanceEntries,
@@ -168,9 +171,11 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       timeZone: viewerTimeZone(),
     });
   });
+  const computerZones = useScheduledTasksStore((state) => state.byEnvironment);
   // A computer, project or agent the page didn't have yet when the form
   // opened (right after a reload) is filled in once it arrives; a choice the
-  // user made is never replaced.
+  // user made is never replaced. Until the user picks a time zone, a new task
+  // is in the chosen computer's own: it runs there, by that computer's clock.
   const form = useMemo((): FormState => {
     if (editing) return draftForm;
     const environmentId = draftForm.environmentId ?? environments[0]?.environmentId ?? null;
@@ -179,6 +184,9 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     return {
       ...draftForm,
       environmentId,
+      timeZone: draftForm.timeZoneChosen
+        ? draftForm.timeZone
+        : (computerZones[environmentId]?.timeZone ?? draftForm.timeZone),
       projectId:
         draftForm.projectId ??
         projects.find(
@@ -192,7 +200,15 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
           environment?.isPrimary === true ? settings.newThreadModelSelection : null,
         ),
     };
-  }, [draftForm, editing, environments, projects, providersOn, settings.newThreadModelSelection]);
+  }, [
+    computerZones,
+    draftForm,
+    editing,
+    environments,
+    projects,
+    providersOn,
+    settings.newThreadModelSelection,
+  ]);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const update = (patch: Partial<FormState>) => setForm((current) => ({ ...current, ...patch }));
@@ -658,12 +674,12 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
         {form.cadenceKind !== "manual" ? (
           <FieldRow
             label="Time zone"
-            hint="A time the clocks skip runs right after the jump; one they pass twice runs once."
+            hint="Times use this zone wherever you are. When clocks skip ahead, a skipped time runs right after; when they fall back, a repeated time runs once."
           >
             <Select
               value={form.timeZone}
               onValueChange={(value) => {
-                if (value) update({ timeZone: value });
+                if (value) update({ timeZone: value, timeZoneChosen: true });
               }}
             >
               <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Time zone">

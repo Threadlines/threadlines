@@ -228,21 +228,25 @@ function makeTestLayer(input: {
   readonly guests?: ReadonlyArray<Electron.WebContents>;
   readonly previewAutomation?: Partial<PreviewAutomation.PreviewAutomation["Service"]>;
   readonly showMessageBox?: ElectronDialog.ElectronDialogShape["showMessageBox"];
+  /** The app's state, for a test that changes it while the window lives. */
+  readonly desktopState?: DesktopState.DesktopStateShape;
 }) {
   const desktopStateLayer =
-    input.initialRunningThreadCount === undefined
-      ? DesktopState.layer
-      : Layer.effect(
-          DesktopState.DesktopState,
-          Effect.all({
-            backendReady: Ref.make(false),
-            quitting: Ref.make(false),
-            localRunningThreadCount: Ref.make(input.initialRunningThreadCount),
-            activeScheduledTaskCount: Ref.make(0),
-            workingScheduledRunCount: Ref.make(0),
-            runInBackground: Ref.make(false),
-          }),
-        );
+    input.desktopState !== undefined
+      ? Layer.succeed(DesktopState.DesktopState, input.desktopState)
+      : input.initialRunningThreadCount === undefined
+        ? DesktopState.layer
+        : Layer.effect(
+            DesktopState.DesktopState,
+            Effect.all({
+              backendReady: Ref.make(false),
+              quitting: Ref.make(false),
+              localRunningThreadCount: Ref.make(input.initialRunningThreadCount),
+              activeScheduledTaskCount: Ref.make(0),
+              workingScheduledRunCount: Ref.make(0),
+              runInBackground: Ref.make(false),
+            }),
+          );
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     workAreaSize: Effect.succeed({ width: 1920, height: 1080 }),
     create: (options) =>
@@ -1129,6 +1133,57 @@ describe("DesktopWindow", () => {
         assert.equal(fakeWindow.hide.mock.calls.length, 1);
       }).pipe(Effect.provide(layer));
     }),
+  );
+
+  it.effect(
+    "on Windows, closing hides to the tray only when asked, and a quit or update install still closes",
+    () =>
+      Effect.gen(function* () {
+        const fakeWindow = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+        const state: DesktopState.DesktopStateShape = {
+          backendReady: yield* Ref.make(false),
+          quitting: yield* Ref.make(false),
+          localRunningThreadCount: yield* Ref.make(0),
+          activeScheduledTaskCount: yield* Ref.make(0),
+          workingScheduledRunCount: yield* Ref.make(0),
+          runInBackground: yield* Ref.make(false),
+        };
+        const layer = makeTestLayer({
+          window: fakeWindow.window,
+          createCount,
+          mainWindow,
+          platform: "win32",
+          desktopState: state,
+        });
+
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.handleBackendReady;
+
+          // Not asked: closing the window closes it, as it always has.
+          const plain = { preventDefault: vi.fn() };
+          fakeWindow.emitWindow("close", plain);
+          assert.equal(plain.preventDefault.mock.calls.length, 0);
+          assert.equal(fakeWindow.hide.mock.calls.length, 0);
+
+          // "Keep running in the background": closing hides it instead.
+          yield* Ref.set(state.runInBackground, true);
+          const hidden = { preventDefault: vi.fn() };
+          fakeWindow.emitWindow("close", hidden);
+          assert.equal(hidden.preventDefault.mock.calls.length, 1);
+          assert.equal(fakeWindow.hide.mock.calls.length, 1);
+
+          // Quitting from the tray, or installing an update, sets quitting:
+          // the close goes through.
+          yield* Ref.set(state.quitting, true);
+          const quitting = { preventDefault: vi.fn() };
+          fakeWindow.emitWindow("close", quitting);
+          assert.equal(quitting.preventDefault.mock.calls.length, 0);
+          assert.equal(fakeWindow.hide.mock.calls.length, 1);
+        }).pipe(Effect.provide(layer));
+      }),
   );
 
   it.effect("mutes the browser panel while hidden and gives back only the sound it took", () =>

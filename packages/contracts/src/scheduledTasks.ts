@@ -187,6 +187,8 @@ export const ScheduledTasksSnapshot = Schema.Struct({
   tasks: Schema.Array(ScheduledTask),
   /** Agents' changes waiting for the user. */
   requests: Schema.Array(ScheduledTaskRequest),
+  /** The computer's own time zone: a new task there starts in it. */
+  timeZone: Schema.String,
 });
 export type ScheduledTasksSnapshot = typeof ScheduledTasksSnapshot.Type;
 

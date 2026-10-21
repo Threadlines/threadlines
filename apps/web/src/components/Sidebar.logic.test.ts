@@ -1822,6 +1822,17 @@ describe("child thread status and wrap-up", () => {
     const asking = { ...seenParent, pendingChildApproval: true };
     expect(resolveThreadStatusPill({ thread: asking })?.label).toBe("Pending Approval");
     expect(canMarkThreadDone(asking, { now: NOW })).toBe(false);
+    // So does a scheduled task its agent asked to create or change, even
+    // through a done its quiet scheduled run set.
+    const scheduling = { ...seenParent, pendingScheduleApproval: true };
+    expect(resolveThreadStatusPill({ thread: scheduling })?.label).toBe("Pending Approval");
+    expect(
+      isThreadDone(
+        { ...scheduling, pinnedAt: null },
+        { state: "done", at: "2026-10-04T12:00:00.000Z" },
+        { now: NOW },
+      ),
+    ).toBe(false);
   });
 });
 
