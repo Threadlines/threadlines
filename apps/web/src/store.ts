@@ -418,6 +418,7 @@ function remoteOriginsEqual(
     ? a === b
     : a.linkDeviceId === b.linkDeviceId &&
         a.environmentId === b.environmentId &&
+        a.environmentPinned === b.environmentPinned &&
         a.environmentLabel === b.environmentLabel &&
         a.threadId === b.threadId &&
         a.threadTitle === b.threadTitle;

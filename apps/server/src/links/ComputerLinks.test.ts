@@ -140,6 +140,8 @@ const makeComputer = Effect.gen(function* () {
   const dropPlan: Array<{ readonly wait?: Deferred.Deferred<void>; readonly fail?: string }> = [];
   /** Per link, whether the other computer still takes it (else per computer, takesLinkBack). */
   const takesLink = new Map<string, boolean>();
+  /** The next unlinks the other computer hears wait for these first. */
+  const unlinkHolds: Array<Deferred.Deferred<void>> = [];
 
   /** Another computer, asked over this computer's link: it answers, or refuses the link. */
   const describeAs = (environmentId: string) =>
@@ -170,22 +172,31 @@ const makeComputer = Effect.gen(function* () {
     unlinkPeer: (linkId: ComputerLinkId, input: PeerUnlinkInput) =>
       Effect.suspend((): Effect.Effect<void, PeerRpcError | ComputerLinkUnavailableError> => {
         told.push({ linkId, input });
-        switch (answers.get(linkId) ?? "unreachable") {
-          case "unlinks":
-            return Effect.void;
-          case "already_removed":
-            return Effect.fail(new PeerRpcError({ detail: PEER_LINK_REMOVED }));
-          case "unreachable":
-            return Effect.fail(
-              new ComputerLinkUnavailableError({
-                environmentId: "",
-                detail: "The other computer didn't answer in time.",
-                revoked: false,
-              }),
-            );
-        }
+        const hold = unlinkHolds.shift();
+        return hold === undefined
+          ? answer(linkId)
+          : Deferred.await(hold).pipe(Effect.andThen(answer(linkId)));
       }),
   };
+  /** How another computer answers this one's unlink of a link. */
+  function answer(
+    linkId: ComputerLinkId,
+  ): Effect.Effect<void, PeerRpcError | ComputerLinkUnavailableError> {
+    switch (answers.get(linkId) ?? "unreachable") {
+      case "unlinks":
+        return Effect.void;
+      case "already_removed":
+        return Effect.fail(new PeerRpcError({ detail: PEER_LINK_REMOVED }));
+      case "unreachable":
+        return Effect.fail(
+          new ComputerLinkUnavailableError({
+            environmentId: "",
+            detail: "The other computer didn't answer in time.",
+            revoked: false,
+          }),
+        );
+    }
+  }
   const services = Layer.mergeAll(
     Layer.succeedContext(context),
     Layer.succeed(ComputerLinkClient, client),
@@ -211,12 +222,12 @@ const makeComputer = Effect.gen(function* () {
             return yield* new ComputerLinkError({ detail: step.fail });
           }
         }),
-      oweStops: (deviceId) =>
+      oweDrain: (deviceId) =>
         Effect.sync(() => {
           owed.add(deviceId);
           return 0;
         }),
-      stopsDone: (deviceId) => Effect.sync(() => void owed.delete(deviceId)),
+      drainDone: (deviceId) => Effect.sync(() => void owed.delete(deviceId)),
     }),
   );
   /** Starts this computer's link service; booting again is a restart. */
@@ -290,6 +301,7 @@ const makeComputer = Effect.gen(function* () {
     owed,
     dropPlan,
     takesLink,
+    unlinkHolds,
     boot,
     addLink,
     addInboundLink,
@@ -548,59 +560,99 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
       }),
   );
 
-  it.effect("a computer's link, once used, ends its older links here, never a newer one", () =>
-    Effect.gen(function* () {
-      const computer = yield* makeComputer;
-      const links = yield* computer.boot;
-      const windowsId = EnvironmentId.make("env-windows");
-      yield* computer.addInboundLink({
-        deviceId: "device-old",
-        environmentId: windowsId,
-        createdAt: "2026-10-21T08:00:00.000Z",
-      });
-      // An older link that only says it is Windows PC.
-      yield* computer.addInboundLink({
-        deviceId: "device-says-windows",
-        environmentId: windowsId,
-        pinned: false,
-        createdAt: "2026-10-21T08:30:00.000Z",
-      });
-      yield* computer.addInboundLink({
-        deviceId: "device-linux",
-        environmentId: EnvironmentId.make("env-linux"),
-        createdAt: "2026-10-21T07:00:00.000Z",
-      });
-      yield* computer.addInboundLink({
-        deviceId: "device-current",
-        environmentId: windowsId,
-        createdAt: "2026-10-21T09:00:00.000Z",
-      });
-      // Being made right now: newer than the one in use.
-      yield* computer.addInboundLink({
-        deviceId: "device-newest",
-        environmentId: windowsId,
-        createdAt: "2026-10-21T10:00:00.000Z",
-      });
-      const linkOf = (deviceId: string) =>
-        Effect.map(computer.devices.getDevice(deviceId), (row) =>
-          peerLinkOf(Option.getOrThrow(row)),
+  it.effect(
+    "a settings change waits for an unlink in progress, never turning the link back on mid-way",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        const links = yield* computer.boot;
+        yield* computer.addInboundLink({
+          deviceId: "device-windows",
+          environmentId: EnvironmentId.make("env-windows"),
+        });
+        const release = yield* Deferred.make<void>();
+        computer.dropPlan.push({ wait: release });
+        const unlinking = yield* Effect.forkChild(
+          links.remove({ direction: "inbound", deviceId: "device-windows", stopRunning: true }),
         );
+        yield* wallClockSleep(20);
+        const changing = yield* Effect.forkChild(
+          links.setAccess({ deviceId: "device-windows", access: "allowed" }),
+        );
+        yield* wallClockSleep(50);
+        // The unlink turned it off and is stopping what it started: it stays off.
+        const during = Option.getOrThrow(yield* computer.devices.getDevice("device-windows"));
+        assert.equal(during.linkAccess, "off");
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(unlinking);
+        yield* Fiber.join(changing).pipe(Effect.ignore);
+      }),
+  );
 
-      // A link whose computer isn't confirmed proves nothing: it ends nothing.
-      yield* links.linkInUse(yield* linkOf("device-says-windows"));
-      assert.deepEqual(computer.revoked, []);
+  it.effect(
+    "a computer's link, once used, ends its older links here, and a newer one only once abandoned",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        const links = yield* computer.boot;
+        const windowsId = EnvironmentId.make("env-windows");
+        yield* computer.addInboundLink({
+          deviceId: "device-old",
+          environmentId: windowsId,
+          createdAt: "1969-12-31T22:00:00.000Z",
+        });
+        // An older link that only says it is Windows PC.
+        yield* computer.addInboundLink({
+          deviceId: "device-says-windows",
+          environmentId: windowsId,
+          pinned: false,
+          createdAt: "1969-12-31T22:30:00.000Z",
+        });
+        yield* computer.addInboundLink({
+          deviceId: "device-linux",
+          environmentId: EnvironmentId.make("env-linux"),
+          createdAt: "1969-12-31T21:00:00.000Z",
+        });
+        yield* computer.addInboundLink({
+          deviceId: "device-current",
+          environmentId: windowsId,
+          createdAt: "1969-12-31T23:00:00.000Z",
+        });
+        // Made after it, never used, long ago: Windows PC stopped while making it.
+        yield* computer.addInboundLink({
+          deviceId: "device-abandoned",
+          environmentId: windowsId,
+          createdAt: "1969-12-31T23:30:00.000Z",
+        });
+        // Being made right now: newer than the one in use.
+        yield* computer.addInboundLink({
+          deviceId: "device-newest",
+          environmentId: windowsId,
+          createdAt: "1969-12-31T23:55:00.000Z",
+        });
+        // On the test clock it is now 1970-01-01T00:00:00Z.
+        const linkOf = (deviceId: string) =>
+          Effect.map(computer.devices.getDevice(deviceId), (row) =>
+            peerLinkOf(Option.getOrThrow(row)),
+          );
 
-      yield* links.linkInUse(yield* linkOf("device-current"));
-      assert.deepEqual(computer.revoked, [
-        AuthSessionId.make("session-device-old"),
-        AuthSessionId.make("session-device-says-windows"),
-      ]);
-      // Ended as a removal, not an unlink: what they started isn't stopped.
-      assert.deepEqual(computer.dropped, [
-        { deviceId: "device-old", stopRunning: false },
-        { deviceId: "device-says-windows", stopRunning: false },
-      ]);
-    }),
+        // A link whose computer isn't confirmed proves nothing: it ends nothing.
+        yield* links.linkInUse(yield* linkOf("device-says-windows"));
+        assert.deepEqual(computer.revoked, []);
+
+        yield* links.linkInUse(yield* linkOf("device-current"));
+        assert.deepEqual(computer.revoked, [
+          AuthSessionId.make("session-device-old"),
+          AuthSessionId.make("session-device-says-windows"),
+          AuthSessionId.make("session-device-abandoned"),
+        ]);
+        // Ended as a removal, not an unlink: what they started isn't stopped.
+        assert.deepEqual(computer.dropped, [
+          { deviceId: "device-old", stopRunning: false },
+          { deviceId: "device-says-windows", stopRunning: false },
+          { deviceId: "device-abandoned", stopRunning: false },
+        ]);
+      }),
   );
 
   it.effect("a new link waits for an earlier unlink of that computer to finish", () =>
@@ -637,6 +689,61 @@ it.layer(NodeServices.layer)("ComputerLinks unlink", (it) => {
       assert.isFalse(yield* computer.hasLink(old.linkId));
       assert.notEqual(claimed.detail, waiting.detail);
     }),
+  );
+
+  it.effect(
+    "changes to this computer's links to one computer wait for each other: linking, linking again, unlinking",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        const links = yield* computer.boot;
+        const windowsId = EnvironmentId.make("env-windows");
+        const old = {
+          ...outboundLink("link-old", windowsId, "Windows PC"),
+          state: "unlinking" as const,
+        };
+        const current = outboundLink("link-current", windowsId, "Windows PC");
+        yield* computer.addLink(old);
+        yield* computer.addLink(current);
+        const invite: ComputerLinkInvite = {
+          hostId: RelayHostId.make("8911ad8a-f546-45e5-a2e8-7a6a8adfc65c"),
+          relayOrigin: "http://127.0.0.1:1",
+          inviteId: RelayInviteId.make("invite-1"),
+          inviteSecret: "secret",
+          hostPublicKey: "key",
+          directOrigins: [],
+          environmentId: windowsId,
+          label: "Windows PC",
+          expiresAt: AT,
+        };
+        // The startup retry of the earlier unlink has had its turn.
+        yield* wallClockSleep(50);
+        const before = computer.told.length;
+        // The first link being made waits on Windows PC hearing the earlier unlink.
+        const heard = yield* Deferred.make<void>();
+        computer.unlinkHolds.push(heard);
+        const first = yield* Effect.forkChild(Effect.flip(links.accept(invite)));
+        yield* wallClockSleep(50);
+        const second = yield* Effect.forkChild(Effect.flip(links.accept(invite)));
+        const unlink = yield* Effect.forkChild(
+          links.remove({ direction: "outbound", linkId: current.linkId }),
+        );
+        yield* wallClockSleep(100);
+        // Neither the second link nor the unlink has started meanwhile.
+        assert.deepEqual(
+          computer.told.slice(before).map((call) => call.linkId),
+          [old.linkId],
+        );
+        assert.isTrue(yield* computer.hasLink(current.linkId));
+
+        yield* Deferred.succeed(heard, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(second);
+        const removed = yield* Fiber.join(unlink);
+        // The unlink told Windows PC itself: it found the link where it was.
+        assert.equal(removed.otherComputer, "pending");
+        assert.isTrue(computer.told.some((call) => call.linkId === current.linkId));
+      }),
   );
 
   it.effect("a late write never brings back a link that is unlinking or was removed there", () =>

@@ -54,29 +54,48 @@ export const FLEET_DEVICE_KEY_PREFIX = "device:";
 export type FleetEntryKind = "this" | "saved" | "linked" | "waiting" | "unconfirmed";
 
 /**
- * The computer an inbound link is for, when that is confirmed: its id was
- * pinned by the invite made for it. Only then is the link treated as that
- * computer's (merged with a saved computer, listed in their pair, drawn to
- * it). Any other link stands on its own, under its device: what a computer
- * says about itself could name any other.
+ * The computer an inbound link on `holder` is for, when that is confirmed:
+ * its id was pinned by the invite made for it, or that computer vouches for
+ * it (its own link to `holder`, as this app hears from it, reports this very
+ * device). Only then is the link treated as that computer's (merged with a
+ * saved computer, listed in their pair, drawn to it). Any other link stands
+ * on its own, under its device: what a computer says about itself could name
+ * any other.
  */
-export function confirmedInboundEnvironment(link: InboundComputerLink): EnvironmentId | null {
-  return link.environmentPinned === true ? link.environmentId : null;
+export function confirmedInboundEnvironment(
+  link: InboundComputerLink,
+  holder: string,
+  links: FleetLinksByEnvironment,
+): EnvironmentId | null {
+  if (link.environmentId === null) return null;
+  if (link.environmentPinned === true) return link.environmentId;
+  const vouched = (links[link.environmentId]?.snapshot.outbound ?? []).some(
+    (outbound) =>
+      outbound.remoteEnvironmentId === holder && outbound.remoteDeviceId === link.deviceId,
+  );
+  return vouched ? link.environmentId : null;
 }
 
 /**
- * The computer that asked for a thread another computer started, when that
- * can be trusted: the link it came over (on the computer it runs on) is
- * confirmed, or isn't listed there any more (a thread outlives its link).
+ * The computer that asked for a thread another computer (`worker`) started,
+ * when that can be trusted: the thread says its link was made for that
+ * computer, or the link it came over is still listed there and confirmed.
+ * Otherwise (a link that only said who it is, or one gone since) nobody.
  */
 export function trustedOriginEnvironment(
-  origin: { readonly linkDeviceId: string; readonly environmentId: EnvironmentId },
-  workerLinks: FleetLinksEntry | null,
+  origin: {
+    readonly linkDeviceId: string;
+    readonly environmentId: EnvironmentId;
+    readonly environmentPinned?: boolean | undefined;
+  },
+  worker: string,
+  links: FleetLinksByEnvironment,
 ): EnvironmentId | null {
-  const link = workerLinks?.snapshot.inbound.find(
+  if (origin.environmentPinned === true) return origin.environmentId;
+  const link = links[worker]?.snapshot.inbound.find(
     (candidate) => candidate.deviceId === origin.linkDeviceId,
   );
-  return link === undefined ? origin.environmentId : confirmedInboundEnvironment(link);
+  return link === undefined ? null : confirmedInboundEnvironment(link, worker, links);
 }
 
 /** What a list row known only by its device says where its computer is. */
@@ -171,7 +190,7 @@ export function buildFleetDirectory(input: {
   }
   for (const [holder, entry] of holders) {
     for (const link of entry.snapshot.inbound) {
-      const confirmed = confirmedInboundEnvironment(link);
+      const confirmed = confirmedInboundEnvironment(link, holder, input.links);
       if (confirmed === null) {
         const key = `${FLEET_DEVICE_KEY_PREFIX}${link.deviceId}`;
         byKey.set(key, {
@@ -292,9 +311,14 @@ export function resolveFleetDirection(
       (link) => link.remoteEnvironmentId === worker.environmentId,
     ),
   );
+  // The asker vouches for its own links' halves here, as far as this app hears from it.
+  const vouching: FleetLinksByEnvironment = asker.links
+    ? { [asker.environmentId]: asker.links }
+    : {};
   const allInbound = newestFirst(
     (worker.links?.snapshot.inbound ?? []).filter(
-      (link) => confirmedInboundEnvironment(link) === asker.environmentId,
+      (link) =>
+        confirmedInboundEnvironment(link, worker.environmentId, vouching) === asker.environmentId,
     ),
   );
   // The link the asker uses is its newest that still works, as its server picks it.
@@ -433,6 +457,26 @@ export interface FleetUnlinkPlan {
 }
 
 /**
+ * Whether an outbound link's other half is gone by the time it is removed,
+ * so there's nothing to tell: this unlink removes it first, or the worker
+ * (as it says now) has no such half. With an older server that doesn't say
+ * which half is its own, any half this unlink removes, or a current word
+ * from the worker, counts.
+ */
+function otherHalfGone(outbound: OutboundComputerLink, direction: FleetDirection): boolean {
+  const { worker, allInbound } = direction;
+  if (!worker.reachable) return false;
+  if (outbound.remoteDeviceId === undefined) {
+    return allInbound.length > 0 || worker.links?.live === true;
+  }
+  if (allInbound.some((link) => link.deviceId === outbound.remoteDeviceId)) return true;
+  return (
+    worker.links?.live === true &&
+    !worker.links.snapshot.inbound.some((link) => link.deviceId === outbound.remoteDeviceId)
+  );
+}
+
+/**
  * Unlink removes both directions, each half on its own computer, through
  * this app's connection to it. An outbound half whose other half this app
  * removes (or sees gone) is told so, and needn't reach the other computer;
@@ -442,6 +486,8 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
   const inboundSteps: FleetUnlinkStep[] = [];
   const outboundSteps: FleetUnlinkStep[] = [];
   const finishLater = new Map<EnvironmentId, FleetLinkReach>();
+  /** Computers an outbound removal here goes on to tell, now or when they're back. */
+  const toldLater = new Set<EnvironmentId>();
   for (const [name, direction] of [
     ["outward", pair.outward],
     ["inward", pair.inward],
@@ -460,8 +506,9 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
     }
     for (const outbound of allOutbound) {
       if (asker.reachable) {
-        const otherHalfRemoved =
-          worker.reachable && (allInbound.length > 0 || worker.links?.live === true);
+        const otherHalfRemoved = otherHalfGone(outbound, direction);
+        // A link the other computer already removed is just forgotten here.
+        if (!otherHalfRemoved && outbound.state !== "revoked") toldLater.add(worker.environmentId);
         outboundSteps.push({
           holder: asker,
           direction: name,
@@ -482,13 +529,6 @@ export function planFleetUnlink(pair: FleetPair): FleetUnlinkPlan {
   const steps = [...inboundSteps, ...outboundSteps];
   // An offline computer hears the unlink over the other computer's link to
   // it, which that computer keeps trying until it gets through.
-  const toldLater = new Set(
-    outboundSteps.map((step) =>
-      step.direction === "outward"
-        ? pair.outward.worker.environmentId
-        : pair.inward.worker.environmentId,
-    ),
-  );
   return {
     steps,
     finishLater: [...finishLater.values()],
@@ -720,7 +760,7 @@ export function buildFleetGraphEdges(input: {
       notePair(holder, link.remoteEnvironmentId, entry.live ? link : null);
     }
     for (const link of entry.snapshot.inbound) {
-      const confirmed = confirmedInboundEnvironment(link);
+      const confirmed = confirmedInboundEnvironment(link, holder, input.links);
       if (confirmed !== null) notePair(holder, confirmed, null);
     }
   }

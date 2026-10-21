@@ -205,16 +205,55 @@ describe("buildFleetDirectory", () => {
     );
     expect(direction.allInbound).toEqual([]);
     expect(direction.status).toBe("none");
-    // Work it started on Mac isn't Windows PC's.
+    // Work it started on Mac isn't Windows PC's, nor once its link is gone.
     const origin = { linkDeviceId: "device-posing", environmentId: WINDOWS };
-    expect(trustedOriginEnvironment(origin, links[MAC]!)).toBeNull();
-    const pinned = inbound(WINDOWS, "Windows PC", { deviceId: "device-pinned" });
-    expect(
-      trustedOriginEnvironment(
-        { linkDeviceId: "device-pinned", environmentId: WINDOWS },
-        { live: true, snapshot: snapshot({ inbound: [pinned] }) },
-      ),
-    ).toBe(WINDOWS);
+    expect(trustedOriginEnvironment(origin, MAC, links)).toBeNull();
+    const gone: FleetLinksByEnvironment = { [MAC]: { live: true, snapshot: snapshot({}) } };
+    expect(trustedOriginEnvironment(origin, MAC, gone)).toBeNull();
+    // A thread that says its link was made for Windows PC is, gone link or not.
+    expect(trustedOriginEnvironment({ ...origin, environmentPinned: true }, MAC, gone)).toBe(
+      WINDOWS,
+    );
+  });
+
+  it("takes an older, unpinned link as its computer's when that computer vouches for it", () => {
+    const legacy = inbound(WINDOWS, "Windows PC", {
+      deviceId: "device-legacy",
+      environmentPinned: false,
+    });
+    const links: FleetLinksByEnvironment = {
+      [MAC]: { live: true, snapshot: snapshot({ inbound: [legacy] }) },
+      // Windows PC's own link to Mac reports that very device.
+      [WINDOWS]: {
+        live: true,
+        snapshot: snapshot({
+          outbound: [outbound(MAC, "Mac", { remoteDeviceId: "device-legacy" })],
+        }),
+      },
+    };
+    const directory = buildFleetDirectory({
+      primary: { environmentId: MAC, label: "Mac" },
+      saved: [{ environmentId: WINDOWS, label: "Windows PC" }],
+      links,
+    });
+    expect(directory.map((entry) => entry.key)).toEqual([MAC, WINDOWS]);
+    const origin = { linkDeviceId: "device-legacy", environmentId: WINDOWS };
+    expect(trustedOriginEnvironment(origin, MAC, links)).toBe(WINDOWS);
+
+    // Unlink removes that half, so Windows PC's link needn't tell Mac.
+    const pair = resolveFleetPair(
+      reach(MAC, "Mac", { links: links[MAC]! }),
+      reach(WINDOWS, "Windows PC", { links: links[WINDOWS]! }),
+    );
+    expect(pair.inward.inbound?.deviceId).toBe("device-legacy");
+    expect(planFleetUnlink(pair).steps.map((step) => step.input)).toEqual([
+      { direction: "inbound", deviceId: "device-legacy", stopRunning: true },
+      {
+        direction: "outbound",
+        linkId: ComputerLinkId.make(`link-to-${MAC}`),
+        otherHalfRemoved: true,
+      },
+    ]);
   });
 });
 
@@ -447,6 +486,48 @@ describe("planFleetUnlink", () => {
     expect(outcomes).toEqual([["Windows PC", { kind: "leftover", holder: "Windows PC" }]]);
     // With a link of Mac's to carry it, Windows PC does finish when it's back.
     expect(planFleetUnlink(linkedPair(false)).keepItsSide).toEqual([]);
+    // A link of Mac's that Windows PC already removed carries nothing.
+    const removedThere = resolveFleetPair(
+      reach(MAC, "Mac", {
+        links: {
+          live: true,
+          snapshot: snapshot({
+            outbound: [outbound(WINDOWS, "Windows PC", { state: "revoked" })],
+            inbound: [inbound(WINDOWS, "Windows PC")],
+          }),
+        },
+      }),
+      reach(WINDOWS, "Windows PC", {
+        reachable: false,
+        links: { live: false, snapshot: snapshot({ outbound: [outbound(MAC, "Mac")] }) },
+      }),
+    );
+    expect(planFleetUnlink(removedThere).keepItsSide.map((computer) => computer.label)).toEqual([
+      "Windows PC",
+    ]);
+  });
+
+  it("tells the other computer unless its own half of that very link is gone", () => {
+    const pairWith = (windowsInbound: ReadonlyArray<InboundComputerLink>, live: boolean) =>
+      resolveFleetPair(
+        reach(MAC, "Mac", {
+          links: {
+            live: true,
+            snapshot: snapshot({
+              outbound: [outbound(WINDOWS, "Windows PC", { remoteDeviceId: "device-in-use" })],
+            }),
+          },
+        }),
+        reach(WINDOWS, "Windows PC", {
+          links: { live, snapshot: snapshot({ inbound: windowsInbound }) },
+        }),
+      );
+    const outboundStep = (pair: ReturnType<typeof pairWith>) =>
+      planFleetUnlink(pair).steps.find((step) => step.input.direction === "outbound")!.input;
+    // Windows PC lists nothing for it: gone there, nothing to tell.
+    expect(outboundStep(pairWith([], true))).toHaveProperty("otherHalfRemoved", true);
+    // Windows PC hasn't said yet: Mac tells it.
+    expect(outboundStep(pairWith([], false))).not.toHaveProperty("otherHalfRemoved");
   });
 });
 

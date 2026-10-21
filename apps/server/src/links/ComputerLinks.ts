@@ -73,6 +73,12 @@ const APPROVAL_POLL_MS = 500;
 export const UNLINK_RETRY_EVERY = Duration.seconds(60);
 /** How long a refused connection takes to mark its link revoked. */
 const REFUSAL_SETTLE = Duration.millis(1_500);
+/**
+ * How long after it was made a link never used counts as abandoned (its
+ * computer stopped while making it, then went on with its older link).
+ * Making one takes a minute at most.
+ */
+const ABANDONED_LINK_AFTER = Duration.minutes(10);
 
 /**
  * An unlink as the other computer hears it: it stops what this computer's
@@ -125,8 +131,9 @@ export interface ComputerLinksShape {
   /**
    * A linked computer called over `link`: it uses that link now, so its
    * older links here (from the same computer, confirmed by the invite made
-   * for it) are ones it dropped, and end. One live link per computer, so
-   * its settings here are the ones in effect.
+   * for it) are ones it dropped, and end, as does a newer one it never used
+   * long after it was made. One live link per computer, so its settings
+   * here are the ones in effect.
    */
   readonly linkInUse: (link: PeerLink) => Effect.Effect<void>;
 }
@@ -264,8 +271,17 @@ const make = Effect.gen(function* () {
       return "expired" as const;
     });
 
-  /** One link being made per computer at a time (see accept). */
-  const acceptLock = makeKeyedLock();
+  /**
+   * One change to this computer's links to a given computer at a time:
+   * making one (accept) and unlinking one (removeOutbound) wait for each
+   * other, so neither acts on a link the other is replacing or removing.
+   */
+  const computerLock = makeKeyedLock();
+  /**
+   * One change to another computer's link here at a time (settings, its
+   * removal), so a settings change read before an unlink can't land after it.
+   */
+  const inboundLock = makeKeyedLock();
 
   /**
    * Links this computer to the invite's computer. Calls for the same
@@ -278,7 +294,7 @@ const make = Effect.gen(function* () {
    * halves of them once the new one is used (linkInUse there).
    */
   const accept: ComputerLinksShape["accept"] = (invite) =>
-    acceptLock(invite.environmentId)(
+    computerLock(invite.environmentId)(
       Effect.gen(function* () {
         if (invite.environmentId === descriptor.environmentId) {
           return yield* linkError("That invite is for this computer.");
@@ -440,19 +456,21 @@ const make = Effect.gen(function* () {
     );
 
   const setAccess: ComputerLinksShape["setAccess"] = (input) =>
-    Effect.gen(function* () {
-      yield* inboundRow(input.deviceId);
-      yield* devices
-        .setLinkSettings({
-          deviceId: input.deviceId,
-          ...(input.access !== undefined ? { access: input.access as ComputerLinkAccess } : {}),
-          ...(input.maxRuntimeMode !== undefined ? { maxRuntimeMode: input.maxRuntimeMode } : {}),
-          now: yield* nowIso,
-        })
-        .pipe(Effect.mapError(() => linkError("The link's settings couldn't be saved.")));
-      yield* notify;
-      return inboundOf(yield* inboundRow(input.deviceId));
-    });
+    inboundLock(input.deviceId)(
+      Effect.gen(function* () {
+        yield* inboundRow(input.deviceId);
+        yield* devices
+          .setLinkSettings({
+            deviceId: input.deviceId,
+            ...(input.access !== undefined ? { access: input.access as ComputerLinkAccess } : {}),
+            ...(input.maxRuntimeMode !== undefined ? { maxRuntimeMode: input.maxRuntimeMode } : {}),
+            now: yield* nowIso,
+          })
+          .pipe(Effect.mapError(() => linkError("The link's settings couldn't be saved.")));
+        yield* notify;
+        return inboundOf(yield* inboundRow(input.deviceId));
+      }),
+    );
 
   /**
    * Tells the other computer about an unlink: null once its half is done
@@ -481,16 +499,24 @@ const make = Effect.gen(function* () {
       Effect.andThen(notify),
     );
 
+  const outboundRow = (linkId: ComputerLinkId) =>
+    repo.get(linkId).pipe(
+      Effect.mapError(() => linkError("This computer's links couldn't be read.")),
+      Effect.flatMap((found) =>
+        Option.isSome(found)
+          ? Effect.succeed(found.value)
+          : Effect.fail(linkError("That link is already gone.")),
+      ),
+    );
+
   const removeOutbound = (input: Extract<LinksRemoveInput, { readonly direction: "outbound" }>) =>
+    Effect.flatMap(outboundRow(input.linkId), (found) =>
+      computerLock(found.remoteEnvironmentId)(unlinkOutbound(input)),
+    );
+
+  const unlinkOutbound = (input: Extract<LinksRemoveInput, { readonly direction: "outbound" }>) =>
     Effect.gen(function* () {
-      const row = yield* repo.get(input.linkId).pipe(
-        Effect.mapError(() => linkError("This computer's links couldn't be read.")),
-        Effect.flatMap((found) =>
-          Option.isSome(found)
-            ? Effect.succeed(found.value)
-            : Effect.fail(linkError("That link is already gone.")),
-        ),
-      );
+      const row = yield* outboundRow(input.linkId);
       // Nothing to tell when the app already removed the other halves, or
       // the other computer removed this link first.
       if (
@@ -521,10 +547,11 @@ const make = Effect.gen(function* () {
   /**
    * Ends another computer's link to this one. With `stopRunning` (an
    * unlink) its access is turned off first, so nothing new starts or runs,
-   * and the stops it owes are recorded durably; then what it started is
+   * and the pass it owes is recorded durably; then what it started is
    * cancelled and stopped, and only then does its session end. A pass after
-   * that settles what is owed: when it falls short, the owed stops are tried
-   * again until they are done (LinkRequests.oweStops). When the first pass
+   * that settles what is owed: when it falls short, it is tried again until
+   * it gets through, and each stop is asked for again until its thread is
+   * seen stopped (LinkRequests.oweDrain). When the first pass
    * falls short it fails and the link stays, so the unlink is tried again
    * rather than reported done.
    */
@@ -533,33 +560,35 @@ const make = Effect.gen(function* () {
     readonly sessionId: AuthSessionId | null;
     readonly stopRunning: boolean;
   }) =>
-    Effect.gen(function* () {
-      if (link.stopRunning) {
-        yield* devices
-          .setLinkSettings({ deviceId: link.deviceId, access: "off", now: yield* nowIso })
-          .pipe(Effect.mapError(() => linkError("The link couldn't be turned off.")));
-      }
-      // Off before it is owed: an owed link that is on again is one whose
-      // unlink was given up.
-      const owed = link.stopRunning ? yield* linkRequests.oweStops(link.deviceId) : null;
-      yield* linkRequests.dropLink(link.deviceId, { stopRunning: link.stopRunning });
-      // Revoking the session takes it off the relay and closes its connection.
-      if (link.sessionId !== null) {
-        yield* sessions.revoke(link.sessionId).pipe(Effect.ignore);
-      }
-      if (owed !== null) {
-        const last = yield* linkRequests
-          .dropLink(link.deviceId, { stopRunning: true })
-          .pipe(Effect.result);
-        if (last._tag === "Success") {
-          yield* linkRequests.stopsDone(link.deviceId, owed);
-        } else {
-          yield* Effect.logWarning("links.unlink.stops-owed", { detail: last.failure.detail });
-          yield* linkRequests.oweStops(link.deviceId, last.failure.detail).pipe(Effect.ignore);
+    inboundLock(link.deviceId)(
+      Effect.gen(function* () {
+        if (link.stopRunning) {
+          yield* devices
+            .setLinkSettings({ deviceId: link.deviceId, access: "off", now: yield* nowIso })
+            .pipe(Effect.mapError(() => linkError("The link couldn't be turned off.")));
         }
-      }
-      yield* notify;
-    });
+        // Off before it is owed: an owed link that is on again is one whose
+        // unlink was given up.
+        const owed = link.stopRunning ? yield* linkRequests.oweDrain(link.deviceId) : null;
+        yield* linkRequests.dropLink(link.deviceId, { stopRunning: link.stopRunning });
+        // Revoking the session takes it off the relay and closes its connection.
+        if (link.sessionId !== null) {
+          yield* sessions.revoke(link.sessionId).pipe(Effect.ignore);
+        }
+        if (owed !== null) {
+          const last = yield* linkRequests
+            .dropLink(link.deviceId, { stopRunning: true })
+            .pipe(Effect.result);
+          if (last._tag === "Success") {
+            yield* linkRequests.drainDone(link.deviceId, owed);
+          } else {
+            yield* Effect.logWarning("links.unlink.pass-owed", { detail: last.failure.detail });
+            yield* linkRequests.oweDrain(link.deviceId, last.failure.detail).pipe(Effect.ignore);
+          }
+        }
+        yield* notify;
+      }),
+    );
 
   const remove: ComputerLinksShape["remove"] = (input) =>
     Effect.gen(function* () {
@@ -642,22 +671,30 @@ const make = Effect.gen(function* () {
       const all = yield* devices.listDevices;
       const current = all.find((row) => row.deviceId === link.deviceId);
       if (current === undefined) return;
-      for (const older of all) {
+      const abandonedBefore = DateTime.formatIso(
+        DateTime.subtractDuration(yield* DateTime.now, ABANDONED_LINK_AFTER),
+      );
+      for (const other of all) {
         if (
-          older.deviceId === current.deviceId ||
-          !isInboundLink(older) ||
-          older.linkEnvironmentId !== link.environmentId ||
-          older.createdAt >= current.createdAt
+          other.deviceId === current.deviceId ||
+          !isInboundLink(other) ||
+          other.linkEnvironmentId !== link.environmentId
         ) {
           continue;
         }
+        // Older links it dropped; and a newer one it never used, long after
+        // it was made (that computer stopped before it saved that link).
+        const dropped =
+          other.createdAt < current.createdAt ||
+          (other.linkLastUsedAt === null && other.createdAt < abandonedBefore);
+        if (!dropped) continue;
         yield* removeInbound({
-          deviceId: older.deviceId,
-          sessionId: older.sessionId,
+          deviceId: other.deviceId,
+          sessionId: other.sessionId,
           stopRunning: false,
         });
         yield* Effect.logInfo("links.superseded", {
-          deviceId: older.deviceId,
+          deviceId: other.deviceId,
           by: current.deviceId,
         });
       }
@@ -673,12 +710,19 @@ const make = Effect.gen(function* () {
   // at startup and every minute, and the link goes once it has heard (or
   // turns out to have dropped it already).
   yield* Effect.gen(function* () {
-    for (const row of yield* repo.list) {
-      if (row.state !== "unlinking") continue;
-      if (yield* tellUnlinked(row)) {
-        yield* forgetLink(row.linkId);
-        yield* Effect.logInfo("links.unlink.finished", { linkId: row.linkId });
-      }
+    for (const listed of yield* repo.list) {
+      if (listed.state !== "unlinking") continue;
+      yield* computerLock(listed.remoteEnvironmentId)(
+        Effect.gen(function* () {
+          // As it is now: a link being made meanwhile may have finished it.
+          const row = yield* repo.get(listed.linkId);
+          if (Option.isNone(row) || row.value.state !== "unlinking") return;
+          if (yield* tellUnlinked(row.value)) {
+            yield* forgetLink(row.value.linkId);
+            yield* Effect.logInfo("links.unlink.finished", { linkId: row.value.linkId });
+          }
+        }),
+      );
     }
   }).pipe(
     Effect.catchCause((cause) =>

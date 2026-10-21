@@ -252,9 +252,7 @@ export function useFleetModel(): FleetData {
       );
       const origin = thread.remoteOrigin ?? null;
       const asker =
-        origin === null
-          ? null
-          : trustedOriginEnvironment(origin, links[thread.environmentId] ?? null);
+        origin === null ? null : trustedOriginEnvironment(origin, thread.environmentId, links);
       return [
         {
           threadKey,
@@ -363,9 +361,7 @@ export function useFleetModel(): FleetData {
       const origin = thread.remoteOrigin ?? null;
       // Work over a link whose computer isn't confirmed is drawn to no computer.
       const asker =
-        origin === null
-          ? null
-          : trustedOriginEnvironment(origin, links[thread.environmentId] ?? null);
+        origin === null ? null : trustedOriginEnvironment(origin, thread.environmentId, links);
       if (asker !== null) {
         real.push({
           askerEnvironmentId: asker,
