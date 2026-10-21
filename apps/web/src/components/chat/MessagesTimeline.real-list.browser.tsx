@@ -1415,6 +1415,20 @@ function dragSelectWord(messageId: string, word: string) {
   throw new Error(`"${word}" is not in ${messageId}`);
 }
 
+// Scrolls `step` pixels at a time until the list draws message-51, then puts
+// its word in the middle of the list. A saved scroll position cannot stand in
+// for this: the list measures rows as they come into view, and every row it
+// measures moves the ones below it.
+async function scrollPelicanIntoView(list: HTMLElement, step: number) {
+  for (let count = 0; count < 40 && !wordRect("message-51", "pelican"); count += 1) {
+    list.scrollTop += step;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const listTop = list.getBoundingClientRect().top;
+  list.scrollTop += wordRect("message-51", "pelican")!.top - listTop - 180;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+}
+
 function selectionPopover(): HTMLElement | null {
   return document.querySelector<HTMLElement>(SELECTION_POPOVER);
 }
@@ -1454,14 +1468,7 @@ describe("text selection popover with the real virtual list", () => {
     await vi.waitFor(() => {
       expect(document.querySelector('[data-message-id="message-59"]')).not.toBeNull();
     });
-    for (let step = 0; step < 20 && !wordRect("message-51", "pelican"); step += 1) {
-      list.scrollTop -= 200;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    // Bring the word to the middle of the list and let the list settle.
-    const listTop = list.getBoundingClientRect().top;
-    list.scrollTop += wordRect("message-51", "pelican")!.top - listTop - 180;
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await scrollPelicanIntoView(list, -200);
     return { screen, list };
   }
 
@@ -1518,7 +1525,6 @@ describe("text selection popover with the real virtual list", () => {
       await userEvent.fill(noteInput, "Check this bird");
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       expect(selectionPopover()).not.toBeNull();
-      const readingPosition = list.scrollTop;
 
       // Far enough away that the list drops the message's row. One jump can
       // be served from slots the list has spare, so climb a step at a time:
@@ -1542,7 +1548,7 @@ describe("text selection popover with the real virtual list", () => {
       expect(pinned.bottom).toBeLessThanOrEqual(listRect.bottom);
 
       // Back again, the highlight finds the word in the redrawn row.
-      list.scrollTop = readingPosition;
+      await scrollPelicanIntoView(list, 200);
       await vi.waitFor(
         () => {
           const word = wordRect("message-51", "pelican")!;
