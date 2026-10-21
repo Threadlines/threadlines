@@ -435,7 +435,7 @@ function RailIconButton({
               "relative inline-flex size-[34px] shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors select-none focus-ring [-webkit-app-region:no-drag] [&_svg]:size-4",
               selected
                 ? "bg-sidebar-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
               className,
             )}
             onClick={onClick}

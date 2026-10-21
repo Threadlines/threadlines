@@ -319,11 +319,13 @@ export function FleetView() {
               className={selected ? "mt-3" : "mt-7"}
               data-testid={`fleet-computer-${computer.id}`}
             >
-              <div className="flex min-w-0 items-baseline gap-2 px-1">
-                <h2 className="min-w-0 truncate text-[15px] leading-5 font-semibold text-foreground">
+              {/* The name keeps its width first; on a narrow screen the counts
+                  wrap to their own line rather than squeezing it. */}
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 px-1">
+                <h2 className="max-w-full shrink-0 truncate text-[15px] leading-5 font-semibold text-foreground">
                   {computer.label}
                 </h2>
-                <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
                   {describeComputerLocation(computer, nowMs)}
                 </span>
                 <span className="ms-auto shrink-0 font-mono text-[11px] text-muted-foreground">
