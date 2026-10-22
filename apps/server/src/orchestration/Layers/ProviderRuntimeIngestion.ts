@@ -3014,6 +3014,21 @@ const make = Effect.gen(function* () {
         yield* recordCheckBacks(event, thread);
         return;
       }
+      // A thread moving or moved to another computer is frozen here: its
+      // runtime was stopped at the freeze, and a turn one starts by itself
+      // anyway is refused and stopped.
+      if (
+        (thread.move ?? null) !== null &&
+        event.type === "turn.started" &&
+        event.turnId !== undefined
+      ) {
+        const key = participantSessionKey(thread.id, event.participantId ?? null);
+        yield* turnAdmission.decide(key, event.turnId, "rejected");
+        yield* providerService
+          .interruptTurn({ threadId: key, turnId: event.turnId })
+          .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
+        return;
+      }
       // In a room, only the agent holding the session slot is working; an
       // idle agent's runtime (starting up, being reaped, finishing stray
       // background work) must not overwrite the working agent's state.
