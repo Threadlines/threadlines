@@ -4,6 +4,7 @@ import type { ProviderAuthEvent, ProviderInstanceId } from "@threadlines/contrac
 import {
   applyProviderAuthEvent,
   appendOutputPreview,
+  extractSignInUrl,
   initialProviderConnectFlowState,
   providerConnectStatusLine,
   shouldAutoExpandTerminal,
@@ -142,6 +143,61 @@ describe("provider connect flow state", () => {
     ).toMatchObject({ pageRequest: null, question: null });
   });
 
+  it("takes Codex's sign-in page, not its local server, as Windows prints them", () => {
+    const authUrl =
+      "https://auth.openai.com/oauth/authorize?response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=abc&originator=codex_cli_rs";
+    // ConPTY draws the blank lines around the address as a jump to a later row.
+    const state = replay([
+      event({ type: "status", status: "starting", exitCode: null, detail: null }),
+      event({
+        type: "output",
+        data: `Starting local login server on http://localhost:1455.\r\nIf your browser did not open, navigate to this URL to authenticate:\r\n\u001B[5;1H${authUrl}\u001B[7;1HOn a remote or headless machine? Use \`codex login --device-auth\` instead.`,
+      }),
+    ]);
+    expect(state.signInUrl).toBe(authUrl);
+    expect(state.lastLine).toBe(
+      "On a remote or headless machine? Use `codex login --device-auth` instead.",
+    );
+  });
+
+  it("reads the whole address of a link Pi's screen wraps into rows", () => {
+    const authUrl = `https://claude.ai/oauth/authorize?code=true&client_id=pi&state=${"s".repeat(200)}`;
+    // Each row: a jump to it, the link with its full target, a 98-character slice.
+    const rows = [0, 98, 196]
+      .map(
+        (start, index) =>
+          `\u001B[${index + 4};1H\u001B[2K \u001B]8;;${authUrl}\u001B\\${authUrl.slice(start, start + 98)}\u001B]8;;\u001B\\`,
+      )
+      .join("");
+    // Split inside the first link's code: the target must survive the chunk boundary.
+    const split = rows.indexOf("claude.ai");
+    const state = replay([
+      event({ type: "status", status: "starting", exitCode: null, detail: null }),
+      event({ type: "output", data: rows.slice(0, split) }),
+      event({ type: "output", data: rows.slice(split) }),
+    ]);
+    expect(state.signInUrl).toBe(authUrl);
+
+    // A link longer than the kept tail, split just before its code ends.
+    const longUrl = `https://auth.example.com/authorize?state=${"x".repeat(2400)}`;
+    const longRow = `\u001B[4;1H \u001B]8;;${longUrl}\u001B\\${longUrl.slice(0, 98)}\u001B]8;;\u001B\\\u001B[5;1H`;
+    const end = longRow.indexOf("\u001B\\");
+    expect(
+      replay([
+        event({ type: "output", data: longRow.slice(0, end) }),
+        event({ type: "output", data: longRow.slice(end) }),
+      ]).signInUrl,
+    ).toBe(longUrl);
+  });
+
+  it("never takes an address on the CLI's own machine, or one cut short", () => {
+    expect(
+      extractSignInUrl(
+        "http://127.0.0.2:1455/ http://0.0.0.0:8080 http://login.localhost/ http://[::1]:1455/ https://auth.example.com/sign-in\n",
+      ),
+    ).toBe("https://auth.example.com/sign-in");
+  });
+
   it("waits for a URL split across output chunks to finish before taking it", () => {
     const state = replay([
       event({ type: "status", status: "starting", exitCode: null, detail: null }),
@@ -153,6 +209,18 @@ describe("provider connect flow state", () => {
 
     const finished = applyProviderAuthEvent(state, event({ type: "output", data: "QL-JLJT\r\n" }));
     expect(finished.signInUrl).toBe("https://vercel.com/oauth/device?user_code=QJQL-JLJT");
+
+    // Still waiting for its line to end when the kept output is trimmed.
+    const authUrl = "https://auth.example.com/sign-in?code=abc";
+    expect(
+      replay([
+        event({
+          type: "output",
+          data: `${"Waiting for sign-in\r".repeat(120)}${authUrl}\u001B[0m`,
+        }),
+        event({ type: "output", data: "\r\n" }),
+      ]).signInUrl,
+    ).toBe(authUrl);
   });
 
   it("tracks a run from start to success and keeps the resolved command", () => {

@@ -2152,6 +2152,15 @@ describe("GeneralSettingsPanel observability", () => {
   });
 
   it("signs a provider in without leaving settings", async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      shell: { openExternal },
+      server: {},
+    } as unknown as LocalApi;
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
       providers: [
@@ -2205,6 +2214,19 @@ describe("GeneralSettingsPanel observability", () => {
       .element(page.getByText("Finish sign-in in your browser, then come back to this page."))
       .toBeVisible();
     await expect.element(page.getByText("Opening browser to complete sign-in")).toBeVisible();
+
+    // Claude opened the page itself: the address it prints is a link, not a second tab.
+    const fallbackUrl = "https://claude.com/cai/oauth/authorize?code=true&state=abc";
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:01.500Z",
+      type: "output",
+      data: `If the browser didn't open, visit: ${fallbackUrl}\r\n`,
+    });
+    const openPage = page.getByRole("button", { name: "Open sign-in page" });
+    await openPage.click();
+    // Opened once, by the click.
+    expect(openExternal.mock.calls).toEqual([[fallbackUrl]]);
 
     providerAuthHarness.emit({
       instanceId: "claudeAgent",

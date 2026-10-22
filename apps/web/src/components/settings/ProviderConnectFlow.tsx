@@ -135,6 +135,13 @@ export interface ProviderConnectFlowProps {
    */
   readonly acceptsRedirect?: boolean;
   /**
+   * A terminal run's command opens its sign-in page in the browser itself
+   * (`codex login`, `/login` in Pi). The panel then keeps the address it
+   * prints as a link, for when the browser didn't open, instead of opening
+   * the page a second time.
+   */
+  readonly commandOpensBrowser?: boolean;
+  /**
    * A browser sign-in the agent can also run in its own terminal (Pi's
    * `/login`): the command fallback stays, with what to type in it, and can
    * open right here.
@@ -348,6 +355,7 @@ export function ProviderConnectFlow({
   runningHint,
   surface = "terminal",
   acceptsRedirect = true,
+  commandOpensBrowser = false,
   terminalFallback,
 }: ProviderConnectFlowProps) {
   const [showFallback, setShowFallback] = useState(false);
@@ -415,10 +423,10 @@ export function ProviderConnectFlow({
     }
   }, [autoShowTerminal, isBrowserFlow, needsTerminal, state.status, terminalFallbackRun]);
 
-  // Open the printed sign-in page once per run. Most CLIs open the browser
-  // themselves; the ones that cannot (fx inside WSL) print a device-code URL
-  // and wait, which would otherwise time out silently. A browser sign-in's
-  // page is opened by the flow hook, for whichever surface started it.
+  // Open the printed sign-in page once per run, unless the command opened it
+  // itself. CLIs that cannot (fx inside WSL) print a device-code URL and
+  // wait, which would otherwise time out silently. A browser sign-in's page
+  // is opened by the flow hook, for whichever surface started it.
   const openedSignInUrlRef = useRef<string | null>(null);
   const openSignInUrl = (url: string) => {
     openedSignInUrlRef.current = url;
@@ -433,6 +441,7 @@ export function ProviderConnectFlow({
     if (
       isBrowserFlow ||
       isCommunityAgent ||
+      commandOpensBrowser ||
       !url ||
       !isProviderConnectFlowActive(state.status) ||
       openedSignInUrlRef.current === url
@@ -440,7 +449,7 @@ export function ProviderConnectFlow({
       return;
     }
     openSignInUrl(url);
-  }, [isBrowserFlow, isCommunityAgent, state.signInUrl, state.status]);
+  }, [commandOpensBrowser, isBrowserFlow, isCommunityAgent, state.signInUrl, state.status]);
 
   const startFlow = (options?: { readonly terminal?: boolean }) => {
     setShowTerminal(false);
