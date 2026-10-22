@@ -40,6 +40,9 @@ function toApprovalRequestId(value: string | undefined): ApprovalRequestId | und
 }
 
 const APPROVAL_DETAIL_LIMIT = 600;
+// What the agent says about an approval can spell out what approving grants
+// (folders, hosts): kept nearly whole so nothing in it is cut from view.
+const APPROVAL_NOTE_LIMIT = 4000;
 
 // Claude approvals carry the SDK tool name in `args.toolName`; Codex approvals
 // don't name a tool, so this returns undefined for them.
@@ -734,6 +737,20 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.detail
               ? { detail: truncateDetail(event.payload.detail, APPROVAL_DETAIL_LIMIT) }
               : {}),
+            // The agent's own words about the request, shown with it.
+            ...(event.payload.title
+              ? { title: truncateDetail(event.payload.title, APPROVAL_NOTE_LIMIT) }
+              : {}),
+            ...(event.payload.reason
+              ? { reason: truncateDetail(event.payload.reason, APPROVAL_NOTE_LIMIT) }
+              : {}),
+            ...(event.payload.description
+              ? { description: truncateDetail(event.payload.description, APPROVAL_NOTE_LIMIT) }
+              : {}),
+            ...(event.payload.blockedPath
+              ? { blockedPath: truncateDetail(event.payload.blockedPath, APPROVAL_NOTE_LIMIT) }
+              : {}),
+            ...(event.payload.defaultToNo === true ? { defaultToNo: true } : {}),
           },
         }),
       ];

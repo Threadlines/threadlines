@@ -285,6 +285,16 @@ export interface PendingApproval {
   toolName?: string;
   /** What is being approved: the command, path, or tool summary. */
   detail?: string;
+  /** The agent's own sentence for the request ("Claude wants to read notes.txt"). */
+  title?: string;
+  /** Why the agent asks rather than going ahead. */
+  reason?: string;
+  /** What approving allows, in the agent's words. */
+  description?: string;
+  /** The file or folder that made the agent ask. */
+  blockedPath?: string;
+  /** The agent asks that this one not be approved by habit. */
+  defaultToNo?: boolean;
   /** A workflow asking to run: its plan, from the script's own header. */
   workflow?: PendingWorkflowApproval;
 }
@@ -987,7 +997,15 @@ export function derivePendingApprovals(
         ? payload.availableDecisions.filter(isProviderApprovalDecision)
         : undefined;
       const decisionWarnings = readDecisionWarnings(payload?.decisionWarnings);
-      const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
+      const text = (key: string) => {
+        const value = payload?.[key];
+        return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+      };
+      const detail = text("detail");
+      const title = text("title");
+      const reason = text("reason");
+      const description = text("description");
+      const blockedPath = text("blockedPath");
       const toolName =
         payload && typeof payload.toolName === "string" ? payload.toolName : undefined;
       const environmentId =
@@ -1001,6 +1019,11 @@ export function derivePendingApprovals(
           ...(environmentId ? { environmentId } : {}),
           ...(toolName ? { toolName } : {}),
           ...(detail ? { detail } : {}),
+          ...(title ? { title } : {}),
+          ...(reason ? { reason } : {}),
+          ...(description ? { description } : {}),
+          ...(blockedPath ? { blockedPath } : {}),
+          ...(payload?.defaultToNo === true ? { defaultToNo: true } : {}),
           ...(workflow ? { workflow } : {}),
           ...(availableDecisions && availableDecisions.length > 0 ? { availableDecisions } : {}),
           ...(decisionWarnings ? { decisionWarnings } : {}),

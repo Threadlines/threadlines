@@ -104,6 +104,7 @@ import {
   THREADLINES_CLAUDE_MCP_SERVER_NAME,
 } from "../claudeLongRunningTool.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
+import { nonEmptyTrimmed } from "../providerSnapshot.ts";
 import { httpStatusFailureCategory, withFailureCategory } from "../providerFailureCategory.ts";
 import {
   buildAgentPageInstructions,
@@ -8640,12 +8641,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               )
             : undefined;
         const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
+        // A rule from "Always allow" would grant more than this one ask: Claude
+        // says so, and then neither the answer nor the rule is offered.
+        const offersAlwaysAllow = callbackOptions.suppressAlwaysAllowRule !== true;
         const pendingApproval: PendingApproval = {
           requestType,
           detail,
           decision: decisionDeferred,
-          ...(callbackOptions.suggestions ? { suggestions: callbackOptions.suggestions } : {}),
+          ...(callbackOptions.suggestions && offersAlwaysAllow
+            ? { suggestions: callbackOptions.suggestions }
+            : {}),
         };
+        // Claude's own words about the ask, shown with it.
+        const title = nonEmptyTrimmed(callbackOptions.title);
+        const reason = nonEmptyTrimmed(callbackOptions.decisionReason);
+        const description = nonEmptyTrimmed(callbackOptions.description);
+        const blockedPath = nonEmptyTrimmed(callbackOptions.blockedPath);
 
         const requestedStamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -8659,6 +8670,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: {
             requestType,
             detail,
+            ...(offersAlwaysAllow
+              ? {}
+              : { availableDecisions: ["accept", "decline", "cancel"] as const }),
+            ...(title ? { title } : {}),
+            ...(reason ? { reason } : {}),
+            ...(description ? { description } : {}),
+            ...(blockedPath ? { blockedPath } : {}),
+            ...(callbackOptions.defaultToNo === true ? { defaultToNo: true } : {}),
             args: {
               toolName,
               input: toolInput,

@@ -3859,9 +3859,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               />
               <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-3 sm:px-4">
                 <ComposerPendingApprovalActions
+                  // A new request gets new buttons: focus left on one answer
+                  // must not let Enter give it to the next request.
+                  key={activePendingApproval.requestId}
                   requestId={activePendingApproval.requestId}
                   availableDecisions={activePendingApproval.availableDecisions}
                   decisionWarnings={activePendingApproval.decisionWarnings}
+                  defaultToNo={activePendingApproval.defaultToNo}
                   isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                   onRespondToApproval={onRespondToApproval}
                 />
@@ -4148,9 +4152,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               {isComposerCollapsedMobile ? null : activePendingApproval ? (
                 <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
                   <ComposerPendingApprovalActions
+                    // A new request gets new buttons: focus left on one answer
+                    // must not let Enter give it to the next request.
+                    key={activePendingApproval.requestId}
                     requestId={activePendingApproval.requestId}
                     availableDecisions={activePendingApproval.availableDecisions}
                     decisionWarnings={activePendingApproval.decisionWarnings}
+                    defaultToNo={activePendingApproval.defaultToNo}
                     isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                     onRespondToApproval={onRespondToApproval}
                   />

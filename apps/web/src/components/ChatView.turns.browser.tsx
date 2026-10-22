@@ -722,6 +722,116 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     },
   );
 
+  it("shows why the agent asks and leaves out Always allow when the agent says so", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-approval-words" as MessageId,
+      targetText: "approval words target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-approval-words" as TurnId,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id !== THREAD_ID
+            ? thread
+            : {
+                ...thread,
+                activities: [
+                  ...thread.activities,
+                  {
+                    id: EventId.make("activity-approval-words"),
+                    kind: "approval.requested",
+                    tone: "info",
+                    summary: "File-read approval requested",
+                    payload: {
+                      requestId: "req-approval-words",
+                      requestKind: "file-read",
+                      toolName: "Read",
+                      detail: "/Users/me/.ssh/config",
+                      title: "Claude wants to read a file outside this project",
+                      reason: "Path is outside the allowed working directories",
+                      description: "Claude will have read access to files in ~/.ssh",
+                      // Exactly the detail above: not repeated.
+                      blockedPath: "/Users/me/.ssh/config",
+                      availableDecisions: ["accept", "decline", "cancel"],
+                      defaultToNo: true,
+                    },
+                    turnId: "turn-approval-words" as TurnId,
+                    sequence: 2,
+                    createdAt: isoAt(1_001),
+                  },
+                ],
+              },
+        ),
+      },
+    });
+    try {
+      await expect
+        .element(page.getByTestId("pending-approval-heading"))
+        .toHaveTextContent("Claude wants to read a file outside this project");
+      await expect
+        .element(page.getByTestId("pending-approval-detail"))
+        .toHaveTextContent("/Users/me/.ssh/config");
+      const notes = document.querySelector<HTMLElement>('[data-pending-approval-notes="true"]');
+      expect(notes?.textContent).toContain("Why: Path is outside the allowed working directories");
+      expect(notes?.textContent).toContain("Claude will have read access to files in ~/.ssh");
+      expect(notes?.textContent).not.toContain("Path:");
+      await expect.element(page.getByRole("button", { name: "Approve once" })).toBeVisible();
+      expect(
+        [...document.querySelectorAll("button")].some(
+          (button) => button.textContent === "Always allow this session",
+        ),
+      ).toBe(false);
+
+      // Focus left on Approve must not carry to the next request: answered
+      // elsewhere, this one gives way to another the agent wants said no to.
+      const appendActivity = (sequence: number, kind: string, payload: Record<string, unknown>) =>
+        rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+          kind: "event",
+          event: {
+            sequence: fixture.snapshot.snapshotSequence + sequence,
+            eventId: EventId.make(`evt-approval-words-${sequence}`),
+            aggregateKind: "thread",
+            aggregateId: THREAD_ID,
+            occurredAt: NOW_ISO,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.activity-appended",
+            payload: {
+              threadId: THREAD_ID,
+              activity: {
+                id: EventId.make(`activity-approval-words-${sequence}`),
+                kind,
+                tone: "info",
+                summary: kind,
+                payload,
+                turnId: "turn-approval-words" as TurnId,
+                createdAt: isoAt(1_001 + sequence),
+              },
+            },
+          },
+        });
+      (await waitForButtonByText("Approve once")).focus();
+      appendActivity(1, "approval.requested", {
+        requestId: "req-approval-next",
+        requestKind: "command",
+        detail: "git push --force",
+        defaultToNo: true,
+      });
+      appendActivity(2, "approval.resolved", { requestId: "req-approval-words" });
+      await expect
+        .element(page.getByTestId("pending-approval-detail"))
+        .toHaveTextContent("git push --force");
+      expect(document.activeElement?.textContent).not.toBe("Approve once");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("declines a waiting approval and steers the turn with a message typed meanwhile", async () => {
     // "Send when done" is picked, and still the message steers: the turn is
     // waiting on the user, so waiting for it to finish would never send.

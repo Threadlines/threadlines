@@ -1717,7 +1717,7 @@ export function mapToRuntimeEvents(
             EffectCodexSchema.PermissionsRequestApprovalParams,
             event.payload,
           );
-          return payload?.reason ?? describePermissionsRequest(payload?.permissions);
+          return describePermissionsRequest(payload?.permissions) ?? payload?.reason ?? undefined;
         }
         case "applyPatchApproval": {
           const payload = readPayload(
@@ -1731,7 +1731,7 @@ export function mapToRuntimeEvents(
             EffectCodexSchema.ServerRequest__ExecCommandApprovalParams,
             event.payload,
           );
-          return payload?.reason ?? payload?.command.join(" ");
+          return payload?.command.join(" ") || payload?.reason || undefined;
         }
         case "item/tool/call": {
           const payload = readPayload(
@@ -1746,6 +1746,24 @@ export function mapToRuntimeEvents(
     })();
     const environmentId = readPayloadEnvironmentId(event.payload);
     const availableDecisions = supportedApprovalDecisions(commandApproval?.availableDecisions);
+    // Why Codex asks ("needs network access", the model's justification), kept
+    // apart from what is asked whenever the request shows something else.
+    const reason = (() => {
+      const stated = trimText(
+        event.method === "item/commandExecution/requestApproval"
+          ? (commandApproval?.reason ?? undefined)
+          : event.method === "item/permissions/requestApproval"
+            ? (readPayload(EffectCodexSchema.PermissionsRequestApprovalParams, event.payload)
+                ?.reason ?? undefined)
+            : event.method === "execCommandApproval"
+              ? (readPayload(
+                  EffectCodexSchema.ServerRequest__ExecCommandApprovalParams,
+                  event.payload,
+                )?.reason ?? undefined)
+              : undefined,
+      );
+      return stated !== undefined && stated !== detail ? stated : undefined;
+    })();
 
     return [
       {
@@ -1758,6 +1776,7 @@ export function mapToRuntimeEvents(
               : toRequestTypeFromMethod(event.method),
           ...(environmentId ? { environmentId } : {}),
           ...(detail ? { detail } : {}),
+          ...(reason ? { reason } : {}),
           ...(availableDecisions ? { availableDecisions } : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),
         },
