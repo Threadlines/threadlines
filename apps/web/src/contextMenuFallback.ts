@@ -27,6 +27,14 @@ export function showContextMenuFallback<T extends string>(
     overlay.style.cssText = "position:fixed;inset:0;z-index:9999";
 
     const menuStack: HTMLDivElement[] = [];
+    // A finger needs rows it can hit: a phone or tablet gets taller rows and
+    // body-size text; a mouse keeps the compact menu.
+    const coarse = window.matchMedia?.("(pointer: coarse)").matches === true;
+    const itemSize = coarse ? "px-4 py-2.5 text-sm" : "px-3 py-1.5 text-[11px]";
+    // A menu opened by holding a finger down sits under that finger, and
+    // lifting it sends a click. On a touch screen an item answers only once
+    // a press has started on the menu itself.
+    let pressedOnMenu = !coarse;
 
     const cleanup = (result: T | null) => {
       document.removeEventListener("keydown", onKeyDown);
@@ -59,8 +67,7 @@ export function showContextMenuFallback<T extends string>(
       closeMenusFromLevel(level);
 
       const menu = document.createElement("div");
-      menu.className =
-        "fixed z-[10000] min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-xl animate-in fade-in zoom-in-95";
+      menu.className = `fixed z-[10000] ${coarse ? "min-w-[200px]" : "min-w-[160px]"} rounded-md border border-border bg-popover py-1 shadow-xl animate-in fade-in zoom-in-95`;
       menu.style.left = `${preferredLeft}px`;
       menu.style.top = `${preferredTop}px`;
       menu.dataset.level = String(level);
@@ -74,10 +81,10 @@ export function showContextMenuFallback<T extends string>(
         const isDisabled = item.disabled === true;
         button.disabled = isDisabled;
         button.className = isDisabled
-          ? "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-muted-foreground/60 cursor-not-allowed"
+          ? `flex w-full items-center gap-2 ${itemSize} text-left text-muted-foreground/60 cursor-not-allowed`
           : isLeafDestructive
-            ? "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-destructive hover:bg-accent cursor-default"
-            : "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-popover-foreground hover:bg-accent cursor-default";
+            ? `flex w-full items-center gap-2 ${itemSize} text-left text-destructive hover:bg-accent cursor-default`
+            : `flex w-full items-center gap-2 ${itemSize} text-left text-popover-foreground hover:bg-accent cursor-default`;
 
         const label = document.createElement("span");
         label.className = "min-w-0 flex-1 truncate";
@@ -115,7 +122,9 @@ export function showContextMenuFallback<T extends string>(
             button.addEventListener("mouseenter", () => {
               closeMenusFromLevel(level + 1);
             });
-            button.addEventListener("click", () => cleanup(item.id));
+            button.addEventListener("click", () => {
+              if (pressedOnMenu) cleanup(item.id);
+            });
           }
         }
 
@@ -124,6 +133,9 @@ export function showContextMenuFallback<T extends string>(
 
       menu.addEventListener("mouseenter", () => {
         closeMenusFromLevel(level + 1);
+      });
+      menu.addEventListener("pointerdown", () => {
+        pressedOnMenu = true;
       });
 
       document.body.appendChild(menu);
@@ -134,7 +146,10 @@ export function showContextMenuFallback<T extends string>(
       });
     };
 
-    overlay.addEventListener("mousedown", () => cleanup(null));
+    // A new press outside closes the menu. On a touch screen that is a
+    // pointerdown: the finger that opened the menu sends mouse events only as
+    // it lifts.
+    overlay.addEventListener(coarse ? "pointerdown" : "mousedown", () => cleanup(null));
     document.addEventListener("keydown", onKeyDown);
     document.body.appendChild(overlay);
     openMenu(items, position?.x ?? 0, position?.y ?? 0, 0);

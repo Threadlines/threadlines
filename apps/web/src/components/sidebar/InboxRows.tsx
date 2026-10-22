@@ -29,6 +29,7 @@ import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/c
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import type { SidebarThreadSummary } from "../../types";
 import { cn } from "../../lib/utils";
+import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import { useGitStatus } from "../../lib/gitStatusState";
 import { useScheduledRunTaskName } from "../../lib/scheduledTasksState";
 import { selectProjectByRef, useStore } from "../../store";
@@ -79,7 +80,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 const ROW_ITEM_CLASS_NAME = "group/thread-row relative w-full";
 
 export const ROW_SURFACE_CLASS_NAME =
-  "relative w-full cursor-pointer select-none text-left outline-hidden focus-ring focus-visible:ring-inset";
+  "relative w-full cursor-pointer select-none text-left outline-hidden focus-ring focus-visible:ring-inset [-webkit-touch-callout:none]";
 
 /** Hover and selection are colour shifts only — nothing moves under the cursor. */
 export function resolveRowSurfaceTone(input: { isActive: boolean; isSelected: boolean }): string {
@@ -837,6 +838,18 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     },
     [clearSelection, handleMultiSelectContextMenu, handleThreadContextMenu, isSelected, threadRef],
   );
+  // On a touch screen, holding the row opens the same menu.
+  const openTouchMenu = useCallback(
+    (position: { readonly x: number; readonly y: number }) => {
+      clearSelection();
+      void handleThreadContextMenu(threadRef, position);
+    },
+    [clearSelection, handleThreadContextMenu, threadRef],
+  );
+  const touchHold = useTouchHoldMenu<HTMLDivElement>({
+    open: openTouchMenu,
+    onContextMenu: handleRowContextMenu,
+  });
   const handleRenameInputRef = useCallback(
     (element: HTMLInputElement | null) => {
       if (element && renamingInputRef.current !== element) {
@@ -906,7 +919,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
             className={cn(ROW_SURFACE_CLASS_NAME, "px-3 pt-1.5", family ? "pb-0" : "pb-2")}
             onClick={handleRowClick}
             onKeyDown={handleRowKeyDown}
-            onContextMenu={handleRowContextMenu}
+            {...touchHold}
           >
             {/* Line one: where the work lives, and what it is doing. */}
             <div
@@ -1238,6 +1251,18 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
     },
     [clearSelection, handleMultiSelectContextMenu, handleThreadContextMenu, isSelected, threadRef],
   );
+  // On a touch screen, holding the row opens the same menu.
+  const openTouchMenu = useCallback(
+    (position: { readonly x: number; readonly y: number }) => {
+      clearSelection();
+      void handleThreadContextMenu(threadRef, position);
+    },
+    [clearSelection, handleThreadContextMenu, threadRef],
+  );
+  const touchHold = useTouchHoldMenu<HTMLDivElement>({
+    open: openTouchMenu,
+    onContextMenu: handleRowContextMenu,
+  });
   const handleRenameInputRef = useCallback(
     (element: HTMLInputElement | null) => {
       if (element && renamingInputRef.current !== element) {
@@ -1305,7 +1330,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
           )}
           onClick={handleRowClick}
           onKeyDown={handleRowKeyDown}
-          onContextMenu={handleRowContextMenu}
+          {...touchHold}
         >
           {isDone ? (
             <CheckIcon
@@ -1727,6 +1752,16 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
     },
     [handleThreadContextMenu, threadRef],
   );
+  // On a touch screen, holding the row opens the same menu.
+  const openTouchMenu = useCallback(
+    (position: { readonly x: number; readonly y: number }) =>
+      void handleThreadContextMenu(threadRef, position),
+    [handleThreadContextMenu, threadRef],
+  );
+  const touchHold = useTouchHoldMenu<HTMLDivElement>({
+    open: openTouchMenu,
+    onContextMenu: handleContextMenu,
+  });
   const handleReopenClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -1821,7 +1856,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
           )}
           onClick={handleClick}
           onKeyDown={handleKeyDown}
-          onContextMenu={handleContextMenu}
+          {...touchHold}
         >
           {/* The project leads the row as an icon, not a name: a one-line row
               has one thing worth reading whole, and spelling out the project

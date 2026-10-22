@@ -133,6 +133,75 @@ function renderRow(
   return { openPrLink };
 }
 
+describe("InboxThreadRow on a touch screen", () => {
+  it("opens the thread's menu on a held finger, and the lift doesn't also open the thread", async () => {
+    const handleThreadContextMenu = vi.fn(async () => undefined);
+    const handleThreadClick = vi.fn();
+    render(
+      <ThreadHoverCardProvider>
+        <ul>
+          <InboxThreadRow
+            thread={THREAD}
+            status={resolveThreadStatusPill({ thread: THREAD })}
+            projectLabel={null}
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            orderedThreadKeys={[]}
+            renamingThreadKey={null}
+            renamingTitle=""
+            setRenamingTitle={() => undefined}
+            renamingInputRef={{ current: null }}
+            renamingCommittedRef={{ current: false }}
+            handleThreadClick={handleThreadClick}
+            navigateToThread={() => undefined}
+            handleMultiSelectContextMenu={async () => undefined}
+            handleThreadContextMenu={handleThreadContextMenu}
+            clearSelection={() => undefined}
+            commitRename={async () => undefined}
+            cancelRename={() => undefined}
+            markThreadDone={() => undefined}
+            listPullRequest={null}
+            linkedPullRequests={[]}
+            openPrLink={() => undefined}
+          />
+        </ul>
+      </ThreadHoverCardProvider>,
+    );
+    const row = page.getByTestId(`thread-row-${THREAD_ID}`);
+    await expect.element(row).toBeVisible();
+    const element = row.element();
+    const rect = element.getBoundingClientRect();
+    const finger = {
+      bubbles: true,
+      clientX: rect.left + 24,
+      clientY: rect.top + 12,
+      pointerId: 7,
+      pointerType: "touch",
+      isPrimary: true,
+    };
+    const tap = () => element.dispatchEvent(new MouseEvent("click", finger));
+
+    // Held: the menu opens where the finger is, and lifting it opens nothing.
+    element.dispatchEvent(new PointerEvent("pointerdown", finger));
+    await vi.waitFor(() => expect(handleThreadContextMenu).toHaveBeenCalledTimes(1));
+    expect(handleThreadContextMenu).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: THREAD_ID }),
+      { x: finger.clientX, y: finger.clientY },
+    );
+    element.dispatchEvent(new PointerEvent("pointerup", finger));
+    tap();
+    expect(handleThreadClick).not.toHaveBeenCalled();
+
+    // A quick tap still opens the thread, and no menu.
+    element.dispatchEvent(new PointerEvent("pointerdown", finger));
+    element.dispatchEvent(new PointerEvent("pointerup", finger));
+    tap();
+    expect(handleThreadClick).toHaveBeenCalledTimes(1);
+    expect(handleThreadContextMenu).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("InboxThreadRow pull request badge", () => {
   it("names the pull request the open listing found for this branch", async () => {
     const { openPrLink } = renderRow(OPEN_PULL_REQUEST);
