@@ -210,16 +210,13 @@ const TRANSPORT_DIFF_FLAGS = [
 ];
 
 /**
- * What the checkout looks like right now: its head, the hash of its tracked
- * changes as they would be packed, its status, and each untracked file's size
- * and time. Equal before and after packing means nothing changed meanwhile.
+ * What the checkout looks like right now: its head, which files changed and
+ * which are new, its tracked changes as they would be packed (written to
+ * `diffPath`, and hashed), its status, and each new file's size and time.
+ * The packing uses this snapshot's own lists and diff, so a snapshot taken
+ * after packing that equals it means what was packed is what's there.
  */
-function checkoutFingerprint(
-  git: GitVcsDriverShape,
-  root: string,
-  untracked: ReadonlyArray<string>,
-  scratch: string,
-) {
+function checkoutFingerprint(git: GitVcsDriverShape, root: string, diffPath: string) {
   return Effect.gen(function* () {
     const head = yield* gitOk(
       git,
@@ -227,14 +224,14 @@ function checkoutFingerprint(
       ["rev-parse", "HEAD"],
       "Couldn't read this thread's checkout.",
     );
+    const { tracked, untracked } = yield* summarizeMoveChanges(git, root);
     yield* gitOk(
       git,
       root,
-      [...TRANSPORT_DIFF_FLAGS, `--output=${scratch}`, "HEAD"],
+      [...TRANSPORT_DIFF_FLAGS, `--output=${diffPath}`, "HEAD"],
       "Couldn't read this thread's changes.",
     );
-    const diffHash = yield* sha256OfFile(scratch);
-    yield* fsCall("Couldn't tidy up.", () => NodeFs.rm(scratch, { force: true }));
+    const diffHash = yield* sha256OfFile(diffPath);
     const status = yield* gitOk(
       git,
       root,
@@ -247,7 +244,12 @@ function checkoutFingerprint(
         Effect.map((stat) => `${path}:${stat.size}:${stat.mtimeMs}`),
       ),
     );
-    return { head: head.trim(), key: `${head}\n${diffHash}\n${status}\n${stats.join("\n")}` };
+    return {
+      head: head.trim(),
+      tracked,
+      untracked,
+      key: [head, tracked.join("\0"), untracked.join("\0"), diffHash, status, ...stats].join("\n"),
+    };
   });
 }
 
@@ -370,9 +372,10 @@ export function writeMoveExport(
     yield* fsCall("Couldn't make room to pack this thread.", () =>
       NodeFs.mkdir(dir, { recursive: true }),
     );
-    const scratch = NodePath.join(dir, "fingerprint.tmp");
-    const { tracked, untracked } = yield* summarizeMoveChanges(git, root);
-    const before = yield* checkoutFingerprint(git, root, untracked, scratch);
+    const diffPath = NodePath.join(dir, "diff.tmp");
+    const afterDiffPath = NodePath.join(dir, "diff.after.tmp");
+    const before = yield* checkoutFingerprint(git, root, diffPath);
+    const { tracked, untracked } = before;
     if (before.head !== checkout.headSha) return yield* new CheckoutChanged();
 
     // Submodule and Git LFS changes can't travel as a diff.
@@ -443,19 +446,10 @@ export function writeMoveExport(
         read: () => NodeFs.readFile(bundlePath),
       });
     }
-    if (tracked.length > 0) {
-      const diffPath = NodePath.join(dir, "diff.tmp");
-      yield* gitOk(
-        git,
-        root,
-        [...TRANSPORT_DIFF_FLAGS, `--output=${diffPath}`, "HEAD"],
-        "Couldn't pack this thread's changes.",
-      );
-      parts.push({
-        kind: "diff",
-        size: yield* fileSize(diffPath),
-        read: () => NodeFs.readFile(diffPath),
-      });
+    // The snapshot's own diff: what the snapshot after packing is checked against.
+    const diffSize = yield* fileSize(diffPath);
+    if (diffSize > 0) {
+      parts.push({ kind: "diff", size: diffSize, read: () => NodeFs.readFile(diffPath) });
     }
     for (const path of untracked) {
       const absolute = NodePath.join(root, path);
@@ -543,13 +537,13 @@ export function writeMoveExport(
         await handle.close();
       }
     });
+    if (resized) return yield* new CheckoutChanged();
+    const after = yield* checkoutFingerprint(git, root, afterDiffPath);
     yield* fsCall("Couldn't tidy up.", async () => {
       await NodeFs.rm(NodePath.join(dir, "bundle.tmp"), { force: true });
-      await NodeFs.rm(NodePath.join(dir, "diff.tmp"), { force: true });
+      await NodeFs.rm(diffPath, { force: true });
+      await NodeFs.rm(afterDiffPath, { force: true });
     });
-    if (resized) return yield* new CheckoutChanged();
-
-    const after = yield* checkoutFingerprint(git, root, untracked, scratch);
     if (after.key !== before.key) return yield* new CheckoutChanged();
 
     const manifest: PeerMoveManifest = {

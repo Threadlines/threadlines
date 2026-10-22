@@ -468,7 +468,7 @@ The pending move is listed to B's user through `ComputerLinkPendingRequest`, whi
 
 #### Import on B (`LinkMoves`, beside `LinkRequests`)
 
-Table `link_moves` (migration 079): `link_device_id, transfer_id, transfer_key, status (awaiting_approval|receiving|importing|committed|aborted), stage, manifest_json, bytes_received, thread_id, branch, worktree_path, reason, cleaned_at, created_at, updated_at`, unique on `(link_device_id, transfer_id)`. Staging lives in `<stateDir>/link-moves/<K>/`.
+Table `link_moves` (migration 079): `link_device_id, transfer_id, transfer_key, status (awaiting_approval|receiving|importing|committed|aborted), stage, manifest_json, bytes_received, thread_id, branch, worktree_path, repo_root, reason, cleaned_at, created_at, updated_at`, unique on `(link_device_id, transfer_id)`. Staging lives in `<stateDir>/link-moves/<K>/`.
 
 **Path rules** (B's filesystem semantics, checked at prepare and again before writing):
 
@@ -490,8 +490,8 @@ Attachments get B's own ids (`createAttachmentId(B's thread id)`) and are writte
 **Commit and abort exclude each other under one lock that an interruption can't release early.** Both run under the per-transfer lock keyed by `K` (the `withRequestLock` pattern in `LinkRequests`).
 
 - **Commit.** Under the lock, re-read the row. If it's `aborted`, stop. Otherwise dispatch `thread.import` and await the engine's answer _uninterruptibly_, then write `committed`, and only then release the lock. An interrupted caller can't leave a queued import behind an unlocked transfer. The thread id is deterministic, so a duplicate dispatch is refused as "already exists" and read as committed.
-- **Abort.** Under the lock, look the thread up in the engine's read model. If it exists, answer `committed`. Otherwise write `aborted` durably, then release the lock and clean up.
-- **Startup.** The process died, so nothing is queued. Reconcile each `importing` row from the read model: the thread exists means committed, else resume the import.
+- **Abort.** Under the lock, check whether the import landed: the engine's receipt for the import's deterministic command id (written in the same transaction as its events), or the thread's row in any state, archived or deleted included. If it landed, answer `committed`. Otherwise write `aborted` durably, then release the lock and clean up. A read that fails is an error, never "gone": A asks again.
+- **Startup.** The process died, so nothing is queued. Reconcile each `importing` row the same way: landed means committed, else resume the import.
 
 After an abort, B removes the staging folder, the worktree, and any branch it made, then sets `cleaned_at`. An aborted row without `cleaned_at` is cleanup still owed: startup and the hourly sweep retry it. B never touches anything once committed.
 
@@ -516,6 +516,8 @@ A unfreezes only after B confirms an abort (`thread.move-aborted { reason }`, pl
 
 `historySeedOwed` is persisted on the thread, set by `thread.import`. Delivery is send-time, through the existing owed-history path (`withContextSeedPreamble` with a `ThreadContextSeedBuilder` seed). So a warm-up session, a restart between bind and send, or a provider switch all still deliver it on the first real send. The reactor dispatches `thread.history-seed.delivered` once the provider accepted that turn. A crash in between re-sends the seed: at least once, never zero. Owed-history delivery uses a strict build: if the transcript can't be read, or the seed has no entries while the thread has imported messages, the debt stays and that send goes without it. Today's builder falls back to a workspace-only seed, and that must not count as delivered. Also fix `hasProviderBinding` so that a null `projectedSession` reads as no binding.
 
+The delivered event records the message whose send carried the seed (`historySeedMessageId`). A revert that removes that message owes the seed again, whichever of B's turns carried it (`revertOwesHistorySeed`, used by both projections). A session started seeded with the conversation pays the debt only through a send on that same runtime (matched by its `createdAt`); a replacement runtime builds the seed again. Seed entries name a message's attachments, so a message that was only an attachment still counts.
+
 #### The revert boundary (fixes D6)
 
 **Imported history is outside B's revert accounting.** Every imported message carries `imported: true`: a new optional field on `OrchestrationMessage` and on the `thread.message-sent` payload, stored in a `projection_thread_messages.imported` column. Imported activities have `turnId: null`, so revert already keeps them.
@@ -523,6 +525,15 @@ A unfreezes only after B confirms an abort (`thread.move-aborted { reason }`, pl
 The shared `revertMessages` (`packages/shared/src/transcriptRevert.ts`) keeps imported messages unconditionally and leaves them out of its count-based fallback. That's one rule for all three revert sites: `projector.ts`, `ProjectionPipeline.ts`, and the web.
 
 B's turn numbering starts at 1. Revert to count 0, the state right after the import, is valid and keeps all imported history. There is no decider fence. The web hides revert controls on imported messages.
+
+#### Rules the server reviews added (Oct 22)
+
+- **Branch ownership is proven, not inferred.** B makes the branch itself with `update-ref --create-reflog -m "threadlines move <K>" refs/heads/<name> <headSha> ""` (create-only), then adds the worktree on it. A restart reuses a saved name only when the branch's oldest reflog entry is that note; a name taken by anyone else gets another. Clean-up deletes the branch only with that note and only while it still points at `headSha`.
+- **One size budget, measured before anything is written.** At the fetch stage: every path the commits change, at its new size (`diff-tree base..head`, then `cat-file`, so one blob under many paths counts each time), each binary hunk's real target size (a `literal`'s stated size, or the target size in a `delta`'s own header), the patch and the new files. Over 1 GiB aborts. A bundle without a base is refused.
+- **Clean-up knows its repository.** The repo root is recorded before the fetch stage makes anything, so a project removed since doesn't strand the temp ref, branch or worktree. Clean-up is recorded only once each is verified gone.
+- **Ask first is read at admission.** The link's current access is read inside the admission lock, right before the row is recorded.
+- **A's worker can't die quietly.** Any failure restarts it from the top after 30 s (it asks B where it stands first). A drop B couldn't record yet is asked again every 15 s. A move runs on while its thread is archived. Deleting the thread mid-move ends the wait and asks B once to drop it; one that already arrived there stays.
+- **The export packs its own snapshot.** The file lists and the diff come from the snapshot taken before packing, and the one after must match it exactly, lists included.
 
 #### Web
 

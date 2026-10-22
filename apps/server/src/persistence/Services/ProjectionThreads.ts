@@ -8,6 +8,7 @@
  */
 import {
   IsoDateTime,
+  MessageId,
   ModelSelection,
   NonNegativeInt,
   OrchestrationCheckBack,
@@ -153,6 +154,8 @@ export const ProjectionThread = Schema.Struct({
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
   /** See `OrchestrationThread.historySeedOwed`, as 0 or 1. Absent or null reads as 0. */
   historySeedOwed: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  /** See `OrchestrationThread.historySeedMessageId`. Absent or null reads as none. */
+  historySeedMessageId: Schema.optional(Schema.NullOr(MessageId)),
   /** On a parent: see `OrchestrationThread.childRequests`. Absent or null reads as none. */
   childRequests: Schema.optional(Schema.NullOr(OrchestrationChildRequestState)),
   /**

@@ -40,6 +40,8 @@ export const LinkMoveRow = Schema.Struct({
   threadId: ThreadId,
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
+  /** The repository the move's git work happens in (its temp ref, branch, worktree), once known. */
+  repoRoot: Schema.NullOr(Schema.String),
   reason: Schema.NullOr(Schema.String),
   /** An aborted move's clean-up is done. Null on an aborted row: still owed. */
   cleanedAt: Schema.NullOr(IsoDateTime),
@@ -88,7 +90,10 @@ export interface LinkMoveRepositoryShape {
     readonly linkDeviceId: string;
     readonly transferId: string;
     readonly patch: Partial<
-      Pick<LinkMoveRow, "status" | "stage" | "bytesReceived" | "branch" | "worktreePath" | "reason">
+      Pick<
+        LinkMoveRow,
+        "status" | "stage" | "bytesReceived" | "branch" | "worktreePath" | "repoRoot" | "reason"
+      >
     >;
     readonly now: string;
   }) => Effect.Effect<boolean, LinkMoveRepositoryError>;
@@ -131,6 +136,7 @@ const make = Effect.gen(function* () {
       thread_id AS "threadId",
       branch AS "branch",
       worktree_path AS "worktreePath",
+      repo_root AS "repoRoot",
       reason AS "reason",
       cleaned_at AS "cleanedAt",
       created_at AS "createdAt",
@@ -204,6 +210,7 @@ const make = Effect.gen(function* () {
           bytes_received = COALESCE(${patch.bytesReceived ?? null}, bytes_received),
           branch = COALESCE(${patch.branch ?? null}, branch),
           worktree_path = COALESCE(${patch.worktreePath ?? null}, worktree_path),
+          repo_root = COALESCE(${patch.repoRoot ?? null}, repo_root),
           reason = COALESCE(${patch.reason ?? null}, reason),
           updated_at = ${input.now}
         WHERE link_device_id = ${input.linkDeviceId}

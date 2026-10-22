@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,13 +26,20 @@ import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts"
 import { inspectMoveCheckout, movePayloadPath, writeMoveExport } from "../moves/moveExport.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { LinkMoveRepositoryLive } from "./LinkMoveRepository.ts";
-import { LinkMoves, LinkMovesLive, moveManifestRefusal, movePathRefusal } from "./LinkMoves.ts";
+import {
+  binaryPatchBytes,
+  LinkMoves,
+  LinkMovesLive,
+  moveManifestRefusal,
+  movePathRefusal,
+} from "./LinkMoves.ts";
 import { LinkRequests, type PeerLink } from "./LinkRequests.ts";
 
 const run = (cwd: string, ...args: string[]) =>
@@ -115,9 +123,11 @@ const movingThread = (): OrchestrationThread =>
   }) as unknown as OrchestrationThread;
 
 /** The services LinkMoves leans on, with this computer's git real and the rest faked. */
-function testLayer(repos: ReturnType<typeof makeRepos>, dispatched: OrchestrationCommand[]) {
-  const imported = (threadId: string) =>
-    dispatched.some((command) => command.type === "thread.import" && command.threadId === threadId);
+function testLayer(
+  repos: ReturnType<typeof makeRepos>,
+  dispatched: OrchestrationCommand[],
+  access: "allowed" | "ask" = "allowed",
+) {
   return LinkMovesLive.pipe(
     Layer.provideMerge(LinkMoveRepositoryLive),
     Layer.provideMerge(
@@ -126,6 +136,7 @@ function testLayer(repos: ReturnType<typeof makeRepos>, dispatched: Orchestratio
           authority: () =>
             Effect.succeed({
               ok: true,
+              access,
               maxRuntimeMode: "auto-accept-edits",
               pinnedEnvironmentId: null,
             }),
@@ -146,12 +157,17 @@ function testLayer(repos: ReturnType<typeof makeRepos>, dispatched: Orchestratio
               dispatched.push(command);
               return { sequence: dispatched.length };
             }),
+          getCommandReceipt: (commandId) =>
+            Effect.succeed(
+              dispatched.some((command) => command.commandId === commandId)
+                ? Option.some({ status: "accepted" } as never)
+                : Option.none(),
+            ),
         }),
         Layer.mock(ProjectionSnapshotQuery)({
-          getThreadShellById: (threadId) =>
-            Effect.succeed(imported(threadId) ? Option.some({} as never) : Option.none()),
           getCommandReadModel: () => Effect.succeed({ threads: [], projects: [] } as never),
         }),
+        Layer.mock(ProjectionThreadRepository)({ getById: () => Effect.succeed(Option.none()) }),
         Layer.mock(RelayDeviceRepository)({ getDevice: () => Effect.succeed(Option.none()) }),
         Layer.mock(RepositoryIdentityResolver)({
           resolve: () =>
@@ -302,41 +318,76 @@ describe("LinkMoves", () => {
       assert.equal((yield* moves.pending).length, 0);
       assert.equal(dispatched.length, 0);
       assert.equal(run(repos.b, "worktree", "list").split("\n").length, 1);
-    }).pipe(Effect.provide(testLayer(repos, dispatched)));
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "ask")));
   });
 });
 
 describe("LinkMoves, a clean thread", () => {
-  it.live("moves a thread with nothing unpushed and no changes, carrying no bytes", () => {
-    const repos = makeRepos();
-    // `a` as pushed, nothing changed: the move carries only its history.
-    run(repos.a, "reset", "--hard", "origin/main");
-    run(repos.a, "clean", "-fdx");
-    run(repos.a, "checkout", "main");
-    const dispatched: OrchestrationCommand[] = [];
-    return Effect.gen(function* () {
-      const { manifest, checkout } = yield* pack(repos);
-      assert.equal(manifest.totalBytes, 0);
-      assert.isNull(manifest.git.baseSha);
-      const moves = yield* LinkMoves;
-      let state = yield* moves.prepare(link("allowed"), { transferId: TRANSFER, manifest });
-      assert.equal(state.status, "receiving");
-      state = yield* moves.finish(link("allowed"), { transferId: TRANSFER });
-      for (let tries = 0; tries < 200 && state.status === "importing"; tries += 1) {
-        yield* Effect.sleep("50 millis");
-        state = yield* moves.status(link("allowed"), { transferId: TRANSFER });
-      }
-      assert.equal(state.status, "committed", state.reason);
-      const command = dispatched.find((entry) => entry.type === "thread.import");
-      assert(command?.type === "thread.import");
-      // `main` is checked out in b already, so the move takes another name.
-      assert.equal(command.branch, "main-from-windows-pc");
-      assert.equal(run(command.worktreePath!, "rev-parse", "HEAD"), checkout.headSha);
-    }).pipe(Effect.provide(testLayer(repos, dispatched)));
-  });
+  it.live(
+    "moves a thread with nothing unpushed and only an empty new file, carrying no bytes",
+    () => {
+      const repos = makeRepos();
+      // `a` as pushed, with one new empty file: the move carries its history
+      // and a file of no bytes.
+      run(repos.a, "reset", "--hard", "origin/main");
+      run(repos.a, "clean", "-fdx");
+      run(repos.a, "checkout", "main");
+      fs.writeFileSync(path.join(repos.a, "EMPTY"), "");
+      const dispatched: OrchestrationCommand[] = [];
+      return Effect.gen(function* () {
+        const { manifest, checkout } = yield* pack(repos);
+        assert.equal(manifest.totalBytes, 0);
+        assert.isNull(manifest.git.baseSha);
+        const moves = yield* LinkMoves;
+        let state = yield* moves.prepare(link("allowed"), { transferId: TRANSFER, manifest });
+        assert.equal(state.status, "receiving");
+        state = yield* moves.finish(link("allowed"), { transferId: TRANSFER });
+        for (let tries = 0; tries < 200 && state.status === "importing"; tries += 1) {
+          yield* Effect.sleep("50 millis");
+          state = yield* moves.status(link("allowed"), { transferId: TRANSFER });
+        }
+        assert.equal(state.status, "committed", state.reason);
+        const command = dispatched.find((entry) => entry.type === "thread.import");
+        assert(command?.type === "thread.import");
+        // `main` is checked out in b already, so the move takes another name.
+        assert.equal(command.branch, "main-from-windows-pc");
+        assert.equal(run(command.worktreePath!, "rev-parse", "HEAD"), checkout.headSha);
+        assert.equal(fs.readFileSync(path.join(command.worktreePath!, "EMPTY"), "utf8"), "");
+      }).pipe(Effect.provide(testLayer(repos, dispatched)));
+    },
+  );
 });
 
 describe("what a move may write here", () => {
+  it("measures a binary change by the file it makes, delta or literal", () => {
+    const repos = makeRepos();
+    // A big file that doesn't compress, changed a little: git sends a small
+    // delta, whose stated size is far below the file it makes.
+    const big = randomBytes(300_000);
+    fs.writeFileSync(path.join(repos.a, "blob.bin"), big);
+    run(repos.a, "add", "blob.bin");
+    run(repos.a, "commit", "-m", "blob");
+    big[150_000] = (big[150_000]! + 1) % 256;
+    const grown = Buffer.concat([big, randomBytes(100)]);
+    fs.writeFileSync(path.join(repos.a, "blob.bin"), grown);
+    fs.writeFileSync(path.join(repos.a, "fresh.bin"), Buffer.from([0, 1, 2, 3, 0, 5]));
+    run(repos.a, "add", "fresh.bin");
+    const patch = run(
+      repos.a,
+      "diff",
+      "--binary",
+      "--full-index",
+      "HEAD",
+      "--",
+      "blob.bin",
+      "fresh.bin",
+    );
+    assert.match(patch, /^delta \d+$/m);
+    assert.equal(binaryPatchBytes(patch), grown.length + 6);
+    // A hunk that doesn't parse can't be measured, so it's refused.
+    assert.isNull(binaryPatchBytes(patch.replace(/^delta \d+\n./m, "delta 10\n~")));
+  });
+
   it("refuses paths that leave the worktree or touch git, and a manifest that doesn't add up", () => {
     for (const bad of [
       "../escape.txt",

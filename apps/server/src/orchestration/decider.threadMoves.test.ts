@@ -96,6 +96,42 @@ const startMove = (threadId: ThreadId = THREAD): OrchestrationCommand => ({
   createdAt: now,
 });
 
+/** Projects an event as the engine would store it. */
+async function project(
+  model: OrchestrationReadModel,
+  type: OrchestrationEvent["type"],
+  payload: Record<string, unknown>,
+): Promise<OrchestrationReadModel> {
+  sequence += 1;
+  return Effect.runPromise(
+    projectEvent(model, {
+      sequence,
+      eventId: EventId.make(`evt-${sequence}`),
+      aggregateKind: "thread",
+      aggregateId: payload.threadId,
+      type,
+      occurredAt: now,
+      commandId: nextCommandId(),
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      payload,
+    } as OrchestrationEvent),
+  );
+}
+
+/** A user message sent on the computer a thread moved to. */
+const sentHere = (id: string, text: string) => ({
+  threadId: ThreadId.make("thread-arrived"),
+  messageId: MessageId.make(id),
+  role: "user",
+  text,
+  turnId: null,
+  streaming: false,
+  createdAt: now,
+  updatedAt: now,
+});
+
 const threadOf = (model: OrchestrationReadModel, threadId = THREAD) =>
   model.threads.find((thread) => thread.id === threadId)!;
 
@@ -110,17 +146,19 @@ describe("moving a thread to a linked computer", () => {
 
     const frozen = await apply(model, rename("Something else"));
     expect(frozen.refusal).toContain("moving to Mac mini");
-    // Filing it away still works.
-    expect(
-      (
-        await apply(model, {
-          type: "thread.pin",
-          commandId: nextCommandId(),
-          threadId: THREAD,
-          createdAt: now,
-        } as OrchestrationCommand)
-      ).refusal,
-    ).toBeNull();
+    // Filing it away still works, and the move runs on while it's archived.
+    for (const type of ["thread.pin", "thread.archive"] as const) {
+      expect(
+        (
+          await apply(model, {
+            type,
+            commandId: nextCommandId(),
+            threadId: THREAD,
+            createdAt: now,
+          } as OrchestrationCommand)
+        ).refusal,
+      ).toBeNull();
+    }
 
     ({ model } = await apply(model, {
       type: "thread.move.abort",
@@ -274,33 +312,30 @@ describe("moving a thread to a linked computer", () => {
     ]);
     expect((await apply(after, importCommand())).refusal).toContain("already exists");
 
-    const { model: seeded2 } = await apply(after, {
+    // Its first turn here went out without the conversation (another agent
+    // in the room spoke first, or the history couldn't be read); the second
+    // carried it.
+    let here = await project(after, "thread.message-sent", sentHere("b-first", "Run the tests"));
+    here = await project(here, "thread.message-sent", sentHere("b-second", "Now fix it"));
+    ({ model: here } = await apply(here, {
       type: "thread.history-seed.delivered",
       commandId: nextCommandId(),
       threadId: ARRIVED,
+      messageId: MessageId.make("b-second"),
       createdAt: now,
-    });
-    expect(threadOf(seeded2, ARRIVED).historySeedOwed).toBe(false);
+    }));
+    expect(threadOf(here, ARRIVED).historySeedOwed).toBe(false);
 
-    // Undone back to where it arrived: the turn that gave its agent the
-    // conversation is gone, so it is owed again, and the history stays.
-    sequence += 1;
-    const reverted = await Effect.runPromise(
-      projectEvent(seeded2, {
-        sequence,
-        eventId: EventId.make("evt-revert-to-arrival"),
-        aggregateKind: "thread",
-        aggregateId: ARRIVED,
-        type: "thread.reverted",
-        occurredAt: now,
-        commandId: nextCommandId(),
-        causationEventId: null,
-        correlationId: null,
-        metadata: {},
-        payload: { threadId: ARRIVED, turnCount: 0 },
-      } as OrchestrationEvent),
-    );
-    expect(threadOf(reverted, ARRIVED).historySeedOwed).toBe(true);
-    expect(threadOf(reverted, ARRIVED).messages).toHaveLength(2);
+    // Undoing the turn that carried it owes it again; the history stays.
+    const undone = await project(here, "thread.reverted", { threadId: ARRIVED, turnCount: 1 });
+    expect(threadOf(undone, ARRIVED).historySeedOwed).toBe(true);
+    expect(threadOf(undone, ARRIVED).messages.map((message) => message.text)).toEqual([
+      "Why does it flake?",
+      "A timer races the click.",
+      "Run the tests",
+    ]);
+    // An undo that keeps it owes nothing.
+    const kept = await project(here, "thread.reverted", { threadId: ARRIVED, turnCount: 2 });
+    expect(threadOf(kept, ARRIVED).historySeedOwed).toBe(false);
   });
 });

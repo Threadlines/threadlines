@@ -36,7 +36,11 @@ import {
   applyCommandRunProgress,
   applyCommandRunStarted,
 } from "@threadlines/shared/commandRuns";
-import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
+import {
+  retainTurnItemsAfterRevert,
+  revertMessages,
+  revertOwesHistorySeed,
+} from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
 import { applyWorkflowRunPatch } from "@threadlines/shared/workflowRuns";
 
@@ -1017,7 +1021,10 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) => ({
           ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, { historySeedOwed: false }),
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            historySeedOwed: false,
+            historySeedMessageId: payload.messageId,
+          }),
         })),
       );
 
@@ -1900,10 +1907,23 @@ export function projectEvent(
               activities,
               subagents,
               latestTurn,
-              // Back to where a moved thread arrived: the turn that gave its
-              // agent the conversation is undone, so it is owed again.
-              ...(payload.turnCount === 0 && (thread.movedFrom ?? null) !== null
-                ? { historySeedOwed: true }
+              // The send that gave a moved thread's agent the conversation
+              // is undone: it is owed again.
+              ...(revertOwesHistorySeed({
+                movedHere: (thread.movedFrom ?? null) !== null,
+                historySeedOwed: thread.historySeedOwed === true,
+                seedMessageRemoved:
+                  thread.historySeedMessageId === undefined
+                    ? null
+                    : thread.messages.some(
+                        (message) => message.id === thread.historySeedMessageId,
+                      ) &&
+                      !reverted.messages.some(
+                        (message) => message.id === thread.historySeedMessageId,
+                      ),
+                turnCount: payload.turnCount,
+              })
+                ? { historySeedOwed: true, historySeedMessageId: undefined }
                 : {}),
               updatedAt: event.occurredAt,
             }),

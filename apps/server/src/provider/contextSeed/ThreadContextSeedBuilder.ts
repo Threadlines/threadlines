@@ -93,14 +93,16 @@ function compareIso(a: string, b: string): number {
 /**
  * Flatten messages + tool activities into one oldest-first entry list. Only
  * `tone === "tool"` activities are included (concrete actions); thinking/info/
- * warning/error tones are noise for a handoff and are skipped. Empty text is
- * dropped.
+ * warning/error tones are noise for a handoff and are skipped. A message's
+ * attachments are named after its text (their bytes aren't carried), so a
+ * message that was only an attachment still shows; empty text is dropped.
  */
 function buildEntries(input: {
   readonly messages: ReadonlyArray<{
     readonly id?: string | undefined;
     readonly role: "user" | "assistant" | "system";
     readonly text: string;
+    readonly attachments?: ReadonlyArray<{ readonly name: string }> | undefined;
     readonly createdAt: string;
   }>;
   readonly activities: ReadonlyArray<{
@@ -116,7 +118,13 @@ function buildEntries(input: {
     if (message.id !== undefined && message.id === input.excludeMessageId) {
       continue;
     }
-    const text = message.text.trim();
+    const attached = (message.attachments ?? []).map((attachment) => attachment.name);
+    const text = [
+      message.text.trim(),
+      attached.length > 0 ? `[Attached: ${attached.join(", ")}]` : "",
+    ]
+      .filter((part) => part.length > 0)
+      .join("\n");
     if (text.length === 0) {
       continue;
     }

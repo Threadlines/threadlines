@@ -198,3 +198,21 @@ export function retainTurnItemsAfterRevert<
     (item) => compareTranscriptPosition(item, cut) < 0 || keptTurnIds.has(item.turnId),
   );
 }
+
+/**
+ * Whether a revert takes away the send that gave a moved thread's agent its
+ * conversation, so the conversation is owed again: the revert removed the
+ * message that carried it, or, when no send is known to have carried it,
+ * went back to where the thread arrived. Both server read models go
+ * through this.
+ */
+export function revertOwesHistorySeed(input: {
+  readonly movedHere: boolean;
+  readonly historySeedOwed: boolean;
+  /** Whether the revert removed the message that carried it; null when none is known. */
+  readonly seedMessageRemoved: boolean | null;
+  readonly turnCount: number;
+}): boolean {
+  if (!input.movedHere || input.historySeedOwed) return false;
+  return input.seedMessageRemoved ?? input.turnCount === 0;
+}

@@ -36,7 +36,9 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
@@ -52,6 +54,7 @@ import { ComputerLinkRepository, isUsableLink } from "../links/ComputerLinkRepos
 import { threadMoveRefusal } from "../orchestration/threadMoveDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import {
@@ -108,6 +111,7 @@ function suggestAgent(
 const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
+  const threadRows = yield* ProjectionThreadRepository;
   const links = yield* ComputerLinkRepository;
   const client = yield* ComputerLinkClient;
   const identities = yield* RepositoryIdentityResolver;
@@ -251,12 +255,24 @@ const make = Effect.gen(function* () {
       return { transferId };
     });
 
+  /**
+   * A thread's move, read from its row so an archived thread's move runs
+   * on; none for a deleted thread. Fails when it couldn't be read.
+   */
+  const moveOf = (threadId: ThreadId) =>
+    threadRows
+      .getById({ threadId })
+      .pipe(
+        Effect.map((row) =>
+          Option.isSome(row) && row.value.deletedAt === null ? (row.value.move ?? null) : null,
+        ),
+      );
+
   const cancel: ThreadMovesShape["cancel"] = (threadId) =>
     Effect.gen(function* () {
-      const shell = yield* snapshots
-        .getThreadShellById(threadId)
-        .pipe(Effect.mapError(() => moveError("That thread couldn't be read.")));
-      const move = Option.isSome(shell) ? (shell.value.move ?? null) : null;
+      const move = yield* moveOf(threadId).pipe(
+        Effect.mapError(() => moveError("That thread couldn't be read.")),
+      );
       if (move === null) return yield* moveError("This thread isn't moving.");
       if (move.movedAway !== undefined) {
         return yield* moveError(`This thread already moved to ${move.target.label}.`);
@@ -279,16 +295,14 @@ const make = Effect.gen(function* () {
   /** Moves this process is running, so a second start of the same one does nothing. */
   const running = new Set<string>();
 
-  /** The thread's move as it stands now, if it is still `transferId` and unfinished. */
+  /** The thread's move as it stands now, if it is still `transferId` and unfinished. Fails when it couldn't be read. */
   const currentMove = (threadId: ThreadId, transferId: string) =>
-    snapshots.getThreadShellById(threadId).pipe(
-      Effect.map((shell) => {
-        const move = Option.isSome(shell) ? (shell.value.move ?? null) : null;
-        return move !== null && move.transferId === transferId && move.movedAway === undefined
+    moveOf(threadId).pipe(
+      Effect.map((move) =>
+        move !== null && move.transferId === transferId && move.movedAway === undefined
           ? move
-          : null;
-      }),
-      Effect.orElseSucceed(() => null),
+          : null,
+      ),
     );
 
   const dispatchStep = (
@@ -346,12 +360,14 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * Calls the other computer, waiting through outages (every 15 seconds): a
-   * move never gives up on its own, so the thread stays frozen until that
-   * computer answers. An answer that refuses the call (PeerRpcError) is final
-   * and fails the call.
+   * Calls the other computer for a thread's move, waiting through outages
+   * (every 15 seconds) for as long as the thread is here: a move never gives
+   * up on its own, so the thread stays frozen until that computer answers.
+   * Deleting the thread ends the wait. An answer that refuses the call
+   * (PeerRpcError) is final and fails the call.
    */
   const peerCall = <A>(
+    threadId: ThreadId,
     environmentId: EnvironmentId,
     call: (peer: PeerClient) => Effect.Effect<A, PeerRpcError | RpcClientError.RpcClientError>,
   ) =>
@@ -361,7 +377,13 @@ const make = Effect.gen(function* () {
       ),
       Effect.retry({
         schedule: Schedule.spaced(Duration.seconds(15)),
-        while: (error) => error._tag === "ComputerLinkUnavailableError",
+        while: (error) =>
+          error._tag === "ComputerLinkUnavailableError"
+            ? threadRows.getById({ threadId }).pipe(
+                Effect.map((row) => Option.isSome(row) && row.value.deletedAt === null),
+                Effect.orElseSucceed(() => true),
+              )
+            : Effect.succeed(false),
       }),
     );
 
@@ -378,9 +400,11 @@ const make = Effect.gen(function* () {
         const move = yield* currentMove(threadId, transferId);
         if (move === null) return null;
         if (move.cancelRequested) {
-          return yield* peerCall(environmentId, (peer) => peer["peer.move.abort"]({ transferId }));
+          return yield* peerCall(threadId, environmentId, (peer) =>
+            peer["peer.move.abort"]({ transferId }),
+          );
         }
-        const state = yield* peerCall(environmentId, (peer) =>
+        const state = yield* peerCall(threadId, environmentId, (peer) =>
           peer["peer.move.status"]({ transferId }),
         );
         if (state.status !== waitingWhile) return state;
@@ -493,7 +517,9 @@ const make = Effect.gen(function* () {
         const move = yield* currentMove(threadId, transferId);
         if (move === null) return null;
         if (move.cancelRequested) {
-          return yield* peerCall(environmentId, (peer) => peer["peer.move.abort"]({ transferId }));
+          return yield* peerCall(threadId, environmentId, (peer) =>
+            peer["peer.move.abort"]({ transferId }),
+          );
         }
         const length = Math.min(CHUNK_BYTES, manifest.totalBytes - offset);
         const bytes = yield* Effect.tryPromise({
@@ -509,7 +535,7 @@ const make = Effect.gen(function* () {
           },
           catch: () => new ThreadMoveFailure({ reason: "The packed thread couldn't be read." }),
         });
-        const state = yield* peerCall(environmentId, (peer) =>
+        const state = yield* peerCall(threadId, environmentId, (peer) =>
           peer["peer.move.chunk"]({ transferId, offset, data: bytes.toString("base64") }),
         );
         if (state.status !== "receiving") return state;
@@ -525,7 +551,9 @@ const make = Effect.gen(function* () {
           });
         }
       }
-      return yield* peerCall(environmentId, (peer) => peer["peer.move.finish"]({ transferId }));
+      return yield* peerCall(threadId, environmentId, (peer) =>
+        peer["peer.move.finish"]({ transferId }),
+      );
     });
 
   /**
@@ -536,6 +564,37 @@ const make = Effect.gen(function* () {
   const runMove = (threadId: ThreadId, transferId: ThreadMoveId): Effect.Effect<void> => {
     if (running.has(transferId)) return Effect.void;
     running.add(transferId);
+    /**
+     * Drops the move on the other computer and records its answer. Its
+     * answer is the only way the thread unfreezes, so a drop it couldn't
+     * record yet is asked again until it is.
+     */
+    const drop = (environmentId: EnvironmentId, reason: string) =>
+      peerCall(threadId, environmentId, (peer) => peer["peer.move.abort"]({ transferId })).pipe(
+        Effect.retry({
+          schedule: Schedule.spaced(Duration.seconds(15)),
+          while: (error) => error._tag === "PeerRpcError",
+        }),
+        Effect.flatMap((dropped) => settle(threadId, transferId, dropped, reason)),
+      );
+    /**
+     * The thread was deleted while it moved: the other computer is asked
+     * once to drop the move (one that already arrived there stays), and the
+     * packed copy goes. Unreachable, its own expiry drops a move that never
+     * finished arriving.
+     */
+    const dropIfDeleted = Effect.gen(function* () {
+      const row = yield* threadRows.getById({ threadId });
+      if (Option.isNone(row) || row.value.deletedAt === null) return;
+      const move = row.value.move ?? null;
+      if (move === null || move.transferId !== transferId || move.movedAway !== undefined) return;
+      yield* client
+        .withPeer(move.target.environmentId, (peer) => peer["peer.move.abort"]({ transferId }))
+        .pipe(Effect.ignore);
+      yield* Effect.tryPromise(() =>
+        NodeFs.rm(moveDir(transferId), { recursive: true, force: true }),
+      ).pipe(Effect.ignore);
+    }).pipe(Effect.ignore);
     const steps = Effect.gen(function* () {
       const move = yield* currentMove(threadId, transferId);
       if (move === null) return;
@@ -543,7 +602,7 @@ const make = Effect.gen(function* () {
       const label = move.target.label;
       // Where the other computer stands, if it heard of this move at all: one
       // it never heard of reads aborted with no reason.
-      const known = yield* peerCall(environmentId, (peer) =>
+      const known = yield* peerCall(threadId, environmentId, (peer) =>
         peer["peer.move.status"]({ transferId }),
       );
       let state: PeerMoveState | null = known;
@@ -568,7 +627,7 @@ const make = Effect.gen(function* () {
           });
           return;
         }
-        state = yield* peerCall(environmentId, (peer) =>
+        state = yield* peerCall(threadId, environmentId, (peer) =>
           peer["peer.move.prepare"]({ transferId, manifest: manifest.success }),
         );
       }
@@ -591,10 +650,7 @@ const make = Effect.gen(function* () {
             );
             if (manifest._tag === "Failure") {
               // The other computer has part of it: drop it there first.
-              const dropped = yield* peerCall(environmentId, (peer) =>
-                peer["peer.move.abort"]({ transferId }),
-              );
-              yield* settle(threadId, transferId, dropped, manifest.failure.reason);
+              yield* drop(environmentId, manifest.failure.reason);
               return;
             }
             state = yield* send(
@@ -615,22 +671,33 @@ const make = Effect.gen(function* () {
         }
       }
     });
-    return steps.pipe(
+    const attempt = steps.pipe(
       // The other computer refused a step outright: drop the move there, and
       // record what it answers. Unanswered, the thread stays frozen.
       Effect.catchTag("PeerRpcError", (error) =>
         Effect.gen(function* () {
           const move = yield* currentMove(threadId, transferId);
           if (move === null) return;
-          const dropped = yield* peerCall(move.target.environmentId, (peer) =>
-            peer["peer.move.abort"]({ transferId }),
-          );
-          yield* settle(threadId, transferId, dropped, error.detail);
+          yield* drop(move.target.environmentId, error.detail);
         }),
       ),
-      Effect.catchCause((cause) => Effect.logWarning("thread move stopped", { transferId, cause })),
-      Effect.ensuring(Effect.sync(() => running.delete(transferId))),
     );
+    // Runs until the move ends. Anything else that stops it (a read that
+    // failed, a dropped connection) starts it again from the top, which asks
+    // the other computer where it stands first.
+    const supervised = Effect.gen(function* () {
+      for (;;) {
+        const exit = yield* Effect.exit(attempt);
+        if (Exit.isSuccess(exit)) return yield* dropIfDeleted;
+        if (Cause.hasInterruptsOnly(exit.cause)) return;
+        yield* Effect.logWarning("thread move stopped, trying again", {
+          transferId,
+          cause: exit.cause,
+        });
+        yield* Effect.sleep(Duration.seconds(30));
+      }
+    });
+    return supervised.pipe(Effect.ensuring(Effect.sync(() => running.delete(transferId))));
   };
 
   const startReactor: ThreadMovesShape["startReactor"] = () =>
@@ -641,14 +708,16 @@ const make = Effect.gen(function* () {
       if (Option.isSome(model)) {
         for (const thread of model.value.threads) {
           const move = thread.move ?? null;
-          if (move !== null && move.movedAway === undefined) {
+          if (thread.deletedAt === null && move !== null && move.movedAway === undefined) {
             yield* runMove(thread.id, move.transferId).pipe(Effect.forkScoped);
           }
         }
       }
       yield* events.pipe(
+        // A cancel wakes a move this process isn't running (it does
+        // nothing to one it is).
         Stream.runForEach((event) =>
-          event.type === "thread.move-started"
+          event.type === "thread.move-started" || event.type === "thread.move-cancel-requested"
             ? runMove(event.payload.threadId, event.payload.transferId).pipe(
                 Effect.forkScoped,
                 Effect.asVoid,

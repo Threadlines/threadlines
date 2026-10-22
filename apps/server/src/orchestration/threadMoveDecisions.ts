@@ -125,18 +125,17 @@ export function threadMoveRefusal(
 }
 
 /**
- * Commands a moving or moved thread still takes: filing it away, the
- * server's own bookkeeping that can't change what moves, and the move's
- * own steps. Everything else is refused (`threadMoveGuardRefusal`).
- * Archiving and deleting wait until it moved: a move under way runs on the
- * thread being there.
+ * Commands a moving or moved thread still takes: filing it away (archive,
+ * unarchive, delete, pin), the server's own bookkeeping that can't change
+ * what moves, and the move's own steps. Everything else is refused
+ * (`threadMoveGuardRefusal`). A move under way runs on whether the thread
+ * is archived or not; deleting it mid-move drops the move on the other
+ * computer, unless it already arrived there.
  */
-const MOVED_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
-  "thread.delete",
+const FROZEN_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
   "thread.archive",
   "thread.unarchive",
-]);
-const FROZEN_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
+  "thread.delete",
   "thread.pin",
   "thread.unpin",
   "thread.done-override.set",
@@ -179,11 +178,7 @@ export function threadMoveGuardRefusal(
   };
   if ("threadId" in command && command.type !== "thread.import") {
     const thread = frozen(command.threadId);
-    if (
-      thread !== null &&
-      !FROZEN_THREAD_COMMANDS.has(command.type) &&
-      !(thread.move?.movedAway !== undefined && MOVED_THREAD_COMMANDS.has(command.type))
-    ) {
+    if (thread !== null && !FROZEN_THREAD_COMMANDS.has(command.type)) {
       return frozenWords(thread);
     }
   }
@@ -441,7 +436,7 @@ export function decideHistorySeedDelivered(
     {
       ...baseFor(thread.id),
       type: "thread.history-seed-delivered",
-      payload: { threadId: thread.id, updatedAt: command.createdAt },
+      payload: { threadId: thread.id, messageId: command.messageId, updatedAt: command.createdAt },
     },
   ];
 }

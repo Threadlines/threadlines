@@ -558,21 +558,24 @@ const make = Effect.gen(function* () {
        */
       readonly moved?: true;
       /**
-       * The session was started seeded with the conversation: the next send
-       * adds no seed of its own, and once the provider takes that send the
-       * debt is paid. Lost with the process, so a restart seeds the send.
+       * The runtime started seeded with the conversation, by its start time
+       * (ProviderSession.createdAt): a send on that runtime adds no seed of
+       * its own, and pays the debt once the provider takes it. A send on any
+       * other runtime (this one was stopped or replaced) builds the seed
+       * again. Lost with the process, so a restart seeds the send.
        */
-      readonly carried?: true;
+      readonly carriedBy?: string;
     }
   >();
 
-  /** A moved thread's agent was given its conversation: the recorded debt is paid. */
-  const markHistorySeedDelivered = (threadId: ThreadId) =>
+  /** A moved thread's agent was given its conversation with `messageId`'s send: the recorded debt is paid. */
+  const markHistorySeedDelivered = (threadId: ThreadId, messageId: MessageId) =>
     orchestrationEngine
       .dispatch({
         type: "thread.history-seed.delivered",
         commandId: serverCommandId("history-seed-delivered"),
         threadId,
+        messageId,
         createdAt: new Date().toISOString(),
       })
       .pipe(Effect.ignore);
@@ -1416,7 +1419,7 @@ const make = Effect.gen(function* () {
             cwd: effectiveCwd ?? undefined,
             claimed: false,
             moved: true,
-            carried: true,
+            carriedBy: handoffSession.createdAt,
           });
         }
       }
@@ -1825,6 +1828,15 @@ const make = Effect.gen(function* () {
     // for one thread run one at a time, so the next build sees the claim.
     // A thread moved here owes its agent the conversation until a send
     // carries it (recorded on the thread, so a restart still owes it).
+    // A seed carried by a runtime that is gone isn't in this one.
+    const carried = owedHistorySeeds.get(sessionKey);
+    if (
+      carried?.carriedBy !== undefined &&
+      !carried.claimed &&
+      carried.carriedBy !== activeSession?.createdAt
+    ) {
+      owedHistorySeeds.delete(sessionKey);
+    }
     if (
       !owedHistorySeeds.has(sessionKey) &&
       thread.historySeedOwed === true &&
@@ -1858,7 +1870,7 @@ const make = Effect.gen(function* () {
     // context-seed preamble and re-sent source attachments would duplicate it.
     const forkContextText = !nativeForkApplied ? input.providerContext : undefined;
     const builtSeed =
-      owedCandidate === undefined || roomPaysHistory || owedCandidate.carried === true
+      owedCandidate === undefined || roomPaysHistory || owedCandidate.carriedBy !== undefined
         ? undefined
         : yield* seedBuilder
             .build({
@@ -1874,7 +1886,7 @@ const make = Effect.gen(function* () {
     // transcript, and that send must leave the debt owed.
     const movedSeedEmpty =
       owedCandidate?.moved === true &&
-      owedCandidate.carried !== true &&
+      owedCandidate.carriedBy === undefined &&
       (builtSeed === undefined || builtSeed.entries.length === 0) &&
       thread.messages.some((message) => message.imported === true);
     const owedSeed = movedSeedEmpty ? undefined : owedCandidate;
@@ -2010,7 +2022,9 @@ const make = Effect.gen(function* () {
               if (owedHistorySeeds.get(sessionKey) === owedSeed) {
                 owedHistorySeeds.delete(sessionKey);
               }
-              if (owedSeed.moved === true) yield* markHistorySeedDelivered(input.threadId);
+              if (owedSeed.moved === true) {
+                yield* markHistorySeedDelivered(input.threadId, input.messageId);
+              }
             }),
       // A send that failed before the provider took it delivered nothing.
       historyDebtReturned:

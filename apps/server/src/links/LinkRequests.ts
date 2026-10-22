@@ -241,6 +241,8 @@ export interface LinkRequestsShape {
 export type LinkAuthority =
   | {
       readonly ok: true;
+      /** Allowed outright, or each new request asks this computer's user first. */
+      readonly access: Exclude<ComputerLinkAccess, "off">;
       readonly maxRuntimeMode: RuntimeMode;
       /** The computer the link was made for, when pinned by its invite. */
       readonly pinnedEnvironmentId: string | null;
@@ -384,7 +386,8 @@ const make = Effect.gen(function* () {
         ) {
           return { ok: false, outcome: "cancelled", text: `${ownLabel} removed the link.` };
         }
-        if (found.value.linkAccess === "off") {
+        const access = peerLinkOf(found.value).access;
+        if (access === "off") {
           return {
             ok: false,
             outcome: "denied",
@@ -393,6 +396,7 @@ const make = Effect.gen(function* () {
         }
         return {
           ok: true,
+          access,
           maxRuntimeMode: found.value.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE,
           pinnedEnvironmentId: found.value.linkEnvironmentPinned
             ? found.value.linkEnvironmentId

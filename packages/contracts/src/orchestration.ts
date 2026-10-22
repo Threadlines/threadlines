@@ -2011,6 +2011,11 @@ export const OrchestrationThread = Schema.Struct({
    * flag clears once the provider took that turn.
    */
   historySeedOwed: Schema.optional(Schema.Boolean),
+  /**
+   * The message whose send gave a moved thread's agent the conversation. A
+   * revert that takes that message away owes the conversation again.
+   */
+  historySeedMessageId: Schema.optional(MessageId),
   /** Child threads this thread started: open requests, limits and notes. */
   childRequests: OrchestrationChildRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_CHILD_REQUEST_STATE)),
@@ -3832,6 +3837,8 @@ const ThreadHistorySeedDeliveredCommand = Schema.Struct({
   type: Schema.Literal("thread.history-seed.delivered"),
   commandId: CommandId,
   threadId: ThreadId,
+  /** The message whose send carried the conversation. */
+  messageId: MessageId,
   createdAt: IsoDateTime,
 });
 
@@ -4285,6 +4292,8 @@ export const ThreadMovedAwayPayload = Schema.Struct({
 
 export const ThreadHistorySeedDeliveredPayload = Schema.Struct({
   threadId: ThreadId,
+  /** The message whose send carried the conversation. */
+  messageId: MessageId,
   updatedAt: IsoDateTime,
 });
 

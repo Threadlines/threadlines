@@ -8,7 +8,11 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
-import { retainTurnItemsAfterRevert, revertMessages } from "@threadlines/shared/transcriptRevert";
+import {
+  retainTurnItemsAfterRevert,
+  revertMessages,
+  revertOwesHistorySeed,
+} from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
 import {
   ApprovalRequestId,
@@ -699,7 +703,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow) || (existingRow.value.historySeedOwed ?? 0) === 0) {
             return;
           }
-          yield* projectionThreadRepository.upsert({ ...existingRow.value, historySeedOwed: 0 });
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            historySeedOwed: 0,
+            historySeedMessageId: event.payload.messageId,
+          });
           return;
         }
 
@@ -1402,14 +1410,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             }
           }
 
+          // The send that gave a moved thread's agent the conversation is
+          // undone (its message is gone by now): it is owed again.
+          const seedMessageId = existingRow.value.historySeedMessageId ?? null;
+          const owesSeed = revertOwesHistorySeed({
+            movedHere: (existingRow.value.movedFrom ?? null) !== null,
+            historySeedOwed: (existingRow.value.historySeedOwed ?? 0) > 0,
+            seedMessageRemoved:
+              seedMessageId === null
+                ? null
+                : Option.isNone(
+                    yield* projectionThreadMessageRepository.getByMessageId({
+                      messageId: seedMessageId,
+                    }),
+                  ),
+            turnCount: event.payload.turnCount,
+          });
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId,
-            // Back to where a moved thread arrived: the turn that gave its
-            // agent the conversation is undone, so it is owed again.
-            ...(event.payload.turnCount === 0 && (existingRow.value.movedFrom ?? null) !== null
-              ? { historySeedOwed: 1 }
-              : {}),
+            ...(owesSeed ? { historySeedOwed: 1, historySeedMessageId: null } : {}),
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

@@ -6,9 +6,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  *
  * - `projection_threads.move_json`: on the computer it leaves, the move under
  *   way or done (OrchestrationThreadMove).
- * - `projection_threads.moved_from_json` and `history_seed_owed`: on the
- *   computer it arrives at, where it came from (ThreadMovedFrom) and whether
- *   its agent still has to be given the conversation.
+ * - `projection_threads.moved_from_json`, `history_seed_owed` and
+ *   `history_seed_message_id`: on the computer it arrives at, where it came
+ *   from (ThreadMovedFrom), whether its agent still has to be given the
+ *   conversation, and the message whose send gave it.
  * - `projection_thread_messages.imported`: a message the move brought; every
  *   revert keeps it.
  * - `link_moves`: on the receiving computer, each move a linked computer
@@ -31,6 +32,9 @@ export default Effect.gen(function* () {
   if (!threadColumns.some((entry) => entry.name === "history_seed_owed")) {
     yield* sql`ALTER TABLE projection_threads ADD COLUMN history_seed_owed INTEGER NOT NULL DEFAULT 0`;
   }
+  if (!threadColumns.some((entry) => entry.name === "history_seed_message_id")) {
+    yield* sql`ALTER TABLE projection_threads ADD COLUMN history_seed_message_id TEXT`;
+  }
   const messageColumns = yield* columns("projection_thread_messages");
   if (!messageColumns.some((entry) => entry.name === "imported")) {
     yield* sql`ALTER TABLE projection_thread_messages ADD COLUMN imported INTEGER NOT NULL DEFAULT 0`;
@@ -47,6 +51,7 @@ export default Effect.gen(function* () {
       thread_id TEXT NOT NULL,
       branch TEXT,
       worktree_path TEXT,
+      repo_root TEXT,
       reason TEXT,
       cleaned_at TEXT,
       created_at TEXT NOT NULL,
