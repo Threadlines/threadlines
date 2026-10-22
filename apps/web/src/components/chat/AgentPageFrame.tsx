@@ -6,6 +6,7 @@ import {
   agentPageThemeMessage,
   isAgentPageLeftMessage,
   readAgentPageContentHeight,
+  readAgentPageImageRequest,
   readAgentPageLinkRequest,
 } from "@threadlines/shared/agentPages";
 import { buildAgentPageDocument } from "@threadlines/shared/agentPageDocument";
@@ -19,6 +20,7 @@ import {
   readAgentPageContent,
   useAgentPageTheme,
 } from "./agentPageClient";
+import { openExpandedImagePreview } from "./ExpandedImagePreview";
 
 type LoadState =
   | { readonly status: "loading" }
@@ -88,7 +90,8 @@ function useFocusGuard(frameRef: React.RefObject<HTMLIFrameElement | null>) {
  * One agent page in its sandboxed frame (docs/agent-pages.md). The page
  * runs with an opaque origin under the content policy the shared wrapper puts
  * ahead of it; it gets the app's theme as it loads and every change after,
- * reports its height, and asks the app to open links. A page that navigates
+ * reports its height, and asks the app to open links and show its pictures
+ * bigger, each only on the reader's own click. A page that navigates
  * itself away is stopped: that would be a way to carry what it shows to a
  * server of its own. The desktop app refuses the navigation outright
  * (DesktopWindow). A browser cannot, and here the frame goes on the load
@@ -109,8 +112,10 @@ export function AgentPageFrame(props: {
   readonly onContentHeight?: (height: number) => void;
   /** Hands the loaded page up, for saving and viewing its source. */
   readonly onLoaded?: (page: AgentPageReadResult) => void;
+  /** Draws the page bigger or smaller, laid out at the frame's width over this. */
+  readonly zoom?: number;
 }) {
-  const { version, onContentHeight, onLoaded } = props;
+  const { version, title, onContentHeight, onLoaded } = props;
   const theme = useAgentPageTheme();
   // The document is built with the theme current when the page loads; later
   // changes reach the running page as a message, so it keeps its state.
@@ -181,18 +186,29 @@ export function AgentPageFrame(props: {
         onContentHeight?.(height);
         return;
       }
+      // Only what the reader just clicked inside this page: the frame holds
+      // focus and the app was just used. Best effort, as for focus: a page
+      // that holds focus can still ask in the moments after the reader used
+      // the app anywhere, since the app cannot see clicks inside the frame.
+      const clickedInPage =
+        document.activeElement === frame && navigator.userActivation?.isActive !== false;
+      const image = readAgentPageImageRequest(event.data);
+      if (image !== undefined) {
+        if (!clickedInPage) return;
+        openExpandedImagePreview({
+          images: image.images.map(({ src, alt }) => ({ src, name: alt || title })),
+          index: image.index,
+        });
+        return;
+      }
       const link = readAgentPageLinkRequest(event.data);
       if (link === undefined) return;
-      // Only a link the reader just clicked inside this page: the frame holds
-      // focus and the app was just used. A page cannot open tabs by itself.
-      if (document.activeElement === frame && navigator.userActivation?.isActive !== false) {
-        openExternalUrl(link.url);
-      }
+      if (clickedInPage) openExternalUrl(link.url);
       frame.contentWindow?.postMessage(agentPageResult(link.id), "*");
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [onContentHeight]);
+  }, [onContentHeight, title]);
 
   useFocusGuard(frameRef);
 
@@ -201,8 +217,8 @@ export function AgentPageFrame(props: {
       <div className={cn("flex items-center justify-center", props.className)} style={props.style}>
         <p className="text-xs text-muted-foreground">
           {stopped
-            ? `${props.title} tried to open another page and was stopped.`
-            : `Couldn't load ${props.title}.`}
+            ? `${title} tried to open another page and was stopped.`
+            : `Couldn't load ${title}.`}
         </p>
       </div>
     );
@@ -213,11 +229,14 @@ export function AgentPageFrame(props: {
       {pageDocument !== null ? (
         <iframe
           ref={frameRef}
-          title={props.title}
+          title={title}
           srcDoc={pageDocument}
           sandbox={AGENT_PAGE_FRAME_SANDBOX}
           referrerPolicy="no-referrer"
           className="block size-full border-0 bg-transparent"
+          // The frame's zoom reaches the page inside, which lays itself out
+          // at the frame's width over the zoom, as a browser's zoom does.
+          style={props.zoom === undefined || props.zoom === 1 ? undefined : { zoom: props.zoom }}
           onLoad={(event) => {
             const loaded = event.currentTarget.contentWindow;
             // The page loads once in a window; a second load in the same

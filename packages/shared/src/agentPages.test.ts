@@ -15,6 +15,7 @@ import {
   agentPageShareLink,
   applyAgentPagePublication,
   readAgentPageHeights,
+  readAgentPageImageRequest,
   readAgentPageLinkRequest,
 } from "./agentPages.ts";
 import { buildAgentPageDocument } from "./agentPageDocument.ts";
@@ -162,6 +163,30 @@ describe("readAgentPageLinkRequest", () => {
     );
     expect(readAgentPageLinkRequest(request("javascript:alert(1)"))).toBeUndefined();
     expect(readAgentPageLinkRequest(request("file:///etc/passwd"))).toBeUndefined();
+  });
+});
+
+describe("readAgentPageImageRequest", () => {
+  const request = (images: ReadonlyArray<{ src: string; alt?: string }>, index = 0) => ({
+    jsonrpc: "2.0",
+    method: "threadlines/open-image",
+    params: { images, index },
+  });
+  const inline = "data:image/png;base64,iVBORw0KGgo=";
+
+  it("accepts only inline pictures, so the viewer loads nothing from elsewhere", () => {
+    expect(readAgentPageImageRequest(request([{ src: inline, alt: "Setup" }]))).toEqual({
+      images: [{ src: inline, alt: "Setup" }],
+      index: 0,
+    });
+    for (const src of [
+      "https://example.com/tracker.png",
+      "blob:null/1b2c",
+      "data:text/html,<script>alert(1)</script>",
+    ]) {
+      expect(readAgentPageImageRequest(request([{ src: inline }, { src }]))).toBeUndefined();
+    }
+    expect(readAgentPageImageRequest(request([{ src: inline }], 1))).toBeUndefined();
   });
 });
 

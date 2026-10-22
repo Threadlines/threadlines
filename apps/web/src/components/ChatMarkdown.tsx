@@ -78,6 +78,8 @@ import { isImageFilePath } from "../lib/imageFilePaths";
 import { useFileNamedInProject } from "../hooks/useFileNamedInProject";
 import { useLocalImagePreview } from "../hooks/useLocalImagePreview";
 import { LocalImageThumbnail } from "./chat/LocalImageThumbnail";
+import { openExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import { usePinchToExpand } from "./chat/usePinchToExpand";
 import { parseCodexInlineVisualizations } from "../lib/codexInlineVisualization";
 import {
   buildFileLinkLabel,
@@ -689,6 +691,9 @@ function MarkdownPullRequestChip({
   );
 }
 
+/** Whether a renderer sits inside a markdown link, whose click is the link's. */
+const InsideMarkdownLinkContext = createContext(false);
+
 function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRendererProps<"a">) {
   const documentContext = useContext(MarkdownDocumentContext);
   const { cwd, threadRef, searchHighlightQuery, markdownFileLinkMetaByHref } = documentContext;
@@ -720,13 +725,13 @@ function MarkdownAnchor({ node: _node, href, children, ...props }: MarkdownRende
           className={props.className}
           title={props.title}
         >
-          {children}
+          <InsideMarkdownLinkContext value>{children}</InsideMarkdownLinkContext>
         </ChatWebLink>
       );
     }
     return (
       <a {...props} href={href} target="_blank" rel="noopener noreferrer">
-        {children}
+        <InsideMarkdownLinkContext value>{children}</InsideMarkdownLinkContext>
       </a>
     );
   }
@@ -864,10 +869,18 @@ function MarkdownPre({ node: _node, children, ...props }: MarkdownRendererProps<
  * An image with an http(s) or data source, the case {@link MarkdownImage} does
  * not turn into a local thumbnail. A host bot links images that later go
  * missing, and a broken-image glyph says nothing; the alt text at least says
- * what was meant to be there.
+ * what was meant to be there. Clicking or pinching it opens the image viewer;
+ * in a link, a click follows the link and only a pinch opens it.
  */
 function RemoteMarkdownImage({ alt, src, ...rest }: React.ComponentProps<"img">) {
+  const inLink = useContext(InsideMarkdownLinkContext);
   const [failed, setFailed] = useState(false);
+  const expand = src
+    ? () => {
+        openExpandedImagePreview({ images: [{ src, name: alt || "Image" }], index: 0 });
+      }
+    : undefined;
+  const pinchRef = usePinchToExpand(expand);
   if (failed || !src) {
     // Shown only once loading fails, which find in chat cannot know about an
     // image it has not drawn, so it reads past the words.
@@ -877,7 +890,28 @@ function RemoteMarkdownImage({ alt, src, ...rest }: React.ComponentProps<"img">)
       </span>
     ) : null;
   }
-  return <img alt={alt ?? ""} src={src} loading="lazy" onError={() => setFailed(true)} {...rest} />;
+  const image = (
+    <img
+      ref={inLink ? pinchRef : undefined}
+      alt={alt ?? ""}
+      src={src}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      {...rest}
+    />
+  );
+  if (inLink) return image;
+  return (
+    <button
+      ref={pinchRef}
+      type="button"
+      className="inline-block max-w-full cursor-zoom-in align-bottom"
+      aria-label={`Preview ${alt || "image"}`}
+      onClick={expand}
+    >
+      {image}
+    </button>
+  );
 }
 
 /**

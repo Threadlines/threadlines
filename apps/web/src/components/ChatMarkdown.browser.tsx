@@ -12,7 +12,7 @@ import {
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement, ReactNode } from "react";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -59,6 +59,7 @@ vi.mock("../localApi", () => ({
 }));
 
 import ChatMarkdown from "./ChatMarkdown";
+import { ExpandedImageViewerHost } from "./chat/ExpandedImageDialog";
 import { ThreadPullRequestLinkContext } from "./chat/ThreadPullRequestLinkContext";
 import {
   CodeBlockRunScopeContext,
@@ -758,6 +759,71 @@ describe("ChatMarkdown", () => {
         expect(pre?.style.backgroundColor).not.toBe("");
         expect(pre?.textContent).toContain("function identity(value) {}");
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens a picture from the web in the image viewer on a click or a pinch, not one in a link", async () => {
+    const picture = `${location.origin}/apple-touch-icon.png`;
+    const screen = await render(
+      <>
+        <ChatMarkdown
+          text={`![Chart](${picture})\n\n[![Badge](${picture})](https://example.com/badge)`}
+          cwd={undefined}
+        />
+        <ExpandedImageViewerHost />
+      </>,
+    );
+    const viewer = page.getByRole("dialog", { name: "Expanded image preview" });
+    const chart = page.getByRole("button", { name: "Preview Chart" });
+    const closeViewer = async () => {
+      await userEvent.keyboard("{Escape}");
+      await expect.element(viewer).not.toBeInTheDocument();
+    };
+
+    try {
+      await chart.click();
+      await expect.element(viewer.getByText("Chart")).toBeVisible();
+      await closeViewer();
+
+      // From the keyboard too.
+      chart.element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(viewer).toBeVisible();
+      await closeViewer();
+
+      // A trackpad pinch: a wheel with Ctrl held, spreading.
+      chart
+        .element()
+        .dispatchEvent(
+          new WheelEvent("wheel", { ctrlKey: true, deltaY: -8, bubbles: true, cancelable: true }),
+        );
+      await expect.element(viewer).toBeVisible();
+      await closeViewer();
+
+      // Two fingers spreading on a touch screen.
+      const box = chart.element().getBoundingClientRect();
+      const touch = (type: string, pointerId: number, x: number) =>
+        chart.element().dispatchEvent(
+          new PointerEvent(type, {
+            pointerId,
+            pointerType: "touch",
+            clientX: box.left + x,
+            clientY: box.top + box.height / 2,
+            bubbles: true,
+          }),
+        );
+      touch("pointerdown", 1, box.width / 2 - 10);
+      touch("pointerdown", 2, box.width / 2 + 10);
+      touch("pointermove", 2, box.width / 2 + 30);
+      await expect.element(viewer).toBeVisible();
+      await closeViewer();
+
+      // In a link, a click is the link's.
+      await page.getByRole("img", { name: "Badge" }).click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(viewer.elements()).toHaveLength(0);
     } finally {
       await screen.unmount();
     }

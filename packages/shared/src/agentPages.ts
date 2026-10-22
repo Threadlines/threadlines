@@ -433,6 +433,8 @@ export const AGENT_PAGE_LAYOUT_GUIDE = [
   "Leave html, body and the outermost element without a background color, border, card or banner title: the panel is the page's frame, and the page paints its fill. This overrides any general style preference such as a black page background.",
   "The title you give the page shows right above it, so do not repeat it as the page's first heading.",
   "Use a fluid width with no horizontal padding on the outermost element.",
+  "Size columns and images fluidly too (percentages, fr, minmax(), max-width:100%), never a fixed pixel width: the reader can open the page full size, about 1200px wide, and a fluid page grows into it.",
+  "The reader can click a picture to see it bigger, so save screenshots at full resolution and let the page scale them down.",
   "The look is dense and flat: structure from type and spacing, quiet fills to group things, thin borders only where needed, no shadows except on things that float. Body text 13-14px, small headings, no hero sizes.",
   "If a box needs its own background (a mock of a specific screen, a panel that must stand apart), give it at least 16px of padding and var(--radius) corners.",
   "Give charts fixed pixel heights rather than heights that scale with width.",
@@ -454,6 +456,20 @@ export const OPEN_LINK_METHOD = "ui/open-link";
 export const HOST_CONTEXT_CHANGED_METHOD = "ui/notifications/host-context-changed";
 // Threadlines' own: the page's document is going away (it navigated itself).
 export const PAGE_LEFT_METHOD = "threadlines/page-left";
+// Threadlines' own: the reader clicked a picture in the page to see it bigger.
+export const OPEN_IMAGE_METHOD = "threadlines/open-image";
+
+/** The most pictures one request may hand the image viewer. Even. */
+export const MAX_OPEN_IMAGES = 200;
+const MAX_IMAGE_ALT_LENGTH = 300;
+// The only pictures a page can load (its content policy allows data: and
+// blob: images, and a blob: URL means nothing outside the page's own window).
+const DATA_IMAGE_URL = /^data:image\/[a-z0-9.+-]+[;,]/i;
+
+export interface AgentPageImage {
+  readonly src: string;
+  readonly alt: string;
+}
 
 /** The content height in a framed page's `size-changed` notification. */
 export function readAgentPageContentHeight(data: unknown): number | undefined {
@@ -478,6 +494,33 @@ export function readAgentPageLinkRequest(
   const url =
     typeof params === "object" && params !== null ? (params as { url?: unknown }).url : undefined;
   return typeof url === "string" && /^https?:\/\//i.test(url) ? { id, url } : undefined;
+}
+
+/**
+ * A page's request to show its pictures bigger: every picture it offers, in
+ * page order, and the one the reader clicked. Undefined unless every picture
+ * is an inline image, so the viewer never loads anything from elsewhere.
+ */
+export function readAgentPageImageRequest(
+  data: unknown,
+): { readonly images: ReadonlyArray<AgentPageImage>; readonly index: number } | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const { jsonrpc, method, params } = data as Record<string, unknown>;
+  if (jsonrpc !== "2.0" || method !== OPEN_IMAGE_METHOD) return undefined;
+  if (typeof params !== "object" || params === null) return undefined;
+  const { images, index } = params as { images?: unknown; index?: unknown };
+  if (!Array.isArray(images) || images.length === 0 || images.length > MAX_OPEN_IMAGES) {
+    return undefined;
+  }
+  if (typeof index !== "number" || !Number.isInteger(index) || index < 0) return undefined;
+  if (index >= images.length) return undefined;
+  const read = images.flatMap((image): AgentPageImage[] => {
+    if (typeof image !== "object" || image === null) return [];
+    const { src, alt } = image as { src?: unknown; alt?: unknown };
+    if (typeof src !== "string" || !DATA_IMAGE_URL.test(src)) return [];
+    return [{ src, alt: typeof alt === "string" ? alt.slice(0, MAX_IMAGE_ALT_LENGTH) : "" }];
+  });
+  return read.length === images.length ? { images: read, index } : undefined;
 }
 
 /** Whether `data` says the page's document is going away. */
