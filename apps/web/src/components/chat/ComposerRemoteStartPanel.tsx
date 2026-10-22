@@ -1,15 +1,14 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo } from "react";
 
-import {
-  describeComputerLinkFailure,
-  respondToComputerLinkRequest,
-} from "../../environments/links/computerLinks";
 import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
-import { useComputerLabel, type PendingLinkRequest } from "../sidebar/linkedComputers";
+import {
+  useComputerLabel,
+  useLinkRequestAnswer,
+  type PendingLinkRequest,
+} from "../sidebar/linkedComputers";
 import { Button } from "../ui/button";
-import { toastManager } from "../ui/toast";
 import { getPickerModelName } from "./providerIconUtils";
 
 /**
@@ -36,25 +35,8 @@ export const ComposerRemoteStartPanel = memo(function ComposerRemoteStartPanel({
     if (entry && model) return getPickerModelName(model, entry.driverKind);
     return entry?.displayName ?? request.agent.model ?? request.agent.instanceId;
   }, [environmentId, providersOn, request.agent.instanceId, request.agent.model]);
-  // Kept once an answer lands: the card is done, and goes when the computer's
-  // next snapshot drops the request.
-  const [answering, setAnswering] = useState<"allow" | "deny" | null>(null);
-  const respond = async (allow: boolean) => {
-    setAnswering(allow ? "allow" : "deny");
-    try {
-      await respondToComputerLinkRequest(
-        { environmentId, label: computerLabel },
-        { deviceId: request.deviceId, requestId: request.requestId, allow },
-      );
-    } catch (error) {
-      setAnswering(null);
-      toastManager.add({
-        type: "error",
-        title: allow ? `Couldn't allow ${request.title}` : `Couldn't deny ${request.title}`,
-        description: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
-      });
-    }
-  };
+  // Shared with the inbox row: an answer sent from either holds both.
+  const { answering, respond } = useLinkRequestAnswer(pending, computerLabel);
   const access = runtimeModeConfig[request.runtimeMode].label;
   return (
     <div className="px-4 py-3.5 sm:px-5 sm:py-4" data-testid="remote-start-panel">

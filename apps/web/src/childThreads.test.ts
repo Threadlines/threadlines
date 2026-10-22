@@ -224,5 +224,54 @@ describe("thread_start records in the parent's chat", () => {
         remoteThreads: [{ threadId: "thread-remote" }],
       });
     }
+    // A later call that kept no result leaves the turn one record, which
+    // still finds the thread the first call named.
+    const unnamed = call("start-2");
+    expect(
+      describeThreadStartCall({
+        ...input,
+        call: unnamed,
+        turnCalls: [asked, unnamed],
+        openRequests: [],
+        remoteChildren: [started],
+      }),
+    ).toMatchObject({
+      heading: "Started 1 thread",
+      remoteThreads: [{ threadId: "thread-remote" }],
+    });
+  });
+
+  it("never says started for a start a linked computer has not taken", () => {
+    // Started here without asking; the title holds braces.
+    const auto = call(
+      "start-1",
+      '{"outcome":"started","threads":[{"threadId":"thread-remote","title":"Fix {id} route","workspace":"remote","computer":"Mac mini"}]}',
+    );
+    const input = { call: auto, turnCalls: [auto], startedInTurn: [], ...local };
+    expect(
+      describeThreadStartCall({
+        ...input,
+        openRequests: [
+          {
+            ...waitingRequest("thread-remote", "batch-1"),
+            status: "starting",
+            remote: {
+              environmentId: MAC_MINI,
+              label: "Mac mini",
+              threadId: null,
+              status: "awaiting_approval",
+            },
+          },
+        ],
+      }),
+    ).toMatchObject({
+      heading: "Asked to start 1 thread",
+      outcome: "waiting for Mac mini to allow it",
+    });
+    // Its user said no: the request is gone and no thread came of it.
+    expect(describeThreadStartCall({ ...input, openRequests: [] })).toMatchObject({
+      heading: "Tried to start threads",
+      outcome: "not started",
+    });
   });
 });
