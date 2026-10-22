@@ -72,13 +72,18 @@ function normalizeLocalRunningThreadCount(input: DesktopTaskbarStatusInput): num
   return Math.floor(count);
 }
 
-function normalizeCompletedThreadCount(input: DesktopTaskbarStatusInput): number {
+/** Finished threads the user has not opened yet, whatever else is running. */
+function normalizeUnreadThreadCount(input: DesktopTaskbarStatusInput): number {
   const count = input.completedThreadCount;
   if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) {
-    // A completed status always represents at least one finished thread.
-    return 1;
+    return 0;
   }
   return Math.floor(count);
+}
+
+function normalizeCompletedThreadCount(input: DesktopTaskbarStatusInput): number {
+  // A completed status always represents at least one finished thread.
+  return Math.max(1, normalizeUnreadThreadCount(input));
 }
 
 function resolveStatusDescription(input: DesktopTaskbarStatusInput): string {
@@ -183,6 +188,9 @@ const make = Effect.gen(function* () {
   let macTrayRenderedStatus: DesktopTaskbarStatusInput["status"] | null = null;
   let macDockBounceId: number | null = null;
   const taskbarOverlayIcons = new Map<DesktopStatusGlyphs.TrayGlyph, Electron.NativeImage>();
+  // Windows whose flash already ends on their next focus, so repeated bursts
+  // of background work add no second listener.
+  const windowsAwaitingFocus = new WeakSet<Electron.BrowserWindow>();
 
   const runTrayEffect = <E>(
     action: string,
@@ -315,6 +323,7 @@ const make = Effect.gen(function* () {
     if (currentStatus.status === macTrayRenderedStatus) {
       return;
     }
+    const previousStatus = macTrayRenderedStatus;
     macTrayRenderedStatus = currentStatus.status;
 
     switch (currentStatus.status) {
@@ -325,10 +334,12 @@ const make = Effect.gen(function* () {
         });
         return;
       case "completed":
-        playMacTrayFrames(images.completedFrames, {
-          loop: false,
-          frameMs: DesktopStatusGlyphs.TRAY_COMPLETED_FRAME_INTERVAL_MS,
-        });
+        // The check pops as work finishes. Unread work already waiting (at
+        // launch, or after marking a thread unread) shows it at rest.
+        playMacTrayFrames(
+          previousStatus === "working" ? images.completedFrames : images.completedFrames.slice(-1),
+          { loop: false, frameMs: DesktopStatusGlyphs.TRAY_COMPLETED_FRAME_INTERVAL_MS },
+        );
         return;
       case "idle":
         clearMacTrayAnimation();
@@ -460,6 +471,7 @@ const make = Effect.gen(function* () {
 
   const applyWindowsStatus = Effect.fn("desktop.status.applyWindows")(function* (
     input: DesktopTaskbarStatusInput,
+    workJustFinished: boolean,
   ) {
     if (environment.platform !== "win32") {
       return;
@@ -501,8 +513,17 @@ const make = Effect.gen(function* () {
         yield* Effect.sync(() => {
           window.setProgressBar(-1);
           window.setOverlayIcon(Option.getOrNull(overlay), description);
-          if (!window.isFocused()) {
+          // The chip stays until the threads are opened; the flash is only for
+          // the moment the work finishes, and ends once the user looks.
+          if (workJustFinished && !window.isFocused()) {
             window.flashFrame(true);
+            if (!windowsAwaitingFocus.has(window)) {
+              windowsAwaitingFocus.add(window);
+              window.once("focus", () => {
+                windowsAwaitingFocus.delete(window);
+                if (isUsableWindow(window)) window.flashFrame(false);
+              });
+            }
           }
         });
         return;
@@ -519,6 +540,7 @@ const make = Effect.gen(function* () {
 
   const applyMacStatus = Effect.fn("desktop.status.applyMac")(function* (
     input: DesktopTaskbarStatusInput,
+    workJustFinished: boolean,
   ) {
     if (environment.platform !== "darwin") {
       return;
@@ -527,17 +549,19 @@ const make = Effect.gen(function* () {
     const maybeWindow = yield* electronWindow.currentMainOrFirst;
     const window = Option.getOrNull(maybeWindow);
 
-    // The Dock stays quiet while working — the menu bar status item is the
-    // macOS activity surface. The badge is reserved for finished work that
-    // has not been seen yet, mirroring Mail's unread semantics.
+    // The menu bar status item is the macOS activity surface. The Dock badge
+    // counts finished threads the user has not opened, like Mail's unread
+    // count: it holds while other work runs and drops as each one is opened.
     switch (input.status) {
-      case "working":
+      case "working": {
         yield* cancelMacDockBounce;
-        yield* electronApp.setDockBadge("");
+        const unreadCount = normalizeUnreadThreadCount(input);
+        yield* electronApp.setDockBadge(unreadCount > 0 ? formatThreadCount(unreadCount) : "");
         return;
+      }
       case "completed": {
         yield* electronApp.setDockBadge(formatThreadCount(normalizeCompletedThreadCount(input)));
-        if (window !== null && isUsableWindow(window) && !window.isFocused()) {
+        if (workJustFinished && window !== null && isUsableWindow(window) && !window.isFocused()) {
           yield* cancelMacDockBounce;
           const bounceId = yield* electronApp.bounceDock("informational");
           macDockBounceId = Option.getOrNull(bounceId);
@@ -572,10 +596,13 @@ const make = Effect.gen(function* () {
   return DesktopStatusIndicator.of({
     configure,
     setStatus: Effect.fn("desktop.status.setStatus")(function* (input) {
+      // Completed also stands for unread work at rest; only the step out of
+      // working is the moment worth a bounce or a flash.
+      const workJustFinished = currentStatus.status === "working" && input.status === "completed";
       currentStatus = input;
       yield* Ref.set(state.localRunningThreadCount, normalizeLocalRunningThreadCount(input));
-      yield* applyWindowsStatus(input);
-      yield* applyMacStatus(input);
+      yield* applyWindowsStatus(input, workJustFinished);
+      yield* applyMacStatus(input, workJustFinished);
       yield* updateTray();
     }),
   });

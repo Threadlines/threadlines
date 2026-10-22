@@ -37,6 +37,16 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
   return result as Awaited<ReturnType<DesktopBridge["ensureSshEnvironment"]>>;
 }
 
+// The window's focus, pushed by the main process. Kept here so a page that
+// asks between changes still gets the answer.
+let windowFocused: boolean | null = null;
+const windowFocusListeners = new Set<(focused: boolean) => void>();
+ipcRenderer.on(IpcChannels.WINDOW_FOCUS_CHANNEL, (_event, focused: unknown) => {
+  if (typeof focused !== "boolean") return;
+  windowFocused = focused;
+  for (const listener of windowFocusListeners) listener(focused);
+});
+
 contextBridge.exposeInMainWorld("desktopBridge", {
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
@@ -255,6 +265,13 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_ALL_BROWSING_DATA_CHANNEL),
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
   setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
+  isWindowFocused: () => windowFocused,
+  onWindowFocusChange: (listener) => {
+    windowFocusListeners.add(listener);
+    return () => {
+      windowFocusListeners.delete(listener);
+    };
+  },
   onQuitConfirmationRequested: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, request: unknown) => {
       if (request === null) {
