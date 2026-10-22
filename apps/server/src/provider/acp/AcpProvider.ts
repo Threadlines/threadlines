@@ -296,6 +296,31 @@ export const discoverAcpModelCapabilities = <Settings extends AcpProviderSetting
               capabilities: capabilitiesBySlug.get(choice.value) ?? EMPTY_ACP_MODEL_CAPABILITIES,
             })),
           );
+        // An agent that lists every model's options is read, never switched
+        // through: a switch can outlive the probe (Cursor saves it as the
+        // user's default model). If the list fails, the current model's
+        // options are all there is.
+        if (descriptor.listModelOptions) {
+          const listed = yield* descriptor.listModelOptions(acp).pipe(
+            // A catalog read, as slow as discovery, not one model switch.
+            Effect.timeout(descriptor.modelDiscoveryTimeoutMs ?? ACP_MODEL_DISCOVERY_TIMEOUT_MS),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("ACP model option listing failed", {
+                provider: descriptor.driverKind,
+                cause: Cause.pretty(cause),
+              }).pipe(Effect.as(undefined)),
+            ),
+          );
+          for (const entry of listed ?? []) {
+            if (entry.configOptions.length === 0) continue;
+            capabilitiesBySlug.set(
+              entry.slug,
+              mapping.capabilitiesFromConfigOptions(entry.configOptions),
+            );
+          }
+          return assemble();
+        }
+
         if (targetModelSlugs.size === 0) {
           return assemble();
         }
