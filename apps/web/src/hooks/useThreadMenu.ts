@@ -310,26 +310,41 @@ export function useThreadMenu() {
     [describe, run],
   );
 
-  /** The menu over several selected threads (by scoped key); `done` runs once it acted. */
+  /**
+   * The menu over several selected threads (by scoped key). `inboxOf` says
+   * where the inbox files each one now (null outside it); `done` runs once
+   * the menu acted. The threads are read again after the pick, so a thread
+   * that finished while the menu was open is treated as finished.
+   */
   const openSelection = useCallback(
-    async (threadKeys: ReadonlyArray<string>, position: MenuPosition, done: () => void) => {
+    async (
+      threadKeys: ReadonlyArray<string>,
+      position: MenuPosition,
+      inboxOf: (threadKey: string) => ThreadMenuTarget["inbox"],
+      done: () => void,
+    ) => {
       const api = readLocalApi();
       if (!api || threadKeys.length === 0) return;
-      const byKey = summariesByKey();
-      const threads = threadKeys.flatMap((key) => {
-        const thread = byKey.get(key);
-        return thread ? [{ key, thread }] : [];
-      });
-      const count = threads.length;
-      if (count === 0) return;
+      const selected = () => {
+        const byKey = summariesByKey();
+        return threadKeys.flatMap((key) => {
+          const thread = byKey.get(key);
+          return thread ? [{ key, thread }] : [];
+        });
+      };
+      const shown = selected();
+      if (shown.length === 0) return;
       const clicked = await api.contextMenu.show(
         describeThreadSelectionMenu({
-          count,
-          allPinned: threads.every(({ thread }) => thread.pinnedAt !== null),
+          count: shown.length,
+          allPinned: shown.every(({ thread }) => thread.pinnedAt !== null),
         }),
         position,
       );
       if (clicked === null) return;
+      const threads = selected();
+      const count = threads.length;
+      if (count === 0) return;
       const refOf = (thread: SidebarThreadSummary) =>
         scopeThreadRef(thread.environmentId, thread.id);
       const isRunning = (thread: SidebarThreadSummary) => thread.latestTurn?.state === "running";
@@ -355,8 +370,11 @@ export function useThreadMenu() {
           }
           break;
         case "wrap-up":
-          for (const { key, thread } of threads) {
-            if (!isRunning(thread)) markThreadDoneByKey(key);
+          // Only what its own menu would wrap up: not a pinned or running
+          // thread, nor one already wrapped (that would restamp it).
+          for (const { key } of threads) {
+            const inbox = inboxOf(key);
+            if (inbox && !inbox.isDone && inbox.canMarkDone) markThreadDoneByKey(key);
           }
           break;
         case "archive": {

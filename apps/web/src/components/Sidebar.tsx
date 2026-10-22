@@ -1255,10 +1255,18 @@ export default function Sidebar() {
   const handleMultiSelectContextMenu = useCallback(
     async (position: { x: number; y: number }) => {
       const threadKeys = [...useThreadSelectionStore.getState().selectedThreadKeys];
-      await threadMenu.openSelection(threadKeys, position, () => {
-        removeFromSelection(threadKeys);
-        clearSelection();
-      });
+      await threadMenu.openSelection(
+        threadKeys,
+        position,
+        (threadKey) => {
+          const entry = inboxEntryByKeyRef.current.get(threadKey);
+          return entry ? { isDone: entry.isDone, canMarkDone: entry.canMarkDone } : null;
+        },
+        () => {
+          removeFromSelection(threadKeys);
+          clearSelection();
+        },
+      );
     },
     [clearSelection, removeFromSelection, threadMenu],
   );

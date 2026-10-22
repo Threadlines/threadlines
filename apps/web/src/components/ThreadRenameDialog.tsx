@@ -40,7 +40,10 @@ export function openThreadRenameDialog(threadRef: ScopedThreadRef, title: string
   });
 }
 
-export function closeThreadRenameDialog(): void {
+/** Closes the dialog; with `requestId`, only if it still shows that ask. */
+export function closeThreadRenameDialog(requestId?: number): void {
+  const { request } = useThreadRenameDialogStore.getState();
+  if (requestId !== undefined && request?.id !== requestId) return;
   useThreadRenameDialogStore.setState({ request: null });
 }
 
@@ -69,7 +72,7 @@ function ThreadRenameDialogContent({ request }: { readonly request: ThreadRename
   const save = async () => {
     if (!canSave) return;
     if (trimmed === request.title) {
-      closeThreadRenameDialog();
+      closeThreadRenameDialog(request.id);
       return;
     }
     const api = readEnvironmentApi(request.threadRef.environmentId);
@@ -86,7 +89,9 @@ function ThreadRenameDialogContent({ request }: { readonly request: ThreadRename
         threadId: request.threadRef.threadId,
         title: trimmed,
       });
-      closeThreadRenameDialog();
+      // A save that lands after the dialog moved on to another thread
+      // leaves that one open.
+      closeThreadRenameDialog(request.id);
     } catch (cause) {
       setSaving(false);
       setError(cause instanceof Error ? cause.message : "The thread couldn't be renamed.");
@@ -120,7 +125,7 @@ function ThreadRenameDialogContent({ request }: { readonly request: ThreadRename
           ) : null}
         </DialogPanel>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={closeThreadRenameDialog}>
+          <Button type="button" variant="outline" onClick={() => closeThreadRenameDialog()}>
             Cancel
           </Button>
           <Button type="submit" disabled={!canSave} data-testid="thread-rename-save">

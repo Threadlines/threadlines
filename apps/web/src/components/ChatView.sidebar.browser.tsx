@@ -34,6 +34,7 @@ import {
 } from "../environmentApi";
 import { getClientSettings, updateSettings } from "../hooks/useSettings";
 import { isMacPlatform } from "../lib/utils";
+import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
 
 import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
@@ -416,13 +417,27 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
-  it("groups the thread menu, and renames from the palette through a dialog", async () => {
+  it("groups the thread menu, renames from the palette through a dialog, and wraps up a selection by the inbox's rules", async () => {
+    const pinnedThreadId = "thread-menu-pinned" as ThreadId;
+    const settledThreadId = "thread-menu-settled" as ThreadId;
+    const withThreads = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-thread-menu" as MessageId,
+          targetText: "thread menu",
+        }),
+        pinnedThreadId,
+      ),
+      settledThreadId,
+    );
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-thread-menu" as MessageId,
-        targetText: "thread menu",
-      }),
+      snapshot: {
+        ...withThreads,
+        threads: withThreads.threads.map((thread) =>
+          thread.id === pinnedThreadId ? { ...thread, pinnedAt: NOW_ISO } : thread,
+        ),
+      },
     });
 
     try {
@@ -465,6 +480,37 @@ describe("ChatView (full app): sidebar", () => {
         ).toBe(true);
       });
       await expect.element(page.getByTestId("thread-rename-dialog")).not.toBeInTheDocument();
+
+      // Wrap up over a selection skips what its own menu wouldn't wrap up:
+      // the pinned thread stays where it is.
+      const keyOf = (threadId: ThreadId) =>
+        scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId));
+      useThreadSelectionStore.getState().toggleThread(keyOf(pinnedThreadId));
+      useThreadSelectionStore.getState().toggleThread(keyOf(settledThreadId));
+      const settledRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${settledThreadId}"]`),
+        "The settled thread's row should be on screen.",
+      );
+      const settledRect = settledRow.getBoundingClientRect();
+      settledRow.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: settledRect.left + 20,
+          clientY: settledRect.top + 8,
+        }),
+      );
+      await page.getByRole("button", { name: "Wrap up (2)", exact: true }).click();
+      const wrapped = () =>
+        wsRequests.flatMap((request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.done-override.set"
+            ? [request.threadId]
+            : [],
+        );
+      await vi.waitFor(() => {
+        expect(wrapped()).toEqual([settledThreadId]);
+      });
     } finally {
       await mounted.cleanup();
     }
