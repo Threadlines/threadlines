@@ -14,6 +14,7 @@ import type {
   UsageDay,
   UsageHourBucket,
   UsageProviderKind,
+  UsageSource,
   UsageSourceFingerprint,
   UsageSummary,
 } from "@threadlines/contracts";
@@ -167,7 +168,7 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
 
   for (const environment of ordered) {
     for (const source of environment.summary.sources) {
-      if (source.status === "missing") continue;
+      if (!contributes(source)) continue;
       const key = fingerprintKey(source.fingerprint);
       if (ownerByFingerprint.has(key)) {
         duplicates.push(`${environment.label}: ${source.fingerprint.resolvedHomePath}`);
@@ -178,6 +179,15 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
   }
 
   return { ownerByFingerprint, duplicates };
+}
+
+/**
+ * Whether a source read anything. A missing directory or a database that could
+ * not be read must not claim its fingerprint, or another environment's good
+ * read of the same place would be dropped as the duplicate.
+ */
+function contributes(source: UsageSource): boolean {
+  return source.status !== "missing" && source.status !== "failed";
 }
 
 /** Sources this environment owns after fingerprint claims, plus their buckets. */
@@ -193,13 +203,15 @@ function ownedContribution(
   readonly oldestScanAt: string | null;
 } {
   const ownedProviders = new Set<UsageProviderKind>();
+  const ownedSources = new Set<number>();
   let sessions = 0;
   let oldestScanAt: string | null = null;
-  for (const source of environment.summary.sources) {
-    if (source.status === "missing") continue;
+  for (const [index, source] of environment.summary.sources.entries()) {
+    if (!contributes(source)) continue;
     const key = fingerprintKey(source.fingerprint);
     if (ownerByFingerprint.get(key) !== environment.environmentId) continue;
     ownedProviders.add(source.fingerprint.provider);
+    ownedSources.add(index);
     // Distinct within a directory. Summing per-bucket session counts instead
     // would count a session once per day and model it spans.
     sessions += source.distinctSessions;
@@ -208,14 +220,21 @@ function ownedContribution(
       oldestScanAt = source.lastScannedAt;
     }
   }
+  // A bucket that names its source is kept by source: a provider can have
+  // several, and another environment may share only some of them. Servers
+  // from before buckets named one are kept by provider.
+  const owned = (bucket: {
+    readonly provider: UsageProviderKind;
+    readonly source?: number | undefined;
+  }) =>
+    bucket.source === undefined
+      ? ownedProviders.has(bucket.provider)
+      : ownedSources.has(bucket.source);
   const hourlyBuckets = environment.summary.hourlyBuckets;
   return {
     ownsSources: ownedProviders.size > 0,
-    buckets: environment.summary.buckets.filter((bucket) => ownedProviders.has(bucket.provider)),
-    hourlyBuckets:
-      hourlyBuckets === undefined
-        ? null
-        : hourlyBuckets.filter((bucket) => ownedProviders.has(bucket.provider)),
+    buckets: environment.summary.buckets.filter(owned),
+    hourlyBuckets: hourlyBuckets === undefined ? null : hourlyBuckets.filter(owned),
     sessions,
     oldestScanAt,
   };

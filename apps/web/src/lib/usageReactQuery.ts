@@ -2,6 +2,7 @@ import {
   USAGE_CONTRACT_VERSION,
   USAGE_MAX_WINDOW_DAYS,
   UsageDay,
+  UsageProviderKind,
   type EnvironmentId,
   type UsageBreakdownsResult,
   type UsageSummary,
@@ -81,7 +82,9 @@ async function readUsageAcrossEnvironments(
       if (!api?.usage) {
         throw new Error(`Environment ${target.environmentId} is unavailable.`);
       }
-      return api.usage.summary(window);
+      // Names every provider this build can show, so a newer server leaves
+      // out the ones it would fail to decode.
+      return api.usage.summary({ ...window, providers: UsageProviderKind.literals });
     }),
   );
 

@@ -27,7 +27,16 @@ import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useServerProviders } from "../../rpc/serverState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { PageTitlebar } from "../PageTitlebar";
-import { ClaudeAI, GrokIcon, OpenAI, PiIcon, type Icon } from "../Icons";
+import {
+  ClaudeAI,
+  FxIcon,
+  GrokIcon,
+  MuseIcon,
+  OpenAI,
+  OpenCodeIcon,
+  PiIcon,
+  type Icon,
+} from "../Icons";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { ProviderUsageSignIn } from "../chat/providerSignIn";
 import { Button } from "../ui/button";
@@ -117,6 +126,9 @@ const USAGE_PROVIDER_ICONS: Record<UsageProviderKind, Icon> = {
   codex: OpenAI,
   grok: GrokIcon,
   pi: PiIcon,
+  muse: MuseIcon,
+  opencode: OpenCodeIcon,
+  fx: FxIcon,
 };
 
 function shareDigits(share: number): number {
@@ -1344,7 +1356,7 @@ function UsageMachineRowView({ machine }: { readonly machine: UsageMachineRow })
           key={`${source.fingerprint.provider}:${source.fingerprint.resolvedHomePath}`}
           className="flex min-w-0 items-baseline gap-2 text-xs text-muted-foreground/55"
         >
-          <span className="w-12 shrink-0 text-muted-foreground/45">
+          <span className="w-[4.5rem] shrink-0 text-muted-foreground/45">
             {USAGE_PROVIDER_SHORT_LABELS[source.fingerprint.provider]}
           </span>
           <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
@@ -1353,7 +1365,9 @@ function UsageMachineRowView({ machine }: { readonly machine: UsageMachineRow })
           <span className={cn(NUMBER_CLASS, "shrink-0 text-[11px] text-muted-foreground/40")}>
             {source.status === "missing"
               ? "not found"
-              : `scanned ${formatRelativeTimeLabel(source.lastScannedAt)}`}
+              : source.status === "failed"
+                ? "couldn't read"
+                : `scanned ${formatRelativeTimeLabel(source.lastScannedAt)}`}
           </span>
         </span>
       ))}
@@ -1496,7 +1510,7 @@ function UsageLoadingSkeleton({ selectedWindow }: { readonly selectedWindow: Usa
             </span>
             {USAGE_PROVIDER_SKELETON_ORDER.map((provider) => (
               <span key={provider} className="flex min-w-0 items-baseline gap-2">
-                <span className="w-12 shrink-0 text-xs text-muted-foreground/45">
+                <span className="w-[4.5rem] shrink-0 text-xs text-muted-foreground/45">
                   {USAGE_PROVIDER_SHORT_LABELS[provider]}
                 </span>
                 <Skeleton className="h-3 flex-1 rounded-full" />

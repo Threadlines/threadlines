@@ -39,6 +39,7 @@ import type {
   ProviderMaintenanceCapabilities,
   ProviderMaintenanceCommandDefinition,
 } from "../providerMaintenance.ts";
+import type { UsageLedgerProvider } from "../../usage/usageLedger.ts";
 import type { ProviderProbeResult, ServerProviderPresentation } from "../providerSnapshot.ts";
 import type { AcpPlanUpdate, AcpToolCallState } from "./AcpRuntimeModel.ts";
 import type { AcpSessionRuntimeShape, AcpSpawnInput } from "./AcpSessionRuntime.ts";
@@ -312,6 +313,16 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     readonly text: string;
     readonly content: ReadonlyArray<EffectAcpSchema.ContentBlock>;
   }) => Effect.Effect<void, EffectAcpErrors.AcpError>;
+  /**
+   * Where the Usage page counts this agent's turns when it keeps no usage on
+   * disk. Only for an agent whose turn `usage` is known to be the turn's own:
+   * ACP doesn't say whether it is that or a running total, and agents differ
+   * (Copilot's is a running total), so community agents have none. Unset for
+   * an agent whose own files the usage scan reads (Grok), and for one that
+   * reports no turn usage (Cursor, and Antigravity, whose `usage_update`
+   * carries a bare total).
+   */
+  readonly usageLedger?: { readonly provider: UsageLedgerProvider };
   /**
    * The context fill an agent reports on its own updates rather than with
    * ACP's `usage_update` (Grok's `_meta.totalTokens`), and its window size.

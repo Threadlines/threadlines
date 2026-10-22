@@ -18,6 +18,9 @@ const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitThoughts = process.env.T3_ACP_EMIT_THOUGHTS === "1";
+// With the thoughts turn: a running USD cost on the context fill (one cent,
+// then a cent and a half more each turn) and fx's per-turn usage on the result.
+const reportUsage = process.env.T3_ACP_REPORT_USAGE === "1";
 const advertiseHttpMcp = process.env.T3_ACP_ADVERTISE_HTTP_MCP === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
@@ -53,6 +56,8 @@ let parameterizedModelPicker = false;
 let currentReasoning = "medium";
 let currentContext = "272k";
 let currentFast = false;
+let runningCostUsd = 0;
+let promptsAnswered = 0;
 const cancelledSessions = new Set<string>();
 
 function logExit(reason: string): void {
@@ -583,11 +588,29 @@ const program = Effect.gen(function* () {
             content: { type: "text", text: "all set" },
           },
         });
+        promptsAnswered += 1;
+        runningCostUsd += promptsAnswered === 1 ? 0.01 : 0.015;
         yield* agent.client.sessionUpdate({
           sessionId: requestedSessionId,
-          update: { sessionUpdate: "usage_update", used: 11_767, size: 256_000 },
+          update: {
+            sessionUpdate: "usage_update",
+            used: 11_767,
+            size: 256_000,
+            ...(reportUsage ? { cost: { amount: runningCostUsd, currency: "USD" } } : {}),
+          },
         });
-        return { stopReason: "end_turn" };
+        return reportUsage
+          ? {
+              stopReason: "end_turn",
+              // fx 0.0.14's names; input includes the cached part.
+              usage: {
+                inputTokens: 5_111,
+                outputTokens: 53,
+                reasoningTokens: 5,
+                cacheReadTokens: 4_000,
+              },
+            }
+          : { stopReason: "end_turn" };
       }
 
       if (emitGenericToolPlaceholders) {
