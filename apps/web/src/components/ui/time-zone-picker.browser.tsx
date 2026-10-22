@@ -59,7 +59,9 @@ describe("TimeZonePicker", () => {
       await expect.element(trigger).toMatchTextContent("Tokyo (UTC+9)");
 
       // By offset too, with a plain hyphen; Escape closes without a change.
+      // Typing waits for the search box: the popup focuses it as it opens.
       await trigger.click();
+      await expect.element(page.getByRole("combobox", { name: "Search time zones" })).toHaveFocus();
       await userEvent.keyboard("utc+5:30");
       await expect.element(page.getByRole("option", { name: /Kolkata/u })).toBeVisible();
       await userEvent.keyboard("{Escape}");
