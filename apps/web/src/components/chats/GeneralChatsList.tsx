@@ -1,7 +1,10 @@
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { MessageCirclePlusIcon } from "lucide-react";
+import { useCallback } from "react";
 
+import { useThreadMenu } from "../../hooks/useThreadMenu";
+import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import { useThreadSeenSources } from "../../lib/threadInboxSync";
 import { cn } from "../../lib/utils";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../../threadRoutes";
@@ -30,14 +33,28 @@ function GeneralChatRow({
   status,
   active,
   onOpen,
+  onMenu,
 }: {
   readonly thread: SidebarThreadSummary;
   readonly status: ThreadStatusPill | null;
   readonly active: boolean;
   readonly onOpen: () => void;
+  /** The thread menu (right-click, or a held finger). */
+  readonly onMenu: (position: { readonly x: number; readonly y: number }) => void;
 }) {
   // An answer nobody has read keeps the title bright, as in the inbox.
   const unread = isUnreadResultStatus(status);
+  const handleContextMenu = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault();
+      onMenu({ x: event.clientX, y: event.clientY });
+    },
+    [onMenu],
+  );
+  const touchHold = useTouchHoldMenu<HTMLButtonElement>({
+    open: onMenu,
+    onContextMenu: handleContextMenu,
+  });
   return (
     <li>
       <ThreadHoverCard thread={thread} status={status}>
@@ -47,10 +64,11 @@ function GeneralChatRow({
           data-unread={unread ? "" : undefined}
           aria-current={active ? "page" : undefined}
           className={cn(
-            "flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors select-none focus-ring",
+            "flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors select-none focus-ring [-webkit-touch-callout:none]",
             active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60 active:bg-sidebar-accent/80",
           )}
           onClick={onOpen}
+          {...touchHold}
         >
           <span
             aria-label={status?.label}
@@ -85,6 +103,7 @@ function GeneralChatRow({
 export function GeneralChatsList() {
   const navigate = useNavigate();
   const seenSources = useThreadSeenSources();
+  const threadMenu = useThreadMenu();
   const { chats, startChat } = useGeneralChats();
   const groups = useGeneralChatGroups(chats);
   const routeThreadRef = useParams({
@@ -142,6 +161,12 @@ export function GeneralChatsList() {
                         thread={thread}
                         status={resolveSeenThreadStatus(thread, threadKey, seenSources).status}
                         active={threadKey === routeThreadKey}
+                        onMenu={(position) =>
+                          void threadMenu.open(
+                            { threadRef: scopeThreadRef(thread.environmentId, thread.id) },
+                            position,
+                          )
+                        }
                         onOpen={() => {
                           void navigate({
                             to: "/$environmentId/$threadId",

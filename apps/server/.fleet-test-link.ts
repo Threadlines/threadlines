@@ -7,8 +7,8 @@ import * as Socket from "effect/unstable/socket/Socket";
 import { readFileSync } from "node:fs";
 
 const [tokenA, tokenB] = readFileSync(process.argv[2]!, "utf8").trim().split("\n");
-const A = { http: "http://127.0.0.1:14622", token: tokenA! };
-const B = { http: "http://127.0.0.1:14791", token: tokenB! };
+const A = { http: "http://127.0.0.1:14622", token: tokenA!, env: "cb58784c-5e23-4741-b61c-46916d1ae080" };
+const B = { http: "http://127.0.0.1:14791", token: tokenB!, env: "c8d4f232-4e3d-47d5-9e57-9a1dcf4a1dc1" };
 const wsUrl = async (s: typeof A) => {
   const res = await fetch(`${s.http}/api/auth/ws-token`, {
     method: "POST",
@@ -36,7 +36,8 @@ for (const [from, to, name] of [
   [A, B, "A->B"],
   [B, A, "B->A"],
 ] as const) {
-  const invite = await call(to, (c) => c["links.createInvite"]({}));
+  // The invite names the computer that joins (identity pinning).
+  const invite = await call(to, (c) => c["links.createInvite"]({ joinerEnvironmentId: from.env }));
   const link = await call(from, (c) => c["links.accept"]({ invite }));
   console.log(name, link.state, link.connection, link.route);
 }

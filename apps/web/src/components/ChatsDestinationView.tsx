@@ -1,8 +1,11 @@
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { MessageCirclePlusIcon, MessagesSquareIcon } from "lucide-react";
+import { useCallback } from "react";
 
 import { useIsMobile } from "../hooks/useMediaQuery";
+import { useThreadMenu } from "../hooks/useThreadMenu";
+import { useTouchHoldMenu } from "../hooks/useTouchHoldMenu";
 import { useThreadSeenSources } from "../lib/threadInboxSync";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
@@ -68,6 +71,7 @@ function StartGeneralChat() {
 /** The phone's General Chats page: every chat, newest first, by recency. */
 function GeneralChatsPage() {
   const navigate = useNavigate();
+  const threadMenu = useThreadMenu();
   const seenSources = useThreadSeenSources();
   const { chats, startChat } = useGeneralChats();
   const groups = useGeneralChatGroups(chats);
@@ -122,6 +126,12 @@ function GeneralChatsPage() {
                         <ChatRow
                           key={`${thread.environmentId}:${thread.id}`}
                           thread={thread}
+                          onMenu={(position) =>
+                            void threadMenu.open(
+                              { threadRef: scopeThreadRef(thread.environmentId, thread.id) },
+                              position,
+                            )
+                          }
                           status={
                             resolveSeenThreadStatus(
                               thread,
@@ -159,11 +169,25 @@ function ChatRow({
   thread,
   status,
   onOpen,
+  onMenu,
 }: {
   thread: SidebarThreadSummary;
   status: ThreadStatusPill | null;
   onOpen: () => void;
+  /** The thread menu (right-click, or a held finger). */
+  onMenu: (position: { readonly x: number; readonly y: number }) => void;
 }) {
+  const handleContextMenu = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault();
+      onMenu({ x: event.clientX, y: event.clientY });
+    },
+    [onMenu],
+  );
+  const touchHold = useTouchHoldMenu<HTMLButtonElement>({
+    open: onMenu,
+    onContextMenu: handleContextMenu,
+  });
   const provider = thread.session?.provider ?? null;
   // The listing carries no message text and this page adds no fetching of its
   // own, so the provider is what the second line can honestly say.
@@ -175,9 +199,10 @@ function ChatRow({
     <ThreadHoverCard thread={thread} status={status}>
       <button
         type="button"
-        className="-mx-2 flex w-[calc(100%+1rem)] min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-2.5 text-left transition-colors select-none hover:bg-muted focus-ring"
+        className="-mx-2 flex w-[calc(100%+1rem)] min-w-0 cursor-pointer flex-col gap-0.5 rounded-md px-2 py-2.5 text-left transition-colors select-none hover:bg-muted focus-ring [-webkit-touch-callout:none]"
         data-testid="chats-view-row"
         onClick={onOpen}
+        {...touchHold}
       >
         <span className="flex w-full min-w-0 items-baseline gap-3">
           <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">

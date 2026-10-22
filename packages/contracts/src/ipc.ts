@@ -273,6 +273,8 @@ export interface ContextMenuItem<T extends string = string> {
   label: string;
   destructive?: boolean;
   disabled?: boolean;
+  /** Starts a new group: a divider above it (none at the top of the menu). */
+  separatorBefore?: boolean;
   children?: readonly ContextMenuItem<T>[];
 }
 
@@ -281,6 +283,7 @@ export interface ContextMenuItemSchemaType {
   readonly label: string;
   readonly destructive?: boolean;
   readonly disabled?: boolean;
+  readonly separatorBefore?: boolean;
   readonly children?: readonly ContextMenuItemSchemaType[];
 }
 
@@ -289,6 +292,7 @@ export const ContextMenuItemSchema: Schema.Codec<ContextMenuItemSchemaType> = Sc
   label: Schema.String,
   destructive: Schema.optionalKey(Schema.Boolean),
   disabled: Schema.optionalKey(Schema.Boolean),
+  separatorBefore: Schema.optionalKey(Schema.Boolean),
   children: Schema.optionalKey(
     Schema.Array(
       Schema.suspend((): Schema.Codec<ContextMenuItemSchemaType> => ContextMenuItemSchema),

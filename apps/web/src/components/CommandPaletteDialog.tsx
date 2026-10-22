@@ -49,6 +49,14 @@ import {
   WaypointsIcon,
   CalendarClockIcon,
   CalendarPlusIcon,
+  ArchiveIcon,
+  CheckIcon,
+  CopyIcon,
+  PencilIcon,
+  PinIcon,
+  PinOffIcon,
+  RotateCcwIcon,
+  Trash2Icon,
 } from "lucide-react";
 import {
   useCallback,
@@ -73,6 +81,9 @@ import {
   requireEnvironmentConnection,
 } from "../environments/runtime";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useInboxThreads } from "../hooks/useInboxThreads";
+import { useThreadMenu } from "../hooks/useThreadMenu";
+import type { ThreadMenuAction } from "./threadMenu.logic";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
 import { useUiStateStore } from "../uiStateStore";
@@ -432,6 +443,64 @@ function getAddProjectCloneDirectoryName(
  * The open palette: search, actions and the add-project flows. Loaded on
  * demand by CommandPalette, which owns the open state and the shortcut.
  */
+/**
+ * The thread menu's actions the palette offers for the open thread, by what
+ * they are called here. Mark unread, the family's and Move (its own entry)
+ * stay in the menu.
+ */
+const PALETTE_THREAD_ACTIONS: Partial<
+  Record<
+    ThreadMenuAction,
+    { readonly title: string; readonly searchTerms: string[]; readonly icon: ReactNode }
+  >
+> = {
+  rename: {
+    title: "Rename thread",
+    searchTerms: ["rename", "title", "name"],
+    icon: <PencilIcon className={ITEM_ICON_CLASS} />,
+  },
+  pin: {
+    title: "Pin thread",
+    searchTerms: ["pin", "keep", "top"],
+    icon: <PinIcon className={ITEM_ICON_CLASS} />,
+  },
+  unpin: {
+    title: "Unpin thread",
+    searchTerms: ["unpin"],
+    icon: <PinOffIcon className={ITEM_ICON_CLASS} />,
+  },
+  "wrap-up": {
+    title: "Wrap up thread",
+    searchTerms: ["wrap up", "done", "finish", "file away"],
+    icon: <CheckIcon className={ITEM_ICON_CLASS} />,
+  },
+  reopen: {
+    title: "Reopen thread",
+    searchTerms: ["reopen", "active", "unwrap"],
+    icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+  },
+  "copy-path": {
+    title: "Copy thread path",
+    searchTerms: ["copy", "path", "folder", "directory"],
+    icon: <CopyIcon className={ITEM_ICON_CLASS} />,
+  },
+  "copy-thread-id": {
+    title: "Copy thread ID",
+    searchTerms: ["copy", "id"],
+    icon: <CopyIcon className={ITEM_ICON_CLASS} />,
+  },
+  archive: {
+    title: "Archive thread",
+    searchTerms: ["archive", "hide", "put away"],
+    icon: <ArchiveIcon className={ITEM_ICON_CLASS} />,
+  },
+  delete: {
+    title: "Delete thread",
+    searchTerms: ["delete", "remove", "trash"],
+    icon: <Trash2Icon className={ITEM_ICON_CLASS} />,
+  },
+};
+
 export function OpenCommandPaletteDialog() {
   const navigate = useNavigate();
   const setOpen = useCommandPaletteStore((store) => store.setOpen);
@@ -498,6 +567,10 @@ export function OpenCommandPaletteDialog() {
     activeThread?.environmentId ?? null,
     threadMoveStatus(activeThread?.move),
   );
+  // The open thread's own actions are its menu's (useThreadMenu); the inbox
+  // says whether it offers Wrap up or Reopen. This mounts only while open.
+  const threadMenu = useThreadMenu();
+  const { entries: inboxEntries } = useInboxThreads();
   const activeThreadHasBranch = (activeThread?.branch ?? null) !== null;
   const activeThreadGitStatus = useGitStatus({
     environmentId: activeThreadHasBranch ? (activeThread?.environmentId ?? null) : null,
@@ -1812,6 +1885,29 @@ export function OpenCommandPaletteDialog() {
         openThreadMoveDialog(threadRef);
       },
     });
+  }
+
+  if (activeThread) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    const inboxEntry = inboxEntries.find((entry) => entry.threadKey === scopedThreadKey(threadRef));
+    const target = {
+      threadRef,
+      inbox: inboxEntry ? { isDone: inboxEntry.isDone, canMarkDone: inboxEntry.canMarkDone } : null,
+    };
+    for (const item of threadMenu.describe(target) ?? []) {
+      const offered = PALETTE_THREAD_ACTIONS[item.id];
+      if (!offered || item.disabled) continue;
+      actionItems.push({
+        kind: "action",
+        value: `action:thread-${item.id}`,
+        searchTerms: offered.searchTerms,
+        title: offered.title,
+        icon: offered.icon,
+        run: async () => {
+          await threadMenu.run(item.id, target);
+        },
+      });
+    }
   }
 
   actionItems.push({

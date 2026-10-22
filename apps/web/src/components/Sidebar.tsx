@@ -1,7 +1,7 @@
 import { ChevronDownIcon, ChevronsUpIcon, CloudIcon, MonitorIcon, SearchIcon } from "lucide-react";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { type ScopedProjectRef, type ScopedThreadRef, ThreadId } from "@threadlines/contracts";
+import type { ScopedThreadRef } from "@threadlines/contracts";
 import {
   parseScopedThreadKey,
   scopedProjectKey,
@@ -16,20 +16,8 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
 import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebar/sidebarListField";
 import { toSortableTimestamp } from "../lib/threadSort";
-import {
-  markThreadDoneByKey,
-  markThreadUnreadByKey,
-  reopenThreadByKey,
-} from "../lib/threadInboxSync";
-import {
-  selectBootstrapCompleteForActiveEnvironment,
-  selectProjectByRef,
-  selectProjectsAcrossEnvironments,
-  selectSidebarThreadsAcrossEnvironments,
-  selectThreadByRef,
-  useStore,
-  type AppState,
-} from "../store";
+import { markThreadDoneByKey, reopenThreadByKey } from "../lib/threadInboxSync";
+import { selectBootstrapCompleteForActiveEnvironment, useStore, type AppState } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import {
@@ -47,8 +35,9 @@ import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { type InboxEntry, useInboxThreads } from "../hooks/useInboxThreads";
+import { useThreadMenu } from "../hooks/useThreadMenu";
 import { useIsMobile } from "../hooks/useMediaQuery";
-import { useRelativeTimeTick } from "../hooks/useRelativeTimeTick";
+
 import {
   prewarmThreadJumpTargets,
   requestIdleThreadDetailPrewarm,
@@ -75,10 +64,8 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
-  attachedParentKeyOf,
   buildInboxSections,
   buildProjectScopeOptions,
-  canMarkThreadDone,
   childThreadsHoverLine,
   countInboxRowAttention,
   familyParentKeyOf,
@@ -87,15 +74,9 @@ import {
   inboxLiveRowHasAttention,
   inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
-  isChildThreadWorking,
   isNeedsUserStatus,
-  INBOX_AUTO_DONE_AFTER_DAYS,
-  isThreadDone,
   mergeThreadDoneOverride,
   resolveAdjacentThreadId,
-  resolveDoneTimestamp,
-  resolveSeenThreadStatus,
-  resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
   sortDoneThreads,
   sortInboxThreads,
@@ -106,7 +87,6 @@ import {
   useThreadJumpHintVisibility,
   type InboxLiveRow,
   type InboxRemoteChild,
-  type ThreadStatusPill,
 } from "./Sidebar.logic";
 import type { SidebarGrouping } from "@threadlines/contracts/settings";
 import {
@@ -120,11 +100,7 @@ import {
 } from "./sidebar/InboxRows";
 import { useComputerLabel, usePendingLinkRequests } from "./sidebar/linkedComputers";
 import type { ThreadHoverCardLineage } from "./sidebar/ThreadHoverCard";
-import { confirmThreadDeleteWithChildren } from "./ThreadDeleteDialog";
-import { openThreadMoveDialog } from "./ThreadMoveDialog";
-import { readThreadMoveOffered } from "../environments/links/threadMoves";
-import { childAttachRefusal } from "@threadlines/shared/childThreads";
-import { EMPTY_CHILD_REQUEST_STATE } from "@threadlines/contracts";
+
 import {
   countVisibleDraftSessions,
   SidebarDraftBlock,
@@ -144,15 +120,9 @@ import { useGeneralChats } from "./chats/useGeneralChats";
 import { AttentionCounts } from "./sidebar/AttentionCounts";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { isRoom } from "../rooms";
-import {
-  PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
-  PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
-  usePullRequestLists,
-} from "../lib/pullRequestsReactQuery";
+
 import {
   resolveLinkedThreadPullRequests,
-  resolveThreadPullRequest,
-  resolveThreadPullRequestsSettledAt,
   type ThreadPullRequest,
 } from "./pull-requests/pullRequests.logic";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
@@ -161,16 +131,14 @@ import { readEnvironmentApi } from "../environmentApi";
 import { useRoomsEnabled } from "~/hooks/useRoomsEnabled";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
-import { derivePhysicalProjectKey, selectProjectGroupingSettings } from "../logicalProject";
+
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import type { SidebarThreadSummary } from "../types";
-import { buildPhysicalToLogicalProjectKeyMap } from "../sidebarProjectGrouping";
-import { useSidebarProjectSnapshots } from "~/hooks/useSidebarProjectSnapshots";
+
 import { SidebarProviderUpdatePill } from "./sidebar/SidebarProviderUpdatePill";
-import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { CommandDialogTrigger } from "./ui/command";
 
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
@@ -183,9 +151,6 @@ const LIVE_REVEAL_STEP = 5;
 /** The Done tail opens short and reveals in bigger steps: it is history. */
 const DONE_PREVIEW_COUNT = 10;
 const DONE_REVEAL_STEP = 20;
-// The queued-turn grace window is measured in minutes, so a coarse clock is
-// enough to keep "can this be marked done" honest without re-rendering often.
-const INBOX_CLOCK_INTERVAL_MS = 30_000;
 const SIDEBAR_LOADING_LIVE_ROW_WIDTHS = ["w-36", "w-28", "w-40"] as const;
 const SIDEBAR_LOADING_WRAPPED_ROW_WIDTHS = ["w-32", "w-24"] as const;
 
@@ -473,7 +438,6 @@ export default function Sidebar() {
     openPullRequests,
     settledPullRequestEntries,
     pullRequestByThreadKey,
-    nowIso,
     entries,
   } = useInboxThreads();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -499,15 +463,12 @@ export default function Sidebar() {
   const appSettingsConfirmThreadArchive = useSettings<boolean>(
     (settings) => settings.confirmThreadArchive,
   );
-  const appSettingsConfirmThreadDelete = useSettings<boolean>(
-    (settings) => settings.confirmThreadDelete,
-  );
   // The full hook (rather than `useNewThreadHandler`) because compose has to
   // resolve the same default project and draft context the app menu's "New
   // thread" action uses.
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
-  const { archiveThread, deleteThread, pinThread, unpinThread } = useThreadActions();
+  const { archiveThread } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
@@ -543,39 +504,6 @@ export default function Sidebar() {
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
   const confirmArchiveButtonRefs = useRef(new Map<string, HTMLButtonElement>());
-
-  const { copyToClipboard: copyThreadIdToClipboard } = useCopyToClipboard<{ threadId: ThreadId }>({
-    onCopy: (ctx) => {
-      toastManager.add({
-        type: "success",
-        title: "Thread ID copied",
-        description: ctx.threadId,
-      });
-    },
-    onError: (error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Failed to copy thread ID",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    },
-  });
-  const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
-    onCopy: (ctx) => {
-      toastManager.add({ type: "success", title: "Path copied", description: ctx.path });
-    },
-    onError: (error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Failed to copy path",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    },
-  });
 
   const sidebarThreadByKey = useMemo(
     () =>
@@ -1255,27 +1183,6 @@ export default function Sidebar() {
     [archiveThread],
   );
 
-  const attemptTogglePinThread = useCallback(
-    async (threadRef: ScopedThreadRef, shouldPin: boolean) => {
-      try {
-        if (shouldPin) {
-          await pinThread(threadRef);
-        } else {
-          await unpinThread(threadRef);
-        }
-      } catch (error) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: shouldPin ? "Failed to pin thread" : "Failed to unpin thread",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          }),
-        );
-      }
-    },
-    [pinThread, unpinThread],
-  );
-
   const markThreadDone = useCallback((threadKey: string) => {
     markThreadDoneByKey(threadKey);
   }, []);
@@ -1335,257 +1242,47 @@ export default function Sidebar() {
     [],
   );
 
+  // The thread menu (useThreadMenu), the same one General chats and the
+  // command palette offer. A row here renames in place, and the inbox says
+  // whether it offers Wrap up or Reopen.
+  const threadMenu = useThreadMenu();
+  const inboxEntryByKey = useMemo(
+    () => new Map(entries.map((entry) => [entry.threadKey, entry] as const)),
+    [entries],
+  );
+  const inboxEntryByKeyRef = useRef(inboxEntryByKey);
+  inboxEntryByKeyRef.current = inboxEntryByKey;
   const handleMultiSelectContextMenu = useCallback(
     async (position: { x: number; y: number }) => {
-      const api = readLocalApi();
-      if (!api) return;
       const threadKeys = [...useThreadSelectionStore.getState().selectedThreadKeys];
-      if (threadKeys.length === 0) return;
-      const count = threadKeys.length;
-
-      const clicked = await api.contextMenu.show(
-        [
-          { id: "mark-unread", label: `Mark unread (${count})` },
-          { id: "delete", label: `Delete (${count})`, destructive: true },
-        ],
-        position,
-      );
-
-      if (clicked === "mark-unread") {
-        for (const threadKey of threadKeys) {
-          const thread = sidebarThreadByKeyRef.current.get(threadKey);
-          markThreadUnreadByKey(threadKey, thread?.latestTurn?.completedAt);
-        }
+      await threadMenu.openSelection(threadKeys, position, () => {
+        removeFromSelection(threadKeys);
         clearSelection();
-        return;
-      }
-
-      if (clicked !== "delete") return;
-
-      if (appSettingsConfirmThreadDelete) {
-        const confirmed = await api.dialogs.confirm(
-          [
-            `Delete ${count} thread${count === 1 ? "" : "s"}?`,
-            "This permanently clears conversation history for these threads.",
-          ].join("\n"),
-        );
-        if (!confirmed) return;
-      }
-
-      const deletedThreadKeys = new Set(threadKeys);
-      for (const threadKey of threadKeys) {
-        const thread = sidebarThreadByKeyRef.current.get(threadKey);
-        if (!thread) continue;
-        await deleteThread(scopeThreadRef(thread.environmentId, thread.id), { deletedThreadKeys });
-      }
-      removeFromSelection(threadKeys);
+      });
     },
-    [appSettingsConfirmThreadDelete, clearSelection, deleteThread, removeFromSelection],
+    [clearSelection, removeFromSelection, threadMenu],
   );
 
   const handleThreadContextMenu = useCallback(
     async (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
-      const api = readLocalApi();
-      if (!api) return;
       const threadKey = scopedThreadKey(threadRef);
-      const thread = sidebarThreadByKeyRef.current.get(threadKey) ?? null;
-      if (!thread) return;
-      const threadProject = selectProjectByRef(
-        useStore.getState(),
-        scopeProjectRef(thread.environmentId, thread.projectId),
-      );
-      const threadWorkspacePath = thread.worktreePath ?? threadProject?.cwd ?? null;
-      // Child threads: its family, and where it came from. Work in flight
-      // reads the same with or without the user's visits, so the threads'
-      // own statuses answer "how many are working".
-      const childThreads = [...sidebarThreadByKeyRef.current.values()].filter(
-        (candidate) =>
-          candidate.archivedAt === null && attachedParentKeyOf(candidate) === threadKey,
-      );
-      const workingChildCount = childThreads.filter((child) =>
-        isChildThreadWorking({
-          threadKey: scopedThreadKey(scopeThreadRef(child.environmentId, child.id)),
-          thread: child,
-          status: resolveThreadStatusPill({ thread: child }),
-          isDone: false,
-        }),
-      ).length;
-      const parentThread =
-        thread.parentThreadId != null
-          ? (sidebarThreadByKeyRef.current.get(
-              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.parentThreadId)),
-            ) ?? null)
-          : null;
-      const isAttachedChild = thread.attachedToParent === true && thread.parentThreadId != null;
-      // Put back is offered while the parent is still around to take it; the
-      // rules that can refuse it are the server's, read here first so the
-      // menu says why.
-      const attachRefusal =
-        !isAttachedChild && parentThread !== null && parentThread.archivedAt === null
-          ? childAttachRefusal(
-              {
-                parentThreadId: thread.parentThreadId ?? null,
-                childRequests:
-                  selectThreadByRef(useStore.getState(), threadRef)?.childRequests ??
-                  EMPTY_CHILD_REQUEST_STATE,
-              },
-              {
-                parentThreadId: parentThread.parentThreadId ?? null,
-                attachedToParent: parentThread.attachedToParent ?? false,
-                archivedAt: parentThread.archivedAt,
-                deletedAt: null,
-              },
-              childThreads.length > 0 ||
-                (thread.awaitedChildThreadCount ?? 0) > 0 ||
-                thread.pendingChildApproval === true,
-            )
-          : undefined;
-      const moveOffered = readThreadMoveOffered(thread.environmentId, thread.moveStatus);
-      const clicked = await api.contextMenu.show(
-        [
-          { id: "rename", label: "Rename thread" },
-          {
-            id: thread.pinnedAt === null ? "pin" : "unpin",
-            label: thread.pinnedAt === null ? "Pin" : "Unpin",
+      const entry = inboxEntryByKeyRef.current.get(threadKey);
+      await threadMenu.open(
+        {
+          threadRef,
+          inbox: entry ? { isDone: entry.isDone, canMarkDone: entry.canMarkDone } : null,
+          renameInPlace: () => {
+            const thread = sidebarThreadByKeyRef.current.get(threadKey);
+            if (!thread) return;
+            setRenamingThreadKey(threadKey);
+            setRenamingTitle(thread.title);
+            renamingCommittedRef.current = false;
           },
-          { id: "mark-unread", label: "Mark unread" },
-          ...(isAttachedChild
-            ? [{ id: "separate" as const, label: "Make it its own thread" }]
-            : []),
-          ...(attachRefusal !== undefined && parentThread !== null
-            ? [
-                {
-                  id: "attach" as const,
-                  label:
-                    attachRefusal === null
-                      ? `Put back under ${parentThread.title}`
-                      : `Put back under ${parentThread.title}: ${attachRefusal.charAt(0).toLowerCase()}${attachRefusal.slice(1).replace(/\.$/, "")}`,
-                  disabled: attachRefusal !== null,
-                },
-              ]
-            : []),
-          ...(workingChildCount > 0
-            ? [
-                {
-                  id: "stop-children" as const,
-                  label: `Stop ${workingChildCount} working ${workingChildCount === 1 ? "thread" : "threads"}`,
-                },
-              ]
-            : []),
-          ...(moveOffered ? [{ id: "move" as const, label: "Move to another computer" }] : []),
-          { id: "copy-path", label: "Copy path" },
-          { id: "copy-thread-id", label: "Copy thread ID" },
-          { id: "delete", label: "Delete", destructive: true },
-        ],
+        },
         position,
       );
-
-      if (clicked === "separate" || clicked === "attach" || clicked === "stop-children") {
-        const environmentApi = readEnvironmentApi(threadRef.environmentId);
-        if (!environmentApi) return;
-        try {
-          await environmentApi.orchestration.dispatchCommand(
-            clicked === "stop-children"
-              ? {
-                  type: "thread.children.stop",
-                  commandId: newCommandId(),
-                  threadId: threadRef.threadId,
-                  createdAt: new Date().toISOString(),
-                }
-              : {
-                  type: "thread.parent-attachment.set",
-                  commandId: newCommandId(),
-                  threadId: threadRef.threadId,
-                  attached: clicked === "attach",
-                  createdAt: new Date().toISOString(),
-                },
-          );
-        } catch (error) {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title:
-                clicked === "stop-children"
-                  ? "Could not stop its threads"
-                  : clicked === "attach"
-                    ? "Could not put the thread back"
-                    : "Could not make it its own thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        }
-        return;
-      }
-
-      if (clicked === "rename") {
-        setRenamingThreadKey(threadKey);
-        setRenamingTitle(thread.title);
-        renamingCommittedRef.current = false;
-        return;
-      }
-
-      if (clicked === "pin" || clicked === "unpin") {
-        await attemptTogglePinThread(threadRef, clicked === "pin");
-        return;
-      }
-
-      if (clicked === "mark-unread") {
-        markThreadUnreadByKey(threadKey, thread.latestTurn?.completedAt);
-        return;
-      }
-      if (clicked === "move") {
-        openThreadMoveDialog(threadRef);
-        return;
-      }
-      if (clicked === "copy-path") {
-        if (!threadWorkspacePath) {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Path unavailable",
-              description: "This thread does not have a workspace path to copy.",
-            }),
-          );
-          return;
-        }
-        copyPathToClipboard(threadWorkspacePath, { path: threadWorkspacePath });
-        return;
-      }
-      if (clicked === "copy-thread-id") {
-        copyThreadIdToClipboard(thread.id, { threadId: thread.id });
-        return;
-      }
-      if (clicked !== "delete") return;
-      // A parent's threads are separated, not deleted, unless the user says so.
-      if (appSettingsConfirmThreadDelete && childThreads.length > 0) {
-        const answer = await confirmThreadDeleteWithChildren({
-          title: thread.title,
-          childCount: childThreads.length,
-        });
-        if (answer === null) return;
-        await deleteThread(threadRef, { withChildren: answer.withChildren });
-        return;
-      }
-      if (appSettingsConfirmThreadDelete) {
-        const confirmed = await api.dialogs.confirm(
-          [
-            `Delete thread "${thread.title}"?`,
-            "This permanently clears conversation history for this thread.",
-          ].join("\n"),
-        );
-        if (!confirmed) {
-          return;
-        }
-      }
-      await deleteThread(threadRef);
     },
-    [
-      appSettingsConfirmThreadDelete,
-      attemptTogglePinThread,
-      copyPathToClipboard,
-      copyThreadIdToClipboard,
-      deleteThread,
-    ],
+    [threadMenu],
   );
 
   // Compose follows the thread you are in. While the list is scoped to a

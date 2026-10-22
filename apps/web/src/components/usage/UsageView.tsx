@@ -28,7 +28,7 @@ import { PageTitlebar } from "../PageTitlebar";
 import { ClaudeAI, GrokIcon, OpenAI, PiIcon, type Icon } from "../Icons";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { ProviderUsageSignIn } from "../chat/providerSignIn";
-import { Button } from "../ui/button";
+
 import { Checkbox } from "../ui/checkbox";
 import { Skeleton } from "../ui/skeleton";
 import { TooltipWrapper } from "../ui/tooltip";

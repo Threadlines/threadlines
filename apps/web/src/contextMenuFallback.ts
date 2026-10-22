@@ -73,6 +73,13 @@ export function showContextMenuFallback<T extends string>(
       menu.dataset.level = String(level);
 
       for (const item of entries) {
+        // A new group gets a divider above it, never at the top of the menu.
+        if (item.separatorBefore === true && menu.childElementCount > 0) {
+          const divider = document.createElement("div");
+          divider.className = "my-1 h-px bg-border";
+          divider.setAttribute("role", "separator");
+          menu.appendChild(divider);
+        }
         const button = document.createElement("button");
         button.type = "button";
         const hasChildren = Array.isArray(item.children) && item.children.length > 0;

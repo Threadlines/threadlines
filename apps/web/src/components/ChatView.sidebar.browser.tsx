@@ -17,7 +17,7 @@ import {
 } from "@threadlines/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import * as Effect from "effect/Effect";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -73,6 +73,7 @@ import {
   mountChatView,
   clickProjectMenuItem,
   registerChatViewSuiteHooks,
+  openCommandPaletteFromTrigger,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -410,6 +411,60 @@ describe("ChatView (full app): sidebar", () => {
       // arriving in that time may offer the visit again, a few times at most.
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect(visits().length).toBeLessThanOrEqual(4);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups the thread menu, and renames from the palette through a dialog", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-thread-menu" as MessageId,
+        targetText: "thread menu",
+      }),
+    });
+
+    try {
+      // The row's menu: the thread's own actions, then groups ending in
+      // Archive and Delete.
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "The thread's sidebar row should be on screen.",
+      );
+      const rect = row.getBoundingClientRect();
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 20,
+          clientY: rect.top + 8,
+        }),
+      );
+      for (const label of ["Rename", "Pin", "Mark unread", "Copy path", "Archive", "Delete"]) {
+        await expect.element(page.getByRole("button", { name: label, exact: true })).toBeVisible();
+      }
+      expect(document.querySelectorAll('[role="separator"]').length).toBeGreaterThanOrEqual(2);
+      await userEvent.keyboard("{Escape}");
+
+      // The palette's Rename asks in a dialog, and saving sends the new name.
+      await openCommandPaletteFromTrigger();
+      await page.getByTestId("command-palette").getByText("Rename thread", { exact: true }).click();
+      const input = page.getByTestId("thread-rename-input");
+      await expect.element(input).toHaveValue(THREAD_TITLE);
+      await input.fill("Renamed from the palette");
+      await page.getByTestId("thread-rename-save").click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.meta.update" &&
+              request.title === "Renamed from the palette",
+          ),
+        ).toBe(true);
+      });
+      await expect.element(page.getByTestId("thread-rename-dialog")).not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

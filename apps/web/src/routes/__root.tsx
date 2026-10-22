@@ -29,6 +29,7 @@ import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPrompt
 import { QuitConfirmationDialog } from "../components/desktop/QuitConfirmationDialog";
 import { ThreadDeleteDialogHost } from "../components/ThreadDeleteDialog";
 import { ThreadMoveDialogHost } from "../components/ThreadMoveDialog";
+import { ThreadRenameDialogHost } from "../components/ThreadRenameDialog";
 import { ConnectComputerDialogHost } from "../components/settings/connections/JoinComputerDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { SourceControlToolUpdateLaunchNotification } from "../components/SourceControlToolUpdateLaunchNotification";
@@ -216,6 +217,7 @@ function RootRouteView() {
         <DesktopUpdateInstallDialog />
         <ThreadDeleteDialogHost />
         <ThreadMoveDialogHost />
+        <ThreadRenameDialogHost />
         <ConnectComputerDialogHost />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}

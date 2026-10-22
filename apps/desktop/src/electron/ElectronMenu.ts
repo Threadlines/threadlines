@@ -51,6 +51,7 @@ function normalizeContextMenuItems(source: readonly ContextMenuItem[]): ContextM
       label: sourceItem.label,
       destructive: sourceItem.destructive === true,
       disabled: sourceItem.disabled === true,
+      ...(sourceItem.separatorBefore === true ? { separatorBefore: true } : {}),
     };
 
     if (sourceItem.children) {
@@ -117,11 +118,20 @@ export const layer = Layer.sync(ElectronMenu, () => {
     const template: Electron.MenuItemConstructorOptions[] = [];
     let hasInsertedDestructiveSeparator = false;
 
+    const endsInSeparator = () => template.at(-1)?.type === "separator";
+    // A menu that draws its own groups places its dividers; any other one
+    // gets the destructive items set apart.
+    const ownsGroups = entries.some((item) => item.separatorBefore === true);
     for (const item of entries) {
-      if (item.destructive && !hasInsertedDestructiveSeparator && template.length > 0) {
+      if (
+        template.length > 0 &&
+        !endsInSeparator() &&
+        (item.separatorBefore === true ||
+          (!ownsGroups && item.destructive && !hasInsertedDestructiveSeparator))
+      ) {
         template.push({ type: "separator" });
-        hasInsertedDestructiveSeparator = true;
       }
+      if (item.destructive) hasInsertedDestructiveSeparator = true;
 
       const itemOption: Electron.MenuItemConstructorOptions = {
         label: item.label,

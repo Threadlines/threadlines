@@ -100,6 +100,37 @@ describe("ElectronMenu", () => {
     }).pipe(Effect.provide(ElectronMenu.layer)),
   );
 
+  it.effect("draws one divider where a group starts, none at the top or twice before Delete", () =>
+    Effect.gen(function* () {
+      buildFromTemplateMock.mockImplementation(() => ({
+        popup: (options: Electron.PopupOptions) => {
+          options.callback?.();
+        },
+      }));
+
+      const electronMenu = yield* ElectronMenu.ElectronMenu;
+      yield* electronMenu.showContextMenu({
+        window: {} as Electron.BrowserWindow,
+        items: [
+          { id: "rename", label: "Rename", separatorBefore: true },
+          { id: "copy", label: "Copy path", separatorBefore: true },
+          { id: "archive", label: "Archive", separatorBefore: true },
+          { id: "delete", label: "Delete", destructive: true },
+        ],
+        position: Option.none(),
+      });
+
+      const template = buildFromTemplateMock.mock.calls[0]?.[0] as Array<{
+        type?: string;
+        label?: string;
+      }>;
+      assert.deepEqual(
+        template.map((entry) => entry.type ?? entry.label),
+        ["Rename", "separator", "Copy path", "separator", "Archive", "Delete"],
+      );
+    }).pipe(Effect.provide(ElectronMenu.layer)),
+  );
+
   it.effect("defers popupTemplate side effects until the returned Effect runs", () =>
     Effect.gen(function* () {
       const popupMock = vi.fn();
