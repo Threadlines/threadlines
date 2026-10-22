@@ -192,6 +192,10 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
   const { updateSettings } = useUpdateSettings();
   // Controlled so "Only" can close it: toggling a project leaves it open.
   const [menuOpen, setMenuOpen] = useState(false);
+  // The row of controls the menu drops from. The menu takes the row's width
+  // rather than its widest name, so a long project name truncates instead of
+  // stretching the menu past the sidebar.
+  const [controlsRow, setControlsRow] = useState<HTMLDivElement | null>(null);
   // Controlled so the rows that are not projects can step aside while a
   // search is typed; the menu clears it as it closes.
   const [projectQuery, setProjectQuery] = useState("");
@@ -615,7 +619,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
         </span>
         <ChevronsUpDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
       </MenuTrigger>
-      <MenuPopup align="start" side="bottom" className="min-w-56">
+      <MenuPopup align="start" side="bottom" anchor={controlsRow} className="w-(--anchor-width)">
         {showProjectSearch ? (
           <MenuFilterInput
             data-testid="inbox-scope-search"
@@ -677,14 +681,16 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                   {picked ? <CheckIcon aria-hidden className="size-3 shrink-0" /> : null}
                 </span>
                 {/* The fast switch: toggling is the click, so jumping to one
-                      project is its own small button. Absent on the one
-                      project already showing alone, where it would do nothing. */}
+                    project is its own small button. It and the manage button
+                    show on the highlighted row only (always, on touch), so the
+                    other rows keep their width for names. Absent on the one
+                    project already showing alone, where it would do nothing. */}
                 {picked && scopedProjectKeys.length === 1 ? null : (
                   <button
                     type="button"
                     data-testid={`inbox-scope-only-${option.key}`}
                     aria-label={`Show only ${option.label}`}
-                    className="inline-flex h-5 shrink-0 cursor-pointer items-center rounded-sm px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-ring group-hover/scope-item:opacity-100 group-focus-within/scope-item:opacity-100 pointer-coarse:opacity-100"
+                    className="hidden h-5 shrink-0 cursor-pointer items-center rounded-sm px-1.5 text-[11px] text-muted-foreground hover:bg-foreground/10 hover:text-foreground focus-ring group-data-highlighted/scope-item:inline-flex pointer-coarse:inline-flex"
                     onKeyDown={keepActivationKeys}
                     onClick={(event) => {
                       event.preventDefault();
@@ -705,7 +711,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                   type="button"
                   data-testid={`inbox-scope-actions-${option.key}`}
                   aria-label={`Manage ${option.label}`}
-                  className="-mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground focus-ring group-hover/scope-item:opacity-100 group-focus-within/scope-item:opacity-100 pointer-coarse:opacity-100"
+                  className="-mr-1 hidden size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/60 hover:text-foreground focus-ring group-data-highlighted/scope-item:inline-flex pointer-coarse:inline-flex"
                   onKeyDown={keepActivationKeys}
                   onClick={(event) => {
                     event.preventDefault();
@@ -739,59 +745,61 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
 
   return (
     <>
-      <div className="flex items-center gap-1 px-3 pt-2 pb-2">
-        {showProjectSearch ? (
-          <MenuFilterProvider autoHighlight value={projectQuery} onValueChange={setProjectQuery}>
-            {projectMenu}
-          </MenuFilterProvider>
-        ) : (
-          projectMenu
-        )}
-        <InboxViewMenu
-          environmentOptions={environmentOptions}
-          scopedEnvironmentId={scopedEnvironmentId}
-          onEnvironmentScopeChange={onEnvironmentScopeChange}
-          roomsOnly={roomsOnly}
-          onRoomsOnlyChange={onRoomsOnlyChange}
-          grouping={grouping}
-          onGroupingChange={onGroupingChange}
-        />
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                aria-label="Add project"
-                data-testid="sidebar-add-project-trigger"
-                className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
-                onClick={onAddProject}
-              />
-            }
-          >
-            <FolderPlusIcon className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipPopup side="bottom">Add project</TooltipPopup>
-        </Tooltip>
-        {onNewThread ? (
+      <div className="px-3 pt-2 pb-2">
+        <div ref={setControlsRow} className="flex items-center gap-1">
+          {showProjectSearch ? (
+            <MenuFilterProvider autoHighlight value={projectQuery} onValueChange={setProjectQuery}>
+              {projectMenu}
+            </MenuFilterProvider>
+          ) : (
+            projectMenu
+          )}
+          <InboxViewMenu
+            environmentOptions={environmentOptions}
+            scopedEnvironmentId={scopedEnvironmentId}
+            onEnvironmentScopeChange={onEnvironmentScopeChange}
+            roomsOnly={roomsOnly}
+            onRoomsOnlyChange={onRoomsOnlyChange}
+            grouping={grouping}
+            onGroupingChange={onGroupingChange}
+          />
           <Tooltip>
             <TooltipTrigger
               render={
                 <button
                   type="button"
-                  aria-label="New thread"
-                  data-testid="new-thread-button"
+                  aria-label="Add project"
+                  data-testid="sidebar-add-project-trigger"
                   className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
-                  onClick={onNewThread}
+                  onClick={onAddProject}
                 />
               }
             >
-              <SquarePenIcon className="size-3.5" />
+              <FolderPlusIcon className="size-3.5" />
             </TooltipTrigger>
-            <TooltipPopup side="bottom">
-              {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
-            </TooltipPopup>
+            <TooltipPopup side="bottom">Add project</TooltipPopup>
           </Tooltip>
-        ) : null}
+          {onNewThread ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label="New thread"
+                    data-testid="new-thread-button"
+                    className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
+                    onClick={onNewThread}
+                  />
+                }
+              >
+                <SquarePenIcon className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipPopup side="bottom">
+                {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
+        </div>
       </div>
 
       <Dialog

@@ -223,6 +223,9 @@ describe("ProjectScopeMenu", () => {
       // The project already showing alone offers no Only: it would do nothing.
       expect(document.querySelector("[data-testid='inbox-scope-only-alpha']")).toBeNull();
 
+      // Only takes room on the row under the pointer, not on every row.
+      await expect.element(page.getByTestId("inbox-scope-only-gamma")).not.toBeVisible();
+      await page.getByTestId("inbox-scope-gamma").hover();
       await page.getByTestId("inbox-scope-only-gamma").click();
       expect(onScopeChange).toHaveBeenCalledWith(["gamma"]);
       // Only replaces the scope; it does not also toggle the row it sits on.

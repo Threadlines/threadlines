@@ -5,7 +5,7 @@ import {
   ThreadId,
   WS_METHODS,
 } from "@threadlines/contracts";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { DraftId, useComposerDraftStore } from "../composerDraftStore";
@@ -126,9 +126,18 @@ async function mountWithTwoComputers(
   return { mounted, mac };
 }
 
-/** The project's menu in the sidebar, the way its ⋯ button opens it. */
+/**
+ * The project's menu in the sidebar, the way its ⋯ button opens it: the
+ * button shows on the row under the pointer.
+ */
 async function openProjectMenuItem(label: string): Promise<void> {
   await page.getByTestId("inbox-scope-trigger").click();
+  const manageButton = await vi.waitFor(() => {
+    const button = document.querySelector<HTMLElement>('button[aria-label="Manage Project"]');
+    expect(button).not.toBeNull();
+    return button!;
+  });
+  await userEvent.hover(manageButton.closest<HTMLElement>('[role="menuitemcheckbox"]')!);
   await page.getByRole("button", { name: "Manage Project" }).click();
   await page.getByRole("button", { name: label }).click();
 }
