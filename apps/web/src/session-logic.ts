@@ -874,6 +874,37 @@ export function deriveActiveWorkStartedAt(
   return sendStartedAt;
 }
 
+/**
+ * The computer to name with a thread's agent: only when the app is connected
+ * to more than one computer and the thread is on one other than this
+ * device's own. Null when there is nothing worth naming.
+ */
+export function deriveThreadComputerName(input: {
+  readonly threadEnvironmentId: string;
+  readonly primaryEnvironmentId: string | null;
+  readonly connectedEnvironmentIds: ReadonlyArray<string>;
+  readonly computerLabel: string | null | undefined;
+}): string | null {
+  if (input.threadEnvironmentId === input.primaryEnvironmentId) return null;
+  const connected = new Set(input.connectedEnvironmentIds);
+  if (input.primaryEnvironmentId !== null) connected.add(input.primaryEnvironmentId);
+  if (connected.size < 2) return null;
+  return input.computerLabel?.trim() || null;
+}
+
+/**
+ * What the chat calls an agent whose program is starting: its instance's
+ * name, with the computer when there is one worth naming ("Codex on Mac
+ * mini"), or "the agent" when the instance is gone.
+ */
+export function describeLaunchingAgent(input: {
+  readonly agentName: string | null | undefined;
+  readonly computerName: string | null;
+}): string {
+  const agent = input.agentName?.trim() || "the agent";
+  return input.computerName ? `${agent} on ${input.computerName}` : agent;
+}
+
 export function deriveActiveStatusLabel(input: {
   phase: SessionPhase;
   workLogEntries: ReadonlyArray<WorkLogEntry>;
@@ -885,12 +916,17 @@ export function deriveActiveStatusLabel(input: {
   pendingApprovalCount?: number;
   pendingUserInputCount?: number;
   isSessionStarting?: boolean;
+  /** While the session starts, the agent whose program is starting, if one is
+   *  (see describeLaunchingAgent). Otherwise the turn is being prepared. */
+  launchingAgent?: string | null;
 }): string {
   if (input.isRevertingCheckpoint) return "Reverting checkpoint";
   if (input.isPreparingWorktree) return "Preparing worktree";
   if ((input.pendingUserInputCount ?? 0) > 0) return "Waiting for input";
   if ((input.pendingApprovalCount ?? 0) > 0) return "Waiting for approval";
-  if (input.isSessionStarting) return "Preparing turn";
+  if (input.isSessionStarting) {
+    return input.launchingAgent ? `Starting ${input.launchingAgent}` : "Preparing turn";
+  }
   if (input.phase === "connecting" || input.isConnecting) return "Connecting";
   if (input.isSendBusy) return input.phase === "disconnected" ? "Connecting" : "Sending";
   // Private reasoning renders no timeline row; the working anchor's label is

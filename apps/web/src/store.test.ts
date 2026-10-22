@@ -2410,6 +2410,46 @@ describe("incremental orchestration updates", () => {
     );
   });
 
+  it("keeps a launching session's agent through updates that leave it out, until cleared", () => {
+    const thread = makeThread();
+    const at = "2026-02-27T00:00:02.000Z";
+    const sessionSet = (sequence: number, startup: OrchestrationSession["startup"] | "absent") =>
+      makeEvent(
+        "thread.session-set",
+        {
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "starting",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            ...(startup === "absent" ? {} : { startup }),
+            lastError: null,
+            // Marking and clearing keep the turn's start time.
+            updatedAt: at,
+          },
+        },
+        { sequence },
+      );
+    const launching = {
+      phase: "launching",
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+    } as const;
+
+    const marked = applyOrchestrationEvents(
+      makeState(thread),
+      [sessionSet(2, launching), sessionSet(3, "absent")],
+      localEnvironmentId,
+    );
+    expect(threadsOf(marked)[0]?.session?.launchingInstanceId).toBe(
+      ProviderInstanceId.make("claudeAgent"),
+    );
+
+    const cleared = applyOrchestrationEvents(marked, [sessionSet(4, null)], localEnvironmentId);
+    expect(threadsOf(cleared)[0]?.session?.launchingInstanceId).toBeUndefined();
+  });
+
   it("keeps legacy assistant completion events non-terminal while their turn is active", () => {
     const thread = makeThread({
       latestTurn: {

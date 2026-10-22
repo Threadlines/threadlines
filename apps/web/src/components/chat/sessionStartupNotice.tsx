@@ -11,8 +11,22 @@ import { StatusNoticeActionButtons, useProviderStatusRefresh } from "./statusNot
 
 export const SESSION_STARTUP_SLOW_NOTICE_DELAY_MS = 30_000;
 
-const SESSION_STARTUP_SLOW_MESSAGE =
-  "Preparing this turn is taking longer than usual. Refresh provider status or open diagnostics if it stays stuck.";
+const SESSION_STARTUP_STUCK_HINT = "Refresh provider status or open diagnostics if it stays stuck.";
+
+/**
+ * What the slow-start notice says: which agent is slow to start while its
+ * program starts (`launching`, with the instance's name when it has one),
+ * otherwise that preparing the turn is slow. Names are kept as written ("fx").
+ */
+export function sessionStartupNoticeMessage(
+  launching: { readonly agentName: string | null } | null,
+): string {
+  if (launching !== null) {
+    const agent = launching.agentName?.trim() || "The agent";
+    return `${agent} is taking a while to start. ${SESSION_STARTUP_STUCK_HINT}`;
+  }
+  return `Preparing this turn is taking longer than usual. ${SESSION_STARTUP_STUCK_HINT}`;
+}
 
 export function getSessionStartupNoticeDelayMs(input: {
   readonly isSessionStarting: boolean;
@@ -48,9 +62,14 @@ export function useSessionStartupNotice(input: {
   readonly isSessionStarting: boolean;
   readonly startedAt: string | null;
   readonly suppressed: boolean;
+  /** The provider whose status the notice offers to refresh: while an agent's
+   *  program starts, that agent's. */
   readonly providerStatus: ServerProvider | null;
+  /** While the wait is the agent's program starting, that agent's name (see
+   *  sessionStartupNoticeMessage); null otherwise. */
+  readonly launching: { readonly agentName: string | null } | null;
 }): ComposerNotice | null {
-  const { isSessionStarting, providerStatus, startedAt, suppressed } = input;
+  const { isSessionStarting, launching, providerStatus, startedAt, suppressed } = input;
   const [nowMs, setNowMs] = useState(() => Date.now());
   const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh(
     providerStatus?.instanceId ?? null,
@@ -83,13 +102,12 @@ export function useSessionStartupNotice(input: {
     if (!visible) {
       return null;
     }
+    const message = sessionStartupNoticeMessage(launching);
     return {
       id: "session-startup",
       severity: "warning",
       lead: "Turn startup",
-      detail: refreshError
-        ? `${SESSION_STARTUP_SLOW_MESSAGE} ${refreshError}`
-        : SESSION_STARTUP_SLOW_MESSAGE,
+      detail: refreshError ? `${message} ${refreshError}` : message,
       actions: (
         <StatusNoticeActionButtons
           variant="ghost"
@@ -98,5 +116,5 @@ export function useSessionStartupNotice(input: {
         />
       ),
     } satisfies ComposerNotice;
-  }, [isRefreshing, providerStatus, refreshError, refreshProvider, visible]);
+  }, [isRefreshing, launching, providerStatus, refreshError, refreshProvider, visible]);
 }

@@ -39,16 +39,19 @@ function SessionStartupNoticeHarness({
   startedAt,
   providerStatus,
   suppressed = false,
+  launching = null,
 }: {
   startedAt: string | null;
   providerStatus: ServerProvider | null;
   suppressed?: boolean;
+  launching?: { readonly agentName: string | null } | null;
 }) {
   const notice = useSessionStartupNotice({
     isSessionStarting: true,
     providerStatus,
     startedAt,
     suppressed,
+    launching,
   });
   return <ComposerNoticeDock notices={notice ? [notice] : []} />;
 }
@@ -117,6 +120,23 @@ describe("session startup composer notice", () => {
       await vi.waitFor(() => {
         expect(refreshProvidersMock).toHaveBeenCalledWith({ instanceId: provider.instanceId });
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("names the agent when its program is what is slow to start", async () => {
+    const screen = await renderWithTestRouter(
+      <SessionStartupNoticeHarness
+        startedAt={slowStartedAt()}
+        providerStatus={makeProvider()}
+        launching={{ agentName: "Codex" }}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("Codex is taking a while to start.")).toBeVisible();
+      expect(document.body.textContent).not.toContain("Preparing this turn");
     } finally {
       await screen.unmount();
     }

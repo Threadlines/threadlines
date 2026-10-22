@@ -109,6 +109,14 @@ export interface ProviderServiceShape {
   readonly isEarlySession: (threadId: ThreadId) => Effect.Effect<boolean>;
 
   /**
+   * The instance an early start for the key is still starting, if one is:
+   * whoever adopts the session meanwhile waits for that start.
+   */
+  readonly earlyStartInFlight: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderInstanceId | undefined>;
+
+  /**
    * An early session started work or asked the user something on its own:
    * stop it, and start no more early in that checkout on that instance.
    */

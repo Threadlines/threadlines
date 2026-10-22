@@ -997,10 +997,13 @@ it.effect(
         );
         yield* advanceTestClock(10);
         assert.equal(adopted, false);
+        // Whoever adopts it meanwhile is waiting on that instance's launch.
+        assert.equal(yield* provider.earlyStartInFlight(slow), codexInstanceId);
         yield* Deferred.succeed(finishStart, undefined);
         const session = yield* Fiber.join(adoptFiber);
         assert.equal(session?.threadId, slow);
         assert.equal(codex.startSession.mock.calls.length, 1);
+        assert.equal(yield* provider.earlyStartInFlight(slow), undefined);
 
         // Given up while still starting: nothing is left running.
         const stuck = yield* Deferred.make<void>();

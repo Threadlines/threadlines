@@ -11,6 +11,7 @@ import {
   IsoDateTime,
   NonNegativeInt,
   OrchestrationAwaitedBackgroundTask,
+  OrchestrationSessionStartup,
   OrchestrationSessionStatus,
   ProviderInstanceId,
   ThreadId,
@@ -42,6 +43,11 @@ export const ProjectionThreadSession = Schema.Struct({
   pendingBackgroundTaskCount: NonNegativeInt,
   awaitedBackgroundTaskCount: NonNegativeInt,
   awaitedBackgroundTasks: Schema.Array(OrchestrationAwaitedBackgroundTask),
+  /**
+   * The startup phase; see OrchestrationSession.startup. Absent on write
+   * keeps the stored phase.
+   */
+  startup: Schema.optional(Schema.NullOr(OrchestrationSessionStartup)),
   lastError: Schema.NullOr(Schema.String),
   updatedAt: IsoDateTime,
 });

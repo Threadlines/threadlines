@@ -958,6 +958,60 @@ describe("orchestration projector", () => {
     expect(model.threads[0]?.participants).toMatchObject([{ id: "agent-astra", leftAt: at }]);
   });
 
+  it("keeps a launching session's mark through updates that leave it out, until it is cleared", async () => {
+    const at = "2026-02-23T09:00:00.000Z";
+    let model = createEmptyReadModel(at);
+    const apply = async (sequence: number, type: OrchestrationEvent["type"], payload: unknown) => {
+      model = await Effect.runPromise(
+        projectEvent(
+          model,
+          makeEvent({
+            sequence,
+            type,
+            aggregateKind: "thread",
+            aggregateId: "thread-1",
+            occurredAt: at,
+            commandId: `cmd-${sequence}`,
+            payload,
+          }),
+        ),
+      );
+    };
+    const session = (status: string, extra: Record<string, unknown> = {}) => ({
+      threadId: "thread-1",
+      session: {
+        threadId: "thread-1",
+        status,
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: at,
+        ...extra,
+      },
+    });
+    const launching = { phase: "launching", providerInstanceId: "codex" };
+
+    await apply(1, "thread.created", {
+      threadId: "thread-1",
+      projectId: "project-1",
+      title: "thread",
+      modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+      runtimeMode: "full-access",
+      branch: null,
+      worktreePath: null,
+      createdAt: at,
+      updatedAt: at,
+    });
+    await apply(2, "thread.session-set", session("starting", { startup: launching }));
+    // The provider's own start-up updates don't carry the mark.
+    await apply(3, "thread.session-set", session("starting"));
+    expect(model.threads[0]?.session?.startup).toEqual(launching);
+
+    await apply(4, "thread.session-set", session("ready", { startup: null }));
+    expect(model.threads[0]?.session?.startup).toBeNull();
+  });
+
   it("keeps the latest turn running when a provider diff placeholder arrives mid-turn", async () => {
     const createdAt = "2026-02-23T08:00:00.000Z";
     const startedAt = "2026-02-23T08:00:05.000Z";

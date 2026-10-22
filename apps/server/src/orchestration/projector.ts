@@ -1442,11 +1442,17 @@ export function projectEvent(
           event.type,
           "session",
         );
-        // An update that does not name the slot holder keeps the current one.
-        const session: OrchestrationSession =
-          decodedSession.participantId !== undefined
-            ? decodedSession
-            : { ...decodedSession, participantId: thread.session?.participantId ?? null };
+        // An update that does not name the slot holder keeps the current one,
+        // and one that leaves out the startup phase keeps that.
+        const session: OrchestrationSession = {
+          ...decodedSession,
+          ...(decodedSession.participantId === undefined
+            ? { participantId: thread.session?.participantId ?? null }
+            : {}),
+          ...(decodedSession.startup === undefined && thread.session?.startup != null
+            ? { startup: thread.session.startup }
+            : {}),
+        };
 
         return {
           ...nextBase,

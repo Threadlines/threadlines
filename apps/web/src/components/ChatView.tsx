@@ -101,6 +101,8 @@ import {
   isBlockingUserInput,
   derivePhase,
   deriveActiveStatusLabel,
+  deriveThreadComputerName,
+  describeLaunchingAgent,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   findSidebarProposedPlan,
@@ -412,6 +414,7 @@ import {
 import { derivePlanTaskBadge, useThreadPlanCatalog } from "../planPanelState";
 import {
   deriveDisplayProviderInstanceEntries,
+  getProviderInstanceEntry,
   type ProviderInstanceEntry,
   resolveComposerProviderSelection,
 } from "../providerInstances";
@@ -2251,6 +2254,47 @@ export default function ChatView(props: ChatViewProps) {
     latestTurnSettled,
     phase,
   ]);
+  // While the agent's own program starts, the working row and the slow-start
+  // notice name it, and its computer when the app is connected to more than
+  // one. During a hand-over the instance starting is not yet the session's.
+  const launchingInstanceId = isSessionStarting
+    ? (activeThread?.session?.launchingInstanceId ?? null)
+    : null;
+  const launchingAgentName = useMemo(
+    () =>
+      launchingInstanceId === null
+        ? null
+        : (getProviderInstanceEntry(providerStatuses, launchingInstanceId)?.displayName ?? null),
+    [launchingInstanceId, providerStatuses],
+  );
+  const launchingComputerName = useMemo(() => {
+    if (launchingInstanceId === null || !activeThread) return null;
+    const environmentId = activeThread.environmentId;
+    return deriveThreadComputerName({
+      threadEnvironmentId: environmentId,
+      primaryEnvironmentId,
+      connectedEnvironmentIds: Object.entries(savedEnvironmentRuntimeById).flatMap(
+        ([savedEnvironmentId, runtime]) =>
+          runtime?.connectionState === "connected" ? [savedEnvironmentId] : [],
+      ),
+      computerLabel:
+        savedEnvironmentRuntimeById[environmentId]?.descriptor?.label ??
+        savedEnvironmentRegistry[environmentId]?.label ??
+        serverConfig?.environment.label,
+    });
+  }, [
+    activeThread,
+    launchingInstanceId,
+    primaryEnvironmentId,
+    savedEnvironmentRegistry,
+    savedEnvironmentRuntimeById,
+    serverConfig?.environment.label,
+  ]);
+  // A new object only when the name changes, so the notice keeps its memo.
+  const launchingStartupNotice = useMemo(
+    () => (launchingInstanceId === null ? null : { agentName: launchingAgentName }),
+    [launchingAgentName, launchingInstanceId],
+  );
   const activeStatusLabel = deriveActiveStatusLabel({
     phase,
     workLogEntries,
@@ -2259,6 +2303,13 @@ export default function ChatView(props: ChatViewProps) {
     isSendBusy,
     isPreparingWorktree,
     isSessionStarting,
+    launchingAgent:
+      launchingInstanceId === null
+        ? null
+        : describeLaunchingAgent({
+            agentName: launchingAgentName,
+            computerName: launchingComputerName,
+          }),
     isRevertingCheckpoint,
     pendingApprovalCount: pendingApprovals.length,
     // A non-blocking question does not hold the turn, so it must not read as
@@ -6326,7 +6377,11 @@ export default function ChatView(props: ChatViewProps) {
     isSessionStarting,
     startedAt: activeWorkStartedAt,
     suppressed: providerStatusNoticeVisible || threadErrorNoticeVisible,
-    providerStatus: activeProviderStatus,
+    providerStatus:
+      (launchingInstanceId !== null
+        ? providerStatuses.find((status) => status.instanceId === launchingInstanceId)
+        : undefined) ?? activeProviderStatus,
+    launching: launchingStartupNotice,
   });
   const threadErrorNotice = useMemo(
     () =>

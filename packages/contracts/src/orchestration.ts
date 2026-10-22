@@ -1154,6 +1154,18 @@ export const OrchestrationAwaitedBackgroundTask = Schema.Struct({
 });
 export type OrchestrationAwaitedBackgroundTask = typeof OrchestrationAwaitedBackgroundTask.Type;
 
+/**
+ * What a starting session is busy with, when it is more than preparing the
+ * turn. `launching`: the agent's own program is starting (a cold start, a
+ * restart or a hand-over to another instance), with the instance being
+ * started, which during a hand-over is not yet the session's.
+ */
+export const OrchestrationSessionStartup = Schema.Struct({
+  phase: Schema.Literal("launching"),
+  providerInstanceId: ProviderInstanceId,
+});
+export type OrchestrationSessionStartup = typeof OrchestrationSessionStartup.Type;
+
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -1191,6 +1203,13 @@ export const OrchestrationSession = Schema.Struct({
   // on. Only a provider that reports its full task list fills this, so it
   // describes the wait only when it holds as many tasks as the count above.
   awaitedBackgroundTasks: Schema.optional(Schema.Array(OrchestrationAwaitedBackgroundTask)),
+  /**
+   * Set while the agent's program starts; see OrchestrationSessionStartup.
+   * Only the provider command reactor sets and clears it. A session update
+   * that leaves it out keeps the current value, so the provider's own
+   * start-up events can't wipe it mid-launch; null clears it.
+   */
+  startup: Schema.optional(Schema.NullOr(OrchestrationSessionStartup)),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });

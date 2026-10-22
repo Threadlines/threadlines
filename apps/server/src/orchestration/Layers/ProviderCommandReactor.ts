@@ -25,6 +25,7 @@ import {
   type OrchestrationThread,
   type ProviderSession,
   type ProviderSessionForkFrom,
+  type ProviderInstanceId,
   type OrchestrationWarmUpTurnInput,
   type RuntimeMode,
   type ThreadContextSeed,
@@ -85,6 +86,7 @@ import {
 } from "../../checkpointing/Utils.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
+import { makeSessionLaunchGenerations, withoutLaunchMark } from "../sessionLaunches.ts";
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
 
@@ -190,6 +192,32 @@ export interface ForkTurnBoundary {
   readonly beforeTurnId?: TurnId;
   /** Stable inclusive boundary used directly or as the compatibility fallback. */
   readonly lastTurnId?: TurnId;
+}
+
+/** One ensure call's launch mark: its generation and instance, once marked. */
+interface SessionLaunch {
+  generation: number | null;
+  providerInstanceId: ProviderInstanceId | null;
+}
+
+interface EnsureSessionOptions {
+  readonly modelSelection?: ModelSelection;
+  readonly excludeContextSeedMessageId?: MessageId;
+  /** Keep the projected startup state until a requested turn reaches the
+   *  provider. Idle session recycling must settle back to ready. */
+  readonly preservePendingTurnStartup?: boolean;
+  /** Same-driver native fork request for a fresh session start. Falls
+   *  back to a plain start (context-seed seeding) when the fork fails. */
+  readonly forkFrom?: ProviderSessionForkFrom;
+  /** The room agent to run. Null or absent: the thread's own agent. */
+  readonly participantId?: ThreadParticipantId | null;
+  /**
+   * Start early, while the user types the message that will need the
+   * session (docs/early-agent-start.md): only where that message would
+   * plainly start or resume the agent, and without making it the
+   * thread's. `runtimeMode` is the access level the message will carry.
+   */
+  readonly early?: { readonly runtimeMode: RuntimeMode };
 }
 
 interface ForkBoundaryMessage {
@@ -587,6 +615,9 @@ const make = Effect.gen(function* () {
    */
   const reportedMissingCheckouts = new Map<ThreadId, string>();
 
+  /** The newest launch that marked each thread's session as launching. */
+  const launchGenerations = makeSessionLaunchGenerations<ThreadId>();
+
   const noteCheckoutSwitchDeferred = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly fromCwd: string;
@@ -757,6 +788,65 @@ const make = Effect.gen(function* () {
       createdAt: input.createdAt,
     });
 
+  /**
+   * Says on the thread's session that the agent's program is starting, while
+   * a turn waits on it: only when the slot is this agent's and still
+   * starting. Once per ensure call and instance, so a fork that falls back to
+   * a plain start doesn't flicker. Keeps `updatedAt`, which the chat reads as
+   * when the turn started. Best effort: the turn goes on without the mark.
+   */
+  const markSessionLaunching = (input: {
+    readonly threadId: ThreadId;
+    readonly participantId: ThreadParticipantId | null;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly launch: SessionLaunch;
+  }) =>
+    Effect.gen(function* () {
+      if (input.launch.providerInstanceId === input.providerInstanceId) {
+        return;
+      }
+      const session = (yield* resolveThread(input.threadId))?.session;
+      if (
+        !session ||
+        session.status !== "starting" ||
+        sessionSlotParticipantId(session) !== input.participantId
+      ) {
+        return;
+      }
+      input.launch.generation = launchGenerations.begin(input.threadId);
+      input.launch.providerInstanceId = input.providerInstanceId;
+      yield* setThreadSession({
+        threadId: input.threadId,
+        session: {
+          ...session,
+          startup: { phase: "launching", providerInstanceId: input.providerInstanceId },
+        },
+        createdAt: yield* nowIso,
+      });
+    }).pipe(Effect.ignoreCause({ log: true }));
+
+  /**
+   * Ends a launch's mark once its ensure call is over, however it ended,
+   * while it is still the thread's newest launch. A successful start's bind
+   * already wrote the session without it; this covers a start that failed,
+   * timed out or was interrupted.
+   */
+  const clearSessionLaunching = (threadId: ThreadId, launch: SessionLaunch) =>
+    Effect.gen(function* () {
+      if (launch.generation === null || !launchGenerations.end(threadId, launch.generation)) {
+        return;
+      }
+      const session = (yield* resolveThread(threadId))?.session;
+      if (session?.startup == null) {
+        return;
+      }
+      yield* setThreadSession({
+        threadId,
+        session: { ...session, startup: null },
+        createdAt: yield* nowIso,
+      });
+    }).pipe(Effect.ignoreCause({ log: true }));
+
   const setThreadSessionErrorOnTurnStartFailure = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly detail: string;
@@ -770,7 +860,7 @@ const make = Effect.gen(function* () {
     yield* setThreadSession({
       threadId: input.threadId,
       session: {
-        ...session,
+        ...withoutLaunchMark(session),
         status: session.status === "stopped" ? "stopped" : "ready",
         activeTurnId: null,
         lastError: input.detail,
@@ -792,7 +882,7 @@ const make = Effect.gen(function* () {
     yield* setThreadSession({
       threadId: input.threadId,
       session: {
-        ...thread.session,
+        ...withoutLaunchMark(thread.session),
         status: "error",
         lastError: input.detail,
         updatedAt: input.createdAt,
@@ -843,7 +933,7 @@ const make = Effect.gen(function* () {
     yield* setThreadSession({
       threadId: input.threadId,
       session: {
-        ...session,
+        ...withoutLaunchMark(session),
         status: "running",
         activeTurnId: input.turnId,
         lastError: null,
@@ -998,28 +1088,28 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
+  /**
+   * Makes sure the thread's agent has a live session for what comes next,
+   * starting, restarting or handing it over as needed. While a turn waits on
+   * the agent's program starting, the session says so (`startup`), until the
+   * start is over.
+   */
+  const ensureSessionForThread = (
     threadId: ThreadId,
     createdAt: string,
-    options?: {
-      readonly modelSelection?: ModelSelection;
-      readonly excludeContextSeedMessageId?: MessageId;
-      /** Keep the projected startup state until a requested turn reaches the
-       *  provider. Idle session recycling must settle back to ready. */
-      readonly preservePendingTurnStartup?: boolean;
-      /** Same-driver native fork request for a fresh session start. Falls
-       *  back to a plain start (context-seed seeding) when the fork fails. */
-      readonly forkFrom?: ProviderSessionForkFrom;
-      /** The room agent to run. Null or absent: the thread's own agent. */
-      readonly participantId?: ThreadParticipantId | null;
-      /**
-       * Start early, while the user types the message that will need the
-       * session (docs/early-agent-start.md): only where that message would
-       * plainly start or resume the agent, and without making it the
-       * thread's. `runtimeMode` is the access level the message will carry.
-       */
-      readonly early?: { readonly runtimeMode: RuntimeMode };
-    },
+    options?: EnsureSessionOptions,
+  ) => {
+    const launch: SessionLaunch = { generation: null, providerInstanceId: null };
+    return ensureSessionForThreadWith(threadId, createdAt, options, launch).pipe(
+      Effect.onExit(() => clearSessionLaunching(threadId, launch)),
+    );
+  };
+
+  const ensureSessionForThreadWith = Effect.fn("ensureSessionForThread")(function* (
+    threadId: ThreadId,
+    createdAt: string,
+    options: EnsureSessionOptions | undefined,
+    launch: SessionLaunch,
   ) {
     const thread = yield* resolveThread(threadId);
     if (!thread) {
@@ -1043,8 +1133,41 @@ const make = Effect.gen(function* () {
     }
     const sessionKey = participantSessionKey(threadId, participantId);
     const early = options?.early;
+    // A turn about to show the mark finds none of this reactor's launches
+    // running, since a thread's ensures run one at a time: one it finds is
+    // left over (its clear never landed). Only for a turn: a review starting
+    // outside the reactor holds a mark of its own meanwhile.
+    if (
+      options?.preservePendingTurnStartup === true &&
+      thread.session?.startup != null &&
+      !launchGenerations.holds(threadId)
+    ) {
+      yield* setThreadSession({
+        threadId,
+        session: { ...thread.session, startup: null },
+        createdAt,
+      }).pipe(Effect.ignoreCause({ log: true }));
+    }
     // A session started early becomes the thread's here: whoever ensures a
-    // session is about to use it. Waits for one still starting.
+    // session is about to use it. Waits for one still starting, which is
+    // this turn's launch when it is the agent the turn asked for; one
+    // switching away waits on it unnamed, then names its own launch.
+    if (early === undefined) {
+      const earlyInstanceId = yield* providerService.earlyStartInFlight(sessionKey);
+      const turnInstanceId = (
+        options?.modelSelection ??
+        participant?.modelSelection ??
+        thread.modelSelection
+      ).instanceId;
+      if (earlyInstanceId !== undefined && earlyInstanceId === turnInstanceId) {
+        yield* markSessionLaunching({
+          threadId,
+          participantId,
+          providerInstanceId: earlyInstanceId,
+          launch,
+        });
+      }
+    }
     const adoptedEarlySession =
       early === undefined ? yield* providerService.adoptEarlySession(sessionKey) : undefined;
     const projectedSession =
@@ -1251,6 +1374,8 @@ const make = Effect.gen(function* () {
       runtimeMode: desiredRuntimeMode,
     });
 
+    // Every launch of the agent's program goes through here, for every
+    // driver, so this is where a waiting turn learns the program is starting.
     const startProviderSession = (
       input?: {
         readonly resumeCursor?: unknown;
@@ -1259,11 +1384,20 @@ const make = Effect.gen(function* () {
       },
       startKind: "fresh" | "restart" | "handoff" = "fresh",
     ) =>
-      providerService.startSession(sessionKey, sessionStartInput(input)).pipe(
-        withMetrics({
-          timer: providerSessionStartDuration,
-          attributes: { provider: preferredProvider, startKind },
-        }),
+      markSessionLaunching({
+        threadId,
+        participantId,
+        providerInstanceId: desiredInstanceId,
+        launch,
+      }).pipe(
+        Effect.andThen(
+          providerService.startSession(sessionKey, sessionStartInput(input)).pipe(
+            withMetrics({
+              timer: providerSessionStartDuration,
+              attributes: { provider: preferredProvider, startKind },
+            }),
+          ),
+        ),
       );
 
     // A session that could not reopen its conversation owes the thread's
@@ -1339,6 +1473,8 @@ const make = Effect.gen(function* () {
             checkoutCwd: session.cwd ?? effectiveCwd ?? null,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
+            // The program has started: the launch, if this was one, is over.
+            startup: null,
             lastError: session.lastError ?? null,
             updatedAt: shouldPreservePendingTurnStartup
               ? (latestSession?.updatedAt ?? session.updatedAt)
@@ -2837,7 +2973,7 @@ const make = Effect.gen(function* () {
         yield* setThreadSession({
           threadId: event.payload.threadId,
           session: {
-            ...latestSession,
+            ...withoutLaunchMark(latestSession),
             status: "ready",
             activeTurnId: null,
             lastError: null,
@@ -2970,7 +3106,7 @@ const make = Effect.gen(function* () {
       yield* setThreadSession({
         threadId: event.payload.threadId,
         session: {
-          ...session,
+          ...withoutLaunchMark(session),
           status: "interrupted",
           activeTurnId: null,
           lastError: null,
@@ -3429,7 +3565,7 @@ const make = Effect.gen(function* () {
                   yield* setThreadSession({
                     threadId: thread.id,
                     session: {
-                      ...latestSession,
+                      ...withoutLaunchMark(latestSession),
                       status: "ready",
                       activeTurnId: null,
                       updatedAt: event.payload.createdAt,
@@ -5268,6 +5404,8 @@ const make = Effect.gen(function* () {
         // Background tasks lived in the previous process's runtimes, so none
         // survive. A settled session still counting them would read as
         // waiting forever, and in a room would never hand the thread over.
+        // A launch the previous process never finished left its mark behind.
+        const leftStartup = session.startup != null ? { startup: null } : {};
         if (!restartInterruptedStatuses.has(session.status)) {
           if (
             session.status !== "stopped" &&
@@ -5280,9 +5418,16 @@ const make = Effect.gen(function* () {
               session: {
                 ...session,
                 ...NO_BACKGROUND_TASKS,
+                ...leftStartup,
                 updatedAt,
               },
               createdAt: updatedAt,
+            });
+          } else if (session.startup != null) {
+            yield* setThreadSession({
+              threadId: thread.id,
+              session: { ...session, startup: null },
+              createdAt: yield* nowIso,
             });
           }
           continue;
@@ -5295,6 +5440,7 @@ const make = Effect.gen(function* () {
             status: "interrupted",
             activeTurnId: null,
             ...NO_BACKGROUND_TASKS,
+            ...leftStartup,
             lastError: null,
             updatedAt: createdAt,
           },

@@ -46,6 +46,7 @@ import { metricAttributes, providerFirstOutputDuration } from "../../observabili
 import { isAgentOutputEvent } from "../../provider/turnLatency.ts";
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { resolveThreadProviderCwd } from "../generalChats.ts";
+import { withoutLaunchMark } from "../sessionLaunches.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -3574,7 +3575,7 @@ const make = Effect.gen(function* () {
           commandId: providerCommandId(event, "thread-idle-session-set"),
           threadId: thread.id,
           session: {
-            ...thread.session,
+            ...withoutLaunchMark(thread.session),
             status: "ready",
             activeTurnId: null,
             lastError: null,
@@ -3613,7 +3614,7 @@ const make = Effect.gen(function* () {
             commandId: providerCommandId(event, "task-snapshot-session-set"),
             threadId: thread.id,
             session: {
-              ...thread.session,
+              ...withoutLaunchMark(thread.session),
               pendingBackgroundTaskCount: nextPendingCount,
               awaitedBackgroundTaskCount: nextAwaitedTasks.length,
               awaitedBackgroundTasks: nextAwaitedTasks,
@@ -3654,7 +3655,7 @@ const make = Effect.gen(function* () {
             commandId: providerCommandId(event, "task-pending-session-set"),
             threadId: thread.id,
             session: {
-              ...thread.session,
+              ...withoutLaunchMark(thread.session),
               pendingBackgroundTaskCount: nextPendingCount,
               // Edges carry no intent, so every task is awaited, and no list:
               // with nothing describing them, the wait stays unspecific.
