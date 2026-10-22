@@ -443,6 +443,11 @@ export const DesktopTaskbarThreadSummarySchema = Schema.Struct({
 });
 
 export interface DesktopTaskbarStatusInput {
+  /**
+   * `working` while any thread runs, `completed` when nothing runs and
+   * finished threads wait unopened, `idle` otherwise. Only the step from
+   * `working` to `completed` is the moment work finished.
+   */
   status: DesktopTaskbarStatus;
   description?: string;
   runningThreadCount?: number;
@@ -452,7 +457,11 @@ export interface DesktopTaskbarStatusInput {
    * first; threads on other computers keep running there.
    */
   localRunningThreadCount?: number;
-  /** Threads that finished while the app was unfocused (drives dock/taskbar badges). */
+  /**
+   * Finished threads the user has not opened yet, the inbox's unread finished
+   * work. Sent with every status: the macOS Dock badge shows it throughout,
+   * the Windows taskbar once nothing runs.
+   */
   completedThreadCount?: number;
   /** Unseen-completed and running threads, in display order for the status item menu. */
   threads?: readonly DesktopTaskbarThreadSummary[];
@@ -1435,6 +1444,14 @@ export interface DesktopBridge {
   openExternal: (url: string) => Promise<boolean>;
   setTaskbarStatus?: (input: DesktopTaskbarStatusInput) => Promise<void>;
   /**
+   * Whether the app window has focus, as the window itself knows it; null
+   * until the page has loaded. Inside the page, focus moving into a browser
+   * panel (a <webview>) reads the same as the user leaving the app.
+   */
+  isWindowFocused?: () => boolean | null;
+  /** Fires when the app window gains or loses focus. */
+  onWindowFocusChange?: (listener: (focused: boolean) => void) => () => void;
+  /**
    * The quit question, or null when the app takes it back (it asked natively
    * instead, or the quit was settled elsewhere).
    */
@@ -1469,7 +1486,12 @@ export interface LocalApi {
     confirm: (message: string) => Promise<boolean>;
   };
   shell: {
-    openInEditor: (cwd: string, editor: EditorId) => Promise<void>;
+    /**
+     * Opens `target` (a folder, or a file with an optional `:line[:column]`)
+     * in `editor`. Pass the project folder a file belongs to as
+     * `workspaceRoot` so the editor shows it inside that project.
+     */
+    openInEditor: (target: string, editor: EditorId, workspaceRoot?: string) => Promise<void>;
     openExternal: (url: string) => Promise<void>;
   };
   contextMenu: {

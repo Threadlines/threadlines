@@ -1,4 +1,5 @@
 import { replaceAgentCheckBacks, sameCheckBacks } from "@threadlines/shared/checkBacks";
+import { applyPullRequestDismissed } from "@threadlines/shared/pullRequestDismissals";
 import { sameAwaitedBackgroundTasks } from "@threadlines/shared/awaitedBackgroundTasks";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type {
@@ -659,6 +660,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
@@ -714,6 +716,7 @@ function mapThreadShell(
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
@@ -798,6 +801,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     pullRequestAutoFix: thread.pullRequestAutoFix ?? false,
     pullRequestAutoMerge: thread.pullRequestAutoMerge ?? null,
     linkedPullRequests: thread.linkedPullRequests ?? [],
+    ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
     sideTurn: thread.sideTurn ?? null,
@@ -979,6 +983,25 @@ function threadDiffStatsEqual(
   return left.additions === right.additions && left.deletions === right.deletions;
 }
 
+/** Absent when none, so a thread with none carries no field. */
+function dismissedPullRequestsField(
+  dismissed: readonly number[] | undefined,
+): Pick<ThreadShell, "dismissedPullRequests"> {
+  return dismissed && dismissed.length > 0 ? { dismissedPullRequests: dismissed } : {};
+}
+
+function dismissedPullRequestsEqual(
+  left: readonly number[] | undefined,
+  right: readonly number[] | undefined,
+): boolean {
+  const leftList = left ?? [];
+  const rightList = right ?? [];
+  return (
+    leftList.length === rightList.length &&
+    leftList.every((number, index) => number === rightList[index])
+  );
+}
+
 function linkedPullRequestsEqual(
   left: SidebarThreadSummary["linkedPullRequests"],
   right: SidebarThreadSummary["linkedPullRequests"],
@@ -1012,7 +1035,7 @@ function queuedFollowUpsEqual(
   );
 }
 
-/** Participants change rarely and are replaced wholesale, so identity is enough. */
+/** Whether two participant lists say the same about every agent, by what the chat shows of them. */
 function participantsEqual(
   left: ThreadShell["participants"],
   right: ThreadShell["participants"],
@@ -1134,6 +1157,21 @@ function sideTurnsEqual(
         a.requestId === b.requestId;
 }
 
+/**
+ * A changed shell, keeping the participants it had while they are the same.
+ * The server pushes a whole shell again on every update a streaming turn
+ * makes, and what the chat builds from the participants (agent names and
+ * labels) should keep its identity across them.
+ */
+function withKeptParticipants(previous: ThreadShell | undefined, next: ThreadShell): ThreadShell {
+  const kept = previous?.participants;
+  return kept !== undefined &&
+    kept !== next.participants &&
+    participantsEqual(kept, next.participants)
+    ? { ...next, participants: kept }
+    : next;
+}
+
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
   return (
     left !== undefined &&
@@ -1152,6 +1190,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.pullRequestAutoFix === right.pullRequestAutoFix &&
     left.pullRequestAutoMerge === right.pullRequestAutoMerge &&
     linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
+    dismissedPullRequestsEqual(left.dismissedPullRequests, right.dismissedPullRequests) &&
     queuedFollowUpsEqual(left.queuedFollowUps, right.queuedFollowUps) &&
     participantsEqual(left.participants, right.participants) &&
     sideTurnsEqual(left.sideTurn, right.sideTurn) &&
@@ -1388,7 +1427,7 @@ function writeThreadState(
       ...nextState,
       threadShellById: {
         ...nextState.threadShellById,
-        [nextThread.id]: nextShell,
+        [nextThread.id]: withKeptParticipants(previousShell, nextShell),
       },
     };
   }
@@ -1605,7 +1644,7 @@ function writeThreadShellState(
       ...nextState,
       threadShellById: {
         ...nextState.threadShellById,
-        [nextThread.shell.id]: nextThread.shell,
+        [nextThread.shell.id]: withKeptParticipants(previousShell, nextThread.shell),
       },
     };
   }
@@ -2461,6 +2500,16 @@ function applyEnvironmentOrchestrationEvent(
               ],
             },
       );
+
+    // Closing a row is not work on the thread: `updatedAt` stays.
+    case "thread.pull-request-dismissed":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const dismissedPullRequests = applyPullRequestDismissed(
+          thread.dismissedPullRequests,
+          event.payload,
+        );
+        return dismissedPullRequests === null ? thread : { ...thread, dismissedPullRequests };
+      });
 
     case "thread.follow-up-queued":
       return updateThreadState(state, event.payload.threadId, (thread) => ({

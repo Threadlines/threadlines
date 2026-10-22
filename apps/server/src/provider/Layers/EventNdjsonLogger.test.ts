@@ -7,7 +7,7 @@ import { ThreadId } from "@threadlines/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 
 import {
   cleanupProviderEventLogDirectory,

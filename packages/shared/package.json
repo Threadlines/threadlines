@@ -247,6 +247,10 @@
       "types": "./src/pullRequestAutoMerge.ts",
       "import": "./src/pullRequestAutoMerge.ts"
     },
+    "./pullRequestDismissals": {
+      "types": "./src/pullRequestDismissals.ts",
+      "import": "./src/pullRequestDismissals.ts"
+    },
     "./pullRequestPolling": {
       "types": "./src/pullRequestPolling.ts",
       "import": "./src/pullRequestPolling.ts"
@@ -350,7 +354,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vp exec vp test run"
+    "test": "vp exec vp test run --config ../../vite.config.ts"
   },
   "dependencies": {
     "@threadlines/contracts": "workspace:*",

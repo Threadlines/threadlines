@@ -180,6 +180,7 @@ import { cn, randomUUID } from "~/lib/utils";
 import { CommandRunActionsContext } from "./chat/CommandRuns";
 import { useCommandRunActions } from "./chat/useCommandRunActions";
 import { markThreadSeen, selectThreadLastSeenAt } from "~/lib/threadInboxSync";
+import { isPageAttended, onPageAttentionChange } from "~/lib/pageAttention";
 import { mergeTurnStepHistory, turnsWithCutSteps, useTurnStepHistory } from "~/lib/turnStepHistory";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -1747,10 +1748,15 @@ export default function ChatView(props: ChatViewProps) {
     const lastVisitedAt = activeThreadLastVisitedAt ? Date.parse(activeThreadLastVisitedAt) : NaN;
     if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= turnCompletedAt) return;
 
-    markThreadSeen(
-      scopeThreadRef(serverThread.environmentId, serverThread.id),
-      activeLatestTurn.completedAt,
-    );
+    // Open is not seen: a turn that finishes while the user is in another app
+    // stays unread, so the Dock and taskbar count it, until they come back.
+    const threadRef = scopeThreadRef(serverThread.environmentId, serverThread.id);
+    const completedAt = activeLatestTurn.completedAt;
+    const markSeenWhenAttended = () => {
+      if (isPageAttended()) markThreadSeen(threadRef, completedAt);
+    };
+    markSeenWhenAttended();
+    return onPageAttentionChange(markSeenWhenAttended);
   }, [
     activeLatestTurn?.completedAt,
     activeThreadLastVisitedAt,

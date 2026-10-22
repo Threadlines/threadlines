@@ -403,7 +403,7 @@ Inputs name an agent by participant id or by an unambiguous name ("astra 2",
   reactor's worker. It subscribes to domain events before dispatching the
   start, and matches `thread.side-turn-settled` by `sideTurnId`.
 - Result: `{ outcome: answered | failed | stopped | busy | limit | timeout,
-answer?, answerMessageId?, sideTurnId? }`. The answer is bounded; the full
+  answer?, answerMessageId?, sideTurnId? }`. The answer is bounded; the full
   text is in the chat.
 - **One lifecycle per request**: the request has its own deadline and is
   cancelled by the caller's turn ending, Stop or the deadline. HTTP calls
@@ -474,7 +474,7 @@ answer?, answerMessageId?, sideTurnId? }`. The answer is bounded; the full
   Codex otherwise stops waiting at 60s, so the endpoint gets
   `tool_timeout_sec = 660`. Claude's server entry gets `timeout: 660000`.
 - **Credentials**: the registry records, per token, `{ threadId, sessionKey,
-participant key, generation }`, plus `{ sideTurnId, kind }` for side
+  participant key, generation }`, plus `{ sideTurnId, kind }` for side
   runtimes, so a handler knows exactly who called.
   - Each token also carries its **capabilities**: which endpoints and which
     tools it may use. `/mcp` (browser tools, including the hand-registered
@@ -516,7 +516,7 @@ every request has a durable record from submission to its final outcome.
 
 - **Open requests** live on the thread (decider state and a projection JSON
   column, migration 061): `{ requestId, kind, from, to, callerTurnId,
-chainEpoch, status, requestMessageId, sideTurnId?, targetTurnId? }`. Status
+  chainEpoch, status, requestMessageId, sideTurnId?, targetTurnId? }`. Status
   runs `pending` (a hand-off waiting for the caller's turn to complete) →
   `queued` → `running` → settled. A settled request leaves the open set, and
   its outcome is recorded on its request message.

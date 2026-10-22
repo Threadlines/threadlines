@@ -269,7 +269,7 @@ describe("Composer pull request merge controls", () => {
       await checkbox.click();
       await expect
         .element(page.getByRole("alert"))
-        .toHaveTextContent("Auto-merge is not enabled for this repository");
+        .toMatchTextContent("Auto-merge is not enabled for this repository");
       await expect.element(checkbox).not.toBeChecked();
       await expect.element(checkbox).toBeEnabled();
     } finally {
@@ -365,7 +365,7 @@ describe("Composer pull request merge controls", () => {
     try {
       const chip = page.getByRole("button", { name: "Checks", exact: true });
       // The pull request's own checks are green; the chip says what they cannot.
-      await expect.element(chip, { timeout: 5_000 }).toHaveTextContent("Queue failed");
+      await expect.element(chip, { timeout: 5_000 }).toMatchTextContent("Queue failed");
       await expect
         .element(page.getByText("Failed in the merge queue"), { timeout: 5_000 })
         .toBeVisible();
@@ -382,7 +382,7 @@ describe("Composer pull request merge controls", () => {
         mergeMethod: "squash",
       });
       // Armed again, it is on its way back, and the chip goes back to the checks.
-      await expect.element(chip, { timeout: 5_000 }).toHaveTextContent("CI");
+      await expect.element(chip, { timeout: 5_000 }).toMatchTextContent("CI");
     } finally {
       await rendered.cleanup();
     }
@@ -900,10 +900,10 @@ describe("PullRequestDetailPanel", () => {
     });
 
     const submit = page.getByTestId("pull-request-comment-submit");
-    await expect.element(submit).toHaveTextContent("Comment");
+    await expect.element(submit).toMatchTextContent("Comment");
 
     await userEvent.click(page.getByTestId("pull-request-verdict-request-changes"));
-    await expect.element(submit).toHaveTextContent("Request changes");
+    await expect.element(submit).toMatchTextContent("Request changes");
 
     await userEvent.fill(page.getByTestId("pull-request-comment-input"), "Please rename this.");
     await userEvent.click(submit);
@@ -1006,7 +1006,7 @@ describe("PullRequestDetailPanel", () => {
 
     await expect
       .element(page.getByTestId("pull-request-review-bar-count"))
-      .toHaveTextContent("1 comment");
+      .toMatchTextContent("1 comment");
     await userEvent.click(page.getByTestId("pull-request-review-bar-approve"));
 
     await vi.waitFor(() => {
@@ -1045,10 +1045,10 @@ describe("PullRequestDetailPanel", () => {
     await userEvent.click(page.getByRole("tab", { name: "Timeline" }));
 
     const group = page.getByTestId("pull-request-timeline-group");
-    await expect.element(group).toHaveTextContent("3 comments");
-    await expect.element(group).not.toHaveTextContent("body c2");
+    await expect.element(group).toMatchTextContent("3 comments");
+    await expect.element(group).not.toMatchTextContent("body c2");
     await userEvent.click(group.getByRole("button"));
-    await expect.element(group).toHaveTextContent("body c2");
+    await expect.element(group).toMatchTextContent("body c2");
 
     await rendered.cleanup();
   });
@@ -1074,7 +1074,7 @@ describe("PullRequestDetailPanel", () => {
     });
     // The branch line carries how far behind it is; the full sentence is its
     // tooltip.
-    await expect.element(page.getByTestId("pull-request-behind")).toHaveTextContent("behind by 3");
+    await expect.element(page.getByTestId("pull-request-behind")).toMatchTextContent("behind by 3");
     await expect.element(page.getByTestId("pull-request-merge")).toBeEnabled();
     await userEvent.click(page.getByRole("button", { name: "More pull request actions" }));
     await userEvent.click(page.getByTestId("pull-request-update-branch-rebase"));
@@ -1164,7 +1164,7 @@ describe("PullRequestDetailPanel", () => {
     await expect.element(page.getByTestId("pull-request-merge")).toBeDisabled();
     await expect
       .element(page.getByTestId("pull-request-merge-block"))
-      .toHaveTextContent("Waiting on 2 checks");
+      .toMatchTextContent("Waiting on 2 checks");
 
     await rendered.cleanup();
   });
@@ -1261,7 +1261,7 @@ describe("PullRequestDetailPanel", () => {
 
     await expect
       .element(page.getByTestId("pull-request-comment-count"))
-      .toHaveTextContent("Comments unavailable");
+      .toMatchTextContent("Comments unavailable");
     // Nothing to scroll to, so nothing to press.
     expect(page.getByRole("button", { name: "Comments unavailable" }).elements()).toHaveLength(0);
 
@@ -1311,7 +1311,7 @@ describe("PullRequestDetailPanel", () => {
 
     // The repository lists squash first, so that is the button's own until a
     // choice is made. The menu spells the methods out in full.
-    await expect.element(page.getByTestId("pull-request-merge")).toHaveTextContent("Squash");
+    await expect.element(page.getByTestId("pull-request-merge")).toMatchTextContent("Squash");
     await userEvent.click(page.getByRole("button", { name: "Choose a merge method" }));
     await userEvent.click(page.getByRole("menuitem", { name: "Create a merge commit" }));
     const dialog = page.getByRole("alertdialog");
@@ -1327,7 +1327,7 @@ describe("PullRequestDetailPanel", () => {
     await first.cleanup();
 
     const second = await renderPanel({ detail: { viewer } });
-    await expect.element(page.getByTestId("pull-request-merge")).toHaveTextContent("Merge");
+    await expect.element(page.getByTestId("pull-request-merge")).toMatchTextContent("Merge");
     await userEvent.click(page.getByTestId("pull-request-merge"));
     await expect
       .element(page.getByRole("alertdialog").getByText("Create a merge commit."))

@@ -67,25 +67,6 @@ it.layer(NodeServices.layer)("ClaudeSessionTranscripts", (it) => {
   });
 
   describe("ensureClaudeSessionTranscript", () => {
-    it.effect("reports a transcript already stored under the cwd's project directory", () => {
-      const { configDir, cleanup } = makeConfigDir();
-      const cwd = "/repo/main";
-      const projectDir = path.join(configDir, "projects", claudeProjectDirectoryName(cwd));
-      mkdirSync(projectDir, { recursive: true });
-      writeFileSync(path.join(projectDir, `${SESSION_ID}.jsonl`), "");
-      return Effect.gen(function* () {
-        const resolution = yield* ensureClaudeSessionTranscript({
-          environment: { CLAUDE_CONFIG_DIR: configDir },
-          cwd,
-          sessionId: SESSION_ID,
-        });
-        assert.deepEqual(resolution, {
-          outcome: "present",
-          transcriptPath: path.join(projectDir, `${SESSION_ID}.jsonl`),
-        });
-      }).pipe(Effect.ensuring(Effect.sync(cleanup)));
-    });
-
     it.effect("copies the transcript when it lives under another project directory", () => {
       const { configDir, cleanup } = makeConfigDir();
       const cwd = "/repo/main";

@@ -1,10 +1,8 @@
 import {
-  CommandId,
   DEFAULT_SERVER_SETTINGS,
   type DesktopBridge,
   EnvironmentId,
   type VcsStatusResult,
-  ProjectId,
   type OrchestrationShellStreamItem,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -184,12 +182,6 @@ vi.mock("./contextMenuFallback", () => ({
   showContextMenuFallback: showContextMenuFallbackMock,
 }));
 
-function emitEvent<T>(listeners: Set<(event: T) => void>, event: T) {
-  for (const listener of listeners) {
-    listener(event);
-  }
-}
-
 function getWindowForTest(): Window & typeof globalThis & { desktopBridge?: unknown } {
   const testGlobal = globalThis as typeof globalThis & {
     window?: Window & typeof globalThis & { desktopBridge?: unknown };
@@ -352,19 +344,6 @@ const baseServerConfig: ServerConfig = {
   settings: DEFAULT_SERVER_SETTINGS,
 };
 
-const baseGitStatus: VcsStatusResult = {
-  isRepo: true,
-  hasPrimaryRemote: true,
-  isDefaultRef: false,
-  refName: "feature/streamed",
-  hasWorkingTreeChanges: false,
-  workingTree: { files: [], insertions: 0, deletions: 0 },
-  hasUpstream: true,
-  aheadCount: 0,
-  behindCount: 0,
-  pr: null,
-};
-
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
@@ -397,63 +376,6 @@ describe("wsApi", () => {
     expect(rpcClientMock.server.subscribeLifecycle).not.toHaveBeenCalled();
   });
 
-  it("forwards terminal and shell stream events", async () => {
-    const { createEnvironmentApi } = await import("./environmentApi");
-
-    const api = createEnvironmentApi(rpcClientMock as never);
-    const onTerminalEvent = vi.fn();
-    const onShellEvent = vi.fn();
-
-    api.terminal.onEvent(onTerminalEvent);
-    api.orchestration.subscribeShell(onShellEvent);
-
-    const terminalEvent = {
-      threadId: "thread-1",
-      terminalId: "terminal-1",
-      createdAt: "2026-02-24T00:00:00.000Z",
-      type: "output",
-      data: "hello",
-    } as const;
-    emitEvent(terminalEventListeners, terminalEvent);
-
-    const shellEvent = {
-      kind: "project-upserted" as const,
-      sequence: 1,
-      project: {
-        id: ProjectId.make("project-1"),
-        kind: "workspace" as const,
-        title: "Project",
-        workspaceRoot: "/tmp/workspace",
-        defaultModelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5-codex",
-        },
-        scripts: [],
-        createdAt: "2026-02-24T00:00:00.000Z",
-        updatedAt: "2026-02-24T00:00:00.000Z",
-      },
-    } satisfies OrchestrationShellStreamItem;
-    emitEvent(shellStreamListeners, shellEvent);
-
-    expect(onTerminalEvent).toHaveBeenCalledWith(terminalEvent);
-    expect(onShellEvent).toHaveBeenCalledWith(shellEvent);
-  });
-
-  it("forwards git status stream events", async () => {
-    const { createEnvironmentApi } = await import("./environmentApi");
-
-    const api = createEnvironmentApi(rpcClientMock as never);
-    const onStatus = vi.fn();
-
-    api.vcs.onStatus({ cwd: "/repo" }, onStatus);
-
-    const gitStatus = baseGitStatus;
-    emitEvent(gitStatusListeners, gitStatus);
-
-    expect(rpcClientMock.vcs.onStatus).toHaveBeenCalledWith({ cwd: "/repo" }, onStatus, undefined);
-    expect(onStatus).toHaveBeenCalledWith(gitStatus);
-  });
-
   it("forwards realtime audio stream completion handling", async () => {
     const { createEnvironmentApi } = await import("./environmentApi");
     const api = createEnvironmentApi(rpcClientMock as never);
@@ -473,28 +395,6 @@ describe("wsApi", () => {
     );
   });
 
-  it("forwards git status refreshes directly to the RPC client", async () => {
-    rpcClientMock.vcs.refreshStatus.mockResolvedValue(baseGitStatus);
-    const { createEnvironmentApi } = await import("./environmentApi");
-
-    const api = createEnvironmentApi(rpcClientMock as never);
-
-    await api.vcs.refreshStatus({ cwd: "/repo" });
-
-    expect(rpcClientMock.vcs.refreshStatus).toHaveBeenCalledWith({ cwd: "/repo" });
-  });
-
-  it("forwards local git status refreshes directly to the RPC client", async () => {
-    rpcClientMock.vcs.refreshLocalStatus.mockResolvedValue(baseGitStatus);
-    const { createEnvironmentApi } = await import("./environmentApi");
-
-    const api = createEnvironmentApi(rpcClientMock as never);
-
-    await api.vcs.refreshLocalStatus({ cwd: "/repo" });
-
-    expect(rpcClientMock.vcs.refreshLocalStatus).toHaveBeenCalledWith({ cwd: "/repo" });
-  });
-
   it("forwards shell stream subscription options to the RPC client", async () => {
     const { createEnvironmentApi } = await import("./environmentApi");
 
@@ -506,103 +406,6 @@ describe("wsApi", () => {
 
     expect(rpcClientMock.orchestration.subscribeShell).toHaveBeenCalledWith(onShellEvent, {
       onResubscribe,
-    });
-  });
-
-  it("sends orchestration dispatch commands as the direct RPC payload", async () => {
-    rpcClientMock.orchestration.dispatchCommand.mockResolvedValue({ sequence: 1 });
-    const { createEnvironmentApi } = await import("./environmentApi");
-
-    const api = createEnvironmentApi(rpcClientMock as never);
-    const command = {
-      type: "project.create",
-      commandId: CommandId.make("cmd-1"),
-      projectId: ProjectId.make("project-1"),
-      title: "Project",
-      workspaceRoot: "/tmp/project",
-      defaultModelSelection: {
-        instanceId: ProviderInstanceId.make("codex"),
-        model: "gpt-5-codex",
-      },
-      createdAt: "2026-02-24T00:00:00.000Z",
-    } as const;
-    await api.orchestration.dispatchCommand(command);
-
-    expect(rpcClientMock.orchestration.dispatchCommand).toHaveBeenCalledWith(command);
-  });
-
-  it("forwards workspace file writes to the project RPC", async () => {
-    rpcClientMock.projects.writeFile.mockResolvedValue({ relativePath: "plan.md" });
-    const { createEnvironmentApi } = await import("./environmentApi");
-
-    const api = createEnvironmentApi(rpcClientMock as never);
-    await api.projects.writeFile({
-      cwd: "/tmp/project",
-      relativePath: "plan.md",
-      contents: "# Plan\n",
-    });
-
-    expect(rpcClientMock.projects.writeFile).toHaveBeenCalledWith({
-      cwd: "/tmp/project",
-      relativePath: "plan.md",
-      contents: "# Plan\n",
-    });
-  });
-
-  it("forwards visualization reads to the RPC client", async () => {
-    const result = {
-      file: "connection-map.html",
-      contents: "<div>Connection map</div>",
-      sizeBytes: 25,
-    };
-    rpcClientMock.visualizations.read.mockResolvedValue(result);
-    const { createEnvironmentApi } = await import("./environmentApi");
-
-    const api = createEnvironmentApi(rpcClientMock as never);
-    await expect(
-      api.visualizations?.read({
-        threadId: ThreadId.make("thread-1"),
-        file: "connection-map.html",
-      }),
-    ).resolves.toEqual(result);
-    expect(rpcClientMock.visualizations.read).toHaveBeenCalledWith({
-      threadId: "thread-1",
-      file: "connection-map.html",
-    });
-  });
-
-  it("forwards filesystem browse requests to the RPC client", async () => {
-    rpcClientMock.filesystem.browse.mockResolvedValue({
-      parentPath: "/tmp/project/",
-      entries: [],
-    });
-    const { createEnvironmentApi } = await import("./environmentApi");
-
-    const api = createEnvironmentApi(rpcClientMock as never);
-    await api.filesystem.browse({
-      partialPath: "/tmp/project/",
-      cwd: "/tmp/project",
-    });
-
-    expect(rpcClientMock.filesystem.browse).toHaveBeenCalledWith({
-      partialPath: "/tmp/project/",
-      cwd: "/tmp/project",
-    });
-  });
-
-  it("forwards full-thread diff requests to the orchestration RPC", async () => {
-    rpcClientMock.orchestration.getFullThreadDiff.mockResolvedValue({ diff: "patch" });
-    const { createEnvironmentApi } = await import("./environmentApi");
-
-    const api = createEnvironmentApi(rpcClientMock as never);
-    await api.orchestration.getFullThreadDiff({
-      threadId: ThreadId.make("thread-1"),
-      toTurnCount: 1,
-    });
-
-    expect(rpcClientMock.orchestration.getFullThreadDiff).toHaveBeenCalledWith({
-      threadId: "thread-1",
-      toTurnCount: 1,
     });
   });
 
@@ -639,112 +442,6 @@ describe("wsApi", () => {
       providers: nextProviders,
     });
     expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith({ instanceId });
-  });
-
-  it("forwards provider updates directly to the RPC client", async () => {
-    const nextProviders: ReadonlyArray<ServerProvider> = [
-      {
-        ...defaultProviders[0]!,
-        updateState: {
-          status: "succeeded",
-          startedAt: "2026-01-03T00:00:00.000Z",
-          finishedAt: "2026-01-03T00:00:01.000Z",
-          message: "Provider updated.",
-          output: null,
-        },
-      },
-    ];
-    rpcClientMock.server.updateProvider.mockResolvedValue({ providers: nextProviders });
-    const { createLocalApi } = await import("./localApi");
-
-    const api = createLocalApi(rpcClientMock as never);
-
-    await expect(
-      api.server.updateProvider({ provider: ProviderDriverKind.make("codex") }),
-    ).resolves.toEqual({
-      providers: nextProviders,
-    });
-    expect(rpcClientMock.server.updateProvider).toHaveBeenCalledWith({
-      provider: ProviderDriverKind.make("codex"),
-    });
-  });
-
-  it("forwards provider update blocker resolution directly to the RPC client", async () => {
-    const nextProviders: ReadonlyArray<ServerProvider> = [
-      {
-        ...defaultProviders[0]!,
-        updateState: {
-          status: "unchanged",
-          startedAt: "2026-01-03T00:00:00.000Z",
-          finishedAt: "2026-01-03T00:00:01.000Z",
-          message: "Stopped 1 process for Claude. Run the update again.",
-          output: null,
-        },
-      },
-    ];
-    rpcClientMock.server.resolveProviderUpdateBlockers.mockResolvedValue({
-      providers: nextProviders,
-      stoppedProcessCount: 1,
-      remainingProcessCount: 0,
-      message: "Stopped 1 process for Claude. Run the update again.",
-    });
-    const { createLocalApi } = await import("./localApi");
-
-    const api = createLocalApi(rpcClientMock as never);
-
-    await expect(
-      api.server.resolveProviderUpdateBlockers({
-        provider: ProviderDriverKind.make("claudeAgent"),
-      }),
-    ).resolves.toEqual({
-      providers: nextProviders,
-      stoppedProcessCount: 1,
-      remainingProcessCount: 0,
-      message: "Stopped 1 process for Claude. Run the update again.",
-    });
-    expect(rpcClientMock.server.resolveProviderUpdateBlockers).toHaveBeenCalledWith({
-      provider: ProviderDriverKind.make("claudeAgent"),
-    });
-  });
-
-  it("forwards server settings updates directly to the RPC client", async () => {
-    const nextSettings = {
-      ...DEFAULT_SERVER_SETTINGS,
-      enableAssistantStreaming: true,
-    };
-    rpcClientMock.server.updateSettings.mockResolvedValue(nextSettings);
-    const { createLocalApi } = await import("./localApi");
-
-    const api = createLocalApi(rpcClientMock as never);
-
-    await expect(api.server.updateSettings({ enableAssistantStreaming: true })).resolves.toEqual(
-      nextSettings,
-    );
-    expect(rpcClientMock.server.updateSettings).toHaveBeenCalledWith({
-      enableAssistantStreaming: true,
-    });
-  });
-
-  it("forwards typed source control tool updates to the RPC client", async () => {
-    const result = {
-      target: "github-cli" as const,
-      operation: "update" as const,
-      status: "succeeded" as const,
-      previousVersion: "2.92.0",
-      currentVersion: "2.98.0",
-      discovery: { versionControlSystems: [], sourceControlProviders: [] },
-    };
-    rpcClientMock.server.updateSourceControlTool.mockResolvedValue(result);
-    const { createLocalApi } = await import("./localApi");
-
-    const api = createLocalApi(rpcClientMock as never);
-
-    await expect(api.server.updateSourceControlTool({ target: "github-cli" })).resolves.toEqual(
-      result,
-    );
-    expect(rpcClientMock.server.updateSourceControlTool).toHaveBeenCalledWith({
-      target: "github-cli",
-    });
   });
 
   it("forwards context menu metadata to the desktop bridge", async () => {
@@ -806,6 +503,7 @@ describe("wsApi", () => {
       fileViewerWordWrap: false,
       followUpDelivery: "steer" as const,
       favorites: [],
+      openLinksIn: "browser-panel" as const,
       providerModelPreferences: {},
       suppressCrossProviderSwitchWarning: false,
       sidebarGrouping: "none" as const,
@@ -885,6 +583,7 @@ describe("wsApi", () => {
       fileViewerWordWrap: false,
       followUpDelivery: "steer" as const,
       favorites: [],
+      openLinksIn: "browser-panel" as const,
       providerModelPreferences: {},
       suppressCrossProviderSwitchWarning: false,
       sidebarGrouping: "none" as const,

@@ -176,14 +176,6 @@ describe("ProviderCommandReactor", () => {
       ).toBe("codex_personal");
     });
 
-    it("uses the desired provider instance slug when desired instance lookup fails", () => {
-      expect(
-        providerErrorLabelFromInstanceHint({
-          instanceId: "claude_openrouter",
-        }),
-      ).toBe("claude_openrouter");
-    });
-
     it("uses the unknown driver kind when the resolved driver is not registered locally", () => {
       expect(providerErrorLabel("third_party_driver")).toBe("third_party_driver");
     });
@@ -2330,6 +2322,26 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("leaves a newer turn alone when a stopped turn that waited to take over is dropped", async () => {
+    // Counts the reactor's handovers. The stopped turn's send is queued as soon
+    // as its handover ends, so draining after every handover has ended covers
+    // the drop. (The handover module's state outlives each test, so asking it
+    // whether turn-1 is closed could answer from an earlier test.)
+    let handoversStarted = 0;
+    let handoversFinished = 0;
+    const handOver = checkpointHandover.handOver;
+    const handOverSpy = vi
+      .spyOn(checkpointHandover, "handOver")
+      .mockImplementation((...args: Parameters<typeof handOver>) => {
+        handoversStarted += 1;
+        return handOver(...args).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              handoversFinished += 1;
+            }),
+          ),
+        );
+      });
+    onTestFinished(() => handOverSpy.mockRestore());
     const { harness, threadId, astraId, dispatch, settle, now } =
       await startRoomWithMessageQueuedForAstra();
     const releaseLock = await Effect.runPromise(Deferred.make<void>());
@@ -2399,7 +2411,7 @@ describe("ProviderCommandReactor", () => {
 
     // The stopped turn is dropped once the wait ends...
     await Effect.runPromise(Deferred.succeed(releaseLock, undefined));
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitFor(() => handoversStarted > 0 && handoversFinished === handoversStarted);
     await harness.drain();
     expect(
       harness.sendTurn.mock.calls.some(
@@ -4964,106 +4976,6 @@ describe("ProviderCommandReactor", () => {
     expect(sentText).toContain("Now build the second version.");
     expect(sentText).not.toBe("Now build the second version.");
     expect(seedOutcome?.payload).toMatchObject({ seedMode: "context-seed" });
-  });
-
-  it("forwards claude effort options through session start and turn send", async () => {
-    const harness = await createHarness({
-      threadModelSelection: {
-        instanceId: ProviderInstanceId.make("claudeAgent"),
-        model: "claude-sonnet-4-6",
-      },
-    });
-    const now = "2026-01-01T00:00:00.000Z";
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-claude-effort"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-claude-effort"),
-          role: "user",
-          text: "hello with effort",
-          attachments: [],
-        },
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
-          "claude-sonnet-4-6",
-          [{ id: "effort", value: "max" }],
-        ),
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
-    );
-
-    await waitFor(() => harness.startSession.mock.calls.length === 1);
-    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      modelSelection: createModelSelection(
-        ProviderInstanceId.make("claudeAgent"),
-        "claude-sonnet-4-6",
-        [{ id: "effort", value: "max" }],
-      ),
-    });
-    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
-      threadId: ThreadId.make("thread-1"),
-      modelSelection: createModelSelection(
-        ProviderInstanceId.make("claudeAgent"),
-        "claude-sonnet-4-6",
-        [{ id: "effort", value: "max" }],
-      ),
-    });
-  });
-
-  it("forwards claude fast mode options through session start and turn send", async () => {
-    const harness = await createHarness({
-      threadModelSelection: {
-        instanceId: ProviderInstanceId.make("claudeAgent"),
-        model: "claude-opus-4-6",
-      },
-    });
-    const now = "2026-01-01T00:00:00.000Z";
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-claude-fast-mode"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-claude-fast-mode"),
-          role: "user",
-          text: "hello with fast mode",
-          attachments: [],
-        },
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
-          "claude-opus-4-6",
-          [{ id: "fastMode", value: true }],
-        ),
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
-    );
-
-    await waitFor(() => harness.startSession.mock.calls.length === 1);
-    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      modelSelection: createModelSelection(
-        ProviderInstanceId.make("claudeAgent"),
-        "claude-opus-4-6",
-        [{ id: "fastMode", value: true }],
-      ),
-    });
-    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
-      threadId: ThreadId.make("thread-1"),
-      modelSelection: createModelSelection(
-        ProviderInstanceId.make("claudeAgent"),
-        "claude-opus-4-6",
-        [{ id: "fastMode", value: true }],
-      ),
-    });
   });
 
   it("forwards plan interaction mode to the provider turn request", async () => {

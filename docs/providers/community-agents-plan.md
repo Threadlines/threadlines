@@ -320,11 +320,11 @@ versions/.staging-*         a download in progress
   when no installed agent names it. The download honours `HTTPS_PROXY` and
   extra CA certificates from the environment.
 - **npm:** staged like a download: `node <npm-cli.js> install --prefix
-<staging>/payload <pkg@exact>` (never `npm.cmd`, so no shell on Windows),
+  <staging>/payload <pkg@exact>` (never `npm.cmd`, so no shell on Windows),
   then renamed (a local npm tree is relocatable). The user's npm
   configuration is kept for registry, auth, proxy and CA, and overridden
   where it would change the result: `--global=false --package-lock=true
---save=true --save-exact --no-audit --no-fund`. The managed Node's folder
+  --save=true --save-exact --no-audit --no-fund`. The managed Node's folder
   is first on `PATH` for the install and for the agent, so scripts and
   agents that call `node`, `npm` or `npx` find the same one. The package's
   `engines.node` is checked against the managed release before install; a
@@ -553,9 +553,9 @@ removed account.
   matching stream event, for an agent's request to open a sign-in page.
 - `server.removeAcpRegistryAgent { instanceId }`.
 - `ServerProvider` gains optional `community`: `{ agentId, authors,
-website, source, host, integrity, iconSvg, reportedVersionChanged,
-updateCandidate: { version, recipeDigest } | null, signIn: { methods,
-selected, canSignOut, remoteHint } }`.
+  website, source, host, integrity, iconSvg, reportedVersionChanged,
+  updateCandidate: { version, recipeDigest } | null, signIn: { methods,
+  selected, canSignOut, remoteHint } }`.
 - `@threadlines/shared/acpRegistry`: the hidden ids, the instance id rule,
   the confirm and status wording shared by web surfaces.
 
@@ -808,7 +808,7 @@ scope.
    schema is stricter than what listed agents send. `elicitation/create` is
    added by hand instead, see section 4.)
 5. Managed Node lacked a launch contract: **accepted.** `PATH`, `node
-npm-cli.js`, platforms, `engines`, proxy and CA, and each tree bound to
+   npm-cli.js`, platforms, `engines`, proxy and CA, and each tree bound to
    and leasing its Node release.
 6. A lockfile alone doesn't reproduce an npm tree, and user config can change
    the layout: **accepted.** Manifest and lock are both kept; layout options

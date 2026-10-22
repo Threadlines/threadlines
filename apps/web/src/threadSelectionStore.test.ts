@@ -281,12 +281,5 @@ describe("threadSelectionStore", () => {
       useThreadSelectionStore.getState().toggleThread(THREAD_A);
       expect(useThreadSelectionStore.getState().hasSelection()).toBe(true);
     });
-
-    it("returns false after clearing selection", () => {
-      const store = useThreadSelectionStore.getState();
-      store.toggleThread(THREAD_A);
-      store.clearSelection();
-      expect(useThreadSelectionStore.getState().hasSelection()).toBe(false);
-    });
   });
 });

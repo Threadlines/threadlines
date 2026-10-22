@@ -139,11 +139,11 @@ describe("SidebarDraftBlock", () => {
     renderDraftBlock({ onNavigateToDraft });
 
     const previews = page.getByTestId("sidebar-draft-preview");
-    await expect.element(previews.first()).toHaveTextContent("newer idea");
+    await expect.element(previews.first()).toMatchTextContent("newer idea");
     expect(await previews.all()).toHaveLength(2);
     // Only the first line of a multi-line prompt.
-    await expect.element(previews.nth(1)).toHaveTextContent("older idea");
-    await expect.element(previews.nth(1)).not.toHaveTextContent("second line");
+    await expect.element(previews.nth(1)).toMatchTextContent("older idea");
+    await expect.element(previews.nth(1)).not.toMatchTextContent("second line");
 
     await page.getByTestId("sidebar-draft-row").first().click();
 
@@ -186,20 +186,20 @@ describe("SidebarDraftBlock", () => {
     // the way the real sidebar is mounted long before a keystroke can land —
     // React commits the first render asynchronously, so typing first would let
     // the freeze capture the typed content.
-    await expect.element(page.getByTestId("visible-draft-count")).toHaveTextContent("0");
+    await expect.element(page.getByTestId("visible-draft-count")).toMatchTextContent("0");
 
     // Typing in the draft you are looking at must not push a row into the
     // sidebar under your cursor — and the count the empty state gates on must
     // agree, or "No threads yet" vanishes with no row replacing it.
     useComposerDraftStore.getState().setPrompt(draftId, "still writing this");
     await expect.element(page.getByTestId("sidebar-draft-row")).not.toBeInTheDocument();
-    await expect.element(page.getByTestId("visible-draft-count")).toHaveTextContent("0");
+    await expect.element(page.getByTestId("visible-draft-count")).toMatchTextContent("0");
 
     await page.getByTestId("leave-draft").click();
 
     await expect
       .element(page.getByTestId("sidebar-draft-preview"))
-      .toHaveTextContent("still writing this");
-    await expect.element(page.getByTestId("visible-draft-count")).toHaveTextContent("1");
+      .toMatchTextContent("still writing this");
+    await expect.element(page.getByTestId("visible-draft-count")).toMatchTextContent("1");
   });
 });

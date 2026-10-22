@@ -1,5 +1,5 @@
 import { EventId, TurnId } from "@threadlines/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
 import {
@@ -513,6 +513,36 @@ describe("other steps", () => {
     );
     // Free text that merely looks dotted is not a call.
     expect(room("package.json")).toMatchObject({ label: "Used a tool" });
+  });
+
+  it("words Claude's own tools by what they did, in the chat and in an agent's transcript", () => {
+    const step = (
+      itemType: "dynamic_tool_call" | "mcp_tool_call",
+      toolTitle: string,
+      detail: string,
+    ) => activityStepFromWorkLogEntry(entry({ itemType, toolTitle, detail }));
+    expect(step("dynamic_tool_call", "Tool call", "TaskStop: task_id=b75iow87o")).toMatchObject({
+      routine: true,
+      label: "Stopped a background task",
+    });
+    // Messaging an agent stays in view.
+    expect(
+      step("dynamic_tool_call", "Tool call", 'SendMessage: {"to":"a12bbf4fee5d91d9c"}'),
+    ).toMatchObject({ routine: false, label: "Sent a message to an agent" });
+    expect(step("dynamic_tool_call", "Tasks", "Task list")).toMatchObject({
+      label: "Looked at the task list",
+    });
+    // Claude classes its resource tools as MCP calls.
+    expect(step("mcp_tool_call", "MCP tool call", "ListMcpResourcesTool")).toMatchObject({
+      label: "Listed what its tool servers offer",
+    });
+    expect(
+      activityStepFromTranscriptTool({ id: "t1", name: "Monitor", summary: "" }),
+    ).toMatchObject({ label: "Started watching a command's output" });
+    // A tool nobody worded yet still says which it was.
+    expect(step("dynamic_tool_call", "Tool call", "SomethingNew: a=1")).toMatchObject({
+      label: "Used SomethingNew",
+    });
   });
 
   it("says an agent set a check-back when Claude schedules itself", () => {

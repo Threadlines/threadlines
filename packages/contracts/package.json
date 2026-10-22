@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "vp exec vp test run"
+    "test": "vp exec vp test run --config ../../vite.config.ts"
   },
   "dependencies": {
     "effect": "catalog:"

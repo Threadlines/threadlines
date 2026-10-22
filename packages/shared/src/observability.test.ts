@@ -12,7 +12,7 @@ import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 
 import {
   compactTraceAttributes,

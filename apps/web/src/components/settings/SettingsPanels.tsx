@@ -16,6 +16,7 @@ import {
   type AutoArchiveInactiveThreadsDays,
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
+  type LinkOpenTarget,
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
@@ -164,6 +165,11 @@ const TIMESTAMP_FORMAT_LABELS = {
   "12-hour": "12-hour",
   "24-hour": "24-hour",
 } as const;
+
+const OPEN_LINKS_IN_LABELS = {
+  "browser-panel": "Built-in browser",
+  external: "External browser",
+} as const satisfies Record<LinkOpenTarget, string>;
 
 const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
 const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
@@ -438,6 +444,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.newThreadModelSelection !== null ? ["New thread agent"] : []),
       ...(settings.newThreadRoomAgents.length > 0 ? ["New thread room"] : []),
+      ...(settings.openLinksIn !== DEFAULT_UNIFIED_SETTINGS.openLinksIn ? ["Open links in"] : []),
       ...(settings.agentBrowserSitePolicy !== DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy
         ? ["Sites agents can visit"]
         : []),
@@ -484,6 +491,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.agentThreads,
       settings.wrapUpChildThreadsOnFinish,
       settings.addProjectBaseDirectory,
+      settings.openLinksIn,
       settings.agentBrowserSitePolicy,
       settings.defaultThreadEnvMode,
       settings.diffChangesOnly,
@@ -533,6 +541,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       wrapUpThreadsOnPullRequestSettled: DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled,
       newThreadModelSelection: DEFAULT_UNIFIED_SETTINGS.newThreadModelSelection,
       newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,
+      openLinksIn: DEFAULT_UNIFIED_SETTINGS.openLinksIn,
       agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
       enableRooms: true,
       enableAgentPages: true,
@@ -622,6 +631,48 @@ function PreventSleepRow() {
           }
           aria-label="Prevent sleep during turns"
         />
+      }
+    />
+  );
+}
+
+/**
+ * Where a click on a link in a chat or terminal opens: the thread's built-in
+ * browser or the computer's own. Kept on this computer, since only the
+ * desktop app has a built-in browser.
+ */
+function OpenLinksRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Open links in"
+      description="Where chat and terminal links open. Right-click a link for the other choice."
+      resetAction={
+        settings.openLinksIn !== DEFAULT_UNIFIED_SETTINGS.openLinksIn ? (
+          <SettingResetButton
+            label="open links in"
+            onClick={() => updateSettings({ openLinksIn: DEFAULT_UNIFIED_SETTINGS.openLinksIn })}
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={settings.openLinksIn}
+          onValueChange={(value) => {
+            if (value === "browser-panel" || value === "external") {
+              updateSettings({ openLinksIn: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Open links in">
+            <SelectValue>{OPEN_LINKS_IN_LABELS[settings.openLinksIn]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="browser-panel">{OPEN_LINKS_IN_LABELS["browser-panel"]}</SelectItem>
+            <SelectItem value="external">{OPEN_LINKS_IN_LABELS.external}</SelectItem>
+          </SelectPopup>
+        </Select>
       }
     />
   );
@@ -1012,6 +1063,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         ) : null}
 
         {isPhoneSurface ? <UsageAnalyticsRow /> : null}
+        {isElectron ? <OpenLinksRow /> : null}
         {isElectron ? <AgentBrowserSitesRow /> : null}
         {isElectron && !isPhoneSurface ? <ClearBrowserDataRow /> : null}
       </SettingsSection>

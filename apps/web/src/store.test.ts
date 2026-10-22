@@ -1136,6 +1136,79 @@ describe("incremental orchestration updates", () => {
     ).toEqual([{ kind: "agent", description: "Review the diff" }]);
   });
 
+  it("keeps a room's participants while repeated shell pushes carry the same agents", () => {
+    const upsert = (updatedAt: string, leftAt: string | null = null) =>
+      ({
+        kind: "thread-upserted",
+        sequence: 2,
+        thread: {
+          id: ThreadId.make("thread-1"),
+          projectId: ProjectId.make("project-1"),
+          title: "Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-5-5",
+          },
+          runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+          interactionMode: DEFAULT_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          effectiveCwd: null,
+          goal: null,
+          latestTurn: null,
+          createdAt: "2026-02-13T00:00:00.000Z",
+          updatedAt,
+          archivedAt: null,
+          pinnedAt: null,
+          pullRequestAutoFix: false,
+          pullRequestAutoMerge: null,
+          linkedPullRequests: [],
+          // Decoded afresh on every push, as the shell stream does.
+          participants: [
+            {
+              id: ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d"),
+              handle: "agent-2",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-6.1-sol",
+              },
+              joinedAt: "2026-02-13T00:00:00.000Z",
+              leftAt,
+            },
+          ],
+          doneOverride: null,
+          lastSeenAt: null,
+          session: null,
+          latestUserMessageAt: null,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+          cumulativeDiffStat: null,
+          diffStatBaselineTurnCount: 0,
+          ...NO_CHILD_THREAD_SHELL_FIELDS,
+        },
+      }) as const;
+    const participantsOf = (state: ReturnType<typeof makeState>) =>
+      localEnvironmentStateOf(state).threadShellById[ThreadId.make("thread-1")]?.participants;
+
+    const first = applyShellEvent(
+      makeState(makeThread()),
+      upsert("2026-02-27T00:00:01.000Z"),
+      localEnvironmentId,
+    );
+    // A streaming turn pushes the shell again with only its time moved on.
+    const streamed = applyShellEvent(first, upsert("2026-02-27T00:00:02.000Z"), localEnvironmentId);
+    expect(participantsOf(streamed)).toBe(participantsOf(first));
+
+    const left = applyShellEvent(
+      streamed,
+      upsert("2026-02-27T00:00:03.000Z", "2026-02-27T00:00:03.000Z"),
+      localEnvironmentId,
+    );
+    expect(participantsOf(left)).not.toBe(participantsOf(first));
+    expect(participantsOf(left)?.[0]?.leftAt).toBe("2026-02-27T00:00:03.000Z");
+  });
+
   it("sums the thread's own turn diffs into the sidebar summary as turns land", () => {
     const state = makeState(
       makeThread({

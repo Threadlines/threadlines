@@ -38,6 +38,7 @@ import {
   OrchestrationQueuedFollowUp,
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadParticipant,
+  PositiveInt,
   OrchestrationRoomContextCursor,
   OrchestrationSideTurn,
   SideTurnId,
@@ -244,6 +245,9 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
       Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationCheckBack))),
     ),
     linkedPullRequests: Schema.fromJsonString(Schema.Array(OrchestrationThreadLinkedPullRequest)),
+    dismissedPullRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(PositiveInt))),
+    ),
     queuedFollowUps: Schema.fromJsonString(Schema.Array(OrchestrationQueuedFollowUp)),
     participants: Schema.fromJsonString(Schema.Array(OrchestrationThreadParticipant)),
     sideTurn: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn))),
@@ -807,6 +811,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pull_request_auto_fix AS "pullRequestAutoFix",
           pull_request_auto_merge AS "pullRequestAutoMerge",
           linked_pull_requests AS "linkedPullRequests",
+          dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",
@@ -870,6 +875,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pull_request_auto_fix AS "pullRequestAutoFix",
           pull_request_auto_merge AS "pullRequestAutoMerge",
           linked_pull_requests AS "linkedPullRequests",
+          dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",
@@ -935,6 +941,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pull_request_auto_fix AS "pullRequestAutoFix",
           pull_request_auto_merge AS "pullRequestAutoMerge",
           linked_pull_requests AS "linkedPullRequests",
+          dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",
@@ -1701,6 +1708,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pull_request_auto_fix AS "pullRequestAutoFix",
           pull_request_auto_merge AS "pullRequestAutoMerge",
           linked_pull_requests AS "linkedPullRequests",
+          dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
           side_turn AS "sideTurn",
@@ -2567,6 +2575,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 pullRequestAutoFix: (row.pullRequestAutoFix ?? 0) > 0,
                 pullRequestAutoMerge: row.pullRequestAutoMerge ?? null,
                 linkedPullRequests: row.linkedPullRequests ?? [],
+                ...(row.dismissedPullRequests && row.dismissedPullRequests.length > 0
+                  ? { dismissedPullRequests: row.dismissedPullRequests }
+                  : {}),
                 queuedFollowUps: row.queuedFollowUps ?? [],
                 participants: row.participants ?? [],
                 agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
@@ -2883,6 +2894,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   pullRequestAutoFix: (row.pullRequestAutoFix ?? 0) > 0,
                   pullRequestAutoMerge: row.pullRequestAutoMerge ?? null,
                   linkedPullRequests: row.linkedPullRequests ?? [],
+                  ...(row.dismissedPullRequests && row.dismissedPullRequests.length > 0
+                    ? { dismissedPullRequests: row.dismissedPullRequests }
+                    : {}),
                   queuedFollowUps: row.queuedFollowUps ?? [],
                   participants: row.participants ?? [],
                   agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
@@ -3051,6 +3065,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     pullRequestAutoFix: (row.pullRequestAutoFix ?? 0) > 0,
                     pullRequestAutoMerge: row.pullRequestAutoMerge ?? null,
                     linkedPullRequests: row.linkedPullRequests ?? [],
+                    ...(row.dismissedPullRequests && row.dismissedPullRequests.length > 0
+                      ? { dismissedPullRequests: row.dismissedPullRequests }
+                      : {}),
                     queuedFollowUps: row.queuedFollowUps ?? [],
                     participants: row.participants ?? [],
                     ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
@@ -3214,6 +3231,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   pullRequestAutoFix: (row.pullRequestAutoFix ?? 0) > 0,
                   pullRequestAutoMerge: row.pullRequestAutoMerge ?? null,
                   linkedPullRequests: row.linkedPullRequests ?? [],
+                  ...(row.dismissedPullRequests && row.dismissedPullRequests.length > 0
+                    ? { dismissedPullRequests: row.dismissedPullRequests }
+                    : {}),
                   queuedFollowUps: row.queuedFollowUps ?? [],
                   participants: row.participants ?? [],
                   ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
@@ -3510,6 +3530,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         pullRequestAutoFix: (threadRow.value.pullRequestAutoFix ?? 0) > 0,
         pullRequestAutoMerge: threadRow.value.pullRequestAutoMerge ?? null,
         linkedPullRequests: threadRow.value.linkedPullRequests ?? [],
+        ...(threadRow.value.dismissedPullRequests &&
+        threadRow.value.dismissedPullRequests.length > 0
+          ? { dismissedPullRequests: threadRow.value.dismissedPullRequests }
+          : {}),
         queuedFollowUps: threadRow.value.queuedFollowUps ?? [],
         participants: threadRow.value.participants ?? [],
         ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
@@ -3690,6 +3714,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         pullRequestAutoFix: (threadRow.value.pullRequestAutoFix ?? 0) > 0,
         pullRequestAutoMerge: threadRow.value.pullRequestAutoMerge ?? null,
         linkedPullRequests: threadRow.value.linkedPullRequests ?? [],
+        ...(threadRow.value.dismissedPullRequests &&
+        threadRow.value.dismissedPullRequests.length > 0
+          ? { dismissedPullRequests: threadRow.value.dismissedPullRequests }
+          : {}),
         queuedFollowUps: threadRow.value.queuedFollowUps ?? [],
         participants: threadRow.value.participants ?? [],
         agentRequests: threadRow.value.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,

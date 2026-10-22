@@ -148,6 +148,6 @@ describe("useDraftHeroCapable", () => {
     // drop the hero, which removes the scrollbar, which brings the hero back:
     // the pane's own size is what has to be measured.
     expect(pane.clientWidth).toBeLessThan(560);
-    await expect.element(screen.getByTestId("capable")).toHaveTextContent("true");
+    await expect.element(screen.getByTestId("capable")).toMatchTextContent("true");
   });
 });

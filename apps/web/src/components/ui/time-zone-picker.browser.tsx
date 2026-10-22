@@ -36,13 +36,15 @@ describe("TimeZonePicker", () => {
     const screen = await render(<Harness onChange={onChange} />);
     try {
       const trigger = page.getByRole("combobox", { name: "Time zone" });
-      await expect.element(trigger).toHaveTextContent(/New York \(UTC−[45]\)/u);
+      await expect.poll(() => trigger.element().textContent).toMatch(/New York \(UTC−[45]\)/u);
       await trigger.click();
 
       // The short list: this computer's zone, the viewer's, and UTC, marked.
       const options = page.getByRole("option");
       await expect.poll(() => options.elements().length).toBe(3);
-      await expect.element(options.nth(0)).toHaveTextContent(/New York · Eastern Time/u);
+      await expect
+        .poll(() => options.nth(0).element().textContent)
+        .toMatch(/New York · Eastern Time/u);
       await expect.element(options.nth(0)).toHaveTextContent("This computer");
       await expect.element(options.nth(0)).toHaveTextContent("America/New_York");
       await expect.element(options.nth(1)).toHaveTextContent("You");

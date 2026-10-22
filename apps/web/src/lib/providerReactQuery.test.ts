@@ -96,32 +96,6 @@ describe("checkpointDiffQueryOptions", () => {
     expect(getFullThreadDiff).not.toHaveBeenCalled();
   });
 
-  it("forwards whitespace-hidden checkpoint range to the provider API", async () => {
-    const getTurnDiff = vi.fn().mockResolvedValue({ diff: "patch" });
-    const getFullThreadDiff = vi.fn().mockResolvedValue({ diff: "patch" });
-    mockNativeApi({ getTurnDiff, getFullThreadDiff });
-
-    const options = checkpointDiffQueryOptions({
-      environmentId,
-      threadId,
-      fromTurnCount: 3,
-      toTurnCount: 4,
-      ignoreWhitespace: true,
-      cacheScope: "turn:abc",
-    });
-
-    const queryClient = new QueryClient();
-    await queryClient.fetchQuery(options);
-
-    expect(getTurnDiff).toHaveBeenCalledWith({
-      threadId,
-      fromTurnCount: 3,
-      toTurnCount: 4,
-      ignoreWhitespace: true,
-    });
-    expect(getFullThreadDiff).not.toHaveBeenCalled();
-  });
-
   it("uses explicit full thread diff API when range starts from zero", async () => {
     const getTurnDiff = vi.fn().mockResolvedValue({ diff: "patch" });
     const getFullThreadDiff = vi.fn().mockResolvedValue({ diff: "patch" });

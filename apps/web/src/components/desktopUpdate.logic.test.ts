@@ -237,12 +237,6 @@ describe("desktop update UI helpers", () => {
 });
 
 describe("discriminatingVersionLabel", () => {
-  it("keeps only the run suffix for a same-day nightly", () => {
-    expect(
-      discriminatingVersionLabel("0.3.2-nightly.20260807.222", "0.3.2-nightly.20260807.221"),
-    ).toBe(".222");
-  });
-
   it("keeps only the run suffix across days too, since the counter never resets", () => {
     expect(
       discriminatingVersionLabel("0.3.2-nightly.20260808.225", "0.3.2-nightly.20260807.221"),

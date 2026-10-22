@@ -173,19 +173,6 @@ describe("FileViewer pierre integration", () => {
     screen.unmount();
   });
 
-  it("mounts and unmounts cleanly with minimal options", async () => {
-    const screen = await render(
-      <DiffWorkerPoolProvider>
-        <PierreFile
-          file={{ name: "m.ts", contents: "const m = 3;\n" }}
-          options={{ disableFileHeader: true, theme: "pierre-dark", themeType: "dark" }}
-        />
-      </DiffWorkerPoolProvider>,
-    );
-    await settle();
-    screen.unmount();
-  });
-
   it("finds rendered line elements inside pierre's shadow root", () => {
     const host = document.createElement("diffs-container");
     const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: "open" });

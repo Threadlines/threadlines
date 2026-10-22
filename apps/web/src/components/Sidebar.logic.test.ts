@@ -27,12 +27,14 @@ import {
   countThreadAttention,
   familyParentKeyOf,
   groupInboxLiveRows,
+  fileInboxThreads,
   INBOX_AUTO_DONE_AFTER_DAYS,
   resolveThreadAttention,
   inboxLiveRowHasAttention,
   inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
   isThreadDone,
+  isUnreadFinishedWork,
   mergeThreadDoneOverride,
   mergeThreadLastSeenAt,
   remoteChildStatusText,
@@ -2105,5 +2107,78 @@ describe("seen-aware status", () => {
         threadSeedVisitedAtById: {},
       }).status,
     ).toBeNull();
+  });
+});
+
+describe("unread finished work", () => {
+  const NOW = "2026-07-28T12:00:00.000Z";
+  const finishedTurn = {
+    turnId: TurnId.make("turn-finished"),
+    state: "completed",
+    assistantMessageId: null,
+    requestedAt: "2026-07-28T11:00:00.000Z",
+    startedAt: "2026-07-28T11:00:00.000Z",
+    completedAt: "2026-07-28T11:30:00.000Z",
+  } satisfies OrchestrationLatestTurn;
+
+  function summary(
+    id: string,
+    overrides: Partial<SidebarThreadSummary> = {},
+  ): SidebarThreadSummary {
+    return {
+      id: ThreadId.make(id),
+      environmentId: localEnvironmentId,
+      projectId: ProjectId.make("project-1"),
+      title: id,
+      interactionMode: DEFAULT_INTERACTION_MODE,
+      session: null,
+      createdAt: "2026-07-28T10:00:00.000Z",
+      archivedAt: null,
+      pinnedAt: null,
+      doneOverride: null,
+      lastSeenAt: null,
+      latestTurn: finishedTurn,
+      branch: null,
+      worktreePath: null,
+      effectiveCwd: null,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      cumulativeDiffStat: null,
+      ...overrides,
+    };
+  }
+
+  it("counts what the inbox still shows as finished and unopened", () => {
+    const threads = [
+      summary("unread"),
+      summary("opened", { lastSeenAt: "2026-07-28T11:45:00.000Z" }),
+      // Its answer went back to the parent, whose agent read it: the inbox
+      // wraps it up, so the Dock must not ask for a visit either.
+      summary("handed-back-child", {
+        parentThreadId: ThreadId.make("opened"),
+        attachedToParent: true,
+        handedBackTurnId: finishedTurn.turnId,
+      }),
+      // Its own turn ended, but it starts again as its threads answer.
+      summary("waiting-on-children", { awaitedChildThreadCount: 1 }),
+      summary("plan-ready", { interactionMode: "plan", hasActionableProposedPlan: true }),
+    ];
+
+    const filed = fileInboxThreads({
+      threads,
+      seenSources: { seenThreadOverlays: {}, threadSeedVisitedAtById: {} },
+      doneOverlays: {},
+      now: NOW,
+      wrapUpChildThreadsOnFinish: true,
+      wrapUpIdleThreads: true,
+      pullRequestSettledAt: () => null,
+    });
+
+    expect(filed.filter(isUnreadFinishedWork).map((entry) => entry.thread.title)).toEqual([
+      "unread",
+      "plan-ready",
+    ]);
   });
 });

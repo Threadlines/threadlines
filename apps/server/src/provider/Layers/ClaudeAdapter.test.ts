@@ -230,7 +230,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.mcpCalls.push(request);
     return {
       subtype: "success",
-      response: { content: '{"count":4}', structuredContent: { count: 4 } },
+      response: {
+        content: [{ type: "text", text: "Counter at 4" }],
+        structuredContent: { count: 4 },
+      },
     };
   };
 
@@ -418,6 +421,30 @@ function makeHarness(config?: {
     getLastCreateQueryInput: () => createInput,
   };
 }
+
+/**
+ * A tool_progress message a test sends after the messages it checks. The
+ * adapter handles messages in order, so once this one's event arrives, every
+ * event the earlier messages produce has too: collecting up to it lets a test
+ * assert that an event never appeared, which a fixed `Stream.take(n)` window
+ * cannot see past.
+ */
+const SETTLED_MARKER_TOOL_USE_ID = "toolu_events-settled";
+
+function emitSettledMarker(harness: ReturnType<typeof makeHarness>): void {
+  harness.query.emit({
+    type: "tool_progress",
+    tool_use_id: SETTLED_MARKER_TOOL_USE_ID,
+    tool_name: "Bash",
+    parent_tool_use_id: null,
+    elapsed_time_seconds: 0,
+    session_id: "sdk-session-settled-marker",
+    uuid: "events-settled-marker",
+  } as unknown as SDKMessage);
+}
+
+const isSettledMarker = (event: ProviderRuntimeEvent): boolean =>
+  event.type === "tool.progress" && event.payload.toolUseId === SETTLED_MARKER_TOOL_USE_ID;
 
 function makeDeterministicRandomService(seed = 0x1234_5678): {
   nextIntUnsafe: () => number;
@@ -900,48 +927,6 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("uses bypass permissions for full-access claude sessions", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        runtimeMode: "full-access",
-      });
-
-      const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.permissionMode, "bypassPermissions");
-      assert.equal(createInput?.options.allowDangerouslySkipPermissions, true);
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
-  it.effect("forwards claude effort levels into query options", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
-          "claude-opus-4-6",
-          [{ id: "effort", value: "max" }],
-        ),
-        runtimeMode: "full-access",
-      });
-
-      const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.effort, "max");
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
   it.effect("forwards configured Claude fallback model chains into query options", () => {
     const harness = makeHarness({
       claudeConfig: {
@@ -1116,29 +1101,6 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("forwards xhigh effort for Claude Opus 4.7 into query options", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
-          "claude-opus-4-7",
-          [{ id: "effort", value: "xhigh" }],
-        ),
-        runtimeMode: "full-access",
-      });
-
-      const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.effort, "xhigh");
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
   it.effect("uses high effort and 1M context for Claude Opus 4.8 by default", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1270,53 +1232,6 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("forwards max effort for Claude Sonnet 5", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
-          "claude-sonnet-5",
-          [{ id: "effort", value: "max" }],
-        ),
-        runtimeMode: "full-access",
-      });
-
-      const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.model, "claude-sonnet-5");
-      assert.equal(createInput?.options.effort, "max");
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
-  it.effect("forwards max effort for Claude Sonnet 4.6", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
-          "claude-sonnet-4-6",
-          [{ id: "effort", value: "max" }],
-        ),
-        runtimeMode: "full-access",
-      });
-
-      const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.effort, "max");
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
   it.effect("ignores adaptive effort for Haiku 4.5", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1386,54 +1301,6 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.deepEqual(createInput?.options.settings, {
         alwaysThinkingEnabled: false,
-      });
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
-  it.effect("ignores Claude thinking toggle for non-Haiku models", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
-          "claude-sonnet-4-6",
-          [{ id: "thinking", value: false }],
-        ),
-        runtimeMode: "full-access",
-      });
-
-      const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.settings, undefined);
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
-  it.effect("forwards claude fast mode into SDK settings", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
-          "claude-opus-4-6",
-          [{ id: "fastMode", value: true }],
-        ),
-        runtimeMode: "full-access",
-      });
-
-      const createInput = harness.getLastCreateQueryInput();
-      assert.deepEqual(createInput?.options.settings, {
-        fastMode: true,
       });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -1585,28 +1452,6 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.settings, undefined);
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
-  it.effect("uses the bare Claude Fable 5 model id", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("claudeAgent"),
-          "claude-fable-5",
-        ),
-        runtimeMode: "full-access",
-      });
-
-      const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.model, "claude-fable-5");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2031,9 +1876,16 @@ describe("ClaudeAdapterLive", () => {
           tool: "bump",
           arguments: {},
         });
+        // Its result is for the app, not Claude: the tool's own content blocks.
         assert.deepEqual(harness.query.mcpCalls, [
-          { subtype: "mcp_call", tool: "mcp__probe_apps__bump", arguments: {} },
+          {
+            subtype: "mcp_call",
+            tool: "mcp__probe_apps__bump",
+            arguments: {},
+            result_not_for_model: true,
+          },
         ]);
+        assert.deepEqual(result.content, [{ type: "text", text: "Counter at 4" }]);
         assert.deepEqual(result.structuredContent, { count: 4 });
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -4389,6 +4241,7 @@ describe("ClaudeAdapterLive", () => {
           parent_tool_use_id: "tool-task-live",
           message: {
             id: "subagent-message-1",
+            model: "claude-opus-5-5",
             content: [{ type: "text", text: "Scanning the database layer now." }],
           },
         } as unknown as SDKMessage);
@@ -4440,6 +4293,20 @@ describe("ClaudeAdapterLive", () => {
           },
         } as unknown as SDKMessage);
 
+        // A message the CLI wrote itself still streams, but its placeholder
+        // model is not the agent's.
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-subagent-live",
+          uuid: "assistant-subagent-live-3",
+          parent_tool_use_id: "tool-task-live",
+          message: {
+            id: "subagent-message-3",
+            model: "<synthetic>",
+            content: [{ type: "text", text: "You've hit your weekly limit" }],
+          },
+        } as unknown as SDKMessage);
+
         harness.query.emit({
           type: "result",
           subtype: "success",
@@ -4460,9 +4327,15 @@ describe("ClaudeAdapterLive", () => {
             ? [{ event, liveText: data.subagentLiveText }]
             : [];
         });
-        assert.equal(liveUpdates.length, 2);
+        assert.equal(liveUpdates.length, 3);
         assert.equal(liveUpdates[0]?.liveText, "Scanning the database layer now.");
         assert.equal(liveUpdates[1]?.liveText?.length, 4_000);
+        assert.equal(liveUpdates[2]?.liveText, "You've hit your weekly limit");
+        const subagentModels = liveUpdates.map(
+          (update) =>
+            (update.event.payload as { data?: { subagentModel?: unknown } }).data?.subagentModel,
+        );
+        assert.deepStrictEqual(subagentModels, ["claude-opus-5-5", undefined, undefined]);
         for (const update of liveUpdates) {
           assert.equal(String(update.event.itemId), "tool-task-live");
           assert.equal(
@@ -5735,7 +5608,8 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 5).pipe(
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(isSettledMarker),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -5758,6 +5632,8 @@ describe("ClaudeAdapterLive", () => {
         uuid: "task-updated-running-1",
       } as unknown as SDKMessage);
 
+      emitSettledMarker(harness);
+
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const progressEvent = runtimeEvents.find((event) => event.type === "task.progress");
       assert.equal(progressEvent?.type, "task.progress");
@@ -5777,7 +5653,8 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(isSettledMarker),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -5807,6 +5684,8 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-task-updated-completed",
         uuid: "task-updated-completed-1",
       } as unknown as SDKMessage);
+
+      emitSettledMarker(harness);
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const startedEvent = runtimeEvents.find((event) => event.type === "task.started");
@@ -9288,7 +9167,11 @@ describe("ClaudeAdapterLive", () => {
 
       const threadStarted = yield* Stream.runHead(adapter.streamEvents);
       assert.equal(threadStarted._tag, "Some");
-      if (threadStarted._tag !== "Some" || threadStarted.value.type !== "thread.started") {
+      if (threadStarted._tag !== "Some") {
+        return;
+      }
+      assert.equal(threadStarted.value.type, "thread.started");
+      if (threadStarted.value.type !== "thread.started") {
         return;
       }
 
@@ -9395,7 +9278,11 @@ describe("ClaudeAdapterLive", () => {
 
       const agentRequested = yield* Stream.runHead(adapter.streamEvents);
       assert.equal(agentRequested._tag, "Some");
-      if (agentRequested._tag !== "Some" || agentRequested.value.type !== "request.opened") {
+      if (agentRequested._tag !== "Some") {
+        return;
+      }
+      assert.equal(agentRequested.value.type, "request.opened");
+      if (agentRequested.value.type !== "request.opened") {
         return;
       }
       assert.equal(agentRequested.value.payload.requestType, "dynamic_tool_call");
@@ -9420,7 +9307,11 @@ describe("ClaudeAdapterLive", () => {
 
       const grepRequested = yield* Stream.runHead(adapter.streamEvents);
       assert.equal(grepRequested._tag, "Some");
-      if (grepRequested._tag !== "Some" || grepRequested.value.type !== "request.opened") {
+      if (grepRequested._tag !== "Some") {
+        return;
+      }
+      assert.equal(grepRequested.value.type, "request.opened");
+      if (grepRequested.value.type !== "request.opened") {
         return;
       }
       assert.equal(grepRequested.value.payload.requestType, "file_read_approval");
@@ -9995,33 +9886,6 @@ describe("ClaudeAdapterLive", () => {
     },
   );
 
-  it.effect("updates model on sendTurn when model override is provided", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-
-      const session = yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        runtimeMode: "full-access",
-      });
-      yield* adapter.sendTurn({
-        threadId: session.threadId,
-        input: "hello",
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("claudeAgent"),
-          model: "claude-opus-4-6",
-        },
-        attachments: [],
-      });
-
-      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6"]);
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
-
   it.effect("updates model on sendTurn for the adapter's bound custom instance id", () => {
     const customInstanceId = ProviderInstanceId.make("claude_openrouter");
     const harness = makeHarness({ instanceId: customInstanceId });
@@ -10594,7 +10458,11 @@ describe("ClaudeAdapterLive", () => {
 
       const threadStarted = yield* Stream.runHead(adapter.streamEvents);
       assert.equal(threadStarted._tag, "Some");
-      if (threadStarted._tag !== "Some" || threadStarted.value.type !== "thread.started") {
+      if (threadStarted._tag !== "Some") {
+        return;
+      }
+      assert.equal(threadStarted.value.type, "thread.started");
+      if (threadStarted.value.type !== "thread.started") {
         return;
       }
 

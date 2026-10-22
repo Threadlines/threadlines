@@ -33,6 +33,7 @@ const clientSettings: ClientSettings = {
   fileViewerWordWrap: false,
   followUpDelivery: "steer",
   favorites: [],
+  openLinksIn: "browser-panel",
   providerModelPreferences: {},
   suppressCrossProviderSwitchWarning: false,
   sidebarGrouping: "none",

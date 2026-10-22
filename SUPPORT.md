@@ -1,8 +1,8 @@
 # Support Threadlines
 
-Threadlines is free and open source. The primary ways to help are reporting
-reproducible bugs, improving documentation, testing releases, and contributing
-focused pull requests.
+Threadlines is free and open source. You can help by reporting bugs, testing
+releases, improving the docs, or sending pull requests, from small fixes to new
+features. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Project support
 

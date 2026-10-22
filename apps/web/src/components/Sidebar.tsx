@@ -46,6 +46,7 @@ import { readLocalApi } from "../localApi";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { type InboxEntry, useInboxThreads } from "../hooks/useInboxThreads";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../hooks/useRelativeTimeTick";
 import {
@@ -241,17 +242,6 @@ function threadRefsFromKeyList(keyList: string): ScopedThreadRef[] {
     const ref = threadKey ? parseScopedThreadKey(threadKey) : null;
     return ref ? [ref] : [];
   });
-}
-
-interface InboxEntry {
-  thread: SidebarThreadSummary;
-  threadKey: string;
-  status: ThreadStatusPill | null;
-  projectKey: string;
-  projectLabel: string | null;
-  isDone: boolean;
-  canMarkDone: boolean;
-  doneAt: string | null;
 }
 
 /** A run of live rows, under a group header while the inbox is grouped. */
@@ -472,32 +462,22 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
  * nothing has to be traced back to a group header.
  */
 export default function Sidebar() {
-  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  const {
+    projects,
+    sidebarThreads,
+    sidebarProjects,
+    sidebarProjectByKey,
+    resolveProjectKeyForRef,
+    generalChatProjectKeys,
+    inboxThreads,
+    openPullRequests,
+    settledPullRequestEntries,
+    pullRequestByThreadKey,
+    nowIso,
+    entries,
+  } = useInboxThreads();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
-  // One listing for the whole sidebar: the Pull Requests row's count and every
-  // thread row's badge read the same answer, so a poll costs one request.
-  const openPullRequests = usePullRequestLists({
-    state: "open",
-    refetchIntervalMs: PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
-  });
-  // What has landed. A merged or closed pull request files its thread under
-  // Wrapped, and it is the only thing that knows: the open listing simply
-  // stops carrying the row. A branch does not un-merge, so these poll slowly.
-  const mergedPullRequests = usePullRequestLists({
-    state: "merged",
-    refetchIntervalMs: PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
-  });
-  const closedPullRequests = usePullRequestLists({
-    state: "closed",
-    refetchIntervalMs: PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
-  });
-  const seenThreadOverlays = useUiStateStore((store) => store.seenThreadOverlays);
-  const threadSeedVisitedAtById = useUiStateStore((store) => store.threadSeedVisitedAtById);
   const doneThreadOverlays = useUiStateStore((store) => store.doneThreadOverlays);
-  const threadWrapUpOnPullRequestSettledById = useUiStateStore(
-    (store) => store.threadWrapUpOnPullRequestSettledById,
-  );
   const childThreadFamilyOpenById = useUiStateStore((store) => store.childThreadFamilyOpenById);
   const setChildThreadFamilyOpen = useUiStateStore((store) => store.setChildThreadFamilyOpen);
   const inboxProjectScopeKey = useUiStateStore((store) => store.inboxProjectScopeKey);
@@ -508,10 +488,6 @@ export default function Sidebar() {
   const setInboxGroupCollapsed = useUiStateStore((store) => store.setInboxGroupCollapsed);
   const navigate = useNavigate();
   const selectedDestination = useSelectedDestination();
-  const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
-  const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
-  const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
-  const wrapUpIdleThreads = useSettings((s) => s.wrapUpIdleThreads);
   const sidebarGroupingSetting = useSettings((s) => s.sidebarGrouping);
   const { updateSettings } = useUpdateSettings();
   const roomsEnabled = useRoomsEnabled();
@@ -567,8 +543,6 @@ export default function Sidebar() {
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
   const confirmArchiveButtonRefs = useRef(new Map<string, HTMLButtonElement>());
-  const nowMs = useRelativeTimeTick(INBOX_CLOCK_INTERVAL_MS);
-  const nowIso = useMemo(() => new Date(nowMs).toISOString(), [nowMs]);
 
   const { copyToClipboard: copyThreadIdToClipboard } = useCopyToClipboard<{ threadId: ThreadId }>({
     onCopy: (ctx) => {
@@ -603,29 +577,6 @@ export default function Sidebar() {
     },
   });
 
-  const physicalToLogicalKey = useMemo(
-    () =>
-      buildPhysicalToLogicalProjectKeyMap({
-        projects,
-        settings: projectGroupingSettings,
-      }),
-    [projects, projectGroupingSettings],
-  );
-  const projectPhysicalKeyByScopedRef = useMemo(
-    () =>
-      new Map(
-        projects.map((project) => [
-          scopedProjectKey(scopeProjectRef(project.environmentId, project.id)),
-          derivePhysicalProjectKey(project),
-        ]),
-      ),
-    [projects],
-  );
-  const sidebarProjects = useSidebarProjectSnapshots();
-  const sidebarProjectByKey = useMemo(
-    () => new Map(sidebarProjects.map((project) => [project.projectKey, project] as const)),
-    [sidebarProjects],
-  );
   const sidebarThreadByKey = useMemo(
     () =>
       new Map(
@@ -641,77 +592,12 @@ export default function Sidebar() {
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
   sidebarThreadByKeyRef.current = sidebarThreadByKey;
 
-  const resolveProjectKeyForRef = useCallback(
-    (projectRef: ScopedProjectRef) => {
-      const scopedRef = scopedProjectKey(projectRef);
-      const physicalKey = projectPhysicalKeyByScopedRef.get(scopedRef) ?? scopedRef;
-      return physicalToLogicalKey.get(physicalKey) ?? physicalKey;
-    },
-    [physicalToLogicalKey, projectPhysicalKeyByScopedRef],
-  );
-  const resolveThreadProjectKey = useCallback(
-    (thread: SidebarThreadSummary) =>
-      resolveProjectKeyForRef(scopeProjectRef(thread.environmentId, thread.projectId)),
-    [resolveProjectKeyForRef],
-  );
-
-  // General chats belong to no project and have their own page (the rail's
-  // General Chats, which counts what in them needs the user); they never
-  // join the inbox, which is the list of project work.
-  const generalChatProjectKeys = useMemo(
-    () =>
-      new Set(
-        sidebarProjects
-          .filter((project) => project.kind === "general-chat")
-          .map((project) => project.projectKey),
-      ),
-    [sidebarProjects],
-  );
-  const inboxThreads = useMemo(
-    () =>
-      sidebarThreads.filter(
-        (thread) =>
-          thread.archivedAt === null &&
-          !generalChatProjectKeys.has(resolveThreadProjectKey(thread)),
-      ),
-    [generalChatProjectKeys, resolveThreadProjectKey, sidebarThreads],
-  );
   const hasWorkspaceProjects = sidebarProjects.some((project) => project.kind !== "general-chat");
   // Until the first workspace snapshot arrives an empty list means "not loaded",
   // not "nothing here" — a paired phone would otherwise be told it has no
   // projects for the second before its projects appear.
   const bootstrapComplete = useStore(selectBootstrapCompleteForActiveEnvironment);
 
-  // What the listings know about each inbox thread, built once for the whole
-  // sidebar: the row badges read it, and so does the rule that files a thread
-  // whose branch has landed. Rows still consult their own git status for the
-  // branch they are standing on; this is the answer for the ones that moved.
-  const settledPullRequestEntries = useMemo(
-    () => [...mergedPullRequests.entries, ...closedPullRequests.entries],
-    [closedPullRequests.entries, mergedPullRequests.entries],
-  );
-  const pullRequestByThreadKey = useMemo(() => {
-    const byThreadKey = new Map<string, ThreadPullRequest>();
-    if (openPullRequests.entries.length === 0 && settledPullRequestEntries.length === 0) {
-      return byThreadKey;
-    }
-    for (const thread of inboxThreads) {
-      const pullRequest = resolveThreadPullRequest({
-        thread,
-        gitStatus: null,
-        openEntries: openPullRequests.entries,
-        settledEntries: settledPullRequestEntries,
-        projects,
-      });
-      if (pullRequest) {
-        byThreadKey.set(
-          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-          pullRequest,
-        );
-      }
-    }
-    return byThreadKey;
-  }, [inboxThreads, openPullRequests.entries, projects, settledPullRequestEntries]);
   // The pull requests each thread's agent opened on other branches, from the
   // same listings. A row's tag shows one pull request and counts the rest.
   const linkedPullRequestsByThreadKey = useMemo(() => {
@@ -739,99 +625,6 @@ export default function Sidebar() {
     projects,
     pullRequestByThreadKey,
     settledPullRequestEntries,
-  ]);
-
-  const entries = useMemo<InboxEntry[]>(() => {
-    const prepared = inboxThreads.map((thread) => {
-      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      const { lastVisitedAt, status } = resolveSeenThreadStatus(thread, threadKey, {
-        seenThreadOverlays,
-        threadSeedVisitedAtById,
-      });
-      const override = mergeThreadDoneOverride(doneThreadOverlays[threadKey], thread.doneOverride);
-      return { thread, threadKey, lastVisitedAt, status, override };
-    });
-    const preparedByKey = new Map(prepared.map((item) => [item.threadKey, item] as const));
-    // A child's wrap-up reads its parent's, so each answer is worked out once
-    // and parents are asked first. Families are one level deep; `visiting`
-    // only guards against a loop the server should never let happen. A child
-    // on another computer wraps with its parent like any other.
-    const doneByKey = new Map<string, boolean>();
-    const resolveDone = (item: (typeof prepared)[number], visiting: ReadonlySet<string>) => {
-      const known = doneByKey.get(item.threadKey);
-      if (known !== undefined) return known;
-      const parentKey = wrapUpChildThreadsOnFinish ? familyParentKeyOf(item.thread) : null;
-      const parent = parentKey === null ? undefined : preparedByKey.get(parentKey);
-      const childWrapUp =
-        parentKey === null
-          ? null
-          : {
-              parentDone:
-                parent !== undefined && !visiting.has(parent.threadKey)
-                  ? resolveDone(parent, new Set([...visiting, item.threadKey]))
-                  : false,
-            };
-      const isDone = isThreadDone(
-        { ...item.thread, lastVisitedAt: item.lastVisitedAt },
-        item.override,
-        {
-          now: nowIso,
-          // "Wrap up idle threads" off: nothing files itself for sitting still.
-          autoDoneAfterDays: wrapUpIdleThreads ? INBOX_AUTO_DONE_AFTER_DAYS : null,
-          // The thread's own word wins over the app setting. It waits for every
-          // pull request the thread has, its own and the ones its agent opened
-          // elsewhere. A landing the host did not date is taken as now, which
-          // files the thread the way it always did.
-          pullRequestSettledAt:
-            (threadWrapUpOnPullRequestSettledById[item.threadKey] ?? wrapUpOnPullRequestSettled)
-              ? resolveThreadPullRequestsSettledAt({
-                  thread: item.thread,
-                  own: pullRequestByThreadKey.get(item.threadKey),
-                  projects,
-                  settledEntries: settledPullRequestEntries,
-                  now: nowIso,
-                })
-              : null,
-          childWrapUp,
-        },
-      );
-      doneByKey.set(item.threadKey, isDone);
-      return isDone;
-    };
-    return prepared.map(({ thread, threadKey, lastVisitedAt, status, override }) => {
-      const projectKey = resolveThreadProjectKey(thread);
-      const isDone = resolveDone(preparedByKey.get(threadKey)!, new Set());
-      return {
-        thread,
-        threadKey,
-        status,
-        projectKey,
-        projectLabel: sidebarProjectByKey.get(projectKey)?.displayName ?? null,
-        isDone,
-        // A pinned row never offers the wrap-up check: the pin says "keep
-        // this here", and a hover affordance that files it away contradicts
-        // it. Unpinning brings the action back.
-        canMarkDone:
-          thread.pinnedAt === null &&
-          canMarkThreadDone({ ...thread, lastVisitedAt }, { now: nowIso }),
-        doneAt: isDone ? resolveDoneTimestamp(thread, override) : null,
-      };
-    });
-  }, [
-    doneThreadOverlays,
-    inboxThreads,
-    nowIso,
-    projects,
-    pullRequestByThreadKey,
-    resolveThreadProjectKey,
-    settledPullRequestEntries,
-    seenThreadOverlays,
-    sidebarProjectByKey,
-    wrapUpChildThreadsOnFinish,
-    wrapUpIdleThreads,
-    wrapUpOnPullRequestSettled,
-    threadSeedVisitedAtById,
-    threadWrapUpOnPullRequestSettledById,
   ]);
 
   // Every machine the inbox knows about: this device, plus whatever has been

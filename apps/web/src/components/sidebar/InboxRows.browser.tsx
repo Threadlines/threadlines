@@ -138,7 +138,7 @@ describe("InboxThreadRow pull request badge", () => {
     const { openPrLink } = renderRow(OPEN_PULL_REQUEST);
 
     const badge = page.getByTestId("inbox-thread-pr-badge");
-    await expect.element(badge).toHaveTextContent("#123");
+    await expect.element(badge).toMatchTextContent("#123");
     await expect
       .element(badge)
       .toHaveAttribute("aria-label", "#123 PR open: Add the pull requests page");
@@ -161,7 +161,7 @@ describe("InboxThreadRow pull request badge", () => {
     );
 
     const badge = page.getByTestId("inbox-thread-pr-badge");
-    await expect.element(badge).toHaveTextContent("#294+1");
+    await expect.element(badge).toMatchTextContent("#294+1");
     await expect
       .element(badge)
       .toHaveAttribute(
@@ -270,7 +270,7 @@ describe("child thread families in the inbox", () => {
     );
 
     const line = page.getByTestId(`thread-family-${THREAD_ID}`);
-    await expect.element(line).toHaveTextContent("3 threads · 1 needs you");
+    await expect.element(line).toMatchTextContent("3 threads · 1 needs you");
     await expect.element(line).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(line);
     expect(onToggleFamily).toHaveBeenCalledWith(`${ENVIRONMENT_ID}:${THREAD_ID}`);
@@ -328,11 +328,11 @@ describe("child thread families in the inbox", () => {
 
     // Where the project name usually sits, the row says where it came from.
     const detail = page.getByTestId(`thread-detail-${child.id}`);
-    await expect.element(detail).toHaveTextContent("Ship the 0.6 release");
-    await expect.element(detail).not.toHaveTextContent("threadlines");
+    await expect.element(detail).toMatchTextContent("Ship the 0.6 release");
+    await expect.element(detail).not.toMatchTextContent("threadlines");
 
     // A child row is a row the keyboard jumps to, so it shows its shortcut too.
-    await expect.element(page.getByTestId("child-meta-thread-jump-child")).toHaveTextContent("⌘4");
+    await expect.element(page.getByTestId("child-meta-thread-jump-child")).toMatchTextContent("⌘4");
 
     await page.getByTestId("child-row-thread-wrapped-child").hover();
     await userEvent.click(page.getByTestId("child-reopen-thread-wrapped-child"));
@@ -605,11 +605,11 @@ describe("InboxThreadRow background wait", () => {
 
     await expect
       .element(page.getByTestId(`thread-meta-${THREAD_ID}`))
-      .toHaveTextContent(/2 agents/);
+      .toMatchTextContent(/2 agents/);
 
     await page.getByTestId(`thread-title-${THREAD_ID}`).hover();
     const card = page.getByTestId("thread-hover-card");
-    await expect.element(card).toHaveTextContent(/Waiting on 2\sagents and 1\scommand/);
-    await expect.element(card).toHaveTextContent(/Watch CI run until completion/);
+    await expect.element(card).toMatchTextContent(/Waiting on 2\sagents and 1\scommand/);
+    await expect.element(card).toMatchTextContent(/Watch CI run until completion/);
   });
 });

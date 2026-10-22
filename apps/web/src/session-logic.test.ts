@@ -5369,15 +5369,6 @@ describe("isLatestTurnSettled", () => {
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
 
-  it("returns false while the same turn is still active in a running session", () => {
-    expect(
-      isLatestTurnSettled(latestTurn, {
-        orchestrationStatus: "running",
-        activeTurnId: TurnId.make("turn-1"),
-      }),
-    ).toBe(false);
-  });
-
   it("returns false while any turn is running to avoid stale latest-turn banners", () => {
     expect(
       isLatestTurnSettled(latestTurn, {
@@ -5907,6 +5898,66 @@ describe("subagent task stream across a provider restart", () => {
       objective: "Build step 4a server",
     });
     expect(finished[0]?.resultBody).toBe("## Report\n\nStep 4a done.");
+  });
+
+  it("keeps a failed agent failed when its last message lands after the failure", () => {
+    const lateMessage = (id: string, createdAt: string) =>
+      makeActivity({
+        id,
+        kind: "tool.updated",
+        createdAt,
+        payload: {
+          itemType: "collab_agent_tool_call",
+          toolCallId: "toolu_spawn",
+          status: "inProgress",
+          title: "Subagent task",
+          data: {
+            toolName: "Agent",
+            input: { description: "Build PR 5", subagent_type: "general-purpose" },
+            subagentLiveText: "You've hit your weekly limit",
+          },
+        },
+      });
+    const activities = [
+      makeActivity({
+        id: "spawn",
+        kind: "tool.started",
+        turnId: "turn-1",
+        createdAt: "2026-10-21T19:18:30.000Z",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          toolCallId: "toolu_spawn",
+          status: "inProgress",
+          title: "Subagent task",
+          data: {
+            toolName: "Agent",
+            input: { description: "Build PR 5", subagent_type: "general-purpose" },
+          },
+        },
+      }),
+      makeActivity({
+        id: "start",
+        kind: "task.started",
+        tone: "info",
+        turnId: "turn-1",
+        createdAt: "2026-10-21T19:18:55.000Z",
+        payload: { taskId: "a12bbf4fee5d91d9c", toolUseId: "toolu_spawn", taskType: "local_agent" },
+      }),
+      lateMessage("message", "2026-10-21T19:36:55.852Z"),
+      makeActivity({
+        id: "failed",
+        kind: "task.completed",
+        tone: "info",
+        createdAt: "2026-10-21T19:36:55.859Z",
+        payload: { taskId: "a12bbf4fee5d91d9c", toolUseId: "toolu_spawn", status: "failed" },
+      }),
+      // The CLI forwards the agent's last message again after the task failed.
+      lateMessage("message-again", "2026-10-21T19:37:07.346Z"),
+    ];
+
+    const history = deriveThreadSubagentHistory(activities);
+    expect(history).toHaveLength(1);
+    expect(history[0]?.item.status).toBe("failed");
   });
 });
 

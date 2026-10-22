@@ -3,6 +3,7 @@ import "../index.css";
 import {
   EnvironmentId,
   type LocalApi,
+  SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE,
   type SourceControlDiscoveryResult,
   type SourceControlSetupState,
   type SourceControlToolUpdateResult,
@@ -159,13 +160,26 @@ describe("SourceControlToolUpdateLaunchNotification", () => {
 
   it("starts outside Settings and keeps progress across pages without opening Source Control", async () => {
     let resolveUpdate!: (result: SourceControlToolUpdateResult) => void;
+    let setup = IDLE_SETUP;
     const updateSourceControlTool = vi.fn(
       () =>
         new Promise<SourceControlToolUpdateResult>((resolve) => {
+          // Like the server, report the job as queued from the moment it is
+          // asked for, while it checks the tool may update.
+          setup = {
+            ...IDLE_SETUP,
+            tools: [
+              {
+                target: "github-cli",
+                operation: "update",
+                status: "queued",
+                message: SOURCE_CONTROL_TOOL_PREFLIGHT_MESSAGE,
+              },
+            ],
+          };
           resolveUpdate = resolve;
         }),
     );
-    let setup = IDLE_SETUP;
     window.nativeApi = {
       server: {
         discoverSourceControl: async () => BEHIND_LATEST,

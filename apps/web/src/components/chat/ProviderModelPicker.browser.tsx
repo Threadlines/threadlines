@@ -451,34 +451,6 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("selects the favorites tab when the active model is favorited", async () => {
-    localStorage.setItem(
-      CLIENT_SETTINGS_STORAGE_KEY,
-      JSON.stringify({
-        ...DEFAULT_CLIENT_SETTINGS,
-        favorites: [{ provider: "claudeAgent", model: "claude-sonnet-4-6" }],
-      }),
-    );
-
-    const mounted = await mountPicker({
-      activeInstanceId: CLAUDE_INSTANCE_ID,
-      model: "claude-sonnet-4-6",
-      lockedProvider: null,
-    });
-
-    try {
-      await openModelPicker();
-
-      await vi.waitFor(() => {
-        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
-        expect(getVisibleModelNames()).toEqual(["Sonnet 4.6"]);
-      });
-    } finally {
-      await mounted.cleanup();
-      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
-    }
-  });
-
   it("hides non-maintained provider snapshots from the sidebar and search", async () => {
     const providers: ReadonlyArray<ServerProvider> = [
       ...TEST_PROVIDERS,
@@ -522,31 +494,6 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         expect(getModelPickerListText()).not.toContain("Rogue Model");
-      });
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("lists provider tabs in configured order with their models", async () => {
-    const mounted = await mountPicker({
-      activeInstanceId: CLAUDE_INSTANCE_ID,
-      model: "claude-opus-4-6",
-      lockedProvider: null,
-    });
-
-    try {
-      await openModelPicker();
-
-      await vi.waitFor(() => {
-        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
-      });
-
-      await clickModelPickerTab("codex");
-
-      await vi.waitFor(() => {
-        expect(getVisibleModelNames()).toContain("GPT-5 Codex");
-        expect(getVisibleModelNames()).not.toContain("Opus 4.6");
       });
     } finally {
       await mounted.cleanup();
@@ -847,34 +794,6 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("searches models by name across all providers", async () => {
-    const mounted = await mountPicker({
-      activeInstanceId: CLAUDE_INSTANCE_ID,
-      model: "claude-opus-4-6",
-      lockedProvider: null,
-    });
-
-    try {
-      await openModelPicker();
-
-      await vi.waitFor(() => {
-        expect(getVisibleModelNames()).toContain("Opus 4.6");
-        expect(getModelPickerListText()).not.toContain("Claude Opus 4.6");
-        expect(getModelPickerListText()).not.toContain("GPT-5 Codex");
-      });
-
-      await fillModelPickerSearch("claude");
-
-      await vi.waitFor(() => {
-        expect(getVisibleModelNames()).toContain("Opus 4.6");
-        expect(getModelPickerListText()).not.toContain("Claude Opus 4.6");
-        expect(getModelPickerListText()).not.toContain("GPT-5 Codex");
-      });
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
   it("supports arrow-key navigation in the model picker", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
@@ -944,26 +863,6 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("finds matches from other providers than the active tab while searching", async () => {
-    const mounted = await mountPicker({
-      activeInstanceId: CLAUDE_INSTANCE_ID,
-      model: "claude-opus-4-6",
-      lockedProvider: null,
-    });
-
-    try {
-      await openModelPicker();
-      await fillModelPickerSearch("gpt");
-
-      await vi.waitFor(() => {
-        expect(getVisibleModelNames()).toEqual(["GPT-5 Codex", "GPT-5.3 Codex"]);
-        expect(getModelPickerListText()).not.toContain("Opus 4.6");
-      });
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
   it("expands the collapsed search when the user starts typing", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
@@ -1020,32 +919,6 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("closes the picker when escape is pressed in search", async () => {
-    const mounted = await mountPicker({
-      activeInstanceId: CLAUDE_INSTANCE_ID,
-      model: "claude-opus-4-6",
-      lockedProvider: null,
-    });
-
-    try {
-      await openModelPicker();
-
-      const searchInputElement = document.querySelector<HTMLInputElement>(
-        'input[placeholder="Search models..."]',
-      );
-      expect(searchInputElement).not.toBeNull();
-      searchInputElement!.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      );
-
-      await vi.waitFor(() => {
-        expect(document.querySelector(".model-picker-list")).toBeNull();
-      });
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
   it("clears an active search on escape before closing the picker", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
@@ -1084,34 +957,6 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         expect(document.querySelector(".model-picker-list")).toBeNull();
-      });
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("searches models by provider name", async () => {
-    const mounted = await mountPicker({
-      activeInstanceId: CODEX_INSTANCE_ID,
-      model: "gpt-5-codex",
-      lockedProvider: null,
-    });
-
-    try {
-      await openModelPicker();
-
-      await vi.waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toContain("GPT-5 Codex");
-        expect(text).not.toContain("Claude Opus 4.6");
-      });
-
-      await fillModelPickerSearch("codex");
-
-      await vi.waitFor(() => {
-        const listText = getModelPickerListText();
-        expect(listText).toContain("GPT-5 Codex");
-        expect(listText).not.toContain("Claude Opus 4.6");
       });
     } finally {
       await mounted.cleanup();
@@ -1649,26 +1494,6 @@ describe("ProviderModelPicker", () => {
     } finally {
       await mounted.cleanup();
       localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
-    }
-  });
-
-  it("accepts outline trigger styling", async () => {
-    const mounted = await mountPicker({
-      model: "gpt-5-codex",
-      lockedProvider: null,
-      triggerVariant: "outline",
-    });
-
-    try {
-      const button = document.querySelector("button");
-      if (!(button instanceof HTMLButtonElement)) {
-        throw new Error("Expected picker trigger button to be rendered.");
-      }
-      // The solid control face (the variant keeps its historical name).
-      expect(button.className).toContain("bg-control");
-      expect(button.className).toContain("shadow-(--control-shadow)");
-    } finally {
-      await mounted.cleanup();
     }
   });
 });

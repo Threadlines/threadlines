@@ -84,6 +84,7 @@ function makeFakeBrowserWindow(input?: {
     getNormalBounds: vi.fn(() => normalBounds),
     hide: vi.fn(),
     isDestroyed: vi.fn(() => false),
+    isFocused: vi.fn(() => false),
     isFullScreen: vi.fn(() => false),
     isMaximized: vi.fn(() => isMaximized),
     isMinimized: vi.fn(() => false),

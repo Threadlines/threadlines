@@ -1963,6 +1963,8 @@ export const OrchestrationThread = Schema.Struct({
   linkedPullRequests: Schema.Array(OrchestrationThreadLinkedPullRequest).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** See OrchestrationThreadShell.dismissedPullRequests. */
+  dismissedPullRequests: Schema.optional(Schema.Array(PositiveInt)),
   /** See OrchestrationThreadShell.participants. */
   participants: Schema.Array(OrchestrationThreadParticipant).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -2154,6 +2156,12 @@ export const OrchestrationThreadShell = Schema.Struct({
   linkedPullRequests: Schema.Array(OrchestrationThreadLinkedPullRequest).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /**
+   * Numbers of the pull requests whose row the user closed above the composer,
+   * the thread's own or a linked one. The pull request stays the thread's: its
+   * tag, its tab and links to it are untouched. Absent: none.
+   */
+  dismissedPullRequests: Schema.optional(Schema.Array(PositiveInt)),
   /**
    * Agents added to this thread next to its own agent. Empty for an ordinary
    * thread; one or more makes the thread a room.
@@ -2543,6 +2551,18 @@ const ThreadPullRequestAutomationSetCommand = Schema.Struct({
   pullRequestNumber: Schema.optional(PositiveInt),
   autoFix: Schema.optional(Schema.Boolean),
   autoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
+});
+
+/**
+ * Close a pull request's row above the composer, or bring it back. See
+ * `OrchestrationThreadShell.dismissedPullRequests`.
+ */
+const ThreadPullRequestDismissCommand = Schema.Struct({
+  type: Schema.Literal("thread.pull-request.dismiss"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  number: PositiveInt,
+  dismissed: Schema.Boolean,
 });
 
 /**
@@ -3084,6 +3104,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPinCommand,
   ThreadUnpinCommand,
   ThreadPullRequestAutomationSetCommand,
+  ThreadPullRequestDismissCommand,
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadParticipantAddCommand,
@@ -3133,6 +3154,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPinCommand,
   ThreadUnpinCommand,
   ThreadPullRequestAutomationSetCommand,
+  ThreadPullRequestDismissCommand,
   ThreadDoneOverrideSetCommand,
   ThreadSeenSetCommand,
   ThreadParticipantAddCommand,
@@ -3914,6 +3936,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unpinned",
   "thread.pull-request-automation-changed",
   "thread.pull-request-linked",
+  "thread.pull-request-dismissed",
   "thread.done-override-set",
   "thread.seen-set",
   "thread.participant-added",
@@ -4091,6 +4114,13 @@ export const ThreadPullRequestLinkedPayload = Schema.Struct({
   number: PositiveInt,
   url: TrimmedNonEmptyString,
   linkedAt: IsoDateTime,
+});
+
+/** No `updatedAt`: closing a row is not work on the thread. */
+export const ThreadPullRequestDismissedPayload = Schema.Struct({
+  threadId: ThreadId,
+  number: PositiveInt,
+  dismissed: Schema.Boolean,
 });
 
 /** No `updatedAt`: filing a thread is not work on it. */
@@ -4758,6 +4788,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.pull-request-linked"),
     payload: ThreadPullRequestLinkedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pull-request-dismissed"),
+    payload: ThreadPullRequestDismissedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

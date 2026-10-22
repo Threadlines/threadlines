@@ -1,20 +1,25 @@
+import fsPromises from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertSuccess } from "@effect/vitest/utils";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   isCommandAvailable,
   launchBrowser,
   launchEditorProcess,
+  quoteWindowsShellArg,
   resolveAvailableEditors,
   resolveBrowserLaunch,
   resolveEditorLaunch,
@@ -30,10 +35,10 @@ function encodeUtf16LeBase64(input: string): string {
   return Encoding.encodeBase64(bytes);
 }
 
-function makeMockDetachedHandle(onUnref: () => void = () => undefined) {
+function makeMockDetachedHandle(onUnref: () => void = () => undefined, exitCode = 0) {
   return ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(1),
-    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
     isRunning: Effect.succeed(true),
     kill: () => Effect.void,
     unref: Effect.sync(() => {
@@ -451,6 +456,74 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
     }),
   );
 
+  it.effect("opens file targets inside their workspace folder", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const base = yield* fs.makeTempDirectoryScoped({ prefix: "t3-editor-root-test-" });
+      const root = path.join(base, "project");
+      const srcDir = path.join(root, "src");
+      const filePath = path.join(srcDir, "index.ts");
+      const otherRoot = path.join(base, "other");
+      const otherFile = path.join(otherRoot, "index.ts");
+      yield* fs.makeDirectory(srcDir, { recursive: true });
+      yield* fs.makeDirectory(otherRoot);
+      yield* fs.writeFileString(filePath, "export {};\n");
+      yield* fs.writeFileString(otherFile, "export {};\n");
+      const launchArgs = (
+        cwd: string,
+        editor: "vscode" | "kiro" | "zed" | "idea",
+        workspaceRoot = root,
+      ) =>
+        resolveEditorLaunch({ cwd, editor, workspaceRoot }, "darwin", { PATH: "" }).pipe(
+          Effect.map((launch) => launch.args),
+        );
+
+      assert.deepEqual(yield* launchArgs(filePath, "vscode"), [root, filePath]);
+      assert.deepEqual(yield* launchArgs(`${filePath}:12:3`, "vscode"), [
+        root,
+        "--goto",
+        `${filePath}:12:3`,
+      ]);
+      assert.deepEqual(yield* launchArgs(`${filePath}:12`, "kiro"), [
+        "ide",
+        root,
+        "--goto",
+        `${filePath}:12`,
+      ]);
+      assert.deepEqual(yield* launchArgs(`${filePath}:12:3`, "zed"), [root, `${filePath}:12:3`]);
+      assert.deepEqual(yield* launchArgs(`${filePath}:12:3`, "idea"), [
+        root,
+        "--line",
+        "12",
+        "--column",
+        "3",
+        filePath,
+      ]);
+      // A file the agent has not written yet still opens inside the project.
+      const newFile = path.join(srcDir, "new.ts");
+      assert.deepEqual(yield* launchArgs(newFile, "vscode"), [root, newFile]);
+
+      // The root named through a symlink still holds the file's real path.
+      const linkedRoot = path.join(base, "linked");
+      yield* Effect.promise(() =>
+        fsPromises.symlink(root, linkedRoot, process.platform === "win32" ? "junction" : "dir"),
+      );
+      assert.deepEqual(yield* launchArgs(filePath, "vscode", linkedRoot), [linkedRoot, filePath]);
+
+      // Folders open on their own, and so does anything outside the root or
+      // a root that is gone.
+      assert.deepEqual(yield* launchArgs(srcDir, "vscode"), [srcDir]);
+      assert.deepEqual(yield* launchArgs(root, "vscode"), [root]);
+      assert.deepEqual(yield* launchArgs(otherFile, "vscode"), [otherFile]);
+      const climbsOut = `${root}/../other/index.ts`;
+      assert.deepEqual(yield* launchArgs(climbsOut, "vscode"), [climbsOut]);
+      const goneRoot = path.join(root, "gone");
+      const goneFile = path.join(goneRoot, "index.ts");
+      assert.deepEqual(yield* launchArgs(goneFile, "vscode", goneRoot), [goneFile]);
+    }),
+  );
+
   it.effect("falls back to zeditor when zed is not installed", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -614,6 +687,49 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
         shell: false,
         windowsHide: false,
       });
+    }),
+  );
+
+  it.effect("asks the Linux file manager to select a file, opening its folder otherwise", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-file-manager-test-" });
+      const binDir = path.join(dir, "bin");
+      const filePath = path.join(dir, "a,b.html");
+      yield* fs.makeDirectory(binDir);
+      yield* fs.writeFileString(filePath, "<!doctype html>");
+      yield* fs.writeFileString(path.join(binDir, "dbus-send"), "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(path.join(binDir, "dbus-send"), 0o755);
+
+      const launch = yield* resolveEditorLaunch(
+        { cwd: `${filePath}:3`, editor: "file-manager" },
+        "linux",
+        { PATH: binDir },
+      );
+      assert.deepEqual(launch, {
+        command: "dbus-send",
+        args: [
+          "--session",
+          "--print-reply",
+          "--reply-timeout=20000",
+          "--dest=org.freedesktop.FileManager1",
+          "--type=method_call",
+          "/org/freedesktop/FileManager1",
+          "org.freedesktop.FileManager1.ShowItems",
+          `array:string:${pathToFileURL(dir).href}/a%2Cb.html`,
+          "string:",
+        ],
+        fallback: { command: "xdg-open", args: [dir] },
+      });
+
+      // Folders still open directly.
+      assert.deepEqual(
+        yield* resolveEditorLaunch({ cwd: dir, editor: "file-manager" }, "linux", {
+          PATH: binDir,
+        }),
+        { command: "xdg-open", args: [dir] },
+      );
     }),
   );
 
@@ -783,6 +899,73 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
     }),
   );
 
+  it.effect("starts the fallback only when an attached launch fails", () =>
+    Effect.gen(function* () {
+      const run = (firstExitCode: number) => {
+        const spawned: Array<ReadonlyArray<string>> = [];
+        const spawnerLayer = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
+          spawn: (command) =>
+            Effect.sync(() => {
+              if (!ChildProcess.isStandardCommand(command)) {
+                throw new Error("Expected a standard command");
+              }
+              spawned.push(command.args);
+              return makeMockDetachedHandle(undefined, spawned.length === 1 ? firstExitCode : 0);
+            }),
+        });
+        return launchEditorProcess({
+          command: process.execPath,
+          args: ["ask"],
+          fallback: { command: process.execPath, args: ["open-folder"] },
+        }).pipe(
+          Effect.provide(spawnerLayer),
+          Effect.map(() => spawned),
+        );
+      };
+
+      assert.deepEqual(yield* run(0), [["ask"]]);
+      const afterFailure = yield* run(1);
+      assert.equal(afterFailure.length, 2);
+      assert.ok(afterFailure[1]?.some((arg) => arg.includes("open-folder")));
+    }),
+  );
+
+  it.effect("lets a slow attached launch finish on its own instead of falling back", () =>
+    Effect.gen(function* () {
+      let spawnCount = 0;
+      let didUnref = false;
+      const spawnerLayer = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
+        spawn: () =>
+          Effect.sync(() => {
+            spawnCount += 1;
+            return ChildProcessSpawner.makeHandle({
+              ...makeMockDetachedHandle(() => {
+                didUnref = true;
+              }),
+              exitCode: Effect.never,
+            });
+          }),
+      });
+
+      const fiber = yield* launchEditorProcess({
+        command: process.execPath,
+        args: ["ask"],
+        fallback: { command: process.execPath, args: ["open-folder"] },
+      }).pipe(Effect.provide(spawnerLayer), Effect.forkChild);
+      yield* TestClock.adjust("5 seconds");
+      yield* Fiber.join(fiber);
+
+      assert.equal(spawnCount, 1);
+      assert.equal(didUnref, true);
+    }),
+  );
+
+  it("quotes Windows shell args so a trailing backslash cannot escape the quote", () => {
+    assert.equal(quoteWindowsShellArg("C:\\work space\\a.ts"), '"C:\\work space\\a.ts"');
+    assert.equal(quoteWindowsShellArg("C:\\"), '"C:\\\\"');
+    assert.equal(quoteWindowsShellArg("\\\\server\\share\\"), '"\\\\server\\share\\\\"');
+  });
+
   it.effect("does not wrap args, use a shell, or hide the window when a launch opts out", () =>
     Effect.gen(function* () {
       let spawnedCommand: ChildProcess.StandardCommand | undefined;
@@ -835,20 +1018,6 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
 });
 
 it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
-  it.effect("resolves win32 commands with PATHEXT", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-external-launcher-test-" });
-      yield* fs.writeFileString(path.join(dir, "code.CMD"), "@echo off\r\n");
-      const env = {
-        PATH: dir,
-        PATHEXT: ".COM;.EXE;.BAT;.CMD",
-      } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("code", { platform: "win32", env }), true);
-    }),
-  );
-
   it("returns false when a command is not on PATH", () => {
     const env = {
       PATH: "",
@@ -971,6 +1140,30 @@ it.layer(NodeServices.layer)("resolveAvailableEditors", (it) => {
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       });
       assert.deepEqual(editors, ["zed", "file-manager"]);
+    }),
+  );
+
+  it.effect("finds macOS editors inside their app when the command is not on PATH", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const applications = yield* fs.makeTempDirectoryScoped({ prefix: "t3-applications-" });
+      const binDir = path.join(applications, "Visual Studio Code.app/Contents/Resources/app/bin");
+      const codePath = path.join(binDir, "code");
+      yield* fs.makeDirectory(binDir, { recursive: true });
+      yield* fs.writeFileString(codePath, "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(codePath, 0o755);
+
+      assert.deepEqual(resolveAvailableEditors("darwin", { PATH: "" }, [applications]), ["vscode"]);
+      const launch = yield* resolveEditorLaunch(
+        { cwd: "/tmp/workspace", editor: "vscode" },
+        "darwin",
+        { PATH: "" },
+        [applications],
+      );
+      assert.equal(launch.command, codePath);
+      // App folders are a macOS idea; Linux keeps to PATH.
+      assert.deepEqual(resolveAvailableEditors("linux", { PATH: "" }, [applications]), []);
     }),
   );
 

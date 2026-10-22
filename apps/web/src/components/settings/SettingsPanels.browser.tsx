@@ -2406,7 +2406,7 @@ describe("GeneralSettingsPanel observability", () => {
     const signedOut = page.getByRole("button", {
       name: "Claude usage. Claude is signed out. Sign in to see usage.",
     });
-    await expect.element(signedOut).toHaveTextContent("Usage signed out");
+    await expect.element(signedOut).toMatchTextContent("Usage signed out");
     // No empty meter stands in for a reading the app does not have.
     const row = signedOut.element().closest('[data-testid="provider-instance-row"]');
     expect(row?.textContent).not.toContain("0%");
@@ -2671,7 +2671,7 @@ describe("GeneralSettingsPanel observability", () => {
     });
     await expect
       .element(page.getByTestId("provider-auth-device-code"))
-      .toHaveTextContent("ABCD-1234");
+      .toMatchTextContent("ABCD-1234");
     expect(openExternal).not.toHaveBeenCalled();
     await page.getByRole("button", { name: "Copy code and open page" }).click();
     expect(openExternal).toHaveBeenCalledWith("https://github.com/login/device");
@@ -4353,7 +4353,7 @@ describe("ProviderSettingsPanel community agents", () => {
 
     const piRow = page.getByTestId("community-agent-pi-acp");
     await expect.element(piRow).toBeVisible();
-    await expect.element(piRow).toHaveTextContent("Pi");
+    await expect.element(piRow).toMatchTextContent("Pi");
     await expect.element(page.getByTestId("community-agent-alpha")).toBeVisible();
     await expect.element(page.getByTestId("community-agent-added-agent")).not.toBeInTheDocument();
     // The first look takes the server's saved copy.
@@ -4483,7 +4483,7 @@ describe("ProviderSettingsPanel community agents", () => {
         document.querySelector<HTMLElement>(`[data-provider-instance-id="${PI_INSTANCE_ID}"]`),
       ),
     );
-    await expect.element(communityRow).toHaveTextContent("Pi is now built in");
+    await expect.element(communityRow).toMatchTextContent("Pi is now built in");
     await communityRow.getByRole("button", { name: "Use the built-in Pi" }).click();
     await vi.waitFor(() => {
       expect(updateSettings).toHaveBeenCalledTimes(1);
@@ -4525,7 +4525,7 @@ describe("ProviderSettingsPanel community agents", () => {
     // The tag that sets it apart from the agents Threadlines tests.
     await expect
       .element(page.getByTestId("provider-instance-row").filter({ hasText: "Community" }))
-      .toHaveTextContent("Pi");
+      .toMatchTextContent("Pi");
     await page.getByRole("button", { name: /^Update Pi to / }).click();
     // The new version is as unreviewed as the old, and there is no command to copy.
     await expect.element(page.getByText("Threadlines hasn't reviewed this version.")).toBeVisible();
@@ -4541,7 +4541,7 @@ describe("ProviderSettingsPanel community agents", () => {
 
     await openProviderDetails("Pi", PI_INSTANCE_ID);
     await page.getByRole("button", { name: "Remove", exact: true }).click();
-    await expect.element(page.getByRole("alertdialog")).toHaveTextContent("Remove Pi?");
+    await expect.element(page.getByRole("alertdialog")).toMatchTextContent("Remove Pi?");
     expect(removeAcpRegistryAgent).not.toHaveBeenCalled();
     await page
       .getByRole("alertdialog")

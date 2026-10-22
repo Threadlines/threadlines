@@ -101,8 +101,8 @@ describe("ThreadHoverCard", () => {
   it("restores the full title the row had to truncate", async () => {
     const card = await openCard(thread(), status("Working"));
 
-    await expect.element(card).toHaveTextContent("Add smooth hover cards to the sidebar rows");
-    await expect.element(card).toHaveTextContent("Working");
+    await expect.element(card).toMatchTextContent("Add smooth hover cards to the sidebar rows");
+    await expect.element(card).toMatchTextContent("Working");
   });
 
   it("names the provider the way the model picker does", async () => {
@@ -119,15 +119,15 @@ describe("ThreadHoverCard", () => {
       null,
     );
 
-    await expect.element(card).toHaveTextContent("Claude");
+    await expect.element(card).toMatchTextContent("Claude");
     // The internal driver kind must never reach the surface.
-    await expect.element(card).not.toHaveTextContent("claudeAgent");
+    await expect.element(card).not.toMatchTextContent("claudeAgent");
   });
 
   it("reports a branch when the thread has one", async () => {
     const card = await openCard(thread({ branch: "feature/deck-sidebar" }), null);
 
-    await expect.element(card).toHaveTextContent("feature/deck-sidebar");
+    await expect.element(card).toMatchTextContent("feature/deck-sidebar");
   });
 
   it("falls back to the checkout's current ref when the thread pinned no branch", async () => {
@@ -139,7 +139,7 @@ describe("ThreadHoverCard", () => {
 
       // Named as what it is: where the checkout sits, not a branch the thread
       // pinned.
-      await expect.element(card).toHaveTextContent("main · checkout");
+      await expect.element(card).toMatchTextContent("main · checkout");
     } finally {
       setGitStatusRefName(null);
     }
@@ -171,6 +171,6 @@ describe("ThreadHoverCard", () => {
   it("falls back to Idle when the thread has no status", async () => {
     const card = await openCard(thread(), null);
 
-    await expect.element(card).toHaveTextContent("Idle");
+    await expect.element(card).toMatchTextContent("Idle");
   });
 });

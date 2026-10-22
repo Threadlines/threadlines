@@ -54,7 +54,11 @@ import {
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { refreshSourceControlDiscoveryAfterReconnect } from "../lib/sourceControlDiscoveryState";
+import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useSettings } from "../hooks/useSettings";
+import { isUnreadFinishedWork } from "../components/Sidebar.logic";
+import { toSortableTimestamp } from "../lib/threadSort";
+import type { SidebarThreadSummary } from "../types";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKeyFromPath,
@@ -203,7 +207,7 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
         <EnvironmentConnectionManagerBootstrap />
         <AppShellIdlePreloads />
-        <DesktopTaskbarStatusSync />
+        {isElectron ? <DesktopTaskbarStatusSync /> : null}
         {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
         {isElectron ? <BrowserProfileReconciler /> : null}
         {isElectron ? <BrowserHostLayer /> : null}
@@ -270,6 +274,21 @@ function selectRunningTaskbarThreads(state: AppState): DesktopTaskbarThreadSumma
   });
 }
 
+/** Most recently finished first, so the menu leads with what just landed. */
+function compareByCompletion(left: SidebarThreadSummary, right: SidebarThreadSummary): number {
+  return (
+    (toSortableTimestamp(right.latestTurn?.completedAt ?? undefined) ?? 0) -
+    (toSortableTimestamp(left.latestTurn?.completedAt ?? undefined) ?? 0)
+  );
+}
+
+/**
+ * Keeps the desktop app's Dock, taskbar and menu bar item in step with the
+ * threads: how many are running, and how many finished without the user
+ * opening them yet. That second count is the inbox's own unread finished work,
+ * so it holds while the user is in the app looking elsewhere, and drops as
+ * each thread is opened, here or on another device.
+ */
 function DesktopTaskbarStatusSync() {
   // Subscribe to a compact signature so re-renders happen only when the
   // running set or what a running thread shows changes: its title, whether it
@@ -282,6 +301,20 @@ function DesktopTaskbarStatusSync() {
       )
       .join("|"),
   );
+  const { entries, generalChatEntries } = useInboxThreads();
+  const unreadThreads = [...entries, ...generalChatEntries]
+    .filter((entry) => isUnreadFinishedWork({ isDone: false, ...entry }))
+    .map((entry) => entry.thread)
+    .toSorted(compareByCompletion)
+    .map((thread): DesktopTaskbarThreadSummary => ({
+      threadId: thread.id,
+      environmentId: thread.environmentId,
+      title: thread.title,
+      state: "completed",
+    }));
+  const unreadThreadsSignature = unreadThreads
+    .map((thread) => `${taskbarThreadKey(thread)}:${thread.title}`)
+    .join("|");
   // Quitting stops only this computer's threads, so the desktop app is told
   // how many of the running ones are local.
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -299,12 +332,7 @@ function DesktopTaskbarStatusSync() {
       : countWorkingScheduledRuns(state.byEnvironment[primaryEnvironmentId]),
   );
   const hadRunningThreadRef = useRef(false);
-  const completionShownRef = useRef(false);
   const completionSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const previousRunningThreadsRef = useRef<ReadonlyMap<string, DesktopTaskbarThreadSummary>>(
-    new Map(),
-  );
-  const unseenCompletedThreadsRef = useRef(new Map<string, DesktopTaskbarThreadSummary>());
   const lastStatusKeyRef = useRef<string | null>(null);
 
   const setTaskbarStatus = useEffectEvent((status: DesktopTaskbarStatusInput) => {
@@ -335,34 +363,9 @@ function DesktopTaskbarStatusSync() {
   });
 
   const syncTaskbarStatus = useEffectEvent(() => {
-    if (!window.desktopBridge?.setTaskbarStatus) {
-      return;
-    }
-
     const runningThreads = selectRunningTaskbarThreads(useStore.getState());
-    const runningByKey = new Map(
-      runningThreads.map((thread) => [taskbarThreadKey(thread), thread]),
-    );
-
-    // Track threads that finished while the app was unfocused, by identity, so
-    // the badge count and menu list stay truthful; focused users see
-    // completions live.
-    if (document.hasFocus()) {
-      unseenCompletedThreadsRef.current.clear();
-    } else {
-      for (const [key, thread] of previousRunningThreadsRef.current) {
-        if (!runningByKey.has(key)) {
-          unseenCompletedThreadsRef.current.set(key, { ...thread, state: "completed" });
-        }
-      }
-    }
-    previousRunningThreadsRef.current = runningByKey;
-
-    const unseenCompletedThreads = [...unseenCompletedThreadsRef.current.values()];
-    const menuThreads = [...unseenCompletedThreads, ...runningThreads].slice(
-      0,
-      TASKBAR_MENU_THREAD_LIMIT,
-    );
+    const runningKeys = new Set(runningThreads.map(taskbarThreadKey));
+    const unread = unreadThreads.filter((thread) => !runningKeys.has(taskbarThreadKey(thread)));
 
     if (runningThreads.length > 0) {
       if (completionSettleTimerRef.current !== null) {
@@ -370,15 +373,15 @@ function DesktopTaskbarStatusSync() {
         completionSettleTimerRef.current = null;
       }
       hadRunningThreadRef.current = true;
-      completionShownRef.current = false;
       setTaskbarStatus({
         status: "working",
         runningThreadCount: runningThreads.length,
         localRunningThreadCount: runningThreads.filter((thread) =>
           isThreadOnPrimaryEnvironment(thread, primaryEnvironmentId),
         ).length,
+        completedThreadCount: unread.length,
         description: describeWorking(runningThreads.length),
-        threads: menuThreads,
+        threads: [...unread, ...runningThreads].slice(0, TASKBAR_MENU_THREAD_LIMIT),
       });
       return;
     }
@@ -395,38 +398,24 @@ function DesktopTaskbarStatusSync() {
       return;
     }
 
-    if (!completionShownRef.current) {
+    if (unread.length === 0) {
       setTaskbarStatus({ status: "idle", description: "No threads are working", threads: [] });
+      return;
     }
+    setTaskbarStatus({
+      status: "completed",
+      completedThreadCount: unread.length,
+      description: describeCompleted(unread.length),
+      threads: unread.slice(0, TASKBAR_MENU_THREAD_LIMIT),
+    });
   });
 
   /** Nothing has run for the settle time: say the work is done. */
   const settleTaskbarStatus = useEffectEvent(() => {
-    if (
-      selectRunningTaskbarThreads(useStore.getState()).length > 0 ||
-      !hadRunningThreadRef.current
-    ) {
-      syncTaskbarStatus();
-      return;
+    if (selectRunningTaskbarThreads(useStore.getState()).length === 0) {
+      hadRunningThreadRef.current = false;
     }
-    hadRunningThreadRef.current = false;
-    // Nothing unseen: the threads finished while the user was looking, or
-    // they focused the window during the wait and so saw them finish.
-    const unseenCompletedThreads = [...unseenCompletedThreadsRef.current.values()];
-    if (document.hasFocus() || unseenCompletedThreads.length === 0) {
-      completionShownRef.current = false;
-      setTaskbarStatus({ status: "idle", description: "No threads are working", threads: [] });
-      return;
-    }
-
-    completionShownRef.current = true;
-    const completedThreadCount = unseenCompletedThreads.length;
-    setTaskbarStatus({
-      status: "completed",
-      completedThreadCount,
-      description: describeCompleted(completedThreadCount),
-      threads: unseenCompletedThreads.slice(0, TASKBAR_MENU_THREAD_LIMIT),
-    });
+    syncTaskbarStatus();
   });
 
   useEffect(() => {
@@ -435,33 +424,20 @@ function DesktopTaskbarStatusSync() {
     activeScheduledTaskCount,
     primaryEnvironmentId,
     runningThreadsSignature,
+    unreadThreadsSignature,
     workingScheduledRunCount,
   ]);
 
-  useEffect(() => {
-    const handleFocus = () => {
-      if (!document.hasFocus()) {
-        return;
-      }
-
-      // Focus acknowledges completions: clear them and re-sync the surfaces.
-      unseenCompletedThreadsRef.current.clear();
-      completionShownRef.current = false;
-      syncTaskbarStatus();
-    };
-
-    window.addEventListener("focus", handleFocus);
-    document.addEventListener("visibilitychange", handleFocus);
-    return () => {
-      window.removeEventListener("focus", handleFocus);
-      document.removeEventListener("visibilitychange", handleFocus);
+  useEffect(
+    () => () => {
       if (completionSettleTimerRef.current !== null) {
         clearTimeout(completionSettleTimerRef.current);
         completionSettleTimerRef.current = null;
       }
       setTaskbarStatus({ status: "idle", description: "No threads are working" });
-    };
-  }, []);
+    },
+    [],
+  );
 
   return null;
 }

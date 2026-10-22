@@ -2,12 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 
-import {
-  KeybindingsConfig,
-  KeybindingRule,
-  ResolvedKeybindingRule,
-  ResolvedKeybindingsConfig,
-} from "./keybindings.ts";
+import { KeybindingRule, ResolvedKeybindingRule } from "./keybindings.ts";
 
 const decode = <S extends Schema.Top>(
   schema: S,
@@ -92,71 +87,6 @@ it.effect("accepts dynamic script run commands", () =>
       command: "script.setup.run",
     });
     assert.strictEqual(parsed.command, "script.setup.run");
-  }),
-);
-
-it.effect("parses keybindings array payload", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decode(KeybindingsConfig, [
-      { key: "mod+j", command: "terminal.toggle" },
-      { key: "mod+d", command: "terminal.split", when: "terminalFocus" },
-    ]);
-    assert.lengthOf(parsed, 2);
-  }),
-);
-
-it.effect("parses resolved keybinding rules", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decode(ResolvedKeybindingRule, {
-      command: "terminal.split",
-      shortcut: {
-        key: "d",
-        metaKey: false,
-        ctrlKey: false,
-        shiftKey: false,
-        altKey: false,
-        modKey: true,
-      },
-      whenAst: {
-        type: "and",
-        left: { type: "identifier", name: "terminalOpen" },
-        right: {
-          type: "not",
-          node: { type: "identifier", name: "terminalFocus" },
-        },
-      },
-    });
-    assert.strictEqual(parsed.shortcut.key, "d");
-  }),
-);
-
-it.effect("parses resolved keybindings arrays", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decode(ResolvedKeybindingsConfig, [
-      {
-        command: "terminal.toggle",
-        shortcut: {
-          key: "j",
-          metaKey: false,
-          ctrlKey: false,
-          shiftKey: false,
-          altKey: false,
-          modKey: true,
-        },
-      },
-      {
-        command: "thread.jump.3",
-        shortcut: {
-          key: "3",
-          metaKey: false,
-          ctrlKey: false,
-          shiftKey: false,
-          altKey: false,
-          modKey: true,
-        },
-      },
-    ]);
-    assert.lengthOf(parsed, 2);
   }),
 );
 

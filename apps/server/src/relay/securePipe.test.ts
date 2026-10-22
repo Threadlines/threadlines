@@ -16,7 +16,7 @@ import {
   startKKInitiator,
   type NoiseKeyPair,
 } from "@threadlines/shared/relaySecure";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { computeDirectRoutes } from "./directRoutes.ts";
 import { openSecurePipe } from "./securePipe.ts";
@@ -36,7 +36,9 @@ class FakeLocalSocket extends EventTarget {
   }
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+// The handshake and every record go through WebCrypto, which a busy machine can
+// stretch well past any fixed wait: tests wait for what they check instead.
+const UNTIL = { timeout: 5_000, interval: 10 } as const;
 
 async function setup(options: { readonly deviceKey?: NoiseKeyPair } = {}) {
   const [host, device] = await Promise.all([P256.generateKeyPair(), P256.generateKeyPair()]);
@@ -73,6 +75,7 @@ async function setup(options: { readonly deviceKey?: NoiseKeyPair } = {}) {
     localOpens: () => localOpens,
     /** Finishes the device side of the handshake and returns its stream. */
     finish: async () => {
+      await vi.waitFor(() => expect(toDevice.length).toBeGreaterThan(0), UNTIL);
       const reply = readHandshakeFrame(toDevice.shift()!, kkMessageLength());
       const { transport } = await initiator.readMessage2(reply!);
       const records: Array<{ readonly type: number; readonly body: string }> = [];
@@ -82,12 +85,13 @@ async function setup(options: { readonly deviceKey?: NoiseKeyPair } = {}) {
         onRecord: (type, body) => records.push({ type, body: fromUtf8(body) }),
         onError: () => undefined,
       });
-      const drain = async () => {
-        await settle();
-        while (toDevice.length > 0) stream.receiveFrame(binaryFrameBytes(toDevice.shift())!);
-        await settle();
-      };
-      return { stream, records, drain };
+      /** Feeds the host's frames to the device until `count` records arrived. */
+      const receiveRecords = (count: number) =>
+        vi.waitFor(() => {
+          while (toDevice.length > 0) stream.receiveFrame(binaryFrameBytes(toDevice.shift())!);
+          expect(records.length).toBeGreaterThanOrEqual(count);
+        }, UNTIL);
+      return { stream, records, receiveRecords };
     },
   };
 }
@@ -96,7 +100,6 @@ describe("openSecurePipe", () => {
   it("opens the app connection only after the device proves its key and confirms", async () => {
     const run = await setup();
     run.pipe.receive(handshakeFrame(run.message1));
-    await settle();
     const device = await run.finish();
     expect(run.localOpens()).toBe(0);
 
@@ -105,14 +108,13 @@ describe("openSecurePipe", () => {
     const request = JSON.stringify({ _tag: "Request", id: "1", payload: "x".repeat(4_000) });
     device.stream.sendRecord(SECURE_RECORD_CONFIRM, new Uint8Array([SECURE_CONFIRM_SESSION]));
     device.stream.sendText(request);
-    await settle();
+    await vi.waitFor(() => expect(run.local.sent).toEqual([request]), UNTIL);
     expect(run.localOpens()).toBe(1);
-    expect(run.local.sent).toEqual([request]);
     expect(run.closes).toEqual([]);
 
     run.local.deliver('{"_tag":"Exit","requestId":"1"}');
     device.stream.sendRecord(SECURE_RECORD_KEEPALIVE);
-    await device.drain();
+    await device.receiveRecords(2);
     expect(device.records).toEqual([
       { type: SECURE_RECORD_APP, body: '{"_tag":"Exit","requestId":"1"}' },
       { type: SECURE_RECORD_ACK, body: "" },
@@ -123,27 +125,23 @@ describe("openSecurePipe", () => {
   it("never reaches the app for the wrong key, a replayed first message, or a probe", async () => {
     const stranger = await setup({ deviceKey: await P256.generateKeyPair() });
     stranger.pipe.receive(handshakeFrame(stranger.message1));
-    await settle();
-    expect(stranger.closes.length).toBe(1);
+    await vi.waitFor(() => expect(stranger.closes.length).toBe(1), UNTIL);
     expect(stranger.localOpens()).toBe(0);
 
     // A recorded first message gets a reply, but nothing confirms it.
     const replay = await setup();
     replay.pipe.receive(handshakeFrame(replay.message1));
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
-    expect(replay.closes.length).toBe(1);
+    await vi.waitFor(() => expect(replay.closes.length).toBe(1), UNTIL);
     expect(replay.localOpens()).toBe(0);
 
     const probe = await setup();
     probe.pipe.receive(handshakeFrame(probe.message1));
-    await settle();
     const device = await probe.finish();
     device.stream.sendRecord(SECURE_RECORD_CONFIRM, new Uint8Array([SECURE_CONFIRM_PROBE]));
-    await device.drain();
-    await settle();
+    await device.receiveRecords(1);
+    await vi.waitFor(() => expect(probe.closes.length).toBe(1), UNTIL);
     expect(device.records).toEqual([{ type: SECURE_RECORD_ACK, body: "" }]);
     expect(probe.localOpens()).toBe(0);
-    expect(probe.closes.length).toBe(1);
   });
 
   it("ends a direct connection on any plaintext frame", async () => {

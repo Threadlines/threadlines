@@ -274,8 +274,8 @@ describe("UsageView", () => {
 
     finishSummary?.();
 
-    await expect.element(page.getByTestId("usage-total-tokens")).toHaveTextContent("0");
-    await expect.element(page.getByTestId("usage-total-cost")).toHaveTextContent("$0.00*");
+    await expect.element(page.getByTestId("usage-total-tokens")).toMatchTextContent("0");
+    await expect.element(page.getByTestId("usage-total-cost")).toMatchTextContent("$0.00*");
     await expect
       .element(page.getByRole("status", { name: "Loading usage" }))
       .not.toBeInTheDocument();
@@ -301,7 +301,7 @@ describe("UsageView", () => {
 
     renderWithProviders(<UsageView />);
 
-    await expect.element(page.getByTestId("usage-total-tokens")).toHaveTextContent("1M");
+    await expect.element(page.getByTestId("usage-total-tokens")).toMatchTextContent("1M");
     const cells = page.getByTestId("usage-stat").elements();
     expect(cells).toHaveLength(5);
     const tops = cells.map((cell) => Math.round(cell.getBoundingClientRect().top));
@@ -376,11 +376,11 @@ describe("UsageView", () => {
     renderWithProviders(<UsageView />);
 
     // The one display-size figure on the page is tokens; cost trails with its caveat.
-    await expect.element(page.getByTestId("usage-total-tokens")).toHaveTextContent("2.4M");
+    await expect.element(page.getByTestId("usage-total-tokens")).toMatchTextContent("2.4M");
     await expect
       .element(page.getByTestId("usage-new-tokens"))
-      .toHaveTextContent("1.2M new tokens, not counting cache reads");
-    await expect.element(page.getByTestId("usage-total-cost")).toHaveTextContent("$17.00*");
+      .toMatchTextContent("1.2M new tokens, not counting cache reads");
+    await expect.element(page.getByTestId("usage-total-cost")).toMatchTextContent("$17.00*");
     await expect
       .element(page.getByText("* if billed at full API rates. Subscription plans bill separately."))
       .toBeInTheDocument();
@@ -457,7 +457,7 @@ describe("UsageView", () => {
     registerEnvironments(summary);
 
     renderWithProviders(<UsageView />);
-    await expect.element(page.getByTestId("usage-total-tokens")).toHaveTextContent("2.4M");
+    await expect.element(page.getByTestId("usage-total-tokens")).toMatchTextContent("2.4M");
     const legend = () =>
       page
         .getByTestId("usage-chart-legend-item")
@@ -493,7 +493,7 @@ describe("UsageView", () => {
     await expect.element(page.getByTestId("usage-chart-group-kinds")).toBeDisabled();
     expect(page.getByTestId("usage-include-cache-reads").elements()).toHaveLength(0);
     await page.getByTestId("usage-chart-day").nth(29).hover();
-    await expect.element(page.getByTestId("usage-chart-card")).toHaveTextContent("$12.50");
+    await expect.element(page.getByTestId("usage-chart-card")).toMatchTextContent("$12.50");
   });
 
   it("shows each provider's plan limits, and leaves out a provider with none", async () => {
@@ -539,7 +539,7 @@ describe("UsageView", () => {
     renderWithProviders(<UsageView />);
 
     const row = page.getByTestId("usage-plan-limit-row");
-    await expect.element(row).toHaveTextContent("Plan limits can't be read right now");
+    await expect.element(row).toMatchTextContent("Plan limits can't be read right now");
     expect(row.element().textContent).not.toContain("% used");
   });
 
@@ -586,7 +586,7 @@ describe("UsageView", () => {
     });
     await expect
       .element(page.getByTestId("usage-hourly-missing"))
-      .toHaveTextContent(
+      .toMatchTextContent(
         "Studio Mac runs an older Threadlines, so its last 24 hours are not counted here.",
       );
 
@@ -628,10 +628,10 @@ describe("UsageView", () => {
     registerEnvironments(summary);
 
     renderWithProviders(<UsageView />);
-    await expect.element(page.getByTestId("usage-total-tokens")).toHaveTextContent("3M");
+    await expect.element(page.getByTestId("usage-total-tokens")).toMatchTextContent("3M");
     await page.getByTestId("usage-window-24h").click();
 
-    await expect.element(page.getByTestId("usage-date-range")).toHaveTextContent(/ to now$/);
+    await expect.element(page.getByTestId("usage-date-range")).toMatchTextContent(/ to now$/);
     await expect.element(page.getByText("Hourly tokens")).toBeInTheDocument();
     expect(page.getByTestId("usage-chart-day").elements()).toHaveLength(24);
     expect(page.getByTestId("usage-hourly-missing").elements()).toHaveLength(0);

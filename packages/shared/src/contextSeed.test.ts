@@ -3,7 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   DEFAULT_SEED_BUDGET,
-  estimateSeedChars,
   renderSeedEntries,
   renderThreadContextSeed,
   splitSeedEntriesByBudget,
@@ -46,14 +45,6 @@ describe("splitSeedEntriesByBudget", () => {
     const split = splitSeedEntriesByBudget(entries, { maxChars: 1_000, recencyWindow: 4 });
     expect(split.recent).toHaveLength(4);
     expect(split.older).toHaveLength(2);
-  });
-});
-
-describe("estimateSeedChars", () => {
-  it("grows with entry text length", () => {
-    const small = estimateSeedChars([message("user", "hi")]);
-    const large = estimateSeedChars([message("user", "hi".repeat(100))]);
-    expect(large).toBeGreaterThan(small);
   });
 });
 

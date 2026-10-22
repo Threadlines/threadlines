@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vp exec vp test run"
+    "test": "vp exec vp test run --config ../../vite.config.ts"
   },
   "dependencies": {
     "@threadlines/contracts": "workspace:*",
@@ -20,7 +20,6 @@
   "devDependencies": {
     "typescript": "catalog:",
     "vite": "catalog:",
-    "vite-plus": "catalog:",
-    "vitest": "catalog:"
+    "vite-plus": "catalog:"
   }
 }

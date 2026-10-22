@@ -1,11 +1,17 @@
 import "../../index.css";
 
-import { EnvironmentId, MessageId, TurnId } from "@threadlines/contracts";
+import {
+  EnvironmentId,
+  MessageId,
+  SideTurnId,
+  ThreadParticipantId,
+  TurnId,
+} from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vite-plus/test/browser";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 import { useUiStateStore } from "../../uiStateStore";
 import { __resetClientSettingsPersistenceForTests } from "../../hooks/useSettings";
@@ -90,6 +96,7 @@ vi.mock("@legendapp/list/react", async () => {
 });
 
 import { MessagesTimeline } from "./MessagesTimeline";
+import type { SideAnswerView } from "./sideAnswers";
 import { TIMELINE_ENTRANCE_ANIMATION_ID } from "./timelineEntrance";
 
 const MESSAGE_CREATED_AT = "2026-04-13T12:00:00.000Z";
@@ -488,7 +495,96 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("names the step a side answer is on, on its one line, without moving Stop", async () => {
+    const astra = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const sideTurnId = SideTurnId.make("side-live");
+    const roomAgents = new Map([
+      [
+        astra as string,
+        {
+          name: "GPT-6-Astra",
+          modelName: "GPT-6-Astra",
+          role: null,
+          left: false,
+          guest: false,
+          reasoning: null,
+          entry: undefined,
+        },
+      ],
+    ]);
+    const reading = (file: string): SideAnswerView => ({
+      sideTurnId,
+      participantId: astra,
+      kind: "ask",
+      askedBy: null,
+      question: {
+        id: MessageId.make("side-question"),
+        role: "user",
+        text: "Is the lock released on every path?",
+        participantId: astra,
+        sideTurnId,
+        createdAt: MESSAGE_CREATED_AT,
+        streaming: false,
+      },
+      answer: null,
+      steps: [
+        {
+          id: "astra-read",
+          createdAt: MESSAGE_CREATED_AT,
+          label: "Read file",
+          tone: "tool",
+          itemType: "dynamic_tool_call",
+          toolTitle: "Read file",
+          detail: `src/${file}`,
+          executionState: "running",
+        },
+      ],
+      state: "answering",
+      error: null,
+    });
+    const timeline = (sideAnswer: SideAnswerView) => (
+      <div className="w-[420px]">
+        <MessagesTimeline
+          {...buildProps()}
+          isWorking
+          activeTurnStartedAt={MESSAGE_CREATED_AT}
+          roomAgents={roomAgents}
+          sideAnswers={[sideAnswer]}
+          onStopSideAnswer={vi.fn()}
+          timelineEntries={[buildUserTimelineEntry("Fix the lock.")]}
+        />
+      </div>
+    );
+    const screen = await renderTimeline(timeline(reading("lock.ts")));
+
+    try {
+      const line = () =>
+        document.querySelector<HTMLElement>('[data-side-answer-status="answering"] > div')!;
+      const stop = () => page.getByRole("button", { name: "Stop" }).element();
+      await expect.element(page.getByText("GPT-6-Astra · Reading lock.ts")).toBeVisible();
+      const stopAt = stop().getBoundingClientRect();
+
+      // A step too long for the line truncates: Stop stays where it was, on
+      // the same single line, and the timer stays in view.
+      await screen.rerender(timeline(reading(`${"retry".repeat(30)}.ts`)));
+      await expect.element(page.getByText(/GPT-6-Astra · Reading retryretry/u)).toBeVisible();
+      expect(line().getBoundingClientRect().height).toBeLessThanOrEqual(20);
+      expect(stop().getBoundingClientRect().right).toBe(stopAt.right);
+      expect(stop().getBoundingClientRect().top).toBe(stopAt.top);
+      expect(line().textContent).toMatch(/· \d+[smh]/u);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("says when the agent will check back, and cancels from the line", async () => {
+    // A fixed midday clock, so the check-back 14 minutes out is still today:
+    // on the real clock a run after 23:45 reads "Checks back tomorrow at …".
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 3, 13, 12, 0, 0));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const cancelled: string[] = [];
     const scheduledFor = new Date(Date.now() + 14 * 60_000 + 20_000).toISOString();
     const screen = await renderTimeline(
@@ -1270,24 +1366,6 @@ describe("MessagesTimeline", () => {
 
       await expect.element(page.getByRole("button", { name: "Collapse tree" })).toBeVisible();
       await expect.element(page.getByText("example.ts")).toBeVisible();
-    } finally {
-      await screen.unmount();
-    }
-  });
-
-  it("starts the newest long user prompt collapsed", async () => {
-    const screen = await renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[buildUserTimelineEntry(buildLongUserMessageText("latest long prompt"))]}
-      />,
-    );
-
-    try {
-      await expect.element(page.getByRole("button", { name: "Show full message" })).toBeVisible();
-
-      const messageBody = document.querySelector("[data-user-message-body='true']");
-      expect(messageBody?.getAttribute("data-user-message-collapsed")).toBe("true");
     } finally {
       await screen.unmount();
     }

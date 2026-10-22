@@ -24,6 +24,7 @@ import { retainThreadActivities } from "@threadlines/shared/threadActivityRetent
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
 import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import { replaceAgentCheckBacks } from "@threadlines/shared/checkBacks";
+import { applyPullRequestDismissed } from "@threadlines/shared/pullRequestDismissals";
 import {
   agentRequestStateOn,
   withInviteChoice,
@@ -70,6 +71,7 @@ import {
   ThreadUnpinnedPayload,
   ThreadPullRequestAutomationChangedPayload,
   ThreadPullRequestLinkedPayload,
+  ThreadPullRequestDismissedPayload,
   ThreadParticipantAddedPayload,
   ThreadParticipantRemovedPayload,
   ThreadParticipantUpdatedPayload,
@@ -559,6 +561,34 @@ export function projectEvent(
               ],
             }),
           };
+        }),
+      );
+
+    // Closing a row is not work on the thread, so `updatedAt` stays.
+    case "thread.pull-request-dismissed":
+      return decodeForEvent(
+        ThreadPullRequestDismissedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (thread === undefined) {
+            return nextBase;
+          }
+          const dismissedPullRequests = applyPullRequestDismissed(
+            thread.dismissedPullRequests,
+            payload,
+          );
+          return dismissedPullRequests === null
+            ? nextBase
+            : {
+                ...nextBase,
+                threads: updateThread(nextBase.threads, payload.threadId, {
+                  dismissedPullRequests,
+                }),
+              };
         }),
       );
 

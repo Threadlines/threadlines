@@ -194,7 +194,7 @@ function estimateHighlightedSize(html: string, code: string): number {
 /**
  * A fenced code block: copy button, and in a settled agent reply a shell
  * command also gets a Run (or Put in terminal) button and, under it, how its
- * latest run went (CommandRuns.tsx).
+ * latest run went (CommandRuns.tsx). The buttons sit on the code's first line.
  */
 function MarkdownCodeBlock({
   code,
@@ -208,13 +208,15 @@ function MarkdownCodeBlock({
   return (
     <div className="chat-markdown-codeblock-group">
       <div className="chat-markdown-codeblock leading-snug">
-        <CodeBlockRunButton code={code} language={language} />
-        <MessageCopyButton
-          text={code}
-          ariaLabel="Copy code block"
-          size="icon-xs"
-          className="chat-markdown-copy-button"
-        />
+        <div className="chat-markdown-codeblock-actions" data-chat-find-ignore="">
+          <CodeBlockRunButton code={code} language={language} />
+          <MessageCopyButton
+            text={code}
+            ariaLabel="Copy code block"
+            size="icon-xs"
+            className="chat-markdown-copy-button"
+          />
+        </div>
         {children}
       </div>
       <CodeBlockRunNotes code={code} language={language} />
@@ -508,6 +510,7 @@ function fileLinkChip(
     filePath: meta.filePath,
     kind: documentContext.fileLinkKindByPath.get(meta.filePath) ?? "file",
     isInWorkspace: Boolean(cwd && isPathWithinCwd(meta.filePath, cwd)),
+    workspaceRoot: cwd,
     line: meta.line,
     label: buildFileLinkLabel(meta, documentContext.fileLinkParentSuffixByPath.get(meta.filePath)),
     theme: documentContext.resolvedTheme,
@@ -901,6 +904,8 @@ interface MarkdownFileLinkProps {
   filePath: string;
   kind: MarkdownFileLinkKind;
   isInWorkspace: boolean;
+  /** The thread's folder, so a file opened in an editor shows inside it. */
+  workspaceRoot: string | undefined;
   line?: number | undefined;
   label: string;
   theme: "light" | "dark";
@@ -935,6 +940,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   filePath,
   kind,
   isInWorkspace,
+  workspaceRoot,
   line,
   label,
   theme,
@@ -968,7 +974,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       return;
     }
 
-    void openInPreferredEditor(api, targetPath).catch((error) => {
+    void openInPreferredEditor(api, targetPath, workspaceRoot).catch((error) => {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -977,7 +983,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }),
       );
     });
-  }, [entryLabel, targetPath]);
+  }, [entryLabel, targetPath, workspaceRoot]);
 
   const handleRevealInFileManager = useCallback(() => {
     const api = readLocalApi();
@@ -1168,6 +1174,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.filePath === next.filePath &&
     previous.kind === next.kind &&
     previous.isInWorkspace === next.isInWorkspace &&
+    previous.workspaceRoot === next.workspaceRoot &&
     previous.line === next.line &&
     previous.label === next.label &&
     previous.theme === next.theme &&

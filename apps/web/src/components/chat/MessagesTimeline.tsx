@@ -31,7 +31,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
-  type SyntheticEvent as ReactSyntheticEvent,
   type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -96,7 +95,6 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   Clock3Icon,
-  CopyIcon,
   FileTextIcon,
   GitForkIcon,
   KeyRoundIcon,
@@ -113,7 +111,6 @@ import {
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Textarea } from "../ui/textarea";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
@@ -152,6 +149,7 @@ import { useScheduledTasksStore } from "../../lib/scheduledTasksState";
 import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
+  NO_STABLE_TIMELINE_ROWS,
   deriveMessagesTimelineRows,
   deriveRememberedMessagesTimelineRows,
   estimateTimelineRowHeight,
@@ -164,18 +162,21 @@ import {
   type TurnSummary,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
+import {
+  isSettledThreadStartEntry,
+  type SideAnswerContext,
+  threadStartTurnKey,
+} from "./timelineRowsShared";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import {
   PickedElementContextChip,
   PickedElementContextGroupChip,
 } from "./ComposerPendingPickedElementContexts";
 import {
-  handleTranscriptHighlightNoteFormSubmit,
-  handleTranscriptHighlightNoteKeyDown,
   TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME,
   TranscriptHighlightContextCard,
 } from "./TranscriptHighlightContextCard";
-import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
+import { TooltipWrapper } from "../ui/tooltip";
 import { describeCheckBack, formatCheckBackTime, nextCheckBack } from "./checkBacks";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
@@ -217,7 +218,6 @@ import {
 } from "./WorkingAnchorDots";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { formatProviderDriverKindLabel } from "../../providerModels";
-import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useLocalImagePreview } from "~/hooks/useLocalImagePreview";
 import type {
   ParsedTranscriptHighlightContextEntry,
@@ -235,11 +235,15 @@ import {
   type RoomAgentLabel,
   type RoomAgentNames,
   roomAgentKey,
+  sameRoomAgentLabels,
   useRoomAgentNames,
 } from "../../rooms";
+import { useKept, useStableHandlers } from "../../hooks/useStableIdentity";
+import { shallow } from "zustand/vanilla/shallow";
 import { RoomReviewTag } from "./RoomReviewTag";
 import { foldedAnsweringSideTurnIds, type SideAnswerView } from "./sideAnswers";
 import { ChatFind } from "./chatFind/ChatFind";
+import { TranscriptSelectionLayer } from "./TranscriptSelectionPopover";
 import type { ChatFindRowContext } from "./chatFind/chatFindRows";
 import { useChatFindStore } from "../../chatFindStore";
 import { detailEntranceRef, rowEntranceRef } from "./timelineEntrance";
@@ -263,7 +267,7 @@ interface TimelineRowSharedState {
   /** Agent messages that start a new speaker's stretch and carry an author line. */
   authorLineMessageIds: ReadonlySet<MessageId>;
   /** A side answer's review or question, for the name its steps carry. */
-  sideAnswerContext: ReadonlyMap<SideTurnId, { review?: ChatMessage; replyTo?: ChatMessage }>;
+  sideAnswerContext: ReadonlyMap<SideTurnId, SideAnswerContext>;
   /** Room requests still open, by their request message. */
   openAgentRequestByMessageId: ReadonlyMap<MessageId, OrchestrationAgentRequest>;
   /**
@@ -309,7 +313,6 @@ interface TimelineRowSharedState {
   findOpenRequests: ReadonlyMap<string, number>;
   activeSearchTargetMessageId: MessageId | null;
   proposedPlanState: TimelineProposedPlanState | null;
-  turnAgents: TimelineTurnAgentsState | null;
   onOpenAgentsPanel: ((agentThreadId: string | null) => void) | null;
   /** See MessagesTimelineProps.workflowRunActions. */
   workflowRunActions: WorkflowRunActions | null;
@@ -356,6 +359,9 @@ interface TimelineRowActivityState {
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
+/** The turn's spawned agents. A context of its own: they report progress
+ *  often, and only the rows that show agents read them. */
+const TimelineTurnAgentsCtx = createContext<TimelineTurnAgentsState | null>(null);
 
 /**
  * The name an author line gives an agent: `agent` is a room agent, or null for
@@ -390,45 +396,6 @@ const THREAD_SEARCH_TARGET_VIEWPORT_POSITION = 0.28;
 const USER_SCROLL_STICK_LOCK_MS = 450;
 const TIMELINE_MAINTAIN_END_THRESHOLD_RATIO = 0.01;
 const SCROLLBAR_POINTER_GUTTER_PX = 18;
-const TRANSCRIPT_SELECTION_TEXT_MAX_CHARS = 8_000;
-const TRANSCRIPT_SELECTION_COPY_FEEDBACK_MS = 800;
-const TRANSCRIPT_NOTE_HIGHLIGHT_MAX_RECTS = 256;
-const TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX = 320;
-const TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX = 12;
-const TRANSCRIPT_SELECTION_POPOVER_GAP_PX = 8;
-// Room the note form needs when the popover opens below the selection; with
-// less than this left under the selection, the popover flips above it.
-const TRANSCRIPT_SELECTION_POPOVER_MIN_SPACE_BELOW_PX = 224;
-
-// `top` places the popover below the selection; `bottom` places it above,
-// growing upward so the note form never covers the highlighted text.
-type TranscriptSelectionPopoverAnchor = { top: number } | { bottom: number };
-
-// Timeline-container-relative rect painted over one selected line fragment
-// while the note editor holds focus (native selection stops painting then).
-type TranscriptNoteHighlightRect = {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-};
-
-type TranscriptSelectionPopoverState = {
-  sourceMessageId: MessageId;
-  sourceRole: TranscriptHighlightSourceRole;
-  selectedText: string;
-  left: number;
-  anchor: TranscriptSelectionPopoverAnchor;
-  mode: "actions" | "note";
-  note: string;
-};
-
-export function getTranscriptSelectionAfterTimelineScroll(
-  current: TranscriptSelectionPopoverState | null,
-): TranscriptSelectionPopoverState | null {
-  return current?.mode === "note" ? current : null;
-}
-
 const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 4;
 // After a finger lifts, the browser can keep the list moving: momentum, or the
 // bounce at either end. The gesture owns the scroll until that motion has been
@@ -874,8 +841,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isWaitingOnBackgroundTasks = false,
   awaitedTasks = null,
   checkBacks,
-  onCancelCheckBack,
-  onPutMcpAppMessage,
+  onCancelCheckBack: onCancelCheckBackProp,
+  onPutMcpAppMessage: onPutMcpAppMessageProp,
   activeStatusLabel,
   activeTurnInProgress,
   activeTurnId,
@@ -884,23 +851,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   stickToBottomRequestKey = 0,
   timelineEntries,
   sideAnswers = EMPTY_SIDE_ANSWERS,
-  onStopSideAnswer,
-  turnDiffSummaryByAssistantMessageId,
+  onStopSideAnswer: onStopSideAnswerProp,
+  turnDiffSummaryByAssistantMessageId: turnDiffSummaryByAssistantMessageIdProp,
   routeThreadKey,
-  onOpenTurnDiff,
+  onOpenTurnDiff: onOpenTurnDiffProp,
   revertTurnCountByUserMessageId,
-  roomAgents = null,
+  roomAgents: roomAgentsProp = null,
   agentModelLabeler = null,
   ownAgentLabels = null,
   workingParticipantId = null,
   openAgentRequests = EMPTY_AGENT_REQUESTS,
-  onRevertUserMessage,
-  onContinueInNewThread,
-  onRevealPickedElement,
+  onRevertUserMessage: onRevertUserMessageProp,
+  onContinueInNewThread: onContinueInNewThreadProp,
+  onRevealPickedElement: onRevealPickedElementProp,
   onAddTranscriptHighlightContext,
   isRevertingCheckpoint,
-  onImageExpand,
-  onPreviewFile,
+  onImageExpand: onImageExpandProp,
+  onPreviewFile: onPreviewFileProp,
   activeThreadEnvironmentId,
   activeThreadId = null,
   markdownCwd,
@@ -908,21 +875,62 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
-  providerAuthReconnect = null,
-  failedTurnRetry = null,
-  onRunProviderAuthReconnect,
+  providerAuthReconnect: providerAuthReconnectProp = null,
+  failedTurnRetry: failedTurnRetryProp = null,
+  onRunProviderAuthReconnect: onRunProviderAuthReconnectProp,
   mcpAuthReconnectStatusByServerName = EMPTY_MCP_AUTH_RECONNECT_STATUS,
-  onRunMcpAuthReconnect,
+  onRunMcpAuthReconnect: onRunMcpAuthReconnectProp,
   onIsAtEndChange,
   onVisibleTurnIdsChange,
   searchTarget = null,
   planScrollTarget = null,
-  proposedPlanState = null,
+  proposedPlanState: proposedPlanStateProp = null,
   turnAgents = null,
-  onOpenAgentsPanel = null,
-  workflowRunActions = null,
-  onOpenThread = null,
+  onOpenAgentsPanel: onOpenAgentsPanelProp = null,
+  workflowRunActions: workflowRunActionsProp = null,
+  onOpenThread: onOpenThreadProp = null,
 }: MessagesTimelineProps) {
+  // What every row reads changes only when something rows show changes: the
+  // chat rebuilds its callbacks and some of its lookups on every update to
+  // the thread, and a new context value would redraw every row on screen.
+  const {
+    onCancelCheckBack,
+    onPutMcpAppMessage,
+    onStopSideAnswer,
+    onOpenTurnDiff,
+    onRevertUserMessage,
+    onContinueInNewThread,
+    onRevealPickedElement,
+    onImageExpand,
+    onPreviewFile,
+    onRunProviderAuthReconnect,
+    onRunMcpAuthReconnect,
+    onOpenAgentsPanel,
+    onOpenThread,
+  } = useStableHandlers({
+    onCancelCheckBack: onCancelCheckBackProp,
+    onPutMcpAppMessage: onPutMcpAppMessageProp,
+    onStopSideAnswer: onStopSideAnswerProp,
+    onOpenTurnDiff: onOpenTurnDiffProp,
+    onRevertUserMessage: onRevertUserMessageProp,
+    onContinueInNewThread: onContinueInNewThreadProp,
+    onRevealPickedElement: onRevealPickedElementProp,
+    onImageExpand: onImageExpandProp,
+    onPreviewFile: onPreviewFileProp,
+    onRunProviderAuthReconnect: onRunProviderAuthReconnectProp,
+    onRunMcpAuthReconnect: onRunMcpAuthReconnectProp,
+    onOpenAgentsPanel: onOpenAgentsPanelProp,
+    onOpenThread: onOpenThreadProp,
+  });
+  const proposedPlanState = useStableHandlers(proposedPlanStateProp);
+  const workflowRunActions = useStableHandlers(workflowRunActionsProp);
+  const failedTurnRetry = useStableHandlers(failedTurnRetryProp);
+  const providerAuthReconnect = useKept(providerAuthReconnectProp, shallow);
+  const turnDiffSummaryByAssistantMessageId = useKept(
+    turnDiffSummaryByAssistantMessageIdProp,
+    shallow,
+  );
+  const roomAgents = useKept(roomAgentsProp, sameRoomAgentLabels);
   const liveAgentCount = useMemo(
     () =>
       (turnAgents?.subagents ?? []).filter((item) => isActiveSubagentStatus(item.status)).length,
@@ -964,6 +972,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           : roomAgents?.get(roomAgentKey(agent)),
     [agentModelLabeler, hasTeammates, ownAgentLabels, roomAgents],
   );
+  const openAgentRequestByMessageId = useMemo(
+    () => new Map(openAgentRequests.map((request) => [request.requestMessageId, request] as const)),
+    [openAgentRequests],
+  );
   const rowsInput = useMemo<Parameters<typeof deriveMessagesTimelineRows>[0]>(
     () => ({
       timelineEntries,
@@ -981,6 +993,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       revertTurnCountByUserMessageId,
       sideAnswers,
       expandedSideTurnIds,
+      openAgentRequestByMessageId,
       workingParticipantId,
       roomAgentNames,
     }),
@@ -988,6 +1001,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workingParticipantId,
       roomAgentNames,
       sideAnswers,
+      openAgentRequestByMessageId,
       expandedSideTurnIds,
       timelineEntries,
       isWorking,
@@ -1008,7 +1022,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     () => deriveRememberedMessagesTimelineRows(routeThreadKey, rowsInput),
     [routeThreadKey, rowsInput],
   );
-  const rows = useStableRows(rawRows);
+  const { result: rows, shared: rowsShared } = useStableRows(rawRows);
+  // Kept as stable as the rows, so a live update to one row does not hand
+  // every row a new context.
+  const {
+    anchorOwnsLiveAgents,
+    authorLineMessageIds,
+    sideAnswerContext,
+    sideAnswerRequests,
+    threadStartCallsByTurn,
+    resolvedProviderAuthReconnectIds,
+  } = rowsShared;
   // Find in chat searches the rows as drawn, plus answers still being written
   // under a folded side question: they open where they already sit.
   const findOpen = useChatFindStore((state) => state.open);
@@ -1066,63 +1090,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     },
     [],
   );
-  const anchorOwnsLiveAgents = rows.some((row) => row.kind === "working");
-  // Which agent messages carry an author line: the ones that head their
-  // agent's stretch or side answer (AgentLine.heads). A hand-off or a reply
-  // names its writer in its own header.
-  const authorLineMessageIds = useMemo(() => {
-    const ids = new Set<MessageId>();
-    for (const row of rows) {
-      if (
-        row.kind === "message" &&
-        row.message.role === "assistant" &&
-        (row.agentLine !== undefined ? row.agentLine.heads : row.message.sideTurnId !== undefined)
-      ) {
-        ids.add(row.message.id);
-      }
-    }
-    return ids;
-  }, [rows]);
-  // What a side answer's name says when its steps carry it: the review it
-  // answers, or the question it links back to.
-  const sideAnswerContext = useMemo(() => {
-    const context = new Map<SideTurnId, { review?: ChatMessage; replyTo?: ChatMessage }>();
-    for (const row of rows) {
-      if (row.kind === "message" && row.message.sideTurnId !== undefined) {
-        if (row.sideReview !== undefined || row.sideReplyTo !== undefined) {
-          context.set(row.message.sideTurnId, {
-            ...(row.sideReview !== undefined ? { review: row.sideReview } : {}),
-            ...(row.sideReplyTo !== undefined ? { replyTo: row.sideReplyTo } : {}),
-          });
-        }
-      }
-    }
-    return context;
-  }, [rows]);
-  const sideAnswerRequests = useMemo(() => {
-    const requests = new Map<RoomAgentRequestId, ChatMessage>();
-    for (const row of rows) {
-      if (
-        row.kind === "message" &&
-        (row.message.requestKind === "invite" ||
-          row.message.requestKind === "ask" ||
-          row.message.requestKind === "review") &&
-        row.message.requestId !== undefined
-      ) {
-        requests.set(row.message.requestId, row.message);
-      }
-    }
-    return requests;
-  }, [rows]);
-  const threadStartCallsByTurn = useMemo(() => collectThreadStartCalls(rows), [rows]);
-  const openAgentRequestByMessageId = useMemo(
-    () => new Map(openAgentRequests.map((request) => [request.requestMessageId, request] as const)),
-    [openAgentRequests],
-  );
-  const resolvedProviderAuthReconnectIds = useMemo(
-    () => deriveResolvedProviderAuthReconnectIds(rows),
-    [rows],
-  );
   const turnDiffSummaryByTurnId = useMemo(() => {
     const next = new Map<TurnId, TurnDiffSummary>();
     for (const summary of turnDiffSummaryByAssistantMessageId.values()) {
@@ -1171,12 +1138,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // The timeline's width, for guessing how tall an undrawn row is. Read on
   // first use, then kept current by the resize observer.
   const timelineWidthRef = useRef(0);
-  const [transcriptSelection, setTranscriptSelection] =
-    useState<TranscriptSelectionPopoverState | null>(null);
-  const transcriptNoteHighlightRangeRef = useRef<Range | null>(null);
-  const [transcriptNoteHighlightRects, setTranscriptNoteHighlightRects] = useState<
-    TranscriptNoteHighlightRect[] | null
-  >(null);
 
   const setAutoStickToBottomState = useCallback((next: boolean) => {
     if (autoStickToBottomRef.current === next) {
@@ -1451,19 +1412,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const stickToBottomRequestPending =
     stickToBottomRequestKey !== lastHandledStickToBottomRequestKeyRef.current;
 
-  const refreshTranscriptNoteHighlightRects = useCallback(() => {
-    const range = transcriptNoteHighlightRangeRef.current;
-    const container = timelineContainerRef.current;
-    if (!range || !container) {
-      return;
-    }
-    setTranscriptNoteHighlightRects(computeTranscriptNoteHighlightRects(range, container));
-  }, []);
-
   const handleScroll = useCallback(
     (event: TimelineScrollEvent) => {
-      setTranscriptSelection(getTranscriptSelectionAfterTimelineScroll);
-      refreshTranscriptNoteHighlightRects();
       scheduleTouchScrollSettle();
       const eventAtEnd = isTimelineScrollEventAtEnd(event);
       const nextIsAtEnd =
@@ -1523,82 +1473,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       listRef,
       markUserScrollIntent,
       onIsAtEndChange,
-      refreshTranscriptNoteHighlightRects,
       scheduleTouchScrollSettle,
       setAutoStickToBottomState,
       stickToBottomRequestPending,
     ],
   );
-
-  const refreshTranscriptSelectionPopover = useCallback(() => {
-    if (!onAddTranscriptHighlightContext) {
-      setTranscriptSelection(null);
-      return;
-    }
-    const nextSelection = readTranscriptSelectionPopoverState(timelineContainerRef.current);
-    setTranscriptSelection(nextSelection);
-  }, [onAddTranscriptHighlightContext]);
-
-  const handleTranscriptSelectionEnd = useCallback(
-    (event: ReactSyntheticEvent<HTMLElement>) => {
-      if (
-        event.target instanceof Element &&
-        event.target.closest("[data-transcript-selection-popover='true']")
-      ) {
-        return;
-      }
-      window.requestAnimationFrame(refreshTranscriptSelectionPopover);
-    },
-    [refreshTranscriptSelectionPopover],
-  );
-
-  const updateTranscriptSelectionNote = useCallback((note: string) => {
-    setTranscriptSelection((current) => (current ? { ...current, note } : current));
-  }, []);
-
-  const openTranscriptSelectionNote = useCallback(() => {
-    const selection = window.getSelection();
-    const container = timelineContainerRef.current;
-    if (selection && selection.rangeCount > 0 && !selection.isCollapsed && container) {
-      const range = selection.getRangeAt(0).cloneRange();
-      transcriptNoteHighlightRangeRef.current = range;
-      setTranscriptNoteHighlightRects(computeTranscriptNoteHighlightRects(range, container));
-    }
-    setTranscriptSelection((current) => (current ? { ...current, mode: "note" } : current));
-  }, []);
-
-  const transcriptNoteHighlightActive = transcriptSelection?.mode === "note";
-  useEffect(() => {
-    if (!transcriptNoteHighlightActive) {
-      return;
-    }
-    return () => {
-      transcriptNoteHighlightRangeRef.current = null;
-      setTranscriptNoteHighlightRects(null);
-    };
-  }, [transcriptNoteHighlightActive]);
-
-  const dismissTranscriptSelection = useCallback(() => {
-    setTranscriptSelection(null);
-  }, []);
-
-  const submitTranscriptSelectionNote = useCallback(() => {
-    if (!transcriptSelection || !onAddTranscriptHighlightContext) {
-      return;
-    }
-    const note = transcriptSelection.note.trim();
-    if (note.length === 0) {
-      return;
-    }
-    onAddTranscriptHighlightContext({
-      sourceMessageId: transcriptSelection.sourceMessageId,
-      sourceRole: transcriptSelection.sourceRole,
-      selectedText: transcriptSelection.selectedText,
-      note,
-    });
-    window.getSelection()?.removeAllRanges();
-    setTranscriptSelection(null);
-  }, [onAddTranscriptHighlightContext, transcriptSelection]);
 
   const handleWheelCapture = useCallback(
     (event: ReactWheelEvent) => {
@@ -1943,7 +1822,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       findOpenRequests,
       activeSearchTargetMessageId,
       proposedPlanState,
-      turnAgents,
       onOpenAgentsPanel,
       workflowRunActions,
       onOpenThread,
@@ -1989,7 +1867,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       findOpenRequests,
       activeSearchTargetMessageId,
       proposedPlanState,
-      turnAgents,
       onOpenAgentsPanel,
       workflowRunActions,
       onOpenThread,
@@ -2049,379 +1926,84 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     <TimelineRowCtx value={sharedState}>
       <TimelineAgentLabelCtx value={resolveAgentLabel}>
         <TimelineRowActivityCtx value={activityState}>
-          <div className="relative h-full">
-            <div
-              ref={timelineContainerRef}
-              className="relative h-full"
-              onMouseUpCapture={handleTranscriptSelectionEnd}
-              onKeyUpCapture={handleTranscriptSelectionEnd}
-            >
-              <LegendList<MessagesTimelineRow>
-                key={`${routeThreadKey}:${legendListEpoch}`}
-                ref={assignLegendListRef}
-                data={rows}
-                keyExtractor={keyExtractor}
-                renderItem={renderItem}
-                estimatedItemSize={90}
-                getEstimatedItemSize={getEstimatedItemSize}
-                initialScrollAtEnd={searchTargetRowIndex < 0}
-                {...(searchTargetRowIndex >= 0
-                  ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
-                  : {})}
-                maintainScrollAtEnd={
-                  searchTargetRowIndex < 0 &&
-                  ((autoStickToBottom && !touchScrollActive) || stickToBottomRequestPending)
-                    ? MAINTAIN_SCROLL_AT_END
-                    : false
-                }
-                maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
-                // Anchoring and bottom-following both adjust for streamed line wraps.
-                // Use anchoring only while reading above the tail to avoid overshoot.
-                maintainVisibleContentPosition={
-                  !autoStickToBottom && !stickToBottomRequestPending ? HOLD_READING_POSITION : false
-                }
-                onScroll={handleScroll}
-                {...(onVisibleTurnIdsChange
-                  ? { onViewableItemsChanged: handleViewableItemsChanged }
-                  : {})}
-                onWheelCapture={handleWheelCapture}
-                onPointerDownCapture={handlePointerDownCapture}
-                onTouchStartCapture={handleTouchStartCapture}
-                onTouchMoveCapture={handleTouchMoveCapture}
-                onTouchEndCapture={handleTouchEndCapture}
-                onTouchCancelCapture={handleTouchEndCapture}
-                onKeyDownCapture={handleKeyDownCapture}
-                data-chat-messages-list="true"
-                className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
-                ListHeaderComponent={TIMELINE_LIST_HEADER}
-                ListFooterComponent={TIMELINE_LIST_FOOTER}
-              />
-              {/* Dissolve rows into the background at the viewport's bottom edge so
+          <TimelineTurnAgentsCtx value={turnAgents}>
+            <div className="relative h-full">
+              <div ref={timelineContainerRef} className="relative h-full">
+                <LegendList<MessagesTimelineRow>
+                  key={`${routeThreadKey}:${legendListEpoch}`}
+                  ref={assignLegendListRef}
+                  data={rows}
+                  keyExtractor={keyExtractor}
+                  renderItem={renderItem}
+                  estimatedItemSize={90}
+                  getEstimatedItemSize={getEstimatedItemSize}
+                  initialScrollAtEnd={searchTargetRowIndex < 0}
+                  {...(searchTargetRowIndex >= 0
+                    ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
+                    : {})}
+                  maintainScrollAtEnd={
+                    searchTargetRowIndex < 0 &&
+                    ((autoStickToBottom && !touchScrollActive) || stickToBottomRequestPending)
+                      ? MAINTAIN_SCROLL_AT_END
+                      : false
+                  }
+                  maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
+                  // Anchoring and bottom-following both adjust for streamed line wraps.
+                  // Use anchoring only while reading above the tail to avoid overshoot.
+                  maintainVisibleContentPosition={
+                    !autoStickToBottom && !stickToBottomRequestPending
+                      ? HOLD_READING_POSITION
+                      : false
+                  }
+                  onScroll={handleScroll}
+                  {...(onVisibleTurnIdsChange
+                    ? { onViewableItemsChanged: handleViewableItemsChanged }
+                    : {})}
+                  onWheelCapture={handleWheelCapture}
+                  onPointerDownCapture={handlePointerDownCapture}
+                  onTouchStartCapture={handleTouchStartCapture}
+                  onTouchMoveCapture={handleTouchMoveCapture}
+                  onTouchEndCapture={handleTouchEndCapture}
+                  onTouchCancelCapture={handleTouchEndCapture}
+                  onKeyDownCapture={handleKeyDownCapture}
+                  data-chat-messages-list="true"
+                  className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
+                  ListHeaderComponent={TIMELINE_LIST_HEADER}
+                  ListFooterComponent={TIMELINE_LIST_FOOTER}
+                />
+                {/* Dissolve rows into the background at the viewport's bottom edge so
               scrolled-under content fades out instead of hard-clipping right
               above the composer. */}
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
-              />
-              {transcriptNoteHighlightRects && transcriptNoteHighlightRects.length > 0 ? (
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 overflow-hidden"
-                >
-                  {transcriptNoteHighlightRects.map((rect) => (
-                    <div
-                      key={`${rect.top}:${rect.left}:${rect.width}`}
-                      className="transcript-note-highlight absolute"
-                      style={{
-                        left: rect.left,
-                        top: rect.top,
-                        width: rect.width,
-                        height: rect.height,
-                      }}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {transcriptSelection && onAddTranscriptHighlightContext ? (
-                <TranscriptSelectionPopover
-                  state={transcriptSelection}
-                  onCopyDismiss={dismissTranscriptSelection}
-                  onOpenNote={openTranscriptSelectionNote}
-                  onNoteChange={updateTranscriptSelectionNote}
-                  onSubmitNote={submitTranscriptSelectionNote}
-                  onCancel={dismissTranscriptSelection}
+                  className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
                 />
-              ) : null}
-            </div>
-            {/* Beside the list rather than in it: the bar's own keys and its count
+                {onAddTranscriptHighlightContext ? (
+                  <TranscriptSelectionLayer
+                    containerRef={timelineContainerRef}
+                    onAddHighlight={onAddTranscriptHighlightContext}
+                  />
+                ) : null}
+              </div>
+              {/* Beside the list rather than in it: the bar's own keys and its count
               changing are not the transcript's. */}
-            <ChatFind
-              rows={rows}
-              findRows={findRows}
-              rowContext={findRowContext}
-              listRef={listRef}
-              containerRef={timelineContainerRef}
-              onOpenRow={onFindOpenRow}
-              onOpenSideExchange={onFindOpenSideExchange}
-              onStopFollowing={onFindStopFollowing}
-            />
-          </div>
+              <ChatFind
+                rows={rows}
+                findRows={findRows}
+                rowContext={findRowContext}
+                listRef={listRef}
+                containerRef={timelineContainerRef}
+                onOpenRow={onFindOpenRow}
+                onOpenSideExchange={onFindOpenSideExchange}
+                onStopFollowing={onFindStopFollowing}
+              />
+            </div>
+          </TimelineTurnAgentsCtx>
         </TimelineRowActivityCtx>
       </TimelineAgentLabelCtx>
     </TimelineRowCtx>
   );
 });
-
-function TranscriptSelectionPopover({
-  state,
-  onCopyDismiss,
-  onOpenNote,
-  onNoteChange,
-  onSubmitNote,
-  onCancel,
-}: {
-  state: TranscriptSelectionPopoverState;
-  onCopyDismiss: () => void;
-  onOpenNote: () => void;
-  onNoteChange: (note: string) => void;
-  onSubmitNote: () => void;
-  onCancel: () => void;
-}) {
-  const noteInputRef = useRef<HTMLTextAreaElement | null>(null);
-  // timeout: 0 keeps the checkmark painted until the delayed dismiss unmounts
-  // the popover, so it never flips back to the copy icon mid-animation.
-  const { copyToClipboard, isCopied } = useCopyToClipboard<void>({ timeout: 0 });
-  const noteIsEmpty = state.note.trim().length === 0;
-
-  useEffect(() => {
-    if (!isCopied) {
-      return;
-    }
-    const timeoutId = window.setTimeout(onCopyDismiss, TRANSCRIPT_SELECTION_COPY_FEEDBACK_MS);
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [isCopied, onCopyDismiss]);
-
-  useEffect(() => {
-    if (state.mode !== "note") {
-      return;
-    }
-    const frameId = window.requestAnimationFrame(() => {
-      noteInputRef.current?.focus();
-    });
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [state.mode]);
-
-  return (
-    <div
-      className="absolute z-40"
-      style={{ left: state.left, width: TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX, ...state.anchor }}
-      data-transcript-selection-popover="true"
-      onMouseDown={(event) => {
-        if (state.mode === "actions") {
-          event.preventDefault();
-        }
-        event.stopPropagation();
-      }}
-    >
-      {state.mode === "actions" ? (
-        <div className="inline-flex items-center gap-1 rounded-lg border border-border/75 bg-popover/96 px-1.5 py-1 text-popover-foreground shadow-lg shadow-black/10 backdrop-blur">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label="Copy selected text"
-                  onClick={() => copyToClipboard(state.selectedText, undefined)}
-                />
-              }
-            >
-              {isCopied ? (
-                <CheckIcon className="copy-check-pop size-3 text-success" />
-              ) : (
-                <CopyIcon className="size-3" />
-              )}
-            </TooltipTrigger>
-            <TooltipPopup side="top">Copy selected text</TooltipPopup>
-          </Tooltip>
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            onClick={onOpenNote}
-            className="h-6 px-2 text-xs"
-          >
-            <SquarePenIcon className="size-3" />
-            Add note
-          </Button>
-        </div>
-      ) : (
-        <form
-          className="rounded-lg border border-border/75 bg-popover/96 p-2 text-popover-foreground shadow-lg shadow-black/10 backdrop-blur"
-          onSubmit={(event) => handleTranscriptHighlightNoteFormSubmit(event, onSubmitNote)}
-        >
-          <p className="mb-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
-            {state.selectedText}
-          </p>
-          <Textarea
-            ref={noteInputRef}
-            size="sm"
-            value={state.note}
-            onChange={(event) => onNoteChange(event.currentTarget.value)}
-            placeholder="Add context for this highlight"
-            className="text-xs"
-            onKeyDown={(event) =>
-              handleTranscriptHighlightNoteKeyDown(event, {
-                onSubmit: onSubmitNote,
-                onCancel,
-              })
-            }
-          />
-          <div className="mt-2 flex justify-end gap-1.5">
-            <Button type="button" variant="ghost" size="xs" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button type="submit" size="xs" disabled={noteIsEmpty}>
-              Add
-            </Button>
-          </div>
-        </form>
-      )}
-    </div>
-  );
-}
-
-function readTranscriptSelectionPopoverState(
-  container: HTMLDivElement | null,
-): TranscriptSelectionPopoverState | null {
-  if (!container || typeof window === "undefined") {
-    return null;
-  }
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-    return null;
-  }
-  const selectedText = selection.toString().trim();
-  if (selectedText.length === 0) {
-    return null;
-  }
-  const range = selection.getRangeAt(0);
-  const startBody = findTranscriptMessageBody(range.startContainer);
-  const endBody = findTranscriptMessageBody(range.endContainer);
-  if (!startBody || startBody !== endBody) {
-    return null;
-  }
-  if (startBody.dataset.transcriptMessageStreaming === "true") {
-    return null;
-  }
-  const sourceMessageId = startBody.dataset.transcriptMessageId;
-  const sourceRole = startBody.dataset.transcriptMessageRole;
-  if (!sourceMessageId || (sourceRole !== "assistant" && sourceRole !== "user")) {
-    return null;
-  }
-
-  const rect = range.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) {
-    return null;
-  }
-  const containerRect = container.getBoundingClientRect();
-  const unclampedLeft =
-    rect.left - containerRect.left + rect.width / 2 - TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX / 2;
-  const maxLeft = Math.max(
-    TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
-    containerRect.width -
-      TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX -
-      TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
-  );
-  const left = Math.min(Math.max(TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX, unclampedLeft), maxLeft);
-  const selectionTop = rect.top - containerRect.top;
-  const selectionBottom = rect.bottom - containerRect.top;
-  const spaceBelow = containerRect.height - selectionBottom;
-  const anchor: TranscriptSelectionPopoverAnchor =
-    spaceBelow >= TRANSCRIPT_SELECTION_POPOVER_MIN_SPACE_BELOW_PX
-      ? {
-          top: Math.max(
-            TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
-            selectionBottom + TRANSCRIPT_SELECTION_POPOVER_GAP_PX,
-          ),
-        }
-      : {
-          bottom: Math.max(
-            TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
-            containerRect.height - selectionTop + TRANSCRIPT_SELECTION_POPOVER_GAP_PX,
-          ),
-        };
-
-  return {
-    sourceMessageId: sourceMessageId as MessageId,
-    sourceRole,
-    selectedText:
-      selectedText.length > TRANSCRIPT_SELECTION_TEXT_MAX_CHARS
-        ? selectedText.slice(0, TRANSCRIPT_SELECTION_TEXT_MAX_CHARS)
-        : selectedText,
-    left,
-    anchor,
-    mode: "actions",
-    note: "",
-  };
-}
-
-// The native selection stops painting once the note textarea takes focus, so
-// the selected range is re-painted as overlay rects while the note is open.
-// CSS ::highlight() can't be used here: Chromium paints custom highlights at
-// the font's ascent/descent height while native selection fills the whole
-// line box, so the two visibly disagree. Expanding each text fragment's rect
-// to its element's line-height reproduces the native selection geometry.
-function collectRangeTextNodes(range: Range): Text[] {
-  const root = range.commonAncestorContainer;
-  if (root instanceof Text) {
-    return [root];
-  }
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: (node) =>
-      range.intersectsNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
-  });
-  const nodes: Text[] = [];
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    nodes.push(node as Text);
-  }
-  return nodes;
-}
-
-function computeTranscriptNoteHighlightRects(
-  range: Range,
-  container: HTMLElement,
-): TranscriptNoteHighlightRect[] {
-  const containerRect = container.getBoundingClientRect();
-  const rects: TranscriptNoteHighlightRect[] = [];
-  for (const textNode of collectRangeTextNodes(range)) {
-    const nodeRange = document.createRange();
-    nodeRange.selectNodeContents(textNode);
-    if (textNode === range.startContainer) {
-      nodeRange.setStart(textNode, range.startOffset);
-    }
-    if (textNode === range.endContainer) {
-      nodeRange.setEnd(textNode, range.endOffset);
-    }
-    const lineHeight = textNode.parentElement
-      ? Number.parseFloat(window.getComputedStyle(textNode.parentElement).lineHeight)
-      : Number.NaN;
-    const fragmentRects = nodeRange.getClientRects();
-    for (let index = 0; index < fragmentRects.length; index += 1) {
-      const rect = fragmentRects[index];
-      if (!rect || rect.width <= 0 || rect.height <= 0) {
-        continue;
-      }
-      const expansion =
-        Number.isFinite(lineHeight) && lineHeight > rect.height
-          ? (lineHeight - rect.height) / 2
-          : 0;
-      rects.push({
-        left: rect.left - containerRect.left,
-        top: rect.top - containerRect.top - expansion,
-        width: rect.width,
-        height: rect.height + expansion * 2,
-      });
-      if (rects.length >= TRANSCRIPT_NOTE_HIGHLIGHT_MAX_RECTS) {
-        return rects;
-      }
-    }
-  }
-  return rects;
-}
-
-function findTranscriptMessageBody(node: Node): HTMLElement | null {
-  const element = node instanceof Element ? node : node.parentNode;
-  if (!(element instanceof Element)) {
-    return null;
-  }
-  return element?.closest<HTMLElement>("[data-transcript-message-body='true']") ?? null;
-}
 
 /**
  * What a chat whose detail has not landed says in place of its messages:
@@ -2446,53 +2028,6 @@ function PendingThreadDetailState(props: { savedEnvironmentConnected: boolean | 
 
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
-}
-
-function isResolvedProviderAuthRecoverySignal(row: MessagesTimelineRow): boolean {
-  if (row.kind !== "message" || row.message.role !== "assistant" || row.message.streaming) {
-    return false;
-  }
-  return row.message.text.trim().length > 0 && !isProviderAuthErrorChatMessage(row.message);
-}
-
-function deriveResolvedProviderAuthReconnectIds(
-  rows: ReadonlyArray<MessagesTimelineRow>,
-): ReadonlySet<string> {
-  const resolvedIds = new Set<string>();
-  let hasLaterAssistantSuccess = false;
-
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    const row = rows[index];
-    if (!row) {
-      continue;
-    }
-
-    if (isResolvedProviderAuthRecoverySignal(row)) {
-      hasLaterAssistantSuccess = true;
-      continue;
-    }
-
-    if (!hasLaterAssistantSuccess) {
-      continue;
-    }
-
-    if (row.kind === "message" && row.message.role === "assistant") {
-      if (isProviderAuthErrorChatMessage(row.message)) {
-        resolvedIds.add(row.id);
-      }
-      continue;
-    }
-
-    if (row.kind === "work") {
-      for (const entry of row.groupedEntries) {
-        if (entry.authReconnect) {
-          resolvedIds.add(entry.id);
-        }
-      }
-    }
-  }
-
-  return resolvedIds;
 }
 
 // ---------------------------------------------------------------------------
@@ -3549,13 +3084,18 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     () =>
       streaming || row.message.sideTurnId !== undefined || row.message.turnId == null
         ? null
-        : { messageId: row.message.id, participantId: row.message.participantId ?? null },
+        : {
+            messageId: row.message.id,
+            participantId: row.message.participantId ?? null,
+            text: row.message.text,
+          },
     [
       streaming,
       row.message.id,
       row.message.participantId,
       row.message.sideTurnId,
       row.message.turnId,
+      row.message.text,
     ],
   );
 
@@ -3980,8 +3520,8 @@ function McpAppTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mcp-app
  *  the state the turn is in ("Thinking", "Waiting for approval"). While the
  *  agent thinks out loud, its newest thought sits under the word. */
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { turnAgents, onOpenAgentsPanel, activeThreadEnvironmentId, activeThreadId } =
-    use(TimelineRowCtx);
+  const { onOpenAgentsPanel, activeThreadEnvironmentId, activeThreadId } = use(TimelineRowCtx);
+  const turnAgents = use(TimelineTurnAgentsCtx);
   const commandOutputLine = useLiveCommandOutputLine(
     activeThreadEnvironmentId,
     activeThreadId,
@@ -4232,7 +3772,10 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
   }
   if (row.state === "answering" || row.state === "stopping") {
     const stopping = row.state === "stopping";
-    const doing = stopping ? "stopping" : row.review ? "reviewing independently" : "answering";
+    // The step it is on, unless the working row already says it.
+    const doing = stopping
+      ? "stopping"
+      : (row.liveStep ?? (row.review ? "reviewing independently" : "answering"));
     // Its caller stopped waiting: the answer goes to it as a message.
     const goesTo =
       !stopping && openAgentRequestByMessageId.get(row.question.id)?.replyAsMessage === true
@@ -4242,14 +3785,18 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
       <div className="py-1" data-side-answer-status={row.state}>
         <div
           className={cn(
-            "flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-1 text-xs leading-4 text-muted-foreground/70",
+            "flex min-w-0 items-center gap-x-1.5 gap-y-0.5 pl-1 text-xs leading-4 text-muted-foreground/70",
+            // One line that names the step the answer is on: a long step
+            // truncates rather than wrapping Stop onto a line of its own.
+            row.compact ? "flex-nowrap" : "flex-wrap",
             underYourQuestion && "justify-end",
           )}
         >
           <WorkingAnchorDots state="working" className="relative -top-px -mr-0.5 shrink-0" />
           {row.compact ? (
             // The working agent goes on meanwhile: one line, which opens to
-            // show the answer being written.
+            // show the answer being written. It sits at the right, so as the
+            // step changes the words grow to the left and Stop stays put.
             <button
               type="button"
               aria-expanded={row.expanded}
@@ -4258,8 +3805,10 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
             >
               <span className="min-w-0 truncate">
                 {name} · {doing}
-                {goesTo !== null ? ` · goes to ${goesTo} when done` : null} ·{" "}
-                <WorkingTimer createdAt={row.question.createdAt} />
+                {goesTo !== null ? ` · goes to ${goesTo} when done` : null}
+              </span>
+              <span className="shrink-0">
+                · <WorkingTimer createdAt={row.question.createdAt} />
               </span>
               <ChevronRightIcon
                 aria-hidden
@@ -4569,38 +4118,6 @@ function ScheduleCallRecordLine({ entry }: { entry: TimelineWorkEntry }) {
       {line}
     </button>
   );
-}
-
-/** A finished `thread_start` call: the steps leave it to its own record. */
-function isSettledThreadStartEntry(entry: TimelineWorkEntry): boolean {
-  return entry.executionState !== "running" && threadlinesRoomToolOf(entry) === "thread_start";
-}
-
-/** The turn a `thread_start` call is grouped by; a call no turn names stands alone. */
-function threadStartTurnKey(entry: Pick<TimelineWorkEntry, "id" | "turnId">): string {
-  return entry.turnId ? `turn:${entry.turnId}` : `entry:${entry.id}`;
-}
-
-/** Every finished `thread_start` call in the chat, by turn, in order. */
-function collectThreadStartCalls(
-  rows: ReadonlyArray<MessagesTimelineRow>,
-): ReadonlyMap<string, ReadonlyArray<ThreadStartCall>> {
-  const byTurn = new Map<string, ThreadStartCall[]>();
-  for (const row of rows) {
-    if (row.kind !== "work") continue;
-    for (const entry of row.groupedEntries) {
-      if (!isSettledThreadStartEntry(entry)) continue;
-      const key = threadStartTurnKey(entry);
-      const calls = byTurn.get(key) ?? [];
-      calls.push({
-        id: entry.id,
-        turnId: entry.turnId ?? null,
-        result: parseThreadStartResult(entry.toolResult ?? entry.outputPreview),
-      });
-      byTurn.set(key, calls);
-    }
-  }
-  return byTurn;
 }
 
 /**
@@ -4914,7 +4431,7 @@ function useTurnAgents(
   trackerTurnIds: ReadonlyArray<TurnId>,
   trackerAgentSpawnIds: ReadonlyArray<string> = [],
 ): ReadonlyArray<SubagentProgressItem> {
-  const { turnAgents } = use(TimelineRowCtx);
+  const turnAgents = use(TimelineTurnAgentsCtx);
   const turnIds = useMemo(() => new Set(trackerTurnIds), [trackerTurnIds]);
   const spawnCallIds = useMemo(() => new Set(trackerAgentSpawnIds), [trackerAgentSpawnIds]);
   return useMemo(
@@ -5687,17 +5204,15 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 // ---------------------------------------------------------------------------
 
 /** Returns a structurally-shared copy of `rows`: for each row whose content
- *  hasn't changed since last call, the previous object reference is reused. */
-function useStableRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
-  const prevState = useRef<StableMessagesTimelineRowsState>({
-    byId: new Map<string, MessagesTimelineRow>(),
-    result: [],
-  });
+ *  hasn't changed since last call, the previous object reference is reused,
+ *  and so is each part of what the rows share with every row. */
+function useStableRows(rows: MessagesTimelineRow[]): StableMessagesTimelineRowsState {
+  const prevState = useRef<StableMessagesTimelineRowsState>(NO_STABLE_TIMELINE_ROWS);
 
   return useMemo(() => {
     const nextState = computeStableMessagesTimelineRows(rows, prevState.current);
     prevState.current = nextState;
-    return nextState.result;
+    return nextState;
   }, [rows]);
 }
 

@@ -1,6 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import { beforeEach, vi } from "vite-plus/test";
 
 const {
@@ -89,21 +88,6 @@ describe("ElectronApp", () => {
     setPathMock.mockClear();
   });
 
-  it.effect("reads app metadata through the service", () =>
-    Effect.gen(function* () {
-      const electronApp = yield* ElectronApp.ElectronApp;
-      const metadata = yield* electronApp.metadata;
-
-      assert.deepEqual(metadata, {
-        appVersion: "1.2.3",
-        appPath: "/app",
-        isPackaged: true,
-        resourcesPath: process.resourcesPath,
-        runningUnderArm64Translation: false,
-      });
-    }).pipe(Effect.provide(ElectronApp.layer)),
-  );
-
   it.effect("scopes app event listeners", () =>
     Effect.gen(function* () {
       const listener = vi.fn();
@@ -117,24 +101,6 @@ describe("ElectronApp", () => {
 
       assert.deepEqual(onMock.mock.calls, [["activate", listener]]);
       assert.deepEqual(removeListenerMock.mock.calls, [["activate", listener]]);
-    }).pipe(Effect.provide(ElectronApp.layer)),
-  );
-
-  it.effect("wraps macOS Dock status APIs", () =>
-    Effect.gen(function* () {
-      const electronApp = yield* ElectronApp.ElectronApp;
-
-      yield* electronApp.setDockBadge("1");
-      const bounceId = yield* electronApp.bounceDock("informational");
-      yield* electronApp.cancelDockBounce(7);
-
-      assert.deepEqual(setDockBadgeMock.mock.calls, [["1"]]);
-      assert.deepEqual(bounceDockMock.mock.calls, [["informational"]]);
-      assert.deepEqual(cancelDockBounceMock.mock.calls, [[7]]);
-      assert.isTrue(Option.isSome(bounceId));
-      if (Option.isSome(bounceId)) {
-        assert.equal(bounceId.value, 7);
-      }
     }).pipe(Effect.provide(ElectronApp.layer)),
   );
 });

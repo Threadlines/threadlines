@@ -160,15 +160,17 @@ function openPathInEditor(cwd: string, path: string, editor: EditorId): void {
   if (!api) {
     return;
   }
-  void api.shell.openInEditor(workspaceAbsolutePath(cwd, path), editor).catch((error: unknown) => {
-    toastManager.add(
-      stackedThreadToast({
-        type: "error",
-        title: "Unable to open file externally",
-        description: error instanceof Error ? error.message : "An error occurred.",
-      }),
-    );
-  });
+  void api.shell
+    .openInEditor(workspaceAbsolutePath(cwd, path), editor, cwd)
+    .catch((error: unknown) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to open file externally",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+    });
 }
 
 type OpenWithMenuId = "open-external" | "reveal" | "copy-path";

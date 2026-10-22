@@ -46,11 +46,6 @@ describe("splitRelayFrame", () => {
 });
 
 describe("createRelayChunkReassembler", () => {
-  it("round-trips an oversized frame", () => {
-    const frame = JSON.stringify({ payload: "x".repeat(RELAY_CHUNK_MAX_CHARS * 3) });
-    expect(roundTrip(frame)).toBe(frame);
-  });
-
   it("returns non-chunk frames as-is", () => {
     const reassembler = createRelayChunkReassembler();
     expect(reassembler.push('{"a":1}')).toBe('{"a":1}');

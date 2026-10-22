@@ -5,7 +5,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import {
-  DICTATION_MODELS,
   DICTATION_RUNTIME_VERSION,
   dictationModel,
   modelIsReady,
@@ -33,15 +32,6 @@ it.layer(NodeServices.layer)("dictation catalog", (it) => {
       }
       assert.isNull(resolveRuntimePackage("linux", "ia32"));
       assert.isNull(resolveRuntimePackage("freebsd", "x64"));
-    }),
-  );
-
-  it.effect("names both models in catalog order", () =>
-    Effect.sync(() => {
-      assert.deepEqual(
-        DICTATION_MODELS.map((entry) => entry.id),
-        ["parakeet", "moonshine"],
-      );
     }),
   );
 

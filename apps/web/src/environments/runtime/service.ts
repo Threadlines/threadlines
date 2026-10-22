@@ -37,6 +37,7 @@ import {
 } from "~/composerDraftStore";
 import { ensureLocalApi } from "~/localApi";
 import { collectActiveTerminalThreadIds } from "~/lib/terminalStateCleanup";
+import { settleComposerPullRequestDismissals } from "~/lib/composerPullRequestDismissals";
 import {
   migrateLegacyInboxStateForEnvironment,
   resendUndeliveredThreadSeen,
@@ -1252,6 +1253,11 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       return;
     case "thread-upserted":
       syncThreadUiFromStore();
+      settleComposerPullRequestDismissals({
+        environmentId,
+        threadId: event.thread.id,
+        sequence: event.sequence,
+      });
       if (!previousThread && threadRef) {
         markPromotedDraftThreadByRef(threadRef);
       }
@@ -1269,6 +1275,12 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       threadDetails.evictIdleToCapacity();
       return;
     case "thread-removed":
+      settleComposerPullRequestDismissals({
+        environmentId,
+        threadId: event.threadId,
+        sequence: event.sequence,
+        removed: true,
+      });
       if (threadRef) {
         threadDetails.disposeThread(environmentId, threadRef.threadId);
         useOptimisticThreadMessagesStore.getState().clearThread(threadRef);
@@ -1293,6 +1305,10 @@ function createEnvironmentConnectionHandlers() {
       ) {
         useStore.getState().syncServerShellSnapshot(snapshot, environmentId);
         markAppliedProjectionSnapshot(environmentId, snapshot);
+        settleComposerPullRequestDismissals({
+          environmentId,
+          sequence: snapshot.snapshotSequence,
+        });
         threadDetails.warmNonIdle(environmentId, snapshot.threads);
         threadDetails.reconcileForEnvironment(
           environmentId,

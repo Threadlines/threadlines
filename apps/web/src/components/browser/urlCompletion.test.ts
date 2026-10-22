@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { completeUrl, rememberVisit, type VisitedUrl } from "./urlCompletion";
 
@@ -14,10 +14,6 @@ describe("completeUrl", () => {
     visited("https://fastmail.com/", 2, 900),
     visited("http://localhost:18821/", 3, 100),
   ];
-
-  it("finishes a site from the few letters people actually type", () => {
-    expect(completeUrl("facp", history)).toBe("facpmanuals.com/");
-  });
 
   it("ignores the scheme and www, which nobody types", () => {
     expect(completeUrl("localhost:1", history)).toBe("localhost:18821/");

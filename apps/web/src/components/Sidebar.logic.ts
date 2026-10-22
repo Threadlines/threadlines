@@ -871,6 +871,101 @@ function isFiledByPullRequest(
   return Number.isNaN(userSpokeMs) || userSpokeMs <= settledMs;
 }
 
+/** One inbox thread as every list reads it: seen-aware status, and Active or Wrapped. */
+export interface FiledInboxThread {
+  readonly thread: SidebarThreadSummary;
+  readonly threadKey: string;
+  readonly lastVisitedAt: string | undefined;
+  readonly status: ThreadStatusPill | null;
+  readonly override: ThreadDoneOverride | null;
+  readonly isDone: boolean;
+}
+
+/**
+ * Files each inbox thread under Active or Wrapped by {@link isThreadDone}. A
+ * child's wrap-up reads its parent's, so each answer is worked out once and
+ * parents are asked first. Families are one level deep; `visiting` only
+ * guards against a loop the server should never let happen.
+ */
+export function fileInboxThreads(input: {
+  readonly threads: readonly SidebarThreadSummary[];
+  readonly seenSources: ThreadSeenSources;
+  /** This device's filings not yet confirmed, by scoped thread key. */
+  readonly doneOverlays: Readonly<Record<string, ThreadDoneOverride>>;
+  readonly now: string;
+  /** The "wrap up finished child threads" setting. */
+  readonly wrapUpChildThreadsOnFinish: boolean;
+  /** The "wrap up idle threads" setting: off, nothing files itself for sitting still. */
+  readonly wrapUpIdleThreads: boolean;
+  /** When the thread's pull requests landed, if a landing should file it; null otherwise. */
+  readonly pullRequestSettledAt: (thread: SidebarThreadSummary, threadKey: string) => string | null;
+}): FiledInboxThread[] {
+  const prepared = input.threads.map((thread) => {
+    const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+    const { lastVisitedAt, status } = resolveSeenThreadStatus(thread, threadKey, input.seenSources);
+    const override = mergeThreadDoneOverride(input.doneOverlays[threadKey], thread.doneOverride);
+    return { thread, threadKey, lastVisitedAt, status, override };
+  });
+  const preparedByKey = new Map(prepared.map((item) => [item.threadKey, item] as const));
+  const doneByKey = new Map<string, boolean>();
+  const resolveDone = (item: (typeof prepared)[number], visiting: ReadonlySet<string>): boolean => {
+    const known = doneByKey.get(item.threadKey);
+    if (known !== undefined) return known;
+    // A child on another computer wraps with its parent like any other.
+    const parentKey = input.wrapUpChildThreadsOnFinish ? familyParentKeyOf(item.thread) : null;
+    const parent = parentKey === null ? undefined : preparedByKey.get(parentKey);
+    const childWrapUp =
+      parentKey === null
+        ? null
+        : {
+            parentDone:
+              parent !== undefined && !visiting.has(parent.threadKey)
+                ? resolveDone(parent, new Set([...visiting, item.threadKey]))
+                : false,
+          };
+    const isDone = isThreadDone(
+      { ...item.thread, lastVisitedAt: item.lastVisitedAt },
+      item.override,
+      {
+        now: input.now,
+        autoDoneAfterDays: input.wrapUpIdleThreads ? INBOX_AUTO_DONE_AFTER_DAYS : null,
+        pullRequestSettledAt: input.pullRequestSettledAt(item.thread, item.threadKey),
+        childWrapUp,
+      },
+    );
+    doneByKey.set(item.threadKey, isDone);
+    return isDone;
+  };
+  return prepared.map((item) => ({ ...item, isDone: resolveDone(item, new Set()) }));
+}
+
+/** Statuses a finished turn can leave behind: a result, a plan to review, or a failure. */
+const FINISHED_WORK_LABELS: ReadonlySet<ThreadStatusPill["label"]> = new Set([
+  "Completed",
+  "Plan Ready",
+  "Failed",
+]);
+
+/**
+ * Finished work the user has not opened yet, still in front of them: the
+ * count the Dock and taskbar show. Work still moving or waiting on its own
+ * threads is not finished, and a child thread wrapped up with its family (its
+ * answer went back to the parent, or the parent was wrapped) needs no visit.
+ */
+export function isUnreadFinishedWork(entry: {
+  readonly thread: Pick<SidebarThreadSummary, "latestTurn">;
+  readonly status: ThreadStatusPill | null;
+  readonly lastVisitedAt: string | undefined;
+  readonly isDone: boolean;
+}): boolean {
+  if (entry.isDone || entry.status === null) return false;
+  if (!FINISHED_WORK_LABELS.has(entry.status.label)) return false;
+  return hasUnseenCompletion({
+    latestTurn: entry.thread.latestTurn,
+    lastVisitedAt: entry.lastVisitedAt,
+  });
+}
+
 /**
  * Pins are a deliberate, stable group at the top. Everything else tracks the
  * user's latest message rather than background agent activity.

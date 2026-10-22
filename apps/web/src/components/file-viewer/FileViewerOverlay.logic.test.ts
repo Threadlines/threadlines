@@ -3,7 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyEditSeedToEditor,
   countRenderableTextLines,
-  formatRevealLineNoticeLabel,
   formatSelectedLineRangeLabel,
   isEditableEventTarget,
   isPrintableKeydown,
@@ -57,16 +56,6 @@ describe("formatSelectedLineRangeLabel", () => {
     expect(formatSelectedLineRangeLabel({ start: 42, end: 42 })).toBe("L42 selected");
     expect(formatSelectedLineRangeLabel({ start: 42, end: 45 })).toBe("L42-L45 selected");
     expect(formatSelectedLineRangeLabel({ start: 45, end: 42 })).toBe("L42-L45 selected");
-  });
-});
-
-describe("formatRevealLineNoticeLabel", () => {
-  it("explains when a requested line is outside the current file", () => {
-    expect(
-      formatRevealLineNoticeLabel({
-        requestedLine: 87,
-      }),
-    ).toBe("L87 is not available in this file");
   });
 });
 

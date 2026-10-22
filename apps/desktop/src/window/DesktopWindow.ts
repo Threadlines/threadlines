@@ -1142,8 +1142,18 @@ const make = Effect.gen(function* () {
       event.preventDefault();
       window.setTitle(environment.displayName);
     });
+    // The page asks the window whether it has focus: inside the page, focus
+    // moving into a browser panel (<webview>) reads as the window losing it.
+    const sendWindowFocus = () => {
+      if (!window.isDestroyed()) {
+        window.webContents.send(IpcChannels.WINDOW_FOCUS_CHANNEL, window.isFocused());
+      }
+    };
+    window.on("focus", sendWindowFocus);
+    window.on("blur", sendWindowFocus);
     window.webContents.on("did-finish-load", () => {
       window.setTitle(environment.displayName);
+      sendWindowFocus();
     });
     window.webContents.on(
       "did-fail-load",

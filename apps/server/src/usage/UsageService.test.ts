@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { afterEach, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "../config.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -129,6 +130,10 @@ const makeFixture = Effect.fn("makeFixture")(function* () {
   const root = yield* Effect.promise(() =>
     NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "threadlines-usage-")),
   );
+  // Pi and Grok sessions come from the process environment, not settings.
+  // Point both at empty folders so this machine's own sessions stay out.
+  vi.stubEnv("PI_CODING_AGENT_DIR", NodePath.join(root, "pi-agent"));
+  vi.stubEnv("GROK_HOME", NodePath.join(root, "grok-home"));
   const claudeHome = NodePath.join(root, "claude-home");
   const claudeProjects = NodePath.join(claudeHome, ".claude", "projects", "-tmp-project");
   const codexHome = NodePath.join(root, "codex-home");
@@ -260,6 +265,10 @@ function bucketFor(summary: UsageSummary, provider: "claude" | "codex") {
 }
 
 describe("UsageService.readSummary", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   // it.live throughout: the service walks real directories and reads the real
   // clock, both of which stall under it.effect's TestClock.
   it.live("prices a window, dropping repeated Claude usage and copied fork turns", () =>

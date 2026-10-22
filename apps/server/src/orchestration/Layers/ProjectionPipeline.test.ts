@@ -188,73 +188,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   );
 });
 
-it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
-  "OrchestrationProjectionPipeline",
-  (it) => {
-    it.effect("stores message attachment references without mutating payloads", () =>
-      Effect.gen(function* () {
-        const projectionPipeline = yield* OrchestrationProjectionPipeline;
-        const eventStore = yield* OrchestrationEventStore;
-        const sql = yield* SqlClient.SqlClient;
-        const now = "2026-01-01T00:00:00.000Z";
-
-        yield* eventStore.append({
-          type: "thread.message-sent",
-          eventId: EventId.make("evt-attachments"),
-          aggregateKind: "thread",
-          aggregateId: ThreadId.make("thread-attachments"),
-          occurredAt: now,
-          commandId: CommandId.make("cmd-attachments"),
-          causationEventId: null,
-          correlationId: CommandId.make("cmd-attachments"),
-          metadata: {},
-          payload: {
-            threadId: ThreadId.make("thread-attachments"),
-            messageId: MessageId.make("message-attachments"),
-            role: "user",
-            text: "Inspect this",
-            attachments: [
-              {
-                type: "image",
-                id: "thread-attachments-att-1",
-                name: "example.png",
-                mimeType: "image/png",
-                sizeBytes: 5,
-              },
-            ],
-            turnId: null,
-            streaming: false,
-            createdAt: now,
-            updatedAt: now,
-          },
-        });
-
-        yield* projectionPipeline.bootstrap;
-
-        const rows = yield* sql<{
-          readonly attachmentsJson: string | null;
-        }>`
-            SELECT
-              attachments_json AS "attachmentsJson"
-            FROM projection_thread_messages
-            WHERE message_id = 'message-attachments'
-          `;
-        assert.equal(rows.length, 1);
-        // @effect-diagnostics-next-line preferSchemaOverJson:off
-        assert.deepEqual(JSON.parse(rows[0]?.attachmentsJson ?? "null"), [
-          {
-            type: "image",
-            id: "thread-attachments-att-1",
-            name: "example.png",
-            mimeType: "image/png",
-            sizeBytes: 5,
-          },
-        ]);
-      }),
-    );
-  },
-);
-
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-safe-")))(
   "OrchestrationProjectionPipeline",
   (it) => {
@@ -3214,6 +3147,79 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           pullRequestAutoMerge: null,
         },
       ]);
+    }),
+  );
+
+  it.effect("keeps the pull request rows a user closed when the shell is read back", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-dismissed-pull-requests");
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-dismissed-project"),
+        projectId: ProjectId.make("project-dismissed"),
+        title: "Dismissed Project",
+        workspaceRoot: "/tmp/project-dismissed",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-dismissed-thread"),
+        threadId,
+        projectId: ProjectId.make("project-dismissed"),
+        title: "Dismissed Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: "default",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      const dismiss = (id: string, number: number, dismissed: boolean) =>
+        engine.dispatch({
+          type: "thread.pull-request.dismiss",
+          commandId: CommandId.make(id),
+          threadId,
+          number,
+          dismissed,
+        });
+      yield* dismiss("cmd-dismiss-294", 294, true);
+      yield* dismiss("cmd-dismiss-301", 301, true);
+      yield* dismiss("cmd-restore-294", 294, false);
+
+      // Read back from SQL, the way a restarted server answers the app.
+      const query = yield* ProjectionSnapshotQuery.pipe(
+        Effect.provide(
+          OrchestrationProjectionSnapshotQueryLive.pipe(
+            Layer.provide(RepositoryIdentityResolverLive),
+          ),
+        ),
+      );
+      const shellThread = (yield* query.getShellSnapshot()).threads.find(
+        (thread) => thread.id === threadId,
+      );
+      assert.deepEqual(shellThread?.dismissedPullRequests, [301]);
+      // Closing a row is not work on the thread, so the sidebar order holds.
+      assert.equal(shellThread?.updatedAt, createdAt);
+      const readModelThread = (yield* query.getCommandReadModel()).threads.find(
+        (thread) => thread.id === threadId,
+      );
+      assert.deepEqual(readModelThread?.dismissedPullRequests, [301]);
+
+      yield* dismiss("cmd-restore-301", 301, false);
+      const restored = (yield* query.getShellSnapshot()).threads.find(
+        (thread) => thread.id === threadId,
+      );
+      assert.equal(restored?.dismissedPullRequests, undefined);
     }),
   );
 

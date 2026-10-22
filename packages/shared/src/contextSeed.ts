@@ -76,15 +76,6 @@ function entryChars(entry: ThreadContextSeedEntry): number {
   return entry.text.trim().length + 16;
 }
 
-/** Coarse character-count estimate of a rendered entry list (token proxy). */
-export function estimateSeedChars(entries: ReadonlyArray<ThreadContextSeedEntry>): number {
-  let total = 0;
-  for (const entry of entries) {
-    total += entryChars(entry);
-  }
-  return total;
-}
-
 /**
  * Walk newest→oldest, keeping entries verbatim in `recent` while either under
  * the char budget or still below the recency floor. Once an entry is excluded,

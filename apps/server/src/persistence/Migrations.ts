@@ -94,11 +94,13 @@ import Migration0072 from "./Migrations/072_ProjectionThreadCommands.ts";
 import Migration0073 from "./Migrations/073_ProjectionWorkflowRuns.ts";
 import Migration0074 from "./Migrations/074_ProjectionThreadsCheckBacks.ts";
 import Migration0075 from "./Migrations/075_McpAppCalls.ts";
-import Migration0076 from "./Migrations/076_ComputerLinks.ts";
-import Migration0077 from "./Migrations/077_ScheduledTasks.ts";
-import Migration0078 from "./Migrations/078_ComputerLinkPinnedEnvironment.ts";
-import Migration0079 from "./Migrations/079_LinkStopsOwed.ts";
-import Migration0080 from "./Migrations/080_ThreadMoves.ts";
+import Migration0076 from "./Migrations/076_ProjectionThreadsDismissedPullRequests.ts";
+import Migration0077 from "./Migrations/077_ProjectionThreadSubagentsRepairClaudeRows.ts";
+import Migration0078 from "./Migrations/078_ComputerLinks.ts";
+import Migration0079 from "./Migrations/079_ComputerLinkPinnedEnvironment.ts";
+import Migration0080 from "./Migrations/080_LinkStopsOwed.ts";
+import Migration0081 from "./Migrations/081_ScheduledTasks.ts";
+import Migration0082 from "./Migrations/082_ThreadMoves.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -186,11 +188,13 @@ export const migrationEntries = [
   [73, "ProjectionWorkflowRuns", Migration0073],
   [74, "ProjectionThreadsCheckBacks", Migration0074],
   [75, "McpAppCalls", Migration0075],
-  [76, "ComputerLinks", Migration0076],
-  [77, "ScheduledTasks", Migration0077],
-  [78, "ComputerLinkPinnedEnvironment", Migration0078],
-  [79, "LinkStopsOwed", Migration0079],
-  [80, "ThreadMoves", Migration0080],
+  [76, "ProjectionThreadsDismissedPullRequests", Migration0076],
+  [77, "ProjectionThreadSubagentsRepairClaudeRows", Migration0077],
+  [78, "ComputerLinks", Migration0078],
+  [79, "ComputerLinkPinnedEnvironment", Migration0079],
+  [80, "LinkStopsOwed", Migration0080],
+  [81, "ScheduledTasks", Migration0081],
+  [82, "ThreadMoves", Migration0082],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

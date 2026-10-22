@@ -204,6 +204,8 @@ export interface Thread {
   pullRequestAutoMerge?: PullRequestMergeMethod | null;
   /** See ThreadShell.linkedPullRequests. */
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
+  /** See ThreadShell.dismissedPullRequests. */
+  dismissedPullRequests?: readonly number[];
   /** See ThreadShell.queuedFollowUps. */
   queuedFollowUps?: readonly OrchestrationQueuedFollowUp[];
   /** See ThreadShell.participants. */
@@ -311,6 +313,11 @@ export interface ThreadShell {
    * thread, each with its own merge switch. Absent means none.
    */
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
+  /**
+   * Numbers of the pull requests whose row the user closed above the
+   * composer. Absent means none.
+   */
+  dismissedPullRequests?: readonly number[];
   /**
    * Messages waiting for the running turn to finish, oldest first. The
    * server sends them one turn at a time. Absent means none.

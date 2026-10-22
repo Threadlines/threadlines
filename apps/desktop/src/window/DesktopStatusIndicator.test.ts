@@ -38,6 +38,7 @@ function makeFakeWindow(input?: { readonly focused?: boolean }) {
     flashFrame: vi.fn(),
     isDestroyed: vi.fn(() => false),
     isFocused: vi.fn(() => input?.focused === true),
+    once: vi.fn(),
     setOverlayIcon: vi.fn(),
     setProgressBar: vi.fn(),
   };
@@ -294,6 +295,46 @@ describe("DesktopStatusIndicator", () => {
       }),
   );
 
+  it.effect("keeps the macOS Dock count while work runs and bounces only as work finishes", () =>
+    Effect.gen(function* () {
+      const { appCalls, trayCalls } = makeCalls();
+      const window = makeFakeWindow({ focused: false });
+
+      yield* Effect.gen(function* () {
+        const indicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+        yield* indicator.configure;
+        // Unread work already waiting at launch: counted, no bounce.
+        yield* indicator.setStatus({
+          status: "completed",
+          description: "1 thread completed",
+          completedThreadCount: 1,
+        });
+        // A thread finished while another still runs: the count holds.
+        yield* indicator.setStatus({
+          status: "working",
+          description: "1 thread is working",
+          runningThreadCount: 1,
+          completedThreadCount: 2,
+        });
+        yield* indicator.setStatus({
+          status: "completed",
+          description: "3 threads completed",
+          completedThreadCount: 3,
+        });
+        // The user opened one, here or on another device.
+        yield* indicator.setStatus({
+          status: "completed",
+          description: "2 threads completed",
+          completedThreadCount: 2,
+        });
+        yield* indicator.setStatus({ status: "idle", description: "No threads are working" });
+      }).pipe(Effect.provide(makeTestLayer({ appCalls, trayCalls, window })));
+
+      assert.deepEqual(appCalls.setDockBadge, ["1", "2", "3", "2", ""]);
+      assert.deepEqual(appCalls.bounceDock, ["informational"]);
+    }),
+  );
+
   it.effect("counts only this computer's threads toward the quit question", () =>
     Effect.gen(function* () {
       const { appCalls, trayCalls } = makeCalls();
@@ -349,13 +390,19 @@ describe("DesktopStatusIndicator", () => {
           completedThreadCount: 3,
         });
         assert.equal(yield* Ref.get(state.localRunningThreadCount), 0);
+        // One of them opened: the chip follows, but the work did not just finish.
+        yield* indicator.setStatus({
+          status: "completed",
+          description: "2 threads completed",
+          completedThreadCount: 2,
+        });
         yield* indicator.setStatus({ status: "idle", description: "No threads are working" });
       }).pipe(Effect.provide(makeTestLayer({ appCalls, trayCalls, window, platform: "win32" })));
 
       // No macOS status item on Windows; overlay chips are created once per
       // distinct label and reused.
       assert.deepEqual(trayCalls.createTemplateImages, []);
-      assert.lengthOf(trayCalls.createImages, 2);
+      assert.lengthOf(trayCalls.createImages, 3);
       assert.isTrue(
         trayCalls.createImages.every(
           (representations) =>
@@ -369,14 +416,15 @@ describe("DesktopStatusIndicator", () => {
 
       const overlayCalls = (window.setOverlayIcon as unknown as ReturnType<typeof vi.fn>).mock
         .calls as [Electron.NativeImage | null, string][];
-      assert.lengthOf(overlayCalls, 4);
+      assert.lengthOf(overlayCalls, 5);
       assert.isNotNull(overlayCalls[0]?.[0]);
       assert.equal(overlayCalls[0]?.[1], "2 threads are working");
       assert.equal(overlayCalls[1]?.[0], overlayCalls[0]?.[0]);
       assert.isNotNull(overlayCalls[2]?.[0]);
       assert.notEqual(overlayCalls[2]?.[0], overlayCalls[0]?.[0]);
       assert.equal(overlayCalls[2]?.[1], "3 threads completed");
-      assert.deepEqual(overlayCalls[3], [null, ""]);
+      assert.equal(overlayCalls[3]?.[1], "2 threads completed");
+      assert.deepEqual(overlayCalls[4], [null, ""]);
 
       const progressCalls = (window.setProgressBar as unknown as ReturnType<typeof vi.fn>).mock
         .calls;
@@ -385,10 +433,20 @@ describe("DesktopStatusIndicator", () => {
         [2, { mode: "indeterminate" }],
         [-1],
         [-1],
+        [-1],
       ]);
 
+      // Only the step out of working flashes, and looking at the window ends it.
       const flashCalls = (window.flashFrame as unknown as ReturnType<typeof vi.fn>).mock.calls;
       assert.deepEqual(flashCalls, [[false], [false], [true], [false]]);
+      const onceCalls = (window.once as unknown as ReturnType<typeof vi.fn>).mock.calls as [
+        string,
+        () => void,
+      ][];
+      assert.lengthOf(onceCalls, 1);
+      assert.equal(onceCalls[0]?.[0], "focus");
+      onceCalls[0]?.[1]();
+      assert.deepEqual(flashCalls.at(-1), [false]);
       assert.deepEqual(appCalls.setDockBadge, []);
     }),
   );
@@ -412,6 +470,26 @@ describe("DesktopStatusIndicator", () => {
       }).pipe(Effect.provide(makeTestLayer({ appCalls, dispatchedActions, trayCalls, window })));
 
       assert.deepEqual(dispatchedActions, [{ action: "open-fleet" }]);
+    }),
+  );
+
+  it.effect("flashes the Windows taskbar for each burst but ends it on one focus", () =>
+    Effect.gen(function* () {
+      const { appCalls, trayCalls } = makeCalls();
+      const window = makeFakeWindow({ focused: false });
+
+      yield* Effect.gen(function* () {
+        const indicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+        for (const count of [1, 2]) {
+          yield* indicator.setStatus({ status: "working", runningThreadCount: 1 });
+          yield* indicator.setStatus({ status: "completed", completedThreadCount: count });
+        }
+      }).pipe(Effect.provide(makeTestLayer({ appCalls, trayCalls, window, platform: "win32" })));
+
+      const flashCalls = (window.flashFrame as unknown as ReturnType<typeof vi.fn>).mock.calls;
+      assert.deepEqual(flashCalls, [[false], [true], [false], [true]]);
+      const onceCalls = (window.once as unknown as ReturnType<typeof vi.fn>).mock.calls;
+      assert.lengthOf(onceCalls, 1);
     }),
   );
 

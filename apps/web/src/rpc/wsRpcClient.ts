@@ -166,6 +166,7 @@ export interface WsRpcClient {
     readonly openInEditor: (input: {
       readonly cwd: Parameters<LocalApi["shell"]["openInEditor"]>[0];
       readonly editor: Parameters<LocalApi["shell"]["openInEditor"]>[1];
+      readonly workspaceRoot?: Parameters<LocalApi["shell"]["openInEditor"]>[2];
     }) => ReturnType<LocalApi["shell"]["openInEditor"]>;
   };
   readonly vcs: {

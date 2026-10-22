@@ -29,6 +29,7 @@ import {
 import type { ChatMessage, ProposedPlan } from "../../types";
 import { useChatFindStore } from "../../chatFindStore";
 import { CHAT_FIND_CURRENT_HIGHLIGHT, CHAT_FIND_MATCH_HIGHLIGHT } from "./chatFind/chatFindDom";
+import { TIMELINE_ENTRANCE_ANIMATION_ID } from "./timelineEntrance";
 
 const ACTIVE_TURN_ID = "turn-active" as TurnId;
 const queryClient = new QueryClient();
@@ -906,7 +907,18 @@ describe("MessagesTimeline with the real virtual list", () => {
       </div>,
     );
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // The entrance runs on the page's animation clock, which a busy or
+      // background tab advances late: wait for it to end and for a frame
+      // painted after that, not for a fixed time a slow machine may miss.
+      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0), { timeout: 5_000 });
+      await Promise.all(
+        document
+          .getAnimations()
+          .filter((animation) => animation.id === TIMELINE_ENTRANCE_ANIMATION_ID)
+          .map((animation) => animation.finished),
+      );
+      const endedAt = frames.length;
+      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(endedAt), { timeout: 5_000 });
       expect(frames[0]!.opacity, "the reply fades in as it arrives").toBeLessThan(1);
       const settled = frames.at(-1)!;
       expect(settled.opacity).toBe(1);
@@ -1366,6 +1378,228 @@ describe("find in chat with the real virtual list", () => {
         expect(document.querySelector("[data-chat-find-folded]")).toBeNull();
         expect(currentFindHighlight()?.text).toBe("narwhal");
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
+
+const SELECTION_POPOVER = "[data-transcript-selection-popover='true']";
+
+// The rect of `word` in a message's body as drawn right now, or null when the
+// list has not drawn the message.
+function wordRect(messageId: string, word: string): DOMRect | null {
+  const body = document.querySelector(`[data-transcript-message-id="${messageId}"]`);
+  if (!body) return null;
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const index = (node as Text).data.indexOf(word);
+    if (index < 0) continue;
+    const range = document.createRange();
+    range.setStart(node, index);
+    range.setEnd(node, index + word.length);
+    return range.getBoundingClientRect();
+  }
+  return null;
+}
+
+// Selects `word` the way a drag does, letting the button go outside the list
+// as a drag that scrolled it does.
+function dragSelectWord(messageId: string, word: string) {
+  const body = document.querySelector<HTMLElement>(`[data-transcript-message-id="${messageId}"]`)!;
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const index = (node as Text).data.indexOf(word);
+    if (index < 0) continue;
+    const bounds = body.getBoundingClientRect();
+    body.dispatchEvent(
+      new MouseEvent("mousedown", {
+        bubbles: true,
+        button: 0,
+        clientX: bounds.left + 4,
+        clientY: bounds.top + 4,
+      }),
+    );
+    window.getSelection()!.setBaseAndExtent(node, index, node, index + word.length);
+    document.body.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
+    return;
+  }
+  throw new Error(`"${word}" is not in ${messageId}`);
+}
+
+// Scrolls the list by `delta` the way a reader's wheel does: the wheel comes
+// first and tells the list the reader left its end. A bare scrollTop write
+// does not. The list hears that scroll a frame later (longer on a busy
+// machine), and a row it measures in between snaps it back to the end.
+function wheelScroll(list: HTMLElement, delta: number) {
+  list.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: delta }));
+  list.scrollTop += delta;
+}
+
+// Scrolls `step` pixels at a time until the list draws message-51, then puts
+// its word in the middle of the list. A saved scroll position cannot stand in
+// for this: the list measures rows as they come into view, and every row it
+// measures moves the ones below it.
+async function scrollPelicanIntoView(list: HTMLElement, step: number) {
+  for (let count = 0; count < 40 && !wordRect("message-51", "pelican"); count += 1) {
+    wheelScroll(list, step);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const listTop = list.getBoundingClientRect().top;
+  wheelScroll(list, wordRect("message-51", "pelican")!.top - listTop - 180);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+}
+
+function selectionPopover(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(SELECTION_POPOVER);
+}
+
+function isShown(element: HTMLElement | null): boolean {
+  return element !== null && getComputedStyle(element).visibility === "visible";
+}
+
+describe("text selection popover with the real virtual list", () => {
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges();
+    queryClient.clear();
+    document.body.innerHTML = "";
+  });
+
+  async function renderLongChat(onAddTranscriptHighlightContext = vi.fn()) {
+    const messages = Array.from({ length: 60 }, (_, index) =>
+      chatMessage(
+        `message-${index}`,
+        index % 2 === 0 ? "user" : "assistant",
+        index === 51 ? `${FILLER} The pelican was here.` : FILLER,
+        index,
+      ),
+    );
+    const screen = await renderTimeline(
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...buildProps()}
+          isWorking={false}
+          activeTurnInProgress={false}
+          timelineEntries={messageEntries(messages)}
+          onAddTranscriptHighlightContext={onAddTranscriptHighlightContext}
+        />
+      </div>,
+    );
+    const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-message-id="message-59"]')).not.toBeNull();
+    });
+    await scrollPelicanIntoView(list, -200);
+    return { screen, list };
+  }
+
+  it("keeps the actions beside the selected text as the list scrolls", async () => {
+    const { screen, list } = await renderLongChat();
+    try {
+      dragSelectWord("message-51", "pelican");
+      await vi.waitFor(() => expect(isShown(selectionPopover())).toBe(true));
+      const gapBelowWord = () =>
+        selectionPopover()!.getBoundingClientRect().top - wordRect("message-51", "pelican")!.bottom;
+      const gap = gapBelowWord();
+
+      list.scrollTop += 60;
+      await vi.waitFor(() => {
+        expect(isShown(selectionPopover())).toBe(true);
+        expect(Math.abs(gapBelowWord() - gap)).toBeLessThanOrEqual(1);
+      });
+
+      // Out of view the actions hide, and they come back with the text.
+      const scrolledAway =
+        wordRect("message-51", "pelican")!.top - list.getBoundingClientRect().top;
+      list.scrollTop += scrolledAway + 120;
+      await vi.waitFor(() => {
+        expect(selectionPopover()).not.toBeNull();
+        expect(isShown(selectionPopover())).toBe(false);
+      });
+      list.scrollTop -= scrolledAway + 120;
+      await vi.waitFor(() => {
+        expect(isShown(selectionPopover())).toBe(true);
+        expect(Math.abs(gapBelowWord() - gap)).toBeLessThanOrEqual(1);
+      });
+
+      // Clearing the selection takes the actions away.
+      window.getSelection()!.removeAllRanges();
+      await vi.waitFor(() => expect(selectionPopover()).toBeNull());
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps a note in progress, and its highlight, while the list redraws the text", async () => {
+    const onAddTranscriptHighlightContext = vi.fn();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const { screen, list } = await renderLongChat(onAddTranscriptHighlightContext);
+    try {
+      dragSelectWord("message-51", "pelican");
+      // A copy closes the actions a moment later; a note opened in that
+      // moment must outlive it. The clock holds still until the note is open:
+      // each click is a round trip to the browser driver, which on a busy
+      // machine takes longer than that moment.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await page.getByRole("button", { name: "Copy selected text" }).click();
+        await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("pelican"));
+        await page.getByRole("button", { name: "Add note" }).click();
+        const noteInput = page.getByPlaceholder("Add context for this highlight");
+        await userEvent.fill(noteInput, "Check this bird");
+        await vi.advanceTimersByTimeAsync(1_000);
+        // React draws what the timers did on its next turn.
+        await nextFrame();
+        expect(selectionPopover()).not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+
+      // Far enough away that the list drops the message's row. One jump can
+      // be served from slots the list has spare, so climb a step at a time:
+      // the rows brought in on the way outnumber the slots, and the list
+      // reuses the farthest row's slot first.
+      for (let step = 0; step < 100 && list.scrollTop > 0; step += 1) {
+        list.scrollTop = Math.max(0, list.scrollTop - 200);
+        await nextFrame();
+        await nextFrame();
+      }
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-transcript-message-id="message-51"]')).toBeNull();
+        },
+        { timeout: 5_000 },
+      );
+      const listRect = list.getBoundingClientRect();
+      const pinned = selectionPopover()!.getBoundingClientRect();
+      expect(isShown(selectionPopover())).toBe(true);
+      expect(pinned.top).toBeGreaterThanOrEqual(listRect.top);
+      expect(pinned.bottom).toBeLessThanOrEqual(listRect.bottom);
+
+      // Back again, the highlight finds the word in the redrawn row.
+      await scrollPelicanIntoView(list, 200);
+      await vi.waitFor(
+        () => {
+          const word = wordRect("message-51", "pelican")!;
+          const highlightRect = document.querySelector<HTMLElement>(".transcript-note-highlight")!;
+          expect(isShown(highlightRect)).toBe(true);
+          const highlight = highlightRect.getBoundingClientRect();
+          expect(Math.abs(highlight.left - word.left)).toBeLessThanOrEqual(1);
+          expect(highlight.top).toBeLessThanOrEqual(word.top + 1);
+          expect(highlight.bottom).toBeGreaterThanOrEqual(word.bottom - 1);
+        },
+        { timeout: 5_000 },
+      );
+
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      expect(onAddTranscriptHighlightContext).toHaveBeenCalledWith({
+        sourceMessageId: "message-51",
+        sourceRole: "assistant",
+        selectedText: "pelican",
+        note: "Check this bird",
+      });
+      await vi.waitFor(() => expect(selectionPopover()).toBeNull());
     } finally {
       await screen.unmount();
     }

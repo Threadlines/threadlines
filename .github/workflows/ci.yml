@@ -24,8 +24,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # scripts/verify-release-ci.ts requires this job by name.
   quality:
-    name: Format, Lint, Typecheck, Test, Build
+    name: Checks and Build
     runs-on: ubuntu-latest
     # 20 minutes starves dependency-bump branches: a lockfile change cold-starts
     # every cache and slow runners then hit the cap mid-pipeline.
@@ -62,11 +63,6 @@ jobs:
       - name: Typecheck
         run: vp exec vp run -r --concurrency-limit 2 typecheck
 
-      - name: Test
-        # --parallel drops package ordering: server depends on web, so without it
-        # the server suite (~2.5 min) waits for the web suite (~3 min) to finish.
-        run: vp exec vp run --parallel --concurrency-limit 4 test
-
       - name: Build desktop pipeline
         run: vp exec vp run build:desktop
 
@@ -79,12 +75,114 @@ jobs:
           test -f apps/desktop/dist-electron/preload.cjs
           grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
 
+  # Every package's unit tests except the server's, which run in the
+  # `server_test` shards. Its own job so a failing test never hides a broken
+  # build behind it, and both finish sooner side by side.
+  # scripts/verify-release-ci.ts requires this job by name.
+  unit_test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af # v1.21.2
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Ensure Electron binary is installed
+        run: node scripts/ensure-electron-binary.ts
+
+      - name: Test
+        # --parallel drops package ordering, so no suite waits for a package it
+        # depends on.
+        run: vp exec vp run --parallel --concurrency-limit 4 --filter '!@threadlines/server' --filter '!@threadlines/monorepo' test
+
+  # apps/server runs its test files one at a time (`fileParallelism: false`):
+  # side by side they hit load-sensitive flakes. Sharding spreads the files over
+  # separate runners instead, so no two of them ever share a machine. The shards
+  # split files by recorded time (scripts/lib/test-shards.ts). Release
+  # verification requires each shard by name: when the shard count changes,
+  # update DEFAULT_REQUIRED_CHECKS in scripts/verify-release-ci.ts.
+  server_test:
+    name: Server Test (${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # One failing shard still lets the others report their own failures.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af # v1.21.2
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Server test
+        env:
+          THREADLINES_SHARD_TIMINGS_FILE: ${{ runner.temp }}/test-timings.json
+        run: vp exec vp run --filter @threadlines/server test --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+      # `node --run test:shard-weights -- server` reads these from the newest
+      # green run on main to rebalance the shards.
+      - name: Upload server test timings
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-test-timings-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-timings.json
+          retention-days: 14
+          if-no-files-found: error
+
+  # Branch protection requires this check by name, so it keeps the name of the
+  # single job that used to do all of this work. It passes only when every job
+  # it needs passed, so jobs can split or reshard without a ruleset change: add
+  # new ones to `needs`. `always()` rather than `!cancelled()`, because a
+  # skipped job reports success to branch protection and a cancelled run must
+  # still fail this check. That turns cancellation into failure, so release
+  # verification (scripts/verify-release-ci.ts) checks the jobs themselves.
+  quality_gate:
+    name: Format, Lint, Typecheck, Test, Build
+    if: ${{ always() }}
+    needs: [quality, unit_test, server_test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null
+
+  # The browser suite is CPU-bound (every spec renders the whole app), so one
+  # 4-core runner tops out at about two tabs' worth of work. Two shards on two
+  # runners halve it. Files split by recorded time (scripts/lib/test-shards.ts);
+  # release verification requires each shard by name, so a shard count change
+  # updates DEFAULT_REQUIRED_CHECKS in scripts/verify-release-ci.ts too.
   browser:
-    # Runs beside `quality` rather than after it: the browser suite is the
-    # second-longest step and shares nothing with the unit suite.
-    name: Browser Test
+    name: Browser Test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,7 +220,19 @@ jobs:
         run: vp exec vp run --filter @threadlines/web test:browser:install
 
       - name: Browser test
-        run: vp exec vp run --filter @threadlines/web test:browser
+        env:
+          THREADLINES_SHARD_TIMINGS_FILE: ${{ runner.temp }}/test-timings.json
+        run: vp exec vp run --filter @threadlines/web test:browser --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+      # `node --run test:shard-weights -- browser` reads these from the newest
+      # green run on main to rebalance the shards.
+      - name: Upload browser test timings
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-test-timings-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-timings.json
+          retention-days: 14
+          if-no-files-found: error
 
       # Browser test failures are timing-sensitive and CI-only more often than
       # not; the on-failure screenshot is the only evidence of what rendered.
@@ -130,9 +240,26 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: browser-test-screenshots
-          path: apps/web/src/**/__screenshots__/**
+          name: browser-test-screenshots-${{ matrix.shard }}
+          path: apps/web/.vitest/attachments/failure-screenshots/**
+          include-hidden-files: true
           if-no-files-found: ignore
+
+  # Keeps the required "Browser Test" check, the way `quality_gate` keeps its
+  # name: it passes only when every browser shard passed.
+  browser_gate:
+    name: Browser Test
+    if: ${{ always() }}
+    needs: [browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every shard to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null
 
   release_smoke:
     name: Release Smoke
@@ -158,8 +285,8 @@ jobs:
   deploy_web_app:
     name: Deploy app.threadlines.dev
     needs:
-      - quality
-      - browser
+      - quality_gate
+      - browser_gate
       - release_smoke
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy == true
     uses: ./.github/workflows/deploy-web.yml

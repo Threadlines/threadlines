@@ -1090,7 +1090,7 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
-function openPathInEditor(targetPath: string) {
+function openPathInEditor(targetPath: string, workspaceRoot: string) {
   let api: ReturnType<typeof ensureLocalApi>;
   try {
     api = ensureLocalApi();
@@ -1105,7 +1105,7 @@ function openPathInEditor(targetPath: string) {
     return;
   }
 
-  void openInPreferredEditor(api, targetPath).then(
+  void openInPreferredEditor(api, targetPath, workspaceRoot).then(
     () => {
       toastManager.add({
         type: "success",
@@ -2622,7 +2622,7 @@ function ExtensionDetailDialog({
               <TooltipPopup side="top">Copy metadata</TooltipPopup>
             </Tooltip>
             {openPath ? (
-              <Button size="xs" onClick={() => openPathInEditor(openPath)}>
+              <Button size="xs" onClick={() => openPathInEditor(openPath, cwd)}>
                 <ExternalLinkIcon className="size-3.5" />
                 Open path
               </Button>

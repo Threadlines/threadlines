@@ -251,7 +251,7 @@ describe("SidebarVersionTag", () => {
       availableVersion: "1.0.1",
       downloadPercent: 42,
     });
-    await expect.element(versionChip()).toHaveTextContent("42%");
+    await expect.element(versionChip()).toMatchTextContent("42%");
     await expect.element(page.getByText("Downloading v1.0.1 · 42%")).toBeVisible();
     expect(widthOf(versionChip())).toBe(chipWidth);
     expect(Math.abs(heightOf(versionCard()) - cardHeight)).toBeLessThanOrEqual(1);
@@ -263,7 +263,7 @@ describe("SidebarVersionTag", () => {
       downloadedVersion: "1.0.1",
       downloadPercent: 100,
     });
-    await expect.element(versionChip()).toHaveTextContent("Restart");
+    await expect.element(versionChip()).toMatchTextContent("Restart");
     await expect.element(versionCard().getByText("v1.0.1 downloaded")).toBeVisible();
     await expect.element(versionCard().getByRole("button")).not.toBeInTheDocument();
     expect(widthOf(versionChip())).toBe(chipWidth);
@@ -293,12 +293,12 @@ describe("SidebarVersionTag", () => {
     } as unknown as Partial<DesktopBridge>);
     await mountTag();
 
-    await expect.element(versionChip()).toHaveTextContent("Update");
+    await expect.element(versionChip()).toMatchTextContent("Update");
     await versionChip().click();
     await vi.waitFor(() => {
       expect(bridge.downloadUpdate).toHaveBeenCalledTimes(1);
     });
-    await expect.element(versionChip()).toHaveTextContent("0%");
+    await expect.element(versionChip()).toMatchTextContent("0%");
 
     const emitUpdateState = (state: DesktopUpdateState) => {
       if (updateStateListener === null) {
@@ -312,7 +312,7 @@ describe("SidebarVersionTag", () => {
       downloadedVersion: "1.0.1",
       downloadPercent: 100,
     });
-    await expect.element(versionChip()).toHaveTextContent("Restart");
+    await expect.element(versionChip()).toMatchTextContent("Restart");
     await versionChip().click();
     const dialog = page.getByRole("alertdialog");
     await expect.element(dialog).toBeVisible();

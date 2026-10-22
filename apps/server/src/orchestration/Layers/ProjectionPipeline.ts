@@ -1,4 +1,5 @@
 import { replaceAgentCheckBacks } from "@threadlines/shared/checkBacks";
+import { applyPullRequestDismissed } from "@threadlines/shared/pullRequestDismissals";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
@@ -1052,6 +1053,28 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ...linkedPullRequests,
               { number: event.payload.number, url: event.payload.url, autoMerge: null },
             ],
+          });
+          return;
+        }
+
+        // Closing a row is not work on the thread, so `updatedAt` stays.
+        case "thread.pull-request-dismissed": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const dismissedPullRequests = applyPullRequestDismissed(
+            existingRow.value.dismissedPullRequests,
+            event.payload,
+          );
+          if (dismissedPullRequests === null) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            dismissedPullRequests,
           });
           return;
         }
