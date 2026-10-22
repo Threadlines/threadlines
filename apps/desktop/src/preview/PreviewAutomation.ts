@@ -79,6 +79,13 @@ import {
   buildLocatorQueryScript,
   INJECTED_WORLD_NAME,
 } from "./injectedRuntime.ts";
+import {
+  type Affine,
+  applyAffine,
+  composeAffine,
+  frameAffine,
+  IDENTITY_AFFINE,
+} from "./frameAffine.ts";
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
 import {
   buildDrawOverlayScript,
@@ -130,6 +137,34 @@ const PAGE_FOCUS_POLL = "4 millis";
  * animation, a fetch), so it gets nearly all of the broker's deadline.
  */
 const AGENT_SCRIPT_TIMEOUT = "18 seconds";
+/**
+ * CDP sessions of their own for a page's frames that run in other processes
+ * (another site's, or a sandboxed one), and for theirs in turn: agent input
+ * goes straight into them (`routePoint`). Nothing is enabled in them.
+ */
+const FRAME_AUTO_ATTACH = {
+  autoAttach: true,
+  waitForDebuggerOnStart: false,
+  flatten: true,
+  filter: [{ type: "iframe" }],
+};
+/** How deep `routePoint` follows frames inside frames. */
+const MAX_FRAME_DEPTH = 8;
+/** Elements whose content is a frame of its own. */
+const FRAME_OWNER_NODE_NAMES = new Set(["IFRAME", "FRAME", "OBJECT", "EMBED", "FENCEDFRAME"]);
+/** The world `frameViewportSize` reads in. */
+const FRAME_METRICS_WORLD_NAME = "threadlines-frame-metrics";
+/** How long one frame gets to answer `routePoint`, and how long it may take in all. */
+const FRAME_ROUTE_TIMEOUT = "1 second";
+const FRAME_ROUTE_BUDGET = "3 seconds";
+
+/** The session agent input goes to (the page's when undefined) and the page→frame mapping. */
+interface FrameRoute {
+  readonly sessionId: string | undefined;
+  readonly toFrame: Affine;
+}
+
+const pageRoute: FrameRoute = { sessionId: undefined, toFrame: IDENTITY_AFFINE };
 
 export class PreviewTargetMissingError extends Schema.TaggedError<PreviewTargetMissingError>()(
   "PreviewTargetMissingError",
@@ -171,6 +206,8 @@ interface AttachedTab {
   expectedAgentInputs: Array<{ kind: "mouseDown" | "mouseWheel"; expiresAt: number }>;
   /** Until when the user's keys are kept out of the page; see `agentKeys`. */
   holdUserKeysUntil: number;
+  /** Frame id -> its own CDP session, for frames in other processes; see `routePoint`. */
+  frameSessions: Map<string, string>;
   dispose: () => void;
 }
 
@@ -680,13 +717,15 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       readonly refusal?: () => string | null;
       /** Why the page did not answer, when the caller knows better. */
       readonly timedOut?: () => string;
+      /** A frame's own session (`routePoint`); the page's when absent. */
+      readonly sessionId?: string | undefined;
     },
   ) =>
     Effect.tryPromise({
       try: () => {
         const reason = options?.refusal?.() ?? null;
         return reason === null
-          ? contents.debugger.sendCommand(method, params ?? {})
+          ? contents.debugger.sendCommand(method, params ?? {}, options?.sessionId)
           : Promise.reject(reason);
       },
       catch: (cause) => new PreviewCommandError({ webContentsId: contents.id, method, cause }),
@@ -1284,6 +1323,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       controlEpoch: 0,
       expectedAgentInputs: [],
       holdUserKeysUntil: 0,
+      frameSessions: new Map(),
       dispose: () => {},
     };
 
@@ -1343,7 +1383,37 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     contents.on("before-input-event", onBeforeInput);
     contents.on("before-mouse-event", onBeforeMouse);
 
-    const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => {
+    const onMessage = (
+      _event: unknown,
+      method: string,
+      params: Record<string, unknown>,
+      sessionId?: string,
+    ) => {
+      if (method === "Target.attachedToTarget") {
+        const info = params.targetInfo as { targetId?: unknown; type?: unknown } | undefined;
+        const frameSession = params.sessionId;
+        if (
+          info?.type === "iframe" &&
+          typeof info.targetId === "string" &&
+          typeof frameSession === "string"
+        ) {
+          // An iframe target's id is its frame's id, as DOM.describeNode names it.
+          tab.frameSessions.set(info.targetId, frameSession);
+          contents.debugger
+            .sendCommand("Target.setAutoAttach", FRAME_AUTO_ATTACH, frameSession)
+            .catch(() => {});
+        }
+        return;
+      }
+      if (method === "Target.detachedFromTarget") {
+        for (const [frameId, frameSession] of tab.frameSessions) {
+          if (frameSession === params.sessionId) tab.frameSessions.delete(frameId);
+        }
+        return;
+      }
+      // A frame's own session reports nothing else this reads. The page's own
+      // messages come with an empty session id, not a missing one.
+      if (sessionId !== undefined && sessionId !== "") return;
       if (method === "Runtime.consoleAPICalled") {
         const args = (params.args as ReadonlyArray<{ value?: unknown }> | undefined) ?? [];
         pushConsole({
@@ -1454,6 +1524,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     ]) {
       yield* sendCommand(contents, method);
     }
+    // Best effort: without it, input meant for such a frame lands as it did
+    // before, on the frame's element.
+    yield* sendCommand(contents, "Target.setAutoAttach", FRAME_AUTO_ATTACH).pipe(Effect.ignore);
 
     // The guest believes it is focused even while the user's caret is
     // elsewhere in the embedding window. Agent input pulls focus onto the
@@ -1575,6 +1648,146 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     }
     const backendNodeId = yield* resolveTarget(contents, target);
     return yield* centerOf(contents, backendNodeId);
+  });
+
+  /**
+   * A frame's own viewport size in its own CSS pixels, scrollbars included,
+   * read in a world of the panel's own so the page cannot misreport it; null
+   * when the frame does not answer promptly.
+   */
+  const frameViewportSize = Effect.fn("PreviewAutomation.frameViewportSize")(function* (
+    contents: WebContents,
+    frameId: string,
+    sessionId: string,
+  ) {
+    const world = (yield* sendCommand(
+      contents,
+      "Page.createIsolatedWorld",
+      { frameId, worldName: FRAME_METRICS_WORLD_NAME, grantUniveralAccess: false },
+      { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+    ).pipe(Effect.orElseSucceed(() => null))) as { executionContextId?: number } | null;
+    if (world?.executionContextId === undefined) return null;
+    const read = (yield* sendCommand(
+      contents,
+      "Runtime.evaluate",
+      {
+        expression: "[innerWidth, innerHeight]",
+        contextId: world.executionContextId,
+        returnByValue: true,
+      },
+      { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+    ).pipe(Effect.orElseSucceed(() => null))) as { result?: { value?: unknown } } | null;
+    const value = read?.result?.value;
+    if (!Array.isArray(value) || value.length !== 2) return null;
+    const [width, height] = value as ReadonlyArray<unknown>;
+    return typeof width === "number" && typeof height === "number" && width > 0 && height > 0
+      ? { width, height }
+      : null;
+  });
+
+  /**
+   * Where agent mouse input at a point in the page goes: the session of the
+   * frame under it, and how a page point maps into that frame.
+   *
+   * Chromium hands input sent to a page to the frame under the point by hit
+   * testing the window, and the panel takes a page the user is not looking at
+   * out of hit testing (`pointer-events: none` on its element, so the user's
+   * own clicks pass through it to the app). A frame running in another
+   * process is then out of reach: the input lands on the page's top document,
+   * on the frame's element. So the point is followed down through such frames
+   * here, and the input is sent straight into the innermost one through its
+   * own session. Frames in the page's own process need nothing; the page's
+   * input reaches them. Each frame's placement is followed whatever it is (an
+   * offset, a CSS zoom, any transform), from the corners Chromium reports for
+   * the frame's element and the frame's own size. Within a time budget: past
+   * it the input goes to the page, as it did before frames were followed.
+   */
+  const routePoint = (contents: WebContents, point: { readonly x: number; readonly y: number }) => {
+    // Hit test and input use the same pixel, so an overlay's edge cannot fall
+    // between them.
+    const at = { x: Math.round(point.x), y: Math.round(point.y) };
+    return followFrames(contents, at).pipe(
+      Effect.timeoutOrElse({
+        duration: FRAME_ROUTE_BUDGET,
+        orElse: () => Effect.succeed(pageRoute),
+      }),
+      Effect.map((route) => ({
+        sessionId: route.sessionId,
+        at: applyAffine(route.toFrame, at),
+        toFrame: (page: { readonly x: number; readonly y: number }) =>
+          applyAffine(route.toFrame, page),
+      })),
+    );
+  };
+
+  const followFrames = Effect.fn("PreviewAutomation.followFrames")(function* (
+    contents: WebContents,
+    point: { readonly x: number; readonly y: number },
+  ) {
+    const frameSessions = attached.get(contents.id)?.frameSessions;
+    // A page with no such frames needs no looking.
+    if (frameSessions === undefined || frameSessions.size === 0) return pageRoute;
+    let route: FrameRoute = pageRoute;
+    const visited = new Set<string>();
+    for (let depth = 0; depth < MAX_FRAME_DEPTH; depth += 1) {
+      const { sessionId } = route;
+      const local = applyAffine(route.toFrame, point);
+      // The hit test takes document coordinates: the viewport point plus how
+      // far the frame is scrolled.
+      const metrics = (yield* sendCommand(
+        contents,
+        "Page.getLayoutMetrics",
+        {},
+        { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+      ).pipe(Effect.orElseSucceed(() => null))) as {
+        cssLayoutViewport?: { pageX?: number; pageY?: number };
+      } | null;
+      const hit = (yield* sendCommand(
+        contents,
+        "DOM.getNodeForLocation",
+        {
+          x: Math.round(local.x + (metrics?.cssLayoutViewport?.pageX ?? 0)),
+          y: Math.round(local.y + (metrics?.cssLayoutViewport?.pageY ?? 0)),
+        },
+        { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+      ).pipe(Effect.orElseSucceed(() => null))) as { backendNodeId?: number } | null;
+      if (hit?.backendNodeId === undefined) break;
+      const backendNodeId = hit.backendNodeId;
+      const described = (yield* sendCommand(
+        contents,
+        "DOM.describeNode",
+        { backendNodeId },
+        { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+      ).pipe(Effect.orElseSucceed(() => null))) as {
+        node?: { nodeName?: string; frameId?: string };
+      } | null;
+      // Only a frame's element leads into it: a document's root element
+      // carries its own frame's id too.
+      const node = described?.node;
+      if (node?.frameId === undefined || !FRAME_OWNER_NODE_NAMES.has(node.nodeName ?? "")) break;
+      const frameId = node.frameId;
+      const frameSession = frameSessions.get(frameId);
+      if (frameSession === undefined || visited.has(frameSession)) break;
+      const box = (yield* sendCommand(
+        contents,
+        "DOM.getBoxModel",
+        { backendNodeId },
+        { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+      ).pipe(Effect.orElseSucceed(() => null))) as {
+        model?: { content?: ReadonlyArray<number> };
+      } | null;
+      const quad = box?.model?.content;
+      if (quad === undefined || quad.length < 8) break;
+      // Without the frame's own size its placement is unknown: the input
+      // stops at the frame mapped so far rather than guess.
+      const size = yield* frameViewportSize(contents, frameId, frameSession);
+      if (size === null) break;
+      const into = frameAffine(quad, size);
+      if (into === null) break;
+      route = { sessionId: frameSession, toFrame: composeAffine(into, route.toFrame) };
+      visited.add(frameSession);
+    }
+    return route;
   });
 
   const expectAgentInput = (webContentsId: number, kind: "mouseDown" | "mouseWheel") => {
@@ -2028,66 +2241,77 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     click: Effect.fn("PreviewAutomation.click")(function* (input: DesktopPreviewClickInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       const point = yield* targetPoint(contents, input.target);
+      const route = yield* routePoint(contents, point);
+      const at = route.at;
       const clickCount = input.doubleClick === true ? 2 : 1;
       expectAgentInput(contents.id, "mouseDown");
       // Real input events rather than element.click(): hover, focus and blur
       // fire as they would for a person, and a handler that checks isTrusted
       // behaves the same way too.
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x: point.x,
-        y: point.y,
-        button: "left",
-        clickCount,
-      });
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: point.x,
-        y: point.y,
-        button: "left",
-        clickCount,
-      });
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mousePressed", x: at.x, y: at.y, button: "left", clickCount },
+        { sessionId: route.sessionId },
+      );
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", x: at.x, y: at.y, button: "left", clickCount },
+        { sessionId: route.sessionId },
+      );
       return point;
     }),
     move: Effect.fn("PreviewAutomation.move")(function* (input: DesktopPreviewMoveInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       const point = yield* targetPoint(contents, input.target);
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: point.x,
-        y: point.y,
-      });
+      const route = yield* routePoint(contents, point);
+      const at = route.at;
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mouseMoved", x: at.x, y: at.y },
+        { sessionId: route.sessionId },
+      );
       return point;
     }),
     drag: Effect.fn("PreviewAutomation.drag")(function* (input: DesktopPreviewDragInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       const from = yield* targetPoint(contents, input.from);
       const to = yield* targetPoint(contents, input.to);
+      // The whole drag goes to the frame it starts in, as a held button
+      // keeps a person's drag there, even past its edge.
+      const route = yield* routePoint(contents, from);
+      const start = route.at;
+      const end = route.toFrame(to);
       expectAgentInput(contents.id, "mouseDown");
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x: from.x,
-        y: from.y,
-        button: "left",
-        clickCount: 1,
-      });
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mousePressed", x: start.x, y: start.y, button: "left", clickCount: 1 },
+        { sessionId: route.sessionId },
+      );
       for (let step = 1; step <= DRAG_MOVE_STEPS; step += 1) {
         const progress = step / DRAG_MOVE_STEPS;
-        yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          x: from.x + (to.x - from.x) * progress,
-          y: from.y + (to.y - from.y) * progress,
-          button: "left",
-          buttons: 1,
-        });
+        yield* sendCommand(
+          contents,
+          "Input.dispatchMouseEvent",
+          {
+            type: "mouseMoved",
+            x: start.x + (end.x - start.x) * progress,
+            y: start.y + (end.y - start.y) * progress,
+            button: "left",
+            buttons: 1,
+          },
+          { sessionId: route.sessionId },
+        );
       }
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: to.x,
-        y: to.y,
-        button: "left",
-        clickCount: 1,
-      });
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", x: end.x, y: end.y, button: "left", clickCount: 1 },
+        { sessionId: route.sessionId },
+      );
       return { from, to };
     }),
     // Into whatever the page has focused: the renderer clicks the field first,
@@ -2152,14 +2376,25 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       const metrics = (yield* sendCommand(contents, "Page.getLayoutMetrics", {})) as {
         cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
       };
-      expectAgentInput(contents.id, "mouseWheel");
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mouseWheel",
+      const center = {
         x: (metrics.cssVisualViewport?.clientWidth ?? 0) / 2,
         y: (metrics.cssVisualViewport?.clientHeight ?? 0) / 2,
-        deltaX: input.deltaX ?? 0,
-        deltaY: input.deltaY ?? 0,
-      });
+      };
+      const route = yield* routePoint(contents, center);
+      const at = route.at;
+      expectAgentInput(contents.id, "mouseWheel");
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        {
+          type: "mouseWheel",
+          x: at.x,
+          y: at.y,
+          deltaX: input.deltaX ?? 0,
+          deltaY: input.deltaY ?? 0,
+        },
+        { sessionId: route.sessionId },
+      );
     }),
     evaluate: Effect.fn("PreviewAutomation.evaluate")(function* (
       input: DesktopPreviewEvaluateInput,
