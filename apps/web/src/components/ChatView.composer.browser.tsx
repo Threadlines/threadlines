@@ -102,6 +102,45 @@ describe("ChatView (full app): composer", () => {
     }
   });
 
+  it("brings back the user's earlier messages with Up and Down, and leaves typed words alone", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-recall" as MessageId,
+        targetText: "recall target",
+      }),
+    });
+
+    try {
+      await waitForComposerText("");
+      await pressComposerKey("ArrowUp");
+      await waitForComposerText("filler user message 21");
+      await pressComposerKey("ArrowUp");
+      await waitForComposerText("filler user message 20");
+      await pressComposerKey("ArrowDown");
+      await waitForComposerText("filler user message 21");
+      // Past the newest, the box is empty again.
+      await pressComposerKey("ArrowDown");
+      await waitForComposerText("");
+
+      // Words the user typed keep the arrows for the caret: recall leaves the key alone.
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "my draft");
+      await waitForComposerText("my draft");
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      const arrowUp = new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+        bubbles: true,
+        cancelable: true,
+      });
+      composerEditor.dispatchEvent(arrowUp);
+      expect(arrowUp.defaultPrevented).toBe(false);
+      await waitForComposerText("my draft");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("supports symmetric and backward-selection surrounds", async () => {
     useComposerDraftStore.getState().setPrompt(THREAD_REF, "backward");
 

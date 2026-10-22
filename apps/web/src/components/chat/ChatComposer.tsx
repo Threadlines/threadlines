@@ -17,6 +17,7 @@ import type {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { type PromptRecall, recallablePrompts, stepPromptRecall } from "./composerPromptRecall";
 import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
 import { ComposerWorkflowKeywordHint } from "./ComposerWorkflowKeywordHint";
 import {
@@ -2861,6 +2862,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     });
     return true;
   }, [promptRef, promptSuggestion, promptSuggestionView, readComposerSnapshot, setPrompt]);
+  // Up and Down bring back what the user wrote here before (shell style):
+  // see stepPromptRecall. The recalled text is remembered so an edit hands
+  // the arrows back to the caret.
+  const promptRecallRef = useRef<PromptRecall | null>(null);
+  const stepRecall = useCallback(
+    (key: "ArrowUp" | "ArrowDown"): boolean => {
+      const step = stepPromptRecall({
+        key,
+        value: readComposerSnapshot().value,
+        recall: promptRecallRef.current,
+        prompts: recallablePrompts(threadMessages ?? []),
+      });
+      if (step === null) {
+        promptRecallRef.current = null;
+        return false;
+      }
+      promptRecallRef.current = step.recall;
+      promptRef.current = step.value;
+      setPrompt(step.value);
+      const nextCursor = collapseExpandedComposerCursor(step.value, step.value.length);
+      setComposerCursor(nextCursor);
+      setComposerTrigger(null);
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focusAt(nextCursor);
+      });
+      return true;
+    },
+    [promptRef, readComposerSnapshot, setPrompt, threadMessages],
+  );
   // Stays set while the box fills and empties again, so the editor keeps the
   // suggestion mounted and its fade-in plays once.
   const promptSuggestionDisplay = useMemo<ComposerPromptSuggestionDisplay | null>(() => {
@@ -3155,6 +3185,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onSelectComposerItem(selectedItem);
         return true;
       }
+    }
+    // Up and Down walk the user's earlier prompts while the box is empty or
+    // still holds one unedited; an open menu above keeps the arrows.
+    if (
+      (key === "ArrowUp" || key === "ArrowDown") &&
+      !menuIsActive &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      stepRecall(key)
+    ) {
+      return true;
     }
     // Tab takes the agent's suggestion in the box: all of it when the box is
     // empty, or the rest when the typed words start it, so it never clobbers
