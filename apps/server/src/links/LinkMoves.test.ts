@@ -127,6 +127,7 @@ function testLayer(
   repos: ReturnType<typeof makeRepos>,
   dispatched: OrchestrationCommand[],
   access: "allowed" | "ask" = "allowed",
+  revoked: () => boolean = () => false,
 ) {
   return LinkMovesLive.pipe(
     Layer.provideMerge(LinkMoveRepositoryLive),
@@ -134,12 +135,20 @@ function testLayer(
       Layer.mergeAll(
         Layer.mock(LinkRequests)({
           authority: () =>
-            Effect.succeed({
-              ok: true,
-              access,
-              maxRuntimeMode: "auto-accept-edits",
-              pinnedEnvironmentId: null,
-            }),
+            Effect.succeed(
+              revoked()
+                ? {
+                    ok: false,
+                    outcome: "denied",
+                    text: "Mac mini doesn't take work from Windows PC.",
+                  }
+                : {
+                    ok: true,
+                    access,
+                    maxRuntimeMode: "auto-accept-edits",
+                    pinnedEnvironmentId: null,
+                  },
+            ),
           projectForKey: () =>
             Effect.succeed({
               id: ProjectId.make("project-b"),
@@ -287,6 +296,47 @@ describe("LinkMoves", () => {
       );
     }).pipe(Effect.provide(testLayer(repos, dispatched)));
   });
+
+  it.live(
+    "a move dropped after its worktree was made takes away the branch it made, and only that",
+    () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      // Someone on this computer has a branch at the moved commit's name: not ours.
+      const hasMovedBranch = () =>
+        run(repos.b, "branch", "--list", "feature/move-me-from-windows-pc").length > 0;
+      return Effect.gen(function* () {
+        const { manifest, payload } = yield* pack(repos);
+        run(repos.b, "fetch", "--quiet", "origin");
+        const moves = yield* LinkMoves;
+        let state = yield* moves.prepare(link("allowed"), { transferId: TRANSFER, manifest });
+        state = yield* moves.chunk(link("allowed"), {
+          transferId: TRANSFER,
+          offset: 0,
+          data: payload.toString("base64"),
+        });
+        // `feature/move-me` exists here already (someone else's), so the move
+        // makes `feature/move-me-from-windows-pc`; the link goes off right after.
+        run(repos.b, "branch", "feature/move-me", "origin/main");
+        state = yield* moves.finish(link("allowed"), { transferId: TRANSFER });
+        for (let tries = 0; tries < 200 && state.status === "importing"; tries += 1) {
+          yield* Effect.sleep("50 millis");
+          state = yield* moves.status(link("allowed"), { transferId: TRANSFER });
+        }
+        assert.equal(state.status, "aborted");
+        assert.include(state.reason ?? "", "doesn't take work");
+        assert.equal(dispatched.length, 0);
+        // Its branch and worktree go (clean-up follows the recorded abort);
+        // the other branch stays.
+        for (let tries = 0; tries < 200 && hasMovedBranch(); tries += 1) {
+          yield* Effect.sleep("50 millis");
+        }
+        assert.isFalse(hasMovedBranch());
+        assert.include(run(repos.b, "branch", "--list", "feature/move-me"), "feature/move-me");
+        assert.equal(run(repos.b, "worktree", "list").split("\n").length, 1);
+      }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", hasMovedBranch)));
+    },
+  );
 
   it.live("asks first, and a no leaves nothing behind", () => {
     const repos = makeRepos();
