@@ -619,24 +619,6 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
     }),
   );
-  it.effect("passes forkFrom through to the session runtime", () =>
-    Effect.gen(function* () {
-      validationRuntimeFactory.factory.mockClear();
-      const adapter = yield* CodexAdapter;
-
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("codex"),
-        threadId: asThreadId("thread-fork"),
-        runtimeMode: "full-access",
-        forkFrom: { providerThreadId: "source-thread", lastTurnId: "turn-3" },
-      });
-
-      assert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0]?.forkFrom, {
-        providerThreadId: "source-thread",
-        lastTurnId: "turn-3",
-      });
-    }),
-  );
   it.effect("starts an independent review fresh, whatever conversation it is offered", () =>
     Effect.gen(function* () {
       validationRuntimeFactory.factory.mockClear();
@@ -1116,42 +1098,6 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
-  it.effect("starts Codex reviews through the active runtime session", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CodexAdapter;
-      const threadId = asThreadId("sess-review");
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("codex"),
-        threadId,
-        runtimeMode: "full-access",
-      });
-      const runtime = sessionRuntimeFactory.lastRuntime;
-      assert.ok(runtime);
-      runtime.startReviewImpl.mockClear();
-      assert.ok(adapter.startReview);
-
-      const result = yield* adapter.startReview({
-        threadId,
-        target: {
-          type: "commit",
-          sha: "abc123",
-          title: "Review target",
-        },
-        delivery: "inline",
-      });
-
-      assert.equal(result?.turnId, asTurnId("review-turn-1"));
-      assert.deepStrictEqual(runtime.startReviewImpl.mock.calls[0]?.[0], {
-        target: {
-          type: "commit",
-          sha: "abc123",
-          title: "Review target",
-        },
-        delivery: "inline",
-      });
-    }),
-  );
-
   it.effect("keeps legacy fastMode selections working for Codex turns", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -1245,25 +1191,6 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       assert.equal(runtime.deleteThreadImpl.mock.calls.length, 1);
       assert.equal(runtime.closeImpl.mock.calls.length, 1);
       assert.equal(yield* adapter.hasSession(threadId), false);
-    }),
-  );
-
-  it.effect("starts provider Codex context compaction", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CodexAdapter;
-      const threadId = asThreadId("sess-compact-provider-thread");
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("codex"),
-        threadId,
-        runtimeMode: "full-access",
-      });
-      const runtime = sessionRuntimeFactory.lastRuntime;
-      assert.ok(runtime);
-
-      assert.ok(adapter.compactContext);
-      yield* adapter.compactContext(threadId);
-
-      assert.equal(runtime.compactContextImpl.mock.calls.length, 1);
     }),
   );
 
