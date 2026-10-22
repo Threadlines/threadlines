@@ -454,7 +454,15 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
       // Waiting for this computer's user, then cancelled: Allow is refused.
       const waiting = yield* service.start(link({ access: "ask" }), startInput("request-2"));
       assert.equal(waiting.status, "awaiting_approval");
-      assert.equal((yield* service.pending).length, 1);
+      const pending = yield* service.pending;
+      assert.equal(pending.length, 1);
+      // The card can open the thread that asked and say what it would get:
+      // full access asked for, capped at the link's most (Auto).
+      const asked = startInput("request-2");
+      assert.equal(pending[0]?.parentThreadId, asked.parent.threadId);
+      assert.equal(pending[0]?.parentEnvironmentId, asked.parent.environmentId);
+      assert.equal(pending[0]?.askedBy, "Codex");
+      assert.equal(pending[0]?.runtimeMode, "auto");
       yield* service.cancel(link(), ChildRequestId.make("request-2"));
       const allow = yield* Effect.flip(
         service.respond({

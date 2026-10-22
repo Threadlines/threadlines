@@ -414,13 +414,21 @@ describe("a thread another computer asked to start", () => {
     deviceId: "device-windows-pc",
     requestId: ChildRequestId.make("request-changelog"),
     fromLabel: "Windows PC",
+    parentEnvironmentId: EnvironmentId.make("environment-windows"),
+    parentThreadId: ThreadId.make("thread-release"),
     parentThreadTitle: "Ship the 0.6 release",
+    askedBy: "Codex",
     title: "Write the changelog",
     prompt: "Read the pull requests merged since 0.5,\n\n   then write the changelog.",
     projectName: "threadlines",
+    agent: { instanceId: "codex", model: "gpt-5" },
+    runtimeMode: "auto",
     createdAt: "2026-10-21T09:00:00.000Z",
     expiresAt: "2099-10-22T09:00:00.000Z",
   };
+
+  // Requests whose row was clicked, in order.
+  let opened: string[] = [];
 
   // What the sidebar draws from the links store: each request waiting on a
   // computer this app hears from, as a row.
@@ -433,7 +441,9 @@ describe("a thread another computer asked to start", () => {
             key={request.requestId}
             environmentId={environmentId}
             computerLabel="Mac mini"
+            askerLabel="Windows PC"
             request={request}
+            onOpen={() => opened.push(request.requestId)}
           />
         ))}
       </ul>
@@ -459,31 +469,39 @@ describe("a thread another computer asked to start", () => {
 
   afterEach(() => {
     __resetComputerLinksForTests();
+    opened = [];
   });
 
-  it("names both computers and sends Allow to the computer it would run on", async () => {
+  it("reads as a request from another computer and sends Allow to the one it would run on", async () => {
     const respondRequest = vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined);
     stubMacMini(respondRequest);
     render(<PendingRequestRows />);
 
     await expect
       .element(page.getByTestId(`link-request-title-${REQUEST.requestId}`))
-      .toHaveTextContent("Windows PC wants to start a thread: Write the changelog");
+      .toHaveTextContent("Write the changelog");
     await expect
       .element(page.getByTestId(`link-request-where-${REQUEST.requestId}`))
-      .toHaveTextContent("threadlines on Mac mini · from Ship the 0.6 release");
-    await expect
-      .element(page.getByTestId(`link-request-prompt-${REQUEST.requestId}`))
-      .toHaveTextContent("Read the pull requests merged since 0.5, then write the changelog.");
+      .toHaveTextContent("Asked by “Ship the 0.6 release” on Windows PC");
 
+    // Allow answers the request; it doesn't open it.
     await userEvent.click(page.getByTestId(`link-request-allow-${REQUEST.requestId}`));
     expect(respondRequest).toHaveBeenCalledWith({
       deviceId: REQUEST.deviceId,
       requestId: REQUEST.requestId,
       allow: true,
     });
+    expect(opened).toEqual([]);
     // Answered: nothing more to press while Mac mini drops the request.
     await expect.element(page.getByTestId(`link-request-deny-${REQUEST.requestId}`)).toBeDisabled();
+  });
+
+  it("opens the request when the row is clicked", async () => {
+    stubMacMini(vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined));
+    render(<PendingRequestRows />);
+
+    await userEvent.click(page.getByTestId(`link-request-title-${REQUEST.requestId}`));
+    expect(opened).toEqual([REQUEST.requestId]);
   });
 
   it("sends Deny, and offers both again when Mac mini can't take the answer", async () => {

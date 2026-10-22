@@ -1342,14 +1342,28 @@ const make = Effect.gen(function* () {
         .getDevice(row.linkDeviceId)
         .pipe(Effect.orElseSucceed(Option.none));
       const project = yield* projectForKey(input.projectKey);
+      const { runtimeMode } = clampLaunchToCeiling(input, {
+        runtimeMode: Option.isSome(device)
+          ? (device.value.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE)
+          : DEFAULT_LINK_MAX_RUNTIME_MODE,
+        interactionMode: input.interactionMode,
+      });
       result.push({
         deviceId: row.linkDeviceId,
         requestId: row.requestId,
         fromLabel: Option.isSome(device) ? device.value.label : input.parent.environmentLabel,
+        parentEnvironmentId: input.parent.environmentId,
+        parentThreadId: input.parent.threadId,
         parentThreadTitle: input.parent.threadTitle,
+        askedBy: input.parent.handle,
         title: input.title,
         prompt: input.prompt.slice(0, 2_000),
         projectName: project?.title ?? input.projectKey,
+        agent: {
+          instanceId: input.agent.instanceId,
+          ...(input.agent.model !== undefined ? { model: input.agent.model } : {}),
+        },
+        runtimeMode,
         createdAt: row.createdAt,
         expiresAt: DateTime.formatIso(
           DateTime.makeUnsafe(Date.parse(row.createdAt) + LINK_APPROVAL_TTL_MS),

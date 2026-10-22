@@ -135,6 +135,8 @@ import { ComposerAgentInvitePanel } from "./ComposerAgentInvitePanel";
 import { ComposerChildThreadsPanel } from "./ComposerChildThreadsPanel";
 import { ComposerScheduleRequestPanel } from "./ComposerScheduleRequestPanel";
 import { useScheduledTaskRequestsForThread } from "../../lib/scheduledTasksState";
+import { ComposerRemoteStartPanel } from "./ComposerRemoteStartPanel";
+import { usePendingLinkRequests } from "../sidebar/linkedComputers";
 import { pendingChildThreads } from "../../childThreads";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
@@ -1238,6 +1240,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     routeThreadRef.environmentId,
     routeThreadRef.threadId,
   )[0];
+  // A thread the agent asked another computer to start, waiting for that
+  // computer's user: the card that decides it sits here, in the thread that
+  // asked, where the conversation says why.
+  const pendingLinkRequests = usePendingLinkRequests();
+  const pendingRemoteStart = useMemo(
+    () =>
+      activeThread
+        ? (pendingLinkRequests.find(
+            ({ request }) =>
+              request.parentEnvironmentId === activeThread.environmentId &&
+              request.parentThreadId === activeThread.id,
+          ) ?? null)
+        : null,
+    [activeThread, pendingLinkRequests],
+  );
   // The agents "@" offers in a room, first in the menu above files. Picking
   // one sends the message to it, like the agent picker.
   const roomMentionAgents = useMemo(() => {
@@ -3730,6 +3747,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   key={pendingScheduleRequest.requestId}
                   threadRef={routeThreadRef}
                   request={pendingScheduleRequest}
+                />
+              </div>
+            ) : pendingRemoteStart !== null ? (
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
+                <ComposerRemoteStartPanel
+                  key={`${pendingRemoteStart.environmentId}:${pendingRemoteStart.request.requestId}`}
+                  pending={pendingRemoteStart}
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (

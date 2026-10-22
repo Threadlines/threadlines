@@ -6,6 +6,7 @@ import {
   Clock3Icon,
   CloudIcon,
   CornerDownRightIcon,
+  LinkIcon,
   GitForkIcon,
   PinIcon,
   TerminalIcon,
@@ -1475,32 +1476,35 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
   );
 });
 
-/** A prompt as one line, for a row that can only spare a glance at it. */
-function promptPreview(prompt: string): string {
-  return prompt.replace(/\s+/g, " ").trim();
-}
-
 export interface InboxLinkRequestRowProps {
   /** The computer the thread would run on, whose Allow it waits for. */
   readonly environmentId: EnvironmentId;
   /** That computer's name. */
   readonly computerLabel: string;
+  /** The asking computer's name. */
+  readonly askerLabel: string;
   readonly request: ComputerLinkPendingRequest;
+  /** Opens where the request can be read in full: the thread that asked, else Fleet. */
+  readonly onOpen: () => void;
 }
 
 /**
  * A thread another computer's agent asked to start, waiting for the user
- * (docs/design/fleet.md, Part 2 "Ask first"): who asks and for what, which
- * project and computer it would run on and which thread asked, a glance at
- * the prompt, then Deny and Allow. The answer goes to the computer it would
- * run on; the row leaves when that computer drops the request. Its buttons
- * are plain like every list control but always showing, so a touch screen
- * reaches them too.
+ * (docs/design/fleet.md, Part 2 "Ask first"). Marked as a request, not a
+ * thread: it leads with what would start, then which thread on which
+ * computer asked, with Deny and Allow. Clicking it opens the thread that
+ * asked, where a card above the message box shows everything (the full
+ * instructions, the agent, the access it would get). The answer goes to the
+ * computer it would run on; the row leaves when that computer drops the
+ * request. Its buttons are plain like every list control but always showing,
+ * so a touch screen reaches them too.
  */
 export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
   environmentId,
   computerLabel,
+  askerLabel,
   request,
+  onOpen,
 }: InboxLinkRequestRowProps) {
   // Set while an answer is on its way, and kept after it lands: the row is
   // done, and goes when the computer's next snapshot drops the request.
@@ -1524,14 +1528,29 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
     },
     [computerLabel, environmentId, request.deviceId, request.requestId, request.title],
   );
-  const preview = promptPreview(request.prompt);
+  const answer = (allow: boolean) => (event: React.MouseEvent) => {
+    event.stopPropagation();
+    void respond(allow);
+  };
   return (
     <li
-      className={cn(ROW_ITEM_CLASS_NAME, "px-3 pt-1.5 pb-1.5 hover:bg-sidebar-accent/60")}
+      role="button"
+      tabIndex={0}
+      className={cn(
+        ROW_ITEM_CLASS_NAME,
+        "cursor-pointer px-3 pt-1.5 pb-1 hover:bg-sidebar-accent/60 focus-ring",
+      )}
       data-testid={`link-request-${request.requestId}`}
+      aria-label={`Request from ${askerLabel}: ${request.title}. Open it.`}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
     >
-      {/* Who asks and for what may take two lines: the thread's title is the
-          part worth reading, and it comes last. */}
       <div className="flex min-w-0 items-start gap-1.5">
         <span
           aria-label="Needs you"
@@ -1543,28 +1562,26 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
         <span
           className="line-clamp-2 min-w-0 flex-1 text-xs leading-4 font-medium text-foreground"
           data-testid={`link-request-title-${request.requestId}`}
-          title={`${request.fromLabel} wants to start a thread: ${request.title}`}
         >
-          {request.fromLabel} wants to start a thread: {request.title}
+          {request.title}
         </span>
-        <span className="mt-0.5 shrink-0 font-mono text-[11px] leading-none text-muted-foreground/50 tabular-nums">
-          {formatRelativeTimeLabel(request.createdAt)}
+        {/* The same word-and-color a thread waiting on an approval shows. */}
+        <span className="mt-0.5 shrink-0 font-mono text-[11px] leading-none text-amber-600 dark:text-amber-300/90">
+          request
         </span>
       </div>
       <div
-        className="mt-0.5 truncate ps-[13px] text-[11px] text-muted-foreground/60"
+        className="mt-0.5 flex min-w-0 items-center gap-1 ps-[13px] text-[11px] text-muted-foreground/60"
         data-testid={`link-request-where-${request.requestId}`}
       >
-        {request.projectName} on {computerLabel}
-        <MetaSeparator />
-        from {request.parentThreadTitle}
+        <LinkIcon aria-hidden className="size-2.5 shrink-0" />
+        <span className="min-w-0 truncate">
+          Asked by “{request.parentThreadTitle}” on {askerLabel}
+        </span>
       </div>
-      <div className="mt-0.5 flex min-w-0 items-center gap-1 ps-[13px]">
-        <span
-          className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/60"
-          data-testid={`link-request-prompt-${request.requestId}`}
-        >
-          {preview}
+      <div className="flex min-w-0 items-center gap-1 ps-[13px]">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/50 tabular-nums">
+          {formatRelativeTimeLabel(request.createdAt)}
         </span>
         <Button
           variant="ghost"
@@ -1574,7 +1591,7 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
           aria-label={`Deny ${request.title}`}
           className="text-muted-foreground"
           disabled={answering !== null}
-          onClick={() => void respond(false)}
+          onClick={answer(false)}
         >
           Deny
         </Button>
@@ -1586,7 +1603,7 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
           aria-label={`Allow ${request.title}`}
           className="text-primary-readable"
           disabled={answering !== null}
-          onClick={() => void respond(true)}
+          onClick={answer(true)}
         >
           Allow
         </Button>
