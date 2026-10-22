@@ -67,6 +67,8 @@ import type {
   PullRequestDiffResult,
   PullRequestListInput,
   PullRequestListResult,
+  PullRequestLookupInput,
+  PullRequestLookupResult,
   PullRequestReactionInput,
   PullRequestRef,
   PullRequestReviewerCandidateList,
@@ -1846,6 +1848,7 @@ export interface EnvironmentApi {
   };
   pullRequests: {
     list: (input: PullRequestListInput) => Promise<PullRequestListResult>;
+    lookup: (input: PullRequestLookupInput) => Promise<PullRequestLookupResult>;
     detail: (input: PullRequestDetailInput) => Promise<PullRequestDetail>;
     activity: (input: PullRequestActivityInput) => Promise<PullRequestActivity>;
     diff: (input: PullRequestDiffInput) => Promise<PullRequestDiffResult>;

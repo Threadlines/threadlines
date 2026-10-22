@@ -128,6 +128,8 @@ import {
   PullRequestDiffResult,
   PullRequestListInput,
   PullRequestListResult,
+  PullRequestLookupInput,
+  PullRequestLookupResult,
   PullRequestReactionInput,
   PullRequestRef,
   PullRequestReviewerCandidateList,
@@ -416,6 +418,7 @@ export const WS_METHODS = {
 
   // Pull request methods
   pullRequestsList: "pullRequests.list",
+  pullRequestsLookup: "pullRequests.lookup",
   pullRequestsDetail: "pullRequests.detail",
   pullRequestsActivity: "pullRequests.activity",
   pullRequestsDiff: "pullRequests.diff",
@@ -1270,6 +1273,12 @@ export const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
   error: PullRequestServiceError,
 });
 
+export const WsPullRequestsLookupRpc = Rpc.make(WS_METHODS.pullRequestsLookup, {
+  payload: PullRequestLookupInput,
+  success: PullRequestLookupResult,
+  error: PullRequestServiceError,
+});
+
 export const WsPullRequestsDetailRpc = Rpc.make(WS_METHODS.pullRequestsDetail, {
   payload: PullRequestDetailInput,
   success: PullRequestDetail,
@@ -1812,6 +1821,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitAuthRemediationPlanRpc,
   WsGitApplyAuthRemediationRpc,
   WsPullRequestsListRpc,
+  WsPullRequestsLookupRpc,
   WsPullRequestsDetailRpc,
   WsPullRequestsActivityRpc,
   WsPullRequestsDiffRpc,

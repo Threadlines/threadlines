@@ -7,6 +7,7 @@ import {
   decodeGitHubDetailBaseStateJson,
   decodeGitHubImmediatelyMergeableJson,
   decodeGitHubPullRequestConversationJson,
+  decodeGitHubPullRequestLookupJson,
   decodeGitHubReviewerCandidatesJson,
   decodeGitHubSubjectScopeJson,
 } from "./gitHubPullRequestGraphql.ts";
@@ -507,5 +508,57 @@ describe("decodeGitHubAuthoredPullRequestsJson", () => {
       rows.map((row) => row.number),
       [12],
     );
+  });
+});
+
+describe("decodeGitHubPullRequestLookupJson", () => {
+  const node = (number: number, state: string, isCrossRepository = false) => ({
+    number,
+    title: `Pull request ${number}`,
+    url: `https://github.com/octocat/example-app/pull/${number}`,
+    headRefName: "main",
+    baseRefName: "release",
+    state,
+    isDraft: false,
+    additions: 1,
+    deletions: 0,
+    createdAt: "2026-10-01T10:00:00Z",
+    updatedAt: "2026-10-02T10:00:00Z",
+    mergedAt: state === "MERGED" ? "2026-10-02T10:00:00Z" : null,
+    closedAt: state === "OPEN" ? null : "2026-10-02T10:00:00Z",
+    isCrossRepository,
+    isInMergeQueue: false,
+    autoMergeRequest: null,
+  });
+  const page = (nodes: ReadonlyArray<unknown>, hasNextPage = false) => ({
+    pageInfo: { hasNextPage },
+    nodes,
+  });
+
+  it("reads past history on the default branch and never calls a crowded page empty", () => {
+    const lookup = decoded(
+      decodeGitHubPullRequestLookupJson(
+        JSON.stringify({
+          data: {
+            repository: {
+              defaultBranchRef: { name: "main" },
+              // The default branch: a merge from it is history, not the thread's.
+              bo0: page([]),
+              bs0: page([node(12, "MERGED")]),
+              // Only forks' open pull requests on this page, and more past it:
+              // one of those could be this repository's, so the settled one
+              // does not answer for the branch.
+              bo1: page([node(13, "OPEN", true)], true),
+              bs1: page([node(11, "MERGED")]),
+            },
+          },
+        }),
+        { numbers: [], branches: ["main", "shared-name"] },
+      ),
+      "lookup",
+    );
+
+    assert.isNull(lookup.branches.get("main"));
+    assert.isFalse(lookup.branches.has("shared-name"));
   });
 });

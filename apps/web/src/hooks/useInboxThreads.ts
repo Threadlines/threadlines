@@ -16,9 +16,10 @@ import {
   type ThreadStatusPill,
 } from "../components/Sidebar.logic";
 import {
+  resolveLinkedThreadPullRequests,
   resolveThreadPullRequest,
   resolveThreadPullRequestsSettledAt,
-  type PullRequestEntry,
+  threadPullRequestLookupRequests,
   type ThreadPullRequest,
 } from "../components/pull-requests/pullRequests.logic";
 import type { SidebarGeneralChatEntry } from "../components/sidebar/SidebarGeneralChats";
@@ -28,6 +29,7 @@ import {
   usePullRequestLists,
   type PullRequestListSnapshot,
 } from "../lib/pullRequestsReactQuery";
+import { usePullRequestLookups } from "../lib/pullRequestLookups";
 import { derivePhysicalProjectKey, selectProjectGroupingSettings } from "../logicalProject";
 import {
   buildPhysicalToLogicalProjectKeyMap,
@@ -77,8 +79,10 @@ export interface InboxThreads {
   /** Open threads outside the general chats: the inbox's rows, Active and Wrapped. */
   readonly inboxThreads: SidebarThreadSummary[];
   readonly openPullRequests: PullRequestListSnapshot;
-  readonly settledPullRequestEntries: readonly PullRequestEntry[];
+  /** Each inbox thread's own pull request, from its branch; see `resolveThreadPullRequest`. */
   readonly pullRequestByThreadKey: ReadonlyMap<string, ThreadPullRequest>;
+  /** The pull requests each inbox thread's agent opened on other branches, where it has any. */
+  readonly linkedPullRequestsByThreadKey: ReadonlyMap<string, readonly ThreadPullRequest[]>;
   readonly nowIso: string;
   readonly entries: InboxEntry[];
   readonly generalChatEntries: InboxGeneralChatEntry[];
@@ -193,17 +197,35 @@ export function useInboxThreads(): InboxThreads {
     [generalChatProjectKeys, resolveThreadProjectKey, sidebarThreads],
   );
 
-  // What the listings know about each inbox thread, built once for the whole
-  // sidebar: the row badges read it, and so does the rule that files a thread
-  // whose branch has landed. Rows still consult their own git status for the
-  // branch they are standing on; this is the answer for the ones that moved.
+  // What the listings and lookups know about each inbox thread, built once for
+  // the whole sidebar: the row badges read it, and so does the rule that files
+  // a thread whose branch has landed. Rows still consult their own git status
+  // for the branch they are standing on; this is the answer for the ones that
+  // moved, and for every Wrapped row. The listings keep only the newest few
+  // settled pull requests, so whatever the open one does not carry is looked
+  // up on its own.
   const settledPullRequestEntries = useMemo(
     () => [...mergedPullRequests.entries, ...closedPullRequests.entries],
     [closedPullRequests.entries, mergedPullRequests.entries],
   );
+  const pullRequestLookups = usePullRequestLookups(
+    useMemo(
+      () =>
+        threadPullRequestLookupRequests({
+          threads: inboxThreads,
+          projects,
+          openEntries: openPullRequests.entries,
+        }),
+      [inboxThreads, openPullRequests.entries, projects],
+    ),
+  );
   const pullRequestByThreadKey = useMemo(() => {
     const byThreadKey = new Map<string, ThreadPullRequest>();
-    if (openPullRequests.entries.length === 0 && settledPullRequestEntries.length === 0) {
+    if (
+      openPullRequests.entries.length === 0 &&
+      settledPullRequestEntries.length === 0 &&
+      pullRequestLookups.size === 0
+    ) {
       return byThreadKey;
     }
     for (const thread of inboxThreads) {
@@ -212,6 +234,7 @@ export function useInboxThreads(): InboxThreads {
         gitStatus: null,
         openEntries: openPullRequests.entries,
         settledEntries: settledPullRequestEntries,
+        lookups: pullRequestLookups,
         projects,
       });
       if (pullRequest) {
@@ -222,7 +245,44 @@ export function useInboxThreads(): InboxThreads {
       }
     }
     return byThreadKey;
-  }, [inboxThreads, openPullRequests.entries, projects, settledPullRequestEntries]);
+  }, [
+    inboxThreads,
+    openPullRequests.entries,
+    projects,
+    pullRequestLookups,
+    settledPullRequestEntries,
+  ]);
+  // The pull requests each thread's agent opened on other branches, from the
+  // same reads. A row's tag shows one pull request and counts the rest, and
+  // the thread waits for all of them before a landing files it.
+  const linkedPullRequestsByThreadKey = useMemo(() => {
+    const byThreadKey = new Map<string, readonly ThreadPullRequest[]>();
+    for (const thread of inboxThreads) {
+      if ((thread.linkedPullRequests?.length ?? 0) === 0) {
+        continue;
+      }
+      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      const linked = resolveLinkedThreadPullRequests({
+        thread,
+        ownNumber: pullRequestByThreadKey.get(threadKey)?.number ?? null,
+        projects,
+        openEntries: openPullRequests.entries,
+        settledEntries: settledPullRequestEntries,
+        lookups: pullRequestLookups,
+      });
+      if (linked.length > 0) {
+        byThreadKey.set(threadKey, linked);
+      }
+    }
+    return byThreadKey;
+  }, [
+    inboxThreads,
+    openPullRequests.entries,
+    projects,
+    pullRequestByThreadKey,
+    pullRequestLookups,
+    settledPullRequestEntries,
+  ]);
 
   const entries = useMemo<InboxEntry[]>(
     () =>
@@ -239,10 +299,8 @@ export function useInboxThreads(): InboxThreads {
         pullRequestSettledAt: (thread, threadKey) =>
           (threadWrapUpOnPullRequestSettledById[threadKey] ?? wrapUpOnPullRequestSettled)
             ? resolveThreadPullRequestsSettledAt({
-                thread,
                 own: pullRequestByThreadKey.get(threadKey),
-                projects,
-                settledEntries: settledPullRequestEntries,
+                linked: linkedPullRequestsByThreadKey.get(threadKey) ?? [],
                 now: nowIso,
               })
             : null,
@@ -268,11 +326,10 @@ export function useInboxThreads(): InboxThreads {
     [
       doneThreadOverlays,
       inboxThreads,
+      linkedPullRequestsByThreadKey,
       nowIso,
-      projects,
       pullRequestByThreadKey,
       resolveThreadProjectKey,
-      settledPullRequestEntries,
       seenThreadOverlays,
       sidebarProjectByKey,
       wrapUpChildThreadsOnFinish,
@@ -306,8 +363,8 @@ export function useInboxThreads(): InboxThreads {
     generalChatProjectKeys,
     inboxThreads,
     openPullRequests,
-    settledPullRequestEntries,
     pullRequestByThreadKey,
+    linkedPullRequestsByThreadKey,
     nowIso,
     entries,
     generalChatEntries,

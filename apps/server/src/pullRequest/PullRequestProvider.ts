@@ -114,6 +114,33 @@ export interface ProviderAuthoredChangeRequest extends ProviderChangeRequest {
   readonly viewerCanWrite?: boolean;
 }
 
+/** What a lookup needs to say about one change request. */
+export type ProviderChangeRequestSummary = Pick<
+  ProviderChangeRequest,
+  | "number"
+  | "title"
+  | "url"
+  | "headBranch"
+  | "state"
+  | "isDraft"
+  | "additions"
+  | "deletions"
+  | "updatedAt"
+  | "settledAt"
+  | "autoMergeEnabled"
+>;
+
+/**
+ * A lookup's answers. Null is the host saying there is none: no such number,
+ * or no change request from this repository's branch (on its default branch,
+ * no open one). Anything the host did not answer is left out, so absence is
+ * never read into a failure.
+ */
+export interface ProviderChangeRequestLookup {
+  readonly numbers: ReadonlyMap<number, ProviderChangeRequestSummary | null>;
+  readonly branches: ReadonlyMap<string, ProviderChangeRequestSummary | null>;
+}
+
 export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   readonly body: string;
   readonly changedFiles: number;
@@ -195,6 +222,20 @@ export interface PullRequestProviderApi {
     readonly state: PullRequestListState;
     readonly limit: number;
   }) => Effect.Effect<ReadonlyArray<ProviderAuthoredChangeRequest>, PullRequestProviderError>;
+
+  /**
+   * Particular change requests, however long ago they moved: by number, and by
+   * the head branch one would come from. The listings are capped by count, so
+   * this is how a thread whose change request fell off them still learns where
+   * it stands. Absent from a host that cannot be asked this way, where the
+   * listings are all there is.
+   */
+  readonly lookupChangeRequests?: (
+    input: ProviderRepositoryRef & {
+      readonly numbers: ReadonlyArray<number>;
+      readonly branches: ReadonlyArray<string>;
+    },
+  ) => Effect.Effect<ProviderChangeRequestLookup, PullRequestProviderError>;
 
   readonly getChangeRequest: (
     input: ProviderRepositoryRef & { readonly number: number },

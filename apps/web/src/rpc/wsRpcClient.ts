@@ -223,6 +223,7 @@ export interface WsRpcClient {
    */
   readonly pullRequests: {
     readonly list: RpcUnaryMethod<typeof WS_METHODS.pullRequestsList>;
+    readonly lookup: RpcUnaryMethod<typeof WS_METHODS.pullRequestsLookup>;
     readonly detail: RpcUnaryMethod<typeof WS_METHODS.pullRequestsDetail>;
     readonly activity: RpcUnaryMethod<typeof WS_METHODS.pullRequestsActivity>;
     readonly diff: RpcUnaryMethod<typeof WS_METHODS.pullRequestsDiff>;
@@ -727,6 +728,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     },
     pullRequests: {
       list: (input) => transport.request((client) => client[WS_METHODS.pullRequestsList](input)),
+      lookup: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsLookup](input)),
       detail: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestsDetail](input)),
       activity: (input) =>

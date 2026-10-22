@@ -160,6 +160,72 @@ export const PullRequestListResult = Schema.Struct({
 });
 export type PullRequestListResult = typeof PullRequestListResult.Type;
 
+/** How many pull requests one lookup may ask about. */
+export const PULL_REQUEST_LOOKUP_LIMIT = 50;
+
+/**
+ * One pull request a thread points at, whatever the listings carry: by its
+ * number (one the thread's agent opened), or by the head branch it would come
+ * from (the thread's own).
+ */
+export const PullRequestLookupItem = Schema.Union([
+  Schema.Struct({ number: PositiveInt }),
+  Schema.Struct({ branch: TrimmedNonEmptyString }),
+]);
+export type PullRequestLookupItem = typeof PullRequestLookupItem.Type;
+
+/**
+ * Asks a project's repository about pull requests the listings may not carry:
+ * they are capped by count, so on a busy repository a merge falls off them
+ * within a day, while the thread that made it still needs to know.
+ */
+export const PullRequestLookupInput = Schema.Struct({
+  projectId: ProjectId,
+  /** `owner/name`. */
+  repository: TrimmedNonEmptyString,
+  items: Schema.Array(PullRequestLookupItem).check(Schema.isMaxLength(PULL_REQUEST_LOOKUP_LIMIT)),
+});
+export type PullRequestLookupInput = typeof PullRequestLookupInput.Type;
+
+/** What a thread's tag, rows and wrap-up need to know about one pull request. */
+export const PullRequestLookupEntry = Schema.Struct({
+  number: PositiveInt,
+  title: TrimmedNonEmptyString,
+  url: TrimmedNonEmptyString,
+  headBranch: TrimmedNonEmptyString,
+  state: PullRequestState,
+  isDraft: Schema.Boolean,
+  additions: NonNegativeInt,
+  deletions: NonNegativeInt,
+  updatedAt: IsoDateTime,
+  /** When it merged or closed. Absent while open, or where the host did not say. */
+  settledAt: Schema.optionalKey(IsoDateTime),
+  /** Auto-merge is enabled or the pull request is in the merge queue. */
+  autoMergeEnabled: Schema.Boolean,
+});
+export type PullRequestLookupEntry = typeof PullRequestLookupEntry.Type;
+
+export const PullRequestLookupAnswer = Schema.Struct({
+  item: PullRequestLookupItem,
+  /**
+   * Null where the host has none: no such number, or no pull request from this
+   * repository's branch of that name. On the repository's default branch only
+   * an open one counts, since merged ones there are history, not the thread's.
+   */
+  pullRequest: Schema.NullOr(PullRequestLookupEntry),
+  /** When the host gave this answer, which a cached one keeps. */
+  answeredAt: IsoDateTime,
+});
+export type PullRequestLookupAnswer = typeof PullRequestLookupAnswer.Type;
+
+export const PullRequestLookupResult = Schema.Struct({
+  /** False where the host cannot be asked this way; the listings are all there is. */
+  supported: Schema.Boolean,
+  /** An item the host could not answer this time is left out, not answered with null. */
+  answers: Schema.Array(PullRequestLookupAnswer),
+});
+export type PullRequestLookupResult = typeof PullRequestLookupResult.Type;
+
 export class PullRequestServiceError extends Schema.TaggedError<PullRequestServiceError>()(
   "PullRequestServiceError",
   {
