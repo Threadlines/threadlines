@@ -18,6 +18,14 @@ import {
   OutboundComputerLink,
 } from "./links.ts";
 import {
+  ThreadMoveCancelInput,
+  ThreadMoveError,
+  ThreadMovePreview,
+  ThreadMovePreviewInput,
+  ThreadMoveStartInput,
+  ThreadMoveStartResult,
+} from "./moves.ts";
+import {
   RelayAccessError,
   RelayAccessSnapshot,
   RelayCancelInviteInput,
@@ -575,6 +583,10 @@ export const WS_METHODS = {
   linksSetAccess: "links.setAccess",
   linksRemove: "links.remove",
   linksRespondRequest: "links.respondRequest",
+  // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
+  movesPreview: "moves.preview",
+  movesStart: "moves.start",
+  movesCancel: "moves.cancel",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1770,6 +1782,26 @@ export const WsLinksRespondRequestRpc = Rpc.make(WS_METHODS.linksRespondRequest,
   error: ComputerLinkError,
 });
 
+/** Where this thread could move, and what would go with it. */
+export const WsMovesPreviewRpc = Rpc.make(WS_METHODS.movesPreview, {
+  payload: ThreadMovePreviewInput,
+  success: ThreadMovePreview,
+  error: ThreadMoveError,
+});
+
+/** Freeze the thread and move it; the move then runs on its own. */
+export const WsMovesStartRpc = Rpc.make(WS_METHODS.movesStart, {
+  payload: ThreadMoveStartInput,
+  success: ThreadMoveStartResult,
+  error: ThreadMoveError,
+});
+
+/** Ask to stop a move; the thread unfreezes once the other computer confirms. */
+export const WsMovesCancelRpc = Rpc.make(WS_METHODS.movesCancel, {
+  payload: ThreadMoveCancelInput,
+  error: ThreadMoveError,
+});
+
 /** Empty for anyone but a "Connect a device" device. */
 export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
   payload: Schema.Struct({}),
@@ -1944,6 +1976,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsLinksSetAccessRpc,
   WsLinksRemoveRpc,
   WsLinksRespondRequestRpc,
+  WsMovesPreviewRpc,
+  WsMovesStartRpc,
+  WsMovesCancelRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,

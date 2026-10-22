@@ -101,7 +101,24 @@ export type InboundComputerLink = typeof InboundComputerLink.Type;
 /** A thread another computer asked to start here, waiting for this computer's user. */
 export const ComputerLinkPendingRequest = Schema.Struct({
   deviceId: TrimmedNonEmptyString,
+  /** A start: its request id. A move: its transfer id. */
   requestId: ChildRequestId,
+  /**
+   * `move`: the asking computer wants to move one of its threads here, with
+   * its history and code (docs/design/fleet.md, Part 3). The parent fields
+   * then name that thread, and `prompt` is empty. Absent: a start.
+   */
+  kind: Schema.optional(Schema.Literals(["start", "move"])),
+  move: Schema.optional(
+    Schema.Struct({
+      messageCount: Schema.Number,
+      /** The branch it's on there; null for a detached head. */
+      branch: Schema.NullOr(TrimmedNonEmptyString),
+      trackedFiles: Schema.Number,
+      untrackedFiles: Schema.Number,
+      unpushedCommits: Schema.Number,
+    }),
+  ),
   /** The asking computer's name. */
   fromLabel: TrimmedNonEmptyString,
   /** The asking computer and the thread that asked, to open it where the app reaches it. */

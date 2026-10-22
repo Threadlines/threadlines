@@ -13,6 +13,7 @@ import {
   CheckpointRef,
   ChildRequestBatchId,
   ChildRequestId,
+  ThreadMoveId,
   CommandId,
   CommandRequestId,
   CommandRunId,
@@ -606,6 +607,59 @@ export const ThreadRemoteOrigin = Schema.Struct({
 });
 export type ThreadRemoteOrigin = typeof ThreadRemoteOrigin.Type;
 
+/** Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far it got. */
+export const ThreadMovePhase = Schema.Literals([
+  "exporting",
+  "awaiting_approval",
+  "sending",
+  "importing",
+]);
+export type ThreadMovePhase = typeof ThreadMovePhase.Type;
+
+/** The computer a thread moves to, by the name it had when the move started. */
+export const ThreadMoveTarget = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+});
+export type ThreadMoveTarget = typeof ThreadMoveTarget.Type;
+
+/**
+ * A thread moving, or moved, to a linked computer. From the moment it starts
+ * the thread is frozen here: the decider refuses everything but archiving,
+ * deleting, pinning, reading and the move's own steps. It unfreezes only when
+ * the other computer confirms the move was dropped; once `movedAway` is set
+ * the thread lives there and this copy stays read-only.
+ */
+export const OrchestrationThreadMove = Schema.Struct({
+  transferId: ThreadMoveId,
+  target: ThreadMoveTarget,
+  /** The agent the other computer will run it with (its own instance id). */
+  agent: ModelSelection,
+  phase: ThreadMovePhase,
+  sentBytes: Schema.optional(NonNegativeInt),
+  totalBytes: Schema.optional(NonNegativeInt),
+  /** The user asked to stop it; it stops once the other computer confirms. */
+  cancelRequested: Schema.Boolean,
+  startedAt: IsoDateTime,
+  /** The other computer took it: the thread there. */
+  movedAway: Schema.optional(
+    Schema.Struct({
+      threadId: ThreadId,
+      movedAt: IsoDateTime,
+    }),
+  ),
+});
+export type OrchestrationThreadMove = typeof OrchestrationThreadMove.Type;
+
+/** A thread that moved here from another computer, and where it came from. */
+export const ThreadMovedFrom = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+  threadId: ThreadId,
+  movedAt: IsoDateTime,
+});
+export type ThreadMovedFrom = typeof ThreadMovedFrom.Type;
+
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
@@ -676,6 +730,12 @@ export const OrchestrationMessage = Schema.Struct({
    */
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  /**
+   * Brought over when the thread moved here from another computer
+   * (ThreadMovedFrom). Every revert keeps it and leaves it out of its turn
+   * count: this computer's turns start after it.
+   */
+  imported: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1920,6 +1980,16 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /** See OrchestrationThreadShell.move. */
+  move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** See OrchestrationThreadShell.movedFrom. */
+  movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
+  /**
+   * Moved here: the next turn's agent hasn't been given the conversation yet.
+   * Its first send carries a seed built from the imported transcript; the
+   * flag clears once the provider took that turn.
+   */
+  historySeedOwed: Schema.optional(Schema.Boolean),
   /** Child threads this thread started: open requests, limits and notes. */
   childRequests: OrchestrationChildRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_CHILD_REQUEST_STATE)),
@@ -2108,6 +2178,10 @@ export const OrchestrationThreadShell = Schema.Struct({
    * by <thread> on <computer>". Absent or null: started here.
    */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /** Moving, or moved, to a linked computer: see OrchestrationThreadMove. Absent or null: neither. */
+  move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** Moved here from another computer: see ThreadMovedFrom. Absent or null: started here. */
+  movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
   /**
    * On a parent: its children on linked computers with their last known
    * status (OrchestrationChildRequestState.remoteChildren), so its family
@@ -3611,7 +3685,111 @@ const ThreadChildNotesDeliveredCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Moving a thread to a linked computer (docs/design/fleet.md, Part 3), on the
+ * computer it leaves. Only ThreadMoveService dispatches the start, after it
+ * checked the link and the target; the rest come from ThreadMoveReactor.
+ */
+const ThreadMoveStartCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.start"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  target: ThreadMoveTarget,
+  agent: ModelSelection,
+  createdAt: IsoDateTime,
+});
+
+const ThreadMoveProgressCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.progress"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  phase: ThreadMovePhase,
+  sentBytes: Schema.optional(NonNegativeInt),
+  totalBytes: Schema.optional(NonNegativeInt),
+  createdAt: IsoDateTime,
+});
+
+const ThreadMoveCancelCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.cancel"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  createdAt: IsoDateTime,
+});
+
+/** The other computer confirmed the move was dropped, or it never got there: unfreeze. */
+const ThreadMoveAbortCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.abort"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  reason: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+/** The other computer committed the move: the thread lives there now. */
+const ThreadMoveCompleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.complete"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  movedThreadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
+/** One message a move brings, as the computer it left had it. */
+export const ThreadImportMessage = Schema.Struct({
+  messageId: MessageId,
+  role: Schema.Literals(["user", "assistant"]),
+  text: Schema.String,
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  turnId: Schema.NullOr(TurnId),
+  completesTurn: Schema.optional(Schema.Boolean),
+  createdAt: IsoDateTime,
+});
+export type ThreadImportMessage = typeof ThreadImportMessage.Type;
+
+/**
+ * A moved thread arriving, on the computer it moves to: created with its
+ * whole history in one decision, so the thread existing is the move's
+ * commit. Ids are the receiving side's own (fresh, derived from the
+ * transfer); only the link's move handler dispatches it.
+ */
+const ThreadImportCommand = Schema.Struct({
+  type: Schema.Literal("thread.import"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  branch: Schema.NullOr(TrimmedNonEmptyString),
+  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  movedFrom: ThreadMovedFrom,
+  messages: Schema.Array(ThreadImportMessage),
+  activities: Schema.Array(OrchestrationThreadActivity),
+  createdAt: IsoDateTime,
+});
+
+/** A moved thread's agent was given the conversation: see OrchestrationThread.historySeedOwed. */
+const ThreadHistorySeedDeliveredCommand = Schema.Struct({
+  type: Schema.Literal("thread.history-seed.delivered"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadMoveStartCommand,
+  ThreadMoveProgressCommand,
+  ThreadMoveCancelCommand,
+  ThreadMoveAbortCommand,
+  ThreadMoveCompleteCommand,
+  ThreadImportCommand,
+  ThreadHistorySeedDeliveredCommand,
   ThreadChildStartCommand,
   ThreadChildSendCommand,
   ThreadChildRequestUpdateCommand,
@@ -3700,6 +3878,12 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.remote-child-updated",
   "thread.remote-cancel-queued",
   "thread.remote-cancels-delivered",
+  "thread.move-started",
+  "thread.move-progressed",
+  "thread.move-cancel-requested",
+  "thread.move-aborted",
+  "thread.moved-away",
+  "thread.history-seed-delivered",
   "thread.handed-back",
   "thread.parent-attachment-set",
   "thread.meta-updated",
@@ -3793,6 +3977,9 @@ export const ThreadCreatedPayload = Schema.Struct({
   attachedToParent: Schema.optional(Schema.Boolean),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
+  /** Imported by a move: see ThreadMovedFrom and OrchestrationThread.historySeedOwed. */
+  movedFrom: Schema.optional(ThreadMovedFrom),
+  historySeedOwed: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -4003,6 +4190,48 @@ export const ThreadRemoteChildUpdatedPayload = Schema.Struct({
 });
 
 /** Linked computers: these cancels reached their computer. */
+export const ThreadMoveStartedPayload = Schema.Struct({
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  target: ThreadMoveTarget,
+  agent: ModelSelection,
+  startedAt: IsoDateTime,
+});
+
+export const ThreadMoveProgressedPayload = Schema.Struct({
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  phase: ThreadMovePhase,
+  sentBytes: Schema.optional(NonNegativeInt),
+  totalBytes: Schema.optional(NonNegativeInt),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMoveCancelRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMoveAbortedPayload = Schema.Struct({
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  reason: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMovedAwayPayload = Schema.Struct({
+  threadId: ThreadId,
+  transferId: ThreadMoveId,
+  movedThreadId: ThreadId,
+  movedAt: IsoDateTime,
+});
+
+export const ThreadHistorySeedDeliveredPayload = Schema.Struct({
+  threadId: ThreadId,
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadRemoteCancelsDeliveredPayload = Schema.Struct({
   threadId: ThreadId,
   requestIds: Schema.Array(ChildRequestId),
@@ -4108,6 +4337,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  /** See OrchestrationMessage.imported. */
+  imported: Schema.optional(Schema.Literal(true)),
   /** Missing means legacy behavior for events written before assistant
    * segments carried an explicit turn-settlement decision. */
   completesTurn: Schema.optional(Schema.Boolean),
@@ -4582,6 +4813,36 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.remote-cancels-delivered"),
     payload: ThreadRemoteCancelsDeliveredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-started"),
+    payload: ThreadMoveStartedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-progressed"),
+    payload: ThreadMoveProgressedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-cancel-requested"),
+    payload: ThreadMoveCancelRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-aborted"),
+    payload: ThreadMoveAbortedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.moved-away"),
+    payload: ThreadMovedAwayPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.history-seed-delivered"),
+    payload: ThreadHistorySeedDeliveredPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
