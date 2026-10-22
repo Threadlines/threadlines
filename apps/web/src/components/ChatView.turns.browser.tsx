@@ -921,6 +921,48 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     }
   });
 
+  it("names the agent on the working row while its program starts", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-launching-agent" as MessageId,
+      targetText: "launching agent target",
+      sessionStatus: "starting",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID && thread.session
+            ? {
+                ...thread,
+                session: {
+                  ...thread.session,
+                  startup: {
+                    phase: "launching",
+                    providerInstanceId: ProviderInstanceId.make("codex"),
+                  },
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          const anchor = document.querySelector<HTMLElement>('[data-turn-working-anchor="true"]');
+          expect(
+            anchor?.querySelector('[data-turn-working-label="true"]')?.textContent?.trim(),
+          ).toMatch(/^Starting Codex/);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps plan follow-up footer actions fused and aligned after a real resize", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,

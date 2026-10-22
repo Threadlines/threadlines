@@ -28,6 +28,14 @@ import {
   type ThreadId,
   type TurnId,
   WS_METHODS,
+  ChildRequestId,
+  type ComputerLinkInvite,
+  ComputerLinkId,
+  type ComputerLinkPendingRequest,
+  type ComputerLinksSnapshot,
+  type OutboundComputerLink,
+  RelayHostId,
+  RelayInviteId,
   CheckpointRef,
   OrchestrationSessionStatus,
   DEFAULT_SERVER_SETTINGS,
@@ -46,6 +54,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vite-plu
 import { render } from "vitest-browser-react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import {
+  __resetComputerLinksForTests,
+  type ComputerLinksClient,
+} from "../environments/links/computerLinks";
+import { __resetThreadMovesForTests } from "../environments/links/threadMoves";
+import { closeConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
+import { closeThreadMoveDialog } from "./ThreadMoveDialog";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import { connectEnvironmentBrowserHost } from "./browser/previewAutomationHost";
 import { closeThreadBrowser, useBrowserPageWatchers } from "./browser/BrowserHostLayer";
@@ -59,6 +74,8 @@ import { __resetEnvironmentApiOverridesForTests } from "../environmentApi";
 import {
   resetSavedEnvironmentRegistryStoreForTests,
   resetSavedEnvironmentRuntimeStoreForTests,
+  useSavedEnvironmentRegistryStore,
+  useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import { type TerminalContextDraft } from "../lib/terminalContext";
 import { isMacPlatform } from "../lib/utils";
@@ -74,6 +91,7 @@ import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store"
 import { dismissFirstRunSetup } from "./setup/firstRunGate";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
+import type { SidebarThreadSummary } from "../types";
 import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers";
 import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
@@ -172,7 +190,7 @@ export const BASE_TIME_MS = Date.parse(NOW_ISO);
 const ATTACHMENT_SVG = "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'></svg>";
 export const ADD_PROJECT_SUBMENU_PLACEHOLDER = "Enter path (e.g. ~/projects/my-app)";
 
-interface TestFixture {
+export interface TestFixture {
   snapshot: OrchestrationReadModel;
   serverConfig: ServerConfig;
   welcome: ServerLifecycleWelcomePayload;
@@ -183,6 +201,8 @@ export const rpcHarness = new BrowserWsRpcHarness();
 export const wsRequests = rpcHarness.requests;
 let customWsRpcResolver: ((body: NormalizedWsRpcRequestBody) => unknown | undefined) | null = null;
 let suppressInitialShellSnapshot = false;
+/** What this computer's server streams for `links.subscribe`; null sends nothing. */
+let primaryLinksSnapshot: ComputerLinksSnapshot | null = null;
 const wsLink = ws.link(/ws(s)?:\/\/.*/);
 export const encodeServerConfig = Schema.encodeSync(ServerConfigSchema);
 
@@ -772,6 +792,8 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
+    ...(thread.move ? { move: thread.move } : {}),
+    ...(thread.movedFrom ? { movedFrom: thread.movedFrom } : {}),
   };
 }
 
@@ -791,6 +813,251 @@ export function toShellSnapshot(snapshot: OrchestrationReadModel) {
     })),
     threads: snapshot.threads.map(toShellThread),
     updatedAt: snapshot.updatedAt,
+  };
+}
+
+/**
+ * Puts a thread to work, or has it wait on the user, the way the shell
+ * stream's next summary would, without a server round trip. Use it on a
+ * thread that is not open: the open one's detail stream re-derives its row.
+ */
+export function setSidebarThreadWork(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  work: "working" | "needs-you",
+  overrides: Partial<SidebarThreadSummary> = {},
+): void {
+  useStore.setState((state) => {
+    const environment = state.environmentStateById[environmentId];
+    const summary = environment?.sidebarThreadSummaryById[threadId];
+    if (!environment || !summary) {
+      throw new Error(`No sidebar summary for ${environmentId}/${threadId}.`);
+    }
+    const next: SidebarThreadSummary =
+      work === "working"
+        ? {
+            ...summary,
+            latestTurn: {
+              turnId: `turn-${threadId}` as TurnId,
+              state: "running",
+              requestedAt: NOW_ISO,
+              startedAt: NOW_ISO,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            session: summary.session
+              ? { ...summary.session, status: "running", orchestrationStatus: "running" }
+              : summary.session,
+            ...overrides,
+          }
+        : { ...summary, hasPendingApprovals: true, ...overrides };
+    return {
+      environmentStateById: {
+        ...state.environmentStateById,
+        [environmentId]: {
+          ...environment,
+          sidebarThreadSummaryById: { ...environment.sidebarThreadSummaryById, [threadId]: next },
+        },
+      },
+    };
+  });
+}
+
+/**
+ * A second computer's threads, as its shell stream would leave them in the
+ * store: a copy of this computer's state holding only the given threads.
+ */
+export function injectRemoteEnvironmentThreads(
+  environmentId: EnvironmentId,
+  threads: ReadonlyArray<{ readonly id: ThreadId; readonly title: string }>,
+): void {
+  useStore.setState((state) => {
+    const local = state.environmentStateById[LOCAL_ENVIRONMENT_ID]!;
+    const template = local.sidebarThreadSummaryById[THREAD_ID]!;
+    const shellTemplate = local.threadShellById[THREAD_ID]!;
+    const project = local.projectById[PROJECT_ID]!;
+    return {
+      environmentStateById: {
+        ...state.environmentStateById,
+        [environmentId]: {
+          ...local,
+          projectIds: [PROJECT_ID],
+          projectById: { [PROJECT_ID]: { ...project, environmentId } },
+          threadIds: threads.map((thread) => thread.id),
+          threadIdsByProjectId: { [PROJECT_ID]: threads.map((thread) => thread.id) },
+          sidebarThreadSummaryById: Object.fromEntries(
+            threads.map((thread) => [
+              thread.id,
+              { ...template, id: thread.id, environmentId, title: thread.title },
+            ]),
+          ),
+          threadShellById: Object.fromEntries(
+            threads.map((thread) => [
+              thread.id,
+              { ...shellTemplate, id: thread.id, environmentId, title: thread.title },
+            ]),
+          ),
+        },
+      },
+    };
+  });
+}
+
+export const FLEET_REMOTE_ENVIRONMENT_ID = EnvironmentId.make("environment-windows");
+export const FLEET_OFFLINE_ENVIRONMENT_ID = EnvironmentId.make("environment-mac-mini");
+
+/**
+ * Saves computers the way Settings › Connections does, then sets what the
+ * connection service would report for each, once its first (credential-less)
+ * attempt has settled.
+ */
+export async function saveFleetComputers(
+  computers: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+    readonly os: "darwin" | "windows" | "linux";
+    readonly state: "connected" | "connecting" | "disconnected";
+    readonly lastConnectedAt?: string;
+  }>,
+): Promise<void> {
+  for (const computer of computers) {
+    useSavedEnvironmentRegistryStore.getState().upsert({
+      environmentId: computer.environmentId,
+      label: computer.label,
+      httpBaseUrl: `https://${computer.environmentId}.example.test`,
+      wsBaseUrl: `wss://${computer.environmentId}.example.test/ws`,
+      createdAt: NOW_ISO,
+      lastConnectedAt: computer.lastConnectedAt ?? NOW_ISO,
+    });
+  }
+  await vi.waitFor(
+    () => {
+      for (const computer of computers) {
+        expect(
+          useSavedEnvironmentRuntimeStore.getState().byId[computer.environmentId]?.authState,
+        ).toBe("requires-auth");
+      }
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+  for (const computer of computers) {
+    useSavedEnvironmentRuntimeStore.getState().patch(computer.environmentId, {
+      connectionState: computer.state,
+      authState: "authenticated",
+      lastError: null,
+      route: computer.state === "connected" ? "direct" : null,
+      descriptor: {
+        ...fixture.serverConfig.environment,
+        environmentId: computer.environmentId,
+        label: computer.label,
+        platform: { os: computer.os, arch: "x64" },
+      },
+      ...(computer.state === "disconnected"
+        ? { disconnectedAt: computer.lastConnectedAt ?? NOW_ISO }
+        : {}),
+    });
+  }
+}
+
+/** This computer's server, and the computers saved from its config, take links. */
+export function withComputerLinksFixture(nextFixture: TestFixture): void {
+  const capabilities = {
+    ...nextFixture.serverConfig.environment.capabilities,
+    computerLinks: true,
+  };
+  nextFixture.serverConfig = {
+    ...nextFixture.serverConfig,
+    environment: { ...nextFixture.serverConfig.environment, capabilities },
+  };
+  nextFixture.welcome = {
+    ...nextFixture.welcome,
+    environment: { ...nextFixture.welcome.environment, capabilities },
+  };
+}
+
+export function fleetLinksSnapshot(parts: Partial<ComputerLinksSnapshot>): ComputerLinksSnapshot {
+  return { outbound: [], inbound: [], pending: [], ...parts };
+}
+
+/** This computer's own link to `remote`. */
+export function fleetOutboundLink(
+  remote: EnvironmentId,
+  remoteLabel: string,
+  overrides: Partial<OutboundComputerLink> = {},
+): OutboundComputerLink {
+  return {
+    linkId: ComputerLinkId.make(`link-to-${remote}`),
+    remoteEnvironmentId: remote,
+    remoteLabel,
+    remotePlatform: null,
+    state: "active",
+    connection: "idle",
+    route: null,
+    createdAt: NOW_ISO,
+    lastConnectedAt: null,
+    lastError: null,
+    ...overrides,
+  };
+}
+
+export function fleetPendingRequest(
+  from: EnvironmentId,
+  requestId: string,
+  title: string,
+): ComputerLinkPendingRequest {
+  return {
+    deviceId: `device-${from}`,
+    requestId: ChildRequestId.make(requestId),
+    fromLabel: "Mac mini",
+    parentEnvironmentId: from,
+    parentThreadId: `thread-asking-${requestId}` as ThreadId,
+    parentThreadTitle: "Release checklist",
+    askedBy: "Codex",
+    title,
+    prompt: "Run the tests and tell me what fails.",
+    projectName: "Orbit",
+    agent: { instanceId: "codex", model: "gpt-5" },
+    runtimeMode: "auto",
+    createdAt: NOW_ISO,
+    expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+  };
+}
+
+export function fleetInvite(environmentId: EnvironmentId, label: string): ComputerLinkInvite {
+  return {
+    hostId: RelayHostId.make(`host-${environmentId}`),
+    relayOrigin: "https://relay.example.test",
+    inviteId: RelayInviteId.make(`invite-${environmentId}`),
+    inviteSecret: "secret",
+    hostPublicKey: "key",
+    directOrigins: [],
+    environmentId,
+    label,
+    expiresAt: "2099-01-01T00:10:00.000Z",
+  };
+}
+
+/** A saved computer's links calls, as its server would take them. */
+export function fakeComputerLinksClient() {
+  const setAccess = vi.fn(async () => ({}));
+  const accept = vi.fn(async () => ({ state: "active" }));
+  const remove = vi.fn(async () => ({ otherComputer: "confirmed" as const }));
+  const respondRequest = vi.fn(async () => undefined);
+  const createInvite = vi.fn(async () => fleetInvite(FLEET_REMOTE_ENVIRONMENT_ID, "Windows PC"));
+  return {
+    setAccess,
+    accept,
+    remove,
+    respondRequest,
+    createInvite,
+    client: {
+      subscribe: () => () => undefined,
+      setAccess,
+      accept,
+      remove,
+      respondRequest,
+      createInvite,
+    } as unknown as ComputerLinksClient,
   };
 }
 
@@ -2464,10 +2731,9 @@ export async function waitForNewThreadShortcutLabel(): Promise<void> {
   const newThreadButton = page.getByTestId("new-thread-button");
   await expect.element(newThreadButton).toBeInTheDocument();
   await newThreadButton.hover();
-  const shortcutLabel = isMacPlatform(navigator.platform)
-    ? "New thread (⇧⌘O)"
-    : "New thread (Ctrl+Shift+O)";
-  await expect.element(page.getByText(shortcutLabel)).toBeInTheDocument();
+  // The rail's tooltip names the button, then its shortcut.
+  const shortcutLabel = isMacPlatform(navigator.platform) ? "⇧⌘O" : "Ctrl+Shift+O";
+  await expect.element(page.getByText(shortcutLabel, { exact: true })).toBeInTheDocument();
 }
 
 export async function waitForCommandPaletteShortcutLabel(): Promise<void> {
@@ -2672,6 +2938,11 @@ export function setSuppressInitialShellSnapshot(value: boolean): void {
   suppressInitialShellSnapshot = value;
 }
 
+/** Sets what this computer's server streams for `links.subscribe`; null sends nothing. */
+export function setPrimaryLinksSnapshot(snapshot: ComputerLinksSnapshot | null): void {
+  primaryLinksSnapshot = snapshot;
+}
+
 /**
  * Registers the hooks every ChatView browser spec shares: the mock service
  * worker, a fresh RPC harness for each test, and reset stores. Call it first
@@ -2722,6 +2993,9 @@ export function registerChatViewSuiteHooks(): void {
             },
           ];
         }
+        if (request._tag === WS_METHODS.linksSubscribe) {
+          return primaryLinksSnapshot === null ? [] : [primaryLinksSnapshot];
+        }
         if (request._tag === ORCHESTRATION_WS_METHODS.subscribeShell) {
           if (suppressInitialShellSnapshot) {
             return [];
@@ -2753,6 +3027,9 @@ export function registerChatViewSuiteHooks(): void {
     await __resetLocalApiForTests();
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
+    // Each spec is a fresh window: session storage would otherwise carry the
+    // previous spec's history (like a reload does) into this one.
+    sessionStorage.clear();
     // A computer that has finished setup: these specs exercise empty drafts
     // and threads, which a first run would leave for the setup screen.
     dismissFirstRunSetup(LOCAL_ENVIRONMENT_ID);
@@ -2760,6 +3037,11 @@ export function registerChatViewSuiteHooks(): void {
     wsRequests.length = 0;
     customWsRpcResolver = null;
     suppressInitialShellSnapshot = false;
+    primaryLinksSnapshot = null;
+    __resetComputerLinksForTests();
+    closeConnectComputerDialog();
+    closeThreadMoveDialog();
+    __resetThreadMovesForTests();
     __resetEnvironmentApiOverridesForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
@@ -2789,6 +3071,8 @@ export function registerChatViewSuiteHooks(): void {
       threadSeedVisitedAtById: {},
       doneThreadOverlays: {},
       inboxProjectScopeKey: null,
+      collapsedInboxGroups: {},
+      sidebarListOpen: true,
     });
     useTerminalStateStore.persist.clearStorage();
     useTerminalStateStore.setState({

@@ -5,6 +5,7 @@ import {
   EMPTY_CHILD_REQUEST_STATE,
   EventId,
   ORCHESTRATION_WS_METHODS,
+  EnvironmentId,
   type EnvironmentApi,
   MessageId,
   type PreviewAutomationRequest,
@@ -772,7 +773,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                     {
                       id: "msg-child-report" as MessageId,
                       role: "user" as const,
-                      text: "The changelog is written.",
+                      text: "The changelog is written:\n\n```text\n0.7.1: replies read as markdown\n```",
                       fromThread: {
                         threadId: childThreadId,
                         requestId: ChildRequestId.make("request-earlier"),
@@ -783,10 +784,38 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                       createdAt: isoAt(300),
                       updatedAt: isoAt(300),
                     },
+                    {
+                      id: "msg-remote-child-report" as MessageId,
+                      role: "user" as const,
+                      text: "The Windows build passed.",
+                      fromThread: {
+                        threadId: "thread-child-windows-build" as ThreadId,
+                        requestId: ChildRequestId.make("request-windows-build"),
+                        kind: "report" as const,
+                        environmentId: EnvironmentId.make("environment-windows"),
+                      },
+                      turnId: null,
+                      streaming: false,
+                      createdAt: isoAt(302),
+                      updatedAt: isoAt(302),
+                    },
                   ],
                   childRequests: {
                     ...EMPTY_CHILD_REQUEST_STATE,
                     startsSinceUser: 1,
+                    // A child on a computer this app has no thread list for.
+                    remoteChildren: [
+                      {
+                        environmentId: EnvironmentId.make("environment-windows"),
+                        label: "Windows PC",
+                        threadId: "thread-child-windows-build" as ThreadId,
+                        handle: "Codex",
+                        title: "Check the Windows build",
+                        attachmentEpoch: 0,
+                        cachedStatus: "idle",
+                        updatedAt: isoAt(300),
+                      },
+                    ],
                     open: [
                       {
                         requestId: ChildRequestId.make("request-start-1"),
@@ -813,6 +842,39 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                         },
                         createdAt: isoAt(301),
                       },
+                      {
+                        requestId: ChildRequestId.make("request-start-2"),
+                        batchId,
+                        kind: "start" as const,
+                        from: { participantId: null },
+                        callerTurnId: "turn-start" as TurnId,
+                        deliveryEpoch: 0,
+                        status: "awaiting_user" as const,
+                        childThreadId: "thread-child-remote" as ThreadId,
+                        childMessageId: "msg-child-remote" as MessageId,
+                        launch: {
+                          title: "Run the Windows installer tests",
+                          prompt: "Run the installer tests on Windows.",
+                          modelSelection: {
+                            instanceId: ProviderInstanceId.make("codex"),
+                            model: "gpt-5",
+                          },
+                          runtimeMode: "full-access" as const,
+                          interactionMode: "default" as const,
+                          reportBack: true,
+                          runSetup: true,
+                          workspace: {
+                            kind: "remote" as const,
+                            projectKey: "github.com/example/repo",
+                            checkout: "worktree" as const,
+                          },
+                          target: {
+                            environmentId: EnvironmentId.make("environment-windows"),
+                            label: "Windows PC",
+                          },
+                        },
+                        createdAt: isoAt(301),
+                      },
                     ],
                   },
                 }
@@ -835,15 +897,39 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         () => document.querySelector<HTMLElement>('[data-testid="child-threads-panel"]'),
         "Unable to find the approval card.",
       );
-      expect(panel.textContent).toContain("wants to start 1 thread");
+      expect(panel.textContent).toContain("wants to start 2 threads");
       expect(panel.textContent).toContain("Fix the flaky cleanup test");
       // No git to isolate it in: the card says it shares the folder.
       expect(panel.textContent).toContain("shares this folder");
+      // One for a linked computer says where it would run.
+      expect(panel.textContent).toContain("on Windows PC");
       // The answer that came back is the child's, never the user's.
+      const reportOf = (text: string) =>
+        [...document.querySelectorAll('[data-thread-message="report"]')].find((report) =>
+          report.textContent?.includes(text),
+        );
       expect(
-        document.querySelector('[data-thread-message="report"] [data-thread-message-author]')
+        reportOf("The changelog is written")?.querySelector("[data-thread-message-author]")
           ?.textContent,
       ).toBe("Write the changelog");
+      // An agent wrote it: it reads as markdown, a code block and no fences.
+      const report = reportOf("The changelog is written")!;
+      await vi.waitFor(() =>
+        expect(report.querySelector(".chat-markdown pre")?.textContent).toContain(
+          "0.7.1: replies read as markdown",
+        ),
+      );
+      expect(report.textContent).not.toContain("```");
+      // One from a linked computer is named from the parent's own record, with
+      // the computer it ran on; the app has no thread there to open.
+      const remoteReport = reportOf("The Windows build passed.");
+      expect(remoteReport?.querySelector("[data-thread-message-author]")?.textContent).toBe(
+        "Check the Windows build",
+      );
+      expect(remoteReport?.querySelector("[data-thread-message-kind]")?.textContent).toBe(
+        "reply from Windows PC",
+      );
+      expect(remoteReport?.querySelector("button[data-thread-message-author]")).toBeNull();
 
       [...panel.querySelectorAll<HTMLButtonElement>("button")]
         .find((button) => button.textContent === "Start")
