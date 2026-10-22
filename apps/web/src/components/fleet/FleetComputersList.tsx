@@ -13,7 +13,7 @@ import { AttentionCounts } from "../sidebar/AttentionCounts";
 import { ChromeIconButton, ChromeTooltip } from "../sidebar/ChromeIconButton";
 import { DestinationListHeader } from "../sidebar/DestinationListHeader";
 import { Button } from "../ui/button";
-import { SidebarContent, useSidebar } from "../ui/sidebar";
+import { SidebarContent, useCloseSidebarSheet } from "../ui/sidebar";
 import { describeComputerLocation, type FleetComputer } from "./fleet.logic";
 import { FLEET_CONNECTION_DOT_CLASS, FLEET_GLYPH_ICONS } from "./FleetGraph";
 import {
@@ -113,10 +113,10 @@ export function fleetEntryRoute(entry: Pick<FleetDirectoryEntry, "environmentId"
  */
 export function FleetComputersList() {
   const navigate = useNavigate();
-  const { isMobile, setOpenMobile } = useSidebar();
+  const closeSheet = useCloseSidebarSheet();
   // On a phone the list is a sheet over the page: choosing a row closes it.
   const go = (navigateTo: () => void) => {
-    if (isMobile) setOpenMobile(false);
+    closeSheet();
     navigateTo();
   };
   const pathname = useLocation({ select: (location) => location.pathname });

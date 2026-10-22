@@ -7,7 +7,7 @@ import { cn } from "../../lib/utils";
 import { ChromeIconButton, ChromeTooltip } from "../sidebar/ChromeIconButton";
 import { DestinationListHeader } from "../sidebar/DestinationListHeader";
 import { DestinationListRow } from "../sidebar/DestinationListRow";
-import { SidebarContent } from "../ui/sidebar";
+import { SidebarContent, useCloseSidebarSheet } from "../ui/sidebar";
 import {
   describeNextRun,
   describeTaskSchedule,
@@ -84,6 +84,8 @@ export function ScheduledTasksList() {
   const groups = useScheduledTaskGroups();
   const search = useScheduledSearch();
   const navigation = useScheduledNavigation();
+  // On a phone the list is a sheet over the page: choosing anything closes it.
+  const closeSheet = useCloseSidebarSheet();
   const grouped = groups.length > 1;
   const tasks = groups.flatMap((group) => group.tasks ?? []);
   const empty = tasks.length === 0;
@@ -106,7 +108,10 @@ export function ScheduledTasksList() {
                 detail={groups.length === 0 ? "No computer runs scheduled tasks yet." : null}
               />
             }
-            onClick={navigation.newTask}
+            onClick={() => {
+              closeSheet();
+              navigation.newTask();
+            }}
           >
             <CalendarPlusIcon aria-hidden="true" />
           </ChromeIconButton>
@@ -124,7 +129,10 @@ export function ScheduledTasksList() {
               meta={active === 0 ? null : `${active} active`}
               needsYou={tasks.filter((task) => task.status === "error").length}
               working={tasks.filter((task) => task.workingRuns > 0).length}
-              onSelect={() => navigation.showAll()}
+              onSelect={() => {
+                closeSheet();
+                navigation.showAll();
+              }}
             />
           </ul>
         )}
@@ -148,12 +156,13 @@ export function ScheduledTasksList() {
                           search.environment === group.environment.environmentId &&
                           search.task === task.id
                         }
-                        onSelect={() =>
+                        onSelect={() => {
+                          closeSheet();
                           navigation.openTask({
                             environmentId: group.environment.environmentId,
                             taskId: task.id,
-                          })
-                        }
+                          });
+                        }}
                       />
                     ))}
                   </ul>

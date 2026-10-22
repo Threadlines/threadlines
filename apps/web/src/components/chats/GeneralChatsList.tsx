@@ -20,7 +20,7 @@ import { SidebarHoverCardGroup } from "../sidebar/hoverCard";
 import { ThreadStatusText } from "../sidebar/InboxRows";
 import { ThreadHoverCard, ThreadHoverCardProvider } from "../sidebar/ThreadHoverCard";
 import { ChromeIconButton, ChromeTooltip } from "../sidebar/ChromeIconButton";
-import { SidebarContent } from "../ui/sidebar";
+import { SidebarContent, useCloseSidebarSheet } from "../ui/sidebar";
 import {
   CHAT_GROUP_LABELS,
   chatActivityAt,
@@ -104,6 +104,8 @@ export function GeneralChatsList() {
   const navigate = useNavigate();
   const seenSources = useThreadSeenSources();
   const threadMenu = useThreadMenu();
+  // On a phone the list is a sheet over the page: opening a chat closes it.
+  const closeSheet = useCloseSidebarSheet();
   const { chats, startChat } = useGeneralChats();
   const groups = useGeneralChatGroups(chats);
   const routeThreadRef = useParams({
@@ -129,7 +131,11 @@ export function GeneralChatsList() {
                 detail={startChat === null ? "No computer is connected yet." : null}
               />
             }
-            onClick={() => startChat?.()}
+            onClick={() => {
+              if (startChat === null) return;
+              closeSheet();
+              startChat();
+            }}
           >
             <MessageCirclePlusIcon aria-hidden="true" />
           </ChromeIconButton>
@@ -168,6 +174,7 @@ export function GeneralChatsList() {
                           )
                         }
                         onOpen={() => {
+                          closeSheet();
                           void navigate({
                             to: "/$environmentId/$threadId",
                             params: buildThreadRouteParams(

@@ -1043,6 +1043,77 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
+  it("on a phone, lists the open page's own items in the sheet, names its icons, and closes on a pick", async () => {
+    const readingChatId = "thread-phone-chat-reading" as ThreadId;
+    const otherChatId = "thread-phone-chat-other" as ThreadId;
+    const base = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-phone-sheet-chats" as MessageId,
+          targetText: "phone sheet chats",
+        }),
+        readingChatId,
+      ),
+      otherChatId,
+    );
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${readingChatId}`,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: base.threads.map((thread) =>
+          thread.id === readingChatId
+            ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Reading this one" }
+            : thread.id === otherChatId
+              ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Draft reply" }
+              : thread,
+        ),
+      },
+    });
+
+    try {
+      const sidebarTrigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "Unable to find mobile sidebar trigger.",
+      );
+      sidebarTrigger.click();
+
+      // A finger can't hover for the tooltip: each icon says its name.
+      await expect
+        .element(page.getByTestId("sidebar-destination-row"))
+        .toMatchTextContent(/Threads.*Chats.*Settings/);
+      // Reading a chat, the sheet lists the chats, not the project threads.
+      await expect
+        .element(page.getByTestId("chats-list-row").filter({ hasText: "Reading this one" }))
+        .toHaveAttribute("aria-current", "page");
+      expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).toBeNull();
+
+      await page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${otherChatId}`),
+        "A chat in the sheet should open that chat.",
+      );
+      await expect.element(page.getByTestId("sidebar-destination-row")).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("navigates phone settings through the full-page section index", async () => {
     const mounted = await mountChatView({
       viewport: PHONE_VIEWPORT,

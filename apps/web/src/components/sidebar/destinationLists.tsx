@@ -14,7 +14,8 @@ export interface DestinationList {
   readonly ownFooter?: boolean;
   /**
    * A phone's sheet shows this list instead of the threads while the page is
-   * open: the page's own way between its items (Fleet's computers).
+   * open: the page's own way between its items (chats, computers, tasks).
+   * Settings leaves it out: on a phone its page is already its list.
    */
   readonly inPhoneSheet?: boolean;
 }
@@ -26,10 +27,10 @@ export interface DestinationList {
  */
 export const DESTINATION_LISTS: Record<NavigationDestinationId, DestinationList | null> = {
   threads: { body: "inbox" },
-  chats: { body: GeneralChatsList },
+  chats: { body: GeneralChatsList, inPhoneSheet: true },
   "pull-requests": null,
   fleet: { body: FleetComputersList, inPhoneSheet: true },
-  scheduled: { body: ScheduledTasksList },
+  scheduled: { body: ScheduledTasksList, inPhoneSheet: true },
   usage: null,
   settings: { body: SettingsDestinationList, ownFooter: true },
 };

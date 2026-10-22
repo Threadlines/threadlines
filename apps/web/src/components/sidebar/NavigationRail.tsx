@@ -64,6 +64,7 @@ import { RailUpdateButton } from "./RailUpdateButton";
 import { useSidebar } from "../ui/sidebar";
 import {
   NAVIGATION_DESTINATION_LABELS,
+  NAVIGATION_DESTINATION_SHORT_LABELS,
   NAVIGATION_DESTINATION_ORDER,
   type NavigationDestinationId,
   resolveSelectedDestination,
@@ -91,6 +92,8 @@ const DESTINATION_SHORTCUTS: Partial<Record<NavigationDestinationId, KeybindingC
 export interface NavigationDestination {
   readonly id: NavigationDestinationId;
   readonly label: string;
+  /** Its name under the icon on a phone. */
+  readonly shortLabel: string;
   readonly icon: LucideIcon;
   readonly selected: boolean;
   /** Threads waiting on the user: an amber count on the icon. */
@@ -333,6 +336,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
         {
           id,
           label: NAVIGATION_DESTINATION_LABELS[id],
+          shortLabel: NAVIGATION_DESTINATION_SHORT_LABELS[id],
           icon: DESTINATION_ICONS[id],
           selected: selected === id,
           needsYou: id === "pull-requests" ? pullRequestsNeedingYou : (counts?.needsYou ?? 0),
@@ -489,12 +493,15 @@ function DestinationButton({
   destination,
   side,
   glide = false,
+  named = false,
   onSelect,
 }: {
   readonly destination: NavigationDestination;
   readonly side: "right" | "bottom";
   /** In the rail: the rail's sliding highlight marks the selection. */
   readonly glide?: boolean;
+  /** On a phone: its short name under the icon, since a finger can't hover for the tooltip. */
+  readonly named?: boolean;
   readonly onSelect: (id: NavigationDestinationId) => void;
 }) {
   const Icon = destination.icon;
@@ -522,6 +529,18 @@ function DestinationButton({
         <Icon aria-hidden="true" />
         <CornerMarks needsYou={destination.needsYou} unread={destination.unread} />
       </ChromeIconButton>
+      {named ? (
+        // The button already says its full name to a screen reader.
+        <span
+          aria-hidden="true"
+          className={cn(
+            "mt-1 text-[10px] leading-none whitespace-nowrap select-none",
+            destination.selected ? "text-foreground" : "text-muted-foreground",
+          )}
+        >
+          {destination.shortLabel}
+        </span>
+      ) : null}
       {working > 0 ? (
         <span
           data-testid={`rail-${destination.id}-working`}
@@ -692,20 +711,20 @@ export function SidebarDestinationRow() {
     <nav
       aria-label="Main"
       data-testid="sidebar-destination-row"
-      className="flex shrink-0 items-start gap-1 px-2 pb-2"
+      className="flex shrink-0 items-start justify-between px-2 pb-2"
     >
+      {/* Named, they fill the row evenly; Settings still ends it. */}
       {main.map((destination) => (
         <DestinationButton
           key={destination.id}
           destination={destination}
           side="bottom"
+          named
           onSelect={onSelect}
         />
       ))}
       {settings ? (
-        <div className="ms-auto">
-          <DestinationButton destination={settings} side="bottom" onSelect={onSelect} />
-        </div>
+        <DestinationButton destination={settings} side="bottom" named onSelect={onSelect} />
       ) : null}
     </nav>
   );

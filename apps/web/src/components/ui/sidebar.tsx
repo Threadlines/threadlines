@@ -90,6 +90,18 @@ function useSidebar() {
   return context;
 }
 
+/**
+ * For a list that can sit in the phone's sheet: call it when the user picks
+ * something there, and the sheet gets out of the way of what opens. Beside
+ * the rail on a wide screen it does nothing.
+ */
+function useCloseSidebarSheet(): () => void {
+  const { isMobile, setOpenMobile } = useSidebar();
+  return React.useCallback(() => {
+    if (isMobile) setOpenMobile(false);
+  }, [isMobile, setOpenMobile]);
+}
+
 function SidebarProvider({
   defaultOpen = true,
   open: openProp,
@@ -1052,5 +1064,6 @@ export {
   SidebarRail,
   SidebarSeparator,
   SidebarTrigger,
+  useCloseSidebarSheet,
   useSidebar,
 };

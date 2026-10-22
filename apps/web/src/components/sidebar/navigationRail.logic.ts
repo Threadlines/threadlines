@@ -23,6 +23,20 @@ export const NAVIGATION_DESTINATION_LABELS: Record<NavigationDestinationId, stri
   settings: "Settings",
 };
 
+/**
+ * Each destination's name under its icon on a phone, which can't hover for
+ * the tooltip: short enough for all seven to share the sheet's row.
+ */
+export const NAVIGATION_DESTINATION_SHORT_LABELS: Record<NavigationDestinationId, string> = {
+  threads: "Threads",
+  chats: "Chats",
+  "pull-requests": "PRs",
+  fleet: "Fleet",
+  scheduled: "Scheduled",
+  usage: "Usage",
+  settings: "Settings",
+};
+
 /** Top to bottom in the rail, left to right on a phone. Settings sits apart, at the end. */
 export const NAVIGATION_DESTINATION_ORDER: readonly NavigationDestinationId[] = [
   "threads",
