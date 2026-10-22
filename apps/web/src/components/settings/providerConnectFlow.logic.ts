@@ -22,10 +22,11 @@ export interface ProviderConnectFlowState {
   /** `browser`: no terminal; the panel opens the sign-in page and takes its final address. */
   readonly surface: "terminal" | "browser";
   /**
-   * A terminal run's command opens its sign-in page itself (`true`), or
-   * leaves that to the client (`false`). Null when the server didn't say.
+   * The run's command or agent opens its sign-in page itself, on the
+   * server's computer (`true`), or leaves that to the client (`false`). Null
+   * when the server didn't say. See `shouldOpenPrintedPage`.
    */
-  readonly commandOpensBrowser: boolean | null;
+  readonly opensPageItself: boolean | null;
   /** Last non-empty output line, shown as a one-line live preview. */
   readonly lastLine: string;
   /**
@@ -74,7 +75,7 @@ export const initialProviderConnectFlowState: ProviderConnectFlowState = {
   command: null,
   flowId: null,
   surface: "terminal",
-  commandOpensBrowser: null,
+  opensPageItself: null,
   lastLine: "",
   openLine: "",
   signInUrl: null,
@@ -215,7 +216,7 @@ export function applyProviderAuthEvent(
         command: event.command,
         flowId: event.flowId ?? null,
         surface: event.surface ?? "terminal",
-        commandOpensBrowser: event.commandOpensBrowser ?? null,
+        opensPageItself: event.opensPageItself ?? null,
       };
     case "output": {
       const preview = appendOutputPreview(state.openLine, event.data);
@@ -277,6 +278,25 @@ export function applyProviderAuthEvent(
         },
       };
   }
+}
+
+/**
+ * Whether the client that started a run opens the sign-in page it prints.
+ * A browser sign-in's page works from any device, so it opens, unless the
+ * agent already opened it on this very computer (Grok). A terminal
+ * command's page may need the server's computer (a local callback), so it
+ * opens only when the server says the command leaves it to the client,
+ * never on a guess.
+ */
+export function shouldOpenPrintedPage(input: {
+  readonly surface: ProviderConnectFlowState["surface"];
+  readonly opensPageItself: boolean | null;
+  readonly onServerComputer: boolean;
+}): boolean {
+  if (input.surface === "browser") {
+    return !(input.opensPageItself === true && input.onServerComputer);
+  }
+  return input.opensPageItself === false;
 }
 
 export function isProviderConnectFlowActive(status: ProviderAuthStatus): boolean {

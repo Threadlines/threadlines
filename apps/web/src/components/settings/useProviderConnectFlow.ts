@@ -29,6 +29,7 @@ import {
   type RefObject,
 } from "react";
 
+import { isPrimaryEnvironmentOnThisComputer } from "../../environments/primary";
 import { getPrimaryEnvironmentConnection } from "../../environments/runtime";
 import { randomUUID } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
@@ -38,6 +39,7 @@ import {
   initialProviderConnectFlowState,
   isProviderConnectFlowActive,
   shouldAutoExpandTerminal,
+  shouldOpenPrintedPage,
   type ProviderConnectFlowState,
 } from "./providerConnectFlow.logic";
 
@@ -233,16 +235,26 @@ export function useProviderConnectFlow(input: {
 
   // The run's sign-in page opens on whichever surface the user started it
   // from: a browser sign-in has no CLI to open it, and a CLI that cannot
-  // (fx inside WSL) prints a device-code page and waits. A terminal command
-  // that opens the page itself, or a server that doesn't say, gets none: a
-  // second tab would be a duplicate.
-  const opensPrintedPage = state.surface === "browser" || state.commandOpensBrowser === false;
+  // (fx inside WSL) prints a device-code page and waits. Where the command or
+  // agent already opened it, a second tab would be a duplicate.
   useEffect(() => {
-    if (!opensLinksItself || !opensPrintedPage) return;
-    if (!isActive || state.signInUrl === null) return;
+    if (!opensLinksItself || !isActive || state.signInUrl === null) return;
     if (state.flowId === null || state.flowId !== ownedFlowIdRef.current) return;
-    openProviderSignInUrlOnce(state.flowId, state.signInUrl);
-  }, [isActive, opensLinksItself, opensPrintedPage, state.flowId, state.signInUrl]);
+    const opens = shouldOpenPrintedPage({
+      surface: state.surface,
+      opensPageItself: state.opensPageItself,
+      // Read here, not on every render: this hook sits on the composer's.
+      onServerComputer: isPrimaryEnvironmentOnThisComputer(),
+    });
+    if (opens) openProviderSignInUrlOnce(state.flowId, state.signInUrl);
+  }, [
+    isActive,
+    opensLinksItself,
+    state.flowId,
+    state.opensPageItself,
+    state.signInUrl,
+    state.surface,
+  ]);
 
   useEffect(() => {
     if (!isActive) {

@@ -14,9 +14,9 @@
  *     the PTY — no intermediate shell — so process exit means "the flow
  *     finished" and the exit code is meaningful.
  *   - Starting a flow for an instance stops any flow already running for it.
- *   - A terminal run says whether its command opens the sign-in page itself
- *     (`commandOpensBrowser`), so the client that started it knows whether
- *     to open the page the command prints.
+ *   - A run says whether its command or agent opens the sign-in page itself
+ *     (`opensPageItself`), so the client that started it knows whether to
+ *     open the page too.
  *   - `claude setup-token` output is scanned for the long-lived OAuth token.
  *     On a match the token is stored as a sensitive instance environment
  *     variable and *masked before fanout*, so no client ever receives it.
@@ -270,8 +270,8 @@ interface SessionState {
   readonly instanceFlows: ProviderInstanceAuthFlows | null;
   /** `terminal`: a command in the PTY. `browser`: the instance's own `run`. */
   readonly surface: "terminal" | "browser";
-  /** A terminal command that opens its sign-in page itself; undefined when unknown. */
-  readonly commandOpensBrowser: boolean | undefined;
+  /** The command or agent opens its sign-in page itself; undefined when unknown. */
+  readonly opensPageItself: boolean | undefined;
   /** An instance's terminal command: told once how it ended. */
   terminalFinished: ((exitCode: number | null) => Effect.Effect<void>) | null;
   /**
@@ -656,7 +656,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         requestId,
         instanceFlows,
         surface: "browser",
-        commandOpensBrowser: undefined,
+        opensPageItself: instanceFlows.opensPageItself,
         terminalFinished: null,
         pageRequests: new Map(),
         questions: new Map(),
@@ -684,6 +684,9 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         flowId: session.flowId,
         ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
         surface: "browser",
+        ...(session.opensPageItself !== undefined
+          ? { opensPageItself: session.opensPageItself }
+          : {}),
       });
       yield* publishStatus(instanceId, session, "starting");
       session.runFiber = runFork(
@@ -875,7 +878,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
                   display: instanceTerminal.display,
                 },
                 spawnEnv: instanceTerminal.env,
-                commandOpensBrowser: instanceTerminal.opensBrowser,
+                opensPageItself: instanceTerminal.opensPageItself,
                 instanceFlows,
                 terminalFinished: instanceTerminal.finished,
               });
@@ -938,7 +941,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         return yield* startTerminal(instanceId, input, {
           command,
           spawnEnv,
-          commandOpensBrowser: SELF_OPENING_SIGN_IN_DRIVERS.has(String(instance.driver)),
+          opensPageItself: SELF_OPENING_SIGN_IN_DRIVERS.has(String(instance.driver)),
           instanceFlows: null,
           terminalFinished: null,
         });
@@ -956,7 +959,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         readonly display: string;
       };
       readonly spawnEnv: NodeJS.ProcessEnv;
-      readonly commandOpensBrowser: boolean | undefined;
+      readonly opensPageItself: boolean | undefined;
       readonly instanceFlows: ProviderInstanceAuthFlows | null;
       readonly terminalFinished: ProviderAuthTerminalCommand["finished"] | null;
     },
@@ -971,7 +974,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           requestId: input.requestId,
           instanceFlows: prepared.instanceFlows,
           surface: "terminal",
-          commandOpensBrowser: prepared.commandOpensBrowser,
+          opensPageItself: prepared.opensPageItself,
           terminalFinished: prepared.terminalFinished,
           pageRequests: new Map(),
           questions: new Map(),
@@ -1000,8 +1003,8 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           flowId: session.flowId,
           ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
           surface: "terminal",
-          ...(session.commandOpensBrowser !== undefined
-            ? { commandOpensBrowser: session.commandOpensBrowser }
+          ...(session.opensPageItself !== undefined
+            ? { opensPageItself: session.opensPageItself }
             : {}),
         });
         yield* publishStatus(instanceId, session, "starting");
@@ -1189,8 +1192,8 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             flowId: session.flowId,
             ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
             surface: session.surface,
-            ...(session.commandOpensBrowser !== undefined
-              ? { commandOpensBrowser: session.commandOpensBrowser }
+            ...(session.opensPageItself !== undefined
+              ? { opensPageItself: session.opensPageItself }
               : {}),
           }).pipe(Effect.ignoreCause({ log: true }));
           if (session.scrollback.length > 0) {

@@ -233,7 +233,7 @@ const providerAuthHarness = vi.hoisted(() => {
         readonly flowId?: string;
         readonly requestId?: string;
         readonly surface?: "terminal" | "browser";
-        readonly commandOpensBrowser?: boolean;
+        readonly opensPageItself?: boolean;
       }
     | { readonly type: "output"; readonly data: string }
     | {
@@ -2212,7 +2212,7 @@ describe("GeneralSettingsPanel observability", () => {
         ? { requestId: providerAuthHarness.startRequestIds[0] }
         : {}),
       surface: "terminal",
-      commandOpensBrowser: true,
+      opensPageItself: true,
     });
     providerAuthHarness.emit({
       instanceId: "claudeAgent",
@@ -2481,7 +2481,7 @@ describe("GeneralSettingsPanel observability", () => {
         ? { requestId: providerAuthHarness.startRequestIds[0] }
         : {}),
       surface: "terminal",
-      commandOpensBrowser: false,
+      opensPageItself: false,
     });
     providerAuthHarness.emit({
       instanceId: "claudeAgent",
@@ -2525,7 +2525,7 @@ describe("GeneralSettingsPanel observability", () => {
         ? { requestId: providerAuthHarness.startRequestIds[1] }
         : {}),
       surface: "terminal",
-      commandOpensBrowser: false,
+      opensPageItself: false,
     });
     providerAuthHarness.emit({
       instanceId: "claudeAgent",
@@ -2664,6 +2664,101 @@ describe("GeneralSettingsPanel observability", () => {
     expect(saved?.environment).toEqual([
       { name: "XAI_API_KEY", value: "xai-test-key-0007", sensitive: true },
     ]);
+  });
+
+  it("opens Grok's sign-in page only on a device Grok didn't already open it on", async () => {
+    // The desktop app, whose own server runs Grok on this computer.
+    window.desktopBridge = createDesktopBridgeStub();
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      shell: { openExternal },
+      server: {},
+    } as unknown as LocalApi;
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          instanceId: ProviderInstanceId.make("grok"),
+          driver: ProviderDriverKind.make("grok"),
+          displayName: "Grok",
+          version: "1.0.52",
+          auth: { status: "authenticated", type: "subscription", label: "Grok subscription" },
+        },
+      ],
+    });
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+    await openProviderDetails("Grok");
+
+    // Grok's own run of its sign-in, which opens the page on Grok's computer.
+    const runGrokSignIn = (run: number, page: string) => {
+      providerAuthHarness.emit({
+        instanceId: "grok",
+        createdAt: "2026-08-03T00:00:00.000Z",
+        type: "command",
+        flow: "login",
+        command: "Sign in with Grok",
+        flowId: `grok-${run}`,
+        ...(providerAuthHarness.startRequestIds[run]
+          ? { requestId: providerAuthHarness.startRequestIds[run] }
+          : {}),
+        surface: "browser",
+        opensPageItself: true,
+      });
+      providerAuthHarness.emit({
+        instanceId: "grok",
+        createdAt: "2026-08-03T00:00:00.000Z",
+        type: "status",
+        status: "running",
+        exitCode: null,
+        detail: null,
+      });
+      providerAuthHarness.emit({
+        instanceId: "grok",
+        createdAt: "2026-08-03T00:00:01.000Z",
+        type: "output",
+        data: `${page}\r\nApprove the sign-in on that page. The code is already filled in.\r\n`,
+      });
+    };
+
+    // On Grok's computer: Grok opened it, so Threadlines only offers the link.
+    await page.getByRole("button", { name: "Sign in again" }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startRequestIds).toHaveLength(1);
+    });
+    runGrokSignIn(0, "https://accounts.x.ai/device?user_code=HERE-0001");
+    await expect.element(page.getByRole("button", { name: "Open sign-in page" })).toBeVisible();
+
+    // From another device: Threadlines opens it here.
+    providerAuthHarness.emit({
+      instanceId: "grok",
+      createdAt: "2026-08-03T00:00:02.000Z",
+      type: "status",
+      status: "failed",
+      exitCode: null,
+      detail: "Sign-in timed out after 10 minutes. Try again.",
+    });
+    // The Grok card's; the community agents list below has its own Try again.
+    await page.getByRole("button", { name: "Try again" }).first().click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startRequestIds).toHaveLength(2);
+    });
+    // Now a browser, which can't know where the server runs. Switched only
+    // now: the first run's effects ran before this click.
+    Reflect.deleteProperty(window, "desktopBridge");
+    const remotePage = "https://accounts.x.ai/device?user_code=AWAY-0002";
+    runGrokSignIn(1, remotePage);
+    await vi.waitFor(() => {
+      expect(openExternal.mock.calls).toEqual([[remotePage]]);
+    });
   });
 
   it("opens the shared reset-credit picker from provider settings", async () => {

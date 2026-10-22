@@ -8,6 +8,7 @@ import {
   initialProviderConnectFlowState,
   providerConnectStatusLine,
   shouldAutoExpandTerminal,
+  shouldOpenPrintedPage,
   type ProviderConnectFlowState,
 } from "./providerConnectFlow.logic";
 
@@ -283,6 +284,22 @@ describe("provider connect flow state", () => {
       event({ type: "output", data: "abc123" }),
     ]);
     expect(prompt.lastLine).toBe("Paste the code: abc123");
+  });
+
+  it("opens a printed page only where nothing else already opened it", () => {
+    const opens = (
+      surface: "terminal" | "browser",
+      opensPageItself: boolean | null,
+      onServerComputer: boolean,
+    ) => shouldOpenPrintedPage({ surface, opensPageItself, onServerComputer });
+    // A terminal command: only when the server says it leaves the page to us.
+    expect(opens("terminal", false, true)).toBe(true);
+    expect(opens("terminal", true, false)).toBe(false);
+    expect(opens("terminal", null, false)).toBe(false);
+    // A browser sign-in: unless the agent opened it on this very computer.
+    expect(opens("browser", null, true)).toBe(true);
+    expect(opens("browser", true, false)).toBe(true);
+    expect(opens("browser", true, true)).toBe(false);
   });
 
   it("opens the terminal on failure and after a long-running wait", () => {
