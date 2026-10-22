@@ -56,7 +56,7 @@ import {
 } from "../project/Layers/RepositoryIdentityResolver.ts";
 import { findProjectByPlace, resolveProjectPlace } from "../project/projectPlace.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
-import { parseCloneProgress } from "./cloneProgress.ts";
+import { displayClonePercent, parseCloneProgress } from "./cloneProgress.ts";
 import {
   ProjectSetupRepository,
   type ProjectSetupRow,
@@ -438,7 +438,13 @@ export const makeProjectSetups = Effect.gen(function* () {
                 lastHeard = Date.now();
                 tail = `${tail}${chunk}`.slice(-STDERR_TAIL_CHARS);
                 const parsed = parseCloneProgress(chunk);
-                yield* setProgress(row.setupId, { ...parsed, stalled: false });
+                yield* setProgress(row.setupId, {
+                  ...parsed,
+                  ...(parsed !== null
+                    ? { percent: displayClonePercent(parsed, row.request.expectedBytes) }
+                    : {}),
+                  stalled: false,
+                });
               }),
             ),
           ),

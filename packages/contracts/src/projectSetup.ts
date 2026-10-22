@@ -64,6 +64,12 @@ export const ProjectSetupSource = Schema.Struct({
   files: Schema.Array(ProjectSetupFileCandidate),
   /** More ignored files than the list holds. */
   filesTruncated: Schema.Boolean,
+  /**
+   * About how much a clone downloads: this computer's own packed copy of the
+   * repository. Git counts its progress in objects, which says little when a
+   * few large files make up most of the bytes. Absent from older servers.
+   */
+  sizeBytes: Schema.optional(NonNegativeInt),
 });
 export type ProjectSetupSource = typeof ProjectSetupSource.Type;
 
@@ -115,6 +121,8 @@ export const ProjectSetupStartInput = Schema.Struct({
   /** A folder on the target computer; `~` is its own home. */
   destinationPath: TrimmedNonEmptyString,
   files: Schema.Array(ProjectSetupFile),
+  /** The source's `sizeBytes`: the download's progress is measured against it. */
+  expectedBytes: Schema.optional(NonNegativeInt),
 });
 export type ProjectSetupStartInput = typeof ProjectSetupStartInput.Type;
 

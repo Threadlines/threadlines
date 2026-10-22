@@ -27,7 +27,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { RepositoryIdentityResolverLive } from "../project/Layers/RepositoryIdentityResolver.ts";
-import { parseCloneProgress } from "./cloneProgress.ts";
+import { displayClonePercent, parseCloneProgress } from "./cloneProgress.ts";
 import { ProjectSetupRepository, ProjectSetupRepositoryLive } from "./ProjectSetupRepository.ts";
 import {
   cloneUrls,
@@ -73,6 +73,8 @@ function makeRepos() {
   run(a, "add", ".");
   run(a, "commit", "-m", "first");
   run(a, "push", "origin", "HEAD:main");
+  // Packed, as a clone's objects are.
+  run(a, "repack", "-a", "-d");
   run(a, "remote", "add", "mirror", "https://bot:s3cret@example.com/org/app.git");
   fs.writeFileSync(path.join(a, ".env"), "SECRET=1\n", { mode: 0o600 });
   fs.mkdirSync(path.join(a, "apps", "web"), { recursive: true });
@@ -167,6 +169,7 @@ describe("ProjectSetups", () => {
         const answer = yield* source.source(PROJECT_A);
         assert.equal(answer.repositoryKey, normalizeGitRemoteUrl(repos.origin));
         assert.equal(answer.primaryRemoteName, "origin");
+        assert.isAbove(answer.sizeBytes ?? 0, 0);
         // Ignored files only, suggested ones first; no folder git ignores whole, no symlink.
         assert.deepEqual(
           answer.files.map((file) => [file.path, file.suggested]),
@@ -453,6 +456,18 @@ describe("ProjectSetups", () => {
       { phase: "Receiving objects", percent: 24, detail: "168.80 MiB | 20.69 MiB/s" },
     );
     assert.isNull(parseCloneProgress("Cloning into 'app'...\n"));
+    // Git counts objects: 98% of them can arrive with most of the bytes still to
+    // come. Against the expected size, 50 of 250 MiB reads 20%, never 100 early.
+    const receiving = parseCloneProgress(
+      "Receiving objects:  98% (50870/51908), 50.00 MiB | 19.23 MiB/s\r",
+    )!;
+    assert.equal(displayClonePercent(receiving, 250 * 1024 * 1024), 20);
+    assert.equal(displayClonePercent(receiving, 40 * 1024 * 1024), 99);
+    assert.equal(displayClonePercent(receiving, undefined), 98);
+    const received = parseCloneProgress(
+      "Receiving objects: 100% (51908/51908), 537.30 MiB | 19.00 MiB/s, done.\n",
+    )!;
+    assert.equal(displayClonePercent(received, 250 * 1024 * 1024), 100);
     const request = {
       remotes: [{ name: "origin", url: "git@github.com:org/app.git", protocol: "ssh" as const }],
       primaryRemoteName: "origin",

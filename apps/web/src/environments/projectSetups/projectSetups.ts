@@ -427,6 +427,9 @@ export async function startProjectSetup(
     scripts: plan.sourceInfo.scripts,
     destinationPath: plan.destinationPath,
     files,
+    ...(plan.sourceInfo.sizeBytes !== undefined
+      ? { expectedBytes: plan.sourceInfo.sizeBytes }
+      : {}),
   });
   upsertJob(plan.target.environmentId, job);
   return job;

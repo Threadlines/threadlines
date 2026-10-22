@@ -39,6 +39,7 @@ export const ProjectSetupStoredRequest = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   destinationPath: TrimmedNonEmptyString,
   filePaths: Schema.Array(TrimmedNonEmptyString),
+  expectedBytes: Schema.optional(Schema.Number),
 });
 export type ProjectSetupStoredRequest = typeof ProjectSetupStoredRequest.Type;
 

@@ -232,6 +232,10 @@ export const makeProjectSetupSource = Effect.gen(function* () {
             Number(right.name === primary.remoteName) - Number(left.name === primary.remoteName) ||
             left.name.localeCompare(right.name),
         );
+      // About what a clone downloads: this copy's packed objects, in KiB. Loose
+      // objects stay out: they are mostly local work the remote doesn't have.
+      const counted = yield* git(root, ["count-objects", "-v"]);
+      const sizeBytes = Number(/^size-pack: (\d+)$/m.exec(counted.stdout)?.[1] ?? 0) * 1024;
       const home = NodeOs.homedir();
       const fromHome = NodePath.relative(home, root);
       const { files, truncated } = yield* listCandidates(root);
@@ -250,6 +254,7 @@ export const makeProjectSetupSource = Effect.gen(function* () {
         folderName: NodePath.basename(root) || "project",
         files,
         filesTruncated: truncated,
+        ...(counted.code === 0 && sizeBytes > 0 ? { sizeBytes } : {}),
       } satisfies ProjectSetupSourceResult;
     });
 
