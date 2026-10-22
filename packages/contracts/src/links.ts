@@ -5,6 +5,7 @@ import {
   ChildRequestId,
   EnvironmentId,
   IsoDateTime,
+  ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { RuntimeMode } from "./orchestration.ts";
@@ -103,10 +104,22 @@ export const ComputerLinkPendingRequest = Schema.Struct({
   requestId: ChildRequestId,
   /** The asking computer's name. */
   fromLabel: TrimmedNonEmptyString,
+  /** The asking computer and the thread that asked, to open it where the app reaches it. */
+  parentEnvironmentId: EnvironmentId,
+  parentThreadId: ThreadId,
   parentThreadTitle: TrimmedNonEmptyString,
+  /** The asking agent's name ("Codex"). */
+  askedBy: TrimmedNonEmptyString,
   title: TrimmedNonEmptyString,
   prompt: Schema.String,
   projectName: TrimmedNonEmptyString,
+  /** The agent it would run on, by this computer's instance id. */
+  agent: Schema.Struct({
+    instanceId: TrimmedNonEmptyString,
+    model: Schema.optional(TrimmedNonEmptyString),
+  }),
+  /** The access it would get: what was asked, capped by the link's most access. */
+  runtimeMode: RuntimeMode,
   createdAt: IsoDateTime,
   expiresAt: IsoDateTime,
 });
