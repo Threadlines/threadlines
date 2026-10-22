@@ -528,12 +528,15 @@ function ProjectSetupForm({
                 </p>
               </div>
             ) : cloneUrl !== null ? (
-              <p
-                className="font-mono text-[11px] leading-4 break-all text-muted-foreground"
-                data-testid="project-setup-clone-url"
-              >
-                {cloneUrl}
-              </p>
+              <div className="grid gap-1.5">
+                <span className={FIELD_LABEL_CLASS}>Clones from</span>
+                <p
+                  className="font-mono text-[11px] leading-4 break-all text-muted-foreground"
+                  data-testid="project-setup-clone-url"
+                >
+                  {cloneUrl}
+                </p>
+              </div>
             ) : null}
             <FilesField
               files={files}
