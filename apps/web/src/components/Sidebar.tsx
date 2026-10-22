@@ -77,11 +77,14 @@ import {
   isNeedsUserStatus,
   mergeThreadDoneOverride,
   resolveAdjacentThreadId,
+  resolveScopedComposeTarget,
+  resolveScopedProjectKeys,
   shouldClearThreadSelectionOnMouseDown,
   sortDoneThreads,
   sortInboxThreads,
   summarizeChildThreads,
   resolveRemoteFamilyChildren,
+  toggleProjectScopeKey,
   windowInboxDoneRows,
   windowInboxThreads,
   useThreadJumpHintVisibility,
@@ -144,6 +147,7 @@ import { CommandDialogTrigger } from "./ui/command";
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
 /** One empty list for every row with no linked pull requests, so it never reads as a change. */
 const NO_PULL_REQUESTS: readonly ThreadPullRequest[] = [];
+const NO_PROJECT_KEYS: readonly string[] = [];
 /** How many quiet live rows rest unfolded; pinned rows and rows needing you are never folded. */
 const LIVE_PREVIEW_COUNT = 10;
 /** Each click on the reveal row uncovers this many more. */
@@ -444,7 +448,7 @@ export default function Sidebar() {
   const doneThreadOverlays = useUiStateStore((store) => store.doneThreadOverlays);
   const childThreadFamilyOpenById = useUiStateStore((store) => store.childThreadFamilyOpenById);
   const setChildThreadFamilyOpen = useUiStateStore((store) => store.setChildThreadFamilyOpen);
-  const inboxProjectScopeKey = useUiStateStore((store) => store.inboxProjectScopeKey);
+  const inboxProjectScopeKeys = useUiStateStore((store) => store.inboxProjectScopeKeys);
   const setInboxProjectScope = useUiStateStore((store) => store.setInboxProjectScope);
   const inboxEnvironmentScopeId = useUiStateStore((store) => store.inboxEnvironmentScopeId);
   const setInboxEnvironmentScope = useUiStateStore((store) => store.setInboxEnvironmentScope);
@@ -594,25 +598,17 @@ export default function Sidebar() {
       ? inboxEnvironmentScopeId
       : null;
 
-  // The two scopes compose as an intersection, so the project scope only
-  // holds while its project actually lives on the scoped machine — otherwise
-  // it lapses to All projects rather than pinning the list to an empty cross.
-  const scopedProjectKeyValue = (() => {
-    if (inboxProjectScopeKey === null) {
-      return null;
-    }
-    const project = sidebarProjectByKey.get(inboxProjectScopeKey);
-    if (!project) {
-      return null;
-    }
-    if (
-      scopedEnvironmentIdValue !== null &&
-      !project.memberProjects.some((member) => member.environmentId === scopedEnvironmentIdValue)
-    ) {
-      return null;
-    }
-    return inboxProjectScopeKey;
-  })();
+  // Keyed by its joined text so the list keeps its identity while project
+  // snapshots churn: every inbox memo below reads it.
+  const scopedProjectKeyList = resolveScopedProjectKeys({
+    pickedKeys: inboxProjectScopeKeys,
+    projectByKey: sidebarProjectByKey,
+    scopedEnvironmentId: scopedEnvironmentIdValue,
+  }).join("\n");
+  const scopedProjectKeys = useMemo(
+    () => (scopedProjectKeyList === "" ? NO_PROJECT_KEYS : scopedProjectKeyList.split("\n")),
+    [scopedProjectKeyList],
+  );
 
   const machineScopedEntries = useMemo(
     () =>
@@ -662,7 +658,7 @@ export default function Sidebar() {
     countVisibleDraftSessions({
       store,
       projectInfoByScopedRef: draftProjectInfoByScopedRef,
-      scopedProjectKey: scopedProjectKeyValue,
+      scopedProjectKeys,
       scopedEnvironmentId: scopedEnvironmentIdValue,
       routeDraftId,
       frozenOpenDraftRow,
@@ -715,11 +711,12 @@ export default function Sidebar() {
     const entryByThreadKey = new Map(entries.map((entry) => [entry.threadKey, entry] as const));
     const lookup = (thread: SidebarThreadSummary) =>
       entryByThreadKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))!;
+    const scopedProjectKeySet = new Set(scopedProjectKeys);
     const inScope = (entry: InboxEntry) =>
       (scopedEnvironmentIdValue === null ||
         entry.thread.environmentId === scopedEnvironmentIdValue) &&
       (!roomsFilterActive || isRoom(entry.thread)) &&
-      (scopedProjectKeyValue === null || entry.projectKey === scopedProjectKeyValue);
+      (scopedProjectKeySet.size === 0 || scopedProjectKeySet.has(entry.projectKey));
     const canSeeComputer = (environmentId: EnvironmentId) =>
       environmentIdsWithThreads.has(environmentId);
     const { live, done } = buildInboxSections({
@@ -763,7 +760,7 @@ export default function Sidebar() {
     roomsFilterActive,
     routeThreadKey,
     scopedEnvironmentIdValue,
-    scopedProjectKeyValue,
+    scopedProjectKeys,
   ]);
 
   // Volume is managed by folding, not by flattening rows: quiet threads past
@@ -902,7 +899,7 @@ export default function Sidebar() {
   useEffect(() => {
     setRevealedLiveCount(0);
     setRevealedDoneCount(0);
-  }, [scopedEnvironmentIdValue, scopedProjectKeyValue]);
+  }, [scopedEnvironmentIdValue, scopedProjectKeyList]);
 
   // Grouping by computer needs a second computer to mean anything.
   const sidebarGrouping: SidebarGrouping =
@@ -1293,29 +1290,29 @@ export default function Sidebar() {
     [threadMenu],
   );
 
-  // Compose follows the thread you are in. While the list is scoped to a
-  // single project, that project wins instead: filtering to it and then
-  // getting a thread somewhere else reads as the button ignoring you.
+  // Compose follows the thread you are in, kept inside the scope while the
+  // list is narrowed to projects (see resolveScopedComposeTarget).
   const handleComposeClick = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
     }
-    const scopedProject =
-      scopedProjectKeyValue === null
-        ? null
-        : (sidebarProjectByKey.get(scopedProjectKeyValue) ?? null);
-    const scopedMember =
-      scopedProject && scopedProject.memberProjects.length === 1
-        ? scopedProject.memberProjects[0]!
-        : null;
-    const projectRef = scopedMember
-      ? scopeProjectRef(scopedMember.environmentId, scopedMember.id)
-      : resolveThreadActionProjectRef({
-          activeDraftThread,
-          activeThread,
-          defaultProjectRef,
-          handleNewThread,
-        });
+    const openProjectRef = resolveThreadActionProjectRef({
+      activeDraftThread,
+      activeThread,
+      defaultProjectRef: null,
+      handleNewThread,
+    });
+    const scopedTarget = resolveScopedComposeTarget({
+      scopedProjectKeys,
+      openProjectKey: openProjectRef === null ? null : resolveProjectKeyForRef(openProjectRef),
+      projectByKey: sidebarProjectByKey,
+      scopedEnvironmentId: scopedEnvironmentIdValue,
+      primaryEnvironmentId,
+    });
+    const projectRef =
+      scopedTarget.kind === "member"
+        ? scopeProjectRef(scopedTarget.member.environmentId, scopedTarget.member.id)
+        : (openProjectRef ?? defaultProjectRef);
     if (!projectRef) {
       return;
     }
@@ -1333,8 +1330,10 @@ export default function Sidebar() {
     generalChatProjectKeys,
     handleNewThread,
     isMobile,
+    primaryEnvironmentId,
     resolveProjectKeyForRef,
-    scopedProjectKeyValue,
+    scopedEnvironmentIdValue,
+    scopedProjectKeys,
     setOpenMobile,
     sidebarProjectByKey,
   ]);
@@ -1348,11 +1347,19 @@ export default function Sidebar() {
   }, [handleComposeClick, setListNewThread]);
 
   const handleScopeChange = useCallback(
-    (projectKey: string | null) => {
-      setInboxProjectScope(projectKey);
+    (projectKeys: readonly string[]) => {
+      setInboxProjectScope(projectKeys);
       setRoomsOnly(false);
     },
     [setInboxProjectScope],
+  );
+  // Toggles against the scope in force, so a pick that has lapsed (a project
+  // removed, or off the scoped machine) is not quietly revived by the next one.
+  const handleToggleScopeProject = useCallback(
+    (projectKey: string) => {
+      handleScopeChange(toggleProjectScopeKey(scopedProjectKeys, projectKey));
+    },
+    [handleScopeChange, scopedProjectKeys],
   );
 
   const handleEnvironmentScopeChange = useCallback(
@@ -1616,8 +1623,9 @@ export default function Sidebar() {
                   <ProjectScopeMenu
                     options={scopeOptions}
                     projectByKey={sidebarProjectByKey}
-                    scopedProjectKey={scopedProjectKeyValue}
+                    scopedProjectKeys={scopedProjectKeys}
                     onScopeChange={handleScopeChange}
+                    onToggleScopeProject={handleToggleScopeProject}
                     environmentOptions={environmentScopeOptions}
                     scopedEnvironmentId={scopedEnvironmentIdValue}
                     onEnvironmentScopeChange={handleEnvironmentScopeChange}
@@ -1651,7 +1659,7 @@ export default function Sidebar() {
                       thread" is the one row you want back in one click. */}
                   <SidebarDraftBlock
                     projectInfoByScopedRef={draftProjectInfoByScopedRef}
-                    scopedProjectKey={scopedProjectKeyValue}
+                    scopedProjectKeys={scopedProjectKeys}
                     scopedEnvironmentId={scopedEnvironmentIdValue}
                     routeDraftId={routeDraftId}
                     frozenOpenDraftRow={frozenOpenDraftRow}
@@ -1705,12 +1713,12 @@ export default function Sidebar() {
                                 <InboxThreadRow
                                   thread={entry.thread}
                                   status={entry.status}
-                                  // A row names its project unless the list already
-                                  // does: scoped to one, or grouped by project.
+                                  // A row names its project unless a project group's
+                                  // header right above it already does. Scoped
+                                  // to projects, it still names it: the menu that
+                                  // says so is out of sight.
                                   projectLabel={
-                                    scopedProjectKeyValue === null && sidebarGrouping !== "project"
-                                      ? entry.projectLabel
-                                      : null
+                                    sidebarGrouping !== "project" ? entry.projectLabel : null
                                   }
                                   // Under a project group's header the project's
                                   // mark is said once, there.
@@ -1869,9 +1877,7 @@ export default function Sidebar() {
                             <React.Fragment key={entry.threadKey}>
                               <InboxDoneRow
                                 thread={entry.thread}
-                                projectLabel={
-                                  scopedProjectKeyValue === null ? entry.projectLabel : null
-                                }
+                                projectLabel={entry.projectLabel}
                                 doneAt={entry.doneAt}
                                 isActive={routeThreadKey === entry.threadKey}
                                 appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}

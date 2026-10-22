@@ -118,7 +118,7 @@ describe("ChatView (full app): sidebar", () => {
     };
   }
 
-  it("narrows the live list from the scope menu and drops the implied project label", async () => {
+  it("narrows the live list from the scope menu and keeps the project name on its rows", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: withThreadBranch(
@@ -144,21 +144,33 @@ describe("ChatView (full app): sidebar", () => {
 
       await vi.waitFor(
         () => {
-          expect(useUiStateStore.getState().inboxProjectScopeKey).toBe(PROJECT_LOGICAL_KEY);
+          expect(useUiStateStore.getState().inboxProjectScopeKeys).toEqual([PROJECT_LOGICAL_KEY]);
+          expect(
+            document.querySelector("[data-testid='inbox-scope-trigger']")?.textContent,
+          ).toContain("Project");
           const scopedRow = document.querySelector<HTMLElement>(
             `[data-testid="thread-row-${THREAD_ID}"]`,
           );
           expect(scopedRow).not.toBeNull();
-          // Scoped: the project is implied, but the row keeps its second line.
-          expect(scopedRow?.textContent).not.toContain("Project");
+          // Scoped: the row still names its project; the menu that says what
+          // the list is narrowed to is out of sight while you read the rows.
           expect(
-            scopedRow?.querySelector(`[data-testid="thread-detail-${THREAD_ID}"]`),
-          ).not.toBeNull();
+            scopedRow?.querySelector(`[data-testid="thread-detail-${THREAD_ID}"]`)?.textContent,
+          ).toContain("Project");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // Clicking it again takes it back out: the list is unscoped.
+      await page.getByTestId(`inbox-scope-${PROJECT_LOGICAL_KEY}`).click();
+      await vi.waitFor(
+        () => {
+          expect(useUiStateStore.getState().inboxProjectScopeKeys).toEqual([]);
         },
         { timeout: 4_000, interval: 16 },
       );
     } finally {
-      useUiStateStore.getState().setInboxProjectScope(null);
+      useUiStateStore.getState().setInboxProjectScope([]);
       await mounted.cleanup();
     }
   });

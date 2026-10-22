@@ -1072,6 +1072,73 @@ export function buildProjectScopeOptions(input: {
 }
 
 /**
+ * The projects the list is actually narrowed to, in the order they were
+ * picked; empty is All projects.
+ *
+ * A picked project lapses rather than pinning the list to nothing: one removed
+ * since, or one with no checkout on the scoped machine (the two scopes compose
+ * as an intersection), drops out, and with none left the list is unscoped.
+ */
+export function resolveScopedProjectKeys(input: {
+  readonly pickedKeys: readonly string[];
+  readonly projectByKey: ReadonlyMap<
+    string,
+    { readonly memberProjects: ReadonlyArray<{ readonly environmentId: string }> }
+  >;
+  readonly scopedEnvironmentId: string | null;
+}): string[] {
+  return input.pickedKeys.filter((key) => {
+    const project = input.projectByKey.get(key);
+    return (
+      project !== undefined &&
+      (input.scopedEnvironmentId === null ||
+        project.memberProjects.some((member) => member.environmentId === input.scopedEnvironmentId))
+    );
+  });
+}
+
+/**
+ * Where the new-thread button starts while the list is scoped to projects.
+ *
+ * It stays inside the scope: a thread or draft open in a picked project keeps
+ * its project ("follow"), and otherwise the first project picked wins --
+ * filtering and then getting a thread somewhere else reads as the button
+ * ignoring you. The default project is not somewhere you are, so it never
+ * outranks the pick order. A project grouped across checkouts starts on the
+ * scoped machine, else this device, else its first checkout. Unscoped, the
+ * button follows as it always has.
+ */
+export function resolveScopedComposeTarget<
+  Member extends { readonly environmentId: string },
+>(input: {
+  readonly scopedProjectKeys: readonly string[];
+  /** The logical key of the project whose thread or draft is open, if any. */
+  readonly openProjectKey: string | null;
+  readonly projectByKey: ReadonlyMap<string, { readonly memberProjects: readonly Member[] }>;
+  readonly scopedEnvironmentId: string | null;
+  readonly primaryEnvironmentId: string | null;
+}): { readonly kind: "follow" } | { readonly kind: "member"; readonly member: Member } {
+  const firstScopedKey = input.scopedProjectKeys[0];
+  if (
+    firstScopedKey === undefined ||
+    (input.openProjectKey !== null && input.scopedProjectKeys.includes(input.openProjectKey))
+  ) {
+    return { kind: "follow" };
+  }
+  const members = input.projectByKey.get(firstScopedKey)?.memberProjects ?? [];
+  const member =
+    members.find((candidate) => candidate.environmentId === input.scopedEnvironmentId) ??
+    members.find((candidate) => candidate.environmentId === input.primaryEnvironmentId) ??
+    members[0];
+  return member === undefined ? { kind: "follow" } : { kind: "member", member };
+}
+
+/** Adds a project to the scope, or takes it out when it is already in. */
+export function toggleProjectScopeKey(keys: readonly string[], key: string): string[] {
+  return keys.includes(key) ? keys.filter((picked) => picked !== key) : [...keys, key];
+}
+
+/**
  * Which live rows show while the list is folded.
  *
  * The live list keeps every thread, but only the first few quiet ones are

@@ -21,6 +21,24 @@ const TWO_MACHINES: EnvironmentScopeOption[] = [
   { environmentId: REMOTE_ENVIRONMENT_ID, label: "Windows Desktop", isPrimary: false },
 ];
 
+// Only the fields the menu reads: its name, and where its icon comes from.
+const PROJECTS = (["Alpha", "Beta", "Gamma"] as const).map(
+  (name) =>
+    ({
+      projectKey: name.toLowerCase(),
+      displayName: name,
+      cwd: `/work/${name.toLowerCase()}`,
+      environmentId: PRIMARY_ENVIRONMENT_ID,
+      memberProjects: [],
+    }) as unknown as SidebarProjectSnapshot,
+);
+const PROJECT_OPTIONS: ProjectScopeOption[] = PROJECTS.map((project) => ({
+  key: project.projectKey,
+  label: project.displayName,
+  needsYouCount: 0,
+}));
+const PROJECT_BY_KEY = new Map(PROJECTS.map((project) => [project.projectKey, project] as const));
+
 async function renderMenu(
   props: Partial<Parameters<typeof ProjectScopeMenu>[0]> = {},
   onEnvironmentScopeChange = vi.fn(),
@@ -31,8 +49,9 @@ async function renderMenu(
       <ProjectScopeMenu
         options={[] as ProjectScopeOption[]}
         projectByKey={new Map<string, SidebarProjectSnapshot>()}
-        scopedProjectKey={null}
+        scopedProjectKeys={[]}
         onScopeChange={vi.fn()}
+        onToggleScopeProject={vi.fn()}
         environmentOptions={TWO_MACHINES}
         scopedEnvironmentId={null}
         onEnvironmentScopeChange={onEnvironmentScopeChange}
@@ -98,6 +117,66 @@ describe("ProjectScopeMenu", () => {
       );
     } finally {
       await scopedMounted.unmount();
+    }
+  });
+
+  it("toggles projects with the menu left open, and Only narrows to one and closes it", async () => {
+    const onScopeChange = vi.fn();
+    const onToggleScopeProject = vi.fn();
+    const { mounted } = await renderMenu({
+      options: PROJECT_OPTIONS,
+      projectByKey: PROJECT_BY_KEY,
+      scopedProjectKeys: ["alpha"],
+      onScopeChange,
+      onToggleScopeProject,
+    });
+    try {
+      await page.getByTestId("inbox-scope-trigger").click();
+      await page.getByTestId("inbox-scope-beta").click();
+      expect(onToggleScopeProject).toHaveBeenCalledWith("beta");
+      // Still open for the next pick.
+      await expect.element(page.getByTestId("inbox-scope-gamma")).toBeVisible();
+      // The project already showing alone offers no Only: it would do nothing.
+      expect(document.querySelector("[data-testid='inbox-scope-only-alpha']")).toBeNull();
+
+      await page.getByTestId("inbox-scope-only-gamma").click();
+      expect(onScopeChange).toHaveBeenCalledWith(["gamma"]);
+      // Only replaces the scope; it does not also toggle the row it sits on.
+      expect(onToggleScopeProject).toHaveBeenCalledTimes(1);
+      await expect.element(page.getByTestId("inbox-scope-gamma")).not.toBeInTheDocument();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("names two picked projects on the trigger in pick order, and counts three", async () => {
+    // The label alone: an icon without a favicon draws its project's initial.
+    const triggerText = () =>
+      document.querySelector("[data-testid='inbox-scope-label']")?.textContent;
+    const { mounted } = await renderMenu({
+      options: PROJECT_OPTIONS,
+      projectByKey: PROJECT_BY_KEY,
+      scopedProjectKeys: ["beta", "alpha"],
+      environmentOptions: [TWO_MACHINES[0]!],
+    });
+    try {
+      await expect.element(page.getByTestId("inbox-scope-trigger")).toBeVisible();
+      expect(triggerText()).toBe("Beta, Alpha");
+    } finally {
+      await mounted.unmount();
+    }
+
+    const { mounted: threeMounted } = await renderMenu({
+      options: PROJECT_OPTIONS,
+      projectByKey: PROJECT_BY_KEY,
+      scopedProjectKeys: ["alpha", "beta", "gamma"],
+      environmentOptions: [TWO_MACHINES[0]!],
+    });
+    try {
+      await expect.element(page.getByTestId("inbox-scope-trigger")).toBeVisible();
+      expect(triggerText()).toBe("3 projects");
+    } finally {
+      await threeMounted.unmount();
     }
   });
 

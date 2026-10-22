@@ -3272,7 +3272,7 @@ export function registerChatViewSuiteHooks(): void {
       seenThreadOverlays: {},
       threadSeedVisitedAtById: {},
       doneThreadOverlays: {},
-      inboxProjectScopeKey: null,
+      inboxProjectScopeKeys: [],
       collapsedInboxGroups: {},
       sidebarListOpen: true,
     });

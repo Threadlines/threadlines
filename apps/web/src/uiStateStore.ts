@@ -31,6 +31,8 @@ export interface PersistedUiState {
   doneThreadOverrides?: Record<string, { state: "done" | "active"; at: string }>;
   /** Legacy, see `doneThreadOverrides`. */
   threadLastVisitedAtById?: Record<string, string>;
+  inboxProjectScopeKeys?: string[];
+  /** Legacy: the single project the list was narrowed to, before several could be. */
   inboxProjectScopeKey?: string | null;
   inboxEnvironmentScopeId?: string | null;
   /** See `UiInboxState.threadWrapUpOnPullRequestSettledById`. */
@@ -120,8 +122,8 @@ export interface UiInboxState {
    * on this device: how a list is folded is a matter of where it is read.
    */
   childThreadFamilyOpenById: Record<string, boolean>;
-  /** Which project chip is selected; null is All. */
-  inboxProjectScopeKey: string | null;
+  /** The projects the list is narrowed to, in the order they were picked; empty is All. */
+  inboxProjectScopeKeys: readonly string[];
   /** Which machine the list is narrowed to; null is All machines. */
   inboxEnvironmentScopeId: string | null;
   /**
@@ -173,7 +175,7 @@ const initialState: UiState = {
   doneThreadOverlays: {},
   threadWrapUpOnPullRequestSettledById: {},
   childThreadFamilyOpenById: {},
-  inboxProjectScopeKey: null,
+  inboxProjectScopeKeys: [],
   inboxEnvironmentScopeId: null,
   collapsedInboxGroups: {},
   sidebarListOpen: true,
@@ -222,10 +224,7 @@ export function readPersistedState(): UiState {
       threadChangedFilesExpandedById: sanitizePersistedThreadChangedFilesExpanded(
         parsed.threadChangedFilesExpandedById,
       ),
-      inboxProjectScopeKey:
-        typeof parsed.inboxProjectScopeKey === "string" && parsed.inboxProjectScopeKey.length > 0
-          ? parsed.inboxProjectScopeKey
-          : null,
+      inboxProjectScopeKeys: sanitizePersistedProjectScopeKeys(parsed),
       inboxEnvironmentScopeId:
         typeof parsed.inboxEnvironmentScopeId === "string" &&
         parsed.inboxEnvironmentScopeId.length > 0
@@ -311,6 +310,24 @@ export function dropLegacyInboxState(threadKeys: readonly string[]): void {
   } catch {
     // Ignore quota/storage errors to avoid breaking chat UX.
   }
+}
+
+/**
+ * The persisted project scope. A build from before several projects could be
+ * picked stored one key, which carries over as a scope of one; anything that
+ * is not a non-empty key is dropped rather than kept as a scope nothing can
+ * match.
+ */
+function sanitizePersistedProjectScopeKeys(parsed: PersistedUiState): string[] {
+  const stored: unknown = parsed.inboxProjectScopeKeys ?? parsed.inboxProjectScopeKey;
+  const candidates: readonly unknown[] = Array.isArray(stored) ? stored : [stored];
+  const keys: string[] = [];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.length > 0 && !keys.includes(candidate)) {
+      keys.push(candidate);
+    }
+  }
+  return keys;
 }
 
 function sanitizePersistedBooleanRecord(
@@ -449,7 +466,7 @@ export function persistState(state: UiState): void {
         projectOrderCwds,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpandedById,
-        inboxProjectScopeKey: state.inboxProjectScopeKey,
+        inboxProjectScopeKeys: [...state.inboxProjectScopeKeys],
         inboxEnvironmentScopeId: state.inboxEnvironmentScopeId,
         threadWrapUpOnPullRequestSettledById: state.threadWrapUpOnPullRequestSettledById,
         childThreadFamilyOpenById: state.childThreadFamilyOpenById,
@@ -1102,7 +1119,7 @@ interface UiStateStore extends UiState {
     writeId: number,
     outcome: { readonly serverLastSeenAt: string | null; readonly resendsLeft?: number },
   ) => void;
-  setInboxProjectScope: (projectKey: string | null) => void;
+  setInboxProjectScope: (projectKeys: readonly string[]) => void;
   setInboxEnvironmentScope: (environmentId: string | null) => void;
   clearThreadUi: (threadKey: string) => void;
   setThreadWrapUpOnPullRequestSettled: (threadKey: string, wrapUp: boolean) => void;
@@ -1135,11 +1152,12 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => resolveDoneOverlay(state, threadKey, at, outcome)),
   settleSeenOverlay: (threadKey, writeId, outcome) =>
     set((state) => settleSeenOverlay(state, threadKey, writeId, outcome)),
-  setInboxProjectScope: (projectKey) =>
+  setInboxProjectScope: (projectKeys) =>
     set((state) =>
-      state.inboxProjectScopeKey === projectKey
+      state.inboxProjectScopeKeys.length === projectKeys.length &&
+      state.inboxProjectScopeKeys.every((key, index) => key === projectKeys[index])
         ? state
-        : { ...state, inboxProjectScopeKey: projectKey },
+        : { ...state, inboxProjectScopeKeys: [...projectKeys] },
     ),
   setInboxEnvironmentScope: (environmentId) =>
     set((state) =>

@@ -39,6 +39,8 @@ import {
   mergeThreadLastSeenAt,
   remoteChildStatusText,
   resolveRemoteFamilyChildren,
+  resolveScopedComposeTarget,
+  resolveScopedProjectKeys,
   sortInboxThreads,
   summarizeChildThreads,
   windowInboxDoneRows,
@@ -1359,6 +1361,96 @@ describe("buildProjectScopeOptions", () => {
     expect(options.map((option) => option.key)).toEqual(["a", "b", "c", "d"]);
     expect(options[1]?.needsYouCount).toBe(2);
     expect(options[0]?.needsYouCount).toBe(0);
+  });
+});
+
+describe("resolveScopedProjectKeys", () => {
+  const projectByKey = new Map([
+    ["mac-only", { memberProjects: [{ environmentId: "mac" }] }],
+    ["both", { memberProjects: [{ environmentId: "mac" }, { environmentId: "pc" }] }],
+    ["pc-only", { memberProjects: [{ environmentId: "pc" }] }],
+  ]);
+
+  it("keeps the picks in the order they were made and lets the dead ones lapse", () => {
+    // A project removed since it was picked drops out instead of narrowing the
+    // list to nothing.
+    expect(
+      resolveScopedProjectKeys({
+        pickedKeys: ["pc-only", "removed", "mac-only"],
+        projectByKey,
+        scopedEnvironmentId: null,
+      }),
+    ).toEqual(["pc-only", "mac-only"]);
+
+    // The machine scope intersects: a pick with no checkout there lapses, and
+    // with none left the list is unscoped.
+    expect(
+      resolveScopedProjectKeys({
+        pickedKeys: ["pc-only", "both", "mac-only"],
+        projectByKey,
+        scopedEnvironmentId: "mac",
+      }),
+    ).toEqual(["both", "mac-only"]);
+    expect(
+      resolveScopedProjectKeys({
+        pickedKeys: ["pc-only"],
+        projectByKey,
+        scopedEnvironmentId: "mac",
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("resolveScopedComposeTarget", () => {
+  const projectByKey = new Map([
+    ["solo", { memberProjects: [{ environmentId: "pc", id: "solo-pc" }] }],
+    [
+      "grouped",
+      {
+        memberProjects: [
+          { environmentId: "pc", id: "grouped-pc" },
+          { environmentId: "mac", id: "grouped-mac" },
+        ],
+      },
+    ],
+  ]);
+  const target = (input: {
+    scopedProjectKeys: readonly string[];
+    openProjectKey: string | null;
+    scopedEnvironmentId?: string | null;
+  }) =>
+    resolveScopedComposeTarget({
+      projectByKey,
+      scopedEnvironmentId: null,
+      primaryEnvironmentId: "mac",
+      ...input,
+    });
+
+  it("follows an open thread inside the scope and otherwise starts in the first pick", () => {
+    expect(target({ scopedProjectKeys: [], openProjectKey: "elsewhere" })).toEqual({
+      kind: "follow",
+    });
+    expect(target({ scopedProjectKeys: ["grouped", "solo"], openProjectKey: "solo" })).toEqual({
+      kind: "follow",
+    });
+    // Open outside the scope, or nothing open (the default project is not
+    // somewhere you are): the first pick wins, never a project left out.
+    for (const openProjectKey of ["elsewhere", null]) {
+      expect(target({ scopedProjectKeys: ["solo", "grouped"], openProjectKey })).toEqual({
+        kind: "member",
+        member: { environmentId: "pc", id: "solo-pc" },
+      });
+    }
+  });
+
+  it("starts a grouped first pick on the scoped machine, else on this device", () => {
+    expect(target({ scopedProjectKeys: ["grouped"], openProjectKey: null })).toEqual({
+      kind: "member",
+      member: { environmentId: "mac", id: "grouped-mac" },
+    });
+    expect(
+      target({ scopedProjectKeys: ["grouped"], openProjectKey: null, scopedEnvironmentId: "pc" }),
+    ).toEqual({ kind: "member", member: { environmentId: "pc", id: "grouped-pc" } });
   });
 });
 

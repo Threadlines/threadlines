@@ -609,7 +609,9 @@ function ChildFamilySummaryLine({
 export interface InboxThreadRowProps {
   thread: SidebarThreadSummary;
   status: ThreadStatusPill | null;
-  /** Null while the list is scoped to one project: the label is implied. */
+  /** Null only when the thread's project is unknown here. The name shows even
+   *  while the list is scoped: the scope menu is out of sight, and a row
+   *  should say where its work lives on its own. */
   projectLabel: string | null;
   /**
    * Whether the row draws its project's mark. Off under a project group's

@@ -1,4 +1,5 @@
 import {
+  CheckIcon,
   ChevronsUpDownIcon,
   CloudIcon,
   EllipsisIcon,
@@ -11,7 +12,7 @@ import {
   SquarePenIcon,
   UsersRoundIcon,
 } from "lucide-react";
-import React, { memo, useCallback, useState } from "react";
+import React, { memo, useCallback, useMemo, useState } from "react";
 import type {
   ContextMenuItem,
   EnvironmentId,
@@ -55,6 +56,7 @@ import {
   Menu,
   MENU_PICK_ITEM_CLASS_NAME,
   MENU_PICK_ITEM_SELECTED_CLASS_NAME,
+  MenuCheckboxItem,
   MenuGroup,
   MenuGroupLabel,
   MenuItem,
@@ -99,6 +101,19 @@ const SET_UP_ELSEWHERE_ITEM_ID = "set-up-elsewhere";
 const SCOPE_ITEM_CLASS_NAME = MENU_PICK_ITEM_CLASS_NAME;
 const SCOPE_ITEM_SELECTED = MENU_PICK_ITEM_SELECTED_CLASS_NAME;
 
+/** How many picked projects the trigger draws an icon for. */
+const TRIGGER_FAVICON_LIMIT = 3;
+
+/**
+ * What the trigger calls the picked projects: their names while two fit, a
+ * count past that -- at sidebar widths a third name is only ever an ellipsis.
+ */
+function describeScopedProjects(projects: readonly SidebarProjectSnapshot[]): string {
+  return projects.length <= 2
+    ? projects.map((project) => project.displayName).join(", ")
+    : `${projects.length} projects`;
+}
+
 /** One machine the inbox can be narrowed to. */
 export interface EnvironmentScopeOption {
   environmentId: EnvironmentId;
@@ -109,8 +124,12 @@ export interface EnvironmentScopeOption {
 export interface ProjectScopeMenuProps {
   options: readonly ProjectScopeOption[];
   projectByKey: ReadonlyMap<string, SidebarProjectSnapshot>;
-  scopedProjectKey: string | null;
-  onScopeChange: (projectKey: string | null) => void;
+  /** The projects the list is narrowed to, in the order they were picked; empty is All. */
+  scopedProjectKeys: readonly string[];
+  /** Replaces the whole scope: empty for All projects, one key for "Only". */
+  onScopeChange: (projectKeys: readonly string[]) => void;
+  /** Adds a project to the scope, or takes it out. */
+  onToggleScopeProject: (projectKey: string) => void;
   /** Empty or single-entry while only one machine is known: no filter is offered. */
   environmentOptions: readonly EnvironmentScopeOption[];
   scopedEnvironmentId: string | null;
@@ -134,10 +153,12 @@ export interface ProjectScopeMenuProps {
  * The scope filter: one quiet line naming what the list is showing.
  *
  * Projects stopped being a tree, so this is where a project is addressed.
- * Picking one narrows the list; right-clicking it opens what the project
- * header used to hold (rename, grouping, path, removal), which keeps those
- * off the menu itself. A menu scales with the pane where a chip row could
- * not, so only "Add project" stays out here as a visible button.
+ * Clicking one adds it to the list's scope or takes it out, and the menu stays
+ * open for the next; "Only" on a row narrows straight to that one project.
+ * Right-clicking a project opens what the project header used to hold
+ * (rename, grouping, path, removal), which keeps those off the menu itself. A
+ * menu scales with the pane where a chip row could not, so only "Add project"
+ * stays out here as a visible button.
  *
  * The machine and rooms filters live here too, as sections under the
  * projects: each narrows the same list, and none is worth a permanent row.
@@ -146,8 +167,9 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
   const {
     options,
     projectByKey,
-    scopedProjectKey,
+    scopedProjectKeys,
     onScopeChange,
+    onToggleScopeProject,
     environmentOptions,
     scopedEnvironmentId,
     onEnvironmentScopeChange,
@@ -161,6 +183,8 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
   } = props;
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const { updateSettings } = useUpdateSettings();
+  // Controlled so "Only" can close it: toggling a project leaves it open.
+  const [menuOpen, setMenuOpen] = useState(false);
   const [projectRenameTarget, setProjectRenameTarget] = useState<SidebarProjectGroupMember | null>(
     null,
   );
@@ -528,8 +552,15 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
     [showProjectContextMenuAt],
   );
 
-  const scopedProject =
-    scopedProjectKey === null ? null : (projectByKey.get(scopedProjectKey) ?? null);
+  const scopedProjects = useMemo(
+    () =>
+      scopedProjectKeys.flatMap((key) => {
+        const project = projectByKey.get(key);
+        return project ? [project] : [];
+      }),
+    [projectByKey, scopedProjectKeys],
+  );
+  const soleScopedProject = scopedProjects.length === 1 ? scopedProjects[0]! : null;
   // One machine is not a choice: the section only appears once there is
   // somewhere else the work could be.
   const showEnvironmentScope = environmentOptions.length > 1;
@@ -541,27 +572,35 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
   return (
     <>
       <div className="flex items-center gap-1 px-3 pt-2 pb-2">
-        <Menu>
+        <Menu open={menuOpen} onOpenChange={setMenuOpen}>
           <MenuTrigger
             data-testid="inbox-scope-trigger"
             // The same quiet surface as the search bar above it (paired
             // chevrons say it is a picker), unlike the flat icon buttons beside it.
             className={cn(SIDEBAR_LIST_FIELD_CLASS, "flex-1 text-xs")}
-            // Right-clicking the trigger addresses the project you are already
-            // scoped to, so the menu is not the only way in.
+            // Right-clicking the trigger addresses the project you are scoped
+            // to, so the menu is not the only way in. With several picked
+            // there is no one project it could mean.
             onContextMenu={(event: React.MouseEvent) => {
-              if (scopedProject) {
-                handleProjectContextMenu(event, scopedProject.projectKey);
+              if (soleScopedProject) {
+                handleProjectContextMenu(event, soleScopedProject.projectKey);
               }
             }}
           >
-            {scopedProject ? (
-              <ProjectFavicon
-                cwd={scopedProject.cwd}
-                environmentId={scopedProject.environmentId}
-                name={scopedProject.displayName}
-                className="size-3.5 shrink-0"
-              />
+            {scopedProjects.length > 0 ? (
+              // Side by side rather than overlapped: a project icon is a logo,
+              // and a stack would clip all but the first.
+              <span className="flex shrink-0 items-center gap-0.5">
+                {scopedProjects.slice(0, TRIGGER_FAVICON_LIMIT).map((project) => (
+                  <ProjectFavicon
+                    key={project.projectKey}
+                    cwd={project.cwd}
+                    environmentId={project.environmentId}
+                    name={project.displayName}
+                    className="size-3.5 shrink-0"
+                  />
+                ))}
+              </span>
             ) : scopedEnvironment ? (
               // A machine-only scope leads with the machine: its glyph in the
               // icon slot and its name as the whole text, because at sidebar
@@ -575,9 +614,9 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             ) : (
               <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
             )}
-            <span className="min-w-0 flex-1 truncate text-left">
-              {scopedProject
-                ? `${scopedProject.displayName}${scopedEnvironment ? ` · ${scopedEnvironment.label}` : ""}`
+            <span data-testid="inbox-scope-label" className="min-w-0 flex-1 truncate text-left">
+              {scopedProjects.length > 0
+                ? `${describeScopedProjects(scopedProjects)}${scopedEnvironment ? ` · ${scopedEnvironment.label}` : ""}`
                 : (scopedEnvironment?.label ?? "All projects")}
             </span>
             {roomsOnly === true ? (
@@ -596,10 +635,10 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
               data-testid="inbox-scope-all"
               className={cn(
                 SCOPE_ITEM_CLASS_NAME,
-                scopedProjectKey === null && SCOPE_ITEM_SELECTED,
+                scopedProjectKeys.length === 0 && SCOPE_ITEM_SELECTED,
               )}
               onClick={() => {
-                onScopeChange(null);
+                onScopeChange([]);
               }}
             >
               <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
@@ -607,18 +646,17 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             </MenuItem>
             {options.map((option) => {
               const project = projectByKey.get(option.key);
+              const picked = scopedProjectKeys.includes(option.key);
               return (
-                <MenuItem
+                <MenuCheckboxItem
                   key={option.key}
-                  data-testid={`inbox-scope-${option.key}`}
-                  className={cn(
-                    SCOPE_ITEM_CLASS_NAME,
-                    "group/scope-item",
-                    scopedProjectKey === option.key && SCOPE_ITEM_SELECTED,
-                  )}
-                  onClick={() => {
-                    onScopeChange(option.key);
+                  variant="fill"
+                  checked={picked}
+                  onCheckedChange={() => {
+                    onToggleScopeProject(option.key);
                   }}
+                  data-testid={`inbox-scope-${option.key}`}
+                  className="group/scope-item"
                   // Right-click keeps working; the button is the discoverable half.
                   onContextMenu={(event: React.MouseEvent) => {
                     handleProjectContextMenu(event, option.key);
@@ -634,7 +672,29 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                   ) : (
                     <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
                   )}
-                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                    <span className="min-w-0 truncate">{option.label}</span>
+                    {picked ? <CheckIcon aria-hidden className="size-3 shrink-0" /> : null}
+                  </span>
+                  {/* The fast switch: toggling is the click, so jumping to one
+                      project is its own small button. Absent on the one
+                      project already showing alone, where it would do nothing. */}
+                  {picked && scopedProjectKeys.length === 1 ? null : (
+                    <button
+                      type="button"
+                      data-testid={`inbox-scope-only-${option.key}`}
+                      aria-label={`Show only ${option.label}`}
+                      className="inline-flex h-5 shrink-0 cursor-pointer items-center rounded-sm px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-ring group-hover/scope-item:opacity-100 group-focus-within/scope-item:opacity-100 pointer-coarse:opacity-100"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onScopeChange([option.key]);
+                        setMenuOpen(false);
+                      }}
+                    >
+                      Only
+                    </button>
+                  )}
                   {option.needsYouCount > 0 ? (
                     <span className="shrink-0 font-mono text-[10px] text-amber-600 dark:text-amber-300/90">
                       {option.needsYouCount}
@@ -657,7 +717,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                   >
                     <EllipsisIcon className="size-3.5" />
                   </button>
-                </MenuItem>
+                </MenuCheckboxItem>
               );
             })}
             {showEnvironmentScope ? (

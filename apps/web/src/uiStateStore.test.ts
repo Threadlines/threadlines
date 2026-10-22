@@ -31,7 +31,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     doneThreadOverlays: {},
     threadWrapUpOnPullRequestSettledById: {},
     childThreadFamilyOpenById: {},
-    inboxProjectScopeKey: null,
+    inboxProjectScopeKeys: [],
     inboxEnvironmentScopeId: null,
     collapsedInboxGroups: {},
     sidebarListOpen: true,
@@ -580,13 +580,26 @@ describe("uiStateStore persistence round-trip", () => {
 
   it("carries the inbox machine filter across a restart, and drops a junk value", () => {
     const state = makeUiState({
-      inboxProjectScopeKey: "github.com/example/repo",
+      inboxProjectScopeKeys: ["github.com/example/repo", "github.com/example/other"],
       inboxEnvironmentScopeId: "env-macbook",
     });
     persistState(state);
 
     expect(readPersistedState().inboxEnvironmentScopeId).toBe("env-macbook");
-    expect(readPersistedState().inboxProjectScopeKey).toBe("github.com/example/repo");
+    expect(readPersistedState().inboxProjectScopeKeys).toEqual([
+      "github.com/example/repo",
+      "github.com/example/other",
+    ]);
+
+    // A build that could pick only one project saved a single key: it carries
+    // over as a scope of one.
+    window.localStorage.setItem(
+      PERSISTED_STATE_KEY,
+      JSON.stringify({
+        inboxProjectScopeKey: "github.com/example/repo",
+      } satisfies PersistedUiState),
+    );
+    expect(readPersistedState().inboxProjectScopeKeys).toEqual(["github.com/example/repo"]);
 
     // An empty or non-string value is "no filter", never a scope nothing can
     // match -- that would hide the whole inbox behind a filter with no name.

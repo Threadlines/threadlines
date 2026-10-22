@@ -94,6 +94,13 @@ function MenuItem({
   );
 }
 
+/**
+ * A menu entry that switches on and off without closing the menu.
+ *
+ * "fill" is the house selection treatment (see MENU_PICK_ITEM_*) for a picker
+ * where several entries can be on at once: checked rows carry the resting
+ * fill, and the children draw their own mark -- there is no indicator column.
+ */
 function MenuCheckboxItem({
   className,
   children,
@@ -101,20 +108,26 @@ function MenuCheckboxItem({
   variant = "default",
   ...props
 }: MenuPrimitive.CheckboxItem.Props & {
-  variant?: "default" | "switch";
+  variant?: "default" | "switch" | "fill";
 }) {
   return (
     <MenuPrimitive.CheckboxItem
       checked={checked}
       className={cn(
-        "grid min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center gap-2 rounded-sm py-1 ps-2 text-base text-foreground outline-none data-disabled:pointer-events-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
-        variant === "switch" ? "grid-cols-[1fr_auto] gap-4 pe-1.5" : "grid-cols-[1rem_1fr] pe-4",
+        "min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center gap-2 rounded-sm py-1 ps-2 text-base text-foreground outline-none data-disabled:pointer-events-none data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        variant === "fill"
+          ? "flex pe-2 text-muted-foreground data-checked:bg-pick-selected data-checked:text-foreground data-checked:inset-ring data-checked:inset-ring-border data-highlighted:bg-foreground/12 data-highlighted:text-foreground"
+          : "grid data-highlighted:bg-accent data-highlighted:text-accent-foreground",
+        variant === "switch" && "grid-cols-[1fr_auto] gap-4 pe-1.5",
+        variant === "default" && "grid-cols-[1rem_1fr] pe-4",
         className,
       )}
       data-slot="menu-checkbox-item"
       {...props}
     >
-      {variant === "switch" ? (
+      {variant === "fill" ? (
+        children
+      ) : variant === "switch" ? (
         <>
           <span className="col-start-1">{children}</span>
           <MenuPrimitive.CheckboxItemIndicator
