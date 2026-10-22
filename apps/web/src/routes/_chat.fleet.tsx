@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { FleetView } from "../components/fleet/FleetView";
+import { FleetLayout } from "../components/fleet/FleetLayout";
 
 export const Route = createFileRoute("/_chat/fleet")({
-  component: FleetView,
+  component: FleetLayout,
 });

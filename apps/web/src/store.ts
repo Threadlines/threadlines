@@ -28,8 +28,11 @@ import type {
   OrchestrationCheckBack,
   OrchestrationThreadGoal,
   ProjectId,
+  RemoteChildStart,
+  RemoteChildThread,
   ScopedProjectRef,
   ScopedThreadRef,
+  ThreadRemoteOrigin,
 } from "@threadlines/contracts";
 import {
   EMPTY_AGENT_REQUEST_STATE,
@@ -108,6 +111,7 @@ import {
   awaitedChildRequestCount,
   childRequestStateOn,
   hasPendingChildApproval,
+  remoteChildStartsOf,
 } from "@threadlines/shared/childThreads";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
@@ -389,6 +393,93 @@ function childRequestCounts(thread: {
       };
 }
 
+/**
+ * A thread's family across computers (docs/design/fleet.md): the thread on
+ * another computer whose agent started it, and on a parent its children on
+ * linked computers. A loaded thread's open requests know them first-hand;
+ * without them, the shell's copies stand. Empty lists are left out, so two
+ * copies of the same family compare alike.
+ */
+function remoteFamily(thread: {
+  readonly remoteOrigin?: ThreadRemoteOrigin | null | undefined;
+  readonly childRequests?: OrchestrationChildRequestState | undefined;
+  readonly remoteChildren?: ReadonlyArray<RemoteChildThread> | undefined;
+  readonly remoteChildStarts?: ReadonlyArray<RemoteChildStart> | undefined;
+}): Pick<ThreadShell, "remoteOrigin" | "remoteChildren" | "remoteChildStarts"> {
+  const children =
+    thread.childRequests !== undefined
+      ? (thread.childRequests.remoteChildren ?? [])
+      : (thread.remoteChildren ?? []);
+  const starts =
+    thread.childRequests !== undefined
+      ? remoteChildStartsOf(thread.childRequests)
+      : (thread.remoteChildStarts ?? []);
+  return {
+    ...(thread.remoteOrigin ? { remoteOrigin: thread.remoteOrigin } : {}),
+    ...(children.length > 0 ? { remoteChildren: children } : {}),
+    ...(starts.length > 0 ? { remoteChildStarts: starts } : {}),
+  };
+}
+
+function remoteOriginsEqual(
+  left: ThreadRemoteOrigin | null | undefined,
+  right: ThreadRemoteOrigin | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.linkDeviceId === b.linkDeviceId &&
+        a.environmentId === b.environmentId &&
+        a.environmentPinned === b.environmentPinned &&
+        a.environmentLabel === b.environmentLabel &&
+        a.threadId === b.threadId &&
+        a.threadTitle === b.threadTitle;
+}
+
+function remoteChildrenEqual(
+  left: ReadonlyArray<RemoteChildThread> | undefined,
+  right: ReadonlyArray<RemoteChildThread> | undefined,
+): boolean {
+  const a = left ?? [];
+  const b = right ?? [];
+  return (
+    a.length === b.length &&
+    a.every((child, index) => {
+      const other = b[index]!;
+      return (
+        child.environmentId === other.environmentId &&
+        child.threadId === other.threadId &&
+        child.label === other.label &&
+        child.title === other.title &&
+        child.cachedStatus === other.cachedStatus &&
+        child.updatedAt === other.updatedAt
+      );
+    })
+  );
+}
+
+function remoteChildStartsEqual(
+  left: ReadonlyArray<RemoteChildStart> | undefined,
+  right: ReadonlyArray<RemoteChildStart> | undefined,
+): boolean {
+  const a = left ?? [];
+  const b = right ?? [];
+  return (
+    a.length === b.length &&
+    a.every((start, index) => {
+      const other = b[index]!;
+      return (
+        start.requestId === other.requestId &&
+        start.environmentId === other.environmentId &&
+        start.label === other.label &&
+        start.title === other.title &&
+        start.status === other.status
+      );
+    })
+  );
+}
+
 /** The child-thread fields a sidebar row reads, from a shell or a loaded thread. */
 function sidebarLineage(
   thread: Pick<
@@ -401,6 +492,9 @@ function sidebarLineage(
     | "pendingChildApproval"
     | "queuedFollowUps"
     | "scheduledRun"
+    | "remoteOrigin"
+    | "remoteChildren"
+    | "remoteChildStarts"
   >,
 ): Pick<
   SidebarThreadSummary,
@@ -412,6 +506,9 @@ function sidebarLineage(
   | "pendingChildApproval"
   | "queuedFollowUpCount"
   | "scheduledRun"
+  | "remoteOrigin"
+  | "remoteChildren"
+  | "remoteChildStarts"
 > {
   return {
     scheduledRun: thread.scheduledRun ?? null,
@@ -422,6 +519,7 @@ function sidebarLineage(
     awaitedChildThreadCount: thread.awaitedChildThreadCount ?? 0,
     pendingChildApproval: thread.pendingChildApproval ?? false,
     queuedFollowUpCount: thread.queuedFollowUps?.length ?? 0,
+    ...remoteFamily(thread),
   };
 }
 
@@ -510,6 +608,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     childRequests: thread.childRequests,
     ...threadLineage(thread),
     ...childRequestCounts(thread),
+    ...(thread.remoteOrigin ? { remoteOrigin: thread.remoteOrigin } : {}),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -562,6 +661,7 @@ function mapThreadShell(
     ...threadLineage(thread),
     awaitedChildThreadCount: thread.awaitedChildThreadCount,
     pendingChildApproval: thread.pendingChildApproval,
+    ...remoteFamily(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -643,6 +743,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     ...threadLineage(thread),
     ...childRequestCounts(thread),
+    ...remoteFamily(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -741,6 +842,7 @@ function toSidebarThreadSummary(
     ...sidebarLineage({
       ...threadLineage(thread),
       ...childRequestCounts(thread),
+      ...remoteFamily(thread),
       queuedFollowUps: thread.queuedFollowUps ?? [],
     }),
   };
@@ -934,7 +1036,10 @@ function sidebarThreadSummariesEqual(
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     (left.pendingScheduleApproval ?? false) === (right.pendingScheduleApproval ?? false) &&
     (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
-    scheduledRunsEqual(left.scheduledRun, right.scheduledRun)
+    scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
+    remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
+    remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
+    remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts)
   );
 }
 
@@ -995,6 +1100,9 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
+    remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
+    remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
+    remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&

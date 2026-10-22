@@ -25,6 +25,7 @@ import {
   childThreadsSummaryText,
   countInboxRowAttention,
   countThreadAttention,
+  familyParentKeyOf,
   groupInboxLiveRows,
   INBOX_AUTO_DONE_AFTER_DAYS,
   resolveThreadAttention,
@@ -34,6 +35,8 @@ import {
   isThreadDone,
   mergeThreadDoneOverride,
   mergeThreadLastSeenAt,
+  remoteChildStatusText,
+  resolveRemoteFamilyChildren,
   sortInboxThreads,
   summarizeChildThreads,
   windowInboxDoneRows,
@@ -42,6 +45,7 @@ import {
   type ThreadStatusPill,
 } from "./Sidebar.logic";
 import {
+  ChildRequestId,
   EnvironmentId,
   OrchestrationLatestTurn,
   ProjectId,
@@ -49,10 +53,12 @@ import {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_COMPOSER_RUNTIME_MODE,
   type Project,
+  type SidebarThreadSummary,
   type Thread,
 } from "../types";
 
@@ -1647,6 +1653,240 @@ describe("child thread families", () => {
     // A wrapped child no longer counts; a live one does, under its parent.
     expect(countInboxRowAttention(groups[0]!.rows)).toEqual({ needsYou: 1, working: 2 });
     expect(countInboxRowAttention(groups[1]!.rows)).toEqual({ needsYou: 1, working: 0 });
+  });
+});
+
+describe("families across computers", () => {
+  const mac = EnvironmentId.make("environment-mac");
+  const windows = EnvironmentId.make("environment-windows");
+  const working: ThreadStatusPill = {
+    label: "Working",
+    colorClass: "text-working",
+    dotClass: "dot-working",
+    pulse: true,
+  };
+  type FamilyThread = Pick<
+    SidebarThreadSummary,
+    | "id"
+    | "createdAt"
+    | "environmentId"
+    | "parentThreadId"
+    | "attachedToParent"
+    | "remoteOrigin"
+    | "remoteChildren"
+    | "remoteChildStarts"
+  >;
+  type Entry = InboxFamilyEntry & { readonly thread: FamilyThread };
+  const keyOf = (environmentId: EnvironmentId, id: string) =>
+    scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make(id)));
+  const entry = (
+    environmentId: EnvironmentId,
+    id: string,
+    options: {
+      startedOnMacBy?: string;
+      status?: ThreadStatusPill | null;
+      remoteChildren?: FamilyThread["remoteChildren"];
+      remoteChildStarts?: FamilyThread["remoteChildStarts"];
+    } = {},
+  ): Entry => ({
+    threadKey: keyOf(environmentId, id),
+    thread: {
+      id: ThreadId.make(id),
+      createdAt: "2026-10-21T09:00:00.000Z",
+      environmentId,
+      parentThreadId: null,
+      attachedToParent: false,
+      remoteOrigin:
+        options.startedOnMacBy === undefined
+          ? null
+          : {
+              linkDeviceId: "device-mac",
+              environmentId: mac,
+              environmentLabel: "Mac mini",
+              threadId: ThreadId.make(options.startedOnMacBy),
+              threadTitle: "Ship the 0.6 release",
+            },
+      ...(options.remoteChildren ? { remoteChildren: options.remoteChildren } : {}),
+      ...(options.remoteChildStarts ? { remoteChildStarts: options.remoteChildStarts } : {}),
+    },
+    status: options.status ?? null,
+    isDone: false,
+  });
+  // The sidebar's rules: families by environment-scoped keys, the machine
+  // filter, and a parent's record of the children this app can't see.
+  const sections = (
+    entries: readonly Entry[],
+    options: {
+      machine?: EnvironmentId;
+      hidden?: readonly string[];
+      open?: boolean;
+      computersWithThreads?: readonly EnvironmentId[];
+    } = {},
+  ) => {
+    const inScope = (candidate: Entry) =>
+      (options.machine === undefined || candidate.thread.environmentId === options.machine) &&
+      !(options.hidden ?? []).includes(candidate.threadKey);
+    return buildInboxSections({
+      entries,
+      parentKeyOf: (candidate) => familyParentKeyOf(candidate.thread),
+      inScope,
+      standsAlone: (child, parent) =>
+        options.machine !== undefined &&
+        parent.thread.environmentId !== options.machine &&
+        inScope(child),
+      remoteChildrenOf: (parent) =>
+        resolveRemoteFamilyChildren({
+          parent: parent.thread,
+          canSeeComputer: (environmentId) =>
+            (options.computersWithThreads ?? [mac, windows]).includes(environmentId),
+          computerLabel: (_environmentId, lastKnown) => lastKnown,
+        }),
+      isFamilyOpen: () => options.open ?? false,
+      activeThreadKey: null,
+      sortLive: (heads) => [...heads],
+      sortDone: (heads) => [...heads],
+    });
+  };
+
+  const release = entry(mac, "release");
+  const flakyTest = entry(windows, "flaky-test", { startedOnMacBy: "release", status: working });
+  const paste = entry(windows, "paste");
+
+  it("nests a thread another computer's agent started under its parent, in the parent's group", () => {
+    const live = sections([release, flakyTest, paste], { open: true }).live;
+    expect(live.flatMap(inboxLiveRowThreadKeys)).toEqual([
+      release.threadKey,
+      flakyTest.threadKey,
+      paste.threadKey,
+    ]);
+    expect(childThreadsSummaryText(summarizeChildThreads(live[0]!.children))).toBe(
+      "1 thread · 1 working",
+    );
+    // Grouped by computer, the family stays in its parent's group, and that
+    // group counts the child working on the other computer.
+    const groups = groupInboxLiveRows(live, (row) => row.entry.thread.environmentId);
+    expect(groups.map((group) => [group.key, group.rows.length])).toEqual([
+      [mac, 1],
+      [windows, 1],
+    ]);
+    expect(countInboxRowAttention(groups[0]!.rows)).toEqual({ needsYou: 0, working: 1 });
+    expect(countInboxRowAttention(groups[1]!.rows)).toEqual({ needsYou: 0, working: 0 });
+  });
+
+  it("lets a child stand on its own when the machine filter hides only its parent's computer", () => {
+    // Showing Windows: the child is its own row, naming the parent it left.
+    const windowsOnly = sections([release, flakyTest, paste], { machine: windows }).live;
+    expect(
+      windowsOnly.map((row) => [row.entry.threadKey, row.scopedOutParent?.threadKey ?? null]),
+    ).toEqual([
+      [flakyTest.threadKey, release.threadKey],
+      [paste.threadKey, null],
+    ]);
+    // Showing the Mac: the child travels with its parent.
+    const macOnly = sections([release, flakyTest, paste], { machine: mac, open: true }).live;
+    expect(macOnly.flatMap(inboxLiveRowThreadKeys)).toEqual([
+      release.threadKey,
+      flakyTest.threadKey,
+    ]);
+    // A scope that hides the parent for any other reason (a project) takes
+    // the child with it.
+    expect(
+      sections([release, flakyTest, paste], { hidden: [release.threadKey] }).live.map(
+        (row) => row.entry.threadKey,
+      ),
+    ).toEqual([paste.threadKey]);
+  });
+
+  it("shows children on a computer the app can't see from the parent's record, never beside the thread", () => {
+    const recorded = (threadId: string, title: string, cachedStatus: string) => ({
+      environmentId: windows,
+      label: "Windows PC",
+      threadId: ThreadId.make(threadId),
+      handle: "Codex",
+      title,
+      attachmentEpoch: 0,
+      cachedStatus,
+      updatedAt: "2026-10-21T09:05:00.000Z",
+    });
+    const start = (requestId: string, title: string, status: "accepted" | "awaiting_approval") => ({
+      requestId: ChildRequestId.make(requestId),
+      environmentId: windows,
+      label: "Windows PC",
+      title,
+      status,
+      createdAt: "2026-10-21T09:06:00.000Z",
+    });
+    const parent = entry(mac, "release", {
+      remoteChildren: [
+        recorded("flaky-test", "Fix the flaky test", "needs the user"),
+        recorded("docs", "Update the docs", "wrapped"),
+      ],
+      remoteChildStarts: [
+        start("request-changelog", "Write the changelog", "awaiting_approval"),
+        start("request-notes", "Draft the notes", "accepted"),
+      ],
+    });
+
+    // The app can't see Windows: every child comes from the parent's record.
+    const [unseen] = sections([parent], { computersWithThreads: [mac] }).live;
+    expect(
+      unseen!.remoteChildren.map((child) => [child.title, remoteChildStatusText(child)]),
+    ).toEqual([
+      ["Fix the flaky test", "needs you"],
+      ["Update the docs", "wrapped"],
+      ["Write the changelog", "Waiting for Windows PC to allow it"],
+      ["Draft the notes", "Starting on Windows PC"],
+    ]);
+    // Closed, the family still shows what waits on the user.
+    expect(unseen!.shownRemoteChildren.map((child) => child.title)).toEqual([
+      "Fix the flaky test",
+      "Write the changelog",
+    ]);
+    expect(
+      childThreadsSummaryText(
+        summarizeChildThreads([...unseen!.children, ...unseen!.remoteChildren]),
+      ),
+    ).toBe("4 threads · 2 needs you");
+    expect(countInboxRowAttention([unseen!])).toEqual({ needsYou: 2, working: 1 });
+
+    // The child's thread is in the list after all: it is the row, once.
+    const withThread = sections([parent, flakyTest], { computersWithThreads: [mac] }).live[0]!;
+    expect(withThread.children.map((child) => child.threadKey)).toEqual([flakyTest.threadKey]);
+    expect(withThread.remoteChildren.map((child) => child.threadKey)).not.toContain(
+      flakyTest.threadKey,
+    );
+
+    // The app sees Windows: its threads speak for themselves, and a start it
+    // took shows up there as its thread. A start still waiting for its Allow
+    // has no thread anywhere, so it stays.
+    const [seen] = sections([parent], { computersWithThreads: [mac, windows] }).live;
+    expect(seen!.remoteChildren.map((child) => child.title)).toEqual(["Write the changelog"]);
+  });
+
+  it("keeps a wrapped parent live while a child the app can't see still works or needs the user", () => {
+    const recorded = (cachedStatus: string) => ({
+      environmentId: windows,
+      label: "Windows PC",
+      threadId: ThreadId.make("flaky-test"),
+      handle: "Codex",
+      title: "Fix the flaky test",
+      attachmentEpoch: 0,
+      cachedStatus,
+      updatedAt: "2026-10-21T09:05:00.000Z",
+    });
+    const wrappedParent = (cachedStatus: string): Entry => ({
+      ...entry(mac, "release", { remoteChildren: [recorded(cachedStatus)] }),
+      isDone: true,
+    });
+    const busy = sections([wrappedParent("needs the user")], { computersWithThreads: [mac] });
+    expect(busy.done).toEqual([]);
+    expect(busy.live.map((row) => row.shownRemoteChildren.map((child) => child.title))).toEqual([
+      ["Fix the flaky test"],
+    ]);
+    // Once that child is quiet, the parent wraps as usual.
+    const quiet = sections([wrappedParent("idle")], { computersWithThreads: [mac] });
+    expect(quiet.live).toEqual([]);
+    expect(quiet.done).toHaveLength(1);
   });
 });
 

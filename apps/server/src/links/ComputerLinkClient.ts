@@ -8,7 +8,10 @@
  * first use, kept while anything uses it (a watch stream holds it open while
  * requests or reports are owed), and closed after two idle minutes.
  * Reconnects back off up to a minute. A connection the other computer
- * refuses because it removed the link marks the link `revoked`.
+ * refuses because it removed the link marks the link `revoked`. A link this
+ * computer is unlinking (`unlinking`) is used for nothing but telling the
+ * other computer (`unlinkPeer`); that computer refusing it finishes the
+ * unlink.
  */
 import {
   type ComputerLinkConnection,
@@ -17,6 +20,7 @@ import {
   type PeerDescriptor,
   PeerRpcGroup,
   type PeerRpcError,
+  type PeerUnlinkInput,
   RELAY_CLOSE_CODE_ACCESS_REMOVED,
   RELAY_TOKEN_PROTOCOL_PREFIX,
   RELAY_WEBSOCKET_PROTOCOL,
@@ -24,6 +28,7 @@ import {
 import { relayDeviceSocketUrl } from "@threadlines/shared/relayJoin";
 import { SECURE_OPEN_TIMEOUT_MS, type SecureRoute } from "@threadlines/shared/relaySecureSocket";
 import type { StoredKeyPair } from "@threadlines/shared/relaySecure";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
@@ -44,7 +49,12 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
-import { ComputerLinkRepository, type ComputerLinkRow } from "./ComputerLinkRepository.ts";
+import {
+  ComputerLinkRepository,
+  type ComputerLinkRepositoryError,
+  type ComputerLinkRow,
+  isUsableLink,
+} from "./ComputerLinkRepository.ts";
 import { PeerSocket } from "./peerSocket.ts";
 
 type PeerRpcs = typeof PeerRpcGroup extends RpcGroup.RpcGroup<infer Rpcs> ? Rpcs : never;
@@ -57,6 +67,8 @@ export const LINK_IDLE_CLOSE_MS = 2 * 60_000;
 export const LINK_DESCRIBE_TTL_MS = 5 * 60_000;
 /** How often a link that keeps failing asks its direct routes whether it was removed. */
 export const LINK_REVOKED_PROBE_EVERY_MS = 30_000;
+/** How long telling the other computer about an unlink waits before it is left for later. */
+export const LINK_UNLINK_WAIT_MS = 5_000;
 const IDLE_SWEEP_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -111,11 +123,31 @@ export interface ComputerLinkClientShape {
   ) => Effect.Effect<PeerDescriptor, PeerRpcError | ComputerLinkUnavailableError>;
   /** The last description this server got, however old; null if none. */
   readonly cachedDescribe: (environmentId: EnvironmentId) => PeerDescriptor | null;
+  /**
+   * peer.describe over that very link, not whichever link to its computer is
+   * in use: how to ask whether the other computer still takes one link.
+   * Fails `revoked` when it is refused (or already marked so here).
+   */
+  readonly describeOver: (
+    linkId: ComputerLinkId,
+  ) => Effect.Effect<PeerDescriptor, PeerRpcError | ComputerLinkUnavailableError>;
   /** Live connection state of every link; current value first. */
   readonly statuses: Stream.Stream<ReadonlyMap<string, ComputerLinkLiveStatus>>;
   readonly currentStatuses: Effect.Effect<ReadonlyMap<string, ComputerLinkLiveStatus>>;
   /** Closes and forgets a link's connection (it was removed or revoked). */
   readonly disconnect: (linkId: ComputerLinkId) => Effect.Effect<void>;
+  /**
+   * Tells the other computer this one removed the link (`peer.unlink`), over
+   * that very link whatever its state here, waiting LINK_UNLINK_WAIT_MS at
+   * most; its connection is closed afterwards. Fails `revoked` when the link
+   * is already gone there (or here).
+   */
+  readonly unlinkPeer: (
+    linkId: ComputerLinkId,
+    input: PeerUnlinkInput,
+  ) => Effect.Effect<void, PeerRpcError | ComputerLinkUnavailableError>;
+  /** Closes a link's connection and deletes it with its keys. */
+  readonly forget: (linkId: ComputerLinkId) => Effect.Effect<void, ComputerLinkRepositoryError>;
 }
 
 export class ComputerLinkClient extends Context.Service<
@@ -191,7 +223,15 @@ const make = Effect.gen(function* () {
                   true,
                 ),
               )
-            : Effect.succeed(row.value),
+            : row.value.state === "unlinking"
+              ? Effect.fail(
+                  unavailable(
+                    environmentId,
+                    `This computer unlinked ${row.value.remoteLabel}.`,
+                    true,
+                  ),
+                )
+              : Effect.succeed(row.value),
       ),
     );
 
@@ -205,7 +245,11 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => Option.none<ComputerLinkSecrets>()),
     );
 
-  /** The other computer removed the link: no more tries until it is linked again. */
+  /**
+   * The other computer removed the link: no more tries until it is linked
+   * again. One this computer was unlinking is then unlinked on both sides,
+   * so it is forgotten.
+   */
   const markRevoked = (row: ComputerLinkRow) =>
     Effect.gen(function* () {
       yield* repo
@@ -213,9 +257,17 @@ const make = Effect.gen(function* () {
           linkId: row.linkId,
           state: "revoked",
           lastError: `${row.remoteLabel} removed this computer's link.`,
+          onlyFrom: ["active", "failed"],
         })
         .pipe(Effect.ignore);
+      const current = yield* repo.get(row.linkId).pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isSome(current) && current.value.state === "unlinking") {
+        yield* forget(row.linkId).pipe(Effect.ignore);
+        yield* Effect.logInfo("links.unlinked", { linkId: row.linkId });
+        return;
+      }
       yield* closeConnection(row.linkId);
+      if (Option.isNone(current)) return;
       yield* setStatus(row, { connection: "offline", route: null });
       yield* Effect.logInfo("links.revoked", { linkId: row.linkId });
     });
@@ -316,10 +368,14 @@ const make = Effect.gen(function* () {
                       yield* repo
                         .update({
                           linkId: row.linkId,
-                          state: "active",
                           lastConnectedAt: yield* nowIso,
                           lastError: null,
                         })
+                        .pipe(Effect.ignore);
+                      // A failed link works again; one being unlinked here,
+                      // or removed there, never comes back by connecting.
+                      yield* repo
+                        .update({ linkId: row.linkId, state: "active", onlyFrom: ["failed"] })
                         .pipe(Effect.ignore);
                     }),
                   );
@@ -379,9 +435,9 @@ const make = Effect.gen(function* () {
       yield* Scope.close(connection.scope, Exit.void);
     });
 
-  const connectionFor = (environmentId: EnvironmentId) =>
+  /** The link's open connection, or a new one. */
+  const connectionForRow = (row: ComputerLinkRow) =>
     Effect.gen(function* () {
-      const row = yield* linkFor(environmentId);
       const existing = connections.get(row.linkId);
       if (existing !== undefined) return existing;
       // One connection per link, even when two callers race to open it.
@@ -398,9 +454,12 @@ const make = Effect.gen(function* () {
         catch: (cause) =>
           cause instanceof ComputerLinkUnavailableError
             ? cause
-            : unavailable(environmentId, `Couldn't connect to ${row.remoteLabel}.`),
+            : unavailable(row.remoteEnvironmentId, `Couldn't connect to ${row.remoteLabel}.`),
       });
     });
+
+  const connectionFor = (environmentId: EnvironmentId) =>
+    Effect.flatMap(linkFor(environmentId), connectionForRow);
 
   const toUnavailable =
     (environmentId: string) =>
@@ -409,21 +468,24 @@ const make = Effect.gen(function* () {
         ? unavailable(environmentId, "The other computer can't be reached right now.")
         : (error as Exclude<E, RpcClientError.RpcClientError>);
 
-  const withPeer = <A>(
-    environmentId: EnvironmentId,
+  /** One call over a connection, which stays open while it runs. */
+  const callOn = <A>(
+    connection: Connection,
     use: (client: PeerClient) => Effect.Effect<A, PeerRpcError | RpcClientError.RpcClientError>,
+    timeoutMs: number,
   ): Effect.Effect<A, PeerRpcError | ComputerLinkUnavailableError> =>
-    Effect.gen(function* () {
-      const connection = yield* connectionFor(environmentId);
+    Effect.suspend(() => {
       connection.inUse += 1;
       connection.lastUsedAt = Date.now();
-      return yield* use(connection.client).pipe(
+      return use(connection.client).pipe(
         Effect.timeoutOrElse({
-          duration: Duration.millis(REQUEST_TIMEOUT_MS),
+          duration: Duration.millis(timeoutMs),
           orElse: () =>
-            Effect.fail(unavailable(environmentId, "The other computer didn't answer in time.")),
+            Effect.fail(
+              unavailable(connection.environmentId, "The other computer didn't answer in time."),
+            ),
         }),
-        Effect.mapError(toUnavailable(environmentId)),
+        Effect.mapError(toUnavailable(connection.environmentId)),
         Effect.ensuring(
           Effect.sync(() => {
             connection.inUse -= 1;
@@ -432,6 +494,14 @@ const make = Effect.gen(function* () {
         ),
       );
     });
+
+  const withPeer = <A>(
+    environmentId: EnvironmentId,
+    use: (client: PeerClient) => Effect.Effect<A, PeerRpcError | RpcClientError.RpcClientError>,
+  ): Effect.Effect<A, PeerRpcError | ComputerLinkUnavailableError> =>
+    Effect.flatMap(connectionFor(environmentId), (connection) =>
+      callOn(connection, use, REQUEST_TIMEOUT_MS),
+    );
 
   const peerStream = <A>(
     environmentId: EnvironmentId,
@@ -482,6 +552,34 @@ const make = Effect.gen(function* () {
   const cachedDescribe: ComputerLinkClientShape["cachedDescribe"] = (environmentId) =>
     describeCache.get(environmentId)?.value ?? null;
 
+  const describeOver: ComputerLinkClientShape["describeOver"] = (linkId) =>
+    Effect.gen(function* () {
+      const found = yield* repo.get(linkId).pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isNone(found) || found.value.state === "revoked") {
+        return yield* unavailable(
+          Option.match(found, { onNone: () => "", onSome: (row) => row.remoteEnvironmentId }),
+          "That link is already gone.",
+          true,
+        );
+      }
+      const row = found.value;
+      if (row.state === "unlinking") {
+        return yield* unavailable(
+          row.remoteEnvironmentId,
+          `This computer unlinked ${row.remoteLabel}.`,
+        );
+      }
+      const connection = yield* connectionForRow(row);
+      return yield* callOn(
+        connection,
+        (peer) =>
+          peer["peer.describe"]({
+            caller: { environmentId: descriptor.environmentId, label: descriptor.label },
+          }),
+        REQUEST_TIMEOUT_MS,
+      );
+    });
+
   const disconnect: ComputerLinkClientShape["disconnect"] = (linkId) =>
     Effect.gen(function* () {
       const connection = connections.get(linkId);
@@ -495,6 +593,51 @@ const make = Effect.gen(function* () {
       });
     });
 
+  const forget: ComputerLinkClientShape["forget"] = (linkId) =>
+    Effect.gen(function* () {
+      yield* disconnect(linkId);
+      yield* repo.remove(linkId);
+      yield* secrets.remove(computerLinkSecretName(linkId)).pipe(Effect.ignore);
+    });
+
+  const unlinkPeer: ComputerLinkClientShape["unlinkPeer"] = (linkId, input) =>
+    Effect.gen(function* () {
+      const found = yield* repo.get(linkId).pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isNone(found) || found.value.state === "revoked") {
+        return yield* unavailable(
+          Option.match(found, { onNone: () => "", onSome: (row) => row.remoteEnvironmentId }),
+          "That link is already gone.",
+          true,
+        );
+      }
+      const row = found.value;
+      const attempt = yield* connectionForRow(row).pipe(
+        Effect.flatMap((connection) =>
+          callOn(connection, (peer) => peer["peer.unlink"](input), LINK_UNLINK_WAIT_MS),
+        ),
+        Effect.exit,
+        Effect.ensuring(closeConnection(row.linkId)),
+      );
+      if (Exit.isSuccess(attempt)) return;
+      // The other computer may have refused the link meanwhile (its relay
+      // close code, or its direct routes answering "gone"): it's gone there.
+      const now = yield* repo.get(linkId).pipe(Effect.orElseSucceed(() => found));
+      if (Option.isNone(now) || now.value.state === "revoked") {
+        return yield* unavailable(
+          row.remoteEnvironmentId,
+          `${row.remoteLabel} already removed this computer's link.`,
+          true,
+        );
+      }
+      const failure = Cause.findErrorOption(attempt.cause);
+      if (Option.isSome(failure)) return yield* failure.value;
+      // Cut off: its connection closed under it.
+      return yield* unavailable(
+        row.remoteEnvironmentId,
+        `Couldn't reach ${row.remoteLabel} to unlink it.`,
+      );
+    });
+
   // Idle connections close; one in use (a call, a watch) never does.
   yield* Effect.gen(function* () {
     const now = Date.now();
@@ -504,7 +647,7 @@ const make = Effect.gen(function* () {
         const row = yield* repo
           .get(connection.linkId)
           .pipe(Effect.orElseSucceed(() => Option.none()));
-        if (Option.isSome(row) && row.value.state !== "revoked") {
+        if (Option.isSome(row) && isUsableLink(row.value)) {
           yield* setStatus(row.value, { connection: "idle", route: null });
         }
       }
@@ -524,9 +667,12 @@ const make = Effect.gen(function* () {
     peerStream,
     describe,
     cachedDescribe,
+    describeOver,
     statuses: SubscriptionRef.changes(statusRef),
     currentStatuses: SubscriptionRef.get(statusRef),
     disconnect,
+    unlinkPeer,
+    forget,
   });
 });
 

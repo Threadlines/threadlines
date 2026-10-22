@@ -28,6 +28,7 @@ import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateI
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { QuitConfirmationDialog } from "../components/desktop/QuitConfirmationDialog";
 import { ThreadDeleteDialogHost } from "../components/ThreadDeleteDialog";
+import { ConnectComputerDialogHost } from "../components/settings/connections/JoinComputerDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { SourceControlToolUpdateLaunchNotification } from "../components/SourceControlToolUpdateLaunchNotification";
 import { SavedEnvironmentConnectionOverlay } from "../components/SavedEnvironmentConnectionOverlay";
@@ -93,6 +94,7 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
+import { startComputerLinksSync } from "../environments/links/computerLinks";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
   ensurePrimaryEnvironmentReady,
@@ -208,6 +210,7 @@ function RootRouteView() {
         <QuitConfirmationDialog />
         <DesktopUpdateInstallDialog />
         <ThreadDeleteDialogHost />
+        <ConnectComputerDialogHost />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
@@ -639,12 +642,16 @@ function EnvironmentConnectionManagerBootstrap() {
     });
     // Joins waiting for a host's Allow survive restarts; pick them back up.
     const stopRelayJoins = startRelayJoinWatchers();
+    // Each connected computer's links, for Fleet, the inbox's link requests
+    // and Settings' linked computers.
+    const stopComputerLinks = startComputerLinksSync();
     // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
     // rather than by the sidebar, which on a phone unmounts the moment a tap
     // closes it, mid-prewarm.
     const unbindRowIntent = bindThreadRowIntentPrewarm(document);
     return () => {
       unbindRowIntent();
+      stopComputerLinks();
       stopRelayJoins();
       stopConnections();
     };

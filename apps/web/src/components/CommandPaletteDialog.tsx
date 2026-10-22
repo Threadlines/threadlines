@@ -35,6 +35,7 @@ import {
   FolderPlusIcon,
   GitPullRequestIcon,
   HomeIcon,
+  LaptopIcon,
   LinkIcon,
   MessageSquareIcon,
   MessagesSquareIcon,
@@ -149,6 +150,7 @@ import {
 import { isHostedStaticApp } from "../hostedPairing";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
+import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
@@ -1654,6 +1656,36 @@ export function OpenCommandPaletteDialog() {
         await navigate({ to: "/scheduled", search: { view: "new" } });
       },
     });
+  }
+  actionItems.push({
+    kind: "action",
+    value: "action:connect-computer",
+    searchTerms: ["connect", "computer", "add computer", "pair", "code", "ssh", "link computers"],
+    title: "Connect to a computer",
+    description: "Use projects from another computer that runs Threadlines",
+    icon: <LaptopIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      openConnectComputerDialog();
+    },
+  });
+
+  // Each computer's Fleet page, once there is more than one to choose from.
+  if (addProjectEnvironmentOptions.length > 1) {
+    for (const option of addProjectEnvironmentOptions) {
+      actionItems.push({
+        kind: "action",
+        value: `action:fleet-computer:${option.environmentId}`,
+        searchTerms: ["fleet", "computer", "link", "unlink", option.label],
+        title: `Open ${option.label} in Fleet`,
+        icon: <WaypointsIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/fleet/$environmentId",
+            params: { environmentId: option.environmentId },
+          });
+        },
+      });
+    }
   }
 
   // The thread list beside the rail; a phone shows it as a sheet instead.

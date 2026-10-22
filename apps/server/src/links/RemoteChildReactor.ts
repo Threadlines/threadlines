@@ -65,7 +65,7 @@ import { childReportMessageId } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { ComputerLinkClient, type ComputerLinkUnavailableError } from "./ComputerLinkClient.ts";
-import { ComputerLinkRepository } from "./ComputerLinkRepository.ts";
+import { ComputerLinkRepository, isUsableLink } from "./ComputerLinkRepository.ts";
 
 /** How often owed work is retried while a computer can't be reached. */
 const RETRY_EVERY = Duration.seconds(15);
@@ -946,7 +946,7 @@ const make = Effect.gen(function* () {
       // Every linked computer is watched once, to drain what it held for us.
       const all = yield* links.list.pipe(Effect.orElseSucceed(() => []));
       for (const link of all) {
-        if (link.state === "revoked") continue;
+        if (!isUsableLink(link)) continue;
         yield* pump(link.remoteEnvironmentId).pipe(Effect.forkDetach);
       }
       for (const environmentId of parentsByEnvironment.keys()) {
@@ -961,7 +961,7 @@ const make = Effect.gen(function* () {
         if (!loaded) yield* loadOwing;
         const environments = new Set([...parentsByEnvironment.keys(), ...pendingAcks.keys()]);
         for (const link of yield* links.list.pipe(Effect.orElseSucceed(() => []))) {
-          if (link.state !== "revoked" && !drained.has(link.remoteEnvironmentId)) {
+          if (isUsableLink(link) && !drained.has(link.remoteEnvironmentId)) {
             environments.add(link.remoteEnvironmentId);
           }
         }

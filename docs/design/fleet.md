@@ -97,6 +97,131 @@ These override anything below that disagrees.
 14. **The resize budget includes the rail.** The guard at AppSidebarLayout.tsx:123 subtracts the rail width as well, so the main pane keeps its 40 rem minimum.
 15. **Cross-computer lineage moves to PR 5.** PR 2 does grouping and the machine filter over today's local lineage, and makes keys environment-scoped where the data already exists. Remote parents and children in the sidebar are PR 5, after PR 1 ships the fields.
 
+## Rev 4 changes (Oct 21): Fleet is where your computers live
+
+Will approved this on Oct 21 from a mockup in chat. Sol reviewed the first draft and found 10 gaps. All 10 were checked against the code and are fixed below. Rev 4 overrides anything below that disagrees, and it replaces Part 4's "Links section".
+
+Fleet and Settings › Connections each get one job:
+
+- **Fleet is your computers:** what they're doing, adding and removing them, and whether agents may start work across them.
+- **Settings › Connections is this computer's door:** who can get in (phones, browsers, linked computers) and how (network options).
+
+Users learn one idea, "my computers", instead of three: a computer this app uses, a device that uses this computer, and a link.
+
+### R4.1 The list column
+
+The list is the computer list, and each row opens that computer's page. "All computers" stays the graph page, and clicking a computer node in the graph also opens its page (instead of filtering the list). Back/forward and deep links work.
+
+Who's in the list:
+
+- this computer, when the app has a primary server (desktop, or the browser served by a server);
+- every saved computer;
+- every linked computer this app hasn't saved, from each connected server's links snapshot (outbound and inbound).
+
+Keys and merging:
+
+- Entries are keyed by environment id.
+- An inbound link whose `environmentId` is still null (the peer hasn't introduced itself yet) gets a temporary entry keyed `device:<deviceId>`, labelled "<label> · waiting to hear from it". It merges into the environment entry once the id arrives.
+- A saved computer and a link to the same environment id are one entry. The label is the saved one when the computer is saved, else the link's.
+
+Rows and adding:
+
+- A computer being added (pairing in progress) shows as a row: "Waiting for approval · <comparison number>", with Cancel.
+- "+" in the list header opens the existing "Connect to a computer" dialog.
+
+Routes: `/fleet/$environmentId`, plus `/fleet/device/$deviceId` for temporary entries.
+
+### R4.2 A computer's page
+
+**Header.** The page title is the computer's name. A mono line gives the connection state and route ("On your network", "Through the relay", "Offline · 2h ago") and the providers with live counts.
+
+**Connection**, a quiet group. Every piece of today's saved-computer row in Settings lives here. Nothing is dropped:
+
+- status, route, last connected, the SSH target when there is one, and the last connection error;
+- the version-mismatch warning (ConnectionsSettings.tsx:180, 1170);
+- Disconnect and Stop trying, which keep the computer saved (ConnectionsSettings.tsx:1194);
+- Reconnect;
+- after access was revoked, "Connect again with a new code", because an ordinary reconnect can't fix that (1119, 1189);
+- the pending pairing state with its comparison number and Cancel (1132, 1179).
+
+There is no Rename today, and Rev 4 doesn't add one.
+
+**Works with other computers**, a quiet group.
+
+- **Pairs.** There is one row per other computer in the fleet, named on both sides. There is no "here" or "this Mac" wording, so the page reads the same from desktop, the hosted web app and a phone, where the device in hand isn't a computer with a server.
+- **Directions.** A row's direction lines read "Mac's agents can start work on Windows PC" and "Windows PC's agents can start work on Mac". Each line has the access dropdown (Allowed / Ask first / Off) and a most-access dropdown (the runtime mode cap). Each line reads and writes the receiving computer's inbound link through the app's connection to that computer (`links.setAccess`; a `client` session may do this, Part 1).
+- **One direction linked:** that line shows its settings, and the other line offers Link for just that direction.
+- **Neither direction linked:** one Link button creates both. If one fails, that line says why and offers Retry.
+- **Creating a link** needs both computers connected to this app and both reporting `computerLinks`. Otherwise Link is disabled with the reason ("Connect to Mac mini first", "Mac mini needs a newer Threadlines").
+- **Existing links are always manageable** on the side that holds them, whatever the remote reports. Capability gates only creation.
+- **The owner of a setting is unreachable:** its line shows the last known value, disabled, with "Windows PC is offline".
+- **A failed or revoked link** says what happened in plain words (from `lastError`) and offers Link again.
+- **Pending requests** from that computer sit at the top of its pair row as approval rows (rows, not cards): "Windows PC wants to start a thread: <title>". Each shows the project, the parent thread and a one-line prompt preview, with Allow / Deny (`links.respondRequest`). The same requests also show in the sidebar inbox (Part 2, "Ask first") and at the top of the All computers page.
+
+**Unlink** removes both directions and stops the work the link started.
+
+- **Confirm.** The dialog lists what will stop: "2 threads Mac started on Windows PC are still running. Unlinking stops them." Unlink then cancels pending requests and stops running link-started threads on both sides. The server's inbound removal gains an explicit `stopRunning` that passes `stopThread: true` to `dropLink` (today it passes false: ComputerLinks.ts:355, LinkRequests.ts:1045, 1225).
+- **Each direction reports its own result.** Today `links.remove` removes one direction per call, and the outbound path ignores a failed remote `peer.unlink` after 5 s, then deletes its record (ComputerLinks.ts:373). Rev 4:
+  - Unlink calls each owning computer directly through the app.
+  - When one side is unreachable, the dialog says so up front and offers "Unlink on Mac now. Windows PC finishes when it's back."
+  - The reachable side records a pending unlink, and the other side applies it on its next contact. The peer refuses a revoked link's requests, so nothing new starts meanwhile.
+  - The outbound path never reports success for the remote half it couldn't confirm.
+- **As built.**
+  - An offline computer hears the unlink over the other computer's link to it. When there is none (only its own agents worked on the other computer), the dialog promises only what happens: "Mac mini is offline. It can't start work on Mac after this, but it still lists the link until you unlink again while it's online."
+  - Stops are owed until done. The receiving computer turns the link off and records the pass it owes (`link_drains_owed`) in one write, drains, ends the session, and drains again. Each thread a pass finds running a turn asked for before the link went off owes its stop (`link_thread_stops_owed`, with that turn) until it is seen stopped or on a later turn (its user's); the stop is asked for again every minute. An unlink cut off part way (a failed step, a restart) is finished on its own a minute later, and its link can't be turned back on meanwhile. A `peer.unlink` runs detached from its call, so ending the session (which closes the connection the call came over) can't cut it off.
+  - A start or send that lands while its link is being removed ends at once: the link is read again right after the request is recorded. The send gate also refuses a request whose link is off or gone.
+  - The reverse cleanup asks about each link back on its own and drops only the ones the other computer refuses.
+  - One live link per direction. A computer makes and unlinks its links to another computer one at a time (making one gives up after two minutes), and finishes an earlier unlink of it before claiming a new invite. The receiving computer ends that computer's older links once it uses the newest (`peer.describe` or a start over a pinned link), and a newer one never used ten minutes after it was made. Outbound links report `remoteDeviceId`, so Fleet edits the other half of the link in use, and counts an unpinned half as a computer's when that computer's own link reports it.
+
+**Working now.** For a saved, connected computer, its threads in the same rows as the All computers list. Cross-computer children read "Started by <title> on <computer>".
+
+A linked computer this app hasn't saved has no thread data. Its page shows "Connect to Windows PC to see its work" with Connect, and never shows idle or zero counts. Its link state is the server-to-server link, which is separate from this app's connection, and the page says which is which.
+
+**This app**, a quiet group.
+
+- "Remove from this app" is today's forget (service.ts:2039). It only forgets this app's saved connection. It never unlinks.
+- When a link exists, the confirm adds one plain line: "Mac and Windows PC stay linked. Unlink them first to stop agents working across them."
+- Any remote calls a removal needs happen before the credentials are forgotten.
+
+**This computer's own page** has no Remove. It shows its providers, its "Works with" rows, and "Devices that can use this Mac: <n> · Open Connections settings". Remote pages don't link to settings, because Settings only covers this computer.
+
+### R4.3 Adding a computer ends with linking
+
+After a successful connection, the "Connect to a computer" dialog asks "Let agents on these computers start work on each other?" with Link (Ask first) and Not now. Linking needs two computers with servers, so the question works like this:
+
+- On desktop, or in a browser served by a server, the pair is that server and the new computer.
+- On the hosted web app or a phone, it asks only when the app already has another saved computer, with a picker ("Link with: Mac ▾").
+- It asks only when both computers report `computerLinks`.
+
+The same dialog opens from Fleet's "+", the one-computer Fleet state, the command palette and Settings.
+
+### R4.4 Settings › Connections
+
+- The section is renamed "Devices that can use this computer".
+- **A stable join for computer links.** `InboundComputerLink` gains `sessionId` (the server row already has it, ComputerLinks.ts:357). Settings joins an auth session (`role: peer`) to its inbound link by session id, never by label. Joined rows read "Linked computer · its agents: <access>", keep Remove access (removes that inbound link and stops its link-started work, as Unlink does), and add "Manage in Fleet", which opens the entry for its environment id or device id. A peer session with no matching link reads "Linked computer" with Remove access only.
+- **"Computers you use from here"** shrinks to one row: "<n> computers. See what they're doing and manage them in Fleet." It has Open Fleet and Connect to a computer.
+
+### R4.5 Phones and tablets
+
+They stay managed in Settings. Fleet's graph still draws them around this computer, and clicking one opens Settings › Connections.
+
+### R4.6 Look
+
+Groups and approval rows follow the design language: quiet groups, rows, solid controls in content, and no raised cards.
+
+### R4.7 Tests
+
+- The list: unsaved linked computers, temporary device entries merging when the id arrives, and a saved-and-linked computer shown once.
+- Per-direction rows read and write the receiving side's inbound link.
+- One direction linked offers Link for the other.
+- An offline owner disables its line. An existing link stays manageable when the remote's capabilities are unknown.
+- Allow and Deny work from the computer page.
+- Unlink stops link-started threads. Unlink with one side offline reports that side as pending and finishes on reconnect.
+- Remove from this app never unlinks.
+- The Settings join by session id, including two computers with the same name.
+- One test walks every connection action from the old saved-computer rows on the new page.
+- The hosted web app's add flow with and without a second saved computer.
+
 ## Part 1: Computer links
 
 ### Model
@@ -114,7 +239,7 @@ We reuse relay-v2 device pairing (`apps/server/src/relay/RelayHost.ts`) instead 
 
 The client is connected to both A and B.
 
-1. Client → B: `links.createInvite`. B mints a `computer-link` invite (single use, 10 min TTL, auto-approve claim) and returns `{ hostId, relayOrigin, inviteId, inviteSecret, hostPublicKey, directRoutes, environmentId, label, expiresAt }`. B registers with the relay first if it never has.
+1. Client → B: `links.createInvite({ joinerEnvironmentId: A })`. B mints a `computer-link` invite (single use, 10 min TTL, auto-approve claim) for A only and returns `{ hostId, relayOrigin, inviteId, inviteSecret, hostPublicKey, directRoutes, environmentId, label, expiresAt }`. B registers with the relay first if it never has.
 2. Client → A: `links.accept(invite)`. A's server claims it as a device (Node joiner, below). It stores its device keys in `ServerSecretStore` under `computer-link-<linkId>`, inserts a `computer_links` row, and connects once to confirm.
 3. The client repeats with roles swapped for B → A. If one direction fails, the UI says which and offers Retry.
 
@@ -128,6 +253,7 @@ The client is connected to both A and B.
 
 - Today the in-memory `localInvites` map (RelayHost.ts:243-257) holds the invite, and recovery calls `finishApproval` from a device row whose `kind` came from the joiner (RelayHost.ts:785-797, 935).
 - New: the invite record is persisted, with `purpose: device | computer-link` set by the host. `approveVerified` copies `grant: client | peer` from the verified invite into the device row in the same insert, before any session exists. `finishApproval` and restart recovery issue the session role from `row.grant` only.
+- The invite also pins the joining computer's environment id, as the client that asked for it knows it. `approveVerified` writes it into the device row as `link_environment_id` with `link_environment_pinned = 1`. The link refuses a `peer.describe` or `peer.request.start` that names a different computer, and its id never changes. An unpinned row (from an invite that named no computer) keeps the first id the computer gives, and clients show it as unconfirmed: never merged with a saved computer of that id.
 - Test: crash between inserting the device row and issuing its session, then restart → the session has the invite's role.
 
 ### Server pieces (A side, outbound)
@@ -414,14 +540,14 @@ Schedules are configuration, not thread history, so they live in their own table
 
 ## Pull requests, waves and file ownership
 
-| PR  | Branch                 | Contents                                                                                                                                                                                                                                                                       | Needs merged first                                 |
-| --- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
-| 1   | `feat/computer-links`  | Parts 1-2: shared secure socket and joiner, persisted invite purpose, the `peer` role and endpoint, `computer_links`, `ComputerLinkClient`, `PeerRpcGroup` (minus move), links RPC, capability flags, remote requests on both sides, the B ledger, tool changes and the fence. | none                                               |
-| 2   | `feat/fleet-rail`      | Parts 4-5 minus the Links section and minus cross-computer lineage. The graph uses client connections and today's local lineage only.                                                                                                                                          | none                                               |
-| 3   | `feat/scheduled-tasks` | Part 6, plus the Windows/Linux "keep running in the background" setting.                                                                                                                                                                                                       | 1, 2                                               |
-| 5   | `feat/fleet-links-ui`  | The Links section, incoming-request cards and inbox rows, link lines between computers, cross-computer lineage in the sidebar (remote parents and children, the family line, machine-filter orphans, grouping placement) and cross-computer work lines in the graph.           | 1, 2                                               |
-| 4   | `feat/move-thread`     | Part 3.                                                                                                                                                                                                                                                                        | 1, and 3 if both touch `ProviderCommandReactor.ts` |
-| 6   | `fix/startup-label`    | Part 7.                                                                                                                                                                                                                                                                        | 4                                                  |
+| PR  | Branch                 | Contents                                                                                                                                                                                                                                                                                                                                              | Needs merged first                                 |
+| --- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| 1   | `feat/computer-links`  | Parts 1-2: shared secure socket and joiner, persisted invite purpose, the `peer` role and endpoint, `computer_links`, `ComputerLinkClient`, `PeerRpcGroup` (minus move), links RPC, capability flags, remote requests on both sides, the B ledger, tool changes and the fence.                                                                        | none                                               |
+| 2   | `feat/fleet-rail`      | Parts 4-5 minus the Links section and minus cross-computer lineage. The graph uses client connections and today's local lineage only.                                                                                                                                                                                                                 | none                                               |
+| 3   | `feat/scheduled-tasks` | Part 6, plus the Windows/Linux "keep running in the background" setting.                                                                                                                                                                                                                                                                              | 1, 2                                               |
+| 5   | `feat/fleet-links-ui`  | Rev 4: computer pages, adding and linking in one step, and the trimmed Settings › Connections. Also incoming-request cards and inbox rows, link lines between computers, cross-computer lineage in the sidebar (remote parents and children, the family line, machine-filter orphans, grouping placement) and cross-computer work lines in the graph. | 1, 2                                               |
+| 4   | `feat/move-thread`     | Part 3.                                                                                                                                                                                                                                                                                                                                               | 1, and 3 if both touch `ProviderCommandReactor.ts` |
+| 6   | `fix/startup-label`    | Part 7.                                                                                                                                                                                                                                                                                                                                               | 4                                                  |
 
 - **Wave 1:** PRs 1 and 2 in parallel. PR 1 owns `apps/server`, `packages/contracts` (except `settings.ts` and `keybindings.ts`), `packages/shared/src/relay*` and the new secure socket, plus `apps/web/src/rpc/secureRelaySocket.ts` and `relayJoins.ts`. PR 2 owns `apps/web/src/components/**` and routes, `packages/contracts/src/settings.ts` and `keybindings.ts`, `packages/shared/src/keybindings.ts`, `apps/desktop` menus, and `docs/design/design-language.md`.
 - **Wave 2:** PRs 3 and 5. PR 3 owns its new server files, `ProviderCommandReactor.ts` (tool attachment) and `McpRoomServer.ts`, the Scheduled page, and its palette, rail and settings entries. PR 5 owns `apps/web/src/components/fleet/**` and the sidebar family and inbox files. Where both need the same file, the PR that is second edits it after the first merges.

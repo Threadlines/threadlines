@@ -50,7 +50,19 @@ import {
   collectSourceControlToolUpdateNotices,
   sourceControlToolUpdateNoticeSetKey,
 } from "../SourceControlToolUpdateLaunchNotification.logic";
+import {
+  __resetComputerLinksForTests,
+  __setComputerLinksClientForTests,
+  type ComputerLinksClient,
+  useComputerLinksStore,
+} from "../../environments/links/computerLinks";
+import { ComputerConnectionGroup } from "../fleet/ComputerConnectionGroup";
 import { ConnectionsSettings } from "./ConnectionsSettings";
+import {
+  closeConnectComputerDialog,
+  ConnectComputerDialogHost,
+  openConnectComputerDialog,
+} from "./connections/JoinComputerDialog";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
 import { SourceControlSettingsPanel } from "./SourceControlSettings";
@@ -334,16 +346,25 @@ const providerAuthHarness = vi.hoisted(() => {
 
 const mockConnectDesktopSshEnvironment = vi.hoisted(() => vi.fn());
 
-/** The saved computers Settings lists, and what it does when told to stop. */
+/**
+ * The saved computers this app uses, and what their connection actions do
+ * (Fleet's Connection group, the Connect dialog's other ways).
+ */
 const savedComputersHarness = vi.hoisted(() => {
   const harness = {
     registryById: {} as Record<string, unknown>,
     runtimeById: {} as Record<string, unknown>,
-    disconnectByUser: vi.fn(async () => undefined),
+    disconnectByUser: vi.fn(async (_environmentId: string) => undefined),
+    reconnect: vi.fn(async (_environmentId: string) => undefined),
+    cancelPending: vi.fn(async (_environmentId: string) => undefined),
+    addSavedEnvironment: vi.fn(),
     reset: () => {
       harness.registryById = {};
       harness.runtimeById = {};
       harness.disconnectByUser.mockClear();
+      harness.reconnect.mockClear();
+      harness.cancelPending.mockClear();
+      harness.addSavedEnvironment.mockReset();
     },
   };
   return harness;
@@ -423,8 +444,8 @@ vi.mock("../../environments/runtime", () => {
     resolveEnvironmentHttpUrl: (_environmentId: unknown, path: string) =>
       new URL(path, "http://localhost:3000").toString(),
     waitForSavedEnvironmentRegistryHydration: async () => undefined,
-    addSavedEnvironment: vi.fn(),
-    cancelPendingRelayJoin: vi.fn(),
+    addSavedEnvironment: savedComputersHarness.addSavedEnvironment,
+    cancelPendingRelayJoin: savedComputersHarness.cancelPending,
     canJoinWithCode: () => true,
     connectDesktopSshEnvironment: mockConnectDesktopSshEnvironment,
     disconnectSavedEnvironment: vi.fn(),
@@ -433,7 +454,9 @@ vi.mock("../../environments/runtime", () => {
     getPrimaryEnvironmentConnection: () => primaryConnection,
     readBackendEnvironmentConnection: () => primaryConnection,
     readEnvironmentConnection: () => primaryConnection,
-    reconnectSavedEnvironment: vi.fn(),
+    readEnvironmentDescriptor: () => null,
+    listEnvironmentConnections: () => [primaryConnection],
+    reconnectSavedEnvironment: savedComputersHarness.reconnect,
     removeSavedEnvironment: vi.fn(),
     RelayJoinError: class RelayJoinError extends Error {
       readonly code: string | null;
@@ -787,7 +810,7 @@ function makePairingLink(input: {
 function makeClientSession(input: {
   readonly sessionId: string;
   readonly subject: string;
-  readonly role: "owner" | "client";
+  readonly role: "owner" | "client" | "peer";
   readonly method: AuthAccessSnapshot["clientSessions"][number]["method"];
   readonly client?: {
     readonly label?: string;
@@ -1018,6 +1041,8 @@ describe("GeneralSettingsPanel observability", () => {
     relayAccessHarness.reset();
     mockConnectDesktopSshEnvironment.mockReset();
     savedComputersHarness.reset();
+    __resetComputerLinksForTests();
+    closeConnectComputerDialog();
   });
 
   afterEach(async () => {
@@ -1571,7 +1596,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await expect
-      .element(page.getByText("Devices using this computer", { exact: true }))
+      .element(page.getByText("Devices that can use this computer", { exact: true }))
       .toBeInTheDocument();
     // The desktop window's own sign-in is this computer, not a device using it.
     await expect.element(page.getByText("This Mac")).not.toBeInTheDocument();
@@ -1845,9 +1870,13 @@ describe("GeneralSettingsPanel observability", () => {
     mounted = await renderWithTestRouter(
       <TestAppProviders>
         <ConnectionsSettings />
+        <ConnectComputerDialogHost />
       </TestAppProviders>,
     );
 
+    await expect
+      .element(page.getByTestId("connections-computers-summary"))
+      .toHaveTextContent("No computers yet");
     await page.getByRole("button", { name: "Connect to a computer", exact: true }).click();
     const addEnvironmentDialog = page.getByRole("dialog", { name: "Connect to a computer" });
     await addEnvironmentDialog.getByRole("button", { name: /^Other ways to connect/ }).click();
@@ -1879,11 +1908,15 @@ describe("GeneralSettingsPanel observability", () => {
         { label: "" },
       );
     });
+    // Build box doesn't take links (it hasn't connected yet): plain "Connected".
+    await expect
+      .element(addEnvironmentDialog.getByText("Connected to Build box.", { exact: true }))
+      .toBeInTheDocument();
   });
 
-  it("offers Stop trying for a computer it is waiting on, and stops when asked", async () => {
+  it("walks every connection action of a saved computer on its Fleet page", async () => {
     const environmentId = EnvironmentId.make("environment-macbook");
-    savedComputersHarness.registryById[environmentId] = {
+    const record = {
       environmentId,
       label: "Denys's MacBook Pro",
       httpBaseUrl: "http://10.0.0.219:3773/",
@@ -1891,11 +1924,10 @@ describe("GeneralSettingsPanel observability", () => {
       createdAt: "2036-04-07T00:00:00.000Z",
       lastConnectedAt: "2036-04-07T00:00:00.000Z",
     };
-    savedComputersHarness.runtimeById[environmentId] = {
+    const runtime = {
       connectionState: "disconnected",
       authState: "unknown",
-      lastError:
-        "Can't reach Denys's MacBook Pro. It may be asleep, off, or offline. Threadlines will connect when it's back.",
+      lastError: null,
       lastErrorAt: null,
       role: null,
       descriptor: null,
@@ -1903,9 +1935,166 @@ describe("GeneralSettingsPanel observability", () => {
       connectedAt: null,
       disconnectedAt: null,
       route: null,
-      waitingToReconnect: true,
+      waitingToReconnect: false,
       disconnectedByUser: false,
     };
+    setServerConfigSnapshot(createBaseServerConfig());
+    const showGroup = async (
+      recordPatch: Record<string, unknown>,
+      runtimePatch: Record<string, unknown>,
+    ) => {
+      if (mounted) {
+        const teardown = mounted.cleanup ?? mounted.unmount;
+        await teardown?.call(mounted);
+      }
+      savedComputersHarness.registryById[environmentId] = { ...record, ...recordPatch };
+      savedComputersHarness.runtimeById[environmentId] = { ...runtime, ...runtimePatch };
+      mounted = await renderWithTestRouter(
+        <TestAppProviders>
+          <ComputerConnectionGroup environmentId={environmentId} />
+          <ConnectComputerDialogHost />
+        </TestAppProviders>,
+      );
+    };
+
+    // Waiting for a computer that didn't answer: the last problem, and Stop trying.
+    await showGroup(
+      {},
+      {
+        waitingToReconnect: true,
+        lastError:
+          "Can't reach Denys's MacBook Pro. It may be asleep, off, or offline. Threadlines will connect when it's back.",
+      },
+    );
+    await expect
+      .element(page.getByText("Threadlines will connect when it's back.", { exact: false }))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Stop trying", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(savedComputersHarness.disconnectByUser).toHaveBeenCalledWith(environmentId);
+    });
+
+    // Connected over SSH, on another version: the route, the SSH target, the
+    // version warning, and Disconnect (which keeps it saved).
+    savedComputersHarness.disconnectByUser.mockClear();
+    await showGroup(
+      {
+        desktopSsh: {
+          alias: "devbox",
+          hostname: "devbox.example.com",
+          username: "julius",
+          port: 2222,
+        },
+      },
+      {
+        connectionState: "connected",
+        authState: "authenticated",
+        connectedAt: "2036-04-07T00:00:00.000Z",
+        serverConfig: {
+          ...createBaseServerConfig(),
+          environment: { ...createBaseServerConfig().environment, serverVersion: "9.9.9" },
+        },
+      },
+    );
+    await expect
+      .element(page.getByText("SSH julius@devbox.example.com:2222", { exact: false }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByText("It runs Threadlines 9.9.9", { exact: false }))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Disconnect", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(savedComputersHarness.disconnectByUser).toHaveBeenCalledWith(environmentId);
+    });
+
+    // Offline: when it was last connected, and Reconnect.
+    await showGroup({}, {});
+    await expect.element(page.getByText("Last connected", { exact: false })).toBeInTheDocument();
+    await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(savedComputersHarness.reconnect).toHaveBeenCalledWith(environmentId);
+    });
+
+    // It removed this app's access: a retry can't fix that, a new code can.
+    const relay = {
+      version: 2 as const,
+      relayOrigin: "https://relay.example.test",
+      hostId: "host-1",
+      deviceId: "device-1",
+    };
+    await showGroup({ relay }, { authState: "requires-auth" });
+    await page.getByRole("button", { name: "Connect again with a new code", exact: true }).click();
+    await expect
+      .element(page.getByRole("dialog", { name: "Connect to a computer" }))
+      .toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
+    // Still being added: the number to compare, and Cancel.
+    await showGroup(
+      {
+        relay: {
+          ...relay,
+          pendingRequest: {
+            requestId: "request-1",
+            requestSecret: "secret",
+            expiresAt: "2036-04-07T00:10:00.000Z",
+            matchNumber: "42",
+          },
+        },
+      },
+      {},
+    );
+    await expect
+      .element(page.getByText("Check it shows 42.", { exact: false }))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(savedComputersHarness.cancelPending).toHaveBeenCalledWith(environmentId);
+    });
+  });
+
+  it("joins linked computers to their links by session, even two with one name", async () => {
+    const thisComputer = EnvironmentId.make("environment-local");
+    const linkedSession = AuthSessionId.make("session-linked-studio");
+    const otherSession = AuthSessionId.make("session-other-studio");
+    window.desktopBridge = createDesktopBridgeStub();
+    const peerSession = (sessionId: AuthSessionId) =>
+      makeClientSession({
+        sessionId,
+        subject: "relay-device",
+        role: "peer",
+        method: "bearer-session-token",
+        client: { label: "Studio", deviceType: "desktop", os: "macOS" },
+        issuedAt: "2036-04-07T00:00:00.000Z",
+        expiresAt: "2036-05-07T00:00:00.000Z",
+        connected: true,
+        current: false,
+      });
+    authAccessHarness.setSnapshot({
+      pairingLinks: [],
+      clientSessions: [peerSession(linkedSession), peerSession(otherSession)],
+    });
+    const remove = vi.fn(async () => ({ otherComputer: "not_asked" as const }));
+    __setComputerLinksClientForTests(thisComputer, {
+      remove,
+    } as unknown as ComputerLinksClient);
+    useComputerLinksStore.getState().put(thisComputer, {
+      outbound: [],
+      inbound: [
+        {
+          deviceId: "device-studio",
+          environmentId: EnvironmentId.make("environment-studio"),
+          label: "Studio",
+          platform: "macOS",
+          sessionId: linkedSession,
+          access: "allowed",
+          maxRuntimeMode: "auto",
+          createdAt: "2036-04-07T00:00:00.000Z",
+          lastUsedAt: null,
+        },
+      ],
+      pending: [],
+    });
     setServerConfigSnapshot(createBaseServerConfig());
 
     mounted = await renderWithTestRouter(
@@ -1914,15 +2103,128 @@ describe("GeneralSettingsPanel observability", () => {
       </TestAppProviders>,
     );
 
+    const linkedRow = page.getByTestId(`linked-computer-row-${linkedSession}`);
+    const otherRow = page.getByTestId(`linked-computer-row-${otherSession}`);
     await expect
-      .element(page.getByText("Threadlines will connect when it's back.", { exact: false }), {
-        timeout: 5_000,
-      })
+      .element(linkedRow)
+      .toHaveTextContent("Linked computer · its agents: Allowed · Connected now");
+    await expect
+      .element(linkedRow.getByRole("button", { name: "Manage in Fleet", exact: true }))
       .toBeInTheDocument();
-    await page.getByRole("button", { name: "Stop trying", exact: true }).click({ timeout: 5_000 });
+    // Same name, no link of its own: it is never mistaken for the other.
+    await expect.element(otherRow).toHaveTextContent("Linked computer · Connected now");
+    await expect
+      .element(otherRow.getByRole("button", { name: "Manage in Fleet", exact: true }))
+      .not.toBeInTheDocument();
+
+    // Removing a linked computer's access removes its link and stops its work.
+    await linkedRow.getByRole("button", { name: "Remove access", exact: true }).click();
     await vi.waitFor(() => {
-      expect(savedComputersHarness.disconnectByUser).toHaveBeenCalledWith(environmentId);
+      expect(remove).toHaveBeenCalledWith({
+        direction: "inbound",
+        deviceId: "device-studio",
+        stopRunning: true,
+      });
     });
+  });
+
+  it("offers to link a computer added from the hosted app only when it has another computer", async () => {
+    const windows = EnvironmentId.make("environment-windows");
+    const mac = EnvironmentId.make("environment-mac");
+    const linksDescriptor = (environmentId: EnvironmentId, label: string) => ({
+      ...createBaseServerConfig().environment,
+      environmentId,
+      label,
+      capabilities: { ...createBaseServerConfig().environment.capabilities, computerLinks: true },
+    });
+    const connectedRuntime = (environmentId: EnvironmentId, label: string) => ({
+      connectionState: "connected",
+      authState: "authenticated",
+      lastError: null,
+      lastErrorAt: null,
+      role: "client",
+      descriptor: linksDescriptor(environmentId, label),
+      serverConfig: null,
+      connectedAt: "2036-04-07T00:00:00.000Z",
+      disconnectedAt: null,
+      route: "relay",
+      waitingToReconnect: false,
+      disconnectedByUser: false,
+    });
+    const savedRecord = (environmentId: EnvironmentId, label: string) => ({
+      environmentId,
+      label,
+      httpBaseUrl: `https://${environmentId}.example.test/`,
+      wsBaseUrl: `wss://${environmentId}.example.test/`,
+      createdAt: "2036-04-07T00:00:00.000Z",
+      lastConnectedAt: "2036-04-07T00:00:00.000Z",
+    });
+    savedComputersHarness.addSavedEnvironment.mockImplementation(async () => {
+      savedComputersHarness.registryById[windows] = savedRecord(windows, "Windows PC");
+      savedComputersHarness.runtimeById[windows] = connectedRuntime(windows, "Windows PC");
+      return savedRecord(windows, "Windows PC");
+    });
+    const addWindows = async () => {
+      openConnectComputerDialog();
+      const dialog = page.getByRole("dialog", { name: "Connect to a computer" });
+      await dialog.getByRole("button", { name: /^Other ways to connect/ }).click();
+      await dialog.getByLabelText("Computer address").fill("https://windows.example.test");
+      await dialog.getByLabelText("Pairing code").fill("PAIRCODE");
+      await dialog.getByRole("button", { name: "Add this computer", exact: true }).click();
+      return dialog;
+    };
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    // Its only computer: nothing to link with, so no question.
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ConnectComputerDialogHost />
+      </TestAppProviders>,
+    );
+    let dialog = await addWindows();
+    await expect
+      .element(dialog.getByText("Connected to Windows PC.", { exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(dialog.getByText("Let agents on these computers start work on each other?"))
+      .not.toBeInTheDocument();
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+
+    // With Mac saved too: the question, naming Mac, and Link makes both directions.
+    savedComputersHarness.registryById[mac] = savedRecord(mac, "Mac");
+    savedComputersHarness.runtimeById[mac] = connectedRuntime(mac, "Mac");
+    const invite = (environmentId: EnvironmentId, label: string) => ({
+      hostId: RelayHostId.make(`host-${environmentId}`),
+      relayOrigin: "https://relay.example.test",
+      inviteId: RelayInviteId.make(`invite-${environmentId}`),
+      inviteSecret: "secret",
+      hostPublicKey: "key",
+      directOrigins: [],
+      environmentId,
+      label,
+      expiresAt: "2036-04-07T00:10:00.000Z",
+    });
+    const clientFor = (environmentId: EnvironmentId, label: string) => ({
+      createInvite: vi.fn(async () => invite(environmentId, label)),
+      accept: vi.fn(async () => ({ state: "active" })),
+    });
+    const macClient = clientFor(mac, "Mac");
+    const windowsClient = clientFor(windows, "Windows PC");
+    __setComputerLinksClientForTests(mac, macClient as unknown as ComputerLinksClient);
+    __setComputerLinksClientForTests(windows, windowsClient as unknown as ComputerLinksClient);
+    dialog = await addWindows();
+    await expect
+      .element(dialog.getByText("Let agents on these computers start work on each other?"))
+      .toBeInTheDocument();
+    await expect
+      .element(dialog.getByRole("combobox", { name: "Link with" }))
+      .toHaveTextContent("Mac");
+    await dialog.getByRole("button", { name: "Link (Ask first)", exact: true }).click();
+    await vi.waitFor(() => {
+      expect(windowsClient.accept).toHaveBeenCalledWith({ invite: invite(mac, "Mac") });
+      expect(macClient.accept).toHaveBeenCalledWith({ invite: invite(windows, "Windows PC") });
+    });
+    await expect.element(dialog).not.toBeInTheDocument();
   });
 
   it("opens the logs folder in the preferred editor", async () => {

@@ -58,6 +58,7 @@ import {
   type ThreadAttentionCounts,
 } from "../Sidebar.logic";
 import { ChromeIconButton, ChromeTooltip } from "./ChromeIconButton";
+import { usePendingLinkRequests } from "./linkedComputers";
 import { useListNewThreadStore } from "./listNewThreadStore";
 import { RailUpdateButton } from "./RailUpdateButton";
 import { useSidebar } from "../ui/sidebar";
@@ -223,7 +224,9 @@ export function useRememberThreadsView(): void {
 /**
  * What the rail counts: threads needing the user and threads at work, for the
  * inbox and for general chats separately. Read off every connected computer,
- * above the inbox's project and machine filters.
+ * above the inbox's project and machine filters. A thread another computer
+ * asked to start, waiting for the user's Allow, needs the user too: the inbox
+ * lists it above its threads.
  */
 function useDestinationAttention(): {
   readonly threads: ThreadAttentionCounts;
@@ -234,6 +237,7 @@ function useDestinationAttention(): {
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const seenSources = useThreadSeenSources();
+  const pendingLinkRequestCount = usePendingLinkRequests().length;
   return useMemo(() => {
     const generalChatProjectKeys = new Set(
       projects
@@ -257,12 +261,16 @@ function useDestinationAttention(): {
       (isGeneralChat ? chatAttention : threadAttention).push(attention);
       if (isGeneralChat && isUnreadResultStatus(status)) chatsUnread = true;
     }
+    const threadCounts = countThreadAttention(threadAttention);
     return {
-      threads: countThreadAttention(threadAttention),
+      threads:
+        pendingLinkRequestCount === 0
+          ? threadCounts
+          : { ...threadCounts, needsYou: threadCounts.needsYou + pendingLinkRequestCount },
       chats: countThreadAttention(chatAttention),
       chatsUnread,
     };
-  }, [projects, seenSources, threads]);
+  }, [pendingLinkRequestCount, projects, seenSources, threads]);
 }
 
 function describeWorking(count: number): string | null {

@@ -40,6 +40,8 @@ export interface FleetGraphLayoutInput {
   readonly centerProviderCount: number;
   /** Agents around each other computer, in the order they are drawn. */
   readonly otherProviderCounts: readonly number[];
+  /** Lines between two other computers (links, work), by their drawn order. */
+  readonly otherLines?: ReadonlyArray<readonly [number, number]>;
 }
 
 export interface FleetGraphLayout {
@@ -194,8 +196,8 @@ interface Line {
 
 const LINE_PIECES = 4;
 
-function lineBetween(from: Point, to: Point): Line {
-  const control = curveControlPoint(from, to);
+function lineBetween(from: Point, to: Point, awayFrom?: Point): Line {
+  const control = curveControlPoint(from, to, awayFrom);
   const points = Array.from({ length: LINE_PIECES + 1 }, (_, index) =>
     pointOnCurve(from, control, to, index / LINE_PIECES),
   );
@@ -391,7 +393,14 @@ export function layoutFleetGraph(input: FleetGraphLayoutInput): FleetGraphLayout
     width,
     height,
     footprints: [center, ...others].map(computerFootprint),
-    lines: others.map((position) => lineBetween(center, position)),
+    lines: [
+      ...others.map((position) => lineBetween(center, position)),
+      ...(input.otherLines ?? []).flatMap(([from, to]) =>
+        others[from] !== undefined && others[to] !== undefined
+          ? [lineBetween(others[from], others[to], center)]
+          : [],
+      ),
+    ],
   };
   const centerProviderCount = Math.min(input.centerProviderCount, FLEET_GRAPH_MAX_PROVIDERS);
   const centerProviders = placeProviders(
@@ -420,18 +429,32 @@ export function layoutFleetGraph(input: FleetGraphLayoutInput): FleetGraphLayout
   return { center, centerProviders, others, otherProviders };
 }
 
-/** A gentle quadratic curve from one node to another: its control point. */
-export function curveControlPoint(from: Point, to: Point): Point {
+/** How far a line between two other computers bows out, as a share of its length. */
+const AWAY_BEND = 0.34;
+
+/**
+ * A gentle quadratic curve from one node to another: its control point. A
+ * fixed share of the length, to one side, so every line from this computer
+ * bends the same way. A line between two other computers (`awayFrom` is this
+ * computer) bows further, on the side away from it, so it passes clear of
+ * this computer and its name.
+ */
+export function curveControlPoint(from: Point, to: Point, awayFrom?: Point): Point {
   const midX = (from.x + to.x) / 2;
   const midY = (from.y + to.y) / 2;
   const dx = to.x - from.x;
   const dy = to.y - from.y;
-  // A fixed share of the length, to one side, so every line bends the same way.
-  return { x: midX - dy * 0.16, y: midY + dx * 0.16 };
+  if (awayFrom === undefined) return { x: midX - dy * 0.16, y: midY + dx * 0.16 };
+  const one = { x: midX - dy * AWAY_BEND, y: midY + dx * AWAY_BEND };
+  const other = { x: midX + dy * AWAY_BEND, y: midY - dx * AWAY_BEND };
+  return Math.hypot(one.x - awayFrom.x, one.y - awayFrom.y) >=
+    Math.hypot(other.x - awayFrom.x, other.y - awayFrom.y)
+    ? one
+    : other;
 }
 
-export function curvePath(from: Point, to: Point): string {
-  const control = curveControlPoint(from, to);
+export function curvePath(from: Point, to: Point, awayFrom?: Point): string {
+  const control = curveControlPoint(from, to, awayFrom);
   return `M${from.x.toFixed(1)} ${from.y.toFixed(1)}Q${control.x.toFixed(1)} ${control.y.toFixed(1)} ${to.x.toFixed(1)} ${to.y.toFixed(1)}`;
 }
 
@@ -459,6 +482,8 @@ export interface TravelingLine {
   readonly to: Point;
   readonly fromRadius: number;
   readonly toRadius: number;
+  /** A line between two other computers bows away from this one (curveControlPoint). */
+  readonly awayFrom?: Point | undefined;
 }
 
 /**
@@ -471,7 +496,7 @@ export function buildTravelingDotKeyframes(
   name: string,
   line: TravelingLine,
 ): { readonly dot: string; readonly ring: string } {
-  const control = curveControlPoint(line.from, line.to);
+  const control = curveControlPoint(line.from, line.to, line.awayFrom);
   const length = Math.hypot(line.to.x - line.from.x, line.to.y - line.from.y) || 1;
   // Close enough to where the curve crosses each node's edge for a short line.
   const startT = Math.min(0.45, line.fromRadius / length);

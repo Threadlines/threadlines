@@ -2043,14 +2043,47 @@ export default function ChatView(props: ChatViewProps) {
   }, [forkContextEntries]);
   // Child threads: the thread whose agent started this one, while this
   // device knows it. "Started by" stays true after the thread is separated.
-  const parentThreadId = activeThread?.parentThreadId ?? null;
-  const parentThreadTitle = useThreadTitle(environmentId, parentThreadId);
-  const parentHeaderContext = useMemo<ParentThreadHeaderContext | null>(
-    () =>
-      parentThreadId !== null && parentThreadTitle !== null
-        ? { parentThreadId, parentThreadTitle }
-        : null,
-    [parentThreadId, parentThreadTitle],
+  // One an agent on another computer started names that computer, from what
+  // the thread was told when it started, and opens its parent only while the
+  // app has that computer's threads.
+  const remoteOrigin = activeThread?.remoteOrigin ?? null;
+  const parentEnvironmentId = remoteOrigin?.environmentId ?? environmentId;
+  const parentThreadId = remoteOrigin?.threadId ?? activeThread?.parentThreadId ?? null;
+  const knownParentTitle = useThreadTitle(parentEnvironmentId, parentThreadId);
+  const parentHeaderContext = useMemo<ParentThreadHeaderContext | null>(() => {
+    if (parentThreadId === null) return null;
+    const parentThreadRef = scopeThreadRef(parentEnvironmentId, parentThreadId);
+    if (remoteOrigin === null) {
+      return knownParentTitle === null
+        ? null
+        : {
+            parentThreadRef,
+            parentThreadTitle: knownParentTitle,
+            parentComputer: null,
+            canOpen: true,
+          };
+    }
+    return {
+      parentThreadRef,
+      parentThreadTitle: knownParentTitle ?? remoteOrigin.threadTitle,
+      parentComputer: {
+        environmentId: remoteOrigin.environmentId,
+        lastKnownLabel: remoteOrigin.environmentLabel,
+      },
+      canOpen: knownParentTitle !== null,
+    };
+  }, [knownParentTitle, parentEnvironmentId, parentThreadId, remoteOrigin]);
+  const onOpenParentThread = useCallback(
+    (parentThreadRef: ScopedThreadRef) => {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: parentThreadRef.environmentId,
+          threadId: parentThreadRef.threadId,
+        },
+      });
+    },
+    [navigate],
   );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
@@ -7536,7 +7569,7 @@ export default function ChatView(props: ChatViewProps) {
       taskProgress={taskProgress}
       forkContext={forkHeaderContext}
       parentContext={parentHeaderContext}
-      onOpenParentThread={onOpenForkSourceThread}
+      onOpenParentThread={onOpenParentThread}
       backgroundRuns={backgroundRuns}
       activeThreadRef={activeThreadRef}
       onRunProjectScript={runProjectScript}

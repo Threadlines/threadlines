@@ -4,10 +4,15 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@threadlines/client-runtime";
-import { type ModelSelection, RELAY_DEVICE_SESSION_SUBJECT } from "@threadlines/contracts";
+import {
+  type EnvironmentId,
+  type ModelSelection,
+  RELAY_DEVICE_SESSION_SUBJECT,
+} from "@threadlines/contracts";
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+import { useComputerLinksStore } from "../../environments/links/computerLinks";
 import {
   usePrimaryEnvironmentDescriptor,
   usePrimaryEnvironmentId,
@@ -31,6 +36,8 @@ import { resolveSeenThreadStatus, resolveThreadAttention } from "../Sidebar.logi
 import {
   buildFleetModel,
   type FleetComputerInput,
+  type FleetConnection,
+  type FleetGlyph,
   type FleetModel,
   type FleetThreadInput,
   glyphForPlatform,
@@ -38,6 +45,18 @@ import {
   primaryConnectionFrom,
   savedComputerInput,
 } from "./fleet.logic";
+import {
+  buildFleetDirectory,
+  buildFleetGraphEdges,
+  collectFleetCrossWork,
+  crossWorkAttentionOf,
+  type FleetCrossWorkThread,
+  type FleetDirectoryEntry,
+  type FleetGraphEdge,
+  type FleetLinkReach,
+  type FleetLinksByEnvironment,
+  trustedOriginEnvironment,
+} from "./fleetLinks.logic";
 
 /** Every thread's model, by scoped thread key; references are stable, so a shallow compare holds. */
 function selectThreadModelSelections(state: AppState): Record<string, ModelSelection> {
@@ -51,23 +70,90 @@ function selectThreadModelSelections(state: AppState): Record<string, ModelSelec
   return byKey;
 }
 
+/** A computer's glyph from the system name a link reports ("macOS", "Windows", "Linux"). */
+function glyphForLinkPlatform(platform: string | null): FleetGlyph {
+  const name = platform?.toLowerCase() ?? "";
+  if (name.includes("mac") || name === "darwin") return "laptop";
+  if (name.includes("linux")) return "server";
+  return "monitor";
+}
+
 /**
- * The Fleet page's model, from what this app already holds: this computer and
- * the computers saved under Settings › Connections with their live connection
- * state, the phones and tablets linked to this computer (its owner only), and
- * every connected computer's threads.
+ * A linked computer this app doesn't connect to, as the graph draws it: its
+ * connection is the best any of its links reports.
  */
-export function useFleetModel(): {
+function linkedComputerInput(
+  entry: FleetDirectoryEntry,
+  links: FleetLinksByEnvironment,
+): FleetComputerInput {
+  let connection: FleetConnection = "offline";
+  let platform: string | null = null;
+  for (const holder of Object.values(links)) {
+    for (const link of holder.snapshot.outbound) {
+      if (link.remoteEnvironmentId !== entry.environmentId) continue;
+      platform ??= link.remotePlatform;
+      if (!holder.live || link.state !== "active") continue;
+      if (link.connection === "connected" || link.connection === "idle") connection = "connected";
+      else if (
+        connection !== "connected" &&
+        (link.connection === "connecting" || link.connection === "reconnecting")
+      ) {
+        connection = "reconnecting";
+      }
+    }
+    for (const link of holder.snapshot.inbound) {
+      if (link.environmentId === entry.environmentId) platform ??= link.platform;
+    }
+  }
+  return {
+    id: entry.key,
+    environmentId: entry.environmentId,
+    kind: "linked",
+    label: entry.label,
+    linkedWith: entry.linkedWith,
+    glyph: glyphForLinkPlatform(platform),
+    connection,
+    route: null,
+    lastSeenAt: null,
+  };
+}
+
+export interface FleetData {
   readonly model: FleetModel;
+  /** The list of computers beside the rail, this one first. */
+  readonly directory: readonly FleetDirectoryEntry[];
+  /** The graph's lines between computers. */
+  readonly edges: readonly FleetGraphEdge[];
+  /** What this app can do with each computer's links right now, by environment id. */
+  readonly reach: ReadonlyMap<EnvironmentId, FleetLinkReach>;
+  /** Each connected computer's links, last heard. */
+  readonly links: FleetLinksByEnvironment;
   /** Each listed thread's summary, for the status words its row shares with the inbox. */
   readonly summaryByThreadKey: ReadonlyMap<string, SidebarThreadSummary>;
-  /** Whether this window may manage this computer's devices (the Connect dialog). */
+  /** Whether this window may manage this computer's devices. */
   readonly isOwner: boolean;
-} {
+  /** Phones, tablets, browsers and linked computers with access to this computer (owner only). */
+  readonly deviceCount: number;
+  /**
+   * Threads `asker`'s agents started on `worker` that are still running,
+   * among the threads this app can see.
+   */
+  readonly runningStartedBy: (asker: EnvironmentId, worker: EnvironmentId) => number;
+}
+
+/**
+ * The Fleet page's data, from what this app already holds: this computer and
+ * the computers saved in this app with their live connection state, every
+ * computer they are linked with, the phones and tablets using this computer
+ * (its owner only), every connected computer's threads and links, and the
+ * work computers asked of each other.
+ */
+export function useFleetModel(): FleetData {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const primaryDescriptor = usePrimaryEnvironmentDescriptor();
   const savedRecords = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedRuntime = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const links = useComputerLinksStore((state) => state.byEnvironmentId);
   const { role } = usePrimarySessionAccess(primaryEnvironmentId !== null);
   const isOwner = role === "owner";
   const { clientSessions } = useAuthAccess(isOwner);
@@ -80,6 +166,61 @@ export function useFleetModel(): {
   const wsStatus = useWsConnectionStatus();
   const primaryConnection = primaryConnectionFrom(getWsConnectionUiState(wsStatus));
   const primaryLastSeenAt = wsStatus.disconnectedAt;
+
+  const labelOfEnvironment = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const record of Object.values(savedRecords)) {
+      labels.set(record.environmentId, record.label.trim() || record.environmentId);
+    }
+    if (primaryEnvironmentId !== null) {
+      labels.set(primaryEnvironmentId, primaryDescriptor?.label ?? "This computer");
+    }
+    return labels;
+  }, [primaryDescriptor?.label, primaryEnvironmentId, savedRecords]);
+
+  const directory = useMemo(
+    () =>
+      buildFleetDirectory({
+        primary:
+          primaryEnvironmentId === null
+            ? null
+            : {
+                environmentId: primaryEnvironmentId,
+                label: primaryDescriptor?.label ?? "This computer",
+              },
+        saved: Object.values(savedRecords).map((record) => ({
+          environmentId: record.environmentId,
+          label:
+            record.label.trim() ||
+            savedRuntime[record.environmentId]?.descriptor?.label ||
+            "Computer",
+        })),
+        links,
+      }),
+    [links, primaryDescriptor?.label, primaryEnvironmentId, savedRecords, savedRuntime],
+  );
+
+  const reach = useMemo(() => {
+    const byEnvironment = new Map<EnvironmentId, FleetLinkReach>();
+    for (const entry of directory) {
+      if (entry.environmentId === null) continue;
+      const environmentId = entry.environmentId;
+      const runtime = savedRuntime[environmentId];
+      const descriptor = entry.kind === "this" ? primaryDescriptor : (runtime?.descriptor ?? null);
+      byEnvironment.set(environmentId, {
+        environmentId,
+        label: entry.label,
+        reachable:
+          entry.kind === "this"
+            ? primaryConnection === "connected"
+            : entry.kind === "saved" && runtime?.connectionState === "connected",
+        known: entry.kind === "this" || entry.kind === "saved",
+        supportsLinks: descriptor === null ? null : descriptor.capabilities.computerLinks === true,
+        links: links[environmentId] ?? null,
+      });
+    }
+    return byEnvironment;
+  }, [directory, links, primaryConnection, primaryDescriptor, savedRuntime]);
 
   const model = useMemo(() => {
     const projectByKey = new Map(
@@ -109,6 +250,9 @@ export function useFleetModel(): {
       const project = projectByKey.get(
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
+      const origin = thread.remoteOrigin ?? null;
+      const asker =
+        origin === null ? null : trustedOriginEnvironment(origin, thread.environmentId, links);
       return [
         {
           threadKey,
@@ -130,11 +274,18 @@ export function useFleetModel(): {
           provider: instanceId === null && driverKind === "" ? null : { instanceId, driverKind },
           modelSelection,
           startedByTitle:
-            thread.parentThreadId == null
+            origin !== null
+              ? origin.threadTitle
+              : thread.parentThreadId == null
+                ? null
+                : (titleByThreadKey.get(
+                    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.parentThreadId)),
+                  ) ?? null),
+          startedByComputer:
+            origin === null
               ? null
-              : (titleByThreadKey.get(
-                  scopedThreadKey(scopeThreadRef(thread.environmentId, thread.parentThreadId)),
-                ) ?? null),
+              : ((asker === null ? undefined : labelOfEnvironment.get(asker)) ??
+                origin.environmentLabel),
         },
       ];
     });
@@ -166,17 +317,24 @@ export function useFleetModel(): {
     const savedComputers = Object.values(savedRecords)
       .filter((record) => record.environmentId !== primaryEnvironmentId)
       .map((record) => savedComputerInput(record, savedRuntime[record.environmentId]));
+    const linkedComputers = directory
+      .filter((entry) => entry.kind === "linked")
+      .map((entry) => linkedComputerInput(entry, links));
     return buildFleetModel({
       center,
       others: [
         ...savedComputers,
+        ...linkedComputers,
         ...linkedDeviceInputs(clientSessions, RELAY_DEVICE_SESSION_SUBJECT),
       ],
       threads: threadInputs,
     });
   }, [
     clientSessions,
+    directory,
     isMobile,
+    labelOfEnvironment,
+    links,
     modelSelections,
     primaryConnection,
     primaryDescriptor,
@@ -189,6 +347,77 @@ export function useFleetModel(): {
     threads,
   ]);
 
+  // Work computers asked of each other: the real threads first (their status
+  // wins), then what parents remember of children this app can't see.
+  const crossWorkThreads = useMemo(() => {
+    const attentionByKey = new Map<string, "working" | "needs-you" | null>();
+    for (const computer of [model.center, ...model.others]) {
+      for (const thread of computer.threads) attentionByKey.set(thread.threadKey, thread.attention);
+    }
+    const real: FleetCrossWorkThread[] = [];
+    const remembered: FleetCrossWorkThread[] = [];
+    for (const thread of threads) {
+      if (thread.archivedAt !== null) continue;
+      const origin = thread.remoteOrigin ?? null;
+      // Work over a link whose computer isn't confirmed is drawn to no computer.
+      const asker =
+        origin === null ? null : trustedOriginEnvironment(origin, thread.environmentId, links);
+      if (asker !== null) {
+        real.push({
+          askerEnvironmentId: asker,
+          workerEnvironmentId: thread.environmentId,
+          threadId: thread.id,
+          attention:
+            attentionByKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))) ??
+            null,
+        });
+      }
+      for (const child of thread.remoteChildren ?? []) {
+        remembered.push({
+          askerEnvironmentId: thread.environmentId,
+          workerEnvironmentId: child.environmentId,
+          threadId: child.threadId,
+          attention: crossWorkAttentionOf(child.cachedStatus),
+        });
+      }
+      for (const start of thread.remoteChildStarts ?? []) {
+        remembered.push({
+          askerEnvironmentId: thread.environmentId,
+          workerEnvironmentId: start.environmentId,
+          threadId: `start:${start.requestId}`,
+          attention: start.status === "awaiting_approval" ? "needs-you" : "working",
+        });
+      }
+    }
+    return [...real, ...remembered];
+  }, [links, model, threads]);
+
+  const edges = useMemo(
+    () =>
+      buildFleetGraphEdges({
+        model,
+        links,
+        crossWork: collectFleetCrossWork(crossWorkThreads),
+      }),
+    [crossWorkThreads, links, model],
+  );
+
+  const runningStartedBy = useMemo(() => {
+    const counts = new Map<string, number>();
+    const seen = new Set<string>();
+    for (const thread of crossWorkThreads) {
+      // Threads that exist and run (a start still waiting has no thread to stop),
+      // each once: the real thread comes before its parent's record of it.
+      const threadKey = `${thread.workerEnvironmentId}:${thread.threadId}`;
+      if (seen.has(threadKey)) continue;
+      seen.add(threadKey);
+      if (thread.threadId.startsWith("start:") || thread.attention !== "working") continue;
+      const key = `${thread.askerEnvironmentId}>${thread.workerEnvironmentId}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return (asker: EnvironmentId, worker: EnvironmentId) => counts.get(`${asker}>${worker}`) ?? 0;
+  }, [crossWorkThreads]);
+
   const summaryByThreadKey = useMemo(
     () =>
       new Map(
@@ -200,5 +429,33 @@ export function useFleetModel(): {
     [threads],
   );
 
-  return { model, summaryByThreadKey, isOwner };
+  const deviceCount = useMemo(
+    () => clientSessions.filter((session) => !session.current).length,
+    [clientSessions],
+  );
+
+  return useMemo(
+    () => ({
+      model,
+      directory,
+      edges,
+      reach,
+      links,
+      summaryByThreadKey,
+      isOwner,
+      deviceCount,
+      runningStartedBy,
+    }),
+    [
+      deviceCount,
+      directory,
+      edges,
+      isOwner,
+      links,
+      model,
+      reach,
+      runningStartedBy,
+      summaryByThreadKey,
+    ],
+  );
 }

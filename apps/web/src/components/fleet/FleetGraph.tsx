@@ -19,9 +19,9 @@ import {
   type FleetModel,
   type FleetProvider,
   type FleetWork,
-  resolveConnectionLineState,
   resolveProviderLineState,
 } from "./fleet.logic";
+import type { FleetGraphEdge } from "./fleetLinks.logic";
 import {
   buildTravelingDotKeyframes,
   curvePath,
@@ -106,6 +106,8 @@ interface GraphLine {
   readonly fromRadius: number;
   readonly toRadius: number;
   readonly state: FleetLineState;
+  /** Between two other computers: bows away from this one. */
+  readonly awayFrom?: Point | undefined;
 }
 
 /** A line's look by state: what each one means is in the legend. */
@@ -177,21 +179,16 @@ function ComputerNode({
   computer,
   position,
   nowMs,
-  selected,
-  dimmed,
-  onSelect,
+  onOpen,
 }: {
   readonly computer: FleetComputer;
   readonly position: Point;
   readonly nowMs: number;
-  readonly selected: boolean;
-  readonly dimmed: boolean;
-  readonly onSelect: ((computerId: string) => void) | null;
+  readonly onOpen: ((computer: FleetComputer) => void) | null;
 }) {
   const Glyph = FLEET_GLYPH_ICONS[computer.glyph];
-  // Offline, or set aside while another computer is picked: quiet text, but
-  // the node stays opaque so lines never show through it.
-  const quiet = computer.connection === "offline" || dimmed;
+  // Offline: quiet text, but the node stays opaque so lines never show through it.
+  const quiet = computer.connection === "offline";
   const location = describeComputerLocation(computer, nowMs);
   const body = (
     <>
@@ -201,8 +198,7 @@ function ComputerNode({
           RING_CLASS[computer.work],
           // The hover tint is painted over the solid fill (an inset shadow),
           // never instead of it: a see-through fill lets the lines show through.
-          onSelect !== null && "group-hover/node:shadow-[inset_0_0_0_21px_var(--accent)]",
-          selected && "outline-[1.5px] outline-offset-[3px] outline-foreground/50",
+          onOpen !== null && "group-hover/node:shadow-[inset_0_0_0_21px_var(--accent)]",
         )}
       >
         <Glyph
@@ -235,7 +231,7 @@ function ComputerNode({
   );
   const className = "absolute flex -translate-x-1/2 flex-col items-center rounded-lg";
   const style = { left: position.x, top: position.y - FLEET_COMPUTER_NODE_RADIUS };
-  if (onSelect === null) {
+  if (onOpen === null) {
     return (
       <div className={className} style={style} data-testid={`fleet-node-${computer.id}`}>
         {body}
@@ -245,12 +241,15 @@ function ComputerNode({
   return (
     <button
       type="button"
-      aria-pressed={selected}
-      aria-label={`${computer.label}: show only its threads`}
+      aria-label={
+        computer.kind === "device"
+          ? `${computer.label}: open Connections settings`
+          : `Open ${computer.label}`
+      }
       data-testid={`fleet-node-${computer.id}`}
       className={cn(className, "group/node cursor-pointer focus-ring")}
       style={style}
-      onClick={() => onSelect(computer.id)}
+      onClick={() => onOpen(computer)}
     >
       {body}
     </button>
@@ -317,24 +316,26 @@ function ProviderNode({
 /**
  * The fleet as a graph: this computer in the middle, the other computers and
  * linked devices around it, and each computer's agents fanned out from it.
- * Lines say what is happening on them (see the legend). A working line
- * carries a traveling dot from the asking side to the working one; the dots
- * stop while the window is in the background and never run under reduced
- * motion.
+ * Lines say what is happening on them (see the legend): this app's
+ * connections from the middle, links between the other computers, and work
+ * one computer asked of another. A working line carries a traveling dot from
+ * the asking side to the working one; the dots stop while the window is in
+ * the background and never run under reduced motion.
  */
 export function FleetGraph({
   model,
+  edges,
   nowMs,
   height,
-  selectedComputerId,
-  onSelectComputer,
+  onOpenComputer,
   providerLabel,
 }: {
   readonly model: FleetModel;
+  /** The lines between computers (fleetLinks.logic buildFleetGraphEdges). */
+  readonly edges: ReadonlyArray<FleetGraphEdge>;
   readonly nowMs: number;
   readonly height: number;
-  readonly selectedComputerId: string | null;
-  readonly onSelectComputer: (computerId: string) => void;
+  readonly onOpenComputer: (computer: FleetComputer) => void;
   readonly providerLabel: (provider: FleetProvider) => string;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -348,6 +349,17 @@ export function FleetGraph({
     [model.center.providers],
   );
 
+  // Where each drawn computer sits in the layout: -1 for the center.
+  const indexById = useMemo(() => {
+    const byId = new Map<string, number>([[model.center.id, -1]]);
+    others.forEach((computer, index) => byId.set(computer.id, index));
+    return byId;
+  }, [model.center.id, others]);
+  const drawnEdges = useMemo(
+    () => edges.filter((edge) => indexById.has(edge.fromId) && indexById.has(edge.toId)),
+    [edges, indexById],
+  );
+
   const layout = useMemo(
     () =>
       width === null
@@ -359,24 +371,34 @@ export function FleetGraph({
             otherProviderCounts: others.map((computer) =>
               computer.kind === "device" ? 0 : computer.providers.length,
             ),
+            // Lines between two other computers: agents keep clear of them too.
+            otherLines: drawnEdges.flatMap((edge) => {
+              const from = indexById.get(edge.fromId)!;
+              const to = indexById.get(edge.toId)!;
+              return from >= 0 && to >= 0 ? [[from, to] as const] : [];
+            }),
           }),
-    [centerProviders.length, height, others, width],
+    [centerProviders.length, drawnEdges, height, indexById, others, width],
   );
 
   const lines = useMemo((): GraphLine[] => {
     if (layout === null) return [];
-    const result: GraphLine[] = [];
-    others.forEach((computer, index) => {
-      const position = layout.others[index]!;
-      result.push({
-        key: `connection:${computer.id}`,
-        from: layout.center,
-        to: position,
-        fromRadius: FLEET_COMPUTER_NODE_RADIUS,
-        toRadius: FLEET_COMPUTER_NODE_RADIUS,
-        state: resolveConnectionLineState(computer),
-      });
-    });
+    const positionOf = (id: string) => {
+      const index = indexById.get(id)!;
+      return index < 0 ? layout.center : layout.others[index]!;
+    };
+    const result: GraphLine[] = drawnEdges.map((edge) => ({
+      key: edge.key,
+      from: positionOf(edge.fromId),
+      to: positionOf(edge.toId),
+      fromRadius: FLEET_COMPUTER_NODE_RADIUS,
+      toRadius: FLEET_COMPUTER_NODE_RADIUS,
+      state: edge.state,
+      awayFrom:
+        indexById.get(edge.fromId)! >= 0 && indexById.get(edge.toId)! >= 0
+          ? layout.center
+          : undefined,
+    }));
     centerProviders.forEach((provider, index) => {
       result.push({
         key: `provider:${model.center.id}:${provider.key}`,
@@ -401,7 +423,7 @@ export function FleetGraph({
       });
     });
     return result;
-  }, [centerProviders, layout, model.center, others]);
+  }, [centerProviders, drawnEdges, indexById, layout, model.center, others]);
 
   const moving = useMemo(
     () =>
@@ -431,8 +453,6 @@ export function FleetGraph({
     ].join("\n");
   }, [moving, scope]);
 
-  const filtering = selectedComputerId !== null;
-
   return (
     <div
       ref={stageRef}
@@ -450,7 +470,11 @@ export function FleetGraph({
             viewBox={`0 0 ${width ?? 0} ${height}`}
           >
             {lines.map((line) => (
-              <FleetLinePath key={line.key} d={curvePath(line.from, line.to)} state={line.state} />
+              <FleetLinePath
+                key={line.key}
+                d={curvePath(line.from, line.to, line.awayFrom)}
+                state={line.state}
+              />
             ))}
           </svg>
           {moving.length > 0 ? (
@@ -527,9 +551,7 @@ export function FleetGraph({
             computer={model.center}
             position={layout.center}
             nowMs={nowMs}
-            selected={selectedComputerId === model.center.id}
-            dimmed={filtering && selectedComputerId !== model.center.id}
-            onSelect={model.center.environmentId === null ? null : onSelectComputer}
+            onOpen={model.center.environmentId === null ? null : onOpenComputer}
           />
           {others.map((computer, index) => (
             <ComputerNode
@@ -537,9 +559,7 @@ export function FleetGraph({
               computer={computer}
               position={layout.others[index]!}
               nowMs={nowMs}
-              selected={selectedComputerId === computer.id}
-              dimmed={filtering && selectedComputerId !== computer.id}
-              onSelect={computer.kind === "device" ? null : onSelectComputer}
+              onOpen={onOpenComputer}
             />
           ))}
         </>

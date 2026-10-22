@@ -11,11 +11,18 @@ import {
   TerminalIcon,
   Undo2Icon,
   GitBranchIcon,
+  MonitorIcon,
   UsersRoundIcon,
 } from "lucide-react";
-import React, { memo, useCallback, useMemo } from "react";
+import React, { memo, useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { ModelSelection, ScopedThreadRef, VcsStatusResult } from "@threadlines/contracts";
+import type {
+  ComputerLinkPendingRequest,
+  EnvironmentId,
+  ModelSelection,
+  ScopedThreadRef,
+  VcsStatusResult,
+} from "@threadlines/contracts";
 import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import type { SidebarThreadSummary } from "../../types";
@@ -48,9 +55,18 @@ import {
   formatChildThreadCount,
   formatChildThreadsHighlight,
   inboxStatusWord,
+  remoteChildStatusText,
+  THREAD_STATUS_DOT_CLASSES,
   type ChildThreadsSummary,
+  type InboxRemoteChild,
   type ThreadStatusPill,
 } from "../Sidebar.logic";
+import {
+  describeComputerLinkFailure,
+  respondToComputerLinkRequest,
+} from "../../environments/links/computerLinks";
+import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   ThreadHoverCard,
@@ -639,8 +655,21 @@ export interface InboxThreadRowProps {
    * project name usually sits ("↳ Ship the 0.6 release").
    */
   wrappedParentTitle?: string | null | undefined;
+  /**
+   * A thread an agent on another computer started, standing on its own (the
+   * machine filter hides its parent, or the app can't see that computer):
+   * the parent and its computer, shown where the project name usually sits
+   * ("from Ship the 0.6 release on Mac mini").
+   */
+  remoteParent?: RemoteParentLine | null | undefined;
   /** See ThreadHoverCardPayload.lineage. */
   lineage?: ThreadHoverCardLineage | undefined;
+}
+
+/** See InboxThreadRowProps.remoteParent. */
+export interface RemoteParentLine {
+  readonly title: string;
+  readonly computerLabel: string;
 }
 
 /**
@@ -689,6 +718,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     family = null,
     onToggleFamily,
     wrappedParentTitle = null,
+    remoteParent = null,
     lineage,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
@@ -903,6 +933,18 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   <CalendarClockIcon aria-hidden className="size-2.5 shrink-0" />
                   <span className="min-w-0 truncate">{scheduledRunLabel}</span>
                 </span>
+              ) : remoteParent !== null ? (
+                // Started from another computer and standing on its own: the
+                // thread that started it, and where that thread runs.
+                <span
+                  className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
+                  data-testid={`thread-remote-parent-${thread.id}`}
+                >
+                  <CornerDownRightIcon aria-hidden className="size-2.5 shrink-0" />
+                  <span className="min-w-0 truncate">
+                    from {remoteParent.title} on {remoteParent.computerLabel}
+                  </span>
+                </span>
               ) : wrappedParentTitle !== null ? (
                 // A child whose parent is wrapped says where it came from, in
                 // the project name's place.
@@ -1105,13 +1147,19 @@ export interface InboxChildRowProps {
   markThreadDone: (threadKey: string) => void;
   reopenThread: (threadKey: string) => void;
   lineage?: ThreadHoverCardLineage | undefined;
+  /**
+   * The computer it runs on, when that isn't its parent's: a computer glyph
+   * marks the row (the hover card names the computer).
+   */
+  computerLabel?: string | null | undefined;
 }
 
 /**
  * One thread in a family, under its parent: one line, ~26px. The status dot
  * (a grey check once wrapped), the title, the same status words and colours a
  * live row uses, and the agent. Where the work lives is the parent's to say,
- * and the branch is in the hover card.
+ * and the branch is in the hover card; a child on another computer than its
+ * parent says so with a computer glyph.
  */
 export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowProps) {
   const {
@@ -1138,6 +1186,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
     markThreadDone,
     reopenThread,
     lineage,
+    computerLabel = null,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
@@ -1329,9 +1378,219 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
               </RowFloatingActions>
             ) : null}
           </span>
+          {computerLabel !== null ? (
+            <span
+              role="img"
+              aria-label={`On ${computerLabel}`}
+              data-testid={`child-computer-${thread.id}`}
+              className="inline-flex shrink-0 items-center"
+            >
+              <MonitorIcon aria-hidden className="size-3 text-muted-foreground/45" />
+            </span>
+          ) : null}
           <ThreadProviderGlyph thread={thread} />
         </div>
       </ThreadHoverCard>
+    </li>
+  );
+});
+
+/**
+ * A thread in a family that runs on a computer this app can't see, or a start
+ * that has no thread there yet, from the parent's own record. The status dot
+ * and title as a child row has them, then under the title a computer glyph
+ * with where it stands ("Mac mini · working", "Waiting for Mac mini to allow
+ * it"): a second line, so a narrow list keeps both the title and the
+ * computer. The app has no thread to open, so the row only explains itself
+ * on hover.
+ */
+export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
+  child,
+}: {
+  child: InboxRemoteChild;
+}) {
+  const statusText = remoteChildStatusText(child);
+  const isStart = child.threadId === null;
+  const tone = child.isDone ? undefined : child.status?.colorClass;
+  return (
+    <li className={ROW_ITEM_CLASS_NAME}>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <div
+              data-testid={`remote-child-row-${child.threadKey}`}
+              data-wrapped={child.isDone ? "true" : undefined}
+              className="cursor-default px-3 py-[5px] select-none pointer-coarse:py-2"
+            />
+          }
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            {child.isDone ? (
+              <CheckIcon
+                aria-label="Wrapped"
+                className="size-2.5 shrink-0 text-muted-foreground/50"
+              />
+            ) : (
+              <span
+                aria-label={child.status?.label ?? "Idle"}
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full",
+                  child.status?.dotClass ?? "bg-muted-foreground/45",
+                )}
+              />
+            )}
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate text-xs leading-4",
+                child.isDone ? "text-muted-foreground/80" : "text-foreground/85",
+              )}
+            >
+              {child.title}
+            </span>
+          </span>
+          <span
+            data-testid={`remote-child-meta-${child.threadKey}`}
+            // Under the title: the dot's width plus the gap.
+            className="mt-0.5 flex min-w-0 items-center gap-1 ps-3 text-[11px] leading-4 text-muted-foreground/60"
+          >
+            <MonitorIcon aria-hidden className="size-3 shrink-0" />
+            {isStart ? (
+              <span className={cn("min-w-0 truncate", tone)}>{statusText}</span>
+            ) : (
+              <>
+                <span className="min-w-0 truncate">{child.computerLabel}</span>
+                <MetaSeparator />
+                <span className={cn("shrink-0 font-mono", tone)}>{statusText}</span>
+              </>
+            )}
+          </span>
+        </TooltipTrigger>
+        <TooltipPopup side="top">
+          {isStart
+            ? statusText
+            : `Its last known status. Connect to ${child.computerLabel} to open it.`}
+        </TooltipPopup>
+      </Tooltip>
+    </li>
+  );
+});
+
+/** A prompt as one line, for a row that can only spare a glance at it. */
+function promptPreview(prompt: string): string {
+  return prompt.replace(/\s+/g, " ").trim();
+}
+
+export interface InboxLinkRequestRowProps {
+  /** The computer the thread would run on, whose Allow it waits for. */
+  readonly environmentId: EnvironmentId;
+  /** That computer's name. */
+  readonly computerLabel: string;
+  readonly request: ComputerLinkPendingRequest;
+}
+
+/**
+ * A thread another computer's agent asked to start, waiting for the user
+ * (docs/design/fleet.md, Part 2 "Ask first"): who asks and for what, which
+ * project and computer it would run on and which thread asked, a glance at
+ * the prompt, then Deny and Allow. The answer goes to the computer it would
+ * run on; the row leaves when that computer drops the request. Its buttons
+ * are plain like every list control but always showing, so a touch screen
+ * reaches them too.
+ */
+export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
+  environmentId,
+  computerLabel,
+  request,
+}: InboxLinkRequestRowProps) {
+  // Set while an answer is on its way, and kept after it lands: the row is
+  // done, and goes when the computer's next snapshot drops the request.
+  const [answering, setAnswering] = useState<"allow" | "deny" | null>(null);
+  const respond = useCallback(
+    async (allow: boolean) => {
+      setAnswering(allow ? "allow" : "deny");
+      try {
+        await respondToComputerLinkRequest(
+          { environmentId, label: computerLabel },
+          { deviceId: request.deviceId, requestId: request.requestId, allow },
+        );
+      } catch (error) {
+        setAnswering(null);
+        toastManager.add({
+          type: "error",
+          title: allow ? `Couldn't allow ${request.title}` : `Couldn't deny ${request.title}`,
+          description: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
+        });
+      }
+    },
+    [computerLabel, environmentId, request.deviceId, request.requestId, request.title],
+  );
+  const preview = promptPreview(request.prompt);
+  return (
+    <li
+      className={cn(ROW_ITEM_CLASS_NAME, "px-3 pt-1.5 pb-1.5 hover:bg-sidebar-accent/60")}
+      data-testid={`link-request-${request.requestId}`}
+    >
+      {/* Who asks and for what may take two lines: the thread's title is the
+          part worth reading, and it comes last. */}
+      <div className="flex min-w-0 items-start gap-1.5">
+        <span
+          aria-label="Needs you"
+          className={cn(
+            "mt-[5px] size-[7px] shrink-0 rounded-full",
+            THREAD_STATUS_DOT_CLASSES.amber,
+          )}
+        />
+        <span
+          className="line-clamp-2 min-w-0 flex-1 text-xs leading-4 font-medium text-foreground"
+          data-testid={`link-request-title-${request.requestId}`}
+          title={`${request.fromLabel} wants to start a thread: ${request.title}`}
+        >
+          {request.fromLabel} wants to start a thread: {request.title}
+        </span>
+        <span className="mt-0.5 shrink-0 font-mono text-[11px] leading-none text-muted-foreground/50 tabular-nums">
+          {formatRelativeTimeLabel(request.createdAt)}
+        </span>
+      </div>
+      <div
+        className="mt-0.5 truncate ps-[13px] text-[11px] text-muted-foreground/60"
+        data-testid={`link-request-where-${request.requestId}`}
+      >
+        {request.projectName} on {computerLabel}
+        <MetaSeparator />
+        from {request.parentThreadTitle}
+      </div>
+      <div className="mt-0.5 flex min-w-0 items-center gap-1 ps-[13px]">
+        <span
+          className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/60"
+          data-testid={`link-request-prompt-${request.requestId}`}
+        >
+          {preview}
+        </span>
+        <Button
+          variant="ghost"
+          size="xs"
+          data-thread-selection-safe
+          data-testid={`link-request-deny-${request.requestId}`}
+          aria-label={`Deny ${request.title}`}
+          className="text-muted-foreground"
+          disabled={answering !== null}
+          onClick={() => void respond(false)}
+        >
+          Deny
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          data-thread-selection-safe
+          data-testid={`link-request-allow-${request.requestId}`}
+          aria-label={`Allow ${request.title}`}
+          className="text-primary-readable"
+          disabled={answering !== null}
+          onClick={() => void respond(true)}
+        >
+          Allow
+        </Button>
+      </div>
     </li>
   );
 });

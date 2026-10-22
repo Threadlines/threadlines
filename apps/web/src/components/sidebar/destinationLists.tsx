@@ -12,6 +12,11 @@ export interface DestinationList {
   readonly body: "inbox" | ComponentType;
   /** It ends in a footer of its own; otherwise the shared one (update notices, version) does. */
   readonly ownFooter?: boolean;
+  /**
+   * A phone's sheet shows this list instead of the threads while the page is
+   * open: the page's own way between its items (Fleet's computers).
+   */
+  readonly inPhoneSheet?: boolean;
 }
 
 /**
@@ -23,7 +28,7 @@ export const DESTINATION_LISTS: Record<NavigationDestinationId, DestinationList 
   threads: { body: "inbox" },
   chats: { body: GeneralChatsList },
   "pull-requests": null,
-  fleet: { body: FleetComputersList },
+  fleet: { body: FleetComputersList, inPhoneSheet: true },
   scheduled: { body: ScheduledTasksList },
   usage: null,
   settings: { body: SettingsDestinationList, ownFooter: true },

@@ -17,6 +17,7 @@ import {
   type OrchestrationChildRequestState,
   type RemoteChildCancel,
   type RemoteChildRequest,
+  type RemoteChildStart,
   type RemoteChildThread,
   type RoomAgentRef,
   type ThreadId,
@@ -261,6 +262,40 @@ export const remoteChildOf = (
   threadId: ThreadId,
 ): RemoteChildThread | undefined =>
   (state.remoteChildren ?? []).find((entry) => entry.threadId === threadId);
+
+/**
+ * Starts asked of linked computers whose thread hasn't started there yet
+ * (sending, or waiting for that computer's user): the parent's family shows
+ * them until the child does. A start waiting for an Allow may already carry
+ * the id its thread will have; it counts until the parent records the child.
+ * The thread shell carries these, and the web store derives them the same
+ * way from a loaded thread.
+ */
+export const remoteChildStartsOf = (
+  state: OrchestrationChildRequestState,
+): ReadonlyArray<RemoteChildStart> =>
+  state.open.flatMap((request): RemoteChildStart[] =>
+    request.kind === "start" &&
+    request.remote !== undefined &&
+    (request.remote.threadId === null ||
+      !(state.remoteChildren ?? []).some(
+        (child) =>
+          child.environmentId === request.remote?.environmentId &&
+          child.threadId === request.remote.threadId,
+      )) &&
+    request.launch !== undefined
+      ? [
+          {
+            requestId: request.requestId,
+            environmentId: request.remote.environmentId,
+            label: request.remote.label,
+            title: request.launch.title,
+            status: request.remote.status,
+            createdAt: request.createdAt,
+          },
+        ]
+      : [],
+  );
 
 /**
  * How each child-request event changes a thread's state. The server's

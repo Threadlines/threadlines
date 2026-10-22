@@ -72,6 +72,7 @@ import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import {
   awaitedChildRequestCount,
   hasPendingChildApproval,
+  remoteChildStartsOf,
 } from "@threadlines/shared/childThreads";
 import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 import {
@@ -170,11 +171,14 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
 
 /**
  * Child threads as the sidebar reads them: lineage, and on a parent the
- * answers still owed and whether threads wait for the user's yes, without
- * shipping the open requests to every row.
+ * answers still owed, whether threads wait for the user's yes, and its
+ * children on linked computers (so its family shows them even where the app
+ * can't reach that computer), without shipping the open requests to every row.
  */
 const shellLineageFields = (row: ThreadLineageRow) => {
   const childRequests = row.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
+  const remoteChildren = childRequests.remoteChildren ?? [];
+  const remoteChildStarts = remoteChildStartsOf(childRequests);
   return {
     parentThreadId: row.parentThreadId ?? null,
     parentTurnId: row.parentTurnId ?? null,
@@ -185,6 +189,8 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     pendingChildApproval: hasPendingChildApproval(childRequests),
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
     ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
+    ...(remoteChildren.length > 0 ? { remoteChildren } : {}),
+    ...(remoteChildStarts.length > 0 ? { remoteChildStarts } : {}),
   };
 };
 

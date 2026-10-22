@@ -81,7 +81,12 @@ import {
   LinkRequestRepositoryLive,
   type LinkRequestRepositoryShape,
 } from "./LinkRequestRepository.ts";
-import { LinkRequests, LinkRequestsLive, type PeerLink } from "./LinkRequests.ts";
+import {
+  LinkRequests,
+  LinkRequestsLive,
+  OWED_STOPS_RETRY_EVERY,
+  type PeerLink,
+} from "./LinkRequests.ts";
 
 const AT = "2026-10-20T10:00:00.000Z";
 const PROJECT = ProjectId.make("project-1");
@@ -94,6 +99,7 @@ const link = (patch: Partial<PeerLink> = {}): PeerLink => ({
   deviceId: DEVICE,
   label: "Windows PC",
   environmentId: WINDOWS,
+  environmentPinned: false,
   access: "allowed",
   maxRuntimeMode: "auto",
   ...patch,
@@ -223,6 +229,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
       deviceId: string,
       access: "off" | "ask" | "allowed",
       state: "active" | "revoked" = "active",
+      pinnedTo: EnvironmentId | null = null,
     ) =>
       Effect.gen(function* () {
         yield* devices.insertApproving({
@@ -234,6 +241,7 @@ const makeComputer = (options: { readonly dbPath?: string } = {}) =>
           platform: null,
           devicePublicKey: "key",
           grant: "peer",
+          linkEnvironmentId: pinnedTo,
           now: AT,
         });
         yield* devices.transition({ deviceId, from: ["approving"], to: "active", now: AT });
@@ -361,10 +369,75 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
       const child = yield* computer.thread(linkThreadId(DEVICE, "request-1"));
       // The thread carries where it came from, so it gets no agent tools.
       assert.equal(child?.remoteOrigin?.linkDeviceId, DEVICE);
+      // Its link wasn't made for a named computer: who asked is unconfirmed.
+      assert.isFalse(child?.remoteOrigin?.environmentPinned);
       assert.equal(child?.remoteOrigin?.threadId, PARENT);
       // Never more access than the link allows.
       assert.equal(child?.runtimeMode, "auto");
     }),
+  );
+
+  it.effect(
+    "a link made for one computer refuses a start that says it comes from another, and keeps its id",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed", "active", WINDOWS);
+        const pinned = link({ environmentPinned: true });
+        const service = yield* computer.boot();
+        const linux = EnvironmentId.make("env-linux");
+        const input = startInput("request-1");
+
+        const posing = yield* service.start(pinned, {
+          ...input,
+          parent: { ...input.parent, environmentId: linux, environmentLabel: "Linux box" },
+        });
+        assert.deepEqual(posing, {
+          status: "refused",
+          reason: "This link was made for a different computer.",
+        });
+        // Nothing recorded, nothing started.
+        assert.isTrue(
+          Option.isNone(yield* computer.ledger.get(DEVICE, ChildRequestId.make("request-1"))),
+        );
+        // What it says about itself never replaces the computer it was made for.
+        yield* computer.devices.touchLink({ deviceId: DEVICE, environmentId: linux, now: AT });
+        const row = Option.getOrThrow(yield* computer.devices.getDevice(DEVICE));
+        assert.equal(row.linkEnvironmentId, WINDOWS);
+        assert.isTrue(row.linkEnvironmentPinned);
+
+        // Its own computer's start goes ahead, and its thread says the
+        // computer that asked is confirmed.
+        const own = yield* service.start(pinned, startInput("request-2"));
+        assert.equal(own.status, "started");
+        yield* eventually(computer.firstTurnCommitted("request-2"), "its first turn is committed");
+        const child = yield* computer.thread(linkThreadId(DEVICE, "request-2"));
+        assert.equal(child?.remoteOrigin?.environmentId, WINDOWS);
+        assert.isTrue(child?.remoteOrigin?.environmentPinned);
+
+        // A link whose invite named no computer keeps the first one it said
+        // it was, unconfirmed, and refuses any other after that.
+        yield* computer.addLink("device-unpinned", "allowed");
+        yield* computer.devices.touchLink({
+          deviceId: "device-unpinned",
+          environmentId: WINDOWS,
+          now: AT,
+        });
+        yield* computer.devices.touchLink({
+          deviceId: "device-unpinned",
+          environmentId: linux,
+          now: AT,
+        });
+        const unpinned = Option.getOrThrow(yield* computer.devices.getDevice("device-unpinned"));
+        assert.equal(unpinned.linkEnvironmentId, WINDOWS);
+        assert.isFalse(unpinned.linkEnvironmentPinned);
+        const switched = yield* service.start(link({ deviceId: "device-unpinned" }), {
+          ...input,
+          requestId: ChildRequestId.make("request-3"),
+          parent: { ...input.parent, environmentId: linux, environmentLabel: "Linux box" },
+        });
+        assert.equal(switched.status, "refused");
+      }),
   );
 
   it.effect("refuses a start that comes after its cancel, and a late Allow finds nothing", () =>
@@ -505,6 +578,46 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         });
         assert.equal(cancelled.status, "cancelled");
         assert.equal((yield* computer.request("request-1")).status, "cancelled");
+        assert.isTrue(stopRequestedFor(yield* computer.events, threadId));
+      }),
+  );
+
+  it.effect(
+    "an unlink stops a thread the link started that is still at work after its request was answered; a plain removal leaves it",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const service = yield* computer.boot();
+        // Nothing comes back from it, so its request is answered once it is set up.
+        yield* service.start(link(), { ...startInput("request-1"), reportBack: false });
+        yield* eventually(
+          Effect.map(computer.request("request-1"), (row) => row.status === "answered"),
+          "it is answered once set up",
+        );
+        const threadId = linkThreadId(DEVICE, "request-1");
+        // Its agent is still at work.
+        yield* computer.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("child-session-running"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "auto",
+            activeTurnId: TurnId.make("child-turn-1"),
+            lastError: null,
+            updatedAt: AT,
+          },
+          createdAt: AT,
+        });
+
+        yield* service.dropLink(DEVICE);
+        assert.isFalse(stopRequestedFor(yield* computer.events, threadId));
+
+        yield* service.dropLink(DEVICE, { stopRunning: true });
         assert.isTrue(stopRequestedFor(yield* computer.events, threadId));
       }),
   );
@@ -966,6 +1079,163 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         "taken-back",
       );
     }),
+  );
+
+  it.effect(
+    "a send or start that arrives as its link is being unlinked is refused by the link as it is now",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        const { threadId } = yield* startedChild(computer, "request-1");
+        // The unlink turns the link off after the send read it as allowed,
+        // just before the send is recorded (and before its drain lists what
+        // the link has open, so the drain doesn't find it).
+        const service = yield* computer.boot({
+          ledger: {
+            insert: (input) =>
+              computer.devices
+                .setLinkSettings({ deviceId: DEVICE, access: "off", now: AT })
+                .pipe(Effect.orDie, Effect.andThen(computer.ledger.insert(input))),
+          },
+        });
+        const sent = yield* service.send(link(), {
+          requestId: ChildRequestId.make("send-1"),
+          threadId,
+          text: "Add the security fixes too.",
+        });
+        assert.deepEqual(sent, {
+          status: "refused",
+          reason: "Mac mini doesn't take work from Windows PC.",
+        });
+        const messageId = linkMessageId(DEVICE, "send-1");
+        const child = yield* computer.thread(threadId);
+        assert.isFalse(child?.messages.some((message) => message.id === messageId));
+        assert.isFalse(
+          (child?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId),
+        );
+
+        // Removed outright: a start is ended before anything is set up.
+        yield* computer.devices.transition({
+          deviceId: DEVICE,
+          from: ["active"],
+          to: "revoked",
+          now: AT,
+        });
+        const late = yield* service.start(link(), startInput("request-2"));
+        assert.equal(late.status, "cancelled");
+        yield* wallClockSleep(100);
+        assert.isUndefined(yield* computer.thread(linkThreadId(DEVICE, "request-2")));
+      }),
+  );
+
+  it.effect("a request's turn never runs once its link is off, and the asker hears why", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed");
+      const { service, threadId } = yield* startedChild(computer, "request-1");
+      const firstMessage = linkMessageId(DEVICE, "request-1");
+      assert.equal(yield* service.messageVerdict({ threadId, messageId: firstMessage }), "run");
+      // An unlink turns the link off first: whatever the drain hasn't reached
+      // yet is held at the gate.
+      yield* computer.devices.setLinkSettings({ deviceId: DEVICE, access: "off", now: AT });
+      assert.equal(
+        yield* service.messageVerdict({ threadId, messageId: firstMessage }),
+        "taken-back",
+      );
+      const row = yield* computer.request("request-1");
+      assert.equal(row.status, "denied");
+      assert.equal(row.reportText, "Mac mini doesn't take work from Windows PC.");
+    }),
+  );
+
+  it.effect(
+    "an unlink's stops are asked for until each thread is seen stopped, across a restart, and never its user's later turn",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed");
+        yield* computer.addLink("device-later", "allowed");
+        const service = yield* computer.boot();
+        const session = (threadId: ThreadId, status: "running" | "stopped", turn: string) =>
+          computer.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`session-${status}-${threadId}`),
+            threadId,
+            session: {
+              threadId,
+              status,
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "auto",
+              activeTurnId: status === "running" ? TurnId.make(turn) : null,
+              lastError: null,
+              updatedAt: AT,
+            },
+            createdAt: AT,
+          });
+        const working = (deviceId: string, requestId: string) =>
+          Effect.gen(function* () {
+            // Nothing comes back from it, so its request is answered once it is set up.
+            yield* service.start(link({ deviceId }), {
+              ...startInput(requestId),
+              reportBack: false,
+            });
+            const threadId = linkThreadId(deviceId, requestId);
+            yield* eventually(
+              Effect.map(
+                computer.ledger.get(deviceId, ChildRequestId.make(requestId)),
+                (row) => Option.isSome(row) && row.value.status === "answered",
+              ),
+              "it is answered once set up",
+            );
+            yield* session(threadId, "running", `turn-${requestId}`);
+            return threadId;
+          });
+        const stopsFor = (threadId: ThreadId) =>
+          Effect.map(
+            computer.events,
+            (events) =>
+              events.filter(
+                (event) =>
+                  event.type === "thread.session-stop-requested" &&
+                  event.payload.threadId === threadId,
+              ).length,
+          );
+        const unlinked = yield* working(DEVICE, "request-1");
+        const later = yield* working("device-later", "request-2");
+        // An unlink's pass: its link went off after the thread's turn was asked for.
+        yield* service.dropLink(DEVICE, { stopRunning: true, turnsBefore: AT });
+        // Another link went off before its thread's turn was asked for: that
+        // turn is its user's, and the unlink leaves it alone.
+        yield* service.dropLink("device-later", {
+          stopRunning: true,
+          turnsBefore: "1969-12-31T23:59:59.000Z",
+        });
+        assert.equal(yield* stopsFor(unlinked), 1);
+        assert.equal(yield* stopsFor(later), 0);
+        // Asking isn't stopping: the thread owes its stop until it is seen stopped.
+        assert.deepEqual(
+          (yield* computer.ledger.listThreadStopsOwed).map((owed) => owed.threadId),
+          [unlinked],
+        );
+
+        // The process restarts, and the stop never took: it is asked for again.
+        const restarted = yield* computer.boot();
+        yield* restarted.startReactor();
+        yield* eventually(
+          Effect.map(stopsFor(unlinked), (count) => count === 2),
+          "the stop is asked for again",
+        );
+        // Its agent stops: the next pass sees that, and nothing more is owed.
+        yield* session(unlinked, "stopped", "turn-request-1");
+        yield* TestClock.adjust(OWED_STOPS_RETRY_EVERY);
+        yield* eventually(
+          Effect.map(computer.ledger.listThreadStopsOwed, (owed) => owed.length === 0),
+          "nothing more is owed",
+        );
+        assert.equal(yield* stopsFor(unlinked), 2);
+      }),
   );
 
   it.effect("a restart's settling whose write fails is tried again until it is written", () =>

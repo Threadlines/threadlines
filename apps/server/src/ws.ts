@@ -2587,8 +2587,8 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcStream(WS_METHODS.linksSubscribe, computerLinks.changes, {
             "rpc.aggregate": "links",
           }),
-        [WS_METHODS.linksCreateInvite]: (_input) =>
-          observeRpcEffect(WS_METHODS.linksCreateInvite, computerLinks.createInvite, {
+        [WS_METHODS.linksCreateInvite]: (input) =>
+          observeRpcEffect(WS_METHODS.linksCreateInvite, computerLinks.createInvite(input), {
             "rpc.aggregate": "links",
           }),
         [WS_METHODS.linksAccept]: (input) =>

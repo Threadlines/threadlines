@@ -64,7 +64,6 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -97,9 +96,10 @@ import { ProjectionThreadRepository } from "../persistence/Services/ProjectionTh
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
+import { RelayDeviceRepository, type RelayDeviceRow } from "../relay/RelayDeviceRepository.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { makeKeyedLock } from "./keyedLock.ts";
 import { linkBootstrapKey, linkCommandId, linkMessageId, linkThreadId } from "./linkIds.ts";
 import {
   isTerminalLinkRequest,
@@ -112,9 +112,29 @@ export interface PeerLink {
   readonly deviceId: string;
   readonly label: string;
   readonly environmentId: string | null;
+  /** `environmentId` was fixed by the invite this computer made for it. */
+  readonly environmentPinned: boolean;
   readonly access: ComputerLinkAccess;
   readonly maxRuntimeMode: RuntimeMode;
 }
+
+/**
+ * How `/peer` refuses a link that was removed here; the asking computer reads
+ * it as "already unlinked on this side".
+ */
+export const PEER_LINK_REMOVED = "This link was removed.";
+
+/**
+ * Why a linked computer can't go on as the computer it now says it is: its
+ * link here belongs to another one. A link's computer never changes once
+ * known: pinned by the invite made for it, or else (an invite that named no
+ * computer) the first one it said it was, which clients show as unconfirmed.
+ * Null when it may go on.
+ */
+export const linkIdentityRefusal = (link: PeerLink, environmentId: string): string | null =>
+  link.environmentId !== null && link.environmentId !== environmentId
+    ? "This link was made for a different computer."
+    : null;
 
 /** How long a start waits for this computer's user before it expires. */
 export const LINK_APPROVAL_TTL_MS = 24 * 60 * 60_000;
@@ -123,6 +143,8 @@ const QUIET_GRACE = Duration.seconds(15);
 const STOP_GRACE = Duration.seconds(5);
 const GIT_TIMEOUT_MS = 60_000;
 const DELIVERED_RETENTION_MS = 7 * 24 * 60 * 60_000;
+/** How often an unlink that still owes stops tries again. */
+export const OWED_STOPS_RETRY_EVERY = Duration.minutes(1);
 /** Ends that mean a request never runs: its turn is taken back if it hasn't started. */
 const TAKEN_BACK_STATUSES: ReadonlySet<PeerRequestStatus> = new Set([
   "cancelled",
@@ -163,8 +185,40 @@ export interface LinkRequestsShape {
   readonly pending: Effect.Effect<ReadonlyArray<ComputerLinkPendingRequest>>;
   /** Fires when the waiting starts change. */
   readonly pendingChanges: Stream.Stream<void>;
-  /** An inbound link was removed: what it still had open is cancelled. */
-  readonly dropLink: (deviceId: string) => Effect.Effect<void>;
+  /**
+   * An inbound link was removed: what it still had open is cancelled. With
+   * `stopRunning` (an unlink), the requests' threads are stopped too, and so
+   * is every thread it started that still runs a turn asked for before
+   * `turnsBefore` (when its link went off: a later turn is this computer's
+   * user's, as the link can't start one then), its request answered or not.
+   * Each such thread owes its stop until it is seen stopped (asked for again
+   * every minute).
+   */
+  readonly dropLink: (
+    deviceId: string,
+    options?: { readonly stopRunning?: boolean; readonly turnsBefore?: string },
+  ) => Effect.Effect<void, ComputerLinkError>;
+  /**
+   * An unlink of this link (call it as its access goes off, in the same
+   * transaction) owes a full pass over what it started, until `drainDone`
+   * with the generation this returns. `since` is when the first unlink
+   * owed it: the link has been off since. Call again when a pass falls short.
+   */
+  readonly oweDrain: (
+    deviceId: string,
+    error?: string,
+  ) => Effect.Effect<{ readonly generation: number; readonly since: string }, ComputerLinkError>;
+  /** A pass after the link's session ended got through. */
+  readonly drainDone: (deviceId: string, generation: number) => Effect.Effect<void>;
+  /** Unlinks still owing a pass (an unlink cut off part way, or one that fell short). */
+  readonly drainsOwed: Effect.Effect<
+    ReadonlyArray<{
+      readonly linkDeviceId: string;
+      readonly generation: number;
+      readonly since: string;
+    }>,
+    ComputerLinkError
+  >;
   readonly onTurnEnd: RemoteRequestTurnEndsShape["onTurnEnd"];
   /** See RemoteRequestGate. */
   readonly messageVerdict: RemoteRequestGateShape["messageVerdict"];
@@ -183,6 +237,16 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
  * otherwise: what a new thread here starts with.
  */
 export const DEFAULT_LINK_MAX_RUNTIME_MODE: RuntimeMode = DEFAULT_NEW_THREAD_RUNTIME_MODE;
+
+/** A device row as the link it is: its access settings with their defaults. */
+export const peerLinkOf = (row: RelayDeviceRow): PeerLink => ({
+  deviceId: row.deviceId,
+  label: row.label,
+  environmentId: row.linkEnvironmentId,
+  environmentPinned: row.linkEnvironmentPinned,
+  access: row.linkAccess ?? "ask",
+  maxRuntimeMode: row.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE,
+});
 
 const toOutcome = (outcome: ChildRequestOutcome): PeerRequestOutcome =>
   outcome === "declined" ? "denied" : outcome;
@@ -259,10 +323,6 @@ const make = Effect.gen(function* () {
   const inFlight = new Set<string>();
   /** Requests this process recorded: live work, never the previous process's. */
   const ownRequests = new Set<string>();
-  const requestLocks = new Map<
-    string,
-    { readonly semaphore: Semaphore.Semaphore; holders: number }
-  >();
   const quietChecks = new Set<string>();
   const stopChecks = new Set<string>();
   /** The status word last sent per thread, so watches only hear changes. */
@@ -275,29 +335,9 @@ const make = Effect.gen(function* () {
    * and a cancel's clean-up wait for each other, so a cancel's clean-up sees
    * everything the work before it did.
    */
-  const withRequestLock =
-    (deviceId: string, requestId: string) =>
-    <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-      Effect.suspend(() => {
-        const key = requestKey(deviceId, requestId);
-        let entry = requestLocks.get(key);
-        if (entry === undefined) {
-          entry = { semaphore: Semaphore.makeUnsafe(1), holders: 0 };
-          requestLocks.set(key, entry);
-        }
-        const held = entry;
-        held.holders += 1;
-        return held.semaphore
-          .withPermits(1)(effect)
-          .pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                held.holders -= 1;
-                if (held.holders === 0) requestLocks.delete(key);
-              }),
-            ),
-          );
-      });
+  const requestLock = makeKeyedLock();
+  const withRequestLock = (deviceId: string, requestId: string) =>
+    requestLock(requestKey(deviceId, requestId));
 
   /**
    * Whether the link that asked still lets its request go on: a link removed
@@ -311,7 +351,12 @@ const make = Effect.gen(function* () {
         (
           found,
         ):
-          | { readonly ok: true; readonly maxRuntimeMode: RuntimeMode }
+          | {
+              readonly ok: true;
+              readonly maxRuntimeMode: RuntimeMode;
+              /** The computer the link was made for, when pinned by its invite. */
+              readonly pinnedEnvironmentId: string | null;
+            }
           | { readonly ok: false; readonly outcome: PeerRequestOutcome; readonly text: string } => {
           if (
             Option.isNone(found) ||
@@ -330,6 +375,9 @@ const make = Effect.gen(function* () {
           return {
             ok: true,
             maxRuntimeMode: found.value.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE,
+            pinnedEnvironmentId: found.value.linkEnvironmentPinned
+              ? found.value.linkEnvironmentId
+              : null,
           };
         },
       ),
@@ -341,6 +389,65 @@ const make = Effect.gen(function* () {
     );
 
   const peerError = (detail: string) => new PeerRpcError({ detail });
+
+  /** Whether a link takes a new request now, read afresh: with its access, or why not. */
+  const linkStanding = (deviceId: string) =>
+    devices.getDevice(deviceId).pipe(
+      Effect.map(
+        (
+          found,
+        ):
+          | { readonly open: true; readonly access: ComputerLinkAccess }
+          | {
+              readonly open: false;
+              readonly settled: { readonly outcome: PeerRequestOutcome; readonly text: string };
+            } => {
+          const row = Option.getOrNull(found);
+          if (row === null || row.state !== "active" || row.grant !== "peer") {
+            return {
+              open: false,
+              settled: { outcome: "cancelled", text: `${ownLabel} removed the link.` },
+            };
+          }
+          const access = peerLinkOf(row).access;
+          return access === "off"
+            ? {
+                open: false,
+                settled: {
+                  outcome: "denied",
+                  text: `${ownLabel} doesn't take work from ${row.label}.`,
+                },
+              }
+            : { open: true, access };
+        },
+      ),
+    );
+
+  /**
+   * Records a request as its link stands: open (waiting for this computer's
+   * user under Ask first), or already ended when the link is off or gone.
+   * The link is read again once the request is recorded, and one turned off
+   * or removed meanwhile ends it there: an unlink turns the link off before
+   * it lists what the link has open, so either the unlink finds the request
+   * open and ends it, or the request finds the link off. What the link said
+   * when the call came in doesn't count. (A read that fails after the
+   * insert leaves it to the checks before its setup and its turn.)
+   */
+  const admit = (
+    deviceId: string,
+    record: (
+      standing: Effect.Success<ReturnType<typeof linkStanding>>,
+    ) => Parameters<typeof ledger.insert>[0],
+  ) =>
+    Effect.gen(function* () {
+      const row = yield* ledger.insert(record(yield* linkStanding(deviceId)));
+      if (isTerminalLinkRequest(row)) return row;
+      const after = yield* linkStanding(deviceId).pipe(Effect.option);
+      if (Option.isNone(after) || after.value.open) return row;
+      yield* settleOrFail(row, after.value.settled.outcome, after.value.settled.text);
+      const ended = yield* ledger.get(row.linkDeviceId, row.requestId);
+      return Option.getOrElse(ended, () => row);
+    });
 
   /**
    * A thread here, or undefined when there is none; a read that fails
@@ -702,6 +809,7 @@ const make = Effect.gen(function* () {
           const remoteOrigin: ThreadRemoteOrigin = {
             linkDeviceId: deviceId,
             environmentId: input.parent.environmentId,
+            environmentPinned: authority.pinnedEnvironmentId === input.parent.environmentId,
             environmentLabel: input.parent.environmentLabel,
             threadId: input.parent.threadId,
             threadTitle: input.parent.threadTitle,
@@ -765,6 +873,15 @@ const make = Effect.gen(function* () {
 
   const start: LinkRequestsShape["start"] = (link, input) =>
     Effect.gen(function* () {
+      // Its thread here names the computer that asked: never one it isn't.
+      const impostor = linkIdentityRefusal(link, input.parent.environmentId);
+      if (impostor !== null) {
+        yield* Effect.logWarning("links.identity-mismatch", {
+          deviceId: link.deviceId,
+          claimed: input.parent.environmentId,
+        });
+        return { status: "refused", reason: impostor } as const;
+      }
       const existing = yield* ledger
         .get(link.deviceId, input.requestId)
         .pipe(Effect.orElseSucceed(Option.none));
@@ -778,23 +895,19 @@ const make = Effect.gen(function* () {
       const now = yield* nowIso;
       const threadId = linkThreadId(link.deviceId, input.requestId);
       const messageId = linkMessageId(link.deviceId, input.requestId);
-      // A link that is off is refused in the same write that records the
-      // request, so no restart can find it waiting to be set up.
-      const refusal =
-        link.access === "off" ? `${ownLabel} doesn't take work from ${link.label}.` : null;
+      // A link that is off (or gone) is refused in the same write that
+      // records the request, so no restart can find it waiting to be set up.
       ownRequests.add(requestKey(link.deviceId, input.requestId));
-      const inserted = yield* ledger
-        .insert({
-          linkDeviceId: link.deviceId,
-          requestId: input.requestId,
-          status: link.access === "ask" ? "awaiting_approval" : "received",
-          payload: { kind: "start", input },
-          threadId,
-          messageId,
-          ...(refusal !== null ? { settled: { outcome: "denied", text: refusal } } : {}),
-          now,
-        })
-        .pipe(Effect.option);
+      const inserted = yield* admit(link.deviceId, (admission) => ({
+        linkDeviceId: link.deviceId,
+        requestId: input.requestId,
+        status: admission.open && admission.access === "ask" ? "awaiting_approval" : "received",
+        payload: { kind: "start", input },
+        threadId,
+        messageId,
+        ...(admission.open ? {} : { settled: admission.settled }),
+        now,
+      })).pipe(Effect.option);
       if (Option.isNone(inserted)) {
         return { status: "refused", reason: `${ownLabel} couldn't record the request.` } as const;
       }
@@ -803,7 +916,7 @@ const make = Effect.gen(function* () {
       if (row.createdAt !== now || startPayload(row) === null) {
         return startAnswer(row);
       }
-      if (refusal !== null) {
+      if (isTerminalLinkRequest(row)) {
         yield* publishRow(link.deviceId, input.requestId);
         return startAnswer(row);
       }
@@ -944,22 +1057,19 @@ const make = Effect.gen(function* () {
           } as const;
         }
         const now = yield* nowIso;
-        const refusal =
-          link.access === "off" ? `${ownLabel} doesn't take work from ${link.label}.` : null;
-        // Recorded before it is delivered: a restart finds it and delivers it.
+        // Recorded before it is delivered: a restart finds it and delivers
+        // it. Refused in that same write when the link is off or gone.
         ownRequests.add(requestKey(link.deviceId, input.requestId));
-        const inserted = yield* ledger
-          .insert({
-            linkDeviceId: link.deviceId,
-            requestId: input.requestId,
-            status: "received",
-            payload: { kind: "send", input },
-            threadId: thread.id,
-            messageId: linkMessageId(link.deviceId, input.requestId),
-            ...(refusal !== null ? { settled: { outcome: "denied", text: refusal } } : {}),
-            now,
-          })
-          .pipe(Effect.option);
+        const inserted = yield* admit(link.deviceId, (admission) => ({
+          linkDeviceId: link.deviceId,
+          requestId: input.requestId,
+          status: "received",
+          payload: { kind: "send", input },
+          threadId: thread.id,
+          messageId: linkMessageId(link.deviceId, input.requestId),
+          ...(admission.open ? {} : { settled: admission.settled }),
+          now,
+        })).pipe(Effect.option);
         if (Option.isNone(inserted)) {
           return {
             status: "refused",
@@ -967,8 +1077,9 @@ const make = Effect.gen(function* () {
           } as const;
         }
         const row = inserted.value;
-        if (row.createdAt !== now || row.payload?.kind !== "send" || refusal !== null) {
-          if (refusal !== null) yield* publishRow(link.deviceId, input.requestId);
+        if (row.createdAt !== now || row.payload?.kind !== "send") return sendAnswer(row);
+        if (isTerminalLinkRequest(row)) {
+          yield* publishRow(link.deviceId, input.requestId);
           return sendAnswer(row);
         }
         const answer = yield* deliverSend(link.deviceId, input.requestId);
@@ -978,6 +1089,23 @@ const make = Effect.gen(function* () {
     );
 
   /** Whether a thread still has anything going: a turn, a session at work, queued messages. */
+  /**
+   * Whether a thread's agent is at work: a turn, a session at work, a
+   * background task. (Unlike isWorking, messages queued for later don't
+   * count: a stop leaves those, and an unlink takes back its own.)
+   */
+  const isRunning = (thread: OrchestrationThread) => {
+    const session = thread.session;
+    return (
+      thread.latestTurn?.state === "running" ||
+      (session !== null &&
+        (session.activeTurnId !== null ||
+          session.status === "running" ||
+          session.status === "starting" ||
+          (session.pendingBackgroundTaskCount ?? 0) > 0))
+    );
+  };
+
   const isWorking = (thread: OrchestrationThread) => {
     const session = thread.session;
     return (
@@ -991,15 +1119,24 @@ const make = Effect.gen(function* () {
     );
   };
 
-  /** Stops a link's thread if it is still working; fails if the stop wasn't recorded. */
-  const stopIfWorking = (deviceId: string, thread: OrchestrationThread) =>
+  /** Which turn a thread is at, for telling "still at it" from "moved on". */
+  const turnKeyOf = (thread: OrchestrationThread) => thread.latestTurn?.turnId ?? "none";
+
+  /**
+   * Stops a link's thread if it is still working; fails if the stop wasn't
+   * recorded. `retry` makes it a new stop (the first one, already recorded,
+   * didn't take), not a replay of the first.
+   */
+  const stopIfWorking = (deviceId: string, thread: OrchestrationThread, retry?: string) =>
     Effect.gen(function* () {
       if (!isWorking(thread)) return "not_running" as const;
       yield* mustDispatch(
         {
           type: "thread.session.stop",
           commandId: CommandId.make(
-            `server:link-stop:${deviceId}:${thread.id}:${thread.latestTurn?.turnId ?? "none"}`,
+            `server:link-stop:${deviceId}:${thread.id}:${turnKeyOf(thread)}${
+              retry === undefined ? "" : `:retry:${retry}`
+            }`,
           ),
           threadId: thread.id,
           createdAt: yield* nowIso,
@@ -1222,20 +1359,174 @@ const make = Effect.gen(function* () {
     return result;
   });
 
-  const dropLink: LinkRequestsShape["dropLink"] = (deviceId) =>
+  const dropLink: LinkRequestsShape["dropLink"] = (deviceId, options) =>
     Effect.gen(function* () {
-      const open = yield* ledger.listOpen.pipe(Effect.orElseSucceed(() => []));
+      const stopRunning = options?.stopRunning === true;
+      // An unlink must not claim its work stopped when some of it didn't:
+      // it fails, the link stays, and the unlink is tried again.
+      let incomplete = false;
+      const open = yield* ledger.listOpen.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("link requests could not list a removed link's requests", {
+            detail: String(error),
+          }).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                incomplete = true;
+                return [] as ReadonlyArray<LinkRequestRow>;
+              }),
+            ),
+          ),
+        ),
+      );
       for (const row of open) {
         if (row.linkDeviceId !== deviceId) continue;
-        yield* cancelRequest(deviceId, row.requestId, `${ownLabel} removed the link.`, false).pipe(
+        yield* cancelRequest(
+          deviceId,
+          row.requestId,
+          `${ownLabel} removed the link.`,
+          stopRunning,
+        ).pipe(
           Effect.catch((error) =>
             Effect.logWarning("link requests could not cancel a removed link's request", {
               detail: error.detail,
-            }),
+            }).pipe(Effect.andThen(Effect.sync(() => (incomplete = true)))),
           ),
         );
       }
+      if (stopRunning) {
+        // Its threads whose requests already settled can still be at work
+        // (a follow-up, a background task): an unlink stops them too.
+        const threadIds = yield* threadRows.listIdsByRemoteLink({ linkDeviceId: deviceId }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("link requests could not list a removed link's threads", {
+              detail: String(error),
+            }).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  incomplete = true;
+                  return [] as ReadonlyArray<ThreadId>;
+                }),
+              ),
+            ),
+          ),
+        );
+        for (const threadId of threadIds) {
+          yield* Effect.gen(function* () {
+            const thread = yield* readThreadOrFail(threadId);
+            if (thread === undefined || thread.deletedAt !== null) return;
+            if (thread.remoteOrigin?.linkDeviceId !== deviceId) return;
+            if (!isRunning(thread)) return;
+            // A turn asked for once the link was off is this computer's user's.
+            const turnsBefore = options?.turnsBefore;
+            const requestedAt = thread.latestTurn?.requestedAt;
+            if (
+              turnsBefore !== undefined &&
+              requestedAt !== undefined &&
+              requestedAt > turnsBefore
+            ) {
+              return;
+            }
+            // Owed before it is asked for: a stop that doesn't take is asked
+            // for again until the thread is seen stopped.
+            yield* ledger.oweThreadStop({
+              linkDeviceId: deviceId,
+              threadId,
+              turnKey: turnKeyOf(thread),
+              now: yield* nowIso,
+            });
+            yield* stopIfWorking(deviceId, thread);
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("link requests could not stop a removed link's thread", {
+                    threadId,
+                    cause: Cause.pretty(cause),
+                  }).pipe(Effect.andThen(Effect.sync(() => (incomplete = true)))),
+            ),
+          );
+        }
+      }
+      if (stopRunning && incomplete) {
+        return yield* new ComputerLinkError({
+          detail: `${ownLabel} couldn't stop everything the link started. Try again.`,
+        });
+      }
     });
+
+  const oweDrain: LinkRequestsShape["oweDrain"] = (deviceId, error) =>
+    Effect.gen(function* () {
+      return yield* ledger.oweDrain({
+        linkDeviceId: deviceId,
+        ...(error !== undefined ? { error } : {}),
+        now: yield* nowIso,
+      });
+    }).pipe(
+      Effect.mapError(
+        () =>
+          new ComputerLinkError({ detail: `${ownLabel} couldn't record the unlink. Try again.` }),
+      ),
+    );
+
+  const drainDone: LinkRequestsShape["drainDone"] = (deviceId, generation) =>
+    ledger.clearDrainOwed({ linkDeviceId: deviceId, generation }).pipe(
+      Effect.catch((error) =>
+        // Left owed: the next pass gets through and clears it.
+        Effect.logWarning("link requests could not clear an unlink's pass", {
+          detail: String(error),
+        }),
+      ),
+    );
+
+  const drainsOwed: LinkRequestsShape["drainsOwed"] = ledger.listDrainsOwed.pipe(
+    Effect.mapError(
+      () => new ComputerLinkError({ detail: `${ownLabel} couldn't read its unlinks.` }),
+    ),
+  );
+
+  /**
+   * One pass over stops unlinks still owe: a thread still at work on the
+   * turn it was at is asked to stop again (as a new stop, not a replay); one
+   * stopped, or gone on to a later turn (its user's: the link was off by
+   * then), owes nothing more. A whole-link pass an unlink still owes is
+   * ComputerLinks' to finish, since it ends the link's session too.
+   */
+  const finishOwedStops = Effect.gen(function* () {
+    const stops = yield* ledger.listThreadStopsOwed.pipe(Effect.option);
+    if (Option.isNone(stops)) {
+      yield* Effect.logWarning("link requests could not list threads that owe a stop");
+      return;
+    }
+    const attempt = yield* nowIso;
+    for (const owed of stops.value) {
+      yield* Effect.gen(function* () {
+        const thread = yield* readThreadOrFail(owed.threadId);
+        if (
+          thread === undefined ||
+          thread.deletedAt !== null ||
+          !isRunning(thread) ||
+          turnKeyOf(thread) !== owed.turnKey
+        ) {
+          yield* ledger.clearThreadStopOwed(owed);
+          yield* Effect.logInfo("link requests saw an unlinked link's thread stop", {
+            threadId: owed.threadId,
+          });
+          return;
+        }
+        yield* stopIfWorking(owed.linkDeviceId, thread, attempt);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("link requests could not stop an unlinked link's thread", {
+                threadId: owed.threadId,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      );
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Turns ending, sessions changing
@@ -1710,19 +2001,28 @@ const make = Effect.gen(function* () {
    * message id reserved for it): it never runs once the asking computer took
    * the request back (`revokedAt`, set by every cancel whatever the status:
    * a start that reports nothing back is already settled `answered` before
-   * its turn runs), or once the request ended without running (refused,
-   * expired).
+   * its turn runs), once the request ended without running (refused,
+   * expired), or once its link is gone or off (an unlink turns it off before
+   * anything else, so nothing it started runs after that). A request still
+   * open then ends with the link's reason, so the asking computer hears it.
    */
   const messageVerdict: LinkRequestsShape["messageVerdict"] = ({ threadId, messageId }) =>
-    ledger.listByThread(threadId).pipe(
-      Effect.map((rows) => {
-        const row = rows.find((entry) => entry.messageId === messageId);
-        return row !== undefined && (row.revokedAt !== null || TAKEN_BACK_STATUSES.has(row.status))
-          ? ("taken-back" as const)
-          : ("run" as const);
-      }),
-      Effect.orElseSucceed(() => "unknown" as const),
-    );
+    Effect.gen(function* () {
+      const rows = yield* ledger.listByThread(threadId);
+      const row = rows.find((entry) => entry.messageId === messageId);
+      if (row === undefined) return "run" as const;
+      if (row.revokedAt !== null || TAKEN_BACK_STATUSES.has(row.status)) {
+        return "taken-back" as const;
+      }
+      const authority = yield* linkAuthority(row.linkDeviceId);
+      if (authority.ok) return "run" as const;
+      // The link couldn't be read: hold the turn and ask again.
+      if (authority.outcome === "failed") return "unknown" as const;
+      if (!isTerminalLinkRequest(row)) {
+        yield* settleOrFail(row, authority.outcome, authority.text);
+      }
+      return "taken-back" as const;
+    }).pipe(Effect.orElseSucceed(() => "unknown" as const));
 
   const expireWaiting = Effect.gen(function* () {
     const open = yield* ledger.listOpen.pipe(Effect.orElseSucceed(() => []));
@@ -1755,6 +2055,18 @@ const make = Effect.gen(function* () {
         Effect.repeat(Schedule.spaced(Duration.hours(1))),
         Effect.forkScoped,
       );
+      // Unlinks that still owe stops: now, then every minute.
+      yield* finishOwedStops.pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("link requests could not finish an unlink's stops", {
+                cause: Cause.pretty(cause),
+              }),
+        ),
+        Effect.repeat(Schedule.spaced(OWED_STOPS_RETRY_EVERY)),
+        Effect.forkScoped,
+      );
     });
 
   return LinkRequests.of({
@@ -1770,6 +2082,9 @@ const make = Effect.gen(function* () {
     pending,
     pendingChanges: Stream.fromPubSub(pendingHub),
     dropLink,
+    oweDrain,
+    drainDone,
+    drainsOwed,
     onTurnEnd,
     messageVerdict,
     startReactor,

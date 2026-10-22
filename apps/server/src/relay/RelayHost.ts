@@ -118,10 +118,12 @@ export interface RelayHostShape {
   readonly createInvite: Effect.Effect<RelayOpenInvite, RelayAccessError>;
   /**
    * A single-use invite for another computer's server (a computer link):
-   * claims of it are approved on their own and get the `peer` role. It never
-   * shows as the open code.
+   * claims of it are approved on their own and get the `peer` role, recorded
+   * as `joinerEnvironmentId`'s link for good. It never shows as the open code.
    */
-  readonly createLinkInvite: Effect.Effect<RelayLinkInvite, RelayAccessError>;
+  readonly createLinkInvite: (
+    joinerEnvironmentId: string,
+  ) => Effect.Effect<RelayLinkInvite, RelayAccessError>;
   /** Whether this server removed the device (so its far end can tell that from a wrong address). */
   readonly isRevokedDevice: (deviceId: string) => Effect.Effect<boolean>;
   readonly cancelInvite: (inviteId: RelayInviteId) => Effect.Effect<void, RelayAccessError>;
@@ -272,6 +274,8 @@ const make = Effect.gen(function* () {
       readonly expiresAt: number;
       /** Set by this server when it made the invite; decides the claimer's grant. */
       readonly purpose: RelayInvitePurpose;
+      /** Computer links: the computer it is for, pinned on the device it approves. */
+      readonly joinerEnvironmentId: string | null;
       claimedBy: string | null;
       approved: boolean;
     }
@@ -682,6 +686,7 @@ const make = Effect.gen(function* () {
               request.requestId,
               request.devicePublicKey,
               grantForInvitePurpose(local.purpose),
+              local.joinerEnvironmentId,
             );
             if (decision.state === "approved") {
               local.approved = true;
@@ -821,15 +826,21 @@ const make = Effect.gen(function* () {
           detail: "That code ran out. Make a new one and try again.",
         });
       }
-      return yield* approveVerified(requestId, pairing.value.devicePublicKey, "client");
+      return yield* approveVerified(requestId, pairing.value.devicePublicKey, "client", null);
     });
 
   /**
    * Approves a join whose device key this server already checked. `grant`
-   * comes from the invite this server made and goes into the device row in
-   * the same insert, before any session exists.
+   * (and a computer link's pinned `linkEnvironmentId`) come from the invite
+   * this server made and go into the device row in the same insert, before
+   * any session exists.
    */
-  const approveVerified = (requestId: string, devicePublicKey: string, grant: RelayDeviceGrant) =>
+  const approveVerified = (
+    requestId: string,
+    devicePublicKey: string,
+    grant: RelayDeviceGrant,
+    linkEnvironmentId: string | null,
+  ) =>
     Effect.gen(function* () {
       const request = requests.get(requestId);
       if (!request) {
@@ -845,6 +856,7 @@ const make = Effect.gen(function* () {
         platform: request.joiner.platform ?? null,
         devicePublicKey,
         grant,
+        linkEnvironmentId,
         now: nowIso(),
       });
       if (row.state === "revoking" || row.state === "revoked") {
@@ -1196,7 +1208,7 @@ const make = Effect.gen(function* () {
 
   // ----- public API ---------------------------------------------------------------
 
-  const makeInvite = (purpose: RelayInvitePurpose) =>
+  const makeInvite = (purpose: RelayInvitePurpose, joinerEnvironmentId: string | null = null) =>
     Effect.gen(function* () {
       const creds = yield* ensureRegistered;
       const key = yield* hostKey;
@@ -1222,6 +1234,7 @@ const make = Effect.gen(function* () {
         macKey,
         expiresAt,
         purpose,
+        joinerEnvironmentId,
         claimedBy: null,
         approved: false,
       });
@@ -1231,6 +1244,7 @@ const make = Effect.gen(function* () {
         expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAt)),
         claimedBy: null,
         approved: false,
+        joinerEnvironmentId,
         createdAt: nowIso(),
       });
       const made: RelayOpenInvite = {
@@ -1260,21 +1274,22 @@ const make = Effect.gen(function* () {
     return openInvite;
   }).pipe(Effect.mapError((error) => toAccessError(error, "Couldn't make a code.")));
 
-  const createLinkInvite: RelayHostShape["createLinkInvite"] = Effect.gen(function* () {
-    const made = yield* makeInvite("computer-link");
-    // The control socket has to be up to hear the claim.
-    yield* ensureControl;
-    const port = localOrigin ? Number(new URL(localOrigin).port) : Number.NaN;
-    const directOrigins =
-      Number.isInteger(port) && port > 0
-        ? computeDirectOrigins({
-            bindHost: config.host,
-            port,
-            tailscaleHttpsBaseUrl: yield* tailscaleHttpsBaseUrl,
-          })
-        : [];
-    return { invite: made, directOrigins };
-  }).pipe(Effect.mapError((error) => toAccessError(error, "Couldn't make a link invite.")));
+  const createLinkInvite: RelayHostShape["createLinkInvite"] = (joinerEnvironmentId) =>
+    Effect.gen(function* () {
+      const made = yield* makeInvite("computer-link", joinerEnvironmentId);
+      // The control socket has to be up to hear the claim.
+      yield* ensureControl;
+      const port = localOrigin ? Number(new URL(localOrigin).port) : Number.NaN;
+      const directOrigins =
+        Number.isInteger(port) && port > 0
+          ? computeDirectOrigins({
+              bindHost: config.host,
+              port,
+              tailscaleHttpsBaseUrl: yield* tailscaleHttpsBaseUrl,
+            })
+          : [];
+      return { invite: made, directOrigins };
+    }).pipe(Effect.mapError((error) => toAccessError(error, "Couldn't make a link invite.")));
 
   const isRevokedDevice: RelayHostShape["isRevokedDevice"] = (deviceId) =>
     repo.getDevice(deviceId).pipe(

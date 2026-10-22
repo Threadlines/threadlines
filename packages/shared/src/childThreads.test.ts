@@ -2,6 +2,7 @@ import {
   ChildRequestBatchId,
   ChildRequestId,
   EMPTY_CHILD_REQUEST_STATE,
+  EnvironmentId,
   MessageId,
   type OrchestrationChildRequest,
   ThreadId,
@@ -15,6 +16,7 @@ import {
   childSendRefusal,
   childStartRefusal,
   isHandedBackCompletion,
+  remoteChildStartsOf,
 } from "./childThreads.ts";
 
 const PARENT = ThreadId.make("parent");
@@ -182,6 +184,46 @@ describe("childRequestStateOn", () => {
     expect(reset.startsSinceUser).toBe(0);
     expect(reset.open).toHaveLength(1);
     expect(childRequestStateOn.reset(reset)).toBe(reset);
+  });
+});
+
+describe("remoteChildStartsOf", () => {
+  const windows = EnvironmentId.make("env-windows");
+  const remoteStart = (threadId: ThreadId | null, status: "sending" | "awaiting_approval") =>
+    request({
+      status: "starting",
+      launch: {
+        title: "Fix the flaky test",
+        prompt: "Fix it.",
+        modelSelection: { instanceId: "codex", model: "gpt-5" } as never,
+        runtimeMode: "auto",
+        interactionMode: "default",
+        reportBack: true,
+        runSetup: false,
+        workspace: { kind: "local" } as never,
+      },
+      remote: { environmentId: windows, label: "Windows PC", threadId, status },
+    });
+
+  it("keeps a start in the family until its child is recorded, a reserved thread id or not", () => {
+    const waiting = childRequestStateOn.submitted(
+      EMPTY_CHILD_REQUEST_STATE,
+      remoteStart(ThreadId.make("reserved"), "awaiting_approval"),
+    );
+    expect(remoteChildStartsOf(waiting)).toEqual([
+      expect.objectContaining({ title: "Fix the flaky test", status: "awaiting_approval" }),
+    ]);
+    const started = childRequestStateOn.remoteChildUpdated(waiting, {
+      environmentId: windows,
+      label: "Windows PC",
+      threadId: ThreadId.make("reserved"),
+      handle: "Codex",
+      title: "Fix the flaky test",
+      attachmentEpoch: 0,
+      cachedStatus: "working",
+      updatedAt: "2026-10-04T10:01:00.000Z",
+    });
+    expect(remoteChildStartsOf(started)).toEqual([]);
   });
 });
 
