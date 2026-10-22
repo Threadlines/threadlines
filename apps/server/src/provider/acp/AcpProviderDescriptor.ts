@@ -261,6 +261,12 @@ export interface AcpDetectionInput<Settings extends AcpProviderSettings> {
   readonly detectBinary: (binaryPath: string) => ServerProviderDetection;
 }
 
+/** One catalog model with the options it offers, as an agent lists them. */
+export interface AcpModelOptions {
+  readonly slug: string;
+  readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+}
+
 export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly driverKind: ProviderDriverKind;
   readonly presentation: ServerProviderPresentation;
@@ -492,10 +498,21 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   ) => Effect.Effect<ReadonlyArray<ServerProviderModel>, never, HttpClient.HttpClient>;
   /**
    * When true the option set changes with the selected model, so the driver
-   * probes each model's capabilities in the background (Cursor, fx). When
+   * probes each model's capabilities in the background: fx by switching
+   * through its catalog, Cursor by listing it (`listModelOptions`). When
    * false the current session's options apply to every catalog entry.
    */
   readonly modelCapabilitiesVaryByModel?: boolean;
+  /**
+   * Every model's own options, read without switching the session's model,
+   * or `undefined` when the agent answered in a shape this doesn't know. For
+   * an agent that keeps a model switch beyond the session (Cursor saves it as
+   * the user's CLI default): the capability probe reads this instead of
+   * switching through the catalog, and probes no further when it fails.
+   */
+  readonly listModelOptions?: (
+    acp: AcpSessionRuntimeShape,
+  ) => Effect.Effect<ReadonlyArray<AcpModelOptions> | undefined, EffectAcpErrors.AcpError>;
   /**
    * Sessions the background capability probe splits the catalog across
    * (default 4). Agents that start slowly but switch models in milliseconds

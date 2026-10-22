@@ -192,7 +192,10 @@ const makeProviderStatusEnvFixture = Effect.fn("makeProviderStatusEnvFixture")(f
   };
 });
 
-const makeExitLogFixture = Effect.fn("makeExitLogFixture")(function* (prefix: string) {
+const makeExitLogFixture = Effect.fn("makeExitLogFixture")(function* (
+  prefix: string,
+  environment: Record<string, string> = {},
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const tempDir = yield* fileSystem.makeTempDirectory({
@@ -204,6 +207,7 @@ const makeExitLogFixture = Effect.fn("makeExitLogFixture")(function* (prefix: st
     exitLogPath,
     wrapperPath: yield* makeMockAgentWrapper({
       T3_ACP_EXIT_LOG_PATH: exitLogPath,
+      ...environment,
     }),
   };
 });
@@ -664,13 +668,17 @@ describe("discoverAcpModels (Cursor)", () => {
 });
 
 describe("discoverAcpModelCapabilities (Cursor)", () => {
-  it("closes all ACP probe runtimes after capability enrichment completes", async () => {
+  it("reads every model's options from Cursor's list without switching models", async () => {
     if (process.platform === "win32") {
       return;
     }
 
+    // Cursor saves a model switch as the user's default model, so the mock
+    // quits on any option change: a switch would leave the models bare.
     const { exitLogPath, wrapperPath } = await runNode(
-      makeExitLogFixture("cursor-capabilities-exit-log-"),
+      makeExitLogFixture("cursor-capabilities-exit-log-", {
+        T3_ACP_EXIT_ON_SET_CONFIG_OPTION: "1",
+      }),
     );
     const existingModels: ReadonlyArray<ServerProviderModel> = [
       { slug: "default", name: "Auto", isCustom: false, capabilities: emptyCapabilities },
@@ -710,10 +718,11 @@ describe("discoverAcpModelCapabilities (Cursor)", () => {
     expect(optionIds("gpt-5.4")).toContain("reasoning");
     expect(optionIds("claude-opus-4-6")).toContain("reasoning");
 
-    // The catalog session probes the first lane itself; two more sessions
-    // take the other two models.
+    expect(optionIds("composer-2")).toEqual(["fastMode"]);
+    // One probe session, closed when done, and no switch made it quit.
     const exitLog = await runNode(waitForFileContent(exitLogPath));
-    expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(3);
+    expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(1);
+    expect(exitLog).not.toContain("exit:7");
   });
 });
 

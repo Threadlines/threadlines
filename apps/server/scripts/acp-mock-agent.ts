@@ -81,7 +81,10 @@ process.once("exit", (code) => {
   logExit(`exit:${code}`);
 });
 
-function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
+/** The session's options, with `modelId`'s own when another model is asked about. */
+function configOptions(
+  modelId: string = currentModelId,
+): ReadonlyArray<AcpSchema.SessionConfigOption> {
   if (noModelChoice) {
     return [
       {
@@ -123,7 +126,7 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
       },
     ];
 
-    switch (currentModelId) {
+    switch (modelId) {
       case "gpt-5.4":
         return [
           ...baseOptions,
@@ -703,6 +706,18 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleUnknownExtRequest((method, params) => {
+    // Cursor's own catalog: every model with its options, no model switched.
+    if (method === "cursor/list_available_models" && parameterizedModelPicker) {
+      return Effect.succeed({
+        models: ["default", "composer-2", "gpt-5.4", "claude-opus-4-6"].map((value) => ({
+          value,
+          name: value,
+          configOptions: configOptions(value).filter(
+            (option) => option.id !== "mode" && option.id !== "model",
+          ),
+        })),
+      });
+    }
     if (method !== "session/mode/set" && method !== "session/set_mode") {
       return Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
     }
