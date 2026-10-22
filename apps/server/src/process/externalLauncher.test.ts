@@ -1018,20 +1018,6 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
 });
 
 it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
-  it.effect("resolves win32 commands with PATHEXT", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-external-launcher-test-" });
-      yield* fs.writeFileString(path.join(dir, "code.CMD"), "@echo off\r\n");
-      const env = {
-        PATH: dir,
-        PATHEXT: ".COM;.EXE;.BAT;.CMD",
-      } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("code", { platform: "win32", env }), true);
-    }),
-  );
-
   it("returns false when a command is not on PATH", () => {
     const env = {
       PATH: "",

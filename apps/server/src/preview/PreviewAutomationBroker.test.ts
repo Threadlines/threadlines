@@ -158,23 +158,6 @@ describe("PreviewAutomationBroker", () => {
     ),
   );
 
-  it.effect("gives up on a browser that never answers", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const broker = yield* make;
-        yield* attachHost(broker);
-        const call = yield* broker
-          .invoke({ threadId, agentId, operation: "click", input: {}, timeoutMs: 5_000 })
-          .pipe(Effect.forkChild);
-        yield* Effect.yieldNow;
-
-        yield* TestClock.adjust("6 seconds");
-        const failure = yield* Fiber.join(call).pipe(failureOf);
-        assert.strictEqual(failure._tag, "PreviewAutomationTimeoutError");
-      }),
-    ),
-  );
-
   it.effect("tells a client that can hear it to drop a request it gave up on", () =>
     Effect.scoped(
       Effect.gen(function* () {

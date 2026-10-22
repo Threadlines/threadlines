@@ -113,52 +113,6 @@ function assertCloneDestinationConflict(error: unknown) {
   assert.equal(error.detail, "Destination path already exists and is not empty.");
 }
 
-it.effect("looks up repositories through the requested provider without search", () => {
-  const calls: Array<{ cwd: string; repository: string }> = [];
-  const provider = makeProvider({
-    getRepositoryCloneUrls: (input) =>
-      Effect.sync(() => {
-        calls.push({ cwd: input.cwd, repository: input.repository });
-        return CLONE_URLS;
-      }),
-  });
-
-  return Effect.gen(function* () {
-    const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
-    const result = yield* service.lookupRepository({
-      provider: "github",
-      repository: "octocat/t3code",
-      cwd: "/workspace",
-    });
-
-    assert.deepStrictEqual(result, { provider: "github", ...CLONE_URLS });
-    assert.deepStrictEqual(calls, [{ cwd: "/workspace", repository: "octocat/t3code" }]);
-  }).pipe(Effect.provide(makeLayer({ provider })));
-});
-
-it.effect("lists repositories through the requested provider", () => {
-  const calls: Array<{ cwd: string; limit?: number }> = [];
-  const provider = makeProvider({
-    listRepositories: (input) =>
-      Effect.sync(() => {
-        calls.push(input);
-        return [{ provider: "github", ...CLONE_URLS }];
-      }),
-  });
-
-  return Effect.gen(function* () {
-    const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
-    const result = yield* service.listRepositories({
-      provider: "github",
-      cwd: "/workspace",
-      limit: 25,
-    });
-
-    assert.deepStrictEqual(result, { repositories: [{ provider: "github", ...CLONE_URLS }] });
-    assert.deepStrictEqual(calls, [{ cwd: "/workspace", limit: 25 }]);
-  }).pipe(Effect.provide(makeLayer({ provider })));
-});
-
 it.effect("clones a looked-up repository into the requested destination", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

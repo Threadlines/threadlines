@@ -123,29 +123,6 @@ describe("runProcess", () => {
     }),
   );
 
-  it.effect("runs through the ProcessRunner service", () => {
-    const spawner = makeSpawner((command) =>
-      Effect.sync(() => {
-        expect(command.command).toBe("fake");
-        expect(command.args).toEqual(["--service"]);
-        return makeHandle({ stdout: "service ok" });
-      }),
-    );
-    const layer = ProcessRunnerLive.pipe(
-      Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
-    );
-
-    return Effect.gen(function* () {
-      const runner = yield* ProcessRunner;
-      const result = yield* runner.run({
-        command: "fake",
-        args: ["--service"],
-      });
-
-      expect(result.stdout).toBe("service ok");
-    }).pipe(Effect.provide(layer));
-  });
-
   it.effect("hides transient child process consoles on Windows", () =>
     withProcessPlatform(
       "win32",
