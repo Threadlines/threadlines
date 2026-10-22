@@ -2282,6 +2282,7 @@ describe("tracker spawn-id fallback for turnless groups", () => {
     });
 
     const workRow = rows.find((row) => row.kind === "work");
+    expect(workRow?.kind).toBe("work");
     if (workRow?.kind !== "work") return;
     expect(workRow.trackerTurnIds).toEqual(["33333333-3333-4333-8333-333333333333"]);
     expect(workRow.trackerAgentSpawnIds).toEqual([]);

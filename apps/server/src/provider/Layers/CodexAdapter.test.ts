@@ -1783,7 +1783,11 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       const firstEvent = yield* Fiber.join(firstEventFiber);
 
       assert.equal(firstEvent._tag, "Some");
-      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "item.completed") {
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "item.completed");
+      if (firstEvent.value.type !== "item.completed") {
         return;
       }
       assert.deepEqual(firstEvent.value.payload.mcpApp, {
@@ -1827,7 +1831,11 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       const firstEvent = yield* Fiber.join(firstEventFiber);
 
       assert.equal(firstEvent._tag, "Some");
-      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "item.completed") {
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "item.completed");
+      if (firstEvent.value.type !== "item.completed") {
         return;
       }
       assert.equal(firstEvent.value.payload.itemType, "review_exited");

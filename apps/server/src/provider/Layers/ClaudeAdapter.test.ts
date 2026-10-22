@@ -422,6 +422,30 @@ function makeHarness(config?: {
   };
 }
 
+/**
+ * A tool_progress message a test sends after the messages it checks. The
+ * adapter handles messages in order, so once this one's event arrives, every
+ * event the earlier messages produce has too: collecting up to it lets a test
+ * assert that an event never appeared, which a fixed `Stream.take(n)` window
+ * cannot see past.
+ */
+const SETTLED_MARKER_TOOL_USE_ID = "toolu_events-settled";
+
+function emitSettledMarker(harness: ReturnType<typeof makeHarness>): void {
+  harness.query.emit({
+    type: "tool_progress",
+    tool_use_id: SETTLED_MARKER_TOOL_USE_ID,
+    tool_name: "Bash",
+    parent_tool_use_id: null,
+    elapsed_time_seconds: 0,
+    session_id: "sdk-session-settled-marker",
+    uuid: "events-settled-marker",
+  } as unknown as SDKMessage);
+}
+
+const isSettledMarker = (event: ProviderRuntimeEvent): boolean =>
+  event.type === "tool.progress" && event.payload.toolUseId === SETTLED_MARKER_TOOL_USE_ID;
+
 function makeDeterministicRandomService(seed = 0x1234_5678): {
   nextIntUnsafe: () => number;
   nextDoubleUnsafe: () => number;
@@ -5766,7 +5790,8 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 5).pipe(
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(isSettledMarker),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -5789,6 +5814,8 @@ describe("ClaudeAdapterLive", () => {
         uuid: "task-updated-running-1",
       } as unknown as SDKMessage);
 
+      emitSettledMarker(harness);
+
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const progressEvent = runtimeEvents.find((event) => event.type === "task.progress");
       assert.equal(progressEvent?.type, "task.progress");
@@ -5808,7 +5835,8 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(isSettledMarker),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -5838,6 +5866,8 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-task-updated-completed",
         uuid: "task-updated-completed-1",
       } as unknown as SDKMessage);
+
+      emitSettledMarker(harness);
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const startedEvent = runtimeEvents.find((event) => event.type === "task.started");
@@ -9319,7 +9349,11 @@ describe("ClaudeAdapterLive", () => {
 
       const threadStarted = yield* Stream.runHead(adapter.streamEvents);
       assert.equal(threadStarted._tag, "Some");
-      if (threadStarted._tag !== "Some" || threadStarted.value.type !== "thread.started") {
+      if (threadStarted._tag !== "Some") {
+        return;
+      }
+      assert.equal(threadStarted.value.type, "thread.started");
+      if (threadStarted.value.type !== "thread.started") {
         return;
       }
 
@@ -9426,7 +9460,11 @@ describe("ClaudeAdapterLive", () => {
 
       const agentRequested = yield* Stream.runHead(adapter.streamEvents);
       assert.equal(agentRequested._tag, "Some");
-      if (agentRequested._tag !== "Some" || agentRequested.value.type !== "request.opened") {
+      if (agentRequested._tag !== "Some") {
+        return;
+      }
+      assert.equal(agentRequested.value.type, "request.opened");
+      if (agentRequested.value.type !== "request.opened") {
         return;
       }
       assert.equal(agentRequested.value.payload.requestType, "dynamic_tool_call");
@@ -9451,7 +9489,11 @@ describe("ClaudeAdapterLive", () => {
 
       const grepRequested = yield* Stream.runHead(adapter.streamEvents);
       assert.equal(grepRequested._tag, "Some");
-      if (grepRequested._tag !== "Some" || grepRequested.value.type !== "request.opened") {
+      if (grepRequested._tag !== "Some") {
+        return;
+      }
+      assert.equal(grepRequested.value.type, "request.opened");
+      if (grepRequested.value.type !== "request.opened") {
         return;
       }
       assert.equal(grepRequested.value.payload.requestType, "file_read_approval");
@@ -10592,7 +10634,11 @@ describe("ClaudeAdapterLive", () => {
 
       const threadStarted = yield* Stream.runHead(adapter.streamEvents);
       assert.equal(threadStarted._tag, "Some");
-      if (threadStarted._tag !== "Some" || threadStarted.value.type !== "thread.started") {
+      if (threadStarted._tag !== "Some") {
+        return;
+      }
+      assert.equal(threadStarted.value.type, "thread.started");
+      if (threadStarted.value.type !== "thread.started") {
         return;
       }
 
