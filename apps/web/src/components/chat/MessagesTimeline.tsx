@@ -906,6 +906,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           : roomAgents?.get(roomAgentKey(agent)),
     [agentModelLabeler, hasTeammates, ownAgentLabels, roomAgents],
   );
+  const openAgentRequestByMessageId = useMemo(
+    () => new Map(openAgentRequests.map((request) => [request.requestMessageId, request] as const)),
+    [openAgentRequests],
+  );
   const rowsInput = useMemo<Parameters<typeof deriveMessagesTimelineRows>[0]>(
     () => ({
       timelineEntries,
@@ -923,6 +927,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       revertTurnCountByUserMessageId,
       sideAnswers,
       expandedSideTurnIds,
+      openAgentRequestByMessageId,
       workingParticipantId,
       roomAgentNames,
     }),
@@ -930,6 +935,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workingParticipantId,
       roomAgentNames,
       sideAnswers,
+      openAgentRequestByMessageId,
       expandedSideTurnIds,
       timelineEntries,
       isWorking,
@@ -1057,10 +1063,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     return requests;
   }, [rows]);
   const threadStartCallsByTurn = useMemo(() => collectThreadStartCalls(rows), [rows]);
-  const openAgentRequestByMessageId = useMemo(
-    () => new Map(openAgentRequests.map((request) => [request.requestMessageId, request] as const)),
-    [openAgentRequests],
-  );
   const resolvedProviderAuthReconnectIds = useMemo(
     () => deriveResolvedProviderAuthReconnectIds(rows),
     [rows],
@@ -3741,7 +3743,10 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
   }
   if (row.state === "answering" || row.state === "stopping") {
     const stopping = row.state === "stopping";
-    const doing = stopping ? "stopping" : row.review ? "reviewing independently" : "answering";
+    // The step it is on, unless the working row already says it.
+    const doing = stopping
+      ? "stopping"
+      : (row.liveStep ?? (row.review ? "reviewing independently" : "answering"));
     // Its caller stopped waiting: the answer goes to it as a message.
     const goesTo =
       !stopping && openAgentRequestByMessageId.get(row.question.id)?.replyAsMessage === true
@@ -3751,14 +3756,18 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
       <div className="py-1" data-side-answer-status={row.state}>
         <div
           className={cn(
-            "flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-1 text-xs leading-4 text-muted-foreground/70",
+            "flex min-w-0 items-center gap-x-1.5 gap-y-0.5 pl-1 text-xs leading-4 text-muted-foreground/70",
+            // One line that names the step the answer is on: a long step
+            // truncates rather than wrapping Stop onto a line of its own.
+            row.compact ? "flex-nowrap" : "flex-wrap",
             underYourQuestion && "justify-end",
           )}
         >
           <WorkingAnchorDots state="working" className="relative -top-px -mr-0.5 shrink-0" />
           {row.compact ? (
             // The working agent goes on meanwhile: one line, which opens to
-            // show the answer being written.
+            // show the answer being written. It sits at the right, so as the
+            // step changes the words grow to the left and Stop stays put.
             <button
               type="button"
               aria-expanded={row.expanded}
@@ -3767,8 +3776,10 @@ function SideStatusTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "sid
             >
               <span className="min-w-0 truncate">
                 {name} · {doing}
-                {goesTo !== null ? ` · goes to ${goesTo} when done` : null} ·{" "}
-                <WorkingTimer createdAt={row.question.createdAt} />
+                {goesTo !== null ? ` · goes to ${goesTo} when done` : null}
+              </span>
+              <span className="shrink-0">
+                · <WorkingTimer createdAt={row.question.createdAt} />
               </span>
               <ChevronRightIcon
                 aria-hidden

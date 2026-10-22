@@ -1,6 +1,7 @@
 import {
   EventId,
   MessageId,
+  type OrchestrationAgentRequest,
   type OrchestrationThreadActivity,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   SideTurnId,
@@ -185,9 +186,15 @@ describe("side exchanges in the timeline", () => {
       readonly expanded?: boolean;
       /** The agent at work (default: the thread's own). */
       readonly agent?: ThreadParticipantId;
+      readonly roomAgentNames?: ReadonlyMap<string, string>;
+      readonly openAgentRequests?: ReadonlyArray<OrchestrationAgentRequest>;
     } = {},
   ) =>
     deriveMessagesTimelineRows({
+      roomAgentNames: options.roomAgentNames,
+      openAgentRequestByMessageId: new Map(
+        (options.openAgentRequests ?? []).map((request) => [request.requestMessageId, request]),
+      ),
       timelineEntries: entries,
       isWorking: options.working ?? true,
       activeTurnInProgress: options.working ?? true,
@@ -260,6 +267,143 @@ describe("side exchanges in the timeline", () => {
     ]);
     expect(done.find((row) => row.id === "side-answer:side-1")).toMatchObject({
       sideReplyTo: { id: "question-side-1" },
+    });
+  });
+
+  it("names the step a side answer is on, on the working row or its own line", () => {
+    const roomAgentNames = new Map([
+      ["primary", "Opus 5.5"],
+      [astra, "GPT-6-Astra"],
+    ]);
+    const call = (kind: "ask" | "review", running = true) => ({
+      id: "review-call",
+      kind: "work" as const,
+      createdAt: at(4),
+      entry: {
+        id: "review-call",
+        createdAt: at(4),
+        label: "MCP tool call",
+        tone: "tool",
+        itemType: "mcp_tool_call",
+        detail: `threadlines_room · room_${kind}: agent=GPT-6-Astra request=Check the lock`,
+        executionState: running ? "running" : "completed",
+        turnId: "turn-1" as never,
+      } satisfies WorkLogEntry,
+    });
+    const reading = { ...step("astra-read", 6).entry, executionState: "running" as const };
+    const thinking = {
+      id: "astra-think",
+      createdAt: at(7),
+      label: "Thinking",
+      tone: "thinking",
+      detail: "The retry path never releases it.",
+      executionState: "running",
+      redactedThinking: false,
+    } satisfies WorkLogEntry;
+    const review = (overrides: Parameters<typeof exchange>[0] = {}) =>
+      exchange({ askedBy: { participantId: null }, kind: "review", ...overrides });
+    /** The working row's words, and the step the answer's own line names
+     *  (undefined: it has no line). */
+    const live = (
+      entries: Parameters<typeof derive>[0],
+      sideAnswers: ReadonlyArray<SideAnswerView>,
+      options: {
+        readonly requests?: ReadonlyArray<OrchestrationAgentRequest>;
+        readonly working?: boolean;
+      } = {},
+    ) => {
+      const rows = derive(entries, sideAnswers, {
+        roomAgentNames,
+        openAgentRequests: options.requests ?? [],
+        working: options.working ?? true,
+      });
+      const working = rows.find((row) => row.kind === "working");
+      const line = rows.find((row) => row.kind === "side-status");
+      return {
+        label: working?.kind === "working" ? working.label : null,
+        thought: working?.kind === "working" ? working.thought : null,
+        line: line?.kind === "side-status" ? line.liveStep : undefined,
+      };
+    };
+
+    // The review call has nothing to say while Astra works: Astra's step does,
+    // on the working row, so Astra's own line keeps its plain words.
+    expect(live([userEntry, call("review")], [review({ steps: [reading] })])).toEqual({
+      label: "GPT-6-Astra: Reading lock.ts",
+      thought: null,
+      line: null,
+    });
+    expect(live([userEntry, call("review")], [review({ steps: [thinking] })])).toEqual({
+      label: "GPT-6-Astra: Thinking",
+      thought: "The retry path never releases it.",
+      line: null,
+    });
+    // A thought it keeps to itself, as Codex's arrive, still reads as thinking
+    // while it is the newest thing Astra did.
+    const privateThought = { ...thinking, redactedThinking: true };
+    expect(
+      live([userEntry, call("review")], [review({ steps: [reading, privateThought] })]),
+    ).toMatchObject({ label: "GPT-6-Astra: Reading lock.ts", thought: null });
+    expect(live([userEntry, call("review")], [review({ steps: [privateThought] })])).toEqual({
+      label: "GPT-6-Astra: Thinking",
+      thought: null,
+      line: null,
+    });
+    expect(
+      live(
+        [userEntry, call("review")],
+        [review({ steps: [privateThought, { ...reading, executionState: "completed" }] })],
+      ),
+    ).toMatchObject({ label: "GPT-6-Astra is reviewing" });
+    expect(live([userEntry, call("ask")], [review({ kind: "ask", state: "stopping" })])).toEqual({
+      label: "GPT-6-Astra is stopping",
+      thought: null,
+      line: null,
+    });
+
+    // Nobody waits on it from the working row: its own line names the step.
+    // A review whose caller stopped waiting goes on, and a later call is not
+    // waiting on it.
+    const detached = {
+      requestId: "request-1" as never,
+      kind: "review",
+      from: { participantId: null },
+      to: { participantId: astra },
+      callerTurnId: "turn-1" as never,
+      chainEpoch: 0,
+      status: "running",
+      requestMessageId: question(sideTurnId, at(5)).id,
+      sideTurnId,
+      replyAsMessage: true,
+      createdAt: at(5),
+    } satisfies OrchestrationAgentRequest;
+    expect(
+      live([userEntry, call("review")], [review({ steps: [reading] })], { requests: [detached] }),
+    ).toEqual({ label: "Asking GPT-6-Astra for a review", thought: null, line: "Reading lock.ts" });
+    expect(
+      live([userEntry, call("review")], [review({ steps: [reading] })], {
+        requests: [{ ...detached, replyAsMessage: false }],
+      }),
+    ).toMatchObject({ label: "GPT-6-Astra: Reading lock.ts", line: null });
+    expect(live([userEntry, call("review", false)], [review({ steps: [reading] })])).toEqual({
+      label: "Working",
+      thought: null,
+      line: "Reading lock.ts",
+    });
+    expect(
+      live([userEntry, call("review", false)], [review({ steps: [reading] })], { working: false }),
+    ).toEqual({ label: null, thought: null, line: "Reading lock.ts" });
+    // The user's own side question is not the one the call waits for.
+    expect(live([userEntry, call("review")], [exchange({ steps: [reading] })])).toEqual({
+      label: "Asking GPT-6-Astra for a review",
+      thought: null,
+      line: "Reading lock.ts",
+    });
+    // Answered: the call's own words until it returns, and no line to name.
+    expect(live([userEntry, call("review")], [review({ answeredAt: 8 })])).toEqual({
+      label: "Asking GPT-6-Astra for a review",
+      thought: null,
+      line: undefined,
     });
   });
 
