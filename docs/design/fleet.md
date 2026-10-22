@@ -738,6 +738,96 @@ Schedules are configuration, not thread history, so they live in their own table
 - **30 s notice.** It names the phase: "Codex is taking a while to start", or the current "Preparing this turn is taking longer than usual."
 - **Tests:** a cold first turn, a warm turn (no launching), a resume after restart, and a provider switch.
 
+## Part 8: Set up a project on another computer (Oct 22)
+
+Will asked for it after Move shipped: moving a thread fails with "<computer> doesn't have this project" until that computer has a copy. This part makes that copy in one step: the other computer clones the project from its git remote and gets the ignored files the user ticks (`.env` and the like). T3 Code shipped the same idea as "Add to another machine" (t3code #22180); the rules below take its later fixes (#22492, #23170, #22780, #14781) and avoid its open bugs (#22383 copy lost on a late reconnect, #22539 binary files, #23694 cleanup deleting a `.git` it didn't make, #16560 unborn branch, #22180 empty-folder identity cached).
+
+### Shape
+
+The app does it, not the link. The app is already connected to both computers as the user (the same rule as creating a link, R4.2), so:
+
+- **Source computer (A)** answers two reads: what to clone (remotes, sub-folder, scripts, title) and the bytes of the ignored files the user ticked.
+- **Target computer (B)** runs the whole job on its own from one start call: clone, extra remotes, submodules, write the files, add the project. The files travel inside the start call, so the app can close right after Start (T3 holds them in the browser until the clone ends; a late reconnect loses them).
+- No `peer.*` methods and no link needed: it works for any two computers this app is connected to, linked or not. No "Ask first": the user is acting on B through their own session there.
+- Files travel only when both of the app's connections are protected: end to end encrypted (a relay v2 connection, Noise KK, over the relay or its direct route), `wss://`, or loopback. A computer added by a plain `ws://` address can still be set up, but its file list is off with the reason ("This app reaches Test PC over an unencrypted address, so files can't be sent. Connect it with a code to send them."). Large frames are chunked by the transport (`relayChunking`); the feature's own caps are below.
+- The app must be connected to B. Move can name a linked computer the app isn't connected to; there "Set it up there" says "Connect to Test PC in this app first" and opens its Fleet page.
+
+### Contracts (`packages/contracts/src/projectSetup.ts`, schema-only)
+
+- Capability `projectSetup` on `ExecutionEnvironmentCapabilities`. The app offers only computers that report it.
+- `projects.setupSource({ projectId })` on A:
+  - `title`, `repositoryKey` (the project's `RepositoryIdentity.canonicalKey`), `subdirectory` (the project's folder relative to the repository root, `""` at the root), `scripts` (`ProjectScript[]`).
+  - `remotes: { name, url, protocol: "ssh" | "https" | "other" }[]` and `primaryRemoteName`, picked by the identity resolver's own rule (origin, then upstream, then the first by name), so B's copy resolves to the same `canonicalKey`. URLs lose any `user:token@` before they leave A; B's own credential helpers sign it in.
+  - `homeRelativePath`: the repository root relative to A's home folder, or null outside it.
+  - `files: { path, size, suggested, tooLarge }[]` plus `filesTruncated`: ignored files only (`git ls-files --others --ignored --exclude-standard --directory --no-empty-directory -z`, 10 s timeout), regular files by `lstat` (symlinks and folders git ignores whole, like `node_modules/`, are left out), at most 500. `suggested` = basename `.env`, `.env.*`, `.envrc` or `.dev.vars`. `tooLarge` = over 1 MiB.
+  - Refuses: a general chat, a project with no git remote ("It has no git remote, so another computer has nothing to clone it from"), a repository with no commits.
+- `projects.setupReadFiles({ projectId, paths })` on A: base64 bytes and the file mode for each path. Each path is checked again: relative, inside the repository root after `realpath`, not under `.git/`, a regular file, ignored by git (`git check-ignore`), at most 1 MiB; at most 8 MiB in all.
+- On B:
+  - `projectSetups.start(input)`: `setupId` (made by the app, so a retried call is the same job), `source: { environmentId, projectId, label }`, `title`, `repositoryKey`, `remotes`, `primaryRemoteName`, `protocol` (the user's choice for the primary remote), `subdirectory`, `scripts`, `destinationPath`, `files: { path, contentBase64, mode }[]`. Answers with the job.
+  - `projectSetups.inspectDestination({ path, repositoryKey })`: `{ resolvedPath, state: "missing" | "empty" | "same-repository" | "other-repository" | "not-empty" | "not-a-folder" }`, so the dialog can say what will happen before Start.
+  - `projectSetups.cancel({ setupId })`, `projectSetups.dismiss({ setupId })`.
+  - `projectSetups.subscribe`: a snapshot of the jobs, then each change.
+  - The job: `setupId`, `source`, `title`, `destinationPath`, `repositoryKey`, `subdirectory`, `protocol`, `filePaths` (the ticked paths, for Retry), `stage` (`cloning` | `submodules` | `copying` | `publishing` | `adding` | `done` | `failed` | `cancelled`), `progress` (`{ phase, percent, detail, stalled }` from git's stderr), `projectId` once added, `error`, `warnings` (plain sentences), timestamps.
+
+### B: `ProjectSetupService` (`apps/server/src/projectSetup/`)
+
+- **A project here is (repository, folder in it).** B "has" A's project when a live project of B's resolves to the same `repositoryKey` and the same `subdirectory`. When B has the repository but not that folder (a monorepo's other app), the job adds the folder from B's existing copy and clones nothing.
+- **Admission**, under one lock: refuse when B already has the project, when another unfinished job has this repository or this folder, or when the folder is `not-empty`, `not-a-folder` or `other-repository`. `same-repository` (adopt) needs both the key and the folder's primary remote URL to match one of A's remotes, protocol aside: keys drop ports, so a key alone doesn't prove it's the same repository.
+- **Record first.** A row in `project_setups` (migration 084) before any disk change. It keeps every non-secret part of the request so Retry works after a reload: the source computer and project ids, the chosen remote URL and protocol, the remotes, title, subfolder, scripts, the ticked file paths, and the folder. It also keeps the `projectId` and command ids it will use (made at admission), the staging folder's path, the stage, error and warnings. File bytes stay in memory only: they are secrets and never touch the database.
+- **Stage, then publish.** Everything happens in a staging folder beside the destination, `.<name>.setup-<setupId8>`, made with an exclusive `mkdir` (it fails if anything is there), so the job only ever deletes a folder it made itself:
+  1. clone into it;
+  2. the extra remotes, submodules and files;
+  3. check the project's folder (`subdirectory`) exists on the cloned branch ("apps/web isn't on main on github.com/org/repo yet" fails the job otherwise);
+  4. **publish:** rename the staging folder to the destination (an empty destination folder is removed first, only while still empty). The rename is the commit point: from here nothing is ever deleted.
+  5. `project.create` with the recorded `projectId` and command id, then `project.meta.update` with the scripts, then refresh the identity cache for the folder.
+- **Clone:** `git clone --progress --origin origin -- <url> <staging>` with `GIT_TERMINAL_PROMPT=0`, run by its own process runner (not `GitCore.execute`, which has a 30 s deadline, splits progress only on newlines and keeps the output): no overall deadline, every stderr chunk counts as activity, progress parsed on `\r` and `\n`, the last 16 KiB kept for the error. 20 s without output sets `stalled`; 15 minutes without output fails the job ("Stopped receiving anything from github.com for 15 minutes.").
+- **Sign-in fallback:** when the primary URL is refused for credentials (publickey refused, HTTPS authentication failed; _not_ a host key mismatch, which is a trust failure and fails the job), retry once over the other protocol when the URL converts, and say so in `warnings`. Both refused: the plain reason plus what to do on B ("Sign in to GitHub on Test PC, then Retry").
+- **Remotes.** The primary remote is cloned as `origin`; A's other remotes are added under their own names (`origin` collisions skipped), so B's resolver picks the same URL A's did.
+- **Submodules.** With `.gitmodules`: `git submodule update --init --recursive`. A failure is a warning.
+- **Files.** B checks the request on its own before admission: at most 500 files, 1 MiB each and 8 MiB in all after decoding, valid base64, a mode of 0o600, 0o644 or 0o755, and each path through the receive rule Move uses (`receivedPathRefusal`, moved out of LinkMoves.ts into `apps/server/src/fs/receivedFiles.ts`, gaining Windows reserved names). Writing (`writeReceivedFile`, shared with Move) makes parents one at a time, refusing a symlinked parent, and opens with `wx` and the mode, so nothing is overwritten. In a staging folder nothing else writes; in an adopted copy B's own files win and a warning names each one kept.
+- **Partial success** is success with warnings: a file that couldn't be written or submodules that failed still end "ready", and the dialog lists them.
+- **Cancel** interrupts git and deletes the staging folder. A published job can't be cancelled.
+- **Restart.** At startup, an unfinished job is reconciled: before publish it ends failed ("Stopped when Test PC restarted. Retry starts it again.") and its staging folder is deleted; after publish it carries on (create the project with the recorded id if it isn't there, apply the scripts) and ends done, with a warning if its files hadn't all been written.
+- **Finished jobs** stay listed until dismissed or 24 hours old.
+
+### A: `ProjectSetupSource` (`apps/server/src/projectSetup/`)
+
+The two reads above, with the git commands behind the `GitCore` service (operation names `ProjectSetupSource.*`). File reads open with `O_NOFOLLOW` and check the opened file is a regular file before reading it.
+
+- **Identity hardening** (`packages/shared/src/git.ts`): `normalizeGitRemoteUrl` drops any `user:password@` in every form (today a one-segment path like `https://alice:token@host/repo.git` falls through with its token, which then reaches `peer.describe` and the plan's `repositoryKey`), and treats any `user@host:path` scp form like `git@host:path`. Only unusual URLs change key.
+
+### The app
+
+- **Targets** (`packages/client-runtime`): the connected computers that report `projectSetup` and have no live project with this `repositoryKey`. Offline and older computers are left out of pickers; the dialog's computer list shows them disabled with the reason.
+- **Dialog** (`ProjectSetupDialog`, opened by `openProjectSetupDialog({ project, target?, then? })`, one host at the root):
+  - Title "Set up <project> on another computer".
+  - **Computer** picker (when more than one).
+  - **Folder on <computer>**, a text field. Default: B's own `addProjectBaseDirectory` setting when set; else the folder most of B's projects share; else A's home-relative path on B's home (`~/badcode`); else `~/<name>`. Under it, one line from `inspectDestination`: "A new folder", "An empty folder", "Test PC already has a copy here. It will be added as is, keeping its own files.", or why it can't be used.
+  - **Clone over** SSH or HTTPS, only when the URL converts; the source's protocol first.
+  - **Files to copy**: the ignored files, suggested ones ticked and listed first, "Over 1 MB" rows disabled, All / None, and "Showing the first 500." when truncated. One line: "Sent encrypted to <computer>. Nothing else leaves this computer."
+  - **Start** reads the ticked files from A, then calls `start` on B. The dialog then shows the job's progress ("Downloading · 45%", "Stalled", "Copying 2 files", "Adding the project") with Cancel, and "Keep going in the background" to close it.
+  - **Done:** "badcode is ready on Test PC" with "Start a thread there", and warnings listed. **Failed:** the reason, with Retry (reads the files again and starts a new job) and Close.
+- **Watching** (`useProjectSetups`): the app subscribes on every connected computer that reports `projectSetup`. A job this app started that ends while its dialog is closed raises a toast (done: "Start a thread there"; failed: "Show", which reopens the dialog on it).
+- **Entry points:**
+  - The project's menu in the sidebar: "Set up on another computer…".
+  - The command palette: "Set up project on another computer" for the open thread's project.
+  - The composer's "Runs on <computer>" picker on a new thread: a "Set up on another computer…" item at its end. The picker shows whenever there is a target, not only when two computers already have the project. When the job finishes and the draft is still open on that project, the draft switches to the new copy, keeping its text.
+  - Move: a target refused for lacking the project shows "Set it up there". `ThreadMoveTargetPreview` gains `refusalCode: "no_project"` so the dialog doesn't parse the sentence. When the job finishes, the Move dialog asks for a new preview and that computer becomes choosable. Previews describe each computer fresh (today a cached description up to 5 minutes old would still say "doesn't have this project").
+  - A computer's Fleet page lists its unfinished and recent jobs with progress, Cancel and Dismiss (the way back out of a job started elsewhere).
+- **Matching by folder too.** `PeerProject` gains `subdirectory`; Move's target lookup and a remote start's `projectForKey` match key and folder (`PeerStartInput.projectSubdirectory`), falling back to the key alone for a computer that doesn't report folders.
+- **A moved thread gets its setup.** Move's import on B now runs the project's worktree setup script for the moved worktree, the way a new worktree thread does (`ProjectSetupScriptRunner.runForThread`). That is how ignored files like `.env`, copied into B's main checkout by this feature, reach the moved thread's worktree, and how its dependencies get installed.
+- **Agents.** A remote start refused for the missing project says "<computer> doesn't have this project. The user can set it up there from the project's menu." Agents can't start a setup.
+
+### Tests
+
+- Server, with real git and a bare repository as the remote: the copy's `canonicalKey` equals the source's; the extra remotes; credentials stripped from `setupSource`; ignored-file listing (symlink, folder, size, suggested); `setupReadFiles` refuses a tracked file, `..`, a symlink and `.git/`; `start` is idempotent by `setupId`; files keep their mode and never overwrite; adopting a same-repository folder; refusing a not-empty folder and a key B already has; cancel removes only a folder it made; a restart marks the job failed and cleans up; a `.git` that isn't the job's survives cleanup.
+- The protocol fallback through a stubbed git failure, and the URL conversion as a pure function.
+- Web browser: the dialog from the project menu (ticked files, default folder, the destination line), Start sends the files to B and shows progress to done; Move's "Set it up there".
+
+### Live
+
+Two test servers on this Mac (the release test homes A and B): set up the scratch project from A on B with a `.env`, check B's project matches (Move's target becomes choosable), then move a thread to B end to end. Once more with the clone cancelled, and once with B restarted mid-clone.
+
 ## Pull requests, waves and file ownership
 
 | PR  | Branch                 | Contents                                                                                                                                                                                                                                                                                                                                              | Needs merged first                                 |

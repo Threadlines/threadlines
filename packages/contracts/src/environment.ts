@@ -65,6 +65,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   scheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** The server moves threads to linked computers. Absent until a server ships it. */
   threadMove: Schema.optionalKey(Schema.Boolean),
+  /** The server sets up projects copied from another computer (`projectSetups.*`). */
+  projectSetup: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

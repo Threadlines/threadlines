@@ -199,7 +199,10 @@ export function buildWorkBranchName(raw: string): string {
 }
 
 /**
- * Normalize a git remote URL into a stable comparison key.
+ * Normalize a git remote URL into a stable comparison key: `host/path`,
+ * lowercased, without `.git`, credentials or a port, so the SSH and HTTPS
+ * forms of one repository match. Credentials never reach the key, whatever
+ * the URL's shape.
  */
 export function normalizeGitRemoteUrl(value: string): string {
   const normalized = stripGitSuffix(trimTrailingCharacter(value.trim(), "/")).toLowerCase();
@@ -211,20 +214,81 @@ export function normalizeGitRemoteUrl(value: string): string {
         .split("/")
         .filter((segment) => segment.length > 0)
         .join("/");
-      if (url.hostname && repositoryPath.includes("/")) {
+      if (url.hostname && repositoryPath.length > 0) {
         return `${url.hostname}/${repositoryPath}`;
       }
     } catch {
-      return normalized;
+      // Not a URL after all: fall through, without its credentials.
     }
+    return normalized.replace(/^([a-z+]+:\/\/)[^@/]*@/, "$1");
   }
 
-  const scpStyleHostAndPath = /^git@([^:/\s]+)[:/]([^/\s]+(?:\/[^/\s]+)+)$/i.exec(normalized);
+  // scp-style `user@host:path`, whatever the user's name.
+  const scpStyleHostAndPath = /^[^@\s/:]+@([^:/\s]+):\/?([^/\s]+(?:\/[^/\s]+)+)$/i.exec(normalized);
   if (scpStyleHostAndPath?.[1] && scpStyleHostAndPath[2]) {
     return `${scpStyleHostAndPath[1]}/${scpStyleHostAndPath[2]}`;
   }
 
   return normalized;
+}
+
+export type GitRemoteProtocol = "ssh" | "https" | "other";
+
+const SCP_REMOTE = /^([^@\s/:]+)@([^:/\s]+):(?!\/\/)(.+)$/;
+
+/** How a remote URL is reached: SSH (`ssh://` or scp-style), HTTPS, or anything else. */
+export function gitRemoteProtocol(url: string): GitRemoteProtocol {
+  const trimmed = url.trim();
+  if (/^ssh:\/\//i.test(trimmed) || SCP_REMOTE.test(trimmed)) return "ssh";
+  if (/^https?:\/\//i.test(trimmed)) return "https";
+  return "other";
+}
+
+/**
+ * A remote URL with what could be a secret taken out: all of an HTTP(S)
+ * URL's user part (tokens hide there), an `ssh://` URL's password. The SSH
+ * user (`git@`) stays: it names the account, it isn't a secret.
+ */
+export function stripGitRemoteCredentials(url: string): string {
+  const trimmed = url.trim();
+  if (/^(?:https?|git):\/\//i.test(trimmed)) {
+    return trimmed.replace(/^([a-z+]+:\/\/)[^@/]*@/i, "$1");
+  }
+  if (/^ssh:\/\//i.test(trimmed)) {
+    return trimmed.replace(/^(ssh:\/\/[^:@/]+):[^@/]*@/i, "$1@");
+  }
+  return trimmed;
+}
+
+/**
+ * The same repository over the other protocol, or null when there's no plain
+ * equivalent (a custom port, a local path, another scheme). SSH comes out
+ * scp-style as `git@host:path`; HTTPS as `https://host/path`.
+ */
+export function convertGitRemoteUrl(url: string, to: "ssh" | "https"): string | null {
+  const trimmed = stripGitRemoteCredentials(url);
+  const from = gitRemoteProtocol(trimmed);
+  if (from === "other") return null;
+  if (from === to) return trimmed;
+  if (from === "ssh") {
+    const scp = SCP_REMOTE.exec(trimmed);
+    if (scp?.[2] && scp[3]) return `https://${scp[2]}/${scp[3].replace(/^\//, "")}`;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.port !== "" || !parsed.hostname) return null;
+      return `https://${parsed.hostname}${parsed.pathname}`;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const path = parsed.pathname.replace(/^\//, "");
+    if (parsed.port !== "" || !parsed.hostname || path.length === 0) return null;
+    return `git@${parsed.hostname}:${path}`;
+  } catch {
+    return null;
+  }
 }
 
 const HTTPS_REMOTE_IN_MESSAGE = /['"](https?:\/\/[^'"]+)['"]/i;

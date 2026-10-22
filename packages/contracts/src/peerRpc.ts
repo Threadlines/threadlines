@@ -126,6 +126,11 @@ export const PeerProject = Schema.Struct({
   name: TrimmedNonEmptyString,
   /** RepositoryIdentity.canonicalKey; the caller names the project by it. */
   canonicalKey: TrimmedNonEmptyString,
+  /**
+   * The project's folder from the repository root ("" at the root), so a
+   * monorepo's projects tell apart. Absent: an older server; match the key alone.
+   */
+  subdirectory: Schema.optional(Schema.String),
 });
 export type PeerProject = typeof PeerProject.Type;
 
@@ -166,6 +171,8 @@ export const PeerStartInput = Schema.Struct({
   requestId: ChildRequestId,
   parent: PeerRequestParent,
   projectKey: TrimmedNonEmptyString,
+  /** The project's folder in the repository; absent: an older caller, the key alone decides. */
+  projectSubdirectory: Schema.optional(Schema.String),
   workspace: Schema.Union([
     Schema.Struct({
       kind: Schema.Literal("worktree"),

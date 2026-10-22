@@ -79,6 +79,9 @@ export type AuthSessionId = typeof AuthSessionId.Type;
 /** A scheduled task on one computer (docs/design/fleet.md, Part 6). */
 export const ScheduledTaskId = makeEntityId("ScheduledTaskId");
 export type ScheduledTaskId = typeof ScheduledTaskId.Type;
+/** One project setup on a computer (docs/design/fleet.md, Part 8); made by the app that starts it. */
+export const ProjectSetupId = makeEntityId("ProjectSetupId");
+export type ProjectSetupId = typeof ProjectSetupId.Type;
 
 export const ProviderItemId = makeEntityId("ProviderItemId");
 export type ProviderItemId = typeof ProviderItemId.Type;

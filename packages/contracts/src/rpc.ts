@@ -39,6 +39,19 @@ import {
   ThreadMoveStartResult,
 } from "./moves.ts";
 import {
+  ProjectSetupDestination,
+  ProjectSetupError,
+  ProjectSetupInspectDestinationInput,
+  ProjectSetupJob,
+  ProjectSetupJobInput,
+  ProjectSetupReadFilesInput,
+  ProjectSetupReadFilesResult,
+  ProjectSetupSource,
+  ProjectSetupSourceInput,
+  ProjectSetupStartInput,
+  ProjectSetupsSnapshot,
+} from "./projectSetup.ts";
+import {
   RelayAccessError,
   RelayAccessSnapshot,
   RelayCancelInviteInput,
@@ -609,6 +622,15 @@ export const WS_METHODS = {
   movesPreview: "moves.preview",
   movesStart: "moves.start",
   movesCancel: "moves.cancel",
+
+  // Setting up a project on another computer (docs/design/fleet.md, Part 8)
+  projectSetupsSource: "projectSetups.source",
+  projectSetupsReadFiles: "projectSetups.readFiles",
+  projectSetupsInspectDestination: "projectSetups.inspectDestination",
+  projectSetupsStart: "projectSetups.start",
+  projectSetupsCancel: "projectSetups.cancel",
+  projectSetupsDismiss: "projectSetups.dismiss",
+  projectSetupsSubscribe: "projectSetups.subscribe",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1868,6 +1890,56 @@ export const WsMovesCancelRpc = Rpc.make(WS_METHODS.movesCancel, {
   error: ThreadMoveError,
 });
 
+/** On the source computer: what another computer needs to copy this project. */
+export const WsProjectSetupsSourceRpc = Rpc.make(WS_METHODS.projectSetupsSource, {
+  payload: ProjectSetupSourceInput,
+  success: ProjectSetupSource,
+  error: ProjectSetupError,
+});
+
+/** On the source computer: the ticked ignored files' bytes. */
+export const WsProjectSetupsReadFilesRpc = Rpc.make(WS_METHODS.projectSetupsReadFiles, {
+  payload: ProjectSetupReadFilesInput,
+  success: ProjectSetupReadFilesResult,
+  error: ProjectSetupError,
+});
+
+/** On the target computer: what a folder there would mean for the setup. */
+export const WsProjectSetupsInspectDestinationRpc = Rpc.make(
+  WS_METHODS.projectSetupsInspectDestination,
+  {
+    payload: ProjectSetupInspectDestinationInput,
+    success: ProjectSetupDestination,
+    error: ProjectSetupError,
+  },
+);
+
+/** On the target computer: clone, copy the files and add the project; runs on its own. */
+export const WsProjectSetupsStartRpc = Rpc.make(WS_METHODS.projectSetupsStart, {
+  payload: ProjectSetupStartInput,
+  success: ProjectSetupJob,
+  error: ProjectSetupError,
+});
+
+export const WsProjectSetupsCancelRpc = Rpc.make(WS_METHODS.projectSetupsCancel, {
+  payload: ProjectSetupJobInput,
+  error: ProjectSetupError,
+});
+
+/** Forgets a finished job. */
+export const WsProjectSetupsDismissRpc = Rpc.make(WS_METHODS.projectSetupsDismiss, {
+  payload: ProjectSetupJobInput,
+  error: ProjectSetupError,
+});
+
+/** This computer's setups, unfinished and recent; again on every change. */
+export const WsProjectSetupsSubscribeRpc = Rpc.make(WS_METHODS.projectSetupsSubscribe, {
+  payload: Schema.Struct({}),
+  success: ProjectSetupsSnapshot,
+  error: ProjectSetupError,
+  stream: true,
+});
+
 /** Empty for anyone but a "Connect a device" device. */
 export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
   payload: Schema.Struct({}),
@@ -2052,6 +2124,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsMovesPreviewRpc,
   WsMovesStartRpc,
   WsMovesCancelRpc,
+  WsProjectSetupsSourceRpc,
+  WsProjectSetupsReadFilesRpc,
+  WsProjectSetupsInspectDestinationRpc,
+  WsProjectSetupsStartRpc,
+  WsProjectSetupsCancelRpc,
+  WsProjectSetupsDismissRpc,
+  WsProjectSetupsSubscribeRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,

@@ -13,7 +13,10 @@ import {
   gitRemoteAuthFailureFromError,
   isGitRepositoryMetadataCorruptionErrorMessage,
   isTemporaryWorktreeBranch,
+  convertGitRemoteUrl,
+  gitRemoteProtocol,
   normalizeGitRemoteUrl,
+  stripGitRemoteCredentials,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
   parseRepositoryWebUrlFromRemoteUrl,
   sanitizeBranchFragment,
@@ -59,6 +62,43 @@ describe("normalizeGitRemoteUrl", () => {
     expect(normalizeGitRemoteUrl("ssh://git@gitlab.company.com:2222/team/project.git")).toBe(
       "gitlab.company.com/team/project",
     );
+  });
+});
+
+describe("remote URLs across computers", () => {
+  it("keeps credentials out of the key, whatever the URL's shape", () => {
+    expect(normalizeGitRemoteUrl("https://alice:tok3n@git.example.com/repo.git")).toBe(
+      "git.example.com/repo",
+    );
+    expect(normalizeGitRemoteUrl("https://x-access-token:tok3n@github.com/Org/App.git")).toBe(
+      "github.com/org/app",
+    );
+    // Any scp user, not only git@, lands on the same key as HTTPS.
+    expect(normalizeGitRemoteUrl("deploy@git.example.com:team/app.git")).toBe(
+      normalizeGitRemoteUrl("https://git.example.com/team/app"),
+    );
+  });
+
+  it("strips secrets before a URL leaves the computer, and converts between SSH and HTTPS", () => {
+    expect(stripGitRemoteCredentials("https://tok3n@github.com/org/app.git")).toBe(
+      "https://github.com/org/app.git",
+    );
+    expect(stripGitRemoteCredentials("ssh://git:pw@host.example/org/app.git")).toBe(
+      "ssh://git@host.example/org/app.git",
+    );
+    expect(stripGitRemoteCredentials("git@github.com:org/app.git")).toBe(
+      "git@github.com:org/app.git",
+    );
+    expect(convertGitRemoteUrl("git@github.com:org/app.git", "https")).toBe(
+      "https://github.com/org/app.git",
+    );
+    expect(convertGitRemoteUrl("https://user:tok3n@github.com/org/app.git", "ssh")).toBe(
+      "git@github.com:org/app.git",
+    );
+    expect(convertGitRemoteUrl("ssh://git@host.example:2222/org/app.git", "https")).toBeNull();
+    expect(convertGitRemoteUrl("/srv/git/app.git", "https")).toBeNull();
+    expect(gitRemoteProtocol("git@github.com:org/app.git")).toBe("ssh");
+    expect(gitRemoteProtocol("file:///srv/git/app.git")).toBe("other");
   });
 });
 
