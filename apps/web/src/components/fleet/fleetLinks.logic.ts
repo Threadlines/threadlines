@@ -120,6 +120,12 @@ export interface FleetDirectoryEntry {
   readonly deviceId: string | null;
   readonly holderEnvironmentId: EnvironmentId | null;
   readonly label: string;
+  /**
+   * Its name in sentences that name two computers ("Mac's agents can start
+   * work on Mac mini"). This computer's reads "<name> (this computer)" when
+   * another computer has the same name; otherwise it is `label`.
+   */
+  readonly displayLabel: string;
   /** Linked entries: a computer it is linked with, for "Linked with Mac". */
   readonly linkedWith: string | null;
 }
@@ -161,6 +167,7 @@ export function buildFleetDirectory(input: {
       deviceId: null,
       holderEnvironmentId: null,
       label: computer.label,
+      displayLabel: computer.label,
       linkedWith: null,
     });
   }
@@ -178,6 +185,7 @@ export function buildFleetDirectory(input: {
       deviceId: null,
       holderEnvironmentId: null,
       label,
+      displayLabel: label,
       linkedWith: labelOf.get(holder) ?? null,
     });
   };
@@ -200,6 +208,7 @@ export function buildFleetDirectory(input: {
           deviceId: link.deviceId,
           holderEnvironmentId: holder as EnvironmentId,
           label: link.label,
+          displayLabel: link.label,
           linkedWith: labelOf.get(holder) ?? null,
         });
         continue;
@@ -210,20 +219,22 @@ export function buildFleetDirectory(input: {
   }
 
   const rest = [...byKey.values()].toSorted(compareByLabel);
-  return input.primary
-    ? [
-        {
-          key: input.primary.environmentId,
-          kind: "this",
-          environmentId: input.primary.environmentId,
-          deviceId: null,
-          holderEnvironmentId: null,
-          label: input.primary.label,
-          linkedWith: null,
-        },
-        ...rest,
-      ]
-    : rest;
+  if (!input.primary) return rest;
+  const primaryLabel = input.primary.label;
+  const sharesName = rest.some((entry) => compareByLabel(entry, { label: primaryLabel }) === 0);
+  return [
+    {
+      key: input.primary.environmentId,
+      kind: "this",
+      environmentId: input.primary.environmentId,
+      deviceId: null,
+      holderEnvironmentId: null,
+      label: primaryLabel,
+      displayLabel: sharesName ? `${primaryLabel} (this computer)` : primaryLabel,
+      linkedWith: null,
+    },
+    ...rest,
+  ];
 }
 
 // ── Pairs and directions (R4.2 "Works with other computers") ─────────

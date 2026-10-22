@@ -57,7 +57,7 @@ function joinNames(names: readonly string[]): string {
 function unknownReach(entry: FleetDirectoryEntry): FleetLinkReach {
   return {
     environmentId: entry.environmentId!,
-    label: entry.label,
+    label: entry.displayLabel,
     reachable: false,
     known: false,
     supportsLinks: null,
@@ -92,7 +92,7 @@ function RemoveFromAppSection({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: `Could not remove ${entry.label}`,
+          title: `Could not remove ${entry.displayLabel}`,
           description: error instanceof Error ? error.message : "Try again.",
         }),
       );
@@ -105,7 +105,7 @@ function RemoveFromAppSection({
     <SettingsSection title="This app">
       <SettingsRow
         title="Remove from this app"
-        description={`This app forgets its connection to ${entry.label}. You can connect again with a new code.`}
+        description={`This app forgets its connection to ${entry.displayLabel}. You can connect again with a new code.`}
         control={
           <Button
             size="xs"
@@ -120,9 +120,10 @@ function RemoveFromAppSection({
       <AlertDialog open={open} onOpenChange={(next) => !removing && setOpen(next)}>
         <AlertDialogPopup data-testid="fleet-remove-dialog">
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove {entry.label} from this app?</AlertDialogTitle>
+            <AlertDialogTitle>Remove {entry.displayLabel} from this app?</AlertDialogTitle>
             <AlertDialogDescription>
-              This app forgets its connection to {entry.label}. Its threads stay on {entry.label}.
+              This app forgets its connection to {entry.displayLabel}. Its threads stay on{" "}
+              {entry.displayLabel}.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {linkedWith.length > 0 ? (
@@ -130,8 +131,8 @@ function RemoveFromAppSection({
               className="px-6 pb-2 text-[13px] leading-[19px] text-foreground"
               data-testid="fleet-remove-stays-linked"
             >
-              {joinNames([entry.label, ...linkedWith])} stay linked. Unlink them first to stop
-              agents working across them.
+              {joinNames([entry.displayLabel, ...linkedWith])} stay linked. Unlink them first to
+              stop agents working across them.
             </p>
           ) : null}
           <AlertDialogFooter>
@@ -187,7 +188,7 @@ function WaitingLinkGroup({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: `Could not unlink ${entry.label}`,
+          title: `Could not unlink ${entry.displayLabel}`,
           description: describeComputerLinkFailure(error, "Try again."),
         }),
       );
@@ -200,7 +201,7 @@ function WaitingLinkGroup({
       <div className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5")}>
         <div className="flex min-h-7 items-center gap-2.5">
           <h3 className="min-w-0 flex-1 truncate text-[13.5px] leading-[19px] font-medium text-foreground">
-            {entry.label} and {holder.label}
+            {entry.displayLabel} and {holder.label}
           </h3>
           <Button
             size="xs"
@@ -224,7 +225,7 @@ function WaitingLinkGroup({
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
           <div className="min-w-0 flex-1 space-y-0.5">
             <p className="text-[13px] leading-[18px] text-foreground">
-              {entry.label}&apos;s agents can start work on {holder.label}
+              {entry.displayLabel}&apos;s agents can start work on {holder.label}
             </p>
             {editable ? null : (
               <p className="text-[12.5px] leading-[18px] text-muted-foreground">
@@ -244,23 +245,23 @@ function WaitingLinkGroup({
       </div>
       <div className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5")}>
         <p className="text-[13px] leading-[18px] text-foreground">
-          {holder.label}&apos;s agents can start work on {entry.label}
+          {holder.label}&apos;s agents can start work on {entry.displayLabel}
         </p>
         <p className="text-[12.5px] leading-[18px] text-muted-foreground">
           {entry.kind === "unconfirmed"
             ? "Unlink, then link the two computers again to set this way up too."
-            : `This way can be linked once ${entry.label} says which computer it is.`}
+            : `This way can be linked once ${entry.displayLabel} says which computer it is.`}
         </p>
       </div>
       <AlertDialog open={confirmOpen} onOpenChange={(next) => !removing && setConfirmOpen(next)}>
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Unlink {entry.label} and {holder.label}?
+              Unlink {entry.displayLabel} and {holder.label}?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Agents on {entry.label} can no longer start work on {holder.label}, and threads they
-              started there stop.
+              Agents on {entry.displayLabel} can no longer start work on {holder.label}, and threads
+              they started there stop.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -393,7 +394,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
           )}
         >
           <p className="text-[13px] text-muted-foreground">
-            Connect to {entry.label} to see its work.
+            Connect to {entry.displayLabel} to see its work.
           </p>
           <Button size="xs" variant="outline" onClick={openConnectComputerDialog}>
             Connect
@@ -406,7 +407,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
   } else if (computer && computer.connection !== "connected" && entry.kind === "saved") {
     workingNow = (
       <p className="px-1 text-[12.5px] text-muted-foreground">
-        {entry.label} is offline. Its work shows here when it&apos;s back.
+        {entry.displayLabel} is offline. Its work shows here when it&apos;s back.
       </p>
     );
   } else if (computer && computer.threads.length > 0) {
@@ -420,7 +421,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
   } else {
     workingNow = (
       <p className="px-1 text-[12.5px] text-muted-foreground">
-        Nothing is running on {entry.label} right now.
+        Nothing is running on {entry.displayLabel} right now.
       </p>
     );
   }
@@ -460,7 +461,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
             <SettingsSection title="Connection">
               <SettingsRow
                 title="Not connected to this app"
-                description={`This app doesn't connect to ${entry.label}. ${
+                description={`This app doesn't connect to ${entry.displayLabel}. ${
                   entry.linkedWith
                     ? `Its link with ${entry.linkedWith} is separate and works on its own.`
                     : "Its links with your computers are separate and work on their own."
@@ -479,7 +480,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
                 description={
                   entry.kind === "unconfirmed"
                     ? `${holder.label} can't confirm which computer this is. Unlink it, then link that computer again from Fleet.`
-                    : `${entry.label} linked to ${holder.label} and hasn't said which computer it is yet. It does the next time it reaches ${holder.label}.`
+                    : `${entry.displayLabel} linked to ${holder.label} and hasn't said which computer it is yet. It does the next time it reaches ${holder.label}.`
                 }
               />
             </SettingsSection>
@@ -521,8 +522,8 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
               <SettingsRow
                 title={
                   isOwner
-                    ? `Devices that can use ${entry.label}: ${deviceCount}`
-                    : `Devices that can use ${entry.label}`
+                    ? `Devices that can use ${entry.displayLabel}: ${deviceCount}`
+                    : `Devices that can use ${entry.displayLabel}`
                 }
                 description="Phones, tablets, browsers and linked computers are managed in Settings."
                 control={
