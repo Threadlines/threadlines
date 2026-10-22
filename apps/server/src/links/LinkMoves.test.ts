@@ -100,6 +100,12 @@ const movingThread = (): OrchestrationThread =>
         role: "assistant",
         text: "Done: it caches now.",
         turnId: "turn-1",
+        agentModels: {
+          primary: {
+            modelSelection: { instanceId: ProviderInstanceId.make("fx"), model: "fake-model" },
+            nameIndex: 1,
+          },
+        },
         streaming: false,
         createdAt: "2026-10-22T10:01:00.000Z",
         updatedAt: "2026-10-22T10:01:00.000Z",
@@ -241,6 +247,8 @@ describe("LinkMoves", () => {
         ["Make it faster", "Done: it caches now."],
       );
       assert.notEqual(command.messages[0]?.messageId, "m1");
+      // Its answer keeps the agent that wrote it, not the one it moves on with.
+      assert.equal(command.messages[1]?.agentModels?.primary?.modelSelection.model, "fake-model");
       const worktree = command.worktreePath!;
       assert.equal(run(worktree, "rev-parse", "HEAD"), checkout.headSha);
       const read = (name: string) => fs.readFileSync(path.join(worktree, name), "utf8");

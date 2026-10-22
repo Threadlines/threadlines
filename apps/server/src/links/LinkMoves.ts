@@ -984,6 +984,7 @@ const make = Effect.gen(function* () {
             ? null
             : TurnId.make(derivedUuid("link-move-turn", key, message.turnId)),
         ...(message.completesTurn !== undefined ? { completesTurn: message.completesTurn } : {}),
+        ...(message.agentModels !== undefined ? { agentModels: message.agentModels } : {}),
         createdAt: message.createdAt,
       }));
       const activities = row.manifest.thread.activities.map((activity) => ({

@@ -3798,6 +3798,8 @@ export const ThreadImportMessage = Schema.Struct({
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   completesTurn: Schema.optional(Schema.Boolean),
+  /** Who wrote it, as stamped where it was written (OrchestrationMessage.agentModels). */
+  agentModels: Schema.optional(Schema.Record(Schema.String, MessageAgentModel)),
   createdAt: IsoDateTime,
 });
 export type ThreadImportMessage = typeof ThreadImportMessage.Type;

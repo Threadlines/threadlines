@@ -285,6 +285,7 @@ export function exportThreadHistory(thread: OrchestrationThread): {
         ? { attachments: message.attachments }
         : {}),
       turnId: message.turnId,
+      ...(message.agentModels !== undefined ? { agentModels: message.agentModels } : {}),
       createdAt: message.createdAt,
     }));
   const activities = thread.activities

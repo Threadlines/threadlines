@@ -396,6 +396,8 @@ export function decideThreadImport(
       streaming: false,
       imported: true as const,
       ...(message.completesTurn !== undefined ? { completesTurn: message.completesTurn } : {}),
+      // Who wrote it there, not the agent it continues with here.
+      ...(message.agentModels !== undefined ? { agentModels: message.agentModels } : {}),
       createdAt: message.createdAt,
       updatedAt: message.createdAt,
     },
