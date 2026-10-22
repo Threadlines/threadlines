@@ -30,6 +30,7 @@ import * as Result from "effect/Result";
 
 import type { SavedEnvironmentConnectionState } from "../../environments/runtime/catalog";
 import type { ScheduledTaskEnvironment } from "../../lib/scheduledTasksState";
+import { viewerTimeZone } from "../../lib/timeZones";
 import { resolveEnvironmentOptionLabel } from "../BranchToolbar.logic";
 
 // ---------------------------------------------------------------------------
@@ -165,7 +166,7 @@ export function taskRunStatus(
 }
 
 /** The viewer's own zone. */
-export const viewerTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
+export { viewerTimeZone } from "../../lib/timeZones";
 
 /** A wall time in the viewer's locale ("9:00", "9:00 AM"). */
 export function formatClock(clock: ScheduledTaskClock): string {
@@ -452,14 +453,19 @@ export interface ScheduledTaskForm {
   readonly threadParticipantId: ThreadParticipantId | null;
 }
 
-/** The calendar day after `now` in `timeZone`, "2026-10-22". */
-export function tomorrowIn(timeZone: string, now: Date = new Date()): string {
+/** The calendar day of `now` in `timeZone`, "2026-10-21". */
+export function todayIn(timeZone: string, now: Date = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date(now.getTime() + 24 * 60 * 60_000));
+  }).format(now);
+}
+
+/** The calendar day after `now` in `timeZone`, "2026-10-22". */
+export function tomorrowIn(timeZone: string, now: Date = new Date()): string {
+  return todayIn(timeZone, new Date(now.getTime() + 24 * 60 * 60_000));
 }
 
 export function emptyTaskForm(input: {
@@ -541,18 +547,6 @@ export function formCadence(form: ScheduledTaskForm): ScheduledTaskCadence {
     case "custom":
       return { kind: "custom", cron: form.cron.trim() };
   }
-}
-
-/** "09:30" for an `<input type="time">`. */
-export const clockInputValue = (clock: ScheduledTaskClock) =>
-  `${String(clock.hour).padStart(2, "0")}:${String(clock.minute).padStart(2, "0")}`;
-
-export function parseClockInput(value: string): ScheduledTaskClock | null {
-  const match = /^(\d{1,2}):(\d{2})/u.exec(value);
-  if (!match) return null;
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
-  return hour <= 23 && minute <= 59 ? { hour, minute } : null;
 }
 
 export type FormProblems = Partial<
