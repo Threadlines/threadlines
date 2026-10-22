@@ -9,10 +9,49 @@ import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, it } from "vite-plus/test";
 
-import { checkAcpProviderStatus } from "./AcpProvider.ts";
+import { checkAcpProviderStatus, makeAcpCatalogCache } from "./AcpProvider.ts";
 import { makeAcpProviderMaintenanceResolver, resolveAcpBinaryPath } from "./AcpProviderDriver.ts";
 import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
 import { FX_ACP_DESCRIPTOR } from "./FxAcpSupport.ts";
+
+describe("makeAcpCatalogCache", () => {
+  const model = (slug: string) => ({
+    slug,
+    name: slug,
+    isCustom: false,
+    capabilities: { optionDescriptors: [] },
+  });
+  const probed = { optionDescriptors: [] };
+  const options = new Map([["b", probed]]);
+  const optionsOf = (cache: ReturnType<typeof makeAcpCatalogCache>, slug: string) =>
+    cache.reusable("me", 2)?.find((entry) => entry.slug === slug)?.capabilities;
+
+  it("probes each read once, and keeps a late probe off a newer read", () => {
+    const cache = makeAcpCatalogCache();
+    cache.remember("me", [model("a"), model("b")], 0);
+    const first = cache.claimProbe("me");
+    expect(typeof first).toBe("number");
+    // Cut short or still running, it is not started again for this read.
+    expect(cache.claimProbe("me")).toBe("claimed");
+    expect(cache.claimProbe("someone else")).toBe("none");
+
+    cache.remember("me", [model("a"), model("b")], 1);
+    cache.rememberCapabilities(first as number, options);
+    // The older probe's result doesn't land on the newer read.
+    expect(optionsOf(cache, "b")).not.toBe(probed);
+    const second = cache.claimProbe("me");
+    cache.rememberCapabilities(second as number, options);
+    expect(optionsOf(cache, "b")).toBe(probed);
+  });
+
+  it("stops reusing a read after six hours or for another identity", () => {
+    const cache = makeAcpCatalogCache();
+    cache.remember("me", [model("a")], 0);
+    expect(cache.reusable("me", 6 * 60 * 60 * 1000 - 1)).toHaveLength(1);
+    expect(cache.reusable("me", 6 * 60 * 60 * 1000)).toBeUndefined();
+    expect(cache.reusable("someone else", 1)).toBeUndefined();
+  });
+});
 
 describe("resolveAcpBinaryPath", () => {
   it("keeps explicit paths and unresolvable names untouched", () => {

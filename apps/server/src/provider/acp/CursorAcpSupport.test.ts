@@ -8,12 +8,21 @@ import * as Path from "effect/Path";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { describe, expect, it } from "vite-plus/test";
 import type * as EffectAcpSchema from "effect-acp/schema";
-import type { CursorSettings, ServerProviderModel } from "@threadlines/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type CursorSettings,
+  type ServerProvider,
+  type ServerProviderModel,
+} from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
 
 import {
   buildAcpProviderSnapshot,
+  acpCatalogIdentity,
   checkAcpProviderStatus,
+  enrichAcpSnapshot,
+  makeAcpCatalogCache,
   discoverAcpModelCapabilities,
   discoverAcpModels,
   getAcpFallbackModels,
@@ -621,6 +630,51 @@ describe("checkAcpProviderStatus (Cursor)", () => {
     ]);
     await expect(runNode(waitForFileContent(requestLogPath))).resolves.toContain("initialize");
   });
+
+  it("reuses the catalog on scheduled checks instead of opening another session", async () => {
+    // Cursor and fx keep every session on disk, so each catalog read leaves one behind.
+    const { requestLogPath, wrapperPath } = await runNode(makeProviderStatusEnvFixture());
+    const cache = makeAcpCatalogCache();
+    // Stands in for fx's Gateway prices: network metadata folded on at every check.
+    const descriptor = {
+      ...CURSOR_ACP_DESCRIPTOR,
+      enrichDiscoveredModels: (models: ReadonlyArray<ServerProviderModel>) =>
+        Effect.succeed(models.map((model) => ({ ...model, name: `${model.name} ($)` }))),
+    };
+    const check = (reuse: boolean) =>
+      Effect.runPromise(
+        checkAcpProviderStatus(
+          descriptor,
+          { enabled: true, binaryPath: wrapperPath, apiEndpoint: "", customModels: [] },
+          { ...process.env, T3_ACP_REQUEST_LOG_PATH: requestLogPath },
+          process.platform,
+          { cache, reuse },
+        ).pipe(Effect.provide([NodeServices.layer, TestHttpClientLive])),
+      );
+    const sessionsOpened = async () =>
+      ((await runNode(waitForFileContent(requestLogPath))).match(/"session\/new"/g) ?? []).length;
+
+    await check(false);
+    expect(await sessionsOpened()).toBe(1);
+    const scheduled = await check(true);
+    expect(scheduled.models.map((model) => model.slug)).toEqual([
+      "default",
+      "composer-2",
+      "gpt-5.4",
+      "claude-opus-4-6",
+    ]);
+    // Prices are folded onto the reused catalog once, as on a fresh read.
+    expect(scheduled.models.map((model) => model.name)).toEqual([
+      "Auto ($)",
+      "Composer 2 ($)",
+      "GPT-5.4 ($)",
+      "Opus 4.6 ($)",
+    ]);
+    expect(await sessionsOpened()).toBe(1);
+    // A check that is asked for reads the catalog again.
+    await check(false);
+    expect(await sessionsOpened()).toBe(2);
+  });
 });
 
 describe("discoverAcpModels (Cursor)", () => {
@@ -723,6 +777,71 @@ describe("discoverAcpModelCapabilities (Cursor)", () => {
     const exitLog = await runNode(waitForFileContent(exitLogPath));
     expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(1);
     expect(exitLog).not.toContain("exit:7");
+  });
+
+  it("probes a catalog's options once, though a model with none stays bare", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const { exitLogPath, wrapperPath } = await runNode(
+      makeExitLogFixture("cursor-enrich-once-exit-log-"),
+    );
+    const settings = { enabled: true, binaryPath: wrapperPath, apiEndpoint: "", customModels: [] };
+    const cache = makeAcpCatalogCache();
+    const draft = buildAcpProviderSnapshot({
+      descriptor: CURSOR_ACP_DESCRIPTOR,
+      checkedAt: "2026-10-22T00:00:00.000Z",
+      settings,
+      probe: {
+        installed: true,
+        version: "2026.04.09-f2b0fcd",
+        status: "ready",
+        auth: { status: "authenticated", email: "cursor@example.com" },
+      },
+      discoveredModels: ["default", "composer-2", "gpt-5.4"].map((slug) => ({
+        slug,
+        name: slug,
+        isCustom: false,
+        capabilities: emptyCapabilities,
+      })),
+    });
+    const snapshot: ServerProvider = {
+      ...draft,
+      instanceId: ProviderInstanceId.make("cursor"),
+      driver: ProviderDriverKind.make("cursor"),
+    };
+    cache.remember(acpCatalogIdentity(snapshot), snapshot.models, 0);
+    const published: Array<ServerProvider> = [];
+    const enrich = () =>
+      Effect.runPromise(
+        enrichAcpSnapshot({
+          descriptor: CURSOR_ACP_DESCRIPTOR,
+          settings,
+          snapshot,
+          maintenanceCapabilities: CURSOR_ACP_DESCRIPTOR.maintenance,
+          publishSnapshot: (next) => Effect.sync(() => void published.push(next)),
+          stampIdentity: (next) => next,
+          httpClient: HttpClient.make((request) =>
+            Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({}))),
+          ),
+          catalog: cache,
+        }).pipe(Effect.provide(NodeServices.layer)),
+      );
+
+    await enrich();
+    // Auto has no options of its own, so the snapshot still has a bare model.
+    await enrich();
+
+    const exitLog = await runNode(waitForFileContent(exitLogPath));
+    expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(1);
+    // The next scheduled check reuses the catalog with the options it found.
+    const reused = cache.reusable(acpCatalogIdentity(snapshot), 1);
+    expect(
+      reused
+        ?.find((model) => model.slug === "gpt-5.4")
+        ?.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id),
+    ).toContain("reasoning");
   });
 });
 

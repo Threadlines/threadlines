@@ -41,6 +41,7 @@ import {
   buildInitialAcpProviderSnapshot,
   checkAcpProviderStatus,
   enrichAcpSnapshot,
+  makeAcpCatalogCache,
 } from "./AcpProvider.ts";
 import type { AcpProviderDescriptor, AcpProviderSettings } from "./AcpProviderDescriptor.ts";
 import { makeAcpTextGeneration } from "./AcpTextGeneration.ts";
@@ -215,13 +216,21 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
           processEnv,
         );
 
-        const checkProvider = checkAcpProviderStatus(descriptor, effectiveConfig, processEnv).pipe(
-          Effect.map(stampIdentity),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(HttpClient.HttpClient, httpClient),
-          Effect.provideService(Path.Path, path),
-        );
+        // Reading the catalog opens a session, which some agents keep on
+        // disk: the scheduled check reuses the last one while it is fresh.
+        const catalog = makeAcpCatalogCache();
+        const check = (reuseCatalog: boolean) =>
+          checkAcpProviderStatus(descriptor, effectiveConfig, processEnv, process.platform, {
+            cache: catalog,
+            reuse: reuseCatalog,
+          }).pipe(
+            Effect.map(stampIdentity),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+            Effect.provideService(Path.Path, path),
+          );
+        const checkProvider = check(false);
 
         const snapshot = yield* makeManagedServerProvider<Settings>({
           get maintenanceCapabilities() {
@@ -235,6 +244,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
               Effect.map(stampIdentity),
             ),
           checkProvider,
+          scheduledCheckProvider: check(true),
           enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
             enrichAcpSnapshot({
               descriptor,
@@ -245,6 +255,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
               publishSnapshot,
               stampIdentity,
               httpClient,
+              catalog,
             }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
           refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
         }).pipe(
