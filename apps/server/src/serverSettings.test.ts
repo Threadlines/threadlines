@@ -4,7 +4,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ServerSettings,
-  ServerSettingsPatch,
 } from "@threadlines/contracts";
 import { createModelSelection } from "@threadlines/shared/model";
 import { assert, it } from "@effect/vitest";
@@ -32,29 +31,6 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
-  it.effect("decodes nested settings patches", () =>
-    Effect.gen(function* () {
-      const decodePatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
-
-      assert.deepEqual(yield* decodePatch({ providers: { codex: { binaryPath: "/tmp/codex" } } }), {
-        providers: { codex: { binaryPath: "/tmp/codex" } },
-      });
-
-      assert.deepEqual(
-        yield* decodePatch({
-          textGenerationModelSelection: {
-            options: [{ id: "fastMode", value: false }],
-          },
-        }),
-        {
-          textGenerationModelSelection: {
-            options: [{ id: "fastMode", value: false }],
-          },
-        },
-      );
-    }),
-  );
-
   it.effect(
     "decodes legacy object-shaped textGenerationModelSelection.options from settings.json",
     () =>

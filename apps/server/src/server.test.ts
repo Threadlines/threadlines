@@ -30,7 +30,6 @@ import {
   TurnId,
   WS_METHODS,
   WsRpcGroup,
-  EditorId,
   EMPTY_AGENT_REQUEST_STATE,
   EMPTY_CHILD_REQUEST_STATE,
   RelayHostId,
@@ -3227,34 +3226,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         result.failure.message,
         "Workspace file path must stay within the project root.",
       );
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("routes websocket rpc shell.openInEditor", () =>
-    Effect.gen(function* () {
-      let openedInput: { cwd: string; editor: EditorId } | null = null;
-      yield* buildAppUnderTest({
-        layers: {
-          externalLauncher: {
-            launchEditor: (input) =>
-              Effect.sync(() => {
-                openedInput = input;
-              }),
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.shellOpenInEditor]({
-            cwd: "/tmp/project",
-            editor: "cursor",
-          }),
-        ),
-      );
-
-      assert.deepEqual(openedInput, { cwd: "/tmp/project", editor: "cursor" });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

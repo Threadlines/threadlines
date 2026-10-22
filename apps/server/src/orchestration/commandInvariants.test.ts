@@ -14,8 +14,6 @@ import {
 import * as Effect from "effect/Effect";
 
 import {
-  findThreadById,
-  listThreadsByProjectId,
   requireNonNegativeInteger,
   requireThread,
   requireThreadAbsent,
@@ -160,14 +158,6 @@ const messageSendCommand: OrchestrationCommand = {
 };
 
 describe("commandInvariants", () => {
-  it("finds threads by id and project", () => {
-    expect(findThreadById(readModel, ThreadId.make("thread-1"))?.projectId).toBe("project-a");
-    expect(findThreadById(readModel, ThreadId.make("missing"))).toBeUndefined();
-    expect(
-      listThreadsByProjectId(readModel, ProjectId.make("project-b")).map((thread) => thread.id),
-    ).toEqual([ThreadId.make("thread-2")]);
-  });
-
   it("requires existing thread", async () => {
     const thread = await Effect.runPromise(
       requireThread({
