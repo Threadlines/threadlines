@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentId,
+  type ExecutionEnvironmentDescriptor,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -26,6 +27,7 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import { ServerConfig } from "../config.ts";
+import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import type { McpInvocationScope } from "../mcp/McpSessionRegistry.ts";
 import { roomToolsFor } from "../mcp/roomToolAccess.ts";
@@ -152,6 +154,8 @@ const makeComputer = Effect.gen(function* () {
     patch: {
       readonly bootstrap?: Partial<ThreadBootstrapShape>;
       readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
+      /** The agents the server reports; Codex, signed in, otherwise. */
+      readonly providers?: ReadonlyArray<ServerProvider>;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -159,9 +163,16 @@ const makeComputer = Effect.gen(function* () {
         Layer.provide(
           Layer.mergeAll(
             Layer.succeed(ThreadBootstrap, { ...realBootstrap, ...patch.bootstrap }),
-            Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([PROVIDER]) }),
+            Layer.mock(ProviderRegistry)({
+              getProviders: Effect.succeed(patch.providers ?? [PROVIDER]),
+            }),
             Layer.mock(GitVcsDriver)({}),
             Layer.mock(GitWorkflowService)({}),
+            Layer.mock(ServerEnvironment)({
+              getDescriptor: Effect.succeed({
+                label: "Test Mac",
+              } as ExecutionEnvironmentDescriptor),
+            }),
             ServerSettingsService.layerTest(patch.settings),
           ),
         ),
@@ -1391,6 +1402,51 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       const ended = (yield* computer.runs(task.id))[0];
       assert.equal(ended?.status, "failed");
       assert.equal(ended?.reason, "Provider instance 'codex' is disabled in Threadlines settings.");
+    }),
+  );
+
+  it.effect("a run whose agent isn't signed in says so, naming the agent and the computer", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      /** A run whose turn fails with `lastError`, on a server reporting `providers`. */
+      const failedRun = (lastError: string, providers?: ReadonlyArray<ServerProvider>) =>
+        Effect.gen(function* () {
+          const service = yield* computer.boot(providers === undefined ? {} : { providers });
+          const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+          const run = yield* service.runNow({ id: task.id });
+          const threadId = scheduledRunThreadId(task.id, run.slotUtc);
+          yield* eventually(
+            computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+            "the run started",
+          );
+          const turnId = TurnId.make(`turn-${task.id}`);
+          yield* computer.turnRuns(threadId, turnId);
+          yield* service.onTurnEnd({
+            threadId,
+            turnId,
+            outcome: "failed",
+            error: lastError,
+            pendingMessageId: scheduledRunMessageId(task.id, run.slotUtc),
+          });
+          return (yield* computer.runs(task.id))[0]?.reason;
+        });
+      // The provider's own words, twice over, become one plain sentence.
+      assert.equal(
+        yield* failedRun(
+          "Not logged in · Please run /login Run `claude auth login` in a terminal, then retry.",
+        ),
+        "Codex isn't signed in on Test Mac. Sign in under Settings › Providers, then run it again.",
+      );
+      // So does any failure while the server reports the agent signed out.
+      assert.equal(
+        yield* failedRun("Stream closed.", [
+          { ...PROVIDER, auth: { status: "unauthenticated" } } as ServerProvider,
+        ]),
+        "Codex isn't signed in on Test Mac. Sign in under Settings › Providers, then run it again.",
+      );
+      // Any other failure keeps its own words.
+      assert.equal(yield* failedRun("Stream closed."), "Stream closed.");
     }),
   );
 

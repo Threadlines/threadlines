@@ -51,6 +51,13 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
+import {
+  hasProviderAuthError,
+  PROVIDER_NOT_READY_FIX,
+  providerAgentName,
+  providerNotReady,
+  providerNotReadySentence,
+} from "@threadlines/shared/providerAuth";
 import { agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
 import {
@@ -78,6 +85,7 @@ import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -390,6 +398,7 @@ const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver;
   const gitWorkflow = yield* GitWorkflowService;
   const settings = yield* ServerSettingsService;
+  const environment = yield* ServerEnvironment;
 
   const changed = yield* PubSub.sliding<void>(1);
   const notify = PubSub.publish(changed, undefined).pipe(Effect.asVoid);
@@ -1404,6 +1413,26 @@ const make = Effect.gen(function* () {
    * from that turn. A new thread that had nothing to report is wrapped and
    * marked seen; a continued thread never is.
    */
+  /**
+   * A failed run's reason, in plain words when its agent can't run here (as
+   * the server reports it, or as its error says): "Claude isn't signed in
+   * on Denys's MacBook Pro. Sign in under Settings › Providers, then run it
+   * again." Otherwise the reason as it was.
+   */
+  const failedRunReason = (run: ScheduledRunRow, reason: string | null) =>
+    Effect.gen(function* () {
+      const instanceId = run.launch?.modelSelection.instanceId;
+      if (instanceId === undefined) return reason;
+      const provider = (yield* providers.getProviders.pipe(Effect.orElseSucceed(() => []))).find(
+        (entry) => entry.instanceId === instanceId,
+      );
+      const notReady =
+        providerNotReady(provider) ?? (hasProviderAuthError(reason) ? "signed_out" : null);
+      if (notReady === null) return reason;
+      const computer = (yield* environment.getDescriptor).label;
+      return `${providerNotReadySentence(notReady, providerAgentName(provider, instanceId), computer)} ${PROVIDER_NOT_READY_FIX[notReady]}, then run it again.`;
+    });
+
   const endRun = (
     run: ScheduledRunRow,
     end: {
@@ -1432,7 +1461,7 @@ const make = Effect.gen(function* () {
           slotUtc: run.slotUtc,
           from: WORKING_RUN_STATUSES,
           status,
-          reason: end.reason,
+          reason: status === "failed" ? yield* failedRunReason(run, end.reason) : end.reason,
           ...(end.turnId !== null ? { turnId: end.turnId } : {}),
           summary: finish?.summary ?? null,
           now: at,
