@@ -236,7 +236,8 @@ function sameThreadStartCalls(
         call.id === other.id &&
         call.turnId === other.turnId &&
         call.result.outcome === other.result.outcome &&
-        shallow(call.result.threadIds, other.result.threadIds)
+        shallow(call.result.threadIds, other.result.threadIds) &&
+        shallow(call.result.remoteThreadIds, other.result.remoteThreadIds)
       );
     })
   );

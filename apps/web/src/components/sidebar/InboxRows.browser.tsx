@@ -199,6 +199,17 @@ describe("InboxThreadRow on a touch screen", () => {
     tap();
     expect(handleThreadClick).toHaveBeenCalledTimes(1);
     expect(handleThreadContextMenu).toHaveBeenCalledTimes(1);
+
+    // A hold whose lift lands on the menu, not the row, leaves nothing behind:
+    // the next press, even a mouse's, opens the thread.
+    element.dispatchEvent(new PointerEvent("pointerdown", finger));
+    await vi.waitFor(() => expect(handleThreadContextMenu).toHaveBeenCalledTimes(2));
+    element.dispatchEvent(new PointerEvent("pointercancel", finger));
+    const mouse = { ...finger, pointerType: "mouse", pointerId: 1 };
+    element.dispatchEvent(new PointerEvent("pointerdown", mouse));
+    element.dispatchEvent(new PointerEvent("pointerup", mouse));
+    element.dispatchEvent(new MouseEvent("click", mouse));
+    expect(handleThreadClick).toHaveBeenCalledTimes(2);
   });
 });
 
