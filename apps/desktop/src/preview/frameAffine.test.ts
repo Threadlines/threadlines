@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { applyAffine, composeAffine, frameAffine } from "./frameAffine.ts";
+import { applyAffine, composeAffine, frameAffine, frameToParentAffine } from "./frameAffine.ts";
 
 const at = (
   quad: ReadonlyArray<number>,
@@ -39,6 +39,14 @@ describe("frameAffine", () => {
     expect(turned.y).toBeCloseTo(50);
     // Drawn flat: no mapping.
     expect(frameAffine([0, 0, 100, 0, 100, 0, 0, 0], { width: 100, height: 100 })).toBeNull();
+  });
+
+  it("maps a point in a frame back out to where the parent draws it", () => {
+    const turned = [300, 100, 300, 300, 200, 300, 200, 100];
+    const size = { width: 200, height: 100 };
+    const out = applyAffine(frameToParentAffine(turned, size), { x: 50, y: 50 });
+    expect(out.x).toBeCloseTo(250);
+    expect(out.y).toBeCloseTo(150);
   });
 
   it("follows a frame inside a frame", () => {

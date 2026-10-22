@@ -45,18 +45,28 @@ export const INJECTED_WORLD_NAME = "threadlines-preview";
 
 /** Where the constructed engine lives inside the isolated world. */
 export const INJECTED_HANDLE = "__threadlinesInjected";
+/** The frame number the engine there was built with; see `buildInjectedRuntimeScript`. */
+const INJECTED_FRAME_SEQ = "__threadlinesInjectedFrameSeq";
+
+/** Whether the world already holds an engine built with this frame number. */
+export function injectedRuntimeReadyExpression(frameSeq = 0): string {
+  return `Boolean(globalThis.${INJECTED_HANDLE}) && globalThis.${INJECTED_FRAME_SEQ} === ${frameSeq}`;
+}
 
 /**
  * Builds the engine, or returns the one already built.
  *
  * Idempotent because an isolated world outlives a single call but not a
  * navigation, and the caller should not have to track which of those just
- * happened.
+ * happened. `frameSeq` is the number a frame's snapshot refs carry (`2` makes
+ * `f2e7`); the page's top document has none (0).
  */
-export function buildInjectedRuntimeScript(source = injectedScriptSource()): string {
+export function buildInjectedRuntimeScript(source = injectedScriptSource(), frameSeq = 0): string {
   return `
 (() => {
-  if (globalThis.${INJECTED_HANDLE}) {
+  // One built with another number is replaced: its refs would name the
+  // wrong frame.
+  if (globalThis.${INJECTED_HANDLE} && globalThis.${INJECTED_FRAME_SEQ} === ${frameSeq}) {
     return true;
   }
   const module = { exports: {} };
@@ -72,7 +82,9 @@ export function buildInjectedRuntimeScript(source = injectedScriptSource()): str
     stableRafCount: 1,
     browserName: "chromium",
     customEngines: [],
+    frameSeq: ${frameSeq},
   });
+  globalThis.${INJECTED_FRAME_SEQ} = ${frameSeq};
   return true;
 })();
 `;
@@ -114,12 +126,13 @@ export function buildLocatorQueryScript(locator: string): string {
 }
 
 /**
- * The page as an accessibility tree, with a ref on everything.
+ * A frame's document as an accessibility tree, with a ref on everything.
  *
  * This is what replaces our own tree walk. Ours kept only actionable and
  * landmark nodes that had an accessible name, which meant an agent could see
  * every button and not a word of what the page said. This carries the text too,
- * and the refs in it are what the other tools take.
+ * and the refs in it are what the other tools take. The engine numbers a
+ * frame's refs itself, by the `frameSeq` it was built with.
  */
 export function buildAriaSnapshotScript(): string {
   return `
@@ -128,7 +141,8 @@ export function buildAriaSnapshotScript(): string {
   if (!injected) {
     throw new Error("the element engine is not loaded in this frame");
   }
-  return injected.ariaSnapshot(document.body, { mode: "ai", refPrefix: "" });
+  if (!document.body) return "";
+  return injected.ariaSnapshot(document.body, { mode: "ai" });
 })();
 `;
 }
