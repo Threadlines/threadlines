@@ -175,6 +175,9 @@ export default defineConfig({
             "!src/**/__screenshots__/**",
             "!.vitest/**",
           ],
+          // Tasks run in a clean environment: CI's shard jobs name the file
+          // their per-file timings go to (scripts/lib/test-shards.ts).
+          untrackedEnv: ["THREADLINES_SHARD_TIMINGS_FILE"],
         },
       },
     },

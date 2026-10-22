@@ -34,6 +34,7 @@
     "lint": "vp lint --report-unused-disable-directives",
     "test": "vp run -r --parallel --concurrency-limit 4 --cache test",
     "test:desktop-smoke": "vp run --filter @threadlines/desktop smoke-test",
+    "test:shard-weights": "node scripts/update-test-shard-weights.ts",
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",
     "build:contracts": "vp run --filter @threadlines/contracts build",
