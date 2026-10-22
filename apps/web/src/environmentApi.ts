@@ -145,6 +145,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     },
     pullRequests: {
       list: rpcClient.pullRequests.list,
+      lookup: rpcClient.pullRequests.lookup,
       detail: rpcClient.pullRequests.detail,
       activity: rpcClient.pullRequests.activity,
       diff: rpcClient.pullRequests.diff,

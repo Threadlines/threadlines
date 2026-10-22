@@ -2,9 +2,12 @@
 import { readFileSync } from "node:fs";
 import { assert, afterEach, describe, expect, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
   ProjectId,
@@ -1069,6 +1072,212 @@ describe("PullRequestService pull request actions", () => {
       yield* service.detail(reference);
       expect(prCalls("view")).toHaveLength(2);
     }).pipe(Effect.provide(layer)),
+  );
+});
+
+/** One pull request as GitHub's lookup document reads it. */
+const lookupNode = (input: {
+  readonly number: number;
+  readonly headRefName: string;
+  readonly state: "OPEN" | "MERGED" | "CLOSED";
+  readonly isCrossRepository?: boolean;
+}) => ({
+  ...pullRequestRow({ number: input.number, author: "octocat" }),
+  headRefName: input.headRefName,
+  state: input.state,
+  mergedAt: input.state === "MERGED" ? "2026-10-21T16:46:35Z" : null,
+  closedAt: input.state === "OPEN" ? null : "2026-10-21T16:46:35Z",
+  isCrossRepository: input.isCrossRepository ?? false,
+  isInMergeQueue: false,
+  autoMergeRequest: null,
+});
+
+/**
+ * A repository's pull requests as GitHub's GraphQL answers a lookup: each
+ * aliased number and branch from the document's variables. A number it has
+ * no pull request for fails the whole request, as GitHub does.
+ */
+const lookupHost = (pullRequests: ReadonlyArray<ReturnType<typeof lookupNode>>) => {
+  mockExecute.mockImplementation((input) => {
+    const { variables } = JSON.parse(input.stdin ?? "{}") as {
+      readonly variables: Record<string, string | number>;
+    };
+    const repository: Record<string, unknown> = { defaultBranchRef: { name: "main" } };
+    for (const [name, value] of Object.entries(variables)) {
+      if (/^n\d+$/.test(name)) {
+        const found = pullRequests.find((pullRequest) => pullRequest.number === value);
+        if (found === undefined) {
+          return Effect.fail(
+            new GitHubCli.GitHubCliError({
+              operation: "execute",
+              detail: "Pull request not found. Check the PR number or URL and try again.",
+            }),
+          );
+        }
+        repository[name] = found;
+      }
+      if (/^b\d+$/.test(name)) {
+        const onBranch = pullRequests.filter((pullRequest) => pullRequest.headRefName === value);
+        const page = (states: ReadonlyArray<string>) => ({
+          pageInfo: { hasNextPage: false },
+          nodes: onBranch.filter((pullRequest) => states.includes(pullRequest.state)),
+        });
+        repository[`bo${name.slice(1)}`] = page(["OPEN"]);
+        repository[`bs${name.slice(1)}`] = page(["MERGED", "CLOSED"]);
+      }
+    }
+    return Effect.succeed(processOutput(JSON.stringify({ data: { repository } })));
+  });
+};
+
+/** What each lookup request asked GitHub about, in the order they went. */
+const lookupRequests = () =>
+  mockExecute.mock.calls.map(([input]) =>
+    Object.entries(
+      (JSON.parse(input.stdin ?? "{}") as { readonly variables: Record<string, unknown> })
+        .variables,
+    )
+      .filter(([name]) => name !== "owner" && name !== "name")
+      .map(([, value]) => value),
+  );
+
+const lookupTarget = {
+  projectId: ProjectId.make("project-app"),
+  repository: "octocat/example-app",
+};
+
+describe("PullRequestService.lookup", () => {
+  const merged545 = lookupNode({ number: 545, headRefName: "fix/agent-env", state: "MERGED" });
+
+  it.effect("answers what the listings no longer carry, and keeps only a merge for good", () =>
+    Effect.gen(function* () {
+      onlyGitHubProject();
+      lookupHost([
+        merged545,
+        lookupNode({ number: 544, headRefName: "fix/issue-542", state: "MERGED" }),
+        // A fork's pull request from a branch of the same name is not the thread's.
+        lookupNode({
+          number: 600,
+          headRefName: "fix/issue-542",
+          state: "OPEN",
+          isCrossRepository: true,
+        }),
+      ]);
+      const service = yield* PullRequestService.PullRequestService;
+      const items = [{ number: 545 }, { branch: "fix/issue-542" }, { branch: "never-pushed" }];
+
+      const first = yield* service.lookup({ ...lookupTarget, items });
+      assert.isTrue(first.supported);
+      assert.deepStrictEqual(
+        first.answers.map((answer) => [answer.item, answer.pullRequest?.number ?? null]),
+        [
+          [{ number: 545 }, 545],
+          [{ branch: "fix/issue-542" }, 544],
+          [{ branch: "never-pushed" }, null],
+        ],
+      );
+      assert.equal(first.answers[0]?.pullRequest?.state, "merged");
+
+      // Callers asking at about the same time share one read.
+      yield* service.lookup({ ...lookupTarget, items });
+      assert.equal(mockExecute.mock.calls.length, 1);
+
+      // Later, a branch may have taken a new pull request; a merged number cannot change.
+      yield* TestClock.adjust("31 seconds");
+      yield* service.lookup({ ...lookupTarget, items });
+      assert.deepStrictEqual(lookupRequests()[1], ["fix/issue-542", "never-pushed"]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("splits a request around a number GitHub has no pull request for", () =>
+    Effect.gen(function* () {
+      onlyGitHubProject();
+      lookupHost([merged545]);
+      const service = yield* PullRequestService.PullRequestService;
+
+      const result = yield* service.lookup({
+        ...lookupTarget,
+        items: [{ number: 545 }, { number: 9999 }],
+      });
+
+      assert.deepStrictEqual(
+        result.answers.map((answer) => [answer.item, answer.pullRequest?.state ?? null]),
+        [
+          [{ number: 545 }, "merged"],
+          [{ number: 9999 }, null],
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("asks the host only for what an earlier caller left unanswered", () =>
+    Effect.gen(function* () {
+      onlyGitHubProject();
+      lookupHost([
+        merged545,
+        lookupNode({ number: 547, headRefName: "feat/links", state: "MERGED" }),
+      ]);
+      const answer = mockExecute.getMockImplementation()!;
+      const gate = yield* Deferred.make<void>();
+      // The first read is still with the host when the second caller asks.
+      mockExecute.mockImplementationOnce((input) =>
+        Deferred.await(gate).pipe(Effect.andThen(answer(input))),
+      );
+      const service = yield* PullRequestService.PullRequestService;
+
+      const first = yield* service
+        .lookup({ ...lookupTarget, items: [{ number: 545 }] })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const second = yield* service
+        .lookup({ ...lookupTarget, items: [{ number: 545 }, { number: 547 }] })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      // What nobody else is reading goes out at once, without queueing behind
+      // the first read; what the first is reading is waited for, not read twice.
+      assert.deepStrictEqual(lookupRequests(), [[545], [547]]);
+      yield* Deferred.succeed(gate, undefined);
+      yield* Fiber.join(first);
+      const result = yield* Fiber.join(second);
+
+      assert.equal(mockExecute.mock.calls.length, 2);
+      assert.deepStrictEqual(
+        result.answers.map((entry) => entry.pullRequest?.number),
+        [545, 547],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("lets a later caller read an item whose first read was cut short", () =>
+    Effect.gen(function* () {
+      onlyGitHubProject();
+      lookupHost([merged545]);
+      const answer = mockExecute.getMockImplementation()!;
+      // The first read never comes back from the host.
+      mockExecute.mockImplementationOnce((input) =>
+        Effect.never.pipe(Effect.andThen(answer(input))),
+      );
+      const service = yield* PullRequestService.PullRequestService;
+
+      const cutShort = yield* service
+        .lookup({ ...lookupTarget, items: [{ number: 545 }] })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(cutShort);
+      const result = yield* service.lookup({ ...lookupTarget, items: [{ number: 545 }] });
+
+      assert.equal(result.answers[0]?.pullRequest?.number, 545);
+      assert.equal(mockExecute.mock.calls.length, 2);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("tells the caller a host that cannot be asked this way is not supported", () =>
+    Effect.gen(function* () {
+      onlyGitHubProject();
+      const service = yield* PullRequestService.PullRequestService;
+      const result = yield* service.lookup({ ...lookupTarget, items: [{ number: 545 }] });
+      assert.deepStrictEqual(result, { supported: false, answers: [] });
+    }).pipe(Effect.provide(layerWithCapabilities(GITHUB_PULL_REQUEST_CAPABILITIES))),
   );
 });
 

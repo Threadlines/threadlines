@@ -1,4 +1,5 @@
 import type * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
@@ -219,6 +220,173 @@ export function gitHubAuthoredSearchQuery(input: {
   readonly state: PullRequestListState;
 }): string {
   return `is:pr author:${input.viewer.trim()} ${AUTHORED_SEARCH_STATE[input.state]}`;
+}
+
+/**
+ * What a lookup reads of each pull request: the fields a thread's tag, rows
+ * and wrap-up need, spelled the way `gh pr list --json` reports them so one
+ * decoder normalises every listing. No nested connections, so a whole lookup
+ * costs GitHub about one point however many pull requests it names.
+ */
+const LOOKUP_PULL_REQUEST_FIELDS =
+  "number title url state isDraft headRefName baseRefName additions deletions createdAt updatedAt mergedAt closedAt isCrossRepository isInMergeQueue autoMergeRequest { enabledAt }";
+
+/**
+ * How many candidates a branch is asked for, open and settled separately so a
+ * run of settled ones can never hide the open one. Forks may use the same
+ * branch name; they are read past here, never paged through.
+ */
+const LOOKUP_BRANCH_CANDIDATES = 10;
+
+/**
+ * One request for every number and branch at once, each under an alias of its
+ * own. Every value travels as a variable, so no branch name becomes query text.
+ */
+export function gitHubPullRequestLookupRequest(input: {
+  readonly owner: string;
+  readonly name: string;
+  readonly numbers: ReadonlyArray<number>;
+  readonly branches: ReadonlyArray<string>;
+}): {
+  readonly query: string;
+  readonly variables: Readonly<Record<string, GitHubGraphQlVariable>>;
+} {
+  const declarations = ["$owner: String!", "$name: String!"];
+  const selections = ["defaultBranchRef { name }"];
+  const variables: Record<string, GitHubGraphQlVariable> = { owner: input.owner, name: input.name };
+  input.numbers.forEach((number, index) => {
+    declarations.push(`$n${index}: Int!`);
+    variables[`n${index}`] = number;
+    selections.push(`n${index}: pullRequest(number: $n${index}) { ...LookupFields }`);
+  });
+  const candidates = (alias: string, index: number, states: string) =>
+    `${alias}${index}: pullRequests(headRefName: $b${index}, states: [${states}], first: ${LOOKUP_BRANCH_CANDIDATES}, orderBy: { field: CREATED_AT, direction: DESC }) { pageInfo { hasNextPage } nodes { ...LookupFields } }`;
+  input.branches.forEach((branch, index) => {
+    declarations.push(`$b${index}: String!`);
+    variables[`b${index}`] = branch;
+    selections.push(candidates("bo", index, "OPEN"), candidates("bs", index, "MERGED, CLOSED"));
+  });
+  return {
+    query: [
+      `query(${declarations.join(", ")}) {`,
+      "  repository(owner: $owner, name: $name) {",
+      ...selections.map((selection) => `    ${selection}`),
+      "  }",
+      "}",
+      `fragment LookupFields on PullRequest { ${LOOKUP_PULL_REQUEST_FIELDS} }`,
+    ].join("\n"),
+    variables,
+  };
+}
+
+const RawLookupSchema = Schema.Struct({
+  data: Schema.Struct({
+    repository: Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown)),
+  }),
+});
+
+const RawLookupCandidatesSchema = Schema.Struct({
+  pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean }),
+  nodes: Schema.Array(Schema.Unknown),
+});
+
+const RawLookupOriginSchema = Schema.Struct({
+  isCrossRepository: Schema.optional(Schema.NullOr(Schema.Boolean)),
+});
+
+const RawDefaultBranchSchema = Schema.Struct({ name: Schema.String });
+
+const decodeLookup = decodeJsonResult(RawLookupSchema);
+const decodeLookupCandidates = Schema.decodeUnknownOption(RawLookupCandidatesSchema);
+const decodeLookupOrigin = Schema.decodeUnknownOption(RawLookupOriginSchema);
+const decodeDefaultBranch = Schema.decodeUnknownOption(RawDefaultBranchSchema);
+
+/**
+ * What {@link gitHubPullRequestLookupRequest} answered. Null is GitHub saying
+ * there is none; an item it said nothing usable about is left out.
+ */
+export interface GitHubPullRequestLookup {
+  readonly numbers: ReadonlyMap<number, GitHubPullRequestListRow | null>;
+  readonly branches: ReadonlyMap<string, GitHubPullRequestListRow | null>;
+}
+
+/** The candidates opened from this repository's own branch; a fork's of the same name is not the thread's. */
+function sameRepositoryCandidates(raw: unknown): {
+  readonly rows: ReadonlyArray<GitHubPullRequestListRow>;
+  readonly more: boolean;
+} | null {
+  const candidates = decodeLookupCandidates(raw);
+  if (Option.isNone(candidates)) {
+    return null;
+  }
+  const rows = candidates.value.nodes.flatMap((node) => {
+    const origin = decodeLookupOrigin(node);
+    if (Option.isSome(origin) && origin.value.isCrossRepository === true) {
+      return [];
+    }
+    const row = decodeGitHubPullRequestListRow(node);
+    return row === null ? [] : [row];
+  });
+  return { rows, more: candidates.value.pageInfo.hasNextPage };
+}
+
+/**
+ * Decodes a lookup. A branch's answer is its open pull request, else its
+ * newest settled one; on the default branch only an open one counts, the way
+ * the checkout's own status reads it, since a merge from there is history. A
+ * branch whose candidates ran past the page without the one it needs from this
+ * repository is left unanswered rather than called empty or settled.
+ */
+export function decodeGitHubPullRequestLookupJson(
+  raw: string,
+  request: { readonly numbers: ReadonlyArray<number>; readonly branches: ReadonlyArray<string> },
+): Result.Result<GitHubPullRequestLookup, DecodeFailure> {
+  const decoded = decodeLookup(raw);
+  if (!Result.isSuccess(decoded)) {
+    return Result.fail(decoded.failure);
+  }
+  const repository = decoded.success.data.repository;
+  const numbers = new Map<number, GitHubPullRequestListRow | null>();
+  const branches = new Map<string, GitHubPullRequestListRow | null>();
+  if (repository === null) {
+    return Result.succeed({ numbers, branches });
+  }
+  const defaultBranch = decodeDefaultBranch(repository["defaultBranchRef"]);
+  const defaultBranchName = Option.isSome(defaultBranch) ? defaultBranch.value.name : null;
+
+  request.numbers.forEach((number, index) => {
+    const node = repository[`n${index}`];
+    if (node === null) {
+      numbers.set(number, null);
+      return;
+    }
+    const row = decodeGitHubPullRequestListRow(node);
+    if (row !== null && row.number === number) {
+      numbers.set(number, row);
+    }
+  });
+
+  request.branches.forEach((branch, index) => {
+    const open = sameRepositoryCandidates(repository[`bo${index}`]);
+    const settled = sameRepositoryCandidates(repository[`bs${index}`]);
+    if (open === null || settled === null) {
+      return;
+    }
+    // An open one past the page outranks any settled one, so a crowded open
+    // page settles nothing.
+    const answer =
+      open.rows[0] ??
+      (open.more
+        ? undefined
+        : branch === defaultBranchName
+          ? null
+          : (settled.rows[0] ?? (settled.more ? undefined : null)));
+    if (answer !== undefined) {
+      branches.set(branch, answer);
+    }
+  });
+
+  return Result.succeed({ numbers, branches });
 }
 
 /** The people this pull request may be sent to, with whoever is on it already marked. */
