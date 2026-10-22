@@ -1,6 +1,6 @@
 import "../../index.css";
 
-import { EnvironmentId, ThreadId } from "@threadlines/contracts";
+import { EnvironmentId, ProviderDriverKind, ThreadId } from "@threadlines/contracts";
 import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -918,20 +918,35 @@ describe("AgentsPanel", () => {
     }
   });
 
-  it("marks a spawned agent with the thread provider's glyph", async () => {
+  it("marks each agent with the provider that runs it, else the thread's", async () => {
+    // A Claude thread: one agent with nothing on record, and one it launched as
+    // `codex exec`, which Codex runs.
     const mounted = await renderPanel({
-      subagents: [buildSubagent({ label: "Router sweep" })],
+      subagents: [
+        buildSubagent({ label: "Router sweep" }),
+        buildSubagent({
+          id: "codex-exec:run-1",
+          agentThreadId: "codex-exec:run-1",
+          label: "Codex review",
+          agentProvider: ProviderDriverKind.make("codex"),
+          sessionProvider: ProviderDriverKind.make("claudeAgent"),
+        }),
+      ],
       providerLabel: "claudeAgent",
     });
 
     try {
-      await expect.element(page.getByText("Router sweep")).toBeVisible();
+      await expect.element(page.getByText("Codex review")).toBeVisible();
 
-      const rows = [...document.querySelectorAll("[data-agent-branch='true']")];
-      const subagentRow = rows.find(
-        (row) => row.getAttribute("data-agent-branch-kind") === "subagent",
-      );
-      expect(subagentRow?.querySelector("[data-agent-branch-provider='true'] svg")).not.toBeNull();
+      const markOf = (name: string) =>
+        [...document.querySelectorAll("[data-agent-branch='true']")]
+          .find((row) => row.textContent?.includes(name))
+          ?.querySelector("[data-agent-branch-provider='true'] svg")
+          ?.getAttribute("class") ?? "";
+      // Claude's mark is its brand orange; Codex's follows the text color.
+      expect(markOf("Router sweep")).toContain("fill-[#d97757]");
+      expect(markOf("Codex review")).toContain("dark:fill-white");
+      expect(markOf("Codex review")).not.toContain("fill-[#d97757]");
     } finally {
       await mounted.unmount();
     }
