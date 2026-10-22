@@ -38,7 +38,6 @@ import {
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
-import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -52,6 +51,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { PtyAdapter } from "./terminal/Services/PTY.ts";
 import {
@@ -3721,10 +3721,17 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  // The refresh stays held for the whole call. A call that waits for it fails
+  // at the timeout (on the real clock) instead of hanging the suite.
   it.effect("completes websocket rpc git.pull before background git status refresh finishes", () =>
     Effect.gen(function* () {
+      const releaseRefresh = yield* Deferred.make<void>();
       yield* buildAppUnderTest({
         layers: {
+          // A repository, so the refresh after the pull reaches remoteStatus.
+          vcsDriver: {
+            isInsideWorkTree: () => Effect.succeed(true),
+          },
           gitVcsDriver: {
             pullCurrentBranch: () =>
               Effect.succeed({
@@ -3746,7 +3753,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 workingTree: { files: [], insertions: 0, deletions: 0 },
               }),
             remoteStatus: () =>
-              Effect.sleep(Duration.seconds(2)).pipe(
+              Deferred.await(releaseRefresh).pipe(
                 Effect.as({
                   hasUpstream: true,
                   aheadCount: 0,
@@ -3759,14 +3766,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       });
 
       const wsUrl = yield* getWsServerUrl("/ws");
-      const startedAt = yield* Clock.currentTimeMillis;
       const result = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) => client[WS_METHODS.vcsPull]({ cwd: "/tmp/repo" })),
-      );
-      const elapsedMs = (yield* Clock.currentTimeMillis) - startedAt;
+      ).pipe(Effect.timeoutOption("5 seconds"), TestClock.withLive);
+      yield* Deferred.succeed(releaseRefresh, undefined);
 
-      assert.equal(result.status, "pulled");
-      assertTrue(elapsedMs < 1_000);
+      assertTrue(Option.isSome(result), "git.pull waited for the background status refresh");
+      assert.equal(result.value.status, "pulled");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -3774,6 +3780,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     "completes websocket rpc git.runStackedAction before background git status refresh finishes",
     () =>
       Effect.gen(function* () {
+        const releaseRefresh = yield* Deferred.make<void>();
         yield* buildAppUnderTest({
           layers: {
             vcsDriver: {
@@ -3792,7 +3799,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   workingTree: { files: [], insertions: 0, deletions: 0 },
                 }),
               remoteStatus: () =>
-                Effect.sleep(Duration.seconds(2)).pipe(
+                Deferred.await(releaseRefresh).pipe(
                   Effect.as({
                     hasUpstream: true,
                     aheadCount: 0,
@@ -3828,8 +3835,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         });
 
         const wsUrl = yield* getWsServerUrl("/ws");
-        const startedAt = yield* Clock.currentTimeMillis;
-        yield* Effect.scoped(
+        const events = yield* Effect.scoped(
           withWsRpcClient(wsUrl, (client) =>
             client[WS_METHODS.gitRunStackedAction]({
               actionId: "action-1",
@@ -3837,10 +3843,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               action: "commit",
             }).pipe(Stream.runCollect),
           ),
-        );
-        const elapsedMs = (yield* Clock.currentTimeMillis) - startedAt;
+        ).pipe(Effect.timeoutOption("5 seconds"), TestClock.withLive);
+        yield* Deferred.succeed(releaseRefresh, undefined);
 
-        assertTrue(elapsedMs < 1_000);
+        assertTrue(
+          Option.isSome(events),
+          "git.runStackedAction waited for the background status refresh",
+        );
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

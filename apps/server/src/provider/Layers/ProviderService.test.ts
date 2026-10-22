@@ -388,16 +388,33 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
 const advanceTestClock = (ms: number) =>
   TestClock.adjust(`${ms} millis`).pipe(Effect.andThen(Effect.yieldNow));
 
-const hasMetricSnapshot = (
+const metricCount = (
   snapshots: ReadonlyArray<Metric.Metric.Snapshot>,
   id: string,
   attributes: Readonly<Record<string, string>>,
 ) =>
-  snapshots.some(
-    (snapshot) =>
-      snapshot.id === id &&
-      Object.entries(attributes).every(([key, value]) => snapshot.attributes?.[key] === value),
-  );
+  snapshots
+    .filter(
+      (snapshot) =>
+        snapshot.id === id &&
+        Object.entries(attributes).every(([key, value]) => snapshot.attributes?.[key] === value),
+    )
+    .reduce(
+      (sum, snapshot) => sum + ("count" in snapshot.state ? Number(snapshot.state.count) : 0),
+      0,
+    );
+
+/**
+ * How many times a counter or histogram with these attributes recorded
+ * between two snapshots. Metrics live for the whole test file, so a metric
+ * merely existing could have come from an earlier test.
+ */
+const recordedBetween = (
+  before: ReadonlyArray<Metric.Metric.Snapshot>,
+  after: ReadonlyArray<Metric.Metric.Snapshot>,
+  id: string,
+  attributes: Readonly<Record<string, string>>,
+) => metricCount(after, id, attributes) - metricCount(before, id, attributes);
 
 function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
@@ -2764,6 +2781,8 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
     Effect.gen(function* () {
       const provider = yield* ProviderService;
 
+      const before = yield* Metric.snapshot;
+
       const session = yield* provider.startSession(asThreadId("thread-metrics"), {
         provider: ProviderDriverKind.make("claudeAgent"),
         providerInstanceId: claudeAgentInstanceId,
@@ -2793,45 +2812,45 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
 
       const snapshots = yield* Metric.snapshot;
 
-      assert.equal(
-        hasMetricSnapshot(snapshots, "threadlines_provider_turns_total", {
+      assert.isAbove(
+        recordedBetween(before, snapshots, "threadlines_provider_turns_total", {
           provider: ProviderDriverKind.make("claudeAgent"),
           operation: "interrupt",
           outcome: "success",
         }),
-        true,
+        0,
       );
-      assert.equal(
-        hasMetricSnapshot(snapshots, "threadlines_provider_turns_total", {
+      assert.isAbove(
+        recordedBetween(before, snapshots, "threadlines_provider_turns_total", {
           provider: ProviderDriverKind.make("claudeAgent"),
           operation: "approval-response",
           outcome: "success",
         }),
-        true,
+        0,
       );
-      assert.equal(
-        hasMetricSnapshot(snapshots, "threadlines_provider_turns_total", {
+      assert.isAbove(
+        recordedBetween(before, snapshots, "threadlines_provider_turns_total", {
           provider: ProviderDriverKind.make("claudeAgent"),
           operation: "user-input-response",
           outcome: "success",
         }),
-        true,
+        0,
       );
-      assert.equal(
-        hasMetricSnapshot(snapshots, "threadlines_provider_turns_total", {
+      assert.isAbove(
+        recordedBetween(before, snapshots, "threadlines_provider_turns_total", {
           provider: ProviderDriverKind.make("claudeAgent"),
           operation: "rollback",
           outcome: "success",
         }),
-        true,
+        0,
       );
-      assert.equal(
-        hasMetricSnapshot(snapshots, "threadlines_provider_sessions_total", {
+      assert.isAbove(
+        recordedBetween(before, snapshots, "threadlines_provider_sessions_total", {
           provider: ProviderDriverKind.make("claudeAgent"),
           operation: "stop",
           outcome: "success",
         }),
-        true,
+        0,
       );
     }),
   );
@@ -2841,6 +2860,8 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
     () =>
       Effect.gen(function* () {
         const provider = yield* ProviderService;
+
+        const before = yield* Metric.snapshot;
 
         const session = yield* provider.startSession(asThreadId("thread-send-metrics"), {
           provider: ProviderDriverKind.make("claudeAgent"),
@@ -2858,20 +2879,20 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
 
         const snapshots = yield* Metric.snapshot;
 
-        assert.equal(
-          hasMetricSnapshot(snapshots, "threadlines_provider_turns_total", {
+        assert.isAbove(
+          recordedBetween(before, snapshots, "threadlines_provider_turns_total", {
             provider: ProviderDriverKind.make("claudeAgent"),
             operation: "send",
             outcome: "success",
           }),
-          true,
+          0,
         );
-        assert.equal(
-          hasMetricSnapshot(snapshots, "threadlines_provider_turn_duration", {
+        assert.isAbove(
+          recordedBetween(before, snapshots, "threadlines_provider_turn_duration", {
             provider: ProviderDriverKind.make("claudeAgent"),
             operation: "send",
           }),
-          true,
+          0,
         );
       }),
   );

@@ -1562,6 +1562,8 @@ describe("AgentsPanel", () => {
         return popup as HTMLElement;
       });
       expect(tooltip.textContent).toBe("Diff");
+      // The marker the labelled-tab test below looks for.
+      expect(strip.querySelector("[data-slot='tooltip-trigger']")).not.toBeNull();
     } finally {
       await mounted.unmount();
     }
@@ -1584,14 +1586,11 @@ describe("AgentsPanel", () => {
 
     try {
       await expect.element(page.getByRole("tab", { name: "Source" })).toBeVisible();
-      await page.getByRole("tab", { name: "Source" }).hover();
-      for (let frame = 0; frame < 4; frame += 1) {
-        await new Promise((resolve) => {
-          requestAnimationFrame(() => resolve(null));
-        });
-      }
-      // The label is right there; a tooltip repeating it is noise.
-      expect(document.querySelector('[data-slot="tooltip-popup"]')).toBeNull();
+      const strip = document.querySelector("[data-right-panel-strip='true']");
+      expect(strip?.getAttribute("data-right-panel-strip-mode")).toBe("labels");
+      // The label is right there; a tooltip repeating it is noise. Checked on the
+      // markup: waiting a few frames after a hover misses a delayed tooltip.
+      expect(strip?.querySelector("[data-slot='tooltip-trigger']")).toBeNull();
     } finally {
       await mounted.unmount();
     }
