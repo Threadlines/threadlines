@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vite-plus/test/browser";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 import { useUiStateStore } from "../../uiStateStore";
 import { __resetClientSettingsPersistenceForTests } from "../../hooks/useSettings";
@@ -578,6 +578,13 @@ describe("MessagesTimeline", () => {
   });
 
   it("says when the agent will check back, and cancels from the line", async () => {
+    // A fixed midday clock, so the check-back 14 minutes out is still today:
+    // on the real clock a run after 23:45 reads "Checks back tomorrow at …".
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 3, 13, 12, 0, 0));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const cancelled: string[] = [];
     const scheduledFor = new Date(Date.now() + 14 * 60_000 + 20_000).toISOString();
     const screen = await renderTimeline(
