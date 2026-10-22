@@ -83,7 +83,13 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
                 ) : null}
                 <span className="max-w-40 truncate">{thread.modelName}</span>
                 <span className="text-muted-foreground/50">·</span>
-                <span>{thread.ownWorktree ? "own worktree" : "shares this folder"}</span>
+                <span>
+                  {thread.computer !== null
+                    ? `on ${thread.computer}`
+                    : thread.ownWorktree
+                      ? "own worktree"
+                      : "shares this folder"}
+                </span>
               </span>
             </li>
           ))}

@@ -103,6 +103,8 @@ export interface PendingChildThread {
   readonly entry: ProviderInstanceEntry | undefined;
   /** False in a project without git: it shares the project folder. */
   readonly ownWorktree: boolean;
+  /** The linked computer it would run on (by its name), or null for this one. */
+  readonly computer: string | null;
 }
 
 /** Threads an agent asked to start, waiting for the user's yes (ask mode). */
@@ -152,6 +154,7 @@ export function pendingChildThreads(
           modelName: roomModelName(launch.modelSelection, entries, modelDisplayName),
           entry: entries.find((entry) => entry.instanceId === launch.modelSelection.instanceId),
           ownWorktree: launch.workspace.kind === "worktree",
+          computer: launch.workspace.kind === "remote" ? (launch.target?.label ?? null) : null,
         },
       ];
     }),
