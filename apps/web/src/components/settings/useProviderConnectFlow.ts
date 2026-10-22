@@ -4,8 +4,9 @@
  * `ProviderAuthSessions` runs the provider's own login command in an ephemeral
  * server-side PTY and streams command/output/status back over
  * `providerAuth.subscribe`. This hook owns that subscription, folds the events
- * into `ProviderConnectFlowState`, and decides when a run has stalled long
- * enough to deserve the interactive terminal.
+ * into `ProviderConnectFlowState`, opens the run's sign-in page for the
+ * surface that started it, and decides when a run has stalled long enough to
+ * deserve the interactive terminal.
  *
  * It exists so every "Sign in" in the app drives the same flow: the settings
  * page, the setup screen, and the composer notices all mount this and differ
@@ -58,13 +59,18 @@ function readProviderAuthClient(): ProviderAuthClient | null {
   }
 }
 
-/** Sign-in pages this tab already opened: several surfaces can watch one run. */
-const openedSignInUrls = new Set<string>();
+/**
+ * Sign-in pages this tab already opened, per run: two surfaces can own one
+ * run (the one that started it and one that answered its question), while a
+ * later run may print the same page (a fixed device page) and must open it.
+ */
+const openedSignInPages = new Set<string>();
 
-/** Opens a run's sign-in page unless this tab already did. */
-export function openProviderSignInUrlOnce(url: string): void {
-  if (openedSignInUrls.has(url)) return;
-  openedSignInUrls.add(url);
+/** Opens a run's sign-in page unless this tab already did for that run. */
+export function openProviderSignInUrlOnce(flowId: string, url: string): void {
+  const key = `${flowId}\n${url}`;
+  if (openedSignInPages.has(key)) return;
+  openedSignInPages.add(key);
   void ensureLocalApi()
     .shell.openExternal(url)
     .catch(() => {
@@ -225,14 +231,18 @@ export function useProviderConnectFlow(input: {
   // hasn't tested the agent, and the address is the agent's own.
   const opensLinksItself = !useIsCommunityAgent(instanceId);
 
-  // A browser sign-in has no CLI to open the page and no terminal to show it
-  // in: whichever surface the user started it from, the page opens here.
+  // The run's sign-in page opens on whichever surface the user started it
+  // from: a browser sign-in has no CLI to open it, and a CLI that cannot
+  // (fx inside WSL) prints a device-code page and waits. A terminal command
+  // that opens the page itself, or a server that doesn't say, gets none: a
+  // second tab would be a duplicate.
+  const opensPrintedPage = state.surface === "browser" || state.commandOpensBrowser === false;
   useEffect(() => {
-    if (!opensLinksItself) return;
-    if (!isActive || state.surface !== "browser" || state.signInUrl === null) return;
+    if (!opensLinksItself || !opensPrintedPage) return;
+    if (!isActive || state.signInUrl === null) return;
     if (state.flowId === null || state.flowId !== ownedFlowIdRef.current) return;
-    openProviderSignInUrlOnce(state.signInUrl);
-  }, [isActive, opensLinksItself, state.flowId, state.signInUrl, state.surface]);
+    openProviderSignInUrlOnce(state.flowId, state.signInUrl);
+  }, [isActive, opensLinksItself, opensPrintedPage, state.flowId, state.signInUrl]);
 
   useEffect(() => {
     if (!isActive) {

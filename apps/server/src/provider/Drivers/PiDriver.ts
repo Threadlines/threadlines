@@ -335,6 +335,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
                 args: [...launcher.prefixArgs, "--no-session"],
                 env: piProcessEnvironment({ instanceEnvironment: environment }),
                 display: "pi --no-session",
+                // `/login` in Pi's terminal opens each sign-in page itself.
+                opensBrowser: true,
                 finished: () => Scope.close(leaseScope, Exit.void),
               };
             }),

@@ -180,6 +180,8 @@ export interface ProviderAuthTerminalCommand {
   readonly env: NodeJS.ProcessEnv;
   /** Shown under the panel's "copy command" disclosure. */
   readonly display: string;
+  /** Whether the command opens its sign-in page itself; unset when unknown. */
+  readonly opensBrowser?: boolean;
   readonly finished: (exitCode: number | null) => Effect.Effect<void>;
 }
 

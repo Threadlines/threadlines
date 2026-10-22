@@ -123,6 +123,13 @@ const ProviderAuthCommandEvent = Schema.Struct({
   requestId: Schema.optional(Schema.String),
   /** `browser`: no terminal; the flow opens a sign-in page and accepts its final address. */
   surface: Schema.optional(Schema.Literals(["terminal", "browser"])),
+  /**
+   * Terminal runs: whether the command opens its sign-in page in the browser
+   * itself (`codex login`). If it does, the client that started the run offers
+   * the printed address as a link; if not, that client opens it. Absent when
+   * the server can't say (an older server, a community agent): open nothing.
+   */
+  commandOpensBrowser: Schema.optional(Schema.Boolean),
 });
 
 const ProviderAuthOutputEvent = Schema.Struct({

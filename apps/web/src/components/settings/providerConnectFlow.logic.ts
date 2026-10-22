@@ -21,6 +21,11 @@ export interface ProviderConnectFlowState {
   readonly flowId: string | null;
   /** `browser`: no terminal; the panel opens the sign-in page and takes its final address. */
   readonly surface: "terminal" | "browser";
+  /**
+   * A terminal run's command opens its sign-in page itself (`true`), or
+   * leaves that to the client (`false`). Null when the server didn't say.
+   */
+  readonly commandOpensBrowser: boolean | null;
   /** Last non-empty output line, shown as a one-line live preview. */
   readonly lastLine: string;
   /**
@@ -31,7 +36,7 @@ export interface ProviderConnectFlowState {
   /**
    * First sign-in URL the command printed this run. CLIs that cannot open a
    * browser themselves (fx inside WSL, headless hosts) print a device-code
-   * URL and wait; the panel opens it for the user instead.
+   * URL and wait; the client that started the run opens it instead.
    */
   readonly signInUrl: string | null;
   /**
@@ -69,6 +74,7 @@ export const initialProviderConnectFlowState: ProviderConnectFlowState = {
   command: null,
   flowId: null,
   surface: "terminal",
+  commandOpensBrowser: null,
   lastLine: "",
   openLine: "",
   signInUrl: null,
@@ -209,6 +215,7 @@ export function applyProviderAuthEvent(
         command: event.command,
         flowId: event.flowId ?? null,
         surface: event.surface ?? "terminal",
+        commandOpensBrowser: event.commandOpensBrowser ?? null,
       };
     case "output": {
       const preview = appendOutputPreview(state.openLine, event.data);

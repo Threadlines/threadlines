@@ -231,7 +231,9 @@ const providerAuthHarness = vi.hoisted(() => {
         readonly flow: string;
         readonly command: string;
         readonly flowId?: string;
+        readonly requestId?: string;
         readonly surface?: "terminal" | "browser";
+        readonly commandOpensBrowser?: boolean;
       }
     | { readonly type: "output"; readonly data: string }
     | {
@@ -277,6 +279,8 @@ const providerAuthHarness = vi.hoisted(() => {
   const startCalls: Array<{ instanceId: string; flow: string }> = [];
   /** Whether each start said its client answers questions. */
   const startQuestions: Array<boolean | undefined> = [];
+  /** Each start's `requestId`: a command event echoing it is that client's own run. */
+  const startRequestIds: Array<string | undefined> = [];
   const respondCalls: Array<{
     instanceId: string;
     flowId: string;
@@ -288,11 +292,13 @@ const providerAuthHarness = vi.hoisted(() => {
   return {
     startCalls,
     startQuestions,
+    startRequestIds,
     respondCalls,
     reset() {
       listeners.clear();
       startCalls.length = 0;
       startQuestions.length = 0;
+      startRequestIds.length = 0;
       respondCalls.length = 0;
     },
     emit(event: AuthEvent) {
@@ -303,9 +309,15 @@ const providerAuthHarness = vi.hoisted(() => {
       }
     },
     client: {
-      start: (input: { instanceId: string; flow: string; questions?: boolean }) => {
+      start: (input: {
+        instanceId: string;
+        flow: string;
+        questions?: boolean;
+        requestId?: string;
+      }) => {
         startCalls.push({ instanceId: input.instanceId, flow: input.flow });
         startQuestions.push(input.questions);
+        startRequestIds.push(input.requestId);
         return Promise.resolve();
       },
       write: () => Promise.resolve(),
@@ -2188,12 +2200,19 @@ describe("GeneralSettingsPanel observability", () => {
       ]);
     });
 
+    // This panel's own run, of a command that opens its page itself.
     providerAuthHarness.emit({
       instanceId: "claudeAgent",
       createdAt: "2026-08-03T00:00:00.000Z",
       type: "command",
       flow: "login",
       command: "claude auth login",
+      flowId: "flow-1",
+      ...(providerAuthHarness.startRequestIds[0]
+        ? { requestId: providerAuthHarness.startRequestIds[0] }
+        : {}),
+      surface: "terminal",
+      commandOpensBrowser: true,
     });
     providerAuthHarness.emit({
       instanceId: "claudeAgent",
@@ -2410,6 +2429,15 @@ describe("GeneralSettingsPanel observability", () => {
   });
 
   it("signs a signed-out provider in from its row without opening the card first", async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      shell: { openExternal },
+      server: {},
+    } as unknown as LocalApi;
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
       providers: [
@@ -2437,6 +2465,85 @@ describe("GeneralSettingsPanel observability", () => {
     await expect
       .element(page.getByRole("button", { name: "Sign in", exact: true }), { timeout: 5_000 })
       .toBeVisible();
+
+    // A command that leaves its page to Threadlines (fx in WSL prints a device
+    // page and waits): the row that started the run opens it, once, though
+    // the card shows the same run.
+    const devicePage = "https://vercel.com/oauth/device?user_code=ROWS-1234";
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:00.000Z",
+      type: "command",
+      flow: "login",
+      command: "fx login",
+      flowId: "flow-row",
+      ...(providerAuthHarness.startRequestIds[0]
+        ? { requestId: providerAuthHarness.startRequestIds[0] }
+        : {}),
+      surface: "terminal",
+      commandOpensBrowser: false,
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:00.000Z",
+      type: "status",
+      status: "running",
+      exitCode: null,
+      detail: null,
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:01.000Z",
+      type: "output",
+      data: `Open ${devicePage}\r\nCode: ROWS-1234\r\n`,
+    });
+    await vi.waitFor(() => {
+      expect(openExternal.mock.calls).toEqual([[devicePage]]);
+    });
+
+    // The next run prints the same page (a fixed device page): it opens again.
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:02.000Z",
+      type: "status",
+      status: "failed",
+      exitCode: 1,
+      detail: null,
+    });
+    await page.getByRole("button", { name: "Sign in to Claude" }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startRequestIds).toHaveLength(2);
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:03.000Z",
+      type: "command",
+      flow: "login",
+      command: "fx login",
+      flowId: "flow-row-2",
+      ...(providerAuthHarness.startRequestIds[1]
+        ? { requestId: providerAuthHarness.startRequestIds[1] }
+        : {}),
+      surface: "terminal",
+      commandOpensBrowser: false,
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:03.000Z",
+      type: "status",
+      status: "running",
+      exitCode: null,
+      detail: null,
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:04.000Z",
+      type: "output",
+      data: `Open ${devicePage}\r\nCode: ROWS-1234\r\n`,
+    });
+    await vi.waitFor(() => {
+      expect(openExternal.mock.calls).toEqual([[devicePage], [devicePage]]);
+    });
   });
 
   it("switches Antigravity to a Gemini API key in one save, then checks the key", async () => {
