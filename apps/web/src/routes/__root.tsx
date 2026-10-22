@@ -28,6 +28,7 @@ import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateI
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { QuitConfirmationDialog } from "../components/desktop/QuitConfirmationDialog";
 import { ThreadDeleteDialogHost } from "../components/ThreadDeleteDialog";
+import { ExpandedImageViewerHost } from "../components/chat/ExpandedImageDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { SourceControlToolUpdateLaunchNotification } from "../components/SourceControlToolUpdateLaunchNotification";
 import { SavedEnvironmentConnectionOverlay } from "../components/SavedEnvironmentConnectionOverlay";
@@ -205,6 +206,7 @@ function RootRouteView() {
         <QuitConfirmationDialog />
         <DesktopUpdateInstallDialog />
         <ThreadDeleteDialogHost />
+        <ExpandedImageViewerHost />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}

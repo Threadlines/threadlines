@@ -16,6 +16,8 @@ import {
   type AgentPageTheme,
   agentPageThemeRule,
   HOST_CONTEXT_CHANGED_METHOD,
+  MAX_OPEN_IMAGES,
+  OPEN_IMAGE_METHOD,
   OPEN_LINK_METHOD,
   PAGE_LEFT_METHOD,
   SIZE_CHANGED_METHOD,
@@ -28,11 +30,11 @@ import { scriptLiteral, wrapHtmlDocument } from "./framedDocument.ts";
 // The page paints `--tl-surface`, the host's exact paint around it (a color,
 // or a translucent fill laid over one), when the host gives one: a hex copy
 // can round a shade off the surface around it, and the page then reads as a
-// box.
+// box. A picture the reader can open bigger shows a zoom cursor.
 const BASE_CSS =
   "html{background:var(--tl-surface,var(--background));color:var(--foreground);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;scrollbar-width:none}" +
   "html::-webkit-scrollbar{display:none}body{margin:0}code,kbd,pre,samp{font-family:var(--font-mono)}" +
-  ":focus-visible{outline:2px solid var(--ring);outline-offset:-2px}";
+  ":focus-visible{outline:2px solid var(--ring);outline-offset:-2px}[data-tl-zoom]{cursor:zoom-in!important}";
 
 // Markdown documents: the chat's own reading styles, dense and flat. A
 // document fills its panel in the chat, as the reply around it does; a wider
@@ -60,11 +62,15 @@ const DOCUMENT_CSS =
 // Runs first, before anything the page says. It removes WebRTC, which no
 // content policy governs; rewrites its own theme <style> when the host's theme
 // changes (so a page's later `:root` rules still win); sends links the reader
-// clicks to the host instead of navigating the frame; reports the page's
+// clicks to the host instead of navigating the frame; offers the page's inline
+// pictures to the host's image viewer once the click has run through the
+// page's own handlers (one the page made clickable itself, by a link, a
+// control, its own pointer cursor or a handled click, stays the page's), at
+// most the viewer's limit around the one clicked; reports the page's
 // height so the host can fit the frame to it; and tells the host when the
 // document goes away, which for a page only happens when it navigates itself,
 // even before it has finished loading.
-const BOOTSTRAP_SCRIPT = `(function(){var w=window,d=document,p=w.parent,n=0;["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCSessionDescription","RTCIceCandidate"].forEach(function(k){try{Object.defineProperty(w,k,{value:void 0,writable:false,configurable:false});}catch(e){}});var s=d.getElementById("tl-page-theme"),b=${scriptLiteral(BASE_CSS)};function a(t){if(!s||!t||typeof t!=="object"||!t.variables||typeof t.variables!=="object")return;var c=":root{color-scheme:"+(t.appearance==="light"?"light":"dark")+";";for(var k in t.variables){if(/^--[a-z0-9-]+$/.test(k))c+=k+":"+String(t.variables[k]).replace(/[;{}<>\\\\]/g,"")+";";}s.textContent=c+"}"+b;}w.addEventListener("message",function(e){if(e.source!==p)return;var m=e.data,q=m&&m.params;if(m&&m.jsonrpc==="2.0"&&m.method===${scriptLiteral(HOST_CONTEXT_CHANGED_METHOD)}&&q&&q.styles)a({appearance:q.theme,variables:q.styles.variables});});d.addEventListener("click",function(e){if(!e.isTrusted||e.defaultPrevented)return;var l=e.composedPath().find(function(t){return t&&t.matches&&t.matches("a[href]");}),h,u;if(!l)return;h=l.getAttribute("href")||"";if(h.charAt(0)==="#")return;e.preventDefault();try{u=new URL(h,d.baseURI);}catch(x){return;}if(!/^https?:$/.test(u.protocol))return;p.postMessage({jsonrpc:"2.0",id:"tl-link-"+(++n),method:${scriptLiteral(OPEN_LINK_METHOD)},params:{url:u.href}},"*");});var z,o,r=function(){var e=d.documentElement,v=Math.ceil(e.scrollHeight>e.clientHeight?e.scrollHeight:e.getBoundingClientRect().height);if(v===z)return;z=v;p.postMessage({jsonrpc:"2.0",method:${scriptLiteral(SIZE_CHANGED_METHOD)},params:{height:v}},"*");};if(w.ResizeObserver){o=new ResizeObserver(r);o.observe(d.documentElement);}d.addEventListener("DOMContentLoaded",function(){if(o&&d.body)o.observe(d.body);r();});w.addEventListener("load",r);w.addEventListener("pagehide",function(){p.postMessage({jsonrpc:"2.0",method:${scriptLiteral(PAGE_LEFT_METHOD)}},"*");});})();`;
+const BOOTSTRAP_SCRIPT = `(function(){var w=window,d=document,p=w.parent,n=0;["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCSessionDescription","RTCIceCandidate"].forEach(function(k){try{Object.defineProperty(w,k,{value:void 0,writable:false,configurable:false});}catch(e){}});var s=d.getElementById("tl-page-theme"),b=${scriptLiteral(BASE_CSS)};function a(t){if(!s||!t||typeof t!=="object"||!t.variables||typeof t.variables!=="object")return;var c=":root{color-scheme:"+(t.appearance==="light"?"light":"dark")+";";for(var k in t.variables){if(/^--[a-z0-9-]+$/.test(k))c+=k+":"+String(t.variables[k]).replace(/[;{}<>\\\\]/g,"")+";";}s.textContent=c+"}"+b;}w.addEventListener("message",function(e){if(e.source!==p)return;var m=e.data,q=m&&m.params;if(m&&m.jsonrpc==="2.0"&&m.method===${scriptLiteral(HOST_CONTEXT_CHANGED_METHOD)}&&q&&q.styles)a({appearance:q.theme,variables:q.styles.variables});});function g(t){var r,c;if(!t||t.tagName!=="IMG"||!t.complete||!t.naturalWidth||!/^data:image\\//i.test(t.currentSrc||t.src)||t.closest("a[href],button,label,summary,[role=button],[onclick]"))return false;r=t.getBoundingClientRect();if(r.width<48||r.height<48)return false;if(t.hasAttribute("data-tl-zoom"))return true;c=w.getComputedStyle(t).cursor;return c==="auto"||c==="default";}d.addEventListener("pointerover",function(e){if(g(e.target))e.target.setAttribute("data-tl-zoom","");});d.addEventListener("click",function(e){if(!e.isTrusted||e.defaultPrevented)return;var l=e.composedPath().find(function(t){return t&&t.matches&&t.matches("a[href]");}),h,u,m,i;if(!l){if(!g(e.target))return;w.setTimeout(function(){var t=e.target,k;if(e.defaultPrevented||!g(t))return;m=[].filter.call(d.images,g);i=m.indexOf(t);if(i<0)return;k=Math.max(0,Math.min(i-${MAX_OPEN_IMAGES / 2},m.length-${MAX_OPEN_IMAGES}));m=m.slice(k,k+${MAX_OPEN_IMAGES});p.postMessage({jsonrpc:"2.0",method:${scriptLiteral(OPEN_IMAGE_METHOD)},params:{images:m.map(function(x){return{src:x.currentSrc||x.src,alt:x.alt||x.title||""};}),index:i-k}},"*");},0);return;}h=l.getAttribute("href")||"";if(h.charAt(0)==="#")return;e.preventDefault();try{u=new URL(h,d.baseURI);}catch(x){return;}if(!/^https?:$/.test(u.protocol))return;p.postMessage({jsonrpc:"2.0",id:"tl-link-"+(++n),method:${scriptLiteral(OPEN_LINK_METHOD)},params:{url:u.href}},"*");});var z,o,r=function(){var e=d.documentElement,v=Math.ceil(e.scrollHeight>e.clientHeight?e.scrollHeight:e.getBoundingClientRect().height);if(v===z)return;z=v;p.postMessage({jsonrpc:"2.0",method:${scriptLiteral(SIZE_CHANGED_METHOD)},params:{height:v}},"*");};if(w.ResizeObserver){o=new ResizeObserver(r);o.observe(d.documentElement);}d.addEventListener("DOMContentLoaded",function(){if(o&&d.body)o.observe(d.body);r();});w.addEventListener("load",r);w.addEventListener("pagehide",function(){p.postMessage({jsonrpc:"2.0",method:${scriptLiteral(PAGE_LEFT_METHOD)}},"*");});})();`;
 
 // micromark's own lists of the protocols a link and an image may use.
 const LINK_PROTOCOL = /^(?:https?|ircs?|mailto|xmpp)$/i;

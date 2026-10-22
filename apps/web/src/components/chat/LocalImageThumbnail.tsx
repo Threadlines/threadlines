@@ -3,6 +3,7 @@ import { memo } from "react";
 import { openFileInActiveViewer } from "../../fileViewerStore";
 import { cn } from "../../lib/utils";
 import { openExpandedImagePreview } from "./ExpandedImagePreview";
+import { usePinchToExpand } from "./usePinchToExpand";
 
 /** The one thumbnail shape every chat surface shows a local image at. */
 const THUMBNAIL_BUTTON_CLASS_NAME =
@@ -20,7 +21,7 @@ interface LocalImageThumbnailProps {
 
 /**
  * A picture for a path an agent referred to, once its bytes are here. Clicking
- * it opens the full-screen preview. The caller owns the loading, so it can lay
+ * or pinching it opens the full-screen preview. The caller owns the loading, so it can lay
  * the reference out differently while there is no picture to show.
  */
 export const LocalImageThumbnail = memo(function LocalImageThumbnail({
@@ -29,20 +30,25 @@ export const LocalImageThumbnail = memo(function LocalImageThumbnail({
   name,
   className,
 }: LocalImageThumbnailProps) {
+  const expand = () => {
+    if (openExpandedImagePreview({ images: [{ src: dataUrl, name }], index: 0 })) {
+      return;
+    }
+    // No image viewer is mounted; the file viewer shows the same image and
+    // is always reachable.
+    openFileInActiveViewer({ path: filePath });
+  };
+  const pinchRef = usePinchToExpand(expand);
   return (
     <button
+      ref={pinchRef}
       type="button"
       className={cn(THUMBNAIL_BUTTON_CLASS_NAME, className)}
       aria-label={`Preview ${name}`}
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (openExpandedImagePreview({ images: [{ src: dataUrl, name }], index: 0 })) {
-          return;
-        }
-        // No view owns the full-screen dialog right now; the file viewer shows
-        // the same image and is always reachable.
-        openFileInActiveViewer({ path: filePath });
+        expand();
       }}
     >
       <img

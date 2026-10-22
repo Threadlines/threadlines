@@ -100,6 +100,8 @@ import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { Toggle } from "../ui/toggle";
+import { openExpandedImagePreview } from "../chat/ExpandedImagePreview";
+import { usePinchToExpand } from "../chat/usePinchToExpand";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
 interface FileTreeNode {
@@ -748,6 +750,33 @@ function usePierreHighlighterReady(path: string | null, themeName: string): bool
   return readyKey === targetKey;
 }
 
+/** An image file, fitted; clicking or pinching it opens the image viewer to zoom. */
+function FileViewerImage(props: { readonly src: string; readonly name: string }) {
+  const expand = () => {
+    openExpandedImagePreview({ images: [{ src: props.src, name: props.name }], index: 0 });
+  };
+  const pinchRef = usePinchToExpand(expand);
+  return (
+    <div className="flex h-full items-center justify-center overflow-auto p-6">
+      <img
+        ref={pinchRef}
+        src={props.src}
+        alt={props.name}
+        role="button"
+        tabIndex={0}
+        aria-label={`Preview ${props.name}`}
+        className="max-h-full max-w-full cursor-zoom-in rounded-md border border-border/60 object-contain"
+        onClick={expand}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          expand();
+        }}
+      />
+    </div>
+  );
+}
+
 function FileViewerPreview({
   context,
   wordWrap,
@@ -1021,13 +1050,10 @@ function FileViewerPreview({
 
   if (file.kind === "image") {
     return (
-      <div className="flex h-full items-center justify-center overflow-auto p-6">
-        <img
-          src={`data:${file.mimeType};base64,${file.base64}`}
-          alt={basenameOf(activePath)}
-          className="max-h-full max-w-full rounded-md border border-border/60 object-contain"
-        />
-      </div>
+      <FileViewerImage
+        src={`data:${file.mimeType};base64,${file.base64}`}
+        name={basenameOf(activePath)}
+      />
     );
   }
 

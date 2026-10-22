@@ -110,6 +110,7 @@ import {
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
+import { usePinchToExpand } from "./usePinchToExpand";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
 import { ProposedPlanCard, type ProposedPlanCardStatus } from "./ProposedPlanCard";
@@ -2868,24 +2869,29 @@ function TimelineImagePreviewTile(props: {
     path: props.image.previewUrl ? undefined : props.image.path,
   });
   const previewUrl = props.image.previewUrl ?? loaded.dataUrl;
+  const expand = previewUrl
+    ? () => {
+        const preview = buildExpandedImagePreview(
+          props.images.map((candidate) =>
+            candidate.id === props.image.id ? { ...candidate, previewUrl } : candidate,
+          ),
+          props.image.id,
+        );
+        if (!preview) return;
+        ctx.onImageExpand(preview);
+      }
+    : undefined;
+  const pinchRef = usePinchToExpand(expand);
 
   return (
     <div className="overflow-hidden rounded-lg border border-border/80 bg-background/70">
       {previewUrl ? (
         <button
+          ref={pinchRef}
           type="button"
           className="h-full w-full cursor-zoom-in"
           aria-label={`Preview ${props.image.name}`}
-          onClick={() => {
-            const preview = buildExpandedImagePreview(
-              props.images.map((candidate) =>
-                candidate.id === props.image.id ? { ...candidate, previewUrl } : candidate,
-              ),
-              props.image.id,
-            );
-            if (!preview) return;
-            ctx.onImageExpand(preview);
-          }}
+          onClick={expand}
         >
           <img
             src={previewUrl}

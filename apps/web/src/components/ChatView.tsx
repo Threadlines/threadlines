@@ -254,7 +254,6 @@ import { McpAppSidePanel } from "./chat/McpAppCard";
 import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./chat/ComposerPullRequestRow";
 import { type ComposerGoalSetInput, threadGoalControls } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
-import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import {
   MessagesTimeline,
@@ -279,10 +278,7 @@ import {
 } from "../lib/pickedElementContext";
 import { processStartedAt, type ThreadBackgroundRunItem } from "./chat/threadActivity";
 import { currentWorkLine } from "./chat/activitySteps";
-import {
-  type ExpandedImagePreview,
-  setActiveExpandedImageOpener,
-} from "./chat/ExpandedImagePreview";
+import { closeExpandedImagePreview, openExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDialog";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
@@ -1267,7 +1263,6 @@ export default function ChatView(props: ChatViewProps) {
   // see deriveTimelineScrolledFarFromEnd for why plain at-end would oscillate.
   const [isTimelineScrolledFarFromEnd, setIsTimelineScrolledFarFromEnd] = useState(false);
   const [stickToBottomRequestKey, setStickToBottomRequestKey] = useState(0);
-  const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [previewedFile, setPreviewedFile] = useState<FilePreviewRequest | null>(null);
   const [steeringMessagesById, setSteeringMessagesById] = useState<
     Record<string, SteeringMessageHandoff>
@@ -4632,13 +4627,9 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     resetLocalDispatch();
-    setExpandedImage(null);
+    closeExpandedImagePreview();
     setPreviewedFile(null);
   }, [draftId, resetLocalDispatch, threadId]);
-
-  const closeExpandedImage = useCallback(() => {
-    setExpandedImage(null);
-  }, []);
 
   const closePreviewedFile = useCallback(() => {
     setPreviewedFile(null);
@@ -7346,15 +7337,6 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
-  const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
-    setExpandedImage(preview);
-  }, []);
-  // Inline pictures in chat markdown are rendered far below here and open the
-  // same dialog; registering the opener beats drilling it through every layer.
-  useEffect(() => {
-    setActiveExpandedImageOpener(onExpandTimelineImage);
-    return () => setActiveExpandedImageOpener(null);
-  }, [onExpandTimelineImage]);
   /** A "view diff" link in the conversation opens or retargets the one Diff
    *  tab, leaving the rest of the strip alone. */
   const onOpenTurnDiff = useCallback(
@@ -7699,7 +7681,7 @@ export default function ChatView(props: ChatViewProps) {
                 onRevealPickedElement={isElectron ? revealPickedElement : undefined}
                 onAddTranscriptHighlightContext={addTranscriptHighlightContextToDraft}
                 isRevertingCheckpoint={isRevertingCheckpoint}
-                onImageExpand={onExpandTimelineImage}
+                onImageExpand={openExpandedImagePreview}
                 onPreviewFile={onPreviewFile}
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
@@ -7874,7 +7856,7 @@ export default function ChatView(props: ChatViewProps) {
                   handleInteractionModeChange={handleInteractionModeChange}
                   focusComposer={focusComposer}
                   setThreadError={setThreadError}
-                  onExpandImage={onExpandTimelineImage}
+                  onExpandImage={openExpandedImagePreview}
                   onPreviewFile={onPreviewFile}
                 />
                 <AlertDialog
@@ -8033,9 +8015,6 @@ export default function ChatView(props: ChatViewProps) {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-      {expandedImage && (
-        <ExpandedImageDialog preview={expandedImage} onClose={closeExpandedImage} />
-      )}
       {previewedFile && <FilePreviewDialog request={previewedFile} onClose={closePreviewedFile} />}
     </div>
   );
