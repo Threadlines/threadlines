@@ -394,6 +394,15 @@ export interface WsRpcClient {
     readonly remove: RpcUnaryMethod<typeof WS_METHODS.linksRemove>;
     readonly respondRequest: RpcUnaryMethod<typeof WS_METHODS.linksRespondRequest>;
   };
+  /**
+   * Moving a thread to a linked computer (docs/design/fleet.md, Part 3), on
+   * servers whose descriptor reports `threadMove`.
+   */
+  readonly moves: {
+    readonly preview: RpcUnaryMethod<typeof WS_METHODS.movesPreview>;
+    readonly start: RpcUnaryMethod<typeof WS_METHODS.movesStart>;
+    readonly cancel: RpcUnaryMethod<typeof WS_METHODS.movesCancel>;
+  };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
     readonly warmUpTurn: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.warmUpTurn>;
@@ -1064,6 +1073,13 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       remove: (input) => transport.request((client) => client[WS_METHODS.linksRemove](input)),
       respondRequest: (input) =>
         transport.request((client) => client[WS_METHODS.linksRespondRequest](input)),
+    },
+    // Never replayed on a new socket: a start that may have landed is told by
+    // the thread's own `move`, and a second one would only be refused.
+    moves: {
+      preview: (input) => transport.request((client) => client[WS_METHODS.movesPreview](input)),
+      start: (input) => transport.request((client) => client[WS_METHODS.movesStart](input)),
+      cancel: (input) => transport.request((client) => client[WS_METHODS.movesCancel](input)),
     },
     orchestration: {
       // Commands are deduped server-side by commandId receipts, so re-sending
