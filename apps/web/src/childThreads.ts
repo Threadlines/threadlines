@@ -274,13 +274,15 @@ export function parseThreadStartResult(output: string | undefined): ThreadStartR
     outcomeMatch && THREAD_START_OUTCOMES.has(outcomeMatch[1]!)
       ? (outcomeMatch[1] as ThreadStartOutcome)
       : null;
-  const threadIds = new Set(
-    [...text.matchAll(/"threadId"\s*:\s*"([^"]+)"/gu)].map((match) => match[1]!),
-  );
-  // Each thread is a flat object in the result's `threads`.
+  const idMatches = [...text.matchAll(/"threadId"\s*:\s*"([^"]+)"/gu)];
+  const threadIds = new Set(idMatches.map((match) => match[1]!));
+  // Each entry in `threads` leads with its id, so what follows it, up to the
+  // next id, is that thread's (a title may hold any character, braces too).
   const remoteThreadIds = new Set(
-    [...text.matchAll(/\{[^{}]*"threadId"\s*:\s*"([^"]+)"[^{}]*\}/gu)]
-      .filter((match) => /"workspace"\s*:\s*"remote"/u.test(match[0]))
+    idMatches
+      .filter((match, index) =>
+        /"workspace"\s*:\s*"remote"/u.test(text.slice(match.index, idMatches[index + 1]?.index)),
+      )
       .map((match) => match[1]!),
   );
   return { outcome, threadIds, remoteThreadIds };
@@ -403,12 +405,16 @@ export function describeThreadStartCall(input: {
   const isOwn = (threadId: string) => !attributable || ownIds.has(threadId);
   const threads = input.startedInTurn.filter((thread) => isOwn(thread.id));
   const ownStarts = startsInTurn.filter((request) => isOwn(request.childThreadId));
-  // A remote child has no turn of its own here: only a call that named it
-  // claims it, or, unnamed, one whose start request is still open.
-  const remoteThreads = input.remoteChildren.filter((child) =>
-    attributable
-      ? ownIds.has(child.threadId)
-      : ownStarts.some((request) => request.childThreadId === child.threadId),
+  // A remote child records no turn: a call claims one it named, and the
+  // turn's record (no call can say which are whose) one any call of the turn
+  // named or whose start request is still open.
+  const namedInTurn = attributable
+    ? ownIds
+    : new Set(input.turnCalls.flatMap((candidate) => [...candidate.result.threadIds]));
+  const remoteThreads = input.remoteChildren.filter(
+    (child) =>
+      namedInTurn.has(child.threadId) ||
+      (!attributable && ownStarts.some((request) => request.childThreadId === child.threadId)),
   );
   const waitingHere = ownStarts.filter((request) => request.status === "awaiting_user").length;
   const waitingThere = ownStarts.filter(
@@ -457,8 +463,24 @@ export function describeThreadStartCall(input: {
   if (startedCount > 0) {
     return record(`Started ${started}`, asked ? "you said start" : null);
   }
+  // Nothing open and nothing started. When no call said which threads were
+  // asked for, a child on a linked computer may be this turn's all the same.
+  if (!attributable && input.remoteChildren.length > 0) {
+    return record(asked ? "Asked to start threads" : "Tried to start threads", null);
+  }
   if (asked) {
     return record("Asked to start threads", "not started");
+  }
+  // Started here without asking, but every thread it named was one a linked
+  // computer was to start, and none did: its user said no, or the start was
+  // dropped before it got there.
+  if (
+    attributable &&
+    call.result.outcome === "started" &&
+    localIds.length === 0 &&
+    call.result.remoteThreadIds.size > 0
+  ) {
+    return record("Tried to start threads", "not started");
   }
   if (call.result.outcome === "started") {
     return record("Started threads", null);

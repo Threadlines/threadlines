@@ -4272,6 +4272,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
           allow: true,
         });
       });
+      // One answer per request: the inbox row holds too, until it leaves.
+      await expect.element(page.getByTestId("link-request-deny-request-ask")).toBeDisabled();
+      expect(windowsLinks.respondRequest).toHaveBeenCalledTimes(1);
     } finally {
       await mounted.cleanup();
     }

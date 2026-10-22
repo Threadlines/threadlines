@@ -14,7 +14,7 @@ import {
   MonitorIcon,
   UsersRoundIcon,
 } from "lucide-react";
-import React, { memo, useCallback, useMemo, useState } from "react";
+import React, { memo, useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type {
   ComputerLinkPendingRequest,
@@ -60,12 +60,8 @@ import {
   type InboxRemoteChild,
   type ThreadStatusPill,
 } from "../Sidebar.logic";
-import {
-  describeComputerLinkFailure,
-  respondToComputerLinkRequest,
-} from "../../environments/links/computerLinks";
 import { Button } from "../ui/button";
-import { toastManager } from "../ui/toast";
+import { useLinkRequestAnswer } from "./linkedComputers";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   ThreadHoverCard,
@@ -1486,28 +1482,10 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
   request,
   onOpen,
 }: InboxLinkRequestRowProps) {
-  // Set while an answer is on its way, and kept after it lands: the row is
-  // done, and goes when the computer's next snapshot drops the request.
-  const [answering, setAnswering] = useState<"allow" | "deny" | null>(null);
-  const respond = useCallback(
-    async (allow: boolean) => {
-      setAnswering(allow ? "allow" : "deny");
-      try {
-        await respondToComputerLinkRequest(
-          { environmentId, label: computerLabel },
-          { deviceId: request.deviceId, requestId: request.requestId, allow },
-        );
-      } catch (error) {
-        setAnswering(null);
-        toastManager.add({
-          type: "error",
-          title: allow ? `Couldn't allow ${request.title}` : `Couldn't deny ${request.title}`,
-          description: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
-        });
-      }
-    },
-    [computerLabel, environmentId, request.deviceId, request.requestId, request.title],
-  );
+  // Shared with the card in the thread that asked: an answer sent from either
+  // holds both, and stays until the computer's next snapshot drops the request.
+  const pending = useMemo(() => ({ environmentId, request }), [environmentId, request]);
+  const { answering, respond } = useLinkRequestAnswer(pending, computerLabel);
   const answer = (allow: boolean) => (event: React.MouseEvent) => {
     event.stopPropagation();
     void respond(allow);
