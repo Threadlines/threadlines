@@ -803,6 +803,10 @@ describe("thread tools across linked computers", () => {
       const read = yield* tools.handlers.thread_read(mainCaller(), { threadId: remoteChildId });
       expect(read.outcome).toBe("refused");
       expect(read.detail).toContain("Mac mini can't be reached right now");
+      // Stopping it names the computer that is told.
+      const stopped = yield* tools.handlers.thread_stop(mainCaller(), { threadId: remoteChildId });
+      expect(stopped.outcome).toBe("stopped");
+      expect(stopped.detail).toContain("Stopped. Mac mini is told to stop it");
     }),
   );
 
