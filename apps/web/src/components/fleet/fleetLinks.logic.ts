@@ -411,7 +411,14 @@ export function linkBlockedReason(left: FleetLinkReach, right: FleetLinkReach): 
     if (!computer.reachable) return `Connect to ${computer.label} first.`;
   }
   for (const computer of [left, right]) {
-    if (computer.supportsLinks !== true) return `${computer.label} needs a newer Threadlines.`;
+    if (computer.supportsLinks === false) return `${computer.label} needs a newer Threadlines.`;
+  }
+  // Until both computers have said what links they hold, "not linked" is a
+  // guess: offering Link then could make a second link over one that exists.
+  for (const computer of [left, right]) {
+    if (computer.supportsLinks === null || computer.links?.live !== true) {
+      return `Checking links on ${computer.label}…`;
+    }
   }
   return null;
 }

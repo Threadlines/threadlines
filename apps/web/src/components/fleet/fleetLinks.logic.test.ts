@@ -352,6 +352,18 @@ describe("resolveFleetPair", () => {
         .linkBlockedReason,
     ).toBe("Mac mini needs a newer Threadlines.");
   });
+
+  it("offers no Link while a computer's links are still loading", () => {
+    // Right after the app connects, a linked pair would otherwise read "Not
+    // linked" with Link on offer, and Link would make a second link.
+    const loading = resolveFleetPair(reach(MAC, "Mac"), reach(MINI, "Mac mini", { links: null }));
+    expect(loading.linked).toBe(false);
+    expect(loading.linkBlockedReason).toBe("Checking links on Mac mini…");
+    expect(
+      resolveFleetPair(reach(MAC, "Mac"), reach(MINI, "Mac mini", { supportsLinks: null }))
+        .linkBlockedReason,
+    ).toBe("Checking links on Mac mini…");
+  });
 });
 
 describe("planFleetUnlink", () => {
