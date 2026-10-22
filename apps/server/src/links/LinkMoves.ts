@@ -403,33 +403,37 @@ const make = Effect.gen(function* () {
       );
       // The repository recorded when the import began (nothing was made in
       // git before that). One deleted since took its refs and worktree list
-      // with it; one that is there but can't be read is retried later.
+      // with it; one that is there but can't be read, or can't be told
+      // apart from gone, is retried later.
       const root = row.repoRoot;
       let repo: string | null = null;
-      if (root !== null && (yield* pathExists(root))) {
-        if ((yield* runGit(root, ["rev-parse", "--git-dir"])).ok) repo = root;
-        else clean = false;
+      if (root !== null) {
+        const there = yield* pathState(root);
+        if (there === null) clean = false;
+        else if (there) {
+          if ((yield* runGit(root, ["rev-parse", "--git-dir"])).ok) repo = root;
+          else clean = false;
+        }
       }
       if (row.worktreePath !== null) {
         const inUse = yield* pathInUse(row.worktreePath);
-        if (inUse === null) {
+        const ours = inUse === false ? yield* ownsWorktree(row.worktreePath, row, repo) : null;
+        if (inUse === null || ours === null) {
           clean = false;
         } else if (!inUse) {
-          const ours = yield* ownsFolder(row.worktreePath, row);
           if (repo !== null && ours) {
             yield* runGit(repo, ["worktree", "remove", "--force", row.worktreePath]);
           }
           // A folder this move made goes. Anything else there stays, an
           // empty one excepted (a worktree that was never made).
-          const removed = yield* Effect.tryPromise(async () => {
-            if (ours) await NodeFs.rm(row.worktreePath!, { recursive: true, force: true });
-            else await NodeFs.rmdir(row.worktreePath!).catch(() => undefined);
-          }).pipe(
-            Effect.andThen(pathExists(row.worktreePath)),
-            Effect.map((left) => !left || !ours),
-            Effect.orElseSucceed(() => false),
+          yield* Effect.promise(() =>
+            ours
+              ? NodeFs.rm(row.worktreePath!, { recursive: true, force: true }).catch(
+                  () => undefined,
+                )
+              : NodeFs.rmdir(row.worktreePath!).catch(() => undefined),
           );
-          if (!removed) clean = false;
+          if (ours && (yield* pathState(row.worktreePath)) !== false) clean = false;
           if (repo !== null) {
             yield* runGit(repo, ["worktree", "prune"]);
             // Ours, and still where this move left it: nobody built on it.
@@ -466,30 +470,71 @@ const make = Effect.gen(function* () {
         .pipe(Effect.ignore);
     });
 
-  /**
-   * Whether `path` is the worktree this move made: its `.git` file points at
-   * the repository's worktree entry named after the folder (`moved-<K>`,
-   * maybe with a number git added). Readable even with the repository gone.
-   */
-  const ownsFolder = (path: string, row: Pick<LinkMoveRow, "transferKey">) =>
+  /** Whether `path` is there: false only when it's confirmed gone, null when that can't be told. */
+  const pathState = (path: string) =>
     Effect.promise(() =>
-      NodeFs.readFile(NodePath.join(path, ".git"), "utf8").then(
-        (text) => {
-          const name = /^gitdir: .*[\\/]worktrees[\\/]([^\\/]+?)\s*$/.exec(text)?.[1] ?? "";
-          const base = `moved-${row.transferKey.slice(0, 12)}`;
-          return name.startsWith(base) && /^\d*$/.test(name.slice(base.length));
-        },
-        () => false,
+      NodeFs.lstat(path).then(
+        (): boolean | null => true,
+        (error: NodeJS.ErrnoException): boolean | null =>
+          error.code === "ENOENT" || error.code === "ENOTDIR" ? false : null,
       ),
     );
 
-  const pathExists = (path: string) =>
-    Effect.promise(() =>
-      NodeFs.access(path).then(
-        () => true,
-        () => false,
-      ),
-    );
+  /** Two paths name the same place (macOS's /var is /private/var). */
+  const samePlace = (left: string, right: string) =>
+    Effect.promise(async () => {
+      const real = (path: string) => NodeFs.realpath(path).catch(() => NodePath.resolve(path));
+      return (await real(left)) === (await real(right));
+    });
+
+  /**
+   * Whether `path` is the worktree this move made. Its `.git` file must point
+   * into the recorded repository's own worktree list, at an entry named
+   * after the folder (`moved-<K>`, maybe with a number git added). While
+   * that repository is there, the entry must also have this move's branch
+   * checked out, a branch made with its note. Null when that can't be read.
+   */
+  const ownsWorktree = (path: string, row: LinkMoveRow, repo: string | null) =>
+    Effect.gen(function* () {
+      if (row.repoRoot === null || row.branch === null) return false;
+      const text = yield* Effect.promise(() =>
+        NodeFs.readFile(NodePath.join(path, ".git"), "utf8").then(
+          (content): string | null => content,
+          (error: NodeJS.ErrnoException): string | null =>
+            ["ENOENT", "ENOTDIR", "EISDIR"].includes(error.code ?? "") ? "" : null,
+        ),
+      );
+      if (text === null) return null;
+      const pointer = /^gitdir: (.+?)\s*$/.exec(text)?.[1];
+      if (pointer === undefined) return false;
+      const entry = NodePath.resolve(path, pointer);
+      const base = `moved-${row.transferKey.slice(0, 12)}`;
+      const name = NodePath.basename(entry);
+      if (!name.startsWith(base) || !/^\d*$/.test(name.slice(base.length))) return false;
+      // The repository's worktree list: where its git dir is while it's
+      // there, else where it was.
+      let common = NodePath.join(row.repoRoot, ".git");
+      if (repo !== null) {
+        const found = yield* runGit(repo, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-common-dir",
+        ]);
+        if (!found.ok) return null;
+        common = found.out;
+      }
+      if (!(yield* samePlace(NodePath.dirname(entry), NodePath.join(common, "worktrees")))) {
+        return false;
+      }
+      if (repo === null) return true;
+      const head = yield* Effect.promise(() =>
+        NodeFs.readFile(NodePath.join(entry, "HEAD"), "utf8").then(
+          (content) => content.trim(),
+          () => "",
+        ),
+      );
+      return head === `ref: refs/heads/${row.branch}` && (yield* ownsBranch(repo, row.branch, row));
+    });
 
   /**
    * Whether any thread here works in `path`: then nothing a move does may
@@ -992,7 +1037,7 @@ const make = Effect.gen(function* () {
         );
       // A folder already there when the move first picks its path isn't its
       // own: it's never adopted, reset or removed.
-      if (row.worktreePath === null && (yield* pathExists(path))) {
+      if (row.worktreePath === null && (yield* pathState(path)) !== false) {
         return yield* stop(`${ownLabel} already has a folder at ${path}.`);
       }
       // Recorded before it is made, so a restart finds what it owns.
@@ -1004,6 +1049,11 @@ const make = Effect.gen(function* () {
         .split("\n")
         .some((line) => line === `worktree ${path}` || line === `worktree ${real}`);
       if (registered) {
+        // Only the worktree this move made is kept or replaced; another one
+        // at its path (made after a crash) stops the move instead.
+        if ((yield* ownsWorktree(path, row, row.repoRoot)) !== true) {
+          return yield* stop(`${ownLabel} has another worktree at ${path}.`);
+        }
         const head = yield* runGit(path, ["rev-parse", "HEAD"]);
         if (head.ok && head.out === headSha) {
           yield* setStage(row, { stage: "worktree" });
@@ -1085,7 +1135,10 @@ const make = Effect.gen(function* () {
       const status = yield* runGit(path, ["status", "--porcelain"]);
       if (status.out.length > 0) {
         // Ours, uncommitted, never handed to a thread: back to the moved commit.
-        if ((yield* pathInUse(path)) !== false || !(yield* ownsFolder(path, row))) {
+        if (
+          (yield* pathInUse(path)) !== false ||
+          (yield* ownsWorktree(path, row, row.repoRoot)) !== true
+        ) {
           return yield* stop(`A thread on ${ownLabel} is using that folder.`);
         }
         yield* runGit(path, ["reset", "--hard", headSha]);

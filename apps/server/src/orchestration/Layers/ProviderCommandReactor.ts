@@ -1837,6 +1837,21 @@ const make = Effect.gen(function* () {
     ) {
       owedHistorySeeds.delete(sessionKey);
     }
+    // A debt for another reason (the provider couldn't reopen its
+    // conversation) on a thread that still owes its moved history is that
+    // debt too: the seed it pays with is the same conversation, and paying
+    // it must record the move's delivery.
+    const unmarked = owedHistorySeeds.get(sessionKey);
+    if (
+      unmarked !== undefined &&
+      unmarked.moved !== true &&
+      unmarked.carriedBy === undefined &&
+      !unmarked.claimed &&
+      thread.historySeedOwed === true &&
+      input.participantId === null
+    ) {
+      owedHistorySeeds.set(sessionKey, { ...unmarked, moved: true });
+    }
     if (
       !owedHistorySeeds.has(sessionKey) &&
       thread.historySeedOwed === true &&
