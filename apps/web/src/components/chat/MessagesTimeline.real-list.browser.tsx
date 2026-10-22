@@ -1529,14 +1529,23 @@ describe("text selection popover with the real virtual list", () => {
     try {
       dragSelectWord("message-51", "pelican");
       // A copy closes the actions a moment later; a note opened in that
-      // moment must outlive it.
-      await page.getByRole("button", { name: "Copy selected text" }).click();
-      await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("pelican"));
-      await page.getByRole("button", { name: "Add note" }).click();
-      const noteInput = page.getByPlaceholder("Add context for this highlight");
-      await userEvent.fill(noteInput, "Check this bird");
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-      expect(selectionPopover()).not.toBeNull();
+      // moment must outlive it. The clock holds still until the note is open:
+      // each click is a round trip to the browser driver, which on a busy
+      // machine takes longer than that moment.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await page.getByRole("button", { name: "Copy selected text" }).click();
+        await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("pelican"));
+        await page.getByRole("button", { name: "Add note" }).click();
+        const noteInput = page.getByPlaceholder("Add context for this highlight");
+        await userEvent.fill(noteInput, "Check this bird");
+        await vi.advanceTimersByTimeAsync(1_000);
+        // React draws what the timers did on its next turn.
+        await nextFrame();
+        expect(selectionPopover()).not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
 
       // Far enough away that the list drops the message's row. One jump can
       // be served from slots the list has spare, so climb a step at a time:
