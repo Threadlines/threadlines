@@ -7,6 +7,7 @@ import {
   type OrchestrationCheckBack,
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
+  type RemoteChildThread,
   type RoomAgentRequestId,
   type ServerProviderSkill,
   type SideTurnId,
@@ -133,10 +134,13 @@ import {
   threadStartCallHasRecord,
   useChildRequestState,
   useChildThreadsStartedIn,
-  useThreadTitle,
+  useRemoteChildren,
+  useThreadMessageSource,
   type ThreadStartCall,
 } from "../../childThreads";
-import { resolveThreadStatusPill } from "../Sidebar.logic";
+import { selectEnvironmentState, useStore } from "../../store";
+import { remoteChildEntry, remoteChildStatusText, resolveThreadStatusPill } from "../Sidebar.logic";
+import { useComputerLabel } from "../sidebar/linkedComputers";
 import {
   describeScheduleCall,
   parseScheduleCallResult,
@@ -309,7 +313,7 @@ interface TimelineRowSharedState {
   /** See MessagesTimelineProps.workflowRunActions. */
   workflowRunActions: WorkflowRunActions | null;
   /** See MessagesTimelineProps.onOpenThread. */
-  onOpenThread: ((threadId: ThreadId) => void) | null;
+  onOpenThread: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null;
   /** Every finished `thread_start` call, by turn: a call's record reads its turn's. */
   threadStartCallsByTurn: ReadonlyMap<string, ReadonlyArray<ThreadStartCall>>;
   /** True while the working anchor at the tail is mounted. The per-agent live
@@ -850,10 +854,11 @@ interface MessagesTimelineProps {
   /** What a workflow run's card can do: open it, stop it, save its script. */
   workflowRunActions?: WorkflowRunActions | null | undefined;
   /**
-   * Opens another thread in this environment: the one that started this
-   * thread, or one this thread's agent started (child threads).
+   * Opens another thread: the one that started this thread, or one this
+   * thread's agent started (child threads). `environmentId` names the
+   * computer it lives on when that is another one; absent, this thread's.
    */
-  onOpenThread?: ((threadId: ThreadId) => void) | null | undefined;
+  onOpenThread?: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -3076,9 +3081,14 @@ function ThreadMessageTimelineRow({
 }) {
   const ctx = use(TimelineRowCtx);
   const { message } = row;
-  const title = useThreadTitle(ctx.activeThreadEnvironmentId, origin.threadId);
+  const source = useThreadMessageSource(ctx.activeThreadEnvironmentId, ctx.activeThreadId, origin);
+  const computerLabel = useComputerLabel();
   const isReport = origin.kind === "report";
-  const author = title ?? (isReport ? "A thread it started" : "The thread that started it");
+  const author = source.title ?? (isReport ? "A thread it started" : "The thread that started it");
+  const computer = source.computer
+    ? computerLabel(source.computer.environmentId, source.computer.lastKnown)
+    : "";
+  const kindWord = isReport ? "reply" : "request";
   return (
     <div
       className="group min-w-0 px-1 py-0.5"
@@ -3086,20 +3096,32 @@ function ThreadMessageTimelineRow({
       title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
     >
       <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
-        {ctx.onOpenThread ? (
+        {ctx.onOpenThread && source.openable ? (
           <button
             type="button"
             className="min-w-0 cursor-pointer truncate text-foreground/85 underline-offset-2 transition-colors hover:text-foreground hover:underline"
             data-thread-message-author={origin.threadId}
-            onClick={() => ctx.onOpenThread?.(origin.threadId)}
+            onClick={() =>
+              ctx.onOpenThread?.(
+                origin.threadId,
+                source.computer ? source.computer.environmentId : undefined,
+              )
+            }
           >
             {author}
           </button>
         ) : (
-          <span className="min-w-0 truncate text-foreground/85">{author}</span>
+          <span
+            className="min-w-0 truncate text-foreground/85"
+            data-thread-message-author={origin.threadId}
+          >
+            {author}
+          </span>
         )}
         <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="shrink-0">{isReport ? "reply" : "request"}</span>
+        <span className="min-w-0 truncate" data-thread-message-kind>
+          {computer.length > 0 ? `${kindWord} from ${computer}` : kindWord}
+        </span>
         {message.text.length > 0 ? (
           <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
             <MessageCopyButton
@@ -4562,6 +4584,8 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
     turnId,
   );
   const requests = useChildRequestState(ctx.activeThreadEnvironmentId, ctx.activeThreadId);
+  const remoteChildren = useRemoteChildren(ctx.activeThreadEnvironmentId, ctx.activeThreadId);
+  const computerLabel = useComputerLabel();
   const record = useMemo(() => {
     const turnCalls = ctx.threadStartCallsByTurn.get(threadStartTurnKey(entry)) ?? [];
     const call = turnCalls.find((candidate) => candidate.id === entry.id) ?? {
@@ -4574,12 +4598,22 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
       turnCalls: turnCalls.length > 0 ? turnCalls : [call],
       startedInTurn,
       openRequests: requests?.open ?? [],
+      remoteChildren,
+      computerLabel,
     });
-  }, [ctx.threadStartCallsByTurn, entry, requests, startedInTurn, turnId]);
+  }, [
+    computerLabel,
+    ctx.threadStartCallsByTurn,
+    entry,
+    remoteChildren,
+    requests,
+    startedInTurn,
+    turnId,
+  ]);
   if (record === null) {
     return null;
   }
-  const { heading, outcome, threads } = record;
+  const { heading, outcome, threads, remoteThreads } = record;
   return (
     <div className="min-w-0" data-started-threads={entry.id}>
       <div className="flex min-w-0 items-center gap-[7px] text-xs leading-5 text-foreground/80">
@@ -4596,10 +4630,16 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
           </>
         ) : null}
       </div>
-      {threads.length > 0 ? (
+      {threads.length > 0 || remoteThreads.length > 0 ? (
         <ul className="ml-[19px]">
           {threads.map((thread) => (
             <StartedThreadLine key={thread.id} thread={thread} />
+          ))}
+          {remoteThreads.map((child) => (
+            <RemoteStartedThreadLine
+              key={`${child.environmentId}:${child.threadId}`}
+              child={child}
+            />
           ))}
         </ul>
       ) : null}
@@ -4607,9 +4647,57 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
   );
 }
 
-/** One thread the agent started: its live dot, title and status, opening its chat. */
-function StartedThreadLine({ thread }: { thread: SidebarThreadSummary }) {
-  const { onOpenThread } = use(TimelineRowCtx);
+/**
+ * A thread the agent started on a linked computer: the real thread when the
+ * app has that computer's threads, else the parent's record of it, with its
+ * last known status. Either way it says which computer.
+ */
+function RemoteStartedThreadLine({ child }: { child: RemoteChildThread }) {
+  const computerLabel = useComputerLabel();
+  const thread = useStore(
+    (state) =>
+      selectEnvironmentState(state, child.environmentId).sidebarThreadSummaryById[child.threadId],
+  );
+  const computer = computerLabel(child.environmentId, child.label);
+  if (thread !== undefined) {
+    return <StartedThreadLine thread={thread} computer={computer} />;
+  }
+  const entry = remoteChildEntry(child, computer);
+  return (
+    <li
+      className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-foreground/85"
+      data-started-thread={child.threadId}
+    >
+      <span
+        aria-label={entry.status?.label ?? "Finished"}
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          entry.status ? entry.status.dotClass : "bg-muted-foreground/45",
+        )}
+      />
+      <span className="min-w-0 truncate">{child.title}</span>
+      <span className="min-w-0 shrink-[2] truncate text-muted-foreground">on {computer}</span>
+      {entry.status ? (
+        <span className="ms-auto shrink-0 text-muted-foreground">
+          {remoteChildStatusText(entry)}
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * One thread the agent started: its live dot, title and status, opening its
+ * chat. `computer` names the linked computer it runs on, when it does.
+ */
+function StartedThreadLine({
+  thread,
+  computer,
+}: {
+  thread: SidebarThreadSummary;
+  computer?: string;
+}) {
+  const { onOpenThread, activeThreadEnvironmentId } = use(TimelineRowCtx);
   const status = resolveThreadStatusPill({
     thread: { ...thread, ...(thread.lastSeenAt ? { lastVisitedAt: thread.lastSeenAt } : {}) },
   });
@@ -4627,7 +4715,12 @@ function StartedThreadLine({ thread }: { thread: SidebarThreadSummary }) {
         className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 text-left text-xs leading-5 text-foreground/85 transition-colors hover:text-foreground disabled:cursor-default"
         disabled={onOpenThread === null}
         data-started-thread={thread.id}
-        onClick={() => onOpenThread?.(thread.id)}
+        onClick={() =>
+          onOpenThread?.(
+            thread.id,
+            thread.environmentId === activeThreadEnvironmentId ? undefined : thread.environmentId,
+          )
+        }
       >
         <span
           aria-label={status?.label ?? "Finished"}
@@ -4637,6 +4730,9 @@ function StartedThreadLine({ thread }: { thread: SidebarThreadSummary }) {
           )}
         />
         <span className="min-w-0 truncate">{thread.title}</span>
+        {computer !== undefined ? (
+          <span className="min-w-0 shrink-[2] truncate text-muted-foreground">on {computer}</span>
+        ) : null}
         <span className="ms-auto flex shrink-0 items-center gap-1.5">
           <ThreadStatusText
             thread={thread}
