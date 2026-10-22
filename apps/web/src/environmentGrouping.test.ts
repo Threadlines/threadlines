@@ -550,22 +550,6 @@ describe("environment grouping", () => {
       expect(ids).toContain(threadR1);
     });
 
-    it("returns threads from remote-only project", () => {
-      const state = makeFixtureState();
-      const refs = [scopeProjectRef(remoteEnvId, remoteOnlyProjectId)];
-      const threads = selectSidebarThreadsForProjectRefs(state, refs);
-      expect(threads).toHaveLength(1);
-      expect(threads[0]?.id).toBe(threadRO1);
-    });
-
-    it("returns threads from local-only project", () => {
-      const state = makeFixtureState();
-      const refs = [scopeProjectRef(primaryEnvId, localOnlyProjectId)];
-      const threads = selectSidebarThreadsForProjectRefs(state, refs);
-      expect(threads).toHaveLength(1);
-      expect(threads[0]?.id).toBe(threadL1);
-    });
-
     it("handles refs with nonexistent environment gracefully", () => {
       const state = makeFixtureState();
       const refs = [

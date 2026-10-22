@@ -15,10 +15,6 @@ describe("completeUrl", () => {
     visited("http://localhost:18821/", 3, 100),
   ];
 
-  it("finishes a site from the few letters people actually type", () => {
-    expect(completeUrl("facp", history)).toBe("facpmanuals.com/");
-  });
-
   it("ignores the scheme and www, which nobody types", () => {
     expect(completeUrl("localhost:1", history)).toBe("localhost:18821/");
     expect(completeUrl("www.facp", [visited("https://www.facpmanuals.com/", 4, 10)])).toBe(

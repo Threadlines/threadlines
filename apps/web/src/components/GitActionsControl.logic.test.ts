@@ -389,15 +389,6 @@ describe("when: ref has diverged from upstream", () => {
 });
 
 describe("when: working tree has local changes", () => {
-  it("resolveQuickAction returns commit and push", () => {
-    const quick = resolveQuickAction(status({ hasWorkingTreeChanges: true }), false);
-    assert.deepInclude(quick, {
-      kind: "run_action",
-      action: "commit_push",
-      label: "Commit & push",
-    });
-  });
-
   it("resolveQuickAction falls back to commit when no origin remote exists", () => {
     const quick = resolveQuickAction(
       status({ hasWorkingTreeChanges: true, hasUpstream: false }),

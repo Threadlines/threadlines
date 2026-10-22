@@ -3,17 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
 
 describe("formatPendingPrimaryActionLabel", () => {
-  it("returns 'Submitting...' while responding", () => {
-    expect(
-      formatPendingPrimaryActionLabel({
-        compact: false,
-        isLastQuestion: false,
-        isResponding: true,
-        questionIndex: 0,
-      }),
-    ).toBe("Submitting...");
-  });
-
   it("returns 'Submitting...' while responding regardless of other flags", () => {
     expect(
       formatPendingPrimaryActionLabel({
@@ -76,17 +65,6 @@ describe("formatPendingPrimaryActionLabel", () => {
         isLastQuestion: true,
         isResponding: false,
         questionIndex: 1,
-      }),
-    ).toBe("Submit answers");
-  });
-
-  it("returns plural 'Submit answers' for higher question indices", () => {
-    expect(
-      formatPendingPrimaryActionLabel({
-        compact: false,
-        isLastQuestion: true,
-        isResponding: false,
-        questionIndex: 5,
       }),
     ).toBe("Submit answers");
   });

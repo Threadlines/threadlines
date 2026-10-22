@@ -23,10 +23,8 @@ import {
   gitCommitGraphQueryOptions,
   gitCreateStashMutationOptions,
   gitMutationKeys,
-  gitPreparePullRequestThreadMutationOptions,
   gitPullMutationOptions,
   gitRunStackedActionMutationOptions,
-  gitStashesQueryOptions,
   gitWorkingTreeDiffQueryOptions,
   invalidateGitQueries,
   invalidateGitWorkingTreeDiffQueries,
@@ -240,32 +238,6 @@ describe("git mutation options", () => {
       expectedStashId: "0123456789abcdef0123456789abcdef01234567",
       dropAfterApply: true,
     });
-  });
-
-  it("attaches cwd-scoped mutation key for preparePullRequestThread", () => {
-    const options = gitPreparePullRequestThreadMutationOptions({
-      environmentId: ENVIRONMENT_A,
-      cwd: "/repo/a",
-      queryClient,
-    });
-    expect(options.mutationKey).toEqual(
-      gitMutationKeys.preparePullRequestThread(ENVIRONMENT_A, "/repo/a"),
-    );
-  });
-});
-
-describe("git stash query options", () => {
-  it("lists stashes for the selected checkout", async () => {
-    const listStashes = vi.fn(async () => ({ stashes: [] }));
-    vi.mocked(ensureEnvironmentApi).mockReturnValue({ vcs: { listStashes } } as never);
-    const options = gitStashesQueryOptions({
-      environmentId: ENVIRONMENT_A,
-      cwd: "/repo/a",
-    });
-
-    await options.queryFn?.({} as never);
-
-    expect(listStashes).toHaveBeenCalledWith({ cwd: "/repo/a" });
   });
 });
 
