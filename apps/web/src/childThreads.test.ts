@@ -8,6 +8,7 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationChildRequest,
+  type RemoteChildThread,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -69,6 +70,14 @@ const waitingRequest = (childThreadId: string, batch: string): OrchestrationChil
   createdAt: "2026-10-04T10:00:00.000Z",
 });
 
+const MAC_MINI = EnvironmentId.make("environment-mac-mini");
+
+/** No remote children, and computers named as last known. */
+const local = {
+  remoteChildren: [] as RemoteChildThread[],
+  computerLabel: (_environmentId: EnvironmentId, lastKnown: string) => lastKnown,
+};
+
 const call = (id: string, output?: string): ThreadStartCall => ({
   id,
   turnId: TURN,
@@ -81,10 +90,12 @@ describe("thread_start records in the parent's chat", () => {
     expect(parseThreadStartResult(answer)).toEqual({
       outcome: "asked_user",
       threadIds: new Set(["thread-a"]),
+      remoteThreadIds: new Set(),
     });
     expect(parseThreadStartResult(JSON.stringify(answer))).toEqual({
       outcome: "asked_user",
       threadIds: new Set(["thread-a"]),
+      remoteThreadIds: new Set(),
     });
   });
 
@@ -96,11 +107,13 @@ describe("thread_start records in the parent's chat", () => {
         turnCalls: [refused],
         startedInTurn: [child("thread-earlier")],
         openRequests: [],
+        ...local,
       }),
     ).toEqual({
       heading: "Tried to start threads",
       outcome: "over the limit for one message",
       threads: [],
+      remoteThreads: [],
     });
   });
 
@@ -117,6 +130,7 @@ describe("thread_start records in the parent's chat", () => {
       turnCalls: [first, second],
       startedInTurn: [child("thread-a")],
       openRequests: [waitingRequest("thread-b", "batch-2"), waitingRequest("thread-c", "batch-2")],
+      ...local,
     };
     // The first batch was approved; the second still waits.
     expect(describeThreadStartCall({ ...input, call: first })).toMatchObject({
@@ -138,6 +152,7 @@ describe("thread_start records in the parent's chat", () => {
       turnCalls: [first, second],
       startedInTurn: [child("thread-a")],
       openRequests: [waitingRequest("thread-b", "batch-2"), waitingRequest("thread-c", "batch-2")],
+      ...local,
     };
     expect(describeThreadStartCall({ ...input, call: first })).toBeNull();
     expect(describeThreadStartCall({ ...input, call: second })).toMatchObject({
@@ -155,7 +170,59 @@ describe("thread_start records in the parent's chat", () => {
         turnCalls: [asked],
         startedInTurn: [],
         openRequests: [],
+        ...local,
       }),
-    ).toEqual({ heading: "Asked to start threads", outcome: "not started", threads: [] });
+    ).toEqual({
+      heading: "Asked to start threads",
+      outcome: "not started",
+      threads: [],
+      remoteThreads: [],
+    });
+  });
+
+  it("follows a thread asked of a linked computer until it starts there", () => {
+    const asked = call(
+      "start-1",
+      '{"outcome":"asked_user","threads":[{"threadId":"thread-remote","title":"Read the log","workspace":"remote","computer":"Mac mini"}]}',
+    );
+    const remoteStart = (status: "awaiting_approval" | "accepted"): OrchestrationChildRequest => ({
+      ...waitingRequest("thread-remote", "batch-1"),
+      status: "starting",
+      remote: { environmentId: MAC_MINI, label: "Mac mini", threadId: null, status },
+    });
+    const input = {
+      call: asked,
+      turnCalls: [asked],
+      startedInTurn: [],
+      ...local,
+      // This app knows the computer by the name its user saved it under.
+      computerLabel: () => "Studio Mac",
+    };
+    expect(
+      describeThreadStartCall({ ...input, openRequests: [remoteStart("awaiting_approval")] }),
+    ).toMatchObject({
+      heading: "Asked to start 1 thread",
+      outcome: "waiting for Studio Mac to allow it",
+    });
+    const started: RemoteChildThread = {
+      environmentId: MAC_MINI,
+      label: "Mac mini",
+      threadId: ThreadId.make("thread-remote"),
+      handle: "Codex",
+      title: "Read the log",
+      attachmentEpoch: 0,
+      cachedStatus: "working",
+      updatedAt: "2026-10-04T10:01:00.000Z",
+    };
+    // Running there, and after its answer settled the request.
+    for (const openRequests of [[remoteStart("accepted")], []]) {
+      expect(
+        describeThreadStartCall({ ...input, openRequests, remoteChildren: [started] }),
+      ).toMatchObject({
+        heading: "Started 1 thread",
+        outcome: "you said start",
+        remoteThreads: [{ threadId: "thread-remote" }],
+      });
+    }
   });
 });

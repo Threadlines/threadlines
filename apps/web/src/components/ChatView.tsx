@@ -7410,14 +7410,14 @@ export default function ChatView(props: ChatViewProps) {
     void onRevertToTurnCountRef.current(targetTurnCount, revertedMessageText);
   }, []);
   const onOpenForkSourceThread = useCallback(
-    (sourceThreadId: ThreadId) => {
+    (sourceThreadId: ThreadId, environmentId?: EnvironmentId) => {
       if (!activeThread) {
         return;
       }
       void navigate({
         to: "/$environmentId/$threadId",
         params: {
-          environmentId: activeThread.environmentId,
+          environmentId: environmentId ?? activeThread.environmentId,
           threadId: sourceThreadId,
         },
       });

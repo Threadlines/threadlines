@@ -3,6 +3,7 @@ import type {
   AgentThreadStatusWord,
   EnvironmentId,
   RemoteChildRequestStatus,
+  RemoteChildThread,
   ThreadId,
 } from "@threadlines/contracts";
 import type { SidebarProjectSortOrder } from "@threadlines/contracts/settings";
@@ -1500,23 +1501,11 @@ export function resolveRemoteFamilyChildren(input: {
   readonly canSeeComputer: (environmentId: EnvironmentId) => boolean;
   readonly computerLabel: (environmentId: EnvironmentId, lastKnown: string) => string;
 }): InboxRemoteChild[] {
-  const children = (input.parent.remoteChildren ?? []).flatMap((child): InboxRemoteChild[] => {
-    if (input.canSeeComputer(child.environmentId)) return [];
-    // An unknown word reads as idle, the way the parent's own tools read it.
-    const phase = REMOTE_THREAD_PHASES.find((word) => word === child.cachedStatus) ?? "idle";
-    return [
-      {
-        threadKey: scopedThreadKey(scopeThreadRef(child.environmentId, child.threadId)),
-        environmentId: child.environmentId,
-        threadId: child.threadId,
-        computerLabel: input.computerLabel(child.environmentId, child.label),
-        title: child.title,
-        phase,
-        status: REMOTE_PHASE_PILLS[phase],
-        isDone: phase === "wrapped",
-      },
-    ];
-  });
+  const children = (input.parent.remoteChildren ?? []).flatMap((child): InboxRemoteChild[] =>
+    input.canSeeComputer(child.environmentId)
+      ? []
+      : [remoteChildEntry(child, input.computerLabel(child.environmentId, child.label))],
+  );
   const starts = (input.parent.remoteChildStarts ?? [])
     .filter((start) => !(start.status === "accepted" && input.canSeeComputer(start.environmentId)))
     .toSorted(
@@ -1534,6 +1523,28 @@ export function resolveRemoteFamilyChildren(input: {
       isDone: false,
     }));
   return [...children, ...starts];
+}
+
+/**
+ * A child on a computer this app can't see, from its parent's record: its
+ * last known status, under `computerLabel`.
+ */
+export function remoteChildEntry(
+  child: RemoteChildThread,
+  computerLabel: string,
+): InboxRemoteChild {
+  // An unknown word reads as idle, the way the parent's own tools read it.
+  const phase = REMOTE_THREAD_PHASES.find((word) => word === child.cachedStatus) ?? "idle";
+  return {
+    threadKey: scopedThreadKey(scopeThreadRef(child.environmentId, child.threadId)),
+    environmentId: child.environmentId,
+    threadId: child.threadId,
+    computerLabel,
+    title: child.title,
+    phase,
+    status: REMOTE_PHASE_PILLS[phase],
+    isDone: phase === "wrapped",
+  };
 }
 
 /**

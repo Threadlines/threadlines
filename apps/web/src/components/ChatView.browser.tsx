@@ -10479,10 +10479,38 @@ describe("ChatView timeline estimator parity (full app)", () => {
                       createdAt: isoAt(300),
                       updatedAt: isoAt(300),
                     },
+                    {
+                      id: "msg-remote-child-report" as MessageId,
+                      role: "user" as const,
+                      text: "The Windows build passed.",
+                      fromThread: {
+                        threadId: "thread-child-windows-build" as ThreadId,
+                        requestId: ChildRequestId.make("request-windows-build"),
+                        kind: "report" as const,
+                        environmentId: EnvironmentId.make("environment-windows"),
+                      },
+                      turnId: null,
+                      streaming: false,
+                      createdAt: isoAt(302),
+                      updatedAt: isoAt(302),
+                    },
                   ],
                   childRequests: {
                     ...EMPTY_CHILD_REQUEST_STATE,
                     startsSinceUser: 1,
+                    // A child on a computer this app has no thread list for.
+                    remoteChildren: [
+                      {
+                        environmentId: EnvironmentId.make("environment-windows"),
+                        label: "Windows PC",
+                        threadId: "thread-child-windows-build" as ThreadId,
+                        handle: "Codex",
+                        title: "Check the Windows build",
+                        attachmentEpoch: 0,
+                        cachedStatus: "idle",
+                        updatedAt: isoAt(300),
+                      },
+                    ],
                     open: [
                       {
                         requestId: ChildRequestId.make("request-start-1"),
@@ -10571,10 +10599,24 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // One for a linked computer says where it would run.
       expect(panel.textContent).toContain("on Windows PC");
       // The answer that came back is the child's, never the user's.
+      const reportOf = (text: string) =>
+        [...document.querySelectorAll('[data-thread-message="report"]')].find((report) =>
+          report.textContent?.includes(text),
+        );
       expect(
-        document.querySelector('[data-thread-message="report"] [data-thread-message-author]')
+        reportOf("The changelog is written.")?.querySelector("[data-thread-message-author]")
           ?.textContent,
       ).toBe("Write the changelog");
+      // One from a linked computer is named from the parent's own record, with
+      // the computer it ran on; the app has no thread there to open.
+      const remoteReport = reportOf("The Windows build passed.");
+      expect(remoteReport?.querySelector("[data-thread-message-author]")?.textContent).toBe(
+        "Check the Windows build",
+      );
+      expect(remoteReport?.querySelector("[data-thread-message-kind]")?.textContent).toBe(
+        "reply from Windows PC",
+      );
+      expect(remoteReport?.querySelector("button[data-thread-message-author]")).toBeNull();
 
       [...panel.querySelectorAll<HTMLButtonElement>("button")]
         .find((button) => button.textContent === "Start")

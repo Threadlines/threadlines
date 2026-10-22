@@ -11,7 +11,9 @@ import type {
   ModelSelection,
   OrchestrationChildRequest,
   OrchestrationChildRequestState,
+  RemoteChildThread,
   ThreadId,
+  ThreadMessageOrigin,
   TurnId,
 } from "@threadlines/contracts";
 import { awaitingChildBatch } from "@threadlines/shared/childThreads";
@@ -43,6 +45,73 @@ export function useThreadTitle(
       ? null
       : (selectEnvironmentState(state, environmentId).threadShellById[threadId]?.title ?? null),
   );
+}
+
+const NO_REMOTE_CHILDREN: readonly RemoteChildThread[] = [];
+
+/** A thread's children on linked computers, from its own record of them. */
+export function useRemoteChildren(
+  environmentId: EnvironmentId,
+  threadId: ThreadId | null,
+): readonly RemoteChildThread[] {
+  return useStore((state) =>
+    threadId === null
+      ? NO_REMOTE_CHILDREN
+      : (selectEnvironmentState(state, environmentId).threadShellById[threadId]?.remoteChildren ??
+        NO_REMOTE_CHILDREN),
+  );
+}
+
+/** Where a message another thread wrote (`fromThread`) came from, for its line. */
+export interface ThreadMessageSource {
+  /** The computer that thread lives on. */
+  readonly environmentId: EnvironmentId;
+  /** Its live title, else the one this thread last recorded; null when neither is known. */
+  readonly title: string | null;
+  /** For a thread on a linked computer, that computer and the name it last carried. */
+  readonly computer: { readonly environmentId: EnvironmentId; readonly lastKnown: string } | null;
+  /** This app has the thread to open. */
+  readonly openable: boolean;
+}
+
+/**
+ * Names the thread a message came from. One on this computer is named live.
+ * One on a linked computer is named live when the app has that computer's
+ * threads, else from this thread's own record: the child it started
+ * (`remoteChildren`) or the thread that started it (`remoteOrigin`).
+ */
+export function useThreadMessageSource(
+  environmentId: EnvironmentId,
+  threadId: ThreadId | null,
+  origin: ThreadMessageOrigin,
+): ThreadMessageSource {
+  const remoteEnvironmentId = origin.environmentId ?? null;
+  const sourceEnvironmentId = remoteEnvironmentId ?? environmentId;
+  const liveTitle = useThreadTitle(sourceEnvironmentId, origin.threadId);
+  const remoteChildren = useRemoteChildren(
+    environmentId,
+    remoteEnvironmentId !== null && origin.kind === "report" ? threadId : null,
+  );
+  const remoteOrigin = useStore((state) =>
+    remoteEnvironmentId === null || origin.kind !== "request" || threadId === null
+      ? null
+      : (selectEnvironmentState(state, environmentId).threadShellById[threadId]?.remoteOrigin ??
+        null),
+  );
+  if (remoteEnvironmentId === null) {
+    return { environmentId, title: liveTitle, computer: null, openable: true };
+  }
+  const child = remoteChildren.find((candidate) => candidate.threadId === origin.threadId);
+  const parent = remoteOrigin?.threadId === origin.threadId ? remoteOrigin : null;
+  return {
+    environmentId: remoteEnvironmentId,
+    title: liveTitle ?? child?.title ?? parent?.threadTitle ?? null,
+    computer: {
+      environmentId: remoteEnvironmentId,
+      lastKnown: child?.label ?? parent?.environmentLabel ?? "",
+    },
+    openable: liveTitle !== null,
+  };
 }
 
 /**
@@ -185,6 +254,8 @@ const THREAD_START_OUTCOMES: ReadonlySet<string> = new Set<ThreadStartOutcome>([
 export interface ThreadStartResult {
   readonly outcome: ThreadStartOutcome | null;
   readonly threadIds: ReadonlySet<string>;
+  /** The ones it asked of a linked computer (`"workspace":"remote"`). */
+  readonly remoteThreadIds: ReadonlySet<string>;
 }
 
 /**
@@ -195,7 +266,7 @@ export interface ThreadStartResult {
  */
 export function parseThreadStartResult(output: string | undefined): ThreadStartResult {
   if (!output) {
-    return { outcome: null, threadIds: new Set() };
+    return { outcome: null, threadIds: new Set(), remoteThreadIds: new Set() };
   }
   const text = output.replaceAll('\\"', '"');
   const outcomeMatch = /"outcome"\s*:\s*"([a-z_]+)"/u.exec(text);
@@ -206,7 +277,13 @@ export function parseThreadStartResult(output: string | undefined): ThreadStartR
   const threadIds = new Set(
     [...text.matchAll(/"threadId"\s*:\s*"([^"]+)"/gu)].map((match) => match[1]!),
   );
-  return { outcome, threadIds };
+  // Each thread is a flat object in the result's `threads`.
+  const remoteThreadIds = new Set(
+    [...text.matchAll(/\{[^{}]*"threadId"\s*:\s*"([^"]+)"[^{}]*\}/gu)]
+      .filter((match) => /"workspace"\s*:\s*"remote"/u.test(match[0]))
+      .map((match) => match[1]!),
+  );
+  return { outcome, threadIds, remoteThreadIds };
 }
 
 /** Why a start the agent asked for did not happen, in the user's words. */
@@ -266,6 +343,20 @@ export interface StartedThreadsRecord {
   readonly heading: string;
   readonly outcome: string | null;
   readonly threads: readonly SidebarThreadSummary[];
+  /** The ones it started on linked computers, from the parent's own record. */
+  readonly remoteThreads: readonly RemoteChildThread[];
+}
+
+/** How far a start asked of a linked computer got, before it has a thread there. */
+function remoteStartWords(request: OrchestrationChildRequest, computer: string): string {
+  switch (request.remote?.status) {
+    case "awaiting_approval":
+      return `waiting for ${computer} to allow it`;
+    case "accepted":
+      return `starting on ${computer}`;
+    default:
+      return `sending to ${computer}`;
+  }
 }
 
 /**
@@ -278,6 +369,10 @@ export interface StartedThreadsRecord {
  * started threads, covering everything that turn started and every batch it
  * asked about; the turn's other calls return null rather than count another
  * call's threads. A refused call only ever says it was refused.
+ *
+ * A thread asked of a linked computer has no thread here: it counts as
+ * started once the parent records it as a remote child, and until then its
+ * request says how far it got ("waiting for Mac mini to allow it").
  */
 export function describeThreadStartCall(input: {
   readonly call: ThreadStartCall;
@@ -287,57 +382,87 @@ export function describeThreadStartCall(input: {
   readonly startedInTurn: ReadonlyArray<SidebarThreadSummary>;
   /** The parent's open child requests. */
   readonly openRequests: ReadonlyArray<OrchestrationChildRequest>;
+  /** The parent's children on linked computers. */
+  readonly remoteChildren: ReadonlyArray<RemoteChildThread>;
+  /** Names a linked computer the way this app knows it (useComputerLabel). */
+  readonly computerLabel: (environmentId: EnvironmentId, lastKnown: string) => string;
 }): StartedThreadsRecord | null {
   const { call } = input;
   const refusal = refusalWords(call.result.outcome);
   if (refusal !== null) {
-    return { heading: "Tried to start threads", outcome: refusal, threads: [] };
+    return { heading: "Tried to start threads", outcome: refusal, threads: [], remoteThreads: [] };
   }
-  const waitingInTurn = input.openRequests.filter(
-    (request) =>
-      request.kind === "start" &&
-      request.status === "awaiting_user" &&
-      request.callerTurnId === call.turnId,
+  const startsInTurn = input.openRequests.filter(
+    (request) => request.kind === "start" && request.callerTurnId === call.turnId,
   );
   if (!threadStartCallHasRecord(call, input.turnCalls)) {
     return null;
   }
   const ownIds = call.result.threadIds;
   const attributable = turnCallsNameTheirThreads(input.turnCalls);
-  const threads = attributable
-    ? input.startedInTurn.filter((thread) => ownIds.has(thread.id))
-    : input.startedInTurn;
-  const waiting = attributable
-    ? waitingInTurn.filter((request) => ownIds.has(request.childThreadId)).length
-    : waitingInTurn.length;
+  const isOwn = (threadId: string) => !attributable || ownIds.has(threadId);
+  const threads = input.startedInTurn.filter((thread) => isOwn(thread.id));
+  const ownStarts = startsInTurn.filter((request) => isOwn(request.childThreadId));
+  // A remote child has no turn of its own here: only a call that named it
+  // claims it, or, unnamed, one whose start request is still open.
+  const remoteThreads = input.remoteChildren.filter((child) =>
+    attributable
+      ? ownIds.has(child.threadId)
+      : ownStarts.some((request) => request.childThreadId === child.threadId),
+  );
+  const waitingHere = ownStarts.filter((request) => request.status === "awaiting_user").length;
+  const waitingThere = ownStarts.filter(
+    (request) =>
+      request.status !== "awaiting_user" &&
+      request.remote !== undefined &&
+      !remoteThreads.some((child) => child.threadId === request.childThreadId),
+  );
   const asked = attributable
     ? call.result.outcome === "asked_user"
     : input.turnCalls.some((candidate) => candidate.result.outcome === "asked_user");
-  // Started without asking: every thread it named was started, even one that
-  // is not here yet (still being set up) or was deleted since.
+  // Started without asking: every thread it named here was started, even one
+  // that is not here yet (still being set up) or was deleted since. One named
+  // on a linked computer counts once that computer took it.
+  const localIds = [...ownIds].filter((id) => !call.result.remoteThreadIds.has(id));
   const startedCount =
-    attributable && call.result.outcome === "started"
-      ? Math.max(ownIds.size, threads.length)
-      : threads.length;
+    (attributable && call.result.outcome === "started"
+      ? Math.max(localIds.length, threads.length)
+      : threads.length) + remoteThreads.length;
   const started = formatChildThreadCount(startedCount);
-  if (waiting > 0) {
+  const record = (heading: string, outcome: string | null): StartedThreadsRecord => ({
+    heading,
+    outcome,
+    threads,
+    remoteThreads,
+  });
+  if (waitingHere > 0) {
     return startedCount === 0
-      ? {
-          heading: `Asked to start ${formatChildThreadCount(waiting)}`,
-          outcome: "waiting for you",
-          threads,
-        }
-      : { heading: `Started ${started}`, outcome: `${waiting} more waiting for you`, threads };
+      ? record(`Asked to start ${formatChildThreadCount(waitingHere)}`, "waiting for you")
+      : record(`Started ${started}`, `${waitingHere} more waiting for you`);
+  }
+  if (waitingThere.length > 0) {
+    const phrases = new Set(
+      waitingThere.map((request) =>
+        remoteStartWords(
+          request,
+          input.computerLabel(request.remote!.environmentId, request.remote!.label),
+        ),
+      ),
+    );
+    const phrase = phrases.size === 1 ? [...phrases][0]! : "waiting for other computers";
+    return startedCount === 0
+      ? record(`Asked to start ${formatChildThreadCount(waitingThere.length)}`, phrase)
+      : record(`Started ${started}`, `${waitingThere.length} more ${phrase}`);
   }
   if (startedCount > 0) {
-    return { heading: `Started ${started}`, outcome: asked ? "you said start" : null, threads };
+    return record(`Started ${started}`, asked ? "you said start" : null);
   }
   if (asked) {
-    return { heading: "Asked to start threads", outcome: "not started", threads };
+    return record("Asked to start threads", "not started");
   }
   if (call.result.outcome === "started") {
-    return { heading: "Started threads", outcome: null, threads };
+    return record("Started threads", null);
   }
   // Nothing says what came of it.
-  return { heading: "Tried to start threads", outcome: null, threads };
+  return record("Tried to start threads", null);
 }
