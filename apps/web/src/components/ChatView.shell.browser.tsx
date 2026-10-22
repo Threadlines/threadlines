@@ -1096,6 +1096,13 @@ describe("ChatView (full app): app shell", () => {
       await expect
         .element(page.getByTestId("sidebar-destination-row"))
         .toMatchTextContent(/Threads.*Chats.*Settings/);
+      // The page shows a thumb's width beside the sheet: a strip to tap it shut.
+      const sheet = document.querySelector<HTMLElement>(
+        '[data-slot="sidebar"][data-mobile="true"]',
+      );
+      expect(
+        window.innerWidth - (sheet?.getBoundingClientRect().width ?? 0),
+      ).toBeGreaterThanOrEqual(44);
       // Reading a chat, the sheet lists the chats, not the project threads.
       await expect
         .element(page.getByTestId("chats-list-row").filter({ hasText: "Reading this one" }))

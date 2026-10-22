@@ -26,9 +26,12 @@ import {
 import * as Schema from "effect/Schema";
 
 const SIDEBAR_WIDTH = "16rem";
-// Runtime CSS string: tailwind functions like --spacing() don't exist here,
-// so the 12px edge inset is spelled out as a plain length.
-const SIDEBAR_WIDTH_MOBILE = "calc(100vw - 0.75rem)";
+// The phone's sheet leaves a thumb's width (48px) of the page showing, a
+// strip to tap shut and a glimpse of where closing it lands. It never gets
+// narrower than its row of named icons needs (18rem; the smallest phones
+// keep a thinner strip), nor wider than a panel (22rem; tablets and narrow
+// windows). A runtime CSS string: tailwind's --spacing() doesn't exist here.
+const SIDEBAR_WIDTH_MOBILE = "min(max(calc(100vw - 3rem), 18rem), 22rem)";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
 type SidebarContextProps = {
