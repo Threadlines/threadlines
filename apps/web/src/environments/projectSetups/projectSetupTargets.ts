@@ -54,11 +54,12 @@ export function projectSetupKeyOf(
  * resolved against the page for a same-origin server.
  */
 function isPrimaryConnectionProtected(): boolean {
-  const wsBaseUrl = getPrimaryKnownEnvironment()?.target.wsBaseUrl;
-  if (!wsBaseUrl) return false;
   try {
+    const wsBaseUrl = getPrimaryKnownEnvironment()?.target.wsBaseUrl;
+    if (!wsBaseUrl) return false;
     return isProtectedConnectionUrl(new URL(wsBaseUrl, window.location.origin).toString());
   } catch {
+    // An address it can't tell is not one to send secrets over.
     return false;
   }
 }
@@ -138,10 +139,12 @@ function targetsFor(
     (candidate) =>
       candidate.environmentId === projectRef.environmentId && candidate.id === projectRef.projectId,
   );
-  if (!project) return [];
+  const key = project ? projectSetupKeyOf(project) : null;
+  // Nothing to clone: no need to look at the computers at all.
+  if (key === null) return [];
   return listProjectSetupTargets({
     sourceEnvironmentId: projectRef.environmentId,
-    project: projectSetupKeyOf(project),
+    project: key,
     computers: describeComputers(input),
   });
 }
