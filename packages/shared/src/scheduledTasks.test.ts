@@ -173,6 +173,87 @@ describe("a cadence across a clock change", () => {
     sevens("America/New_York", "2026-11-01T04:30:00Z", "2026-11-01T07:30:00Z");
   });
 
+  it("asked just after a jump, a set-hour cadence still runs its moved time", () => {
+    // Mar 8 2026 in New York: 02:30 is skipped and runs at 03:30 EDT (07:30Z),
+    // whether asked before the jump, on it, or after it.
+    for (const after of [
+      "2026-03-08T06:59:59.999Z",
+      "2026-03-08T07:00:00Z",
+      "2026-03-08T07:10:00Z",
+    ]) {
+      expect(slots(custom("30 2 * * *"), "America/New_York", after, 1)).toEqual([
+        "2026-03-08T07:30:00.000Z",
+      ]);
+    }
+    expect(slots(custom("30 2 * * *"), "America/New_York", "2026-03-08T07:30:00Z", 1)).toEqual([
+      "2026-03-09T06:30:00.000Z",
+    ]);
+    // Lord Howe skips 02:00 to 02:30 (+10:30 to +11): 02:10 runs at 02:40.
+    expect(slots(custom("10 2 * * *"), "Australia/Lord_Howe", "2026-10-03T15:30:00Z", 1)).toEqual([
+      "2026-10-03T15:40:00.000Z",
+    ]);
+    // Troll skips two hours, 01:00 to 03:00 (+00 to +02): 02:30 runs at 04:30.
+    expect(slots(custom("30 2 * * *"), "Antarctica/Troll", "2026-03-29T01:00:00Z", 1)).toEqual([
+      "2026-03-29T02:30:00.000Z",
+    ]);
+  });
+
+  it("answers the same wherever it is asked from, minute by minute around each change", () => {
+    const cases = [
+      ["30 2 * * *", "America/New_York", "2026-03-08T05:00:00Z", "2026-03-08T09:00:00Z"],
+      ["30 1 * * *", "America/New_York", "2026-11-01T04:00:00Z", "2026-11-01T08:00:00Z"],
+      ["10 2 * * *", "Australia/Lord_Howe", "2026-10-03T14:30:00Z", "2026-10-03T17:00:00Z"],
+      ["40 1 * * *", "Australia/Lord_Howe", "2026-04-04T13:30:00Z", "2026-04-04T16:30:00Z"],
+      ["30 2 * * *", "Antarctica/Troll", "2026-03-28T23:00:00Z", "2026-03-29T04:00:00Z"],
+      ["*/7 * * * *", "America/New_York", "2027-03-14T05:30:00Z", "2027-03-14T08:30:00Z"],
+      ["*/7 * * * *", "Australia/Lord_Howe", "2026-04-04T13:30:00Z", "2026-04-04T16:30:00Z"],
+      ["*/7 * * * *", "Antarctica/Troll", "2026-03-28T23:00:00Z", "2026-03-29T04:00:00Z"],
+    ] as const;
+    for (const [cron, timeZone, from, until] of cases) {
+      // The slots stepped through from a day before; asked at any minute in
+      // between, the next one is the first of them after it.
+      const stepped = Result.getOrThrow(
+        upcomingSlots(custom(cron), timeZone, new Date(at(from).getTime() - 86_400_000), 400),
+      ).map((slot) => slot.getTime());
+      const schedule = Result.getOrThrow(compileCadence(custom(cron), timeZone))!;
+      for (let asked = at(from).getTime(); asked <= at(until).getTime(); asked += 60_000) {
+        const expected = stepped.find((slot) => slot > asked);
+        const answer = Result.getOrThrow(schedule.next(new Date(asked)))?.getTime();
+        if (answer !== expected) {
+          expect({ cron, timeZone, asked: new Date(asked).toISOString(), answer }).toEqual({
+            cron,
+            timeZone,
+            asked: new Date(asked).toISOString(),
+            answer: expected,
+          });
+        }
+      }
+    }
+  });
+
+  it("finds a far-off match in a few milliseconds, whatever the distance", () => {
+    // Feb 29 that is also a Sunday: 40 years on, across 80 clock changes in
+    // New York. The search follows the changes near the answer only.
+    const timed = (cron: string, timeZone: string, after: string) => {
+      const schedule = Result.getOrThrow(compileCadence(custom(cron), timeZone))!;
+      const start = performance.now();
+      const slot = Result.getOrThrow(schedule.next(at(after)));
+      return { slot: slot?.toISOString(), fast: performance.now() - start < 100 };
+    };
+    expect(timed("0 * 29 2 */7", "UTC", "2088-03-01T06:00:00Z")).toEqual({
+      slot: "2128-02-29T00:00:00.000Z",
+      fast: true,
+    });
+    expect(timed("0 * 29 2 */7", "America/New_York", "2088-03-01T06:00:00Z")).toEqual({
+      slot: "2128-02-29T05:00:00.000Z",
+      fast: true,
+    });
+    expect(timed("0 * 29 2 *", "America/New_York", "2026-10-21T00:00:00Z")).toEqual({
+      slot: "2028-02-29T05:00:00.000Z",
+      fast: true,
+    });
+  });
+
   it("asked exactly on the change, runs at the first real match after it", () => {
     // Falling back: 01:00 EST again, then 01:07.
     expect(slots(custom("*/7 * * * *"), "America/New_York", "2026-11-01T06:00:00Z", 1)).toEqual([
