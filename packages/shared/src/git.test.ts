@@ -16,6 +16,7 @@ import {
   convertGitRemoteUrl,
   gitRemoteProtocol,
   normalizeGitRemoteUrl,
+  parseGitTransferProgress,
   stripGitRemoteCredentials,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
   parseRepositoryWebUrlFromRemoteUrl,
@@ -109,6 +110,15 @@ describe("remote URLs across computers", () => {
     expect(convertGitRemoteUrl("ssh://git@host.example:2222/org/app.git", "https")).toBeNull();
     expect(convertGitRemoteUrl("/srv/git/app.git", "https")).toBeNull();
     expect(gitRemoteProtocol("git@github.com:org/app.git")).toBe("ssh");
+    expect(parseGitTransferProgress("286.46 MiB | 19.23 MiB/s")).toEqual({
+      receivedBytes: Math.round(286.46 * 1024 ** 2),
+      bytesPerSecond: Math.round(19.23 * 1024 ** 2),
+    });
+    expect(parseGitTransferProgress("812 bytes")).toEqual({
+      receivedBytes: 812,
+      bytesPerSecond: null,
+    });
+    expect(parseGitTransferProgress("(5/5)")).toBeNull();
     expect(gitRemoteProtocol("file:///srv/git/app.git")).toBe("other");
   });
 });

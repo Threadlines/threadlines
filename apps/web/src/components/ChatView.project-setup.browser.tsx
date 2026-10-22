@@ -190,10 +190,17 @@ describe("ChatView (full app): setting a project up on another computer", () => 
         .element(dialog.getByTestId("project-setup-clone-url"))
         .toHaveTextContent("https://github.com/acme/project.git");
 
+      // How much it will download, before Start and while it runs.
+      await expect
+        .element(dialog.getByTestId("project-setup-size"))
+        .toHaveTextContent("About 50 MB to download.");
       await dialog.getByTestId("project-setup-start").click();
       await expect
         .element(dialog.getByTestId("project-setup-stage"))
         .toHaveTextContent("Downloading · 12%");
+      await expect
+        .element(dialog.getByTestId("project-setup-detail"))
+        .toHaveTextContent("1.2 MB of about 50 MB · 600 KB/s");
       // The ticked files were read here, then went to Mac mini inside the start.
       expect(readFiles).toEqual([
         expect.objectContaining({ projectId: PROJECT_ID, paths: [".env", "apps/web/.env.local"] }),

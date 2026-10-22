@@ -250,6 +250,9 @@ export const makeProjectSetups = Effect.gen(function* () {
     protocol: row.request.protocol,
     destinationPath: row.destinationPath,
     filePaths: row.request.filePaths,
+    ...(row.request.expectedBytes !== undefined
+      ? { expectedBytes: row.request.expectedBytes }
+      : {}),
     stage: row.stage,
     progress: FINISHED.has(row.stage)
       ? IDLE_PROGRESS

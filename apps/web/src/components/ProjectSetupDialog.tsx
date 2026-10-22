@@ -579,6 +579,14 @@ function ProjectSetupForm({
                 </p>
               </div>
             ) : null}
+            {source.sizeBytes !== undefined && source.sizeBytes > 0 ? (
+              <p
+                className="-mt-2 text-xs leading-[18px] text-muted-foreground"
+                data-testid="project-setup-size"
+              >
+                About {formatProjectSetupFileSize(source.sizeBytes)} to download.
+              </p>
+            ) : null}
             <FilesField
               files={files}
               ticked={ticked}
@@ -978,7 +986,10 @@ export function ProjectSetupProgress({
         </div>
       ) : null}
       {progress !== null ? (
-        <p className="font-mono text-[11px] leading-4 break-all text-muted-foreground">
+        <p
+          className="font-mono text-[11px] leading-4 break-all text-muted-foreground"
+          data-testid="project-setup-detail"
+        >
           {progress}
         </p>
       ) : null}

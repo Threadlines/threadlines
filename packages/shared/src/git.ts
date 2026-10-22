@@ -232,6 +232,38 @@ export function normalizeGitRemoteUrl(value: string): string {
   return normalized;
 }
 
+const GIT_SIZE_UNITS: Record<string, number> = {
+  bytes: 1,
+  kib: 1024,
+  mib: 1024 ** 2,
+  gib: 1024 ** 3,
+};
+
+const gitSize = (amount: string, unit: string) => {
+  const value = Number(amount);
+  const scale = GIT_SIZE_UNITS[unit.toLowerCase()];
+  return Number.isFinite(value) && scale !== undefined ? Math.round(value * scale) : null;
+};
+
+/**
+ * What a clone's "Receiving objects" line says it has transferred: the part
+ * after the counts, "286.46 MiB | 19.23 MiB/s". Null when it says no amount.
+ */
+export function parseGitTransferProgress(
+  detail: string | null,
+): { readonly receivedBytes: number; readonly bytesPerSecond: number | null } | null {
+  const match =
+    /^([\d.]+)\s*(bytes|KiB|MiB|GiB)\b(?:\s*\|\s*([\d.]+)\s*(bytes|KiB|MiB|GiB)\/s)?/i.exec(
+      detail?.trim() ?? "",
+    );
+  if (match === null) return null;
+  const receivedBytes = gitSize(match[1]!, match[2]!);
+  if (receivedBytes === null) return null;
+  const bytesPerSecond =
+    match[3] !== undefined && match[4] !== undefined ? gitSize(match[3], match[4]) : null;
+  return { receivedBytes, bytesPerSecond };
+}
+
 export type GitRemoteProtocol = "ssh" | "https" | "other";
 
 const SCP_REMOTE = /^([^@\s/:]+)@([^:/\s]+):(?!\/\/)(.+)$/;

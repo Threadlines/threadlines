@@ -1172,6 +1172,7 @@ export const PROJECT_SETUP_SOURCE: ProjectSetupSource = {
     { path: "apps/web/.env.local", size: 2_048, suggested: true, tooLarge: false },
   ],
   filesTruncated: false,
+  sizeBytes: 50 * 1024 * 1024,
 };
 
 /** A job on the computer that gets the copy, as its stream would list it. */
@@ -1220,6 +1221,7 @@ export function fakeProjectSetupsClient(options?: {
       destinationPath: input.destinationPath,
       protocol: input.protocol,
       filePaths: input.files.map((file) => file.path),
+      ...(input.expectedBytes !== undefined ? { expectedBytes: input.expectedBytes } : {}),
       progress: {
         phase: "Receiving objects",
         percent: 12,

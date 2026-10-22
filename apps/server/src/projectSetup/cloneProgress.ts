@@ -1,4 +1,5 @@
 import type { ProjectSetupProgress } from "@threadlines/contracts";
+import { parseGitTransferProgress } from "@threadlines/shared/git";
 
 /**
  * Git's clone progress, as `git clone --progress` writes it to stderr:
@@ -22,21 +23,9 @@ export function parseCloneProgress(text: string): Omit<ProjectSetupProgress, "st
   return null;
 }
 
-const UNIT_BYTES: Record<string, number> = {
-  bytes: 1,
-  kib: 1024,
-  mib: 1024 ** 2,
-  gib: 1024 ** 3,
-};
-
 /** The bytes git says it has received ("286.46 MiB | 19.23 MiB/s"), or null. */
-export function receivedBytesOf(detail: string | null): number | null {
-  const match = /^([\d.]+)\s*(bytes|KiB|MiB|GiB)\b/i.exec(detail?.trim() ?? "");
-  if (match === null) return null;
-  const amount = Number(match[1]);
-  const unit = UNIT_BYTES[match[2]!.toLowerCase()];
-  return Number.isFinite(amount) && unit !== undefined ? Math.round(amount * unit) : null;
-}
+export const receivedBytesOf = (detail: string | null): number | null =>
+  parseGitTransferProgress(detail)?.receivedBytes ?? null;
 
 /** Where each of git's local phases lands on the one bar: [start, share]. */
 const PHASE_SHARES: Record<string, readonly [number, number]> = {

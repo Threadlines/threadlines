@@ -5,6 +5,7 @@
  *
  * @module projectSetup
  */
+import { parseGitTransferProgress } from "@threadlines/shared/git";
 import type {
   ProjectSetupDestinationState,
   ProjectSetupJob,
@@ -59,25 +60,46 @@ export function describeProjectSetupStage(
 }
 
 /**
- * Git's own account of the step, for the line under the stage: "Receiving
- * objects · 168.80 MiB | 20.69 MiB/s". Null when git hasn't said anything
+ * The line under the stage. While the download runs, how much has come of
+ * how much: "286 MB of about 553 MB · 19 MB/s". Otherwise git's own account
+ * of the step ("Resolving deltas · ..."). Null when git hasn't said anything
  * worth showing.
  */
 export function describeProjectSetupProgress(
-  job: Pick<ProjectSetupJob, "stage" | "progress">,
+  job: Pick<ProjectSetupJob, "stage" | "progress" | "expectedBytes">,
 ): string | null {
   if (job.stage !== "cloning" && job.stage !== "submodules") return null;
+  const transfer =
+    job.progress.phase === "Receiving objects"
+      ? parseGitTransferProgress(job.progress.detail)
+      : null;
+  if (transfer !== null) {
+    const received = formatProjectSetupFileSize(transfer.receivedBytes);
+    const total =
+      job.expectedBytes !== undefined && job.expectedBytes > 0
+        ? ` of about ${formatProjectSetupFileSize(job.expectedBytes)}`
+        : "";
+    const speed =
+      transfer.bytesPerSecond !== null
+        ? ` · ${formatProjectSetupFileSize(transfer.bytesPerSecond)}/s`
+        : "";
+    return `${received}${total}${speed}`;
+  }
   const parts = [job.progress.phase, job.progress.detail].filter(
     (part): part is string => part !== null && part.trim().length > 0,
   );
   return parts.length === 0 ? null : parts.join(" · ");
 }
 
-/** A file's size the short way: "812 B", "4 KB", "1.2 MB". */
+/** A size the short way: "812 B", "4 KB", "1.2 MB", "553 MB", "1.4 GB". */
 export function formatProjectSetupFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 ** 3) {
+    const megabytes = bytes / 1024 ** 2;
+    return megabytes < 10 ? `${megabytes.toFixed(1)} MB` : `${Math.round(megabytes)} MB`;
+  }
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
 /** Why the ignored files can't go: this app reaches `label` without encryption. */

@@ -192,6 +192,8 @@ export const ProjectSetupJob = Schema.Struct({
   destinationPath: TrimmedNonEmptyString,
   /** The ticked files' paths, so Retry can read them again. */
   filePaths: Schema.Array(TrimmedNonEmptyString),
+  /** About how much the clone downloads, when the source said (its `sizeBytes`). */
+  expectedBytes: Schema.optional(NonNegativeInt),
   stage: ProjectSetupStage,
   progress: ProjectSetupProgress,
   /** The project it became here, once added. */
