@@ -15,7 +15,7 @@ index c424d3ce576ea8205713d2e34bc5c0ad6de34db9..9f2abe8b8ec7fc4bbbefad87768591eb
       * Returns a stable item type used for pooling and size estimation.
       */
 diff --git a/react-native.web.js b/react-native.web.js
-index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea5bd778cc 100644
+index 5b7b716e1edb046cbb6386b417490fab793f666b..a46677fe932f89f1c8fe1c6474c95d2e0b828b1c 100644
 --- a/react-native.web.js
 +++ b/react-native.web.js
 @@ -1223,6 +1223,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
@@ -34,16 +34,22 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
    if (useAverageSize && !scrollingTo) {
      const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
      if (averageSizeForType !== void 0) {
-@@ -1523,8 +1532,27 @@ function finishMaintainScrollAtEnd(ctx) {
+@@ -1523,8 +1532,33 @@ function finishMaintainScrollAtEnd(ctx) {
      requestAdjust(ctx, nextScroll - state.scroll);
    }
  }
-+// A finger on a web list owns the scroll, as a native drag does. End any
-+// programmatic scroll to the end, since MVCP keeps chasing its growing target
-+// while one is in flight, and stop following the end until every finger lifts.
-+function beginTouchOnList(ctx) {
++// A finger or a mouse button on a web list owns the scroll, as a native drag
++// does. End any programmatic scroll to the end, since MVCP keeps chasing its
++// growing target while one is in flight, and stop following the end until the
++// hold ends: every finger lifts, or the button comes up. Touch and mouse hold
++// apart, so on a device with both one never ends the other's hold.
++function beginHoldOnList(ctx, holder) {
 +  const state = ctx.state;
-+  state.isTouchingList = true;
++  if (holder === "touch") {
++    state.isTouchingList = true;
++  } else {
++    state.isPointerHoldingList = true;
++  }
 +  const scrollingTo = state.scrollingTo;
 +  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && scrollingTo.index === state.props.data.length - 1 && scrollingTo.viewPosition === 1;
 +  if (isScrollingToEnd || state.pendingScrollToEnd) {
@@ -55,14 +61,14 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
 +}
  function doMaintainScrollAtEnd(ctx) {
    const state = ctx.state;
-+  if (state.isTouchingList) {
++  if (state.isTouchingList || state.isPointerHoldingList) {
 +    finishMaintainScrollAtEnd(ctx);
 +    return false;
 +  }
    const {
      didContainersLayout,
      didFinishInitialScroll,
-@@ -1747,6 +1775,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1747,6 +1781,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
    const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
    const indexByKey = state.indexByKey;
    const prevScroll = state.scroll;
@@ -81,7 +87,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
    getContentSize(ctx);
    if (shouldMVCP) {
      if (anchorLock && scrollTarget === void 0) {
-@@ -1754,12 +1794,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1754,12 +1800,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
        prevPosition = anchorLock.position;
      } else if (scrollTarget !== void 0) {
        targetId = getId(state, scrollTarget);
@@ -99,7 +105,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -5765,6 +5805,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
+@@ -5765,6 +5811,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
  });
  
  // src/utils/reordering.ts
@@ -123,7 +129,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
  function sortDOMElements(container, indexByElement) {
    const elements = Array.from(container.children);
    if (elements.length <= 1) return elements;
-@@ -5803,11 +5860,7 @@ function sortDOMElements(container, indexByElement) {
+@@ -5803,11 +5866,7 @@ function sortDOMElements(container, indexByElement) {
            break;
          }
        }
@@ -136,11 +142,11 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
      }
    }
  }
-@@ -6338,7 +6391,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+@@ -6338,7 +6397,50 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
-+    const onTouchStart = () => beginTouchOnList(ctx);
++    const onTouchStart = () => beginHoldOnList(ctx, "touch");
 +    const onTouchEnd = (event) => {
 +      if (!event.touches || event.touches.length === 0) {
 +        ctx.state.isTouchingList = false;
@@ -149,14 +155,45 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
 +    target.addEventListener("touchstart", onTouchStart, { passive: true });
 +    target.addEventListener("touchend", onTouchEnd, { passive: true });
 +    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
++    // The button often comes up outside the list. A context menu, or the
++    // window losing focus, can swallow the release; the blur listener does not
++    // capture, since the press itself blurs whatever had focus.
++    let pointerRelease;
++    const onPointerDown = (event) => {
++      if (event.pointerType === "touch" || event.button !== 0) {
++        return;
++      }
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      const release = new AbortController();
++      pointerRelease = release;
++      const endHold = () => {
++        release.abort();
++        ctx.state.isPointerHoldingList = false;
++      };
++      const endHoldForPointer = (endEvent) => {
++        if (endEvent.pointerId === event.pointerId) {
++          endHold();
++        }
++      };
++      const options = { capture: true, signal: release.signal };
++      window.addEventListener("pointerup", endHoldForPointer, options);
++      window.addEventListener("pointercancel", endHoldForPointer, options);
++      window.addEventListener("contextmenu", endHold, options);
++      window.addEventListener("blur", endHold, { signal: release.signal });
++      beginHoldOnList(ctx, "pointer");
++    };
++    target.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true });
      return () => {
 +      target.removeEventListener("touchstart", onTouchStart);
 +      target.removeEventListener("touchend", onTouchEnd);
 +      target.removeEventListener("touchcancel", onTouchEnd);
++      target.removeEventListener("pointerdown", onPointerDown, { capture: true });
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      ctx.state.isPointerHoldingList = false;
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6560,8 +6625,11 @@ function ScrollAdjust() {
+@@ -6560,8 +6662,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -169,7 +206,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7848,6 +7916,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -7848,6 +7953,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -177,7 +214,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
      getItemType,
      horizontal,
      rtl,
-@@ -8122,6 +8191,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8122,6 +8228,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),
@@ -186,7 +223,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
      hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
      horizontal: !!horizontal,
 diff --git a/react-native.web.mjs b/react-native.web.mjs
-index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e123f476fc0 100644
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..33f71ac25ca97981b9aeae86ec8d529c517a2018 100644
 --- a/react-native.web.mjs
 +++ b/react-native.web.mjs
 @@ -1202,6 +1202,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
@@ -205,16 +242,22 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
    if (useAverageSize && !scrollingTo) {
      const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
      if (averageSizeForType !== void 0) {
-@@ -1502,8 +1511,27 @@ function finishMaintainScrollAtEnd(ctx) {
+@@ -1502,8 +1511,33 @@ function finishMaintainScrollAtEnd(ctx) {
      requestAdjust(ctx, nextScroll - state.scroll);
    }
  }
-+// A finger on a web list owns the scroll, as a native drag does. End any
-+// programmatic scroll to the end, since MVCP keeps chasing its growing target
-+// while one is in flight, and stop following the end until every finger lifts.
-+function beginTouchOnList(ctx) {
++// A finger or a mouse button on a web list owns the scroll, as a native drag
++// does. End any programmatic scroll to the end, since MVCP keeps chasing its
++// growing target while one is in flight, and stop following the end until the
++// hold ends: every finger lifts, or the button comes up. Touch and mouse hold
++// apart, so on a device with both one never ends the other's hold.
++function beginHoldOnList(ctx, holder) {
 +  const state = ctx.state;
-+  state.isTouchingList = true;
++  if (holder === "touch") {
++    state.isTouchingList = true;
++  } else {
++    state.isPointerHoldingList = true;
++  }
 +  const scrollingTo = state.scrollingTo;
 +  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && scrollingTo.index === state.props.data.length - 1 && scrollingTo.viewPosition === 1;
 +  if (isScrollingToEnd || state.pendingScrollToEnd) {
@@ -226,14 +269,14 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
 +}
  function doMaintainScrollAtEnd(ctx) {
    const state = ctx.state;
-+  if (state.isTouchingList) {
++  if (state.isTouchingList || state.isPointerHoldingList) {
 +    finishMaintainScrollAtEnd(ctx);
 +    return false;
 +  }
    const {
      didContainersLayout,
      didFinishInitialScroll,
-@@ -1726,6 +1754,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1726,6 +1760,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
    const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
    const indexByKey = state.indexByKey;
    const prevScroll = state.scroll;
@@ -252,7 +295,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
    getContentSize(ctx);
    if (shouldMVCP) {
      if (anchorLock && scrollTarget === void 0) {
-@@ -1733,12 +1773,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1733,12 +1779,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
        prevPosition = anchorLock.position;
      } else if (scrollTarget !== void 0) {
        targetId = getId(state, scrollTarget);
@@ -270,7 +313,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -5744,6 +5784,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
+@@ -5744,6 +5790,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
  });
  
  // src/utils/reordering.ts
@@ -294,7 +337,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
  function sortDOMElements(container, indexByElement) {
    const elements = Array.from(container.children);
    if (elements.length <= 1) return elements;
-@@ -5782,11 +5839,7 @@ function sortDOMElements(container, indexByElement) {
+@@ -5782,11 +5845,7 @@ function sortDOMElements(container, indexByElement) {
            break;
          }
        }
@@ -307,11 +350,11 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
      }
    }
  }
-@@ -6317,7 +6370,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -6317,7 +6376,50 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
-+    const onTouchStart = () => beginTouchOnList(ctx);
++    const onTouchStart = () => beginHoldOnList(ctx, "touch");
 +    const onTouchEnd = (event) => {
 +      if (!event.touches || event.touches.length === 0) {
 +        ctx.state.isTouchingList = false;
@@ -320,14 +363,45 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
 +    target.addEventListener("touchstart", onTouchStart, { passive: true });
 +    target.addEventListener("touchend", onTouchEnd, { passive: true });
 +    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
++    // The button often comes up outside the list. A context menu, or the
++    // window losing focus, can swallow the release; the blur listener does not
++    // capture, since the press itself blurs whatever had focus.
++    let pointerRelease;
++    const onPointerDown = (event) => {
++      if (event.pointerType === "touch" || event.button !== 0) {
++        return;
++      }
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      const release = new AbortController();
++      pointerRelease = release;
++      const endHold = () => {
++        release.abort();
++        ctx.state.isPointerHoldingList = false;
++      };
++      const endHoldForPointer = (endEvent) => {
++        if (endEvent.pointerId === event.pointerId) {
++          endHold();
++        }
++      };
++      const options = { capture: true, signal: release.signal };
++      window.addEventListener("pointerup", endHoldForPointer, options);
++      window.addEventListener("pointercancel", endHoldForPointer, options);
++      window.addEventListener("contextmenu", endHold, options);
++      window.addEventListener("blur", endHold, { signal: release.signal });
++      beginHoldOnList(ctx, "pointer");
++    };
++    target.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true });
      return () => {
 +      target.removeEventListener("touchstart", onTouchStart);
 +      target.removeEventListener("touchend", onTouchEnd);
 +      target.removeEventListener("touchcancel", onTouchEnd);
++      target.removeEventListener("pointerdown", onPointerDown, { capture: true });
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      ctx.state.isPointerHoldingList = false;
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6539,8 +6604,11 @@ function ScrollAdjust() {
+@@ -6539,8 +6641,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -340,7 +414,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7827,6 +7895,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -7827,6 +7932,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -348,7 +422,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
      getItemType,
      horizontal,
      rtl,
-@@ -8101,6 +8170,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8101,6 +8207,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),
@@ -373,7 +447,7 @@ index c424d3ce576ea8205713d2e34bc5c0ad6de34db9..9f2abe8b8ec7fc4bbbefad87768591eb
       * Returns a stable item type used for pooling and size estimation.
       */
 diff --git a/react.js b/react.js
-index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea5bd778cc 100644
+index 5b7b716e1edb046cbb6386b417490fab793f666b..a46677fe932f89f1c8fe1c6474c95d2e0b828b1c 100644
 --- a/react.js
 +++ b/react.js
 @@ -1223,6 +1223,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
@@ -392,16 +466,22 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
    if (useAverageSize && !scrollingTo) {
      const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
      if (averageSizeForType !== void 0) {
-@@ -1523,8 +1532,27 @@ function finishMaintainScrollAtEnd(ctx) {
+@@ -1523,8 +1532,33 @@ function finishMaintainScrollAtEnd(ctx) {
      requestAdjust(ctx, nextScroll - state.scroll);
    }
  }
-+// A finger on a web list owns the scroll, as a native drag does. End any
-+// programmatic scroll to the end, since MVCP keeps chasing its growing target
-+// while one is in flight, and stop following the end until every finger lifts.
-+function beginTouchOnList(ctx) {
++// A finger or a mouse button on a web list owns the scroll, as a native drag
++// does. End any programmatic scroll to the end, since MVCP keeps chasing its
++// growing target while one is in flight, and stop following the end until the
++// hold ends: every finger lifts, or the button comes up. Touch and mouse hold
++// apart, so on a device with both one never ends the other's hold.
++function beginHoldOnList(ctx, holder) {
 +  const state = ctx.state;
-+  state.isTouchingList = true;
++  if (holder === "touch") {
++    state.isTouchingList = true;
++  } else {
++    state.isPointerHoldingList = true;
++  }
 +  const scrollingTo = state.scrollingTo;
 +  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && scrollingTo.index === state.props.data.length - 1 && scrollingTo.viewPosition === 1;
 +  if (isScrollingToEnd || state.pendingScrollToEnd) {
@@ -413,14 +493,14 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
 +}
  function doMaintainScrollAtEnd(ctx) {
    const state = ctx.state;
-+  if (state.isTouchingList) {
++  if (state.isTouchingList || state.isPointerHoldingList) {
 +    finishMaintainScrollAtEnd(ctx);
 +    return false;
 +  }
    const {
      didContainersLayout,
      didFinishInitialScroll,
-@@ -1747,6 +1775,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1747,6 +1781,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
    const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
    const indexByKey = state.indexByKey;
    const prevScroll = state.scroll;
@@ -439,7 +519,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
    getContentSize(ctx);
    if (shouldMVCP) {
      if (anchorLock && scrollTarget === void 0) {
-@@ -1754,12 +1794,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1754,12 +1800,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
        prevPosition = anchorLock.position;
      } else if (scrollTarget !== void 0) {
        targetId = getId(state, scrollTarget);
@@ -457,7 +537,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -5765,6 +5805,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
+@@ -5765,6 +5811,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
  });
  
  // src/utils/reordering.ts
@@ -481,7 +561,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
  function sortDOMElements(container, indexByElement) {
    const elements = Array.from(container.children);
    if (elements.length <= 1) return elements;
-@@ -5803,11 +5860,7 @@ function sortDOMElements(container, indexByElement) {
+@@ -5803,11 +5866,7 @@ function sortDOMElements(container, indexByElement) {
            break;
          }
        }
@@ -494,11 +574,11 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
      }
    }
  }
-@@ -6338,7 +6391,19 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
+@@ -6338,7 +6397,50 @@ var ListComponentScrollView = React3.forwardRef(function ListComponentScrollView
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
-+    const onTouchStart = () => beginTouchOnList(ctx);
++    const onTouchStart = () => beginHoldOnList(ctx, "touch");
 +    const onTouchEnd = (event) => {
 +      if (!event.touches || event.touches.length === 0) {
 +        ctx.state.isTouchingList = false;
@@ -507,14 +587,45 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
 +    target.addEventListener("touchstart", onTouchStart, { passive: true });
 +    target.addEventListener("touchend", onTouchEnd, { passive: true });
 +    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
++    // The button often comes up outside the list. A context menu, or the
++    // window losing focus, can swallow the release; the blur listener does not
++    // capture, since the press itself blurs whatever had focus.
++    let pointerRelease;
++    const onPointerDown = (event) => {
++      if (event.pointerType === "touch" || event.button !== 0) {
++        return;
++      }
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      const release = new AbortController();
++      pointerRelease = release;
++      const endHold = () => {
++        release.abort();
++        ctx.state.isPointerHoldingList = false;
++      };
++      const endHoldForPointer = (endEvent) => {
++        if (endEvent.pointerId === event.pointerId) {
++          endHold();
++        }
++      };
++      const options = { capture: true, signal: release.signal };
++      window.addEventListener("pointerup", endHoldForPointer, options);
++      window.addEventListener("pointercancel", endHoldForPointer, options);
++      window.addEventListener("contextmenu", endHold, options);
++      window.addEventListener("blur", endHold, { signal: release.signal });
++      beginHoldOnList(ctx, "pointer");
++    };
++    target.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true });
      return () => {
 +      target.removeEventListener("touchstart", onTouchStart);
 +      target.removeEventListener("touchend", onTouchEnd);
 +      target.removeEventListener("touchcancel", onTouchEnd);
++      target.removeEventListener("pointerdown", onPointerDown, { capture: true });
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      ctx.state.isPointerHoldingList = false;
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6560,8 +6625,11 @@ function ScrollAdjust() {
+@@ -6560,8 +6662,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -527,7 +638,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7848,6 +7916,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -7848,6 +7953,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -535,7 +646,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
      getItemType,
      horizontal,
      rtl,
-@@ -8122,6 +8191,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8122,6 +8228,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),
@@ -544,7 +655,7 @@ index 5b7b716e1edb046cbb6386b417490fab793f666b..71afbaa0a6a1f9b8d48e67c3128cc0ea
      hideItemsUntilMeasured: experimental_hideItemsUntilMeasured,
      horizontal: !!horizontal,
 diff --git a/react.mjs b/react.mjs
-index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e123f476fc0 100644
+index f64169616ea5d761bf82a562084e04f2b98ce7c2..33f71ac25ca97981b9aeae86ec8d529c517a2018 100644
 --- a/react.mjs
 +++ b/react.mjs
 @@ -1202,6 +1202,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
@@ -563,16 +674,22 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
    if (useAverageSize && !scrollingTo) {
      const averageSizeForType = (_c = averageSizes[itemType]) == null ? void 0 : _c.avg;
      if (averageSizeForType !== void 0) {
-@@ -1502,8 +1511,27 @@ function finishMaintainScrollAtEnd(ctx) {
+@@ -1502,8 +1511,33 @@ function finishMaintainScrollAtEnd(ctx) {
      requestAdjust(ctx, nextScroll - state.scroll);
    }
  }
-+// A finger on a web list owns the scroll, as a native drag does. End any
-+// programmatic scroll to the end, since MVCP keeps chasing its growing target
-+// while one is in flight, and stop following the end until every finger lifts.
-+function beginTouchOnList(ctx) {
++// A finger or a mouse button on a web list owns the scroll, as a native drag
++// does. End any programmatic scroll to the end, since MVCP keeps chasing its
++// growing target while one is in flight, and stop following the end until the
++// hold ends: every finger lifts, or the button comes up. Touch and mouse hold
++// apart, so on a device with both one never ends the other's hold.
++function beginHoldOnList(ctx, holder) {
 +  const state = ctx.state;
-+  state.isTouchingList = true;
++  if (holder === "touch") {
++    state.isTouchingList = true;
++  } else {
++    state.isPointerHoldingList = true;
++  }
 +  const scrollingTo = state.scrollingTo;
 +  const isScrollingToEnd = !!scrollingTo && !scrollingTo.animated && !scrollingTo.isInitialScroll && scrollingTo.index === state.props.data.length - 1 && scrollingTo.viewPosition === 1;
 +  if (isScrollingToEnd || state.pendingScrollToEnd) {
@@ -584,14 +701,14 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
 +}
  function doMaintainScrollAtEnd(ctx) {
    const state = ctx.state;
-+  if (state.isTouchingList) {
++  if (state.isTouchingList || state.isPointerHoldingList) {
 +    finishMaintainScrollAtEnd(ctx);
 +    return false;
 +  }
    const {
      didContainersLayout,
      didFinishInitialScroll,
-@@ -1726,6 +1754,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1726,6 +1760,18 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
    const shouldMVCP = dataChanged ? mvcpData : mvcpScroll;
    const indexByKey = state.indexByKey;
    const prevScroll = state.scroll;
@@ -610,7 +727,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
    getContentSize(ctx);
    if (shouldMVCP) {
      if (anchorLock && scrollTarget === void 0) {
-@@ -1733,12 +1773,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
+@@ -1733,12 +1779,12 @@ function prepareMVCP(ctx, dataChanged, adjustmentSource) {
        prevPosition = anchorLock.position;
      } else if (scrollTarget !== void 0) {
        targetId = getId(state, scrollTarget);
@@ -628,7 +745,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
          const index = indexByKey.get(id);
          if (index !== void 0) {
            const position = positions[index];
-@@ -5744,6 +5784,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
+@@ -5744,6 +5790,23 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
  });
  
  // src/utils/reordering.ts
@@ -652,7 +769,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
  function sortDOMElements(container, indexByElement) {
    const elements = Array.from(container.children);
    if (elements.length <= 1) return elements;
-@@ -5782,11 +5839,7 @@ function sortDOMElements(container, indexByElement) {
+@@ -5782,11 +5845,7 @@ function sortDOMElements(container, indexByElement) {
            break;
          }
        }
@@ -665,11 +782,11 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
      }
    }
  }
-@@ -6317,7 +6370,19 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+@@ -6317,7 +6376,50 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
      if ("onscrollend" in target) {
        target.addEventListener("scrollend", emitScrollEnd);
      }
-+    const onTouchStart = () => beginTouchOnList(ctx);
++    const onTouchStart = () => beginHoldOnList(ctx, "touch");
 +    const onTouchEnd = (event) => {
 +      if (!event.touches || event.touches.length === 0) {
 +        ctx.state.isTouchingList = false;
@@ -678,14 +795,45 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
 +    target.addEventListener("touchstart", onTouchStart, { passive: true });
 +    target.addEventListener("touchend", onTouchEnd, { passive: true });
 +    target.addEventListener("touchcancel", onTouchEnd, { passive: true });
++    // The button often comes up outside the list. A context menu, or the
++    // window losing focus, can swallow the release; the blur listener does not
++    // capture, since the press itself blurs whatever had focus.
++    let pointerRelease;
++    const onPointerDown = (event) => {
++      if (event.pointerType === "touch" || event.button !== 0) {
++        return;
++      }
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      const release = new AbortController();
++      pointerRelease = release;
++      const endHold = () => {
++        release.abort();
++        ctx.state.isPointerHoldingList = false;
++      };
++      const endHoldForPointer = (endEvent) => {
++        if (endEvent.pointerId === event.pointerId) {
++          endHold();
++        }
++      };
++      const options = { capture: true, signal: release.signal };
++      window.addEventListener("pointerup", endHoldForPointer, options);
++      window.addEventListener("pointercancel", endHoldForPointer, options);
++      window.addEventListener("contextmenu", endHold, options);
++      window.addEventListener("blur", endHold, { signal: release.signal });
++      beginHoldOnList(ctx, "pointer");
++    };
++    target.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true });
      return () => {
 +      target.removeEventListener("touchstart", onTouchStart);
 +      target.removeEventListener("touchend", onTouchEnd);
 +      target.removeEventListener("touchcancel", onTouchEnd);
++      target.removeEventListener("pointerdown", onPointerDown, { capture: true });
++      pointerRelease == null ? void 0 : pointerRelease.abort();
++      ctx.state.isPointerHoldingList = false;
        target.removeEventListener("scroll", handleScroll);
        if ("onscrollend" in target) {
          target.removeEventListener("scrollend", emitScrollEnd);
-@@ -6539,8 +6604,11 @@ function ScrollAdjust() {
+@@ -6539,8 +6641,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -698,7 +846,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7827,6 +7895,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -7827,6 +7932,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      estimatedListSize,
      extraData,
      getFixedItemSize,
@@ -706,7 +854,7 @@ index f64169616ea5d761bf82a562084e04f2b98ce7c2..0f86d0e22094d2136107cce778440e12
      getItemType,
      horizontal,
      rtl,
-@@ -8101,6 +8170,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
+@@ -8101,6 +8207,7 @@ var LegendListInner = typedForwardRef(function LegendListInner2(props, forwarded
      drawDistance,
      estimatedItemSize,
      getFixedItemSize: useWrapIfItem(getFixedItemSize),
