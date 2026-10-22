@@ -154,6 +154,25 @@ describe("buildFleetDirectory", () => {
     expect(directory.find((entry) => entry.kind === "waiting")?.holderEnvironmentId).toBe(MAC);
   });
 
+  it('calls this computer "(this computer)" in sentences only when another computer shares its name', () => {
+    const sameName = buildFleetDirectory({
+      primary: { environmentId: MAC, label: "Denys's MacBook Pro" },
+      saved: [{ environmentId: WINDOWS, label: "denys's macbook pro" }],
+      links: {},
+    });
+    expect(sameName.map((entry) => [entry.label, entry.displayLabel])).toEqual([
+      ["Denys's MacBook Pro", "Denys's MacBook Pro (this computer)"],
+      ["denys's macbook pro", "denys's macbook pro"],
+    ]);
+
+    const distinct = buildFleetDirectory({
+      primary: { environmentId: MAC, label: "Mac" },
+      saved: [{ environmentId: WINDOWS, label: "Windows PC" }],
+      links: {},
+    });
+    expect(distinct.map((entry) => entry.displayLabel)).toEqual(["Mac", "Windows PC"]);
+  });
+
   it("folds a waiting computer into its own entry once it says which computer it is", () => {
     const before = buildFleetDirectory({
       primary: { environmentId: MAC, label: "Mac" },

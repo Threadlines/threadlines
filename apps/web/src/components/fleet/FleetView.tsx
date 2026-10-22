@@ -47,7 +47,7 @@ export function FleetView() {
     () =>
       new Map(
         directory.flatMap((entry) =>
-          entry.environmentId === null ? [] : [[entry.environmentId, entry.label] as const],
+          entry.environmentId === null ? [] : [[entry.environmentId, entry.displayLabel] as const],
         ),
       ),
     [directory],

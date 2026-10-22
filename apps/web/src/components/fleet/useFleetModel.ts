@@ -209,7 +209,7 @@ export function useFleetModel(): FleetData {
       const descriptor = entry.kind === "this" ? primaryDescriptor : (runtime?.descriptor ?? null);
       byEnvironment.set(environmentId, {
         environmentId,
-        label: entry.label,
+        label: entry.displayLabel,
         reachable:
           entry.kind === "this"
             ? primaryConnection === "connected"
