@@ -108,9 +108,9 @@ jobs:
   # apps/server runs its test files one at a time (`fileParallelism: false`):
   # side by side they hit load-sensitive flakes. Sharding spreads the files over
   # separate runners instead, so no two of them ever share a machine. The shards
-  # split files by recorded time (apps/server/scripts/test-shard-sequencer.ts).
-  # Release verification requires each shard by name: when the shard count
-  # changes, update DEFAULT_REQUIRED_CHECKS in scripts/verify-release-ci.ts.
+  # split files by recorded time (scripts/lib/test-shards.ts). Release
+  # verification requires each shard by name: when the shard count changes,
+  # update DEFAULT_REQUIRED_CHECKS in scripts/verify-release-ci.ts.
   server_test:
     name: Server Test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
@@ -134,21 +134,18 @@ jobs:
       - name: Install dependencies
         run: vp install --frozen-lockfile
 
-      # Naming any reporter drops Vitest's default list, so all three are named.
       - name: Server test
-        run: >-
-          vp exec vp run --filter @threadlines/server test
-          --shard=${{ matrix.shard }}/${{ strategy.job-total }}
-          --reporter=default --reporter=github-actions --reporter=json
-          --outputFile.json=${{ runner.temp }}/server-test-timings.json
+        env:
+          THREADLINES_SHARD_TIMINGS_FILE: ${{ runner.temp }}/test-timings.json
+        run: vp exec vp run --filter @threadlines/server test --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
-      # `node --run test:shard-weights` in apps/server reads these from the
-      # newest green run on main to rebalance the shards.
+      # `node --run test:shard-weights -- server` reads these from the newest
+      # green run on main to rebalance the shards.
       - name: Upload server test timings
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-test-timings-${{ matrix.shard }}
-          path: ${{ runner.temp }}/server-test-timings.json
+          path: ${{ runner.temp }}/test-timings.json
           retention-days: 14
           if-no-files-found: error
 
@@ -173,12 +170,19 @@ jobs:
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null
 
+  # The browser suite is CPU-bound (every spec renders the whole app), so one
+  # 4-core runner tops out at about two tabs' worth of work. Two shards on two
+  # runners halve it. Files split by recorded time (scripts/lib/test-shards.ts);
+  # release verification requires each shard by name, so a shard count change
+  # updates DEFAULT_REQUIRED_CHECKS in scripts/verify-release-ci.ts too.
   browser:
-    # Its own job: the browser suite needs a browser runtime and shares
-    # nothing with the unit suites.
-    name: Browser Test
+    name: Browser Test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -216,7 +220,19 @@ jobs:
         run: vp exec vp run --filter @threadlines/web test:browser:install
 
       - name: Browser test
-        run: vp exec vp run --filter @threadlines/web test:browser
+        env:
+          THREADLINES_SHARD_TIMINGS_FILE: ${{ runner.temp }}/test-timings.json
+        run: vp exec vp run --filter @threadlines/web test:browser --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+      # `node --run test:shard-weights -- browser` reads these from the newest
+      # green run on main to rebalance the shards.
+      - name: Upload browser test timings
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-test-timings-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-timings.json
+          retention-days: 14
+          if-no-files-found: error
 
       # Browser test failures are timing-sensitive and CI-only more often than
       # not; the on-failure screenshot is the only evidence of what rendered.
@@ -224,10 +240,26 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: browser-test-screenshots
+          name: browser-test-screenshots-${{ matrix.shard }}
           path: apps/web/.vitest/attachments/failure-screenshots/**
           include-hidden-files: true
           if-no-files-found: ignore
+
+  # Keeps the required "Browser Test" check, the way `quality_gate` keeps its
+  # name: it passes only when every browser shard passed.
+  browser_gate:
+    name: Browser Test
+    if: ${{ always() }}
+    needs: [browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every shard to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null
 
   release_smoke:
     name: Release Smoke
@@ -254,7 +286,7 @@ jobs:
     name: Deploy app.threadlines.dev
     needs:
       - quality_gate
-      - browser
+      - browser_gate
       - release_smoke
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy == true
     uses: ./.github/workflows/deploy-web.yml

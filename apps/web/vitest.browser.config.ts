@@ -3,7 +3,9 @@ import { playwright } from "vite-plus/test/browser-playwright";
 import "vite-plus/test/config";
 import { defineConfig, mergeConfig } from "vite-plus";
 
+import { createWeightedShardSequencer, shardTimingsConfig } from "../../scripts/lib/test-shards.ts";
 import viteConfig, { createWebPlugins } from "./vite.config";
+import shardWeights from "./vitest.browser.shard-weights.json" with { type: "json" };
 
 const srcPath = fileURLToPath(new URL("./src", import.meta.url));
 const browserViteConfig = {
@@ -33,6 +35,9 @@ export default mergeConfig(
         strictPort: false,
       },
       include: ["src/**/*.browser.tsx"],
+      // CI splits the suite across `--shard` jobs by recorded file time.
+      sequence: { sequencer: createWeightedShardSequencer(shardWeights) },
+      ...shardTimingsConfig(),
       // Locally, cap parallel browser tabs at half the cores. Each tab is a
       // full Chromium renderer; saturating every core pages out low-memory
       // machines and turns fast specs into spurious 30s timeouts.

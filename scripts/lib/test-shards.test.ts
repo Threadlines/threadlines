@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { pickWeightedShard } from "./test-shard-sequencer.ts";
+import { pickWeightedShard } from "./test-shards.ts";
 
 describe("pickWeightedShard", () => {
   // Shaped like the server suite: a few heavy orchestration files and a long
