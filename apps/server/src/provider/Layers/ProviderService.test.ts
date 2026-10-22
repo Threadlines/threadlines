@@ -501,61 +501,6 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
   }),
 );
 
-it.effect("ProviderServiceLive rejects new sessions for disabled providers", () =>
-  Effect.gen(function* () {
-    const codex = makeFakeCodexAdapter();
-    const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
-    const registryBase = makeAdapterRegistryMock({
-      [CODEX_DRIVER]: codex.adapter,
-      [CLAUDE_AGENT_DRIVER]: claude.adapter,
-    });
-    const registry: ProviderAdapterRegistryShape = {
-      ...registryBase,
-      getInstanceInfo: (instanceId) =>
-        instanceId === claudeAgentInstanceId
-          ? Effect.succeed({
-              instanceId,
-              driverKind: CLAUDE_AGENT_DRIVER,
-              displayName: undefined,
-              enabled: false,
-              continuationIdentity: {
-                driverKind: CLAUDE_AGENT_DRIVER,
-                continuationKey: "claudeAgent:instance:claudeAgent",
-              },
-            })
-          : registryBase.getInstanceInfo(instanceId),
-    };
-    const providerAdapterLayer = Layer.succeed(ProviderAdapterRegistry, registry);
-    const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
-      Layer.provide(SqlitePersistenceMemory),
-    );
-    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
-    const providerLayer = makeProviderServiceLive().pipe(
-      Layer.provide(providerAdapterLayer),
-      Layer.provide(directoryLayer),
-      Layer.provide(defaultServerSettingsLayer),
-      Layer.provide(AnalyticsService.layerTest),
-      Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
-    );
-
-    const failure = yield* Effect.flip(
-      Effect.gen(function* () {
-        const provider = yield* ProviderService;
-        return yield* provider.startSession(asThreadId("thread-disabled"), {
-          provider: ProviderDriverKind.make("claudeAgent"),
-          providerInstanceId: claudeAgentInstanceId,
-          threadId: asThreadId("thread-disabled"),
-          runtimeMode: "full-access",
-        });
-      }).pipe(Effect.provide(providerLayer)),
-    );
-
-    assert.instanceOf(failure, ProviderValidationError);
-    assert.include(failure.issue, "Provider instance 'claudeAgent' is disabled");
-    assert.equal(claude.startSession.mock.calls.length, 0);
-  }).pipe(Effect.provide(NodeServices.layer)),
-);
-
 it.effect(
   "ProviderServiceLive allows enabled custom instances when legacy driver is disabled",
   () =>

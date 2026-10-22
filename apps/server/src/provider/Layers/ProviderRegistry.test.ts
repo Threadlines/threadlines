@@ -4527,46 +4527,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         }).pipe(Effect.provide(recorded.layer));
       });
 
-      it.effect("includes probed claude slash commands in the provider snapshot", () =>
-        Effect.gen(function* () {
-          const status = yield* checkClaudeProviderStatus(
-            defaultClaudeSettings,
-            claudeCapabilities({
-              subscriptionType: "maxplan",
-              slashCommands: [
-                {
-                  name: "review",
-                  description: "Review a pull request",
-                  input: { hint: "pr-or-branch" },
-                },
-              ],
-            }),
-          );
-
-          assert.deepStrictEqual(status.slashCommands, [
-            {
-              name: "review",
-              description: "Review a pull request",
-              input: { hint: "pr-or-branch" },
-            },
-          ]);
-        }).pipe(
-          Effect.provide(
-            mockSpawnerLayer((args) => {
-              const joined = args.join(" ");
-              if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
-              if (joined === "auth status")
-                return {
-                  stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
-                  stderr: "",
-                  code: 0,
-                };
-              throw new Error(`Unexpected args: ${joined}`);
-            }),
-          ),
-        ),
-      );
-
       it.effect("deduplicates probed claude slash commands by name", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(

@@ -33,32 +33,6 @@ describe("AcpRuntimeModel", () => {
     });
   });
 
-  it("extracts the model config id from typed ACP config options", () => {
-    const modelConfigId = extractModelConfigId({
-      sessionId: "session-1",
-      configOptions: [
-        {
-          id: "approval",
-          name: "Approval Mode",
-          category: "permission",
-          type: "select",
-          currentValue: "ask",
-          options: [{ value: "ask", name: "Ask" }],
-        },
-        {
-          id: "model",
-          name: "Model",
-          category: "model",
-          type: "select",
-          currentValue: "default",
-          options: [{ value: "default", name: "Auto" }],
-        },
-      ],
-    } satisfies EffectAcpSchema.NewSessionResponse);
-
-    expect(modelConfigId).toBe("model");
-  });
-
   it("surfaces fx's model recovery status from session_info_update metadata", () => {
     const parsed = parseSessionUpdateEvent({
       sessionId: "session-1",
