@@ -10571,6 +10571,39 @@ describe("ChatView timeline estimator parity (full app)", () => {
                         },
                         createdAt: isoAt(301),
                       },
+                      {
+                        requestId: ChildRequestId.make("request-start-2"),
+                        batchId,
+                        kind: "start" as const,
+                        from: { participantId: null },
+                        callerTurnId: "turn-start" as TurnId,
+                        deliveryEpoch: 0,
+                        status: "awaiting_user" as const,
+                        childThreadId: "thread-child-remote" as ThreadId,
+                        childMessageId: "msg-child-remote" as MessageId,
+                        launch: {
+                          title: "Run the Windows installer tests",
+                          prompt: "Run the installer tests on Windows.",
+                          modelSelection: {
+                            instanceId: ProviderInstanceId.make("codex"),
+                            model: "gpt-5",
+                          },
+                          runtimeMode: "full-access" as const,
+                          interactionMode: "default" as const,
+                          reportBack: true,
+                          runSetup: true,
+                          workspace: {
+                            kind: "remote" as const,
+                            projectKey: "github.com/example/repo",
+                            checkout: "worktree" as const,
+                          },
+                          target: {
+                            environmentId: EnvironmentId.make("environment-windows"),
+                            label: "Windows PC",
+                          },
+                        },
+                        createdAt: isoAt(301),
+                      },
                     ],
                   },
                 }
@@ -10593,10 +10626,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>('[data-testid="child-threads-panel"]'),
         "Unable to find the approval card.",
       );
-      expect(panel.textContent).toContain("wants to start 1 thread");
+      expect(panel.textContent).toContain("wants to start 2 threads");
       expect(panel.textContent).toContain("Fix the flaky cleanup test");
       // No git to isolate it in: the card says it shares the folder.
       expect(panel.textContent).toContain("shares this folder");
+      // One for a linked computer says where it would run.
+      expect(panel.textContent).toContain("on Windows PC");
       // The answer that came back is the child's, never the user's.
       expect(
         document.querySelector('[data-thread-message="report"] [data-thread-message-author]')
