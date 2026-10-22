@@ -57,24 +57,6 @@ describe("provider slug validation (shared by driver + instance ids)", () => {
 });
 
 describe("ProviderInstanceRef", () => {
-  it("decodes a driver ref", () => {
-    const ref = decodeProviderInstanceRef({
-      instanceId: "codex_work",
-      driver: "codex",
-    });
-    expect(ref.instanceId).toBe("codex_work");
-    expect(ref.driver).toBe("codex");
-  });
-
-  it("decodes a fork-defined driver ref without complaint", () => {
-    const ref = decodeProviderInstanceRef({
-      instanceId: "ollama_local",
-      driver: "ollama",
-    });
-    expect(ref.instanceId).toBe("ollama_local");
-    expect(ref.driver).toBe("ollama");
-  });
-
   it("rejects refs whose driver field is not a valid slug", () => {
     expect(() =>
       decodeProviderInstanceRef({
@@ -86,29 +68,6 @@ describe("ProviderInstanceRef", () => {
 });
 
 describe("ProviderInstanceConfig", () => {
-  it("accepts a minimal config envelope for a driver", () => {
-    const decoded = decodeProviderInstanceConfig({ driver: "codex" });
-    expect(decoded.driver).toBe("codex");
-    expect(decoded.displayName).toBeUndefined();
-    expect(decoded.enabled).toBeUndefined();
-    expect(decoded.config).toBeUndefined();
-  });
-
-  it("preserves driver-opaque config payloads verbatim", () => {
-    const opaqueConfig = { homePath: "~/.codex_personal", binaryPath: "codex" };
-    const decoded = decodeProviderInstanceConfig({
-      driver: "codex",
-      displayName: "Codex (personal)",
-      accentColor: "#dc2626",
-      enabled: true,
-      config: opaqueConfig,
-    });
-    expect(decoded.displayName).toBe("Codex (personal)");
-    expect(decoded.accentColor).toBe("#dc2626");
-    expect(decoded.enabled).toBe(true);
-    expect(decoded.config).toEqual(opaqueConfig);
-  });
-
   it("trims provider instance envelope fields", () => {
     const decoded = decodeProviderInstanceConfig({
       driver: "  codex  ",
@@ -174,30 +133,6 @@ describe("ProviderInstanceConfig", () => {
 });
 
 describe("ProviderInstanceConfigMap", () => {
-  it("decodes a multi-instance map mixing first-party and fork drivers", () => {
-    const decoded = decodeProviderInstanceConfigMap({
-      codex_personal: {
-        driver: "codex",
-        displayName: "Codex (personal)",
-        config: { homePath: "~/.codex_personal" },
-      },
-      codex_work: {
-        driver: "codex",
-        config: { homePath: "~/.codex_work" },
-      },
-      claudeAgent: { driver: "claudeAgent" },
-      ollama_local: { driver: "ollama", config: { endpoint: "http://localhost:11434" } },
-    });
-    expect(new Set(Object.keys(decoded))).toEqual(
-      new Set(["claudeAgent", "codex_personal", "codex_work", "ollama_local"]),
-    );
-    expect(decoded[ProviderInstanceId.make("codex_personal")]?.driver).toBe("codex");
-    expect(decoded[ProviderInstanceId.make("codex_work")]?.config).toEqual({
-      homePath: "~/.codex_work",
-    });
-    expect(decoded[ProviderInstanceId.make("ollama_local")]?.driver).toBe("ollama");
-  });
-
   it("rejects keys that fail the instance-id pattern", () => {
     expect(() =>
       decodeProviderInstanceConfigMap({

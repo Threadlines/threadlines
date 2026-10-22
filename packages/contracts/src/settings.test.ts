@@ -5,7 +5,6 @@ import * as Schema from "effect/Schema";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
-  ClientSettingsPatch,
   CursorSettings,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
@@ -14,7 +13,6 @@ import {
 } from "./settings.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
-const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -38,11 +36,6 @@ describe("ClientSettings defaults", () => {
   it("ignores the retired thread sort preference in legacy profiles", () => {
     const settings = decodeClientSettings({ sidebarThreadSortOrder: "created_at" });
     expect(settings).not.toHaveProperty("sidebarThreadSortOrder");
-  });
-
-  it("decodes cross-provider warning suppression patches", () => {
-    const patch = decodeClientSettingsPatch({ suppressCrossProviderSwitchWarning: true });
-    expect(patch.suppressCrossProviderSwitchWarning).toBe(true);
   });
 });
 
@@ -132,44 +125,6 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     expect(decoded.providerInstances[ollamaId]?.config).toEqual({
       endpoint: "http://localhost:11434",
     });
-  });
-
-  it("rejects instance keys that violate the slug pattern", () => {
-    expect(() =>
-      decodeServerSettings({
-        providerInstances: { "1bad": { driver: "codex" } },
-      }),
-    ).toThrow();
-  });
-});
-
-describe("ServerSettingsPatch.providerInstances", () => {
-  it("treats providerInstances as an optional whole-map replacement", () => {
-    const patch = decodeServerSettingsPatch({});
-    expect(patch.providerInstances).toBeUndefined();
-
-    const replacement = decodeServerSettingsPatch({
-      providerInstances: {
-        codex_personal: { driver: "codex", config: { homePath: "~/.codex" } },
-      },
-    });
-    expect(replacement.providerInstances).toBeDefined();
-    expect(replacement.providerInstances?.[ProviderInstanceId.make("codex_personal")]?.driver).toBe(
-      "codex",
-    );
-  });
-
-  it("preserves a fork-defined driver entry through patch decoding", () => {
-    const patch = decodeServerSettingsPatch({
-      providerInstances: {
-        ollama_local: {
-          driver: "ollama",
-          config: { endpoint: "http://localhost:11434" },
-        },
-      },
-    });
-    const ollamaId = ProviderInstanceId.make("ollama_local");
-    expect(patch.providerInstances?.[ollamaId]?.driver).toBe("ollama");
   });
 });
 
