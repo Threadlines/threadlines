@@ -7,6 +7,8 @@ import {
   respondToComputerLinkRequest,
 } from "../../environments/links/computerLinks";
 import { cn } from "../../lib/utils";
+import { runtimeModeConfig } from "../../runtimeModeOptions";
+import { formatThreadMoveAccess, formatThreadMoveChanges } from "../../threadMove";
 import { SETTINGS_GROUP_ROW_CLASS } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -17,6 +19,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
  * for what, the project, the asking thread and a one-line look at the
  * prompt, with Allow and Deny. A row in a group, never a card. `showWorker`
  * names the computer it would run on, where the row doesn't say it already.
+ * A move (Part 3) names the thread, what goes with it and where it lands.
  */
 export function LinkRequestRow({
   request,
@@ -51,6 +54,14 @@ export function LinkRequestRow({
     }
   };
   const prompt = request.prompt.replace(/\s+/gu, " ").trim();
+  const isMove = request.kind === "move";
+  const heading = isMove
+    ? showWorker
+      ? `${request.fromLabel} wants to move a thread to ${worker.label}: ${request.title}`
+      : `${request.fromLabel} wants to move a thread here: ${request.title}`
+    : showWorker
+      ? `${request.fromLabel} wants to start a thread on ${worker.label}: ${request.title}`
+      : `${request.fromLabel} wants to start a thread: ${request.title}`;
   return (
     <div
       className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5", className)}
@@ -59,13 +70,25 @@ export function LinkRequestRow({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
         <div className="min-w-0 flex-1 space-y-0.5">
           <p className="truncate text-[13.5px] leading-[19px] font-medium text-foreground">
-            {showWorker
-              ? `${request.fromLabel} wants to start a thread on ${worker.label}: ${request.title}`
-              : `${request.fromLabel} wants to start a thread: ${request.title}`}
+            {heading}
           </p>
-          <p className="truncate text-[12.5px] leading-[18px] text-muted-foreground">
-            {request.projectName} · from “{request.parentThreadTitle}”
-          </p>
+          {isMove ? (
+            <>
+              {request.move ? (
+                <p className="truncate text-[12.5px] leading-[18px] text-muted-foreground">
+                  {formatThreadMoveChanges(request.move)}
+                </p>
+              ) : null}
+              <p className="truncate text-[12.5px] leading-[18px] text-muted-foreground">
+                Lands in {request.projectName} with up to{" "}
+                {formatThreadMoveAccess(runtimeModeConfig[request.runtimeMode].label)}
+              </p>
+            </>
+          ) : (
+            <p className="truncate text-[12.5px] leading-[18px] text-muted-foreground">
+              {request.projectName} · from “{request.parentThreadTitle}”
+            </p>
+          )}
           {prompt.length > 0 ? (
             <p className="truncate text-[12.5px] leading-[18px] text-muted-foreground">{prompt}</p>
           ) : null}

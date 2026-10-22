@@ -17,6 +17,7 @@ import {
   GitForkIcon,
   GlobeIcon,
   MessagesSquareIcon,
+  MonitorUpIcon,
   PanelRightIcon,
   TerminalSquareIcon,
 } from "lucide-react";
@@ -138,6 +139,11 @@ interface ChatHeaderProps {
   /** Present only for General Chat threads that can continue into a project. */
   onContinueInProject?: ((event: React.MouseEvent<HTMLButtonElement>) => void) | undefined;
   continueInProjectDisabledReason?: string | null;
+  /**
+   * Present only where the thread's computer can move it to a linked one
+   * (docs/design/fleet.md, Part 3): opens "Move to another computer".
+   */
+  onMoveThread?: (() => void) | undefined;
 }
 
 /** Panel toggles carry no border, pressed or not: an open panel reads as a
@@ -320,6 +326,7 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenAgentsTab,
   onContinueInProject,
   continueInProjectDisabledReason,
+  onMoveThread,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const canOpenInEditor = shouldShowOpenInEditor({
@@ -335,7 +342,10 @@ export const ChatHeader = memo(function ChatHeader({
   // The divider splits launchers from the views on its right; with nothing on
   // its left it would only hang there. A narrow header drops it for the title.
   const hasLaunchers =
-    activeProjectScripts !== undefined || fileBrowserAvailable || onContinueInProject !== undefined;
+    activeProjectScripts !== undefined ||
+    fileBrowserAvailable ||
+    onContinueInProject !== undefined ||
+    onMoveThread !== undefined;
 
   return (
     <div
@@ -457,6 +467,24 @@ export const ChatHeader = memo(function ChatHeader({
               }
             />
             <TooltipPopup side="bottom">{continueInProjectState.tooltip}</TooltipPopup>
+          </Tooltip>
+        ) : null}
+        {onMoveThread ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  className={HEADER_ICON_BUTTON_CLASS}
+                  onClick={onMoveThread}
+                  aria-label="Move to another computer"
+                  variant="ghost"
+                  size="icon-xs"
+                >
+                  <MonitorUpIcon className="size-3.5" />
+                </Button>
+              }
+            />
+            <TooltipPopup side="bottom">Move to another computer</TooltipPopup>
           </Tooltip>
         ) : null}
         {fileBrowserAvailable ? (

@@ -295,6 +295,11 @@ import { toProviderSignInFlowView } from "./chat/providerSignIn";
 import { useProviderConnectFlow } from "./settings/useProviderConnectFlow";
 import { buildThreadErrorNotice } from "./chat/threadErrorNotice";
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
+import { useThreadMoveNotice } from "./chat/threadMoveNotice";
+import { openThreadMoveDialog } from "./ThreadMoveDialog";
+import { useThreadMoveOffered } from "../environments/links/threadMoves";
+import { useComputerLabel } from "./sidebar/linkedComputers";
+import { threadMoveLockReason, threadMoveStatus } from "../threadMove";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   DEFAULT_SCROLL_END_TOLERANCE_PX,
@@ -349,6 +354,7 @@ import {
   deriveOwnThreadActivities,
   deriveSubagentSpawnCallIds,
   deriveThreadForkContextEntries,
+  deriveThreadMovedInEntries,
   deriveThreadProviderBackgroundRuns,
   deriveThreadSideAnswers,
   deriveThreadSubagentActivityState,
@@ -2031,6 +2037,10 @@ export default function ChatView(props: ChatViewProps) {
     () => deriveThreadForkContextEntries(derivationThreadKey, threadActivities),
     [derivationThreadKey, threadActivities],
   );
+  const movedInEntries = useMemo(
+    () => deriveThreadMovedInEntries(derivationThreadKey, threadActivities),
+    [derivationThreadKey, threadActivities],
+  );
   const forkHeaderContext = useMemo<ForkHeaderContext | null>(() => {
     const payload = forkContextEntries[0]?.payload;
     if (!payload) {
@@ -2619,6 +2629,7 @@ export default function ChatView(props: ChatViewProps) {
         activeThread?.pages ?? EMPTY_AGENT_PAGES,
         activeThread?.commandRequests ?? EMPTY_COMMAND_REQUESTS,
         workflowRunsAsShown(activeThread?.workflowRuns ?? EMPTY_WORKFLOW_RUNS),
+        movedInEntries,
       ),
     [
       activeThread?.commandRequests,
@@ -2626,6 +2637,7 @@ export default function ChatView(props: ChatViewProps) {
       activeThread?.workflowRuns,
       activeThread?.proposedPlans,
       forkContextEntries,
+      movedInEntries,
       subagentActivityState.liveEntries,
       subagentActivityState.resultEntries,
       timelineMessages,
@@ -2653,6 +2665,14 @@ export default function ChatView(props: ChatViewProps) {
     (activeThread?.agentRequests?.open.length ?? 0) > 0 ||
     (activeThread?.childRequests?.open.length ?? 0) > 0 ||
     (activeThread?.queuedFollowUps ?? []).some(isAgentOrigin);
+  // Moving or moved to another computer: read-only here, so nothing to revert.
+  const activeThreadMove = activeThread?.move ?? null;
+  const threadMoveLocked = activeThreadMove !== null;
+  const threadMoveLockText = activeThreadMove ? threadMoveLockReason(activeThreadMove) : null;
+  const threadMoveComposerLock = useMemo(
+    () => (threadMoveLockText === null ? null : { reason: threadMoveLockText }),
+    [threadMoveLockText],
+  );
   const revertTurnCountByUserMessageId = useMemo(
     () =>
       deriveThreadRevertTurnCountByUserMessageId(
@@ -2660,7 +2680,7 @@ export default function ChatView(props: ChatViewProps) {
         timelineEntries,
         turnDiffSummaryByAssistantMessageId,
         inferredCheckpointTurnCountByTurnId,
-        threadHasRoomHistory || agentRequestsInFlight,
+        threadHasRoomHistory || agentRequestsInFlight || threadMoveLocked,
       ),
     [
       inferredCheckpointTurnCountByTurnId,
@@ -2668,6 +2688,7 @@ export default function ChatView(props: ChatViewProps) {
       turnDiffSummaryByAssistantMessageId,
       threadHasRoomHistory,
       agentRequestsInFlight,
+      threadMoveLocked,
       derivationThreadKey,
     ],
   );
@@ -5025,6 +5046,7 @@ export default function ChatView(props: ChatViewProps) {
       (isSendBusy && !canSubmitSteeringFollowUp) ||
       isConnecting ||
       activeEnvironmentUnavailable ||
+      activeThread.move ||
       sendInFlightRef.current
     )
       return;
@@ -6894,6 +6916,32 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  // Moving to a linked computer (docs/design/fleet.md, Part 3). From the
+  // move's start the thread is frozen here: its notice is the dock's only
+  // one, and a move that can't go on offers a fork to keep working here.
+  const resolveComputerLabel = useComputerLabel();
+  const activeThreadComputerLabel = resolveComputerLabel(environmentId, environmentId);
+  const continueHereAsNewThread = useCallback(() => {
+    const lastMessage = activeThread?.messages.at(-1);
+    if (lastMessage) onContinueMessageInNewThread(lastMessage.id);
+  }, [activeThread?.messages, onContinueMessageInNewThread]);
+  const threadMoveNotice = useThreadMoveNotice({
+    thread: activeThread,
+    computerLabel: activeThreadComputerLabel,
+    onContinueHere: continueHereAsNewThread,
+  });
+  const dockedComposerNotices = useMemo(
+    () => (threadMoveNotice ? [threadMoveNotice] : composerNotices),
+    [composerNotices, threadMoveNotice],
+  );
+  const threadMoveOffered = useThreadMoveOffered(
+    isServerThread ? environmentId : null,
+    threadMoveStatus(activeThread?.move),
+  );
+  const openMoveDialog = useCallback(() => {
+    if (activeThreadId) openThreadMoveDialog(scopeThreadRef(environmentId, activeThreadId));
+  }, [activeThreadId, environmentId]);
+
   const updateForkDialogInstruction = useCallback((instruction: string) => {
     setForkDialogState((current) => (current ? { ...current, instruction } : current));
   }, []);
@@ -7601,6 +7649,7 @@ export default function ChatView(props: ChatViewProps) {
           : undefined
       }
       continueInProjectDisabledReason={continueInProjectDisabledReason}
+      onMoveThread={threadMoveOffered ? openMoveDialog : undefined}
     />
   ) : null;
 
@@ -7800,6 +7849,7 @@ export default function ChatView(props: ChatViewProps) {
                   isSendBusy={isSendBusy}
                   isPreparingWorktree={isPreparingWorktree}
                   environmentUnavailable={activeEnvironmentUnavailableState}
+                  threadLocked={threadMoveComposerLock}
                   activePendingApproval={activePendingApproval}
                   pendingApprovals={pendingApprovals}
                   pendingUserInputs={pendingUserInputs}
@@ -7825,7 +7875,7 @@ export default function ChatView(props: ChatViewProps) {
                     isLocalDraftThread ? null : activeThread?.modelSelection
                   }
                   activeThreadActivities={activeThread ? threadActivities : undefined}
-                  notices={composerNotices}
+                  notices={dockedComposerNotices}
                   pullRequests={composerPullRequests}
                   stackedAbove={
                     <ComposerFollowUpQueue

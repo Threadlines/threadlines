@@ -73,6 +73,7 @@ import {
 import { filterSupersededManualContextCompactionActivities } from "./lib/contextCompactionActivities";
 import { isImageFilePath } from "./lib/imageFilePaths";
 import { keyedMemo } from "./lib/derivationMemo";
+import { THREAD_MOVE_FAILED_ACTIVITY_KIND, THREAD_MOVED_IN_ACTIVITY_KIND } from "./threadMove";
 
 import type {
   ChatMessage,
@@ -565,6 +566,20 @@ export interface ForkContextEntry {
   seedMode?: ThreadForkSeedOutcomePayload["seedMode"];
 }
 
+/**
+ * Where a thread that moved here from another computer starts being this
+ * computer's: the end of the history it brought (the `thread.moved-in`
+ * activity). Revert never reaches past it.
+ */
+export interface MovedInEntry {
+  readonly id: string;
+  readonly eventSequence?: number | undefined;
+  readonly createdAt: string;
+  /** The computer it came from, by the name it had then. */
+  readonly fromLabel: string;
+  readonly movedAt: string;
+}
+
 /** An MCP app card: the finished tool call whose tool ships the app
  *  (docs/mcp-apps.md). */
 export interface McpAppEntry {
@@ -609,6 +624,12 @@ export type TimelineEntry = { eventSequence?: number | undefined } & (
       kind: "fork-context";
       createdAt: string;
       forkContext: ForkContextEntry;
+    }
+  | {
+      id: string;
+      kind: "moved-in";
+      createdAt: string;
+      movedIn: MovedInEntry;
     }
   | {
       id: string;
@@ -1695,6 +1716,32 @@ export function deriveForkContextEntries(
       ];
     })
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+/** The moved-in boundaries a thread's activities hold: one for a thread that moved here. */
+export function deriveMovedInEntries(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): MovedInEntry[] {
+  return activities
+    .filter((activity) => activity.kind === THREAD_MOVED_IN_ACTIVITY_KIND)
+    .flatMap((activity) => {
+      const payload = asRecord(activity.payload);
+      const fromLabel = asTrimmedString(payload?.fromLabel);
+      if (!fromLabel) {
+        return [];
+      }
+      return [
+        {
+          id: activity.id,
+          createdAt: activity.createdAt,
+          ...(activity.eventSequence !== undefined
+            ? { eventSequence: activity.eventSequence }
+            : {}),
+          fromLabel,
+          movedAt: asTrimmedString(payload?.movedAt) ?? activity.createdAt,
+        },
+      ];
+    });
 }
 
 interface TurnModelSelection {
@@ -3038,6 +3085,8 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "subagent.result")
     .filter((activity) => activity.kind !== "subagent.metadata")
     .filter((activity) => activity.kind !== "thread.fork.context")
+    // A moved thread's boundary is its own row (deriveMovedInEntries).
+    .filter((activity) => activity.kind !== THREAD_MOVED_IN_ACTIVITY_KIND)
     .filter((activity) => activity.kind !== "context-window.updated")
     // Account telemetry; belongs in a usage meter, not the work narrative.
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
@@ -3343,16 +3392,21 @@ function toDerivedWorkLogEntry(
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
   const runtimeWarningDisplay = deriveRuntimeWarningDisplay(activity, payload);
-  const detail = isTaskActivity
-    ? !taskDetailAsLabel &&
-      payload &&
-      typeof payload.detail === "string" &&
-      payload.detail.length > 0
-      ? stripTrailingExitCode(payload.detail).output
-      : null
-    : (runtimeWarningDisplay?.detail ??
-      extractRuntimeActivityDetail(activity, payload) ??
-      extractToolDetail(payload, title ?? activity.summary));
+  // A dropped move says why under its "Couldn't move to …".
+  const moveFailureReason =
+    activity.kind === THREAD_MOVE_FAILED_ACTIVITY_KIND ? asTrimmedString(payload?.reason) : null;
+  const detail = moveFailureReason
+    ? moveFailureReason
+    : isTaskActivity
+      ? !taskDetailAsLabel &&
+        payload &&
+        typeof payload.detail === "string" &&
+        payload.detail.length > 0
+        ? stripTrailingExitCode(payload.detail).output
+        : null
+      : (runtimeWarningDisplay?.detail ??
+        extractRuntimeActivityDetail(activity, payload) ??
+        extractToolDetail(payload, title ?? activity.summary));
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const browserReceipt = deriveBrowserReceipt(payload);
   const entry: DerivedWorkLogEntry = {
@@ -5959,6 +6013,7 @@ export function deriveTimelineEntries(
   pages: ReadonlyArray<OrchestrationAgentPage> = [],
   commandRequests: ReadonlyArray<OrchestrationCommandRequest> = [],
   workflowRuns: ReadonlyArray<OrchestrationWorkflowRun> = [],
+  movedInEntries: ReadonlyArray<MovedInEntry> = [],
 ): TimelineEntry[] {
   const suppressedAssistantEchoIds = findSubagentResultEchoMessageIds(messages, subagentResults);
   // A workflow run shows as its card, where the call that launched it was:
@@ -6046,6 +6101,14 @@ export function deriveTimelineEntries(
       : {}),
     forkContext,
   }));
+  // Where a moved thread's imported history ends, after it.
+  const movedInRows: TimelineEntry[] = movedInEntries.map((movedIn) => ({
+    id: movedIn.id,
+    kind: "moved-in",
+    createdAt: movedIn.createdAt,
+    ...(movedIn.eventSequence !== undefined ? { eventSequence: movedIn.eventSequence } : {}),
+    movedIn,
+  }));
   // A page stands where its turn first showed it; later versions in the same
   // turn replace it there (agentPages.ts).
   const pageRows: TimelineEntry[] = pages.map((page) => ({
@@ -6065,6 +6128,7 @@ export function deriveTimelineEntries(
   }));
   return [
     ...forkContextRows,
+    ...movedInRows,
     ...messageRows,
     ...proposedPlanRows,
     ...workRows,
@@ -6141,6 +6205,8 @@ export function inferCheckpointTurnCountByTurnId(
  * that joined a turn already running (the user's steer, an answer to the
  * agent's question, a reply or report steered in): it has no checkpoint of its
  * own, and it must not hide the one of the message that started its turn.
+ * Nor does history a move brought (`imported`): its turns were another
+ * computer's.
  */
 export function deriveRevertTurnCountByUserMessageId(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
@@ -6155,6 +6221,7 @@ export function deriveRevertTurnCountByUserMessageId(input: {
       !entry ||
       entry.kind !== "message" ||
       entry.message.role !== "user" ||
+      entry.message.imported === true ||
       isAgentOrigin(entry.message) ||
       isTurnAside(entry.message)
     ) {

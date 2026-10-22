@@ -3,6 +3,7 @@ import { memo, useMemo } from "react";
 import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
+import { formatThreadMoveAccess, formatThreadMoveChanges } from "../../threadMove";
 import {
   useComputerLabel,
   useLinkRequestAnswer,
@@ -18,6 +19,10 @@ import { getPickerModelName } from "./providerIconUtils";
  * says why: what would start, the agent and access it would get, the
  * instructions in full, then Deny and Allow. The answer goes to the computer
  * it would run on; the card leaves when that computer drops the request.
+ *
+ * A move (`kind: "move"`, Part 3) docks in the thread being moved: which
+ * computers, the thread, what goes with it and where it lands, with the same
+ * Deny and Allow.
  */
 export const ComposerRemoteStartPanel = memo(function ComposerRemoteStartPanel({
   pending,
@@ -38,6 +43,36 @@ export const ComposerRemoteStartPanel = memo(function ComposerRemoteStartPanel({
   // Shared with the inbox row: an answer sent from either holds both.
   const { answering, respond } = useLinkRequestAnswer(pending, computerLabel);
   const access = runtimeModeConfig[request.runtimeMode].label;
+  if (request.kind === "move") {
+    return (
+      <div
+        className="px-4 py-3.5 sm:px-5 sm:py-4"
+        data-testid="remote-start-panel"
+        data-request-kind="move"
+      >
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm tracking-[0.2em] uppercase">Request</span>
+            <span className="text-sm font-medium" data-testid="remote-start-panel-heading">
+              {request.fromLabel} wants to move a thread to {computerLabel}
+            </span>
+          </div>
+          <p className="text-sm font-medium text-foreground" data-testid="remote-start-panel-title">
+            {request.title}
+          </p>
+          {request.move ? (
+            <p className="text-xs text-muted-foreground" data-testid="remote-start-panel-summary">
+              {formatThreadMoveChanges(request.move)}
+            </p>
+          ) : null}
+          <p className="text-xs text-muted-foreground" data-testid="remote-start-panel-where">
+            Lands in {request.projectName} with up to {formatThreadMoveAccess(access)}.
+          </p>
+        </div>
+        <RemoteRequestAnswerButtons answering={answering} respond={respond} />
+      </div>
+    );
+  }
   return (
     <div className="px-4 py-3.5 sm:px-5 sm:py-4" data-testid="remote-start-panel">
       <div className="space-y-2">
@@ -61,26 +96,39 @@ export const ComposerRemoteStartPanel = memo(function ComposerRemoteStartPanel({
           {request.prompt}
         </p>
       </div>
-      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={answering !== null}
-          onClick={() => void respond(false)}
-          data-testid="remote-start-panel-deny"
-        >
-          Deny
-        </Button>
-        <Button
-          size="sm"
-          variant="default"
-          disabled={answering !== null}
-          onClick={() => void respond(true)}
-          data-testid="remote-start-panel-allow"
-        >
-          Allow
-        </Button>
-      </div>
+      <RemoteRequestAnswerButtons answering={answering} respond={respond} />
     </div>
   );
 });
+
+/** Deny and Allow, held once an answer is on its way (useLinkRequestAnswer). */
+function RemoteRequestAnswerButtons({
+  answering,
+  respond,
+}: {
+  readonly answering: "allow" | "deny" | null;
+  readonly respond: (allow: boolean) => Promise<void>;
+}) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={answering !== null}
+        onClick={() => void respond(false)}
+        data-testid="remote-start-panel-deny"
+      >
+        Deny
+      </Button>
+      <Button
+        size="sm"
+        variant="default"
+        disabled={answering !== null}
+        onClick={() => void respond(true)}
+        data-testid="remote-start-panel-allow"
+      >
+        Allow
+      </Button>
+    </div>
+  );
+}
