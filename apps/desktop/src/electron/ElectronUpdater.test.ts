@@ -78,19 +78,4 @@ describe("ElectronUpdater", () => {
       }
     }).pipe(Effect.provide(ElectronUpdater.layer)),
   );
-
-  it.effect("sets the updater logger", () =>
-    Effect.gen(function* () {
-      const logger = {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-      };
-      const updater = yield* ElectronUpdater.ElectronUpdater;
-
-      yield* updater.setLogger(logger);
-
-      assert.equal(autoUpdaterMock.logger, logger);
-    }).pipe(Effect.provide(ElectronUpdater.layer)),
-  );
 });

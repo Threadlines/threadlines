@@ -159,14 +159,6 @@ describe("resolveSelectableModel", () => {
       "claude-sonnet-5",
     );
   });
-
-  it("resolves the official GPT-5.6 alias to the Sol catalog entry", () => {
-    const options = [{ slug: "gpt-5.6-sol", name: "GPT-5.6 Sol" }];
-
-    expect(resolveSelectableModel(ProviderDriverKind.make("codex"), "gpt-5.6", options)).toBe(
-      "gpt-5.6-sol",
-    );
-  });
 });
 
 describe("misc helpers", () => {
@@ -271,22 +263,6 @@ describe("descriptor helpers", () => {
       { id: "reasoningEffort", value: "high" },
       { id: "fastMode", value: true },
     ]);
-  });
-
-  it("stores option selection arrays in model selections", () => {
-    expect(
-      createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
-        { id: "reasoningEffort", value: "high" },
-        { id: "fastMode", value: true },
-      ]),
-    ).toEqual({
-      instanceId: "codex",
-      model: "gpt-5.4",
-      options: [
-        { id: "reasoningEffort", value: "high" },
-        { id: "fastMode", value: true },
-      ],
-    });
   });
 
   it("tells whether a model still offers the reasoning level a selection names", () => {

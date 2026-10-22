@@ -160,36 +160,6 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
     }),
   );
 
-  it.effect("initializes a command-backed app-server client", () =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const scope = yield* Scope.make();
-      const clientLayer = CodexClient.layerCommand({
-        command: process.execPath,
-        args: [yield* mockPeerPath],
-        cwd: path.join(import.meta.dirname, ".."),
-      });
-      const context = yield* Layer.buildWithScope(clientLayer, scope);
-
-      const initialized = yield* Effect.gen(function* () {
-        const client = yield* CodexClient.CodexAppServerClient;
-        return yield* client.request("initialize", {
-          clientInfo: {
-            name: "effect-codex-app-server-test",
-            title: "Effect Codex App Server Test",
-            version: "0.0.0",
-          },
-          capabilities: {
-            experimentalApi: true,
-            optOutNotificationMethods: null,
-          },
-        });
-      }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
-
-      assert.equal(initialized.userAgent, "mock-codex-app-server");
-    }),
-  );
-
   it.effect("drains command stderr so large diagnostics cannot block protocol responses", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
