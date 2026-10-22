@@ -414,6 +414,21 @@ export interface WsRpcClient {
     readonly start: RpcUnaryMethod<typeof WS_METHODS.movesStart>;
     readonly cancel: RpcUnaryMethod<typeof WS_METHODS.movesCancel>;
   };
+  /**
+   * Setting up a project on another computer (docs/design/fleet.md, Part 8),
+   * on servers whose descriptor reports `projectSetup`: `source` and
+   * `readFiles` on the computer that has the project, the rest on the one
+   * that gets a copy.
+   */
+  readonly projectSetups: {
+    readonly source: RpcUnaryMethod<typeof WS_METHODS.projectSetupsSource>;
+    readonly readFiles: RpcUnaryMethod<typeof WS_METHODS.projectSetupsReadFiles>;
+    readonly inspectDestination: RpcUnaryMethod<typeof WS_METHODS.projectSetupsInspectDestination>;
+    readonly start: RpcUnaryMethod<typeof WS_METHODS.projectSetupsStart>;
+    readonly cancel: RpcUnaryMethod<typeof WS_METHODS.projectSetupsCancel>;
+    readonly dismiss: RpcUnaryMethod<typeof WS_METHODS.projectSetupsDismiss>;
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.projectSetupsSubscribe>;
+  };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
     readonly warmUpTurn: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.warmUpTurn>;
@@ -1110,6 +1125,55 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       preview: (input) => transport.request((client) => client[WS_METHODS.movesPreview](input)),
       start: (input) => transport.request((client) => client[WS_METHODS.movesStart](input)),
       cancel: (input) => transport.request((client) => client[WS_METHODS.movesCancel](input)),
+    },
+    // Every call here is safe to send again: the reads are pure, a start is
+    // the same job for the same setupId, and cancel and dismiss repeat as
+    // no-ops. The files travel in readFiles and start (up to 8 MiB), so those
+    // get the time a slow relay needs.
+    projectSetups: {
+      source: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsSource](input),
+          { label: WS_METHODS.projectSetupsSource },
+        ),
+      readFiles: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsReadFiles](input),
+          {
+            label: WS_METHODS.projectSetupsReadFiles,
+            attemptTimeoutMs: 120_000,
+            totalBudgetMs: 180_000,
+          },
+        ),
+      inspectDestination: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsInspectDestination](input),
+          { label: WS_METHODS.projectSetupsInspectDestination },
+        ),
+      start: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsStart](input),
+          {
+            label: WS_METHODS.projectSetupsStart,
+            attemptTimeoutMs: 120_000,
+            totalBudgetMs: 180_000,
+          },
+        ),
+      cancel: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsCancel](input),
+          { label: WS_METHODS.projectSetupsCancel },
+        ),
+      dismiss: (input) =>
+        transport.requestWithReconnectRetry(
+          (client) => client[WS_METHODS.projectSetupsDismiss](input),
+          { label: WS_METHODS.projectSetupsDismiss },
+        ),
+      subscribe: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.projectSetupsSubscribe]({}), listener, {
+          ...options,
+          tag: WS_METHODS.projectSetupsSubscribe,
+        }),
     },
     orchestration: {
       // Commands are deduped server-side by commandId receipts, so re-sending

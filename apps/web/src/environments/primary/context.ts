@@ -78,6 +78,13 @@ export function usePrimaryEnvironmentDescriptor(): ExecutionEnvironmentDescripto
   return usePrimaryEnvironmentBootstrapStore((state) => state.descriptor);
 }
 
+/** Calls `listener` whenever the primary environment's descriptor changes. */
+export function subscribePrimaryEnvironmentDescriptor(listener: () => void): () => void {
+  return usePrimaryEnvironmentBootstrapStore.subscribe((state, previous) => {
+    if (state.descriptor !== previous.descriptor) listener();
+  });
+}
+
 export function usePrimaryEnvironmentId(): EnvironmentId | null {
   return usePrimaryEnvironmentBootstrapStore((state) => state.descriptor?.environmentId ?? null);
 }
