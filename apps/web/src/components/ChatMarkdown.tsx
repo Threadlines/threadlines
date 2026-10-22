@@ -127,6 +127,8 @@ interface ChatMarkdownProps {
    * where an agent's stray tag is safer shown than interpreted.
    */
   html?: "github" | undefined;
+  /** Overrides the block's classes (its color, for a quieter message). */
+  className?: string | undefined;
 }
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
@@ -1374,6 +1376,7 @@ function ChatMarkdown({
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
   html,
+  className,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   // Boots the highlighting worker and its theme while the page is idle, so the
@@ -1393,6 +1396,7 @@ function ChatMarkdown({
         // Host HTML brings wide tables and images sized for a wider page; give
         // them a scroll of their own rather than letting them widen the panel.
         html === "github" && "chat-markdown-html",
+        className,
       )}
     >
       {segments.map((segment, index) => {

@@ -2929,6 +2929,7 @@ const NO_TERMINAL_CONTEXTS: ParsedTerminalContextEntry[] = [];
 const NO_TRANSCRIPT_HIGHLIGHTS: ParsedTranscriptHighlightContextEntry[] = [];
 const NO_PICKED_ELEMENTS: SentPickedElementEntry[] = [];
 const NO_DRAWINGS: Array<{ id: string; entry: ParsedDrawingContextEntry }> = [];
+const OTHER_CHECKOUT_MARKDOWN = { cwd: undefined };
 
 /**
  * A message one room agent wrote to another through a room tool: a question,
@@ -2938,6 +2939,8 @@ const NO_DRAWINGS: Array<{ id: string; entry: ParsedDrawingContextEntry }> = [];
 function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const { message } = row;
+  // Written in this thread's own checkout.
+  const markdown = useMemo(() => ({ cwd: ctx.markdownCwd }), [ctx.markdownCwd]);
   const description = describeRoomAgentMessage({
     message,
     labels: messageAgentLabels(ctx.roomAgents, message, ctx.agentModelLabeler),
@@ -2988,6 +2991,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
       bodyClassName={
         agentLine?.placement === "single" ? "text-foreground/80" : "text-muted-foreground"
       }
+      markdown={markdown}
       forceExpanded={ctx.searchTargetMessageId === message.id}
       findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
       searchHighlightQuery={
@@ -3143,6 +3147,8 @@ function ThreadMessageTimelineRow({
           drawings={NO_DRAWINGS}
           skills={ctx.skills}
           bodyClassName="text-foreground/80"
+          // Written in another thread's checkout: its paths aren't this one's.
+          markdown={OTHER_CHECKOUT_MARKDOWN}
           forceExpanded={ctx.searchTargetMessageId === message.id}
           findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
           searchHighlightQuery={
@@ -5436,6 +5442,12 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   footer?: ReactNode;
   /** Overrides the text's classes (its color, for an agent's quieter message). */
   bodyClassName?: string | undefined;
+  /**
+   * Text an agent wrote (another room agent, another thread): drawn as
+   * markdown like any answer, its file links read against `cwd`. Absent, the
+   * text shows as typed.
+   */
+  markdown?: { readonly cwd: string | undefined } | undefined;
 }) {
   const findOpenRequest = props.findOpenRequest ?? 0;
   const [expanded, setExpanded] = useState(findOpenRequest > 0);
@@ -5468,14 +5480,24 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           data-chat-find-folded={isCollapsed ? "" : undefined}
           style={isCollapsed ? COLLAPSED_MESSAGE_FADE_STYLE : undefined}
         >
-          <UserMessageBody
-            text={props.text}
-            terminalContexts={props.terminalContexts}
-            transcriptHighlights={props.transcriptHighlights}
-            skills={props.skills}
-            searchHighlightQuery={props.searchHighlightQuery}
-            className={props.bodyClassName}
-          />
+          {props.markdown ? (
+            <ChatMarkdown
+              text={props.text}
+              cwd={props.markdown.cwd}
+              skills={props.skills}
+              searchHighlightQuery={props.searchHighlightQuery}
+              className={props.bodyClassName}
+            />
+          ) : (
+            <UserMessageBody
+              text={props.text}
+              terminalContexts={props.terminalContexts}
+              transcriptHighlights={props.transcriptHighlights}
+              skills={props.skills}
+              searchHighlightQuery={props.searchHighlightQuery}
+              className={props.bodyClassName}
+            />
+          )}
         </div>
       ) : null}
       {hasAttachedContextChips ? (
