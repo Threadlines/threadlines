@@ -38,25 +38,40 @@ export function receivedBytesOf(detail: string | null): number | null {
   return Number.isFinite(amount) && unit !== undefined ? Math.round(amount * unit) : null;
 }
 
+/** Where each of git's local phases lands on the one bar: [start, share]. */
+const PHASE_SHARES: Record<string, readonly [number, number]> = {
+  "Receiving objects": [0, 90],
+  "Resolving deltas": [90, 7],
+  "Updating files": [97, 3],
+  "Checking out files": [97, 3],
+};
+
 /**
- * The percent to show for a progress line. While git receives objects its
- * own percent counts objects, so a repository whose bytes sit in a few large
- * files reads 98% with most of the download still to come: measured against
- * the expected size instead, held at 99% until git itself says 100%.
+ * One percent for the whole clone, for one progress line. Each of git's
+ * phases counts 0 to 100 on its own; here they share one bar: receiving fills
+ * it to 90, resolving deltas to 97, writing the files to 100. The server-side
+ * phases before the download (counting, compressing) give no number.
+ * Receiving counts objects in git's own percent, so a repository whose bytes
+ * sit in a few large files would read 98% with most of the download to come:
+ * with `expectedBytes`, it is the bytes received against it instead, held
+ * short of the phase's end until git says it's done. The caller keeps the
+ * bar from going back.
  */
-export function displayClonePercent(
+export function overallClonePercent(
   progress: Omit<ProjectSetupProgress, "stalled">,
   expectedBytes: number | undefined,
 ): number | null {
+  const share = progress.phase === null ? undefined : PHASE_SHARES[progress.phase];
+  if (share === undefined || progress.percent === null) return null;
+  let phasePercent = progress.percent;
   if (
-    progress.phase !== "Receiving objects" ||
-    progress.percent === 100 ||
-    expectedBytes === undefined ||
-    expectedBytes <= 0
+    progress.phase === "Receiving objects" &&
+    progress.percent < 100 &&
+    expectedBytes !== undefined &&
+    expectedBytes > 0
   ) {
-    return progress.percent;
+    const received = receivedBytesOf(progress.detail);
+    if (received !== null) phasePercent = Math.min(99, (received / expectedBytes) * 100);
   }
-  const received = receivedBytesOf(progress.detail);
-  if (received === null) return progress.percent;
-  return Math.min(99, Math.floor((received / expectedBytes) * 100));
+  return Math.floor(share[0] + (share[1] * phasePercent) / 100);
 }

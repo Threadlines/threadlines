@@ -27,7 +27,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { RepositoryIdentityResolverLive } from "../project/Layers/RepositoryIdentityResolver.ts";
-import { displayClonePercent, parseCloneProgress } from "./cloneProgress.ts";
+import { overallClonePercent, parseCloneProgress } from "./cloneProgress.ts";
 import { ProjectSetupRepository, ProjectSetupRepositoryLive } from "./ProjectSetupRepository.ts";
 import {
   cloneUrls,
@@ -456,18 +456,25 @@ describe("ProjectSetups", () => {
       { phase: "Receiving objects", percent: 24, detail: "168.80 MiB | 20.69 MiB/s" },
     );
     assert.isNull(parseCloneProgress("Cloning into 'app'...\n"));
-    // Git counts objects: 98% of them can arrive with most of the bytes still to
-    // come. Against the expected size, 50 of 250 MiB reads 20%, never 100 early.
-    const receiving = parseCloneProgress(
-      "Receiving objects:  98% (50870/51908), 50.00 MiB | 19.23 MiB/s\r",
-    )!;
-    assert.equal(displayClonePercent(receiving, 250 * 1024 * 1024), 20);
-    assert.equal(displayClonePercent(receiving, 40 * 1024 * 1024), 99);
-    assert.equal(displayClonePercent(receiving, undefined), 98);
-    const received = parseCloneProgress(
-      "Receiving objects: 100% (51908/51908), 537.30 MiB | 19.00 MiB/s, done.\n",
-    )!;
-    assert.equal(displayClonePercent(received, 250 * 1024 * 1024), 100);
+    // One bar for the whole clone. The server's own counting gives no number
+    // (it used to run 0 to 100 and then drop back to the download's 1%).
+    const at = (line: string, expected?: number) =>
+      overallClonePercent(parseCloneProgress(line)!, expected);
+    assert.isNull(at("remote: Counting objects: 100% (5/5), done.\r"));
+    assert.isNull(at("remote: Compressing objects:  73% (30/41)\r"));
+    // Git counts objects: 98% of them can arrive with most of the bytes still
+    // to come. Against the expected size, 50 of 250 MiB is 20% of the
+    // download's share (90), never its end early.
+    const receiving = "Receiving objects:  98% (50870/51908), 50.00 MiB | 19.23 MiB/s\r";
+    assert.equal(at(receiving, 250 * 1024 * 1024), 18);
+    assert.equal(at(receiving, 40 * 1024 * 1024), 89);
+    assert.equal(at(receiving), 88);
+    assert.equal(
+      at("Receiving objects: 100% (51908/51908), 537.30 MiB | 19.00 MiB/s, done.\n", 1),
+      90,
+    );
+    assert.equal(at("Resolving deltas:  50% (100/200)\r"), 93);
+    assert.equal(at("Updating files: 100% (900/900), done.\n"), 100);
     const request = {
       remotes: [{ name: "origin", url: "git@github.com:org/app.git", protocol: "ssh" as const }],
       primaryRemoteName: "origin",
