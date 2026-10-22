@@ -296,10 +296,8 @@ import { useProviderConnectFlow } from "./settings/useProviderConnectFlow";
 import { buildThreadErrorNotice } from "./chat/threadErrorNotice";
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
 import { useThreadMoveNotice } from "./chat/threadMoveNotice";
-import { openThreadMoveDialog } from "./ThreadMoveDialog";
-import { useThreadMoveOffered } from "../environments/links/threadMoves";
 import { useComputerLabel } from "./sidebar/linkedComputers";
-import { threadMoveLockReason, threadMoveStatus } from "../threadMove";
+import { threadMoveLockReason } from "../threadMove";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   DEFAULT_SCROLL_END_TOLERANCE_PX,
@@ -6934,13 +6932,6 @@ export default function ChatView(props: ChatViewProps) {
     () => (threadMoveNotice ? [threadMoveNotice] : composerNotices),
     [composerNotices, threadMoveNotice],
   );
-  const threadMoveOffered = useThreadMoveOffered(
-    isServerThread ? environmentId : null,
-    threadMoveStatus(activeThread?.move),
-  );
-  const openMoveDialog = useCallback(() => {
-    if (activeThreadId) openThreadMoveDialog(scopeThreadRef(environmentId, activeThreadId));
-  }, [activeThreadId, environmentId]);
 
   const updateForkDialogInstruction = useCallback((instruction: string) => {
     setForkDialogState((current) => (current ? { ...current, instruction } : current));
@@ -7649,7 +7640,6 @@ export default function ChatView(props: ChatViewProps) {
           : undefined
       }
       continueInProjectDisabledReason={continueInProjectDisabledReason}
-      onMoveThread={threadMoveOffered ? openMoveDialog : undefined}
     />
   ) : null;
 

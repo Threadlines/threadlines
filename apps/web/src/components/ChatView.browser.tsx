@@ -85,6 +85,7 @@ import { closeThreadMoveDialog } from "./ThreadMoveDialog";
 import {
   __resetThreadMovesForTests,
   __setThreadMovesClientForTests,
+  readThreadMoveOffered,
 } from "../environments/links/threadMoves";
 import { updateSettings } from "../hooks/useSettings";
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
@@ -4703,20 +4704,26 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForServerConfigToApply();
       await saveMacMini("disconnected");
       await expect.element(page.getByRole("button", { name: "Toggle panel" })).toBeVisible();
+      // Nowhere to move it yet: the palette doesn't offer it.
+      await openCommandPaletteFromTrigger();
       expect(
-        page.getByRole("button", { name: "Move to another computer", exact: true }).elements(),
+        page
+          .getByTestId("command-palette")
+          .getByText("Move to another computer", { exact: true })
+          .elements(),
       ).toHaveLength(0);
+      await userEvent.keyboard("{Escape}");
 
-      // A link to Mac mini: the chat header offers the move, and so does the thread's menu.
+      // A link to Mac mini: the thread's menu offers the move, and so does the palette.
       rpcHarness.emitStreamValue(
         WS_METHODS.linksSubscribe,
         fleetLinksSnapshot({
           outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
         }),
       );
-      await expect
-        .element(page.getByRole("button", { name: "Move to another computer", exact: true }))
-        .toBeVisible();
+      await vi.waitFor(() => {
+        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+      });
       await openSidebarThreadMenu(THREAD_ID);
       await expect
         .element(page.getByText("Move to another computer", { exact: true }))
@@ -4769,7 +4776,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       await waitForServerConfigToApply();
       await saveMacMini("connected");
-      await page.getByRole("button", { name: "Move to another computer", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+      });
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move to another computer", { exact: true })
+        .click();
       const dialog = page.getByTestId("thread-move-dialog");
       // The first computer that can take it comes picked, with what would go.
       await expect.element(dialog.getByTestId("thread-move-target")).toHaveTextContent("Mac mini");
@@ -4871,9 +4885,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .element(page.getByTestId(`thread-meta-${THREAD_ID}`))
         .toHaveTextContent("moving");
       // Nothing else to do with it here, and no other way off it.
+      await openCommandPaletteFromTrigger();
       expect(
-        page.getByRole("button", { name: "Move to another computer", exact: true }).elements(),
+        page
+          .getByTestId("command-palette")
+          .getByText("Move to another computer", { exact: true })
+          .elements(),
       ).toHaveLength(0);
+      await userEvent.keyboard("{Escape}");
 
       await page.getByRole("button", { name: "Cancel the move" }).click();
       await vi.waitFor(() => {
