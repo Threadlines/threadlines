@@ -8,13 +8,11 @@ import {
 } from "@threadlines/shared/usageFormat";
 import type { UsageBreakdown } from "@threadlines/shared/usageMerge";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeftIcon, ChevronRightIcon, RotateCwIcon } from "lucide-react";
+import { ChevronRightIcon, RotateCwIcon } from "lucide-react";
 import { Fragment, useMemo, useState, type ReactNode } from "react";
 
-import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
-import { useNavigateBackWithinApp } from "../../hooks/useNavigateBackWithinApp";
 import { usageMeterColor } from "../../lib/providerUsage";
 import { cn } from "../../lib/utils";
 import {
@@ -137,7 +135,6 @@ export function UsageView() {
   const [chartGroup, setChartGroup] = useState<UsageChartGroup>("models");
   const [chartMetric, setChartMetric] = useState<UsageChartMetric>("tokens");
   const [includeCacheReads, setIncludeCacheReads] = useState(true);
-  const handleBackClick = useNavigateBackWithinApp();
   const nowMs = useRelativeTimeTick(FRESHNESS_TICK_MS);
   const targets = useUsageEnvironmentTargets();
   const usageQuery = useQuery(usageSummaryQueryOptions({ targets }));
@@ -220,24 +217,7 @@ export function UsageView() {
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="usage-view">
-      {!isElectron ? (
-        <header className="shrink-0 border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] md:hidden">
-          <div className="flex min-h-7 items-center gap-2">
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              aria-label="Back to previous page"
-              className="shrink-0 text-muted-foreground hover:text-foreground"
-              data-testid="usage-mobile-back"
-              onClick={handleBackClick}
-            >
-              <ArrowLeftIcon />
-            </Button>
-            <span className="text-sm font-medium text-foreground">Usage</span>
-          </div>
-        </header>
-      ) : null}
-      <PageTitlebar label="Usage" mobile="none" />
+      <PageTitlebar label="Usage" />
       {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
           (like Settings); the reading column centers inside it. */}
       <div className="min-h-0 flex-1 overflow-y-auto" data-testid="usage-scroll">
@@ -246,7 +226,8 @@ export function UsageView() {
               page title rather than with any one of them. */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
-              <h1 className="text-lg font-medium tracking-tight">Usage</h1>
+              {/* On a phone the strip above names the page. */}
+              <h1 className="hidden text-lg font-medium tracking-tight md:block">Usage</h1>
               {view ? (
                 <span
                   className={cn(NUMBER_CLASS, "whitespace-nowrap text-xs text-muted-foreground/55")}

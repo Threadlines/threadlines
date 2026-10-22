@@ -615,7 +615,10 @@ export function PullRequestsView({
               selectedReference ? "px-4" : "max-w-3xl px-6",
             )}
           >
-            <h1 className="mb-1 text-lg font-medium tracking-tight">Pull requests</h1>
+            {/* On a phone the strip above names the page. */}
+            <h1 className="mb-1 hidden text-lg font-medium tracking-tight md:block">
+              Pull requests
+            </h1>
             <p className="text-sm text-muted-foreground/70">
               Across every project with a remote we can read.
             </p>

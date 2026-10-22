@@ -93,8 +93,11 @@ function GeneralChatsPage() {
             (like Settings); the reading column centers inside it. */}
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 py-8">
-            <div className="mb-1 flex items-center gap-3">
-              <h1 className="flex-1 text-lg font-medium tracking-tight">General chats</h1>
+            {/* On a phone the strip above names the page. */}
+            <div className="mb-1 flex items-center justify-end gap-3 md:justify-start">
+              <h1 className="hidden flex-1 text-lg font-medium tracking-tight md:block">
+                General chats
+              </h1>
               {newChatButton}
             </div>
             <p className="text-sm text-muted-foreground/70">

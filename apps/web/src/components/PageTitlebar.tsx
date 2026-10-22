@@ -21,9 +21,10 @@ import { TitleBarContent } from "./sidebar/titleBarSlot";
  * for the rail it is the sidebar trigger and the page name, like a phone's.
  * On the web below the `md` breakpoint the sidebar is a sheet, and the only
  * way to reach it is a trigger in the page itself, so there the strip is that
- * header: the trigger and the page name, the same row a thread shows. Pages
- * that already draw their own mobile header (a Back arrow) opt out with
- * `mobile="none"` rather than showing two.
+ * header: the trigger and the page name, the same row a thread shows, ending
+ * in the same fade. The strip's name is then the page's one title, so a page
+ * hides its own heading below `md`. Pages that already draw their own mobile
+ * header (a Back arrow) opt out with `mobile="none"` rather than showing two.
  */
 export function PageTitlebar({
   label,
@@ -64,12 +65,13 @@ function NarrowPageStrip({
       return null;
     }
     return (
-      <header className="flex shrink-0 items-center gap-2 border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] md:hidden">
+      <header className="relative z-10 flex shrink-0 items-center gap-2 pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] md:hidden">
         <SidebarOpenTrigger className="size-7 shrink-0" />
         {label ? (
           <span className="min-w-0 truncate text-sm font-medium text-foreground">{label}</span>
         ) : null}
         {children}
+        <HeaderEdgeFade at="below" />
       </header>
     );
   }
