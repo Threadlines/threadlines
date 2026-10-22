@@ -3650,7 +3650,21 @@ const ThreadChildNotesDeliveredCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Server only: points the General Chats project at the current data folder
+ * when its record was made under another one (a copied or moved Threadlines
+ * home), so chats never work in another install's folder. Clients can't send
+ * it, and General Chats refuses every other project edit.
+ */
+const ProjectGeneralChatsRelocateCommand = Schema.Struct({
+  type: Schema.Literal("project.general-chats.relocate"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  workspaceRoot: TrimmedNonEmptyString,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  ProjectGeneralChatsRelocateCommand,
   ThreadChildStartCommand,
   ThreadChildSendCommand,
   ThreadChildRequestUpdateCommand,

@@ -519,6 +519,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "project.general-chats.relocate": {
+      const project = yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      if (project.kind !== "general-chat") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Project '${command.projectId}' is not the General Chats project.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "project.meta-updated",
+        payload: {
+          projectId: command.projectId,
+          workspaceRoot: command.workspaceRoot,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "project.meta.update": {
       yield* requireWorkspaceProject({
         readModel,

@@ -82,6 +82,11 @@ export function resolveThreadProviderCwd(input: {
  * `kind: "general-chat"` when missing. Safe to run on every startup; a lost
  * race against a concurrent create surfaces as an invariant failure which is
  * resolved by re-reading the projection.
+ *
+ * A project made under another data folder (a copied or moved Threadlines
+ * home) is pointed at this one, so chats never work in another install's
+ * folder. Old chats then start in fresh scratch folders here; nothing in the
+ * other folder is read, moved or deleted.
  */
 export const ensureGeneralChatsProject = Effect.fn("ensureGeneralChatsProject")(function* () {
   const serverConfig = yield* ServerConfig;
@@ -90,12 +95,25 @@ export const ensureGeneralChatsProject = Effect.fn("ensureGeneralChatsProject")(
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
+  const workspaceRoot = generalChatsWorkspaceRoot(serverConfig.stateDir, path);
   const existing = yield* projectionSnapshotQuery.getProjectShellById(GENERAL_CHATS_PROJECT_ID);
   if (Option.isSome(existing)) {
+    if (existing.value.workspaceRoot !== workspaceRoot) {
+      yield* fileSystem.makeDirectory(workspaceRoot, { recursive: true });
+      yield* orchestrationEngine.dispatch({
+        type: "project.general-chats.relocate",
+        commandId: CommandId.make(crypto.randomUUID()),
+        projectId: GENERAL_CHATS_PROJECT_ID,
+        workspaceRoot,
+      });
+      yield* Effect.logInfo("general chats moved to this data folder", {
+        from: existing.value.workspaceRoot,
+        to: workspaceRoot,
+      });
+    }
     return existing.value.id;
   }
 
-  const workspaceRoot = generalChatsWorkspaceRoot(serverConfig.stateDir, path);
   yield* fileSystem.makeDirectory(workspaceRoot, { recursive: true });
   const createdAt = DateTime.formatIso(yield* DateTime.now);
   yield* orchestrationEngine

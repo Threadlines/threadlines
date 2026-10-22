@@ -69,6 +69,64 @@ async function decide(command: OrchestrationCommand, readModel: OrchestrationRea
 }
 
 describe("decider general chats guards", () => {
+  it("moves General Chats to another data folder, and only General Chats", async () => {
+    const readModel = await seedGeneralChatsReadModel();
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel,
+        command: {
+          type: "project.general-chats.relocate",
+          commandId: asCommandId("cmd-general-chats-relocate"),
+          projectId: asProjectId("project-general-chats"),
+          workspaceRoot: "/home/new/userdata/general-chats",
+        },
+      }),
+    );
+    const event = Array.isArray(result) ? result[0] : result;
+    expect(event.type).toBe("project.meta-updated");
+    const moved = await Effect.runPromise(
+      projectEvent(readModel, { ...event, sequence: 2, eventId: asEventId("evt-relocate") }),
+    );
+    expect(moved.projects.find((project) => project.kind === "general-chat")?.workspaceRoot).toBe(
+      "/home/new/userdata/general-chats",
+    );
+
+    const workspace = await Effect.runPromise(
+      projectEvent(readModel, {
+        sequence: 2,
+        eventId: asEventId("evt-workspace-create"),
+        aggregateKind: "project",
+        aggregateId: asProjectId("project-a"),
+        type: "project.created",
+        occurredAt: now,
+        commandId: asCommandId("cmd-workspace-create"),
+        causationEventId: null,
+        correlationId: asCommandId("cmd-workspace-create"),
+        metadata: {},
+        payload: {
+          projectId: asProjectId("project-a"),
+          kind: "workspace",
+          title: "Project A",
+          workspaceRoot: "/repos/project-a",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+    );
+    const refused = await decide(
+      {
+        type: "project.general-chats.relocate",
+        commandId: asCommandId("cmd-workspace-relocate"),
+        projectId: asProjectId("project-a"),
+        workspaceRoot: "/somewhere/else",
+      },
+      workspace,
+    );
+    expect(refused).not.toBeNull();
+  });
+
   it("creates general chat threads without branches or worktrees", async () => {
     const readModel = await seedGeneralChatsReadModel();
     const result = await Effect.runPromise(
