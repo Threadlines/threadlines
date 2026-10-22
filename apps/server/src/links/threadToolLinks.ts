@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import type { ThreadToolComputer, ThreadToolLinks } from "../mcp/threadToolHandlers.ts";
+import { resolveProjectPlace } from "../project/projectPlace.ts";
 import type { RepositoryIdentityResolverShape } from "../project/Services/RepositoryIdentityResolver.ts";
 import type { ComputerLinkClientShape } from "./ComputerLinkClient.ts";
 import { type ComputerLinkRepositoryShape, isUsableLink } from "./ComputerLinkRepository.ts";
@@ -59,9 +60,6 @@ export function makeThreadToolLinks(input: {
           }),
         )
         .pipe(Effect.catch((error) => Effect.succeed({ unavailable: error.message }))),
-    projectKey: (workspaceRoot) =>
-      identities
-        .resolve(workspaceRoot)
-        .pipe(Effect.map((identity) => identity?.canonicalKey ?? null)),
+    projectPlace: (workspaceRoot) => resolveProjectPlace(identities, workspaceRoot),
   };
 }

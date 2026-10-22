@@ -693,7 +693,12 @@ const fakeLinks = (patch: Partial<ThreadToolLinks> = {}): ThreadToolLinks => ({
   ]),
   describe: () => Effect.succeed(MAC_DESCRIPTOR),
   read: () => Effect.succeed({ unavailable: "it is offline" }),
-  projectKey: () => Effect.succeed("github.com/threadlines/threadlines"),
+  projectPlace: () =>
+    Effect.succeed({
+      canonicalKey: "github.com/threadlines/threadlines",
+      subdirectory: "",
+      rootPath: "/repo",
+    }),
   ...patch,
 });
 
@@ -721,6 +726,7 @@ describe("thread tools across linked computers", () => {
       expect(child?.launch.workspace).toEqual({
         kind: "remote",
         projectKey: "github.com/threadlines/threadlines",
+        projectSubdirectory: "",
         checkout: "worktree",
       });
       // The child's id is the one that computer makes for this link and request.
@@ -747,7 +753,8 @@ describe("thread tools across linked computers", () => {
       });
       expect(noProject).toMatchObject({
         outcome: "refused",
-        detail: "Mac mini doesn't have this project.",
+        detail:
+          "Mac mini doesn't have this project. The user can set it up there from the project's menu.",
       });
       expect(ofType(missing.dispatched, "thread.child.start")).toEqual([]);
     }),

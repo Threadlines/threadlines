@@ -1703,6 +1703,8 @@ export const ChildThreadWorkspace = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("remote"),
     projectKey: TrimmedNonEmptyString,
+    /** The project's folder in the repository ("" at the root); absent on older records. */
+    projectSubdirectory: Schema.optional(Schema.String),
     checkout: Schema.Literals(["worktree", "local"]),
     branch: Schema.optional(TrimmedNonEmptyString),
   }),

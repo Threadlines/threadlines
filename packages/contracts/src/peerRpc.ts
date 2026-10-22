@@ -362,6 +362,8 @@ export const PeerMoveManifest = Schema.Struct({
   }),
   project: Schema.Struct({
     canonicalKey: TrimmedNonEmptyString,
+    /** The project's folder in the repository ("" at the root); absent from older senders. */
+    subdirectory: Schema.optional(Schema.String),
     title: TrimmedNonEmptyString,
   }),
   git: Schema.Struct({

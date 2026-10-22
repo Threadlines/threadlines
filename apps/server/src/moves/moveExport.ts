@@ -318,6 +318,8 @@ export interface MoveExportInput {
   readonly thread: OrchestrationThread;
   readonly projectTitle: string;
   readonly canonicalKey: string;
+  /** The project's folder in the repository ("" at the root). */
+  readonly subdirectory: string;
   readonly source: {
     readonly environmentId: EnvironmentId;
     readonly environmentLabel: string;
@@ -551,7 +553,11 @@ export function writeMoveExport(
       sha256: whole.digest("hex"),
       parts: table,
       source: input.source,
-      project: { canonicalKey: input.canonicalKey, title: input.projectTitle },
+      project: {
+        canonicalKey: input.canonicalKey,
+        subdirectory: input.subdirectory,
+        title: input.projectTitle,
+      },
       git: { headSha: checkout.headSha, branch: checkout.branch, baseSha: checkout.baseSha },
       thread: {
         title: input.thread.title,

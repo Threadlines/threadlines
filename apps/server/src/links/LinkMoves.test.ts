@@ -23,6 +23,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../config.ts";
+import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { inspectMoveCheckout, movePayloadPath, writeMoveExport } from "../moves/moveExport.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -129,6 +130,7 @@ function testLayer(
   dispatched: OrchestrationCommand[],
   access: "allowed" | "ask" = "allowed",
   revoked: () => boolean = () => false,
+  setupRuns: string[] = [],
 ) {
   return LinkMovesLive.pipe(
     Layer.provideMerge(LinkMoveRepositoryLive),
@@ -189,6 +191,13 @@ function testLayer(
         Layer.mock(ServerEnvironment)({
           getDescriptor: Effect.succeed({ label: "Mac mini" } as never),
         }),
+        Layer.mock(ProjectSetupScriptRunner)({
+          runForThread: (input) =>
+            Effect.sync(() => {
+              setupRuns.push(input.worktreePath);
+              return { status: "no-script" } as const;
+            }),
+        }),
       ),
     ),
     Layer.provideMerge(GitVcsDriver.layer),
@@ -222,6 +231,7 @@ const pack = (repos: ReturnType<typeof makeRepos>) =>
       attachmentsDir: path.join(repos.root, "attachments"),
       thread: movingThread(),
       projectTitle: "Threadlines",
+      subdirectory: "",
       canonicalKey: "example.com/repo",
       source: {
         environmentId: EnvironmentId.make("environment-windows"),
@@ -237,6 +247,7 @@ describe("LinkMoves", () => {
   it.live("rebuilds the moved checkout in a worktree of its own and imports the thread", () => {
     const repos = makeRepos();
     const dispatched: OrchestrationCommand[] = [];
+    const setupRuns: string[] = [];
     let linkOff = false;
     return Effect.gen(function* () {
       const { manifest, payload, checkout } = yield* pack(repos);
@@ -291,6 +302,8 @@ describe("LinkMoves", () => {
       if (process.platform !== "win32") {
         assert.notEqual(fs.statSync(path.join(worktree, "tool.sh")).mode & 0o111, 0);
       }
+      // Its worktree gets the project's setup, like a new worktree thread here.
+      assert.deepEqual(setupRuns, [worktree]);
       // Dropping it now changes nothing: it landed.
       assert.equal(
         (yield* moves.abort(link("allowed"), { transferId: TRANSFER })).status,
@@ -309,7 +322,7 @@ describe("LinkMoves", () => {
       }
       assert.equal(state.status, "committed");
       assert.equal(run(worktree, "rev-parse", "HEAD"), checkout.headSha);
-    }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => linkOff)));
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => linkOff, setupRuns)));
   });
 
   it.live(

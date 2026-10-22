@@ -26,6 +26,10 @@ import { ComputerLinksLive } from "./links/ComputerLinks.ts";
 import { LinkMoveRepositoryLive } from "./links/LinkMoveRepository.ts";
 import { LinkMovesLive } from "./links/LinkMoves.ts";
 import { ThreadMovesLive } from "./moves/ThreadMoves.ts";
+import { layer as ProcessRunnerLive } from "./processRunner.ts";
+import { ProjectSetupRepositoryLive } from "./projectSetup/ProjectSetupRepository.ts";
+import { ProjectSetupsLive } from "./projectSetup/ProjectSetups.ts";
+import { ProjectSetupSourceLive } from "./projectSetup/ProjectSetupSource.ts";
 import { LinkRequestRepositoryLive } from "./links/LinkRequestRepository.ts";
 import {
   LinkRequestsLive,
@@ -289,6 +293,15 @@ const ScheduledTasksLayerLive = Layer.mergeAll(
   Layer.provide(ProjectionTurnRepositoryLive),
 );
 
+// Setting up a project copied from another computer (docs/design/fleet.md,
+// Part 8): the reads for a copy of this computer's projects, and the jobs
+// that make copies here. Jobs a restart cut short are finished or undone
+// as the layer starts.
+const ProjectSetupsLayerLive = Layer.mergeAll(ProjectSetupsLive, ProjectSetupSourceLive).pipe(
+  Layer.provideMerge(ProjectSetupRepositoryLive),
+  Layer.provide(ProcessRunnerLive),
+);
+
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
@@ -296,6 +309,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   // Both reactors above take these (optionally), so they come after them.
   Layer.provideMerge(Layer.mergeAll(RemoteRequestTurnEndsLive, RemoteRequestGateLive)),
   Layer.provideMerge(ScheduledTasksLayerLive),
+  Layer.provideMerge(ProjectSetupsLayerLive),
   Layer.provideMerge(ComputerLinksLayerLive),
   Layer.provideMerge(ChildThreadReactorLive),
   Layer.provideMerge(CheckpointReactorLive),

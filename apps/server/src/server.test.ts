@@ -96,6 +96,8 @@ import { ScheduledTasks, type ScheduledTasksShape } from "./scheduled/ScheduledT
 import { LinkMoves } from "./links/LinkMoves.ts";
 import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
+import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
+import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
   CheckpointDiffQuery,
@@ -843,6 +845,8 @@ const buildAppUnderTest = (options?: {
             pendingChanges: Stream.empty,
           }),
           Layer.mock(ThreadMoves)({}),
+          Layer.mock(ProjectSetups)({}),
+          Layer.mock(ProjectSetupSource)({}),
           Layer.mock(ThreadSearch)({
             search: () => Effect.succeed({ matches: [], truncated: false }),
             ...options?.layers?.threadSearch,

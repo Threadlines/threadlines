@@ -96,6 +96,7 @@ import { ThreadBootstrap } from "../orchestration/Services/ThreadBootstrap.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
+import { findProjectByPlace } from "../project/projectPlace.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { RelayDeviceRepository, type RelayDeviceRow } from "../relay/RelayDeviceRepository.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -231,8 +232,10 @@ export interface LinkRequestsShape {
    * here a linked computer named, with its model.
    */
   readonly authority: (deviceId: string) => Effect.Effect<LinkAuthority>;
+  /** This computer's project at that key and folder (the key alone without one). */
   readonly projectForKey: (
     canonicalKey: string,
+    subdirectory?: string,
   ) => Effect.Effect<OrchestrationProjectCatalogEntry | undefined>;
   readonly resolveAgentFor: (input: AgentAsked) => Effect.Effect<AgentResolution>;
 }
@@ -649,17 +652,12 @@ const make = Effect.gen(function* () {
   // Where a start runs: the project, its checkout, the agent
   // ---------------------------------------------------------------------------
 
-  const projectForKey = (canonicalKey: string) =>
+  const projectForKey = (canonicalKey: string, subdirectory?: string) =>
     Effect.gen(function* () {
       const catalog = yield* snapshots
         .getProjectCatalog()
         .pipe(Effect.orElseSucceed(() => ({ projects: [] as const })));
-      for (const project of catalog.projects) {
-        if (project.deletedAt !== null || project.kind === "general-chat") continue;
-        const identity = yield* identities.resolve(project.workspaceRoot);
-        if (identity?.canonicalKey === canonicalKey) return project;
-      }
-      return undefined;
+      return yield* findProjectByPlace(identities, catalog.projects, canonicalKey, subdirectory);
     });
 
   const runGit = (cwd: string, args: ReadonlyArray<string>) =>
@@ -806,7 +804,7 @@ const make = Effect.gen(function* () {
                 error: detail,
               },
             );
-          const project = yield* projectForKey(input.projectKey);
+          const project = yield* projectForKey(input.projectKey, input.projectSubdirectory);
           if (project === undefined) {
             return yield* fail(`${ownLabel} doesn't have this project.`);
           }
@@ -943,7 +941,7 @@ const make = Effect.gen(function* () {
         return startAnswer(row);
       }
       // Refused early when this computer can't do it at all.
-      if ((yield* projectForKey(input.projectKey)) === undefined) {
+      if ((yield* projectForKey(input.projectKey, input.projectSubdirectory)) === undefined) {
         const reason = `${ownLabel} doesn't have this project.`;
         yield* settle(row, "failed", reason, { error: reason });
         return { status: "refused", reason } as const;
@@ -1363,7 +1361,7 @@ const make = Effect.gen(function* () {
       const device = yield* devices
         .getDevice(row.linkDeviceId)
         .pipe(Effect.orElseSucceed(Option.none));
-      const project = yield* projectForKey(input.projectKey);
+      const project = yield* projectForKey(input.projectKey, input.projectSubdirectory);
       const { runtimeMode } = clampLaunchToCeiling(input, {
         runtimeMode: Option.isSome(device)
           ? (device.value.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE)

@@ -56,6 +56,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { childRequestCommandId, derivedUuid } from "../orchestration/childRequestIds.ts";
+import type { ProjectPlace } from "../project/projectPlace.ts";
 import { linkMessageId, linkThreadId } from "../links/linkIds.ts";
 import {
   childAgentProviderName,
@@ -151,7 +152,8 @@ export interface ThreadToolLinks {
     },
   ) => Effect.Effect<ThreadReadResult | { readonly unavailable: string }>;
   /** The repository's canonical key for a project folder, how another computer finds its copy. */
-  readonly projectKey: (workspaceRoot: string) => Effect.Effect<string | null>;
+  /** The project's repository key and folder in it, or null without a git remote. */
+  readonly projectPlace: (workspaceRoot: string) => Effect.Effect<ProjectPlace | null>;
 }
 
 const THREADS_OFF =
@@ -1155,18 +1157,25 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               detail: "Only a project's threads can start threads on another computer.",
             } satisfies ThreadStartResult;
           }
-          const projectKey = yield* links.projectKey(project.workspaceRoot);
-          if (projectKey === null) {
+          const place = yield* links.projectPlace(project.workspaceRoot);
+          if (place === null) {
             return {
               outcome: "refused",
               detail:
                 "This project has no git remote, so another computer can't find its copy of it.",
             } satisfies ThreadStartResult;
           }
-          if (!descriptor.projects.some((entry) => entry.canonicalKey === projectKey)) {
+          const projectKey = place.canonicalKey;
+          if (
+            !descriptor.projects.some(
+              (entry) =>
+                entry.canonicalKey === projectKey &&
+                (entry.subdirectory === undefined || entry.subdirectory === place.subdirectory),
+            )
+          ) {
             return {
               outcome: "refused",
-              detail: `${descriptor.label} doesn't have this project.`,
+              detail: `${descriptor.label} doesn't have this project. The user can set it up there from the project's menu.`,
             } satisfies ThreadStartResult;
           }
           const providers = yield* deps.providers;
@@ -1193,6 +1202,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           const workspace: ChildThreadWorkspace = {
             kind: "remote",
             projectKey,
+            projectSubdirectory: place.subdirectory,
             checkout: "worktree",
             ...(branch !== null ? { branch } : {}),
           };

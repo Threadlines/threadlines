@@ -142,6 +142,8 @@ import { RelayHost } from "./relay/RelayHost.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
+import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
+import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput.ts";
@@ -369,6 +371,8 @@ const makeWsRpcLayer = (currentSession: {
       const computerLinks = yield* ComputerLinks;
       const scheduledTasks = yield* ScheduledTasks;
       const threadMoves = yield* ThreadMoves;
+      const projectSetups = yield* ProjectSetups;
+      const projectSetupSource = yield* ProjectSetupSource;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const agentPages = yield* AgentPages;
       const mcpApps = yield* McpApps;
@@ -2693,6 +2697,41 @@ const makeWsRpcLayer = (currentSession: {
         [WS_METHODS.movesCancel]: (input) =>
           observeRpcEffect(WS_METHODS.movesCancel, threadMoves.cancel(input.threadId), {
             "rpc.aggregate": "moves",
+          }),
+        // Setting up a project on another computer (docs/design/fleet.md,
+        // Part 8): the app reads from the computer that has it and starts
+        // the job on the one that gets the copy.
+        [WS_METHODS.projectSetupsSource]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectSetupsSource,
+            projectSetupSource.source(input.projectId),
+            { "rpc.aggregate": "projectSetups" },
+          ),
+        [WS_METHODS.projectSetupsReadFiles]: (input) =>
+          observeRpcEffect(WS_METHODS.projectSetupsReadFiles, projectSetupSource.readFiles(input), {
+            "rpc.aggregate": "projectSetups",
+          }),
+        [WS_METHODS.projectSetupsInspectDestination]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectSetupsInspectDestination,
+            projectSetups.inspectDestination(input),
+            { "rpc.aggregate": "projectSetups" },
+          ),
+        [WS_METHODS.projectSetupsStart]: (input) =>
+          observeRpcEffect(WS_METHODS.projectSetupsStart, projectSetups.start(input), {
+            "rpc.aggregate": "projectSetups",
+          }),
+        [WS_METHODS.projectSetupsCancel]: (input) =>
+          observeRpcEffect(WS_METHODS.projectSetupsCancel, projectSetups.cancel(input.setupId), {
+            "rpc.aggregate": "projectSetups",
+          }),
+        [WS_METHODS.projectSetupsDismiss]: (input) =>
+          observeRpcEffect(WS_METHODS.projectSetupsDismiss, projectSetups.dismiss(input.setupId), {
+            "rpc.aggregate": "projectSetups",
+          }),
+        [WS_METHODS.projectSetupsSubscribe]: (_input) =>
+          observeRpcStream(WS_METHODS.projectSetupsSubscribe, projectSetups.changes, {
+            "rpc.aggregate": "projectSetups",
           }),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(

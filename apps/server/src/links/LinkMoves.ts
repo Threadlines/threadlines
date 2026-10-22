@@ -54,6 +54,8 @@ import * as Stream from "effect/Stream";
 import { resolveAttachmentPath, toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
+import { receivedPathRefusal, writeReceivedFile } from "../fs/receivedFiles.ts";
+import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
 import { MOVE_MAX_BYTES } from "../moves/moveExport.ts";
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
 import { clampLaunchToCeiling } from "../orchestration/childThreadDecisions.ts";
@@ -137,27 +139,8 @@ const isWindows = process.platform === "win32";
 const isCaseInsensitive = process.platform === "win32" || process.platform === "darwin";
 const foldCase = (path: string) => (isCaseInsensitive ? path.toLowerCase() : path);
 
-/**
- * Why `path` (a new file's path from the repository root, `/`-separated, as a
- * peer sent it) can't be written here, or null. Relative, no `.` or `..`
- * segments, nothing under `.git`, no drive, UNC or stream syntax.
- */
-export function movePathRefusal(path: string): string | null {
-  if (path.length === 0 || path.length > 4096) return "an empty or overlong path";
-  if (path.includes("\\") || path.includes("\0")) return `"${path}" has a character paths can't`;
-  if (path.startsWith("/") || /^[A-Za-z]:/.test(path)) return `"${path}" isn't relative`;
-  if (path.includes(":")) return `"${path}" has a ":"`;
-  const segments = path.split("/");
-  for (const segment of segments) {
-    if (segment === "" || segment === "." || segment === "..") {
-      return `"${path}" has an empty, "." or ".." part`;
-    }
-    if (segment.toLowerCase() === ".git") return `"${path}" is inside .git`;
-    if (isWindows && /[<>"|?*]/.test(segment)) return `"${path}" has a character Windows can't`;
-    if (isWindows && /[. ]$/.test(segment)) return `"${path}" ends a part with a dot or space`;
-  }
-  return null;
-}
+/** Why a moved file's path can't be written here, or null (the shared receive rule). */
+export const movePathRefusal = receivedPathRefusal;
 
 /**
  * Why a peer's manifest can't be taken, or null: within the size limit, its
@@ -288,6 +271,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const devices = yield* RelayDeviceRepository;
   const identities = yield* RepositoryIdentityResolver;
+  const setupScripts = yield* ProjectSetupScriptRunner;
   const environment = yield* ServerEnvironment;
   const ownLabel = (yield* environment.getDescriptor).label;
   const pendingHub = yield* PubSub.sliding<void>(1);
@@ -358,7 +342,10 @@ const make = Effect.gen(function* () {
   /** The project here a move lands in, and the remote it fetches from. */
   const landing = (manifest: PeerMoveManifest) =>
     Effect.gen(function* () {
-      const project = yield* requests.projectForKey(manifest.project.canonicalKey);
+      const project = yield* requests.projectForKey(
+        manifest.project.canonicalKey,
+        manifest.project.subdirectory,
+      );
       if (project === undefined) return null;
       const identity = yield* identities.resolve(project.workspaceRoot);
       return {
@@ -1099,28 +1086,15 @@ const make = Effect.gen(function* () {
 
   /** Writes one new file, refusing any parent that is a symbolic link. */
   const writeNewFile = (root: string, part: PeerMovePart, bytes: Buffer) =>
-    Effect.tryPromise(async () => {
-      const segments = part.path!.split("/");
-      let current = root;
-      for (const segment of segments.slice(0, -1)) {
-        current = NodePath.join(current, segment);
-        const stat = await NodeFs.lstat(current).catch(() => null);
-        if (stat === null) {
-          await NodeFs.mkdir(current);
-        } else if (!stat.isDirectory() || stat.isSymbolicLink()) {
-          throw new Error("parent");
-        }
-      }
-      const target = NodePath.join(root, ...segments);
-      if (part.mode === "symlink") {
-        await NodeFs.symlink(bytes.toString("utf8"), target);
-      } else {
-        await NodeFs.writeFile(target, bytes, {
-          flag: "wx",
-          mode: part.mode === "executable" ? 0o755 : 0o644,
-        });
-      }
-    }).pipe(
+    Effect.tryPromise(() =>
+      writeReceivedFile(
+        root,
+        part.path!,
+        part.mode === "symlink"
+          ? { symlinkTarget: bytes.toString("utf8") }
+          : { bytes, mode: part.mode === "executable" ? 0o755 : 0o644 },
+      ),
+    ).pipe(
       Effect.mapError(
         () => new ImportStop({ reason: `${ownLabel} couldn't write ${part.path} safely.` }),
       ),
@@ -1304,14 +1278,33 @@ const make = Effect.gen(function* () {
       if (Exit.isFailure(dispatched) && !(yield* importLanded(row))) {
         return yield* stop(`${ownLabel} couldn't create the thread.`);
       }
-      yield* moves
+      const settled = yield* moves
         .settle({
           linkDeviceId: row.linkDeviceId,
           transferId: row.transferId,
           status: "committed",
           now: yield* nowIso,
         })
-        .pipe(Effect.ignore);
+        .pipe(Effect.orElseSucceed(() => false));
+      // Like a new worktree thread here: the project's setup script brings
+      // its ignored files (.env) and installs what the worktree needs. Once.
+      if (settled && row.worktreePath !== null) {
+        yield* setupScripts
+          .runForThread({
+            threadId: row.threadId,
+            projectId: land.project.id,
+            projectCwd: land.project.workspaceRoot,
+            worktreePath: row.worktreePath,
+          })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("moved thread's setup script didn't start", {
+                threadId: row.threadId,
+                detail: error.message,
+              }),
+            ),
+          );
+      }
     });
 
   /**

@@ -612,6 +612,10 @@ const make = Effect.gen(function* () {
             handle: agentName(parent, request),
           },
           projectKey: launch.workspace.kind === "remote" ? launch.workspace.projectKey : "",
+          ...(launch.workspace.kind === "remote" &&
+          launch.workspace.projectSubdirectory !== undefined
+            ? { projectSubdirectory: launch.workspace.projectSubdirectory }
+            : {}),
           workspace:
             launch.workspace.kind === "remote" && launch.workspace.checkout === "worktree"
               ? {

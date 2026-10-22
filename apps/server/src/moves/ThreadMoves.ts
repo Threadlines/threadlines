@@ -56,6 +56,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
+import { type ProjectPlace, resolveProjectPlace } from "../project/projectPlace.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import {
   inspectMoveCheckout,
@@ -130,23 +131,26 @@ const make = Effect.gen(function* () {
   const whereFrom = (thread: OrchestrationThread, workspaceRoot: string) =>
     Effect.gen(function* () {
       const identity = yield* identities.resolve(workspaceRoot);
-      if (identity === null) {
+      const place = yield* resolveProjectPlace(identities, workspaceRoot);
+      if (identity === null || place === null) {
         return yield* new ThreadMoveFailure({
           reason: "This project has no git remote, so the other computer can't find it.",
         });
       }
       const cwd = thread.worktreePath ?? workspaceRoot;
       const checkout = yield* inspectMoveCheckout(git, cwd, identity.locator.remoteName);
-      return { identity, checkout };
+      return { identity, place, checkout };
     });
 
   const describeTarget = (
     environmentId: EnvironmentId,
     label: string,
     thread: OrchestrationThread,
-    canonicalKey: string | null,
+    place: ProjectPlace | null,
   ) =>
-    client.describe(environmentId).pipe(
+    // Fresh: a project just set up there must show at once, not after the
+    // five minutes a cached description lives.
+    client.describe(environmentId, { fresh: true }).pipe(
       Effect.timeout(DESCRIBE_WAIT),
       Effect.option,
       Effect.map((described): ThreadMoveTargetPreview => {
@@ -160,9 +164,13 @@ const make = Effect.gen(function* () {
         }
         const peer = described.value;
         const project =
-          canonicalKey === null
+          place === null
             ? undefined
-            : peer.projects.find((entry) => entry.canonicalKey === canonicalKey);
+            : peer.projects.find(
+                (entry) =>
+                  entry.canonicalKey === place.canonicalKey &&
+                  (entry.subdirectory === undefined || entry.subdirectory === place.subdirectory),
+              );
         const refusal =
           peer.moves !== true
             ? `${peer.label} needs a newer Threadlines to take moved threads.`
@@ -178,6 +186,12 @@ const make = Effect.gen(function* () {
           environmentId,
           label: peer.label,
           ...(refusal !== undefined ? { refusal } : {}),
+          ...(refusal !== undefined &&
+          peer.moves === true &&
+          peer.access !== "off" &&
+          project === undefined
+            ? { refusalCode: "no_project" as const }
+            : {}),
           ...(project !== undefined ? { projectName: project.name } : {}),
           access: peer.access,
           agents: peer.agents,
@@ -194,11 +208,11 @@ const make = Effect.gen(function* () {
       const project = model.projects.find((entry) => entry.id === thread.projectId);
       let refusal = threadMoveRefusal(model, thread);
       let changes: ThreadMovePreview["changes"];
-      let canonicalKey: string | null = null;
+      let place: ProjectPlace | null = null;
       if (project !== undefined && project.kind !== "general-chat") {
         const source = yield* whereFrom(thread, project.workspaceRoot).pipe(Effect.result);
         if (source._tag === "Success") {
-          canonicalKey = source.success.identity.canonicalKey;
+          place = source.success.place;
           const { tracked, untracked } = yield* summarizeMoveChanges(
             git,
             source.success.checkout.root,
@@ -217,7 +231,7 @@ const make = Effect.gen(function* () {
       const rows = (yield* links.list.pipe(Effect.orElseSucceed(() => []))).filter(isUsableLink);
       const targets = yield* Effect.forEach(
         rows,
-        (row) => describeTarget(row.remoteEnvironmentId, row.remoteLabel, thread, canonicalKey),
+        (row) => describeTarget(row.remoteEnvironmentId, row.remoteLabel, thread, place),
         { concurrency: "unbounded" },
       );
       return {
@@ -488,7 +502,7 @@ const make = Effect.gen(function* () {
       if (Option.isNone(detail)) {
         return yield* new ThreadMoveFailure({ reason: "This thread couldn't be read." });
       }
-      const { identity, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
+      const { place, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
       return yield* writeMoveExport({
         git,
         checkout,
@@ -497,7 +511,8 @@ const make = Effect.gen(function* () {
         attachmentsDir: config.attachmentsDir,
         thread: detail.value,
         projectTitle: project.title,
-        canonicalKey: identity.canonicalKey,
+        canonicalKey: place.canonicalKey,
+        subdirectory: place.subdirectory,
         source: {
           environmentId: descriptor.environmentId,
           environmentLabel: descriptor.label,

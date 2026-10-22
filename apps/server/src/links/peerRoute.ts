@@ -32,6 +32,7 @@ import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts"
 import { listThreadAgents } from "../mcp/threadToolHandlers.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
+import { resolveProjectPlace } from "../project/projectPlace.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import { RelayHost } from "../relay/RelayHost.ts";
@@ -126,9 +127,13 @@ export const makePeerRpcLayer = (input: {
           const projects: Array<PeerDescriptor["projects"][number]> = [];
           for (const project of catalog.projects) {
             if (project.deletedAt !== null || project.kind === "general-chat") continue;
-            const identity = yield* identities.resolve(project.workspaceRoot);
-            if (identity?.canonicalKey) {
-              projects.push({ name: project.title, canonicalKey: identity.canonicalKey });
+            const place = yield* resolveProjectPlace(identities, project.workspaceRoot);
+            if (place !== null) {
+              projects.push({
+                name: project.title,
+                canonicalKey: place.canonicalKey,
+                subdirectory: place.subdirectory,
+              });
             }
           }
           const defaultAgent = defaults?.newThreadModelSelection ?? null;
