@@ -137,6 +137,7 @@ import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
+import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput.ts";
@@ -357,6 +358,7 @@ const makeWsRpcLayer = (currentSession: {
           : Effect.fail(new WsOwnerRequiredError({ method }));
       const relayHost = yield* RelayHost;
       const computerLinks = yield* ComputerLinks;
+      const threadMoves = yield* ThreadMoves;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const agentPages = yield* AgentPages;
       const mcpApps = yield* McpApps;
@@ -2596,6 +2598,19 @@ const makeWsRpcLayer = (currentSession: {
         [WS_METHODS.linksRespondRequest]: (input) =>
           observeRpcEffect(WS_METHODS.linksRespondRequest, computerLinks.respondRequest(input), {
             "rpc.aggregate": "links",
+          }),
+        // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
+        [WS_METHODS.movesPreview]: (input) =>
+          observeRpcEffect(WS_METHODS.movesPreview, threadMoves.preview(input.threadId), {
+            "rpc.aggregate": "moves",
+          }),
+        [WS_METHODS.movesStart]: (input) =>
+          observeRpcEffect(WS_METHODS.movesStart, threadMoves.start(input), {
+            "rpc.aggregate": "moves",
+          }),
+        [WS_METHODS.movesCancel]: (input) =>
+          observeRpcEffect(WS_METHODS.movesCancel, threadMoves.cancel(input.threadId), {
+            "rpc.aggregate": "moves",
           }),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(

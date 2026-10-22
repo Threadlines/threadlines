@@ -55,6 +55,8 @@ import {
   RoomAgentRequestOutcome,
   RoomAgentInvite,
   ThreadMessageOrigin,
+  OrchestrationThreadMove,
+  ThreadMovedFrom,
   ThreadRemoteOrigin,
   RoomReviewInput,
   TrimmedNonEmptyString,
@@ -151,6 +153,9 @@ type ThreadLineageRow = Pick<
   | "archivedWithParentAt"
   | "childRequests"
   | "remoteOrigin"
+  | "move"
+  | "movedFrom"
+  | "historySeedOwed"
 >;
 
 /** Child threads: lineage and family as the decider and the thread detail read them. */
@@ -164,6 +169,14 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   archivedWithParentAt: row.archivedWithParentAt ?? null,
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
   ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+  ...threadMoveFields(row),
+  ...((row.historySeedOwed ?? 0) > 0 ? { historySeedOwed: true } : {}),
+});
+
+/** Moving a thread to a linked computer, or moved here from one (OrchestrationThreadMove). */
+const threadMoveFields = (row: Pick<ProjectionThread, "move" | "movedFrom">) => ({
+  ...(row.move ? { move: row.move } : {}),
+  ...(row.movedFrom ? { movedFrom: row.movedFrom } : {}),
 });
 
 /**
@@ -185,6 +198,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     awaitedChildThreadCount: awaitedChildRequestCount(childRequests),
     pendingChildApproval: hasPendingChildApproval(childRequests),
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+    ...threadMoveFields(row),
     ...(remoteChildren.length > 0 ? { remoteChildren } : {}),
     ...(remoteChildStarts.length > 0 ? { remoteChildStarts } : {}),
   };
@@ -206,6 +220,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
     invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
     fromThread: Schema.NullOr(Schema.fromJsonString(ThreadMessageOrigin)),
+    imported: Schema.NullOr(Schema.Number),
     agentModels: Schema.NullOr(
       Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
     ),
@@ -239,6 +254,8 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
       Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
     ),
     remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
+    move: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove))),
+    movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -496,6 +513,7 @@ function mapThreadMessageRow(
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     ...(row.invite !== null ? { invite: row.invite } : {}),
     ...(row.fromThread !== null ? { fromThread: row.fromThread } : {}),
+    ...(row.imported === 1 ? { imported: true as const } : {}),
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     ...(row.composer !== null ? { composer: row.composer } : {}),
     turnId: row.turnId,
@@ -794,6 +812,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -852,6 +873,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -912,6 +936,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -946,6 +973,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
@@ -1002,6 +1030,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",
@@ -1671,6 +1700,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
+          move_json AS "move",
+          moved_from_json AS "movedFrom",
+          history_seed_owed AS "historySeedOwed",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1706,6 +1738,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
           request_outcome AS "requestOutcome",

@@ -86,6 +86,12 @@ import {
   ThreadRemoteCancelQueuedPayload,
   ThreadRemoteCancelsDeliveredPayload,
   ThreadRemoteChildUpdatedPayload,
+  ThreadMoveStartedPayload,
+  ThreadMoveProgressedPayload,
+  ThreadMoveCancelRequestedPayload,
+  ThreadMoveAbortedPayload,
+  ThreadMovedAwayPayload,
+  ThreadHistorySeedDeliveredPayload,
   ThreadParentAttachmentSetPayload,
   ThreadSideTurnInterruptRequestedPayload,
   ThreadSideTurnRunningPayload,
@@ -186,6 +192,21 @@ function updateAgentRequests(
       agentRequests: change(thread.agentRequests),
     }),
   };
+}
+
+/** Changes the thread's move when it is the one `transferId` names; a late event for another is ignored. */
+function updateMove(
+  base: OrchestrationReadModel,
+  threadId: ThreadId,
+  transferId: string,
+  change: (
+    move: NonNullable<OrchestrationThread["move"]>,
+  ) => NonNullable<OrchestrationThread["move"]> | null,
+): OrchestrationReadModel {
+  const thread = base.threads.find((entry) => entry.id === threadId);
+  const move = thread?.move ?? null;
+  if (move === null || move.transferId !== transferId) return base;
+  return { ...base, threads: updateThread(base.threads, threadId, { move: change(move) }) };
 }
 
 function updateThread(
@@ -379,6 +400,8 @@ export function projectEvent(
             parentTurnId: payload.parentTurnId ?? null,
             attachedToParent: payload.attachedToParent ?? false,
             ...(payload.remoteOrigin !== undefined ? { remoteOrigin: payload.remoteOrigin } : {}),
+            ...(payload.movedFrom !== undefined ? { movedFrom: payload.movedFrom } : {}),
+            ...(payload.historySeedOwed === true ? { historySeedOwed: true } : {}),
             voiceActive: false,
             latestTurn: null,
             createdAt: payload.createdAt,
@@ -922,6 +945,81 @@ export function projectEvent(
         ),
       );
 
+    // Moving a thread to a linked computer (OrchestrationThreadMove).
+    case "thread.move-started":
+      return decodeForEvent(ThreadMoveStartedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            move: {
+              transferId: payload.transferId,
+              target: payload.target,
+              agent: payload.agent,
+              phase: "exporting",
+              cancelRequested: false,
+              startedAt: payload.startedAt,
+            },
+          }),
+        })),
+      );
+
+    case "thread.move-progressed":
+      return decodeForEvent(ThreadMoveProgressedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) =>
+          updateMove(nextBase, payload.threadId, payload.transferId, (move) => ({
+            ...move,
+            phase: payload.phase,
+            ...(payload.sentBytes !== undefined ? { sentBytes: payload.sentBytes } : {}),
+            ...(payload.totalBytes !== undefined ? { totalBytes: payload.totalBytes } : {}),
+          })),
+        ),
+      );
+
+    case "thread.move-cancel-requested":
+      return decodeForEvent(
+        ThreadMoveCancelRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateMove(nextBase, payload.threadId, payload.transferId, (move) => ({
+            ...move,
+            cancelRequested: true,
+          })),
+        ),
+      );
+
+    case "thread.move-aborted":
+      return decodeForEvent(ThreadMoveAbortedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) =>
+          updateMove(nextBase, payload.threadId, payload.transferId, () => null),
+        ),
+      );
+
+    case "thread.moved-away":
+      return decodeForEvent(ThreadMovedAwayPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) =>
+          updateMove(nextBase, payload.threadId, payload.transferId, (move) => ({
+            ...move,
+            movedAway: { threadId: payload.movedThreadId, movedAt: payload.movedAt },
+          })),
+        ),
+      );
+
+    case "thread.history-seed-delivered":
+      return decodeForEvent(
+        ThreadHistorySeedDeliveredPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, { historySeedOwed: false }),
+        })),
+      );
+
     // Neither moves `updatedAt`: a handed-back answer and a family change
     // are not work on the child.
     case "thread.handed-back":
@@ -1116,6 +1214,7 @@ export function projectEvent(
             ...(payload.reviewInput !== undefined ? { reviewInput: payload.reviewInput } : {}),
             ...(payload.invite !== undefined ? { invite: payload.invite } : {}),
             ...(payload.fromThread !== undefined ? { fromThread: payload.fromThread } : {}),
+            ...(payload.imported === true ? { imported: true } : {}),
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             turnId: payload.turnId,

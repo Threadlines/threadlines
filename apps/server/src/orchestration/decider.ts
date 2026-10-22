@@ -96,6 +96,16 @@ import {
 import { childDeliveryForQuietCandidate } from "./childThreadDelivery.ts";
 import { projectEvent } from "./projector.ts";
 import { canReplaceThreadTitle } from "./threadTitle.ts";
+import {
+  decideHistorySeedDelivered,
+  decideMoveAbort,
+  decideMoveCancel,
+  decideMoveComplete,
+  decideMoveProgress,
+  decideMoveStart,
+  decideThreadImport,
+  threadMoveGuardRefusal,
+} from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -460,6 +470,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
 }): Effect.fn.Return<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
+  // A thread moving or moved to another computer is frozen here.
+  const frozenRefusal = threadMoveGuardRefusal(readModel, command);
+  if (frozenRefusal !== null) {
+    return yield* new OrchestrationCommandInvariantError({
+      commandType: command.type,
+      detail: frozenRefusal,
+    });
+  }
   switch (command.type) {
     case "project.create": {
       yield* requireProjectAbsent({
@@ -1561,6 +1579,41 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                       : command.type === "thread.remote-request.queue"
                         ? decideRemoteRequestQueue(thread, command, baseFor)
                         : decideChildNotesDelivered(thread, command, baseFor),
+      );
+    }
+
+    case "thread.import": {
+      return yield* planChildThreadDecision(
+        command.type,
+        decideThreadImport(readModel, command, childEventBase(command, command.createdAt)),
+      );
+    }
+
+    case "thread.move.start":
+    case "thread.move.progress":
+    case "thread.move.cancel":
+    case "thread.move.abort":
+    case "thread.move.complete":
+    case "thread.history-seed.delivered": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const baseFor = childEventBase(command, command.createdAt);
+      return yield* planChildThreadDecision(
+        command.type,
+        command.type === "thread.move.start"
+          ? decideMoveStart(readModel, thread, command, baseFor)
+          : command.type === "thread.move.progress"
+            ? decideMoveProgress(thread, command, baseFor)
+            : command.type === "thread.move.cancel"
+              ? decideMoveCancel(thread, command, baseFor)
+              : command.type === "thread.move.abort"
+                ? decideMoveAbort(thread, command, baseFor)
+                : command.type === "thread.move.complete"
+                  ? decideMoveComplete(thread, command, baseFor)
+                  : decideHistorySeedDelivered(thread, command, baseFor),
       );
     }
 

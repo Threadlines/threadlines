@@ -97,6 +97,7 @@ import Migration0075 from "./Migrations/075_McpAppCalls.ts";
 import Migration0076 from "./Migrations/076_ComputerLinks.ts";
 import Migration0077 from "./Migrations/077_ComputerLinkPinnedEnvironment.ts";
 import Migration0078 from "./Migrations/078_LinkStopsOwed.ts";
+import Migration0079 from "./Migrations/079_ThreadMoves.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -187,6 +188,7 @@ export const migrationEntries = [
   [76, "ComputerLinks", Migration0076],
   [77, "ComputerLinkPinnedEnvironment", Migration0077],
   [78, "LinkStopsOwed", Migration0078],
+  [79, "ThreadMoves", Migration0079],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

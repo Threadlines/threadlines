@@ -23,6 +23,9 @@ import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTur
 import { ComputerLinkClientLive } from "./links/ComputerLinkClient.ts";
 import { ComputerLinkRepositoryLive } from "./links/ComputerLinkRepository.ts";
 import { ComputerLinksLive } from "./links/ComputerLinks.ts";
+import { LinkMoveRepositoryLive } from "./links/LinkMoveRepository.ts";
+import { LinkMovesLive } from "./links/LinkMoves.ts";
+import { ThreadMovesLive } from "./moves/ThreadMoves.ts";
 import { LinkRequestRepositoryLive } from "./links/LinkRequestRepository.ts";
 import {
   LinkRequestsLive,
@@ -255,9 +258,13 @@ const PlatformServicesLive = ChildEnvironment.layer.pipe(
 // end in a linked computer's thread to the ledger (RemoteRequestTurnEnds).
 const ComputerLinksLayerLive = Layer.mergeAll(ComputerLinkReactorsLive, ComputerLinksLive).pipe(
   Layer.provideMerge(RemoteChildReactorLive),
+  Layer.provideMerge(ThreadMovesLive),
+  Layer.provideMerge(LinkMovesLive),
   Layer.provideMerge(LinkRequestsLive),
   Layer.provideMerge(ComputerLinkClientLive),
-  Layer.provideMerge(Layer.mergeAll(ComputerLinkRepositoryLive, LinkRequestRepositoryLive)),
+  Layer.provideMerge(
+    Layer.mergeAll(ComputerLinkRepositoryLive, LinkRequestRepositoryLive, LinkMoveRepositoryLive),
+  ),
   Layer.provide(Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadRepositoryLive)),
   Layer.provide(ServerSecretStoreLive),
 );

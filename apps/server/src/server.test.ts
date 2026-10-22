@@ -93,7 +93,9 @@ import {
   type RelayDeviceRepositoryShape,
 } from "./relay/RelayDeviceRepository.ts";
 import { ComputerLinks, type ComputerLinksShape } from "./links/ComputerLinks.ts";
+import { LinkMoves } from "./links/LinkMoves.ts";
 import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
+import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
   CheckpointDiffQuery,
@@ -830,6 +832,11 @@ const buildAppUnderTest = (options?: {
             pendingChanges: Stream.empty,
             ...options?.layers?.linkRequests,
           }),
+          Layer.mock(LinkMoves)({
+            pending: Effect.succeed([]),
+            pendingChanges: Stream.empty,
+          }),
+          Layer.mock(ThreadMoves)({}),
           Layer.mock(ThreadSearch)({
             search: () => Effect.succeed({ matches: [], truncated: false }),
             ...options?.layers?.threadSearch,

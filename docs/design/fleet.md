@@ -407,6 +407,7 @@ Names used below: `L` is the authenticated link device id on B, `T` the transfer
 #### Who may move (one shared pure check, used by `moves.preview` and by the decider in the freeze decision)
 
 Refused, each with a plain reason:
+
 - archived, or deleted;
 - a room (`isRoomThread`), or open agent requests;
 - a child (attached `parentThreadId`), or `remoteOrigin` set;
@@ -424,6 +425,7 @@ Refused, each with a plain reason:
 The reactor then stops the thread's provider session, so no runtime can start a turn. `ProviderRuntimeIngestion` refuses provider-initiated turns on a moving or moved thread.
 
 **One move guard, used everywhere a thread can change.** A thread with `move` set refuses:
+
 - in the decider: every command whose `threadId` is the thread, except archive, unarchive, delete, pin, unpin, read, unread, wrap, unwrap and the move's internal commands;
 - every command that names it as a parent to attach to (`thread.child.attach`'s parent);
 - the typing warm-up (ws.ts:705) and every direct reactor entry.
@@ -443,6 +445,7 @@ Everything runs from the git top level (`rev-parse --show-toplevel`) of the thre
 7. Attachments of every message are copied in by id, with name and mime type kept only as display metadata.
 
 All of it goes into `<stateDir>/moves/<T>/`: `payload.bin` (the parts, concatenated), then `manifest.json`. The manifest lists:
+
 - the part table `{ kind, offset, length, sha256, path?, mode?, attachment? }` and the payload's sha256;
 - `headSha`, the branch, the remote's canonical key, the base;
 - the thread export: title, model selection, runtime and interaction modes, and messages with their roles, text, turn ids, `createdAt`, attachment references and `completesTurn`;
@@ -468,6 +471,7 @@ The pending move is listed to B's user through `ComputerLinkPendingRequest`, whi
 Table `link_moves` (migration 079): `link_device_id, transfer_id, transfer_key, status (awaiting_approval|receiving|importing|committed|aborted), stage, manifest_json, bytes_received, thread_id, branch, worktree_path, reason, cleaned_at, created_at, updated_at`, unique on `(link_device_id, transfer_id)`. Staging lives in `<stateDir>/link-moves/<K>/`.
 
 **Path rules** (B's filesystem semantics, checked at prepare and again before writing):
+
 - relative only, with no `..`, no empty or `.` segments, no absolute paths, and no drive, UNC or `:` stream syntax;
 - nothing under `.git`;
 - no collision, case-insensitive on Windows and macOS, with a tracked path or another incoming path;
@@ -485,13 +489,14 @@ Attachments get B's own ids (`createAttachmentId(B's thread id)`) and are writte
 
 **Commit and abort exclude each other under one lock that an interruption can't release early.** Both run under the per-transfer lock keyed by `K` (the `withRequestLock` pattern in `LinkRequests`).
 
-- **Commit.** Under the lock, re-read the row. If it's `aborted`, stop. Otherwise dispatch `thread.import` and await the engine's answer *uninterruptibly*, then write `committed`, and only then release the lock. An interrupted caller can't leave a queued import behind an unlocked transfer. The thread id is deterministic, so a duplicate dispatch is refused as "already exists" and read as committed.
+- **Commit.** Under the lock, re-read the row. If it's `aborted`, stop. Otherwise dispatch `thread.import` and await the engine's answer _uninterruptibly_, then write `committed`, and only then release the lock. An interrupted caller can't leave a queued import behind an unlocked transfer. The thread id is deterministic, so a duplicate dispatch is refused as "already exists" and read as committed.
 - **Abort.** Under the lock, look the thread up in the engine's read model. If it exists, answer `committed`. Otherwise write `aborted` durably, then release the lock and clean up.
 - **Startup.** The process died, so nothing is queued. Reconcile each `importing` row from the read model: the thread exists means committed, else resume the import.
 
 After an abort, B removes the staging folder, the worktree, and any branch it made, then sets `cleaned_at`. An aborted row without `cleaned_at` is cleanup still owed: startup and the hourly sweep retry it. B never touches anything once committed.
 
 **`thread.import` writes, in one decision:**
+
 - `thread.created`, with `movedFrom { environmentId, label, threadId, importedTurnIds }`;
 - every message as `thread.message-sent`, with fresh ids derived from `(K, original id)`, turn ids remapped the same way, and attachments remapped;
 - the tool-activity summaries as activities, with fresh ids;
@@ -571,6 +576,7 @@ B's turn numbering starts at 1. Revert to count 0, the state right after the imp
 #### Live
 
 The two test servers:
+
 - Move a thread with unpushed commits and changes, under Ask first and then Allowed.
 - Cancel while waiting.
 - Kill A mid-send.
