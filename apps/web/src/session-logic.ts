@@ -1009,6 +1009,20 @@ export function derivePendingApprovals(
     });
 }
 
+/**
+ * The answer a message typed while `approval` waits gives it: "no", so the
+ * agent reads the message as what to do instead. An agent that can't be told
+ * no is stopped ("cancel"), and the message starts its next turn. Null when
+ * it offers neither.
+ */
+export function approvalDeclineDecision(
+  approval: Pick<PendingApproval, "availableDecisions">,
+): Extract<ProviderApprovalDecision, "decline" | "cancel"> | null {
+  const offered = approval.availableDecisions;
+  if (!offered || offered.includes("decline")) return "decline";
+  return offered.includes("cancel") ? "cancel" : null;
+}
+
 function parseUserInputQuestions(
   payload: Record<string, unknown> | null,
 ): ReadonlyArray<UserInputQuestion> | null {

@@ -210,6 +210,86 @@ function FollowUpSplitButton(props: {
   );
 }
 
+/**
+ * Send for a message to one room agent while another works: asks now or
+ * waits, as `roomDelivery` says. Shared by the normal toolbar and the
+ * approval toolbar.
+ */
+export const ComposerRoomSendButton = memo(function ComposerRoomSendButton({
+  roomDelivery,
+  onRoomDeliveryChange,
+  disabled,
+  preserveComposerFocusOnPointerDown = false,
+}: {
+  roomDelivery: ComposerRoomDelivery;
+  onRoomDeliveryChange?: ((delivery: FollowUpDelivery) => void) | undefined;
+  disabled: boolean;
+  preserveComposerFocusOnPointerDown?: boolean;
+}) {
+  const labels = roomDeliveryLabels(roomDelivery);
+  return (
+    <FollowUpSplitButton
+      mode={roomDelivery.mode}
+      action={labels.action}
+      tooltip={labels.tooltip}
+      icon={
+        roomDelivery.mode === "queue" ? (
+          <ListEndIcon className="size-3.5" />
+        ) : (
+          <MessageCircleQuestionIcon className="size-3.5" />
+        )
+      }
+      value={roomDelivery.mode === "ask" ? "steer" : "queue"}
+      options={[
+        {
+          value: "steer",
+          label: "Ask now",
+          disabled: !roomDelivery.canAsk,
+          title: roomDelivery.canAsk
+            ? `${roomDelivery.recipientName} answers now and can only read, while ${roomDelivery.holderName} keeps working`
+            : `${roomDelivery.recipientName} can't answer while another agent works`,
+        },
+        {
+          value: "queue",
+          label: `Send when ${roomDelivery.holderName} finishes`,
+          title: `Send to ${roomDelivery.recipientName} when ${roomDelivery.holderName} finishes`,
+        },
+      ]}
+      onChange={(delivery) => onRoomDeliveryChange?.(delivery)}
+      disabled={disabled}
+      pointerFocusProps={
+        preserveComposerFocusOnPointerDown ? { onPointerDown: preventPointerFocus } : undefined
+      }
+    />
+  );
+});
+
+/**
+ * Send while an approval waits: the approval is declined and the message
+ * steers the agent instead (ChatView's send path does both).
+ */
+export const ComposerDeclineAndSendButton = memo(function ComposerDeclineAndSendButton({
+  disabled,
+  preserveComposerFocusOnPointerDown = false,
+}: {
+  disabled: boolean;
+  preserveComposerFocusOnPointerDown?: boolean;
+}) {
+  return (
+    <Button
+      type="submit"
+      size="icon"
+      className="rounded-full"
+      onPointerDown={preserveComposerFocusOnPointerDown ? preventPointerFocus : undefined}
+      disabled={disabled}
+      aria-label="Decline and send"
+      tooltip="Decline and send"
+    >
+      <CornerDownRightIcon className="size-3.5" />
+    </Button>
+  );
+});
+
 export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
   isRunning,
@@ -239,39 +319,13 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   // Also while the agent at work only waits on background work, when there
   // is no turn to steer or stop.
   if (roomDelivery !== null && hasSendableContent) {
-    const labels = roomDeliveryLabels(roomDelivery);
     return (
       <div className="flex shrink-0 items-center gap-1.5">
-        <FollowUpSplitButton
-          mode={roomDelivery.mode}
-          action={labels.action}
-          tooltip={labels.tooltip}
-          icon={
-            roomDelivery.mode === "queue" ? (
-              <ListEndIcon className="size-3.5" />
-            ) : (
-              <MessageCircleQuestionIcon className="size-3.5" />
-            )
-          }
-          value={roomDelivery.mode === "ask" ? "steer" : "queue"}
-          options={[
-            {
-              value: "steer",
-              label: "Ask now",
-              disabled: !roomDelivery.canAsk,
-              title: roomDelivery.canAsk
-                ? `${roomDelivery.recipientName} answers now and can only read, while ${roomDelivery.holderName} keeps working`
-                : `${roomDelivery.recipientName} can't answer while another agent works`,
-            },
-            {
-              value: "queue",
-              label: `Send when ${roomDelivery.holderName} finishes`,
-              title: `Send to ${roomDelivery.recipientName} when ${roomDelivery.holderName} finishes`,
-            },
-          ]}
-          onChange={(delivery) => onRoomDeliveryChange?.(delivery)}
+        <ComposerRoomSendButton
+          roomDelivery={roomDelivery}
+          onRoomDeliveryChange={onRoomDeliveryChange}
           disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
-          pointerFocusProps={pointerFocusProps}
+          preserveComposerFocusOnPointerDown={preserveComposerFocusOnPointerDown}
         />
       </div>
     );

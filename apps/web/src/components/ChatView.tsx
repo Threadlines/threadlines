@@ -96,6 +96,7 @@ import {
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
+  approvalDeclineDecision,
   derivePendingApprovals,
   derivePendingUserInputs,
   isBlockingUserInput,
@@ -113,6 +114,7 @@ import {
   describedAwaitedTasks,
   isWaitingOnBackgroundTasks,
   type McpAuthReconnectAction,
+  type PendingApproval,
   type ProviderAuthReconnectAction,
   type SubagentProgressItem,
 } from "../session-logic";
@@ -877,6 +879,11 @@ interface TerminalLaunchContext {
 }
 
 type PersistentTerminalLaunchContext = Pick<TerminalLaunchContext, "cwd" | "worktreePath">;
+
+/** The same items in the same order: a draft list nobody touched. */
+function sameItems<T>(left: ReadonlyArray<T>, right: ReadonlyArray<T>): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
 
 function useLocalDispatchState(input: {
   activeThread: Thread | undefined;
@@ -2207,6 +2214,11 @@ export default function ChatView(props: ChatViewProps) {
     latestTurnSettled &&
     hasActionableProposedPlan(activeProposedPlan);
   const activePendingApproval = pendingApprovals[0] ?? null;
+  // What a send that awaited a decline reads afterwards: the requests now.
+  const pendingApprovalsRef = useRef(pendingApprovals);
+  pendingApprovalsRef.current = pendingApprovals;
+  const pendingUserInputsRef = useRef(pendingUserInputs);
+  pendingUserInputsRef.current = pendingUserInputs;
   const {
     beginLocalDispatch,
     markLocalDispatchAccepted,
@@ -5117,6 +5129,76 @@ export default function ChatView(props: ChatViewProps) {
     setThreadError,
   ]);
 
+  /**
+   * Declines the approvals waiting in this thread for a message the user typed
+   * meanwhile, so the agent reads the message as what to do instead. One that
+   * arrives while the first are declined is declined too. False, with the
+   * reason shown where there is one, when the message must not go out: an
+   * approval can't be declined, a decline could not be sent, approvals keep
+   * coming, the user moved to another thread, or a question now holds the
+   * turn.
+   */
+  const declineApprovalsBeforeSend = async (
+    api: NonNullable<ReturnType<typeof readEnvironmentApi>>,
+    threadId: ThreadId,
+    approvals: ReadonlyArray<PendingApproval>,
+  ): Promise<boolean> => {
+    const threadKeyAtSend = activeThreadKeyRef.current;
+    const declined = new Set<ApprovalRequestId>();
+    let waiting = approvals;
+    for (let round = 0; round < 3 && waiting.length > 0; round += 1) {
+      if (waiting.some((approval) => approvalDeclineDecision(approval) === null)) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Answer the approval first",
+            description: "This agent can't be told no here. Approve it, or stop the turn.",
+          }),
+        );
+        return false;
+      }
+      const requestIds = waiting.map((approval) => approval.requestId);
+      setRespondingRequestIds((existing) => [
+        ...existing,
+        ...requestIds.filter((requestId) => !existing.includes(requestId)),
+      ]);
+      try {
+        const createdAt = new Date().toISOString();
+        await Promise.all(
+          waiting.map((approval) =>
+            api.orchestration.dispatchCommand({
+              type: "thread.approval.respond",
+              commandId: newCommandId(),
+              threadId,
+              requestId: approval.requestId,
+              decision: approvalDeclineDecision(approval) ?? "decline",
+              createdAt,
+            }),
+          ),
+        );
+      } catch (err) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Message not sent",
+            description: describeDispatchFailure(err, "The approval could not be declined."),
+          }),
+        );
+        return false;
+      } finally {
+        setRespondingRequestIds((existing) =>
+          existing.filter((requestId) => !requestIds.includes(requestId)),
+        );
+      }
+      // The refs follow the thread on screen; another thread's requests are
+      // not this message's to answer.
+      if (activeThreadKeyRef.current !== threadKeyAtSend) return false;
+      for (const requestId of requestIds) declined.add(requestId);
+      waiting = pendingApprovalsRef.current.filter((approval) => !declined.has(approval.requestId));
+    }
+    return waiting.length === 0 && !pendingUserInputsRef.current.some(isBlockingUserInput);
+  };
+
   const onSend = async (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
     const api = readEnvironmentApi(environmentId);
@@ -5171,7 +5253,36 @@ export default function ChatView(props: ChatViewProps) {
       pickedElementContextCount: composerPickedElementContexts.length,
       drawingContextCount: composerDrawingContexts.length,
     });
+    // A message for the agent whose turn waits on approvals answers them
+    // first. Only the draft that was sent goes out afterwards, to the agent it
+    // was for: one edited, or readdressed, meanwhile stays in the box, and its
+    // next send goes as usual.
+    const roomRecipientNow = () =>
+      resolveRoomSend({
+        enabled: roomsEnabled,
+        thread: activeThread,
+        threadRef: scopeThreadRef(environmentId, activeThread.id),
+      }).recipient?.id ?? null;
+    const declineBeforeSend = async (approvals: ReadonlyArray<PendingApproval>) => {
+      const recipientAtSend = roomRecipientNow();
+      if (!(await declineApprovalsBeforeSend(api, activeThread.id, approvals))) return false;
+      const draftNow = composerRef.current?.getSendContext();
+      return (
+        roomRecipientNow() === recipientAtSend &&
+        draftNow !== undefined &&
+        promptRef.current === promptForSend &&
+        sameItems(draftNow.images, composerAttachments) &&
+        sameItems(draftNow.terminalContexts, composerTerminalContexts) &&
+        sameItems(draftNow.transcriptHighlightContexts, composerTranscriptHighlightContexts) &&
+        sameItems(draftNow.fileSelectionContexts, composerFileSelectionContexts) &&
+        sameItems(draftNow.pickedElementContexts, composerPickedElementContexts) &&
+        sameItems(draftNow.drawingContexts, composerDrawingContexts)
+      );
+    };
     if (showPlanFollowUpPrompt && activeProposedPlan) {
+      // While an approval waits, an empty box implements nothing: Enter there
+      // is not the go-ahead for the plan.
+      if (pendingApprovals.length > 0 && trimmed.length === 0) return;
       // In a room, plan feedback for another agent carries the plan with it,
       // so it can not wait in the queue while the agent holding the thread
       // is still waiting on background work. It stays in the box instead.
@@ -5193,6 +5304,12 @@ export default function ChatView(props: ChatViewProps) {
           }),
         );
         return;
+      }
+      if (pendingApprovals.length > 0) {
+        sendInFlightRef.current = true;
+        const declined = await declineBeforeSend(pendingApprovals);
+        sendInFlightRef.current = false;
+        if (!declined) return;
       }
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -5382,9 +5499,18 @@ export default function ChatView(props: ChatViewProps) {
       !askOnTheSide &&
       (canSubmitSteeringFollowUp || queueForAnotherAgent) &&
       steeringThreadKey !== null;
+    // An approval holds the agent's turn. A message for that agent answers
+    // it: every waiting approval is declined and the message steers the turn,
+    // whatever "Send when done" says. A side question, or a message waiting
+    // for another agent, leaves the approvals alone.
+    const approvalDeclines = askOnTheSide || queueForAnotherAgent ? [] : pendingApprovals;
     // "Send when done" holds the message on the server until the turn ends;
     // the queue list shows it from there, so it gets no steering row.
-    const followUpDelivery = queueForAnotherAgent ? "queue" : settings.followUpDelivery;
+    const followUpDelivery = queueForAnotherAgent
+      ? "queue"
+      : approvalDeclines.length > 0
+        ? "steer"
+        : settings.followUpDelivery;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
@@ -5400,6 +5526,10 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     sendInFlightRef.current = true;
+    if (approvalDeclines.length > 0 && !(await declineBeforeSend(approvalDeclines))) {
+      sendInFlightRef.current = false;
+      return;
+    }
     if (!isSteeringFollowUp && !askOnTheSide) {
       beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
     }

@@ -124,7 +124,9 @@ import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { ComposerStashControl } from "./ComposerStashControl";
 import {
   type ComposerRoomDelivery,
+  ComposerDeclineAndSendButton,
   ComposerPrimaryActions,
+  ComposerRoomSendButton,
   ComposerStopButton,
   FOLLOW_UP_DELIVERY_LABELS,
   roomDeliveryLabels,
@@ -1934,7 +1936,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // handled inside the menu rather than here. Models without image input
   // still accept document attachments, so modality no longer disables the
   // whole menu — image files are rejected per-file during ingest instead.
-  const attachmentsDisabled = isComposerApprovalState || hasBlockingQuestion;
+  const attachmentsDisabled = hasBlockingQuestion;
   const attachmentsDisabledReason = attachmentsDisabled
     ? "Finish the pending prompt before adding attachments"
     : null;
@@ -1943,15 +1945,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerUnavailable = environmentUnavailable !== null || threadLocked !== null;
   // Dictation writes into the prompt, so it is blocked by everything that
   // blocks typing, named the way the placeholder names it.
-  const dictationDisabledReason = isComposerApprovalState
-    ? "Resolve the approval first"
-    : hasBlockingQuestion
-      ? "Answer the question first"
-      : environmentUnavailable
-        ? `${environmentUnavailable.label} is ${
-            environmentUnavailable.connectionState === "connecting" ? "connecting" : "disconnected"
-          }`
-        : (threadLocked?.reason ?? null);
+  const dictationDisabledReason = hasBlockingQuestion
+    ? isComposerApprovalState
+      ? "Resolve the approval first"
+      : "Answer the question first"
+    : environmentUnavailable
+      ? `${environmentUnavailable.label} is ${
+          environmentUnavailable.connectionState === "connecting" ? "connecting" : "disconnected"
+        }`
+      : (threadLocked?.reason ?? null);
 
   // ------------------------------------------------------------------
   // Prompt helpers
@@ -3448,6 +3450,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       stops="background-work"
     />
   ) : null;
+  // Typing while an approval waits: a message for the agent that asked
+  // declines it and tells that agent what to do instead. In a room, a message
+  // for another agent is asked or queued as usual and leaves the approval be.
+  const approvalRedirectPlaceholder =
+    isComposerApprovalState && !hasBlockingQuestion && roomDelivery === null
+      ? `Type to decline and tell ${roomAgentLabels?.get(roomAgentKey(roomHolderId))?.name ?? "the agent"} what to do instead`
+      : null;
+  const approvalSendDisabled =
+    isSendBusy ||
+    isConnecting ||
+    composerUnavailable ||
+    (activePendingApproval !== null &&
+      respondingRequestIds.includes(activePendingApproval.requestId));
+  const approvalSendButton =
+    !isComposerApprovalState ||
+    hasBlockingQuestion ||
+    !composerSendState.hasSendableContent ? null : roomDelivery !== null ? (
+      <ComposerRoomSendButton
+        roomDelivery={roomDelivery}
+        onRoomDeliveryChange={handleRoomDeliveryChange}
+        disabled={approvalSendDisabled}
+        preserveComposerFocusOnPointerDown={isMobileViewport}
+      />
+    ) : (
+      <ComposerDeclineAndSendButton
+        disabled={approvalSendDisabled}
+        preserveComposerFocusOnPointerDown={isMobileViewport}
+      />
+    );
   const handleImplementPlanInNewThreadPrimaryAction = useCallback(() => {
     void onImplementPlanInNewThread();
   }, [onImplementPlanInNewThread]);
@@ -3902,7 +3933,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isComposerCollapsedMobile && "hidden",
                 )}
               >
-                {composerMenuOpen && !isComposerApprovalState && (
+                {composerMenuOpen && (
                   <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
                     <ComposerCommandMenu
                       maxListHeightPx={composerMenuRoom}
@@ -3920,7 +3951,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerAttachments.length > 0 && (
                     <div className="mb-3 flex flex-wrap gap-2">
@@ -4016,7 +4046,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerTerminalContexts.length > 0 && (
                     <ComposerPendingTerminalContexts
@@ -4027,7 +4056,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerPickedElementContexts.length > 0 && (
                     <ComposerPendingPickedElementContexts
@@ -4040,7 +4068,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerDrawingContexts.length > 0 && (
                     <ComposerPendingDrawingContexts
@@ -4052,7 +4079,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerTranscriptHighlightContexts.length > 0 && (
                     <ComposerPendingTranscriptHighlightContexts
@@ -4064,7 +4090,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
 
                 {!isComposerCollapsedMobile &&
-                  !isComposerApprovalState &&
                   !hasBlockingQuestion &&
                   composerFileSelectionContexts.length > 0 && (
                     <ComposerPendingFileSelectionContexts
@@ -4077,7 +4102,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <div className="relative">
                   <ComposerPromptEditor
                     editorRef={composerEditorRef}
-                    value={isComposerApprovalState ? "" : prompt}
+                    value={prompt}
                     cursor={composerCursor}
                     terminalContexts={[]}
                     skills={composerSkills}
@@ -4092,29 +4117,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     placeholder={
                       threadLocked
                         ? threadLocked.reason
-                        : isComposerApprovalState
+                        : isComposerApprovalState && hasBlockingQuestion
                           ? "Resolve this approval request to continue"
-                          : hasBlockingQuestion
-                            ? "Answer the question above, or stop the turn"
-                            : showPlanFollowUpPrompt && activeProposedPlan
-                              ? "Add feedback to refine the plan, or leave this blank to implement it"
-                              : environmentUnavailable
-                                ? `${environmentUnavailable.label} is ${
-                                    environmentUnavailable.connectionState === "connecting"
-                                      ? "connecting"
-                                      : "disconnected"
-                                  }`
-                                : defaultComposerPlaceholder
+                          : approvalRedirectPlaceholder !== null
+                            ? approvalRedirectPlaceholder
+                            : hasBlockingQuestion
+                              ? "Answer the question above, or stop the turn"
+                              : showPlanFollowUpPrompt && activeProposedPlan
+                                ? "Add feedback to refine the plan, or leave this blank to implement it"
+                                : environmentUnavailable
+                                  ? `${environmentUnavailable.label} is ${
+                                      environmentUnavailable.connectionState === "connecting"
+                                        ? "connecting"
+                                        : "disconnected"
+                                    }`
+                                  : defaultComposerPlaceholder
                     }
-                    disabled={
-                      isConnecting ||
-                      isComposerApprovalState ||
-                      hasBlockingQuestion ||
-                      composerUnavailable
-                    }
+                    disabled={isConnecting || hasBlockingQuestion || composerUnavailable}
                   />
                 </div>
-                {workflowKeywordActive && !isComposerApprovalState ? (
+                {workflowKeywordActive ? (
                   <ComposerWorkflowKeywordHint
                     suppressed={workflowKeywordSuppressed === true}
                     onToggle={onToggleWorkflowKeyword}
@@ -4132,7 +4154,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
                     onRespondToApproval={onRespondToApproval}
                   />
-                  {sideStopButton}
+                  {approvalSendButton ?? sideStopButton}
                 </div>
               ) : (
                 <div

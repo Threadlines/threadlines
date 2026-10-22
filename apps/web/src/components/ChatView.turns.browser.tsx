@@ -6,7 +6,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { updateSettings } from "../hooks/useSettings";
@@ -721,6 +721,157 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
       }
     },
   );
+
+  it("declines a waiting approval and steers the turn with a message typed meanwhile", async () => {
+    // "Send when done" is picked, and still the message steers: the turn is
+    // waiting on the user, so waiting for it to finish would never send.
+    updateSettings({ followUpDelivery: "queue" });
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-approval-redirect" as MessageId,
+      targetText: "approval redirect target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-approval-redirect" as TurnId,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id !== THREAD_ID
+            ? thread
+            : {
+                ...thread,
+                activities: [
+                  ...thread.activities,
+                  {
+                    id: EventId.make("activity-approval-redirect"),
+                    kind: "approval.requested",
+                    tone: "info",
+                    summary: "Approval requested",
+                    payload: {
+                      requestId: "req-approval-redirect",
+                      requestKind: "command",
+                      detail: "rm -rf build",
+                    },
+                    turnId: "turn-approval-redirect" as TurnId,
+                    sequence: 2,
+                    createdAt: isoAt(1_001),
+                  },
+                ],
+              },
+        ),
+      },
+    });
+    const dispatchIndex = (type: string) =>
+      wsRequests.findIndex(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand && request.type === type,
+      );
+    try {
+      await expect.element(page.getByText("Command approval requested")).toBeVisible();
+      const editor = await waitForComposerEditor();
+      expect(editor.getAttribute("aria-placeholder")).toBe(
+        "Type to decline and tell the agent what to do instead",
+      );
+      await waitForButtonByAriaLabel("Stop generation");
+
+      await page
+        .getByTestId("composer-editor")
+        .fill("Use the clean script instead", { timeout: 5_000 });
+      await waitForComposerText("Use the clean script instead");
+      (await waitForButtonByAriaLabel("Decline and send")).click();
+
+      await vi.waitFor(() => {
+        expect(wsRequests[dispatchIndex("thread.approval.respond")]).toMatchObject({
+          requestId: "req-approval-redirect",
+          decision: "decline",
+        });
+        expect(wsRequests[dispatchIndex("thread.follow-up.submit")]).toMatchObject({
+          turnId: "turn-approval-redirect",
+          delivery: "steer",
+          message: { text: "Use the clean script instead" },
+        });
+      });
+      // The agent hears "no" before it reads what to do instead.
+      expect(dispatchIndex("thread.approval.respond")).toBeLessThan(
+        dispatchIndex("thread.follow-up.submit"),
+      );
+    } finally {
+      updateSettings({ followUpDelivery: "steer" });
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not implement a plan on Enter while an approval waits, and declines it for feedback", async () => {
+    // A background agent asked after the plan turn settled.
+    const snapshot = createSnapshotWithPlanFollowUpPrompt();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id !== THREAD_ID
+            ? thread
+            : {
+                ...thread,
+                activities: [
+                  ...thread.activities,
+                  {
+                    id: EventId.make("activity-plan-approval"),
+                    kind: "approval.requested",
+                    tone: "info",
+                    summary: "Approval requested",
+                    payload: {
+                      requestId: "req-plan-approval",
+                      requestKind: "command",
+                      detail: "npm run lint",
+                    },
+                    turnId: null,
+                    sequence: 90,
+                    createdAt: isoAt(1_090),
+                  },
+                ],
+              },
+        ),
+      },
+    });
+    const dispatchIndex = (type: string) =>
+      wsRequests.findIndex(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand && request.type === type,
+      );
+    try {
+      await expect.element(page.getByText("Command approval requested")).toBeVisible();
+      (await waitForComposerEditor()).focus();
+      await userEvent.keyboard("{Enter}");
+
+      await page.getByTestId("composer-editor").fill("Skip the second step", { timeout: 5_000 });
+      await waitForComposerText("Skip the second step");
+      (await waitForButtonByAriaLabel("Decline and send")).click();
+      await vi.waitFor(() => {
+        expect(wsRequests[dispatchIndex("thread.approval.respond")]).toMatchObject({
+          requestId: "req-plan-approval",
+          decision: "decline",
+        });
+        expect(wsRequests[dispatchIndex("thread.turn.start")]).toMatchObject({
+          message: { text: expect.stringContaining("Skip the second step") },
+        });
+      });
+      expect(dispatchIndex("thread.approval.respond")).toBeLessThan(
+        dispatchIndex("thread.turn.start"),
+      );
+      // The empty Enter sent nothing: the one turn is the feedback.
+      expect(
+        wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.turn.start",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
   it("stops one background command through the agent from the runs list", async () => {
     const snapshot = createSnapshotForTargetUser({

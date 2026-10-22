@@ -17,6 +17,7 @@ import {
   describeLaunchingAgent,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  approvalDeclineDecision,
   derivePendingApprovals,
   derivePendingUserInputs,
   deriveRevertTurnCountByUserMessageId,
@@ -667,6 +668,18 @@ it("keeps pending approvals and questions in request order after a clock rollbac
     ];
     expect(derive(activities).map((request) => request.requestId)).toEqual(["first", "second"]);
   }
+});
+
+describe("approvalDeclineDecision", () => {
+  it("says no where it can, and stops an agent that can only be stopped", () => {
+    expect(approvalDeclineDecision({})).toBe("decline");
+    expect(approvalDeclineDecision({ availableDecisions: ["accept", "decline", "cancel"] })).toBe(
+      "decline",
+    );
+    // An ACP agent that offered only "allow" options.
+    expect(approvalDeclineDecision({ availableDecisions: ["cancel", "accept"] })).toBe("cancel");
+    expect(approvalDeclineDecision({ availableDecisions: ["accept"] })).toBeNull();
+  });
 });
 
 describe("derivePendingApprovals", () => {
