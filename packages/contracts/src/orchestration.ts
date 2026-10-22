@@ -4292,8 +4292,8 @@ export const ThreadMovedAwayPayload = Schema.Struct({
 
 export const ThreadHistorySeedDeliveredPayload = Schema.Struct({
   threadId: ThreadId,
-  /** The message whose send carried the conversation. */
-  messageId: MessageId,
+  /** The message whose send carried the conversation; absent on events from before it was recorded. */
+  messageId: Schema.optional(MessageId),
   updatedAt: IsoDateTime,
 });
 

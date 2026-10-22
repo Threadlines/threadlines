@@ -363,6 +363,10 @@ const ProjectIdLookupInput = Schema.Struct({
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
 });
+const ThreadRowLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  includeArchived: Schema.optional(Schema.Boolean),
+});
 const TurnActivityLookupInput = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
@@ -1670,9 +1674,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   });
 
   const getActiveThreadRowById = SqlSchema.findOneOption({
-    Request: ThreadIdLookupInput,
+    Request: ThreadRowLookupInput,
     Result: ProjectionThreadDbRowSchema,
-    execute: ({ threadId }) =>
+    execute: ({ threadId, includeArchived }) =>
       sql`
         SELECT
           thread_id AS "threadId",
@@ -1730,7 +1734,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL
-          AND archived_at IS NULL
+          AND (archived_at IS NULL OR ${includeArchived === true ? 1 : 0} = 1)
         LIMIT 1
       `,
   });
@@ -3539,11 +3543,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
-  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
+  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (
+    threadId,
+    options,
+  ) =>
     Effect.gen(function* () {
-      // An archived, deleted or unknown thread answers none before the eight
-      // detail reads below, the activity history among them.
-      const threadRow = yield* getActiveThreadRowById({ threadId }).pipe(
+      // An archived (unless asked for), deleted or unknown thread answers none
+      // before the eight detail reads below, the activity history among them.
+      const threadRow = yield* getActiveThreadRowById({
+        threadId,
+        ...(options?.includeArchived === true ? { includeArchived: true } : {}),
+      }).pipe(
         Effect.mapError(
           toPersistenceSqlOrDecodeError(
             "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",

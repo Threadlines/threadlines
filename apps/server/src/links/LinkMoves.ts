@@ -401,23 +401,32 @@ const make = Effect.gen(function* () {
         Effect.as(true),
         Effect.orElseSucceed(() => false),
       );
-      // The repository recorded when the import began; one deleted since
-      // took its refs and worktree list with it.
-      const root = row.repoRoot ?? (yield* landing(row.manifest))?.root ?? null;
-      const repo = root !== null && (yield* pathExists(NodePath.join(root, ".git"))) ? root : null;
+      // The repository recorded when the import began (nothing was made in
+      // git before that). One deleted since took its refs and worktree list
+      // with it; one that is there but can't be read is retried later.
+      const root = row.repoRoot;
+      let repo: string | null = null;
+      if (root !== null && (yield* pathExists(root))) {
+        if ((yield* runGit(root, ["rev-parse", "--git-dir"])).ok) repo = root;
+        else clean = false;
+      }
       if (row.worktreePath !== null) {
         const inUse = yield* pathInUse(row.worktreePath);
         if (inUse === null) {
           clean = false;
         } else if (!inUse) {
-          if (repo !== null) {
+          const ours = yield* ownsFolder(row.worktreePath, row);
+          if (repo !== null && ours) {
             yield* runGit(repo, ["worktree", "remove", "--force", row.worktreePath]);
           }
-          const removed = yield* Effect.tryPromise(() =>
-            NodeFs.rm(row.worktreePath!, { recursive: true, force: true }),
-          ).pipe(
+          // A folder this move made goes. Anything else there stays, an
+          // empty one excepted (a worktree that was never made).
+          const removed = yield* Effect.tryPromise(async () => {
+            if (ours) await NodeFs.rm(row.worktreePath!, { recursive: true, force: true });
+            else await NodeFs.rmdir(row.worktreePath!).catch(() => undefined);
+          }).pipe(
             Effect.andThen(pathExists(row.worktreePath)),
-            Effect.map((left) => !left),
+            Effect.map((left) => !left || !ours),
             Effect.orElseSucceed(() => false),
           );
           if (!removed) clean = false;
@@ -457,6 +466,23 @@ const make = Effect.gen(function* () {
         .pipe(Effect.ignore);
     });
 
+  /**
+   * Whether `path` is the worktree this move made: its `.git` file points at
+   * the repository's worktree entry named after the folder (`moved-<K>`,
+   * maybe with a number git added). Readable even with the repository gone.
+   */
+  const ownsFolder = (path: string, row: Pick<LinkMoveRow, "transferKey">) =>
+    Effect.promise(() =>
+      NodeFs.readFile(NodePath.join(path, ".git"), "utf8").then(
+        (text) => {
+          const name = /^gitdir: .*[\\/]worktrees[\\/]([^\\/]+?)\s*$/.exec(text)?.[1] ?? "";
+          const base = `moved-${row.transferKey.slice(0, 12)}`;
+          return name.startsWith(base) && /^\d*$/.test(name.slice(base.length));
+        },
+        () => false,
+      ),
+    );
+
   const pathExists = (path: string) =>
     Effect.promise(() =>
       NodeFs.access(path).then(
@@ -488,6 +514,19 @@ const make = Effect.gen(function* () {
    */
   const abortRow = (row: LinkMoveRow, reason: string) =>
     Effect.gen(function* () {
+      // An import that landed (its final write lost) is committed, whatever
+      // asked to stop it.
+      if (row.status === "importing" && (yield* importLanded(row))) {
+        yield* moves
+          .settle({
+            linkDeviceId: row.linkDeviceId,
+            transferId: row.transferId,
+            status: "committed",
+            now: yield* nowIso,
+          })
+          .pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't record that.`)));
+        return false;
+      }
       const settled = yield* moves
         .settle({
           linkDeviceId: row.linkDeviceId,
@@ -772,9 +811,12 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const land = yield* landing(row.manifest);
       if (land === null) return yield* stop(`${ownLabel} doesn't have this project anymore.`);
-      // Recorded before anything is made in it, so clean-up finds it even if
+      // The repository's top level (the project may be a folder inside it),
+      // recorded before anything is made in it, so clean-up finds it even if
       // the project goes.
-      yield* setStage(row, { repoRoot: land.root });
+      const top = yield* runGit(land.root, ["rev-parse", "--show-toplevel"]);
+      if (!top.ok) return yield* stop(`${ownLabel} can't read this project's repository.`);
+      yield* setStage(row, { repoRoot: top.out });
       yield* runGit(land.root, ["fetch", "--quiet", land.remoteName], GIT_FETCH_TIMEOUT_MS);
       const bundle = row.manifest.parts.find((part) => part.kind === "bundle");
       const { headSha, baseSha } = row.manifest.git;
@@ -945,13 +987,22 @@ const make = Effect.gen(function* () {
         row.worktreePath ??
         NodePath.join(
           config.worktreesDir,
-          NodePath.basename(land.root),
+          NodePath.basename(row.repoRoot ?? land.root),
           `moved-${row.transferKey.slice(0, 12)}`,
         );
+      // A folder already there when the move first picks its path isn't its
+      // own: it's never adopted, reset or removed.
+      if (row.worktreePath === null && (yield* pathExists(path))) {
+        return yield* stop(`${ownLabel} already has a folder at ${path}.`);
+      }
       // Recorded before it is made, so a restart finds what it owns.
       yield* setStage(row, { branch, worktreePath: path });
       const listed = yield* runGit(land.root, ["worktree", "list", "--porcelain"]);
-      const registered = listed.out.split("\n").includes(`worktree ${path}`);
+      // git lists real paths (macOS's /var is /private/var).
+      const real = yield* Effect.promise(() => NodeFs.realpath(path).catch(() => path));
+      const registered = listed.out
+        .split("\n")
+        .some((line) => line === `worktree ${path}` || line === `worktree ${real}`);
       if (registered) {
         const head = yield* runGit(path, ["rev-parse", "HEAD"]);
         if (head.ok && head.out === headSha) {
@@ -1034,7 +1085,7 @@ const make = Effect.gen(function* () {
       const status = yield* runGit(path, ["status", "--porcelain"]);
       if (status.out.length > 0) {
         // Ours, uncommitted, never handed to a thread: back to the moved commit.
-        if ((yield* pathInUse(path)) !== false) {
+        if ((yield* pathInUse(path)) !== false || !(yield* ownsFolder(path, row))) {
           return yield* stop(`A thread on ${ownLabel} is using that folder.`);
         }
         yield* runGit(path, ["reset", "--hard", headSha]);

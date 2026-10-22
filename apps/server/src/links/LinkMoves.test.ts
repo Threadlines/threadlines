@@ -20,6 +20,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
@@ -236,6 +237,7 @@ describe("LinkMoves", () => {
   it.live("rebuilds the moved checkout in a worktree of its own and imports the thread", () => {
     const repos = makeRepos();
     const dispatched: OrchestrationCommand[] = [];
+    let linkOff = false;
     return Effect.gen(function* () {
       const { manifest, payload, checkout } = yield* pack(repos);
       assert.equal(manifest.summary.unpushedCommits, 1);
@@ -294,7 +296,20 @@ describe("LinkMoves", () => {
         (yield* moves.abort(link("allowed"), { transferId: TRANSFER })).status,
         "committed",
       );
-    }).pipe(Effect.provide(testLayer(repos, dispatched)));
+
+      // Its last write lost, the row still says importing; a stop that comes
+      // now (the link went off, a finish resent) finds the import landed.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE link_moves SET status = 'importing'`;
+      linkOff = true;
+      state = yield* moves.finish(link("allowed"), { transferId: TRANSFER });
+      for (let tries = 0; tries < 200 && state.status === "importing"; tries += 1) {
+        yield* Effect.sleep("50 millis");
+        state = yield* moves.status(link("allowed"), { transferId: TRANSFER });
+      }
+      assert.equal(state.status, "committed");
+      assert.equal(run(worktree, "rev-parse", "HEAD"), checkout.headSha);
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => linkOff)));
   });
 
   it.live(

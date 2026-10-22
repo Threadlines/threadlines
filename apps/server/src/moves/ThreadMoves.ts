@@ -325,38 +325,44 @@ const make = Effect.gen(function* () {
           step.kind === "progress" ? `${step.phase}:${step.sentBytes ?? 0}` : "final"
         }`,
       );
-      yield* engine
-        .dispatch(
-          step.kind === "progress"
+      const dispatched = engine.dispatch(
+        step.kind === "progress"
+          ? {
+              type: "thread.move.progress",
+              commandId,
+              threadId,
+              transferId,
+              phase: step.phase,
+              ...(step.sentBytes !== undefined ? { sentBytes: step.sentBytes } : {}),
+              ...(step.totalBytes !== undefined ? { totalBytes: step.totalBytes } : {}),
+              createdAt,
+            }
+          : step.kind === "abort"
             ? {
-                type: "thread.move.progress",
+                type: "thread.move.abort",
                 commandId,
                 threadId,
                 transferId,
-                phase: step.phase,
-                ...(step.sentBytes !== undefined ? { sentBytes: step.sentBytes } : {}),
-                ...(step.totalBytes !== undefined ? { totalBytes: step.totalBytes } : {}),
+                reason: step.reason,
                 createdAt,
               }
-            : step.kind === "abort"
-              ? {
-                  type: "thread.move.abort",
-                  commandId,
-                  threadId,
-                  transferId,
-                  reason: step.reason,
-                  createdAt,
-                }
-              : {
-                  type: "thread.move.complete",
-                  commandId,
-                  threadId,
-                  transferId,
-                  movedThreadId: step.movedThreadId,
-                  createdAt,
-                },
-        )
-        .pipe(Effect.ignore);
+            : {
+                type: "thread.move.complete",
+                commandId,
+                threadId,
+                transferId,
+                movedThreadId: step.movedThreadId,
+                createdAt,
+              },
+      );
+      // Progress is best effort. The outcome must be recorded: failing here
+      // keeps the packed copy, and the worker tries again.
+      if (step.kind === "progress") return yield* Effect.ignore(dispatched);
+      yield* dispatched.pipe(
+        Effect.mapError(
+          () => new ThreadMoveFailure({ reason: "The move's outcome couldn't be recorded." }),
+        ),
+      );
     });
 
   /**
@@ -475,7 +481,7 @@ const make = Effect.gen(function* () {
         return yield* new ThreadMoveFailure({ reason: "This thread's project is gone." });
       }
       const detail = yield* snapshots
-        .getThreadDetailById(thread.id)
+        .getThreadDetailById(thread.id, { includeArchived: true })
         .pipe(
           Effect.mapError(() => new ThreadMoveFailure({ reason: "This thread couldn't be read." })),
         );

@@ -700,13 +700,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
-          if (Option.isNone(existingRow) || (existingRow.value.historySeedOwed ?? 0) === 0) {
-            return;
-          }
+          if (Option.isNone(existingRow)) return;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             historySeedOwed: 0,
-            historySeedMessageId: event.payload.messageId,
+            historySeedMessageId: event.payload.messageId ?? null,
           });
           return;
         }

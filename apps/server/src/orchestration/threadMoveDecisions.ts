@@ -431,7 +431,9 @@ export function decideHistorySeedDelivered(
   command: CommandOf<"thread.history-seed.delivered">,
   baseFor: EventBase,
 ): ThreadMoveDecision {
-  if (thread.historySeedOwed !== true) return [];
+  // Recorded for any thread that moved here, owed or not as this read model
+  // has it: the projections agree on where the conversation went.
+  if ((thread.movedFrom ?? null) === null) return [];
   return [
     {
       ...baseFor(thread.id),
