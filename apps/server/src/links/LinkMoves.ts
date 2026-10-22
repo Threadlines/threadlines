@@ -756,6 +756,43 @@ const make = Effect.gen(function* () {
     abortMove(link.deviceId, input.transferId);
 
   /**
+   * Records a move whose thread landed here as committed. First its worktree
+   * gets the project's setup script, as a new worktree thread here would
+   * (it brings ignored files like .env and installs what the worktree
+   * needs): run before the record, so a crash between them repeats the
+   * script rather than skipping it.
+   */
+  const settleLanded = (row: LinkMoveRow) =>
+    Effect.gen(function* () {
+      if (row.worktreePath !== null) {
+        const land = yield* landing(row.manifest);
+        if (land !== null) {
+          yield* setupScripts
+            .runForThread({
+              threadId: row.threadId,
+              projectId: land.project.id,
+              projectCwd: land.project.workspaceRoot,
+              worktreePath: row.worktreePath,
+            })
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("moved thread's setup script didn't start", {
+                  threadId: row.threadId,
+                  detail: error.message,
+                }),
+              ),
+            );
+        }
+      }
+      return yield* moves.settle({
+        linkDeviceId: row.linkDeviceId,
+        transferId: row.transferId,
+        status: "committed",
+        now: yield* nowIso,
+      });
+    });
+
+  /**
    * Drop a move unless it committed: answers which one it is now. Answers
    * `aborted` only once that is recorded here, and fails when anything it
    * needs to know couldn't be read, so the asking computer asks again rather
@@ -772,9 +809,9 @@ const make = Effect.gen(function* () {
         if (row.status === "committed" || row.status === "aborted") return stateOf(row);
         // The import may have created the thread before it recorded so.
         if (yield* importLanded(row)) {
-          yield* moves
-            .settle({ linkDeviceId, transferId, status: "committed", now: yield* nowIso })
-            .pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't record that.`)));
+          yield* settleLanded(row).pipe(
+            Effect.mapError(() => peerFailure(`${ownLabel} couldn't record that.`)),
+          );
           return stateOf({ ...row, status: "committed" });
         }
         const why = reason ?? "The move was cancelled.";
@@ -1278,33 +1315,7 @@ const make = Effect.gen(function* () {
       if (Exit.isFailure(dispatched) && !(yield* importLanded(row))) {
         return yield* stop(`${ownLabel} couldn't create the thread.`);
       }
-      const settled = yield* moves
-        .settle({
-          linkDeviceId: row.linkDeviceId,
-          transferId: row.transferId,
-          status: "committed",
-          now: yield* nowIso,
-        })
-        .pipe(Effect.orElseSucceed(() => false));
-      // Like a new worktree thread here: the project's setup script brings
-      // its ignored files (.env) and installs what the worktree needs. Once.
-      if (settled && row.worktreePath !== null) {
-        yield* setupScripts
-          .runForThread({
-            threadId: row.threadId,
-            projectId: land.project.id,
-            projectCwd: land.project.workspaceRoot,
-            worktreePath: row.worktreePath,
-          })
-          .pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("moved thread's setup script didn't start", {
-                threadId: row.threadId,
-                detail: error.message,
-              }),
-            ),
-          );
-      }
+      yield* settleLanded(row).pipe(Effect.ignore);
     });
 
   /**
@@ -1473,14 +1484,7 @@ const make = Effect.gen(function* () {
     for (const row of open) {
       if (row.status === "importing") {
         if (yield* importLanded(row)) {
-          yield* moves
-            .settle({
-              linkDeviceId: row.linkDeviceId,
-              transferId: row.transferId,
-              status: "committed",
-              now: yield* nowIso,
-            })
-            .pipe(Effect.ignore);
+          yield* settleLanded(row).pipe(Effect.ignore);
         } else {
           yield* runImport(row.linkDeviceId, row.transferId).pipe(Effect.forkIn(scope));
         }

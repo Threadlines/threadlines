@@ -367,16 +367,26 @@ describe("ProjectSetups", () => {
         // Cut off mid-clone: its staging folder goes, the folder beside it stays.
         const cut = path.join(repos.root, "copies", "cut");
         const cutStaging = stagingPathFor(cut, "cut-1");
-        fs.mkdirSync(cutStaging, { recursive: true });
-        fs.writeFileSync(path.join(cutStaging, "partial"), "x");
+        fs.mkdirSync(path.join(cutStaging, "copy"), { recursive: true });
+        fs.writeFileSync(path.join(cutStaging, ".threadlines-setup"), "cut-1");
+        fs.writeFileSync(path.join(cutStaging, "copy", "partial"), "x");
         fs.writeFileSync(path.join(repos.root, "copies", "keep.txt"), "keep");
         yield* row("cut-1", cut, cutStaging, "cloning");
         // Moved into place just before the restart: it is finished, never deleted.
         const placed = path.join(repos.root, "copies", "placed");
         run(repos.root, "clone", repos.origin, placed);
-        yield* row("placed-1", placed, stagingPathFor(placed, "placed-1"), "publishing");
+        const placedStaging = stagingPathFor(placed, "placed-1");
+        fs.mkdirSync(placedStaging);
+        fs.writeFileSync(path.join(placedStaging, ".threadlines-setup"), "placed-1");
+        yield* row("placed-1", placed, placedStaging, "publishing");
         // A row naming a folder that isn't its own staging folder: nothing is deleted.
         yield* row("odd-1", path.join(repos.root, "copies", "odd"), repos.b, "cloning");
+        // A folder at the staging name without this job's mark isn't the job's.
+        const unmarked = path.join(repos.root, "copies", "unmarked");
+        const unmarkedStaging = stagingPathFor(unmarked, "unmarked-1");
+        fs.mkdirSync(unmarkedStaging);
+        fs.writeFileSync(path.join(unmarkedStaging, "someone-elses"), "x");
+        yield* row("unmarked-1", unmarked, unmarkedStaging, "cloning");
 
         yield* Effect.scoped(
           Effect.gen(function* () {
@@ -394,6 +404,8 @@ describe("ProjectSetups", () => {
         assert.isFalse(fs.existsSync(cutStaging));
         assert.isTrue(fs.existsSync(path.join(repos.root, "copies", "keep.txt")));
         assert.equal(rows.get(ProjectSetupId.make("placed-1"))?.stage, "done");
+        assert.isFalse(fs.existsSync(placedStaging));
+        assert.isTrue(fs.existsSync(path.join(unmarkedStaging, "someone-elses")));
         const created = dispatched.find((command) => command.type === "project.create");
         assert(created?.type === "project.create");
         assert.equal(created.projectId, "project-placed-1");

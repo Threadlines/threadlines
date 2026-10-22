@@ -89,6 +89,17 @@ describe("remote URLs across computers", () => {
     expect(stripGitRemoteCredentials("git@github.com:org/app.git")).toBe(
       "git@github.com:org/app.git",
     );
+    // A password holding "@" leaves nothing behind.
+    expect(stripGitRemoteCredentials("https://alice:one@two@example.com/org/app.git")).toBe(
+      "https://example.com/org/app.git",
+    );
+    expect(normalizeGitRemoteUrl("https://alice:one@two@example.com/repo")).toBe(
+      "example.com/repo",
+    );
+    // A one-part path keeps one key across protocols.
+    expect(normalizeGitRemoteUrl(convertGitRemoteUrl("https://example.com/repo.git", "ssh")!)).toBe(
+      normalizeGitRemoteUrl("https://example.com/repo.git"),
+    );
     expect(convertGitRemoteUrl("git@github.com:org/app.git", "https")).toBe(
       "https://github.com/org/app.git",
     );

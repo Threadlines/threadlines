@@ -220,11 +220,11 @@ export function normalizeGitRemoteUrl(value: string): string {
     } catch {
       // Not a URL after all: fall through, without its credentials.
     }
-    return normalized.replace(/^([a-z+]+:\/\/)[^@/]*@/, "$1");
+    return normalized.replace(/^([a-z+]+:\/\/)[^/]*@/, "$1");
   }
 
-  // scp-style `user@host:path`, whatever the user's name.
-  const scpStyleHostAndPath = /^[^@\s/:]+@([^:/\s]+):\/?([^/\s]+(?:\/[^/\s]+)+)$/i.exec(normalized);
+  // scp-style `user@host:path`, whatever the user's name, one path part or more.
+  const scpStyleHostAndPath = /^[^@\s/:]+@([^:/\s]+):\/?([^/\s]+(?:\/[^/\s]+)*)$/i.exec(normalized);
   if (scpStyleHostAndPath?.[1] && scpStyleHostAndPath[2]) {
     return `${scpStyleHostAndPath[1]}/${scpStyleHostAndPath[2]}`;
   }
@@ -251,11 +251,12 @@ export function gitRemoteProtocol(url: string): GitRemoteProtocol {
  */
 export function stripGitRemoteCredentials(url: string): string {
   const trimmed = url.trim();
+  // A password may hold "@": the user part runs to the last "@" before the path.
   if (/^(?:https?|git):\/\//i.test(trimmed)) {
-    return trimmed.replace(/^([a-z+]+:\/\/)[^@/]*@/i, "$1");
+    return trimmed.replace(/^([a-z+]+:\/\/)[^/]*@/i, "$1");
   }
   if (/^ssh:\/\//i.test(trimmed)) {
-    return trimmed.replace(/^(ssh:\/\/[^:@/]+):[^@/]*@/i, "$1@");
+    return trimmed.replace(/^(ssh:\/\/[^:@/]+):[^/]*@/i, "$1@");
   }
   return trimmed;
 }

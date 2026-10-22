@@ -122,7 +122,7 @@ export const makeProjectSetupSource = Effect.gen(function* () {
         "--no-empty-directory",
         "-z",
       ]);
-      if (listing.code !== 0) return [];
+      if (listing.code !== 0) return { entries: [], cut: false };
       const entries = listing.stdout.split("\0").filter((entry) => entry.length > 0);
       const folders = entries.filter((entry) => entry.endsWith("/"));
       const files = entries.filter((entry) => !entry.endsWith("/"));
@@ -132,11 +132,12 @@ export const makeProjectSetupSource = Effect.gen(function* () {
       const found = [...files];
       let queue = folders;
       let visited = 0;
-      for (
-        let depth = 0;
-        depth < 8 && queue.length > 0 && visited < MAX_SCANNED_ENTRIES;
-        depth += 1
-      ) {
+      let cut = false;
+      for (let depth = 0; queue.length > 0; depth += 1) {
+        if (depth >= 8 || visited >= MAX_SCANNED_ENTRIES) {
+          cut = true;
+          break;
+        }
         const ignored = yield* checkIgnored(root, queue);
         const next: string[] = [];
         const children: string[] = [];
@@ -148,6 +149,10 @@ export const makeProjectSetupSource = Effect.gen(function* () {
             }).catch(() => []),
           );
           for (const entry of listing) {
+            if (visited >= MAX_SCANNED_ENTRIES) {
+              cut = true;
+              break;
+            }
             visited += 1;
             if (entry.isDirectory()) next.push(`${folder}${entry.name}/`);
             else if (entry.isFile()) children.push(`${folder}${entry.name}`);
@@ -157,7 +162,7 @@ export const makeProjectSetupSource = Effect.gen(function* () {
         found.push(...children.filter((child) => ignoredChildren.has(child)));
         queue = next;
       }
-      return found;
+      return { entries: found, cut };
     });
 
   /** Which of `paths` git ignores (a folder with its trailing `/`). */
@@ -176,7 +181,7 @@ export const makeProjectSetupSource = Effect.gen(function* () {
 
   const listCandidates = (root: string) =>
     Effect.gen(function* () {
-      const entries = yield* ignoredEntries(root);
+      const { entries, cut } = yield* ignoredEntries(root);
       const scanned = entries.slice(0, MAX_SCANNED_ENTRIES);
       const files: ProjectSetupFileCandidate[] = [];
       for (const path of scanned) {
@@ -198,7 +203,7 @@ export const makeProjectSetupSource = Effect.gen(function* () {
       );
       return {
         files: files.slice(0, PROJECT_SETUP_MAX_FILES),
-        truncated: files.length > PROJECT_SETUP_MAX_FILES || entries.length > scanned.length,
+        truncated: cut || files.length > PROJECT_SETUP_MAX_FILES || entries.length > scanned.length,
       };
     });
 
@@ -248,17 +253,26 @@ export const makeProjectSetupSource = Effect.gen(function* () {
       } satisfies ProjectSetupSourceResult;
     });
 
-  /** One file's bytes, opened without following a symlink and checked after opening. */
-  const readOne = (root: string, path: string) =>
+  /**
+   * One file's bytes. It must resolve inside the project, and the file opened
+   * (without following a final symlink) must be that same file, so a folder
+   * swapped for a link between the check and the open reads nothing.
+   */
+  const readOne = (root: string, realRoot: string, path: string) =>
     Effect.tryPromise({
       try: async (): Promise<ProjectSetupFile> => {
+        const absolute = NodePath.join(root, ...path.split("/"));
+        const real = await NodeFs.realpath(absolute);
+        if (!real.startsWith(realRoot + NodePath.sep)) throw new Error("outside");
+        const checked = await NodeFs.stat(real);
         const handle = await NodeFs.open(
-          NodePath.join(root, ...path.split("/")),
+          absolute,
           FsConstants.O_RDONLY | (FsConstants.O_NOFOLLOW ?? 0),
         );
         try {
           const stat = await handle.stat();
           if (!stat.isFile()) throw new Error("not a file");
+          if (stat.dev !== checked.dev || stat.ino !== checked.ino) throw new Error("moved");
           if (stat.size > PROJECT_SETUP_MAX_FILE_BYTES) throw new Error("too large");
           const bytes = await handle.readFile();
           return { path, contentBase64: bytes.toString("base64"), mode: sentMode(stat.mode) };
@@ -300,7 +314,7 @@ export const makeProjectSetupSource = Effect.gen(function* () {
       const files: ProjectSetupFile[] = [];
       let total = 0;
       for (const path of input.paths) {
-        const file = yield* readOne(root, path);
+        const file = yield* readOne(root, realRoot, path);
         total += Buffer.byteLength(file.contentBase64, "base64");
         if (total > PROJECT_SETUP_MAX_TOTAL_BYTES) {
           return yield* failure("The files come to more than 8 MB together.");

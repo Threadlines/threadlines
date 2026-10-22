@@ -54,7 +54,7 @@ import {
   parseRemoteFetchUrls,
   pickPrimaryRemote,
 } from "../project/Layers/RepositoryIdentityResolver.ts";
-import { findProjectByPlace } from "../project/projectPlace.ts";
+import { findProjectByPlace, resolveProjectPlace } from "../project/projectPlace.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { parseCloneProgress } from "./cloneProgress.ts";
 import {
@@ -112,12 +112,19 @@ const IDLE_PROGRESS: ProjectSetupProgress = {
 /** A step that can't go on: the job ends failed with this sentence. */
 class SetupStop extends Data.TaggedError("SetupStop")<{ readonly reason: string }> {}
 
-/** The staging folder beside the destination; its name says which job made it. */
+/**
+ * The staging folder beside the destination; its name says which job made
+ * it. It holds the job's ownership mark and the copy being made (`copy/`),
+ * which moves out into the destination when it's whole.
+ */
 export const stagingPathFor = (destination: string, setupId: string) =>
   NodePath.join(
     NodePath.dirname(destination),
     `.${NodePath.basename(destination)}.setup-${setupId.replace(/[^A-Za-z0-9]/g, "").slice(0, 8)}`,
   );
+/** The mark in a staging folder naming the job that made it. */
+const OWNER_MARK = ".threadlines-setup";
+const copyPathOf = (stagingPath: string) => NodePath.join(stagingPath, "copy");
 
 /** A remote URL's host, for a sentence; "the remote" when it has none. */
 const hostOf = (url: string) => {
@@ -341,11 +348,21 @@ export const makeProjectSetups = Effect.gen(function* () {
       return { resolvedPath, state };
     });
 
-  /** Deletes the staging folder this job made, and nothing else. */
+  /**
+   * Deletes the staging folder this job made, and nothing else: the folder
+   * must be at the name this job gives it, be a real folder (not a link),
+   * and carry this job's mark.
+   */
   const removeStaging = (row: ProjectSetupRow) =>
     Effect.promise(async () => {
       const staging = row.stagingPath;
       if (staging === null || staging !== stagingPathFor(row.destinationPath, row.setupId)) return;
+      const stat = await NodeFs.lstat(staging).catch(() => null);
+      if (stat === null || !stat.isDirectory() || stat.isSymbolicLink()) return;
+      const mark = await NodeFs.readFile(NodePath.join(staging, OWNER_MARK), "utf8").catch(
+        () => null,
+      );
+      if (mark !== row.setupId) return;
       await NodeFs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
     });
 
@@ -357,13 +374,14 @@ export const makeProjectSetups = Effect.gen(function* () {
   const cloneOnce = (row: ProjectSetupRow, url: string) =>
     Effect.gen(function* () {
       const staging = row.stagingPath!;
+      const copy = copyPathOf(staging);
       const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_PROGRESS_DELAY: "0" };
       const child = yield* spawner.spawn(
         ChildProcess.make(
           "git",
-          ["clone", "--progress", "--origin", "origin", "--", url, staging],
+          ["clone", "--progress", "--origin", "origin", "--", url, copy],
           hideWindowsConsole({
-            cwd: NodePath.dirname(staging),
+            cwd: staging,
             env,
             extendEnv: false,
             stdin: "ignore",
@@ -371,7 +389,10 @@ export const makeProjectSetups = Effect.gen(function* () {
           }),
         ),
       );
-      yield* Effect.addFinalizer(() => child.kill().pipe(Effect.ignore));
+      // The spawn's own force-kill doesn't apply to an explicit kill: say it again.
+      yield* Effect.addFinalizer(() =>
+        child.kill({ forceKillAfter: "5 seconds" }).pipe(Effect.ignore),
+      );
       let tail = "";
       let lastHeard = Date.now();
       const tick = Effect.gen(function* () {
@@ -427,9 +448,12 @@ export const makeProjectSetups = Effect.gen(function* () {
           );
         }
         if (index > 0) {
-          // A failed clone leaves the staging folder part-filled: start it over, still ours.
-          yield* removeStaging(row);
-          yield* Effect.promise(() => NodeFs.mkdir(row.stagingPath!));
+          // A failed clone leaves its copy part-made, inside the job's own folder.
+          yield* Effect.promise(() =>
+            NodeFs.rm(copyPathOf(row.stagingPath!), { recursive: true, force: true }).catch(
+              () => undefined,
+            ),
+          );
           yield* setProgress(row.setupId, IDLE_PROGRESS);
         }
         const result = yield* cloneOnce(row, url);
@@ -543,13 +567,14 @@ export const makeProjectSetups = Effect.gen(function* () {
       }
     });
 
+  /** Moves the whole copy into its folder: the point of no return. */
   const publish = (row: ProjectSetupRow) =>
     Effect.tryPromise({
       try: async () => {
         const existing = await NodeFs.lstat(row.destinationPath).catch(() => null);
         // An empty folder there is replaced; anything else stops the move (a race since Start).
         if (existing !== null) await NodeFs.rmdir(row.destinationPath);
-        await NodeFs.rename(row.stagingPath!, row.destinationPath);
+        await NodeFs.rename(copyPathOf(row.stagingPath!), row.destinationPath);
       },
       catch: () =>
         new SetupStop({
@@ -557,12 +582,26 @@ export const makeProjectSetups = Effect.gen(function* () {
         }),
     });
 
+  /** Publishing through to done, in one piece: a cancel or shutdown waits for it. */
+  const finish = (row: ProjectSetupRow, publishFirst: boolean) =>
+    Effect.gen(function* () {
+      if (publishFirst) {
+        yield* setStage(row, "publishing");
+        yield* publish(row);
+        // Its mark is all that's left in the staging folder.
+        yield* removeStaging(row);
+      }
+      yield* setStage(row, "adding");
+      yield* addProject(row);
+      yield* setStage(row, "done");
+    }).pipe(Effect.uninterruptible);
+
   const runJob = (row: ProjectSetupRow, files: ReadonlyArray<ProjectSetupFile>) =>
     Effect.gen(function* () {
       if (!row.adopted) {
         const url = yield* clone(row);
         yield* setStage(row, "cloning", { cloneUrl: url });
-        const staging = row.stagingPath!;
+        const staging = copyPathOf(row.stagingPath!);
         for (const remote of row.request.remotes) {
           if (remote.name === row.request.primaryRemoteName || remote.name === "origin") continue;
           yield* git(staging, ["remote", "add", remote.name, remote.url]);
@@ -585,8 +624,7 @@ export const makeProjectSetups = Effect.gen(function* () {
           yield* setStage(row, "copying");
           yield* writeFiles(row, staging, files);
         }
-        yield* setStage(row, "publishing");
-        yield* publish(row);
+        yield* finish(row, true);
       } else {
         yield* requireSubdirectory(
           row,
@@ -594,10 +632,8 @@ export const makeProjectSetups = Effect.gen(function* () {
           `${row.request.subdirectory} isn't in ${row.destinationPath}.`,
         );
         if (files.length > 0) yield* writeFiles(row, row.destinationPath, files);
+        yield* finish(row, false);
       }
-      yield* setStage(row, "adding");
-      yield* addProject(row);
-      yield* setStage(row, "done");
     });
 
   /** Runs a job to its end: failed or cancelled jobs lose their staging folder, never more. */
@@ -612,7 +648,8 @@ export const makeProjectSetups = Effect.gen(function* () {
               yield* repo.get(row.setupId).pipe(Effect.orElseSucceed(() => Option.none())),
             );
             const published = current !== undefined && PUBLISHED.has(current.stage);
-            if (Exit.isSuccess(exit)) {
+            // Done stays done, even when a cancel's interrupt landed as it finished.
+            if (Exit.isSuccess(exit) || current?.stage === "done") {
               live.delete(row.setupId);
               return;
             }
@@ -645,36 +682,55 @@ export const makeProjectSetups = Effect.gen(function* () {
   // Asking
   // ---------------------------------------------------------------------------
 
-  const start: ProjectSetupsShape["start"] = (input) =>
+  /** A live project here in this repository's folder `subdirectory`, or anywhere in it. */
+  const projectsHere = (repositoryKey: string, subdirectory: string) =>
     Effect.gen(function* () {
-      const existing = yield* repo.get(input.setupId).pipe(Effect.mapError(stored("read it")));
-      if (Option.isSome(existing)) return toJob(existing.value);
-      const refusal = filesRefusal(input.files);
-      if (refusal !== null) return yield* failure(`Can't take the files: ${refusal}.`);
-      if (input.subdirectory.split("/").some((part) => part === ".." || part === ".")) {
-        return yield* failure("The project's folder in the repository isn't valid.");
+      const catalog = yield* snapshots
+        .getProjectCatalog()
+        .pipe(Effect.mapError(stored("read its projects")));
+      const exact = yield* findProjectByPlace(
+        identities,
+        catalog.projects,
+        repositoryKey,
+        subdirectory,
+      );
+      let copyRoot: string | null = null;
+      for (const project of catalog.projects) {
+        if (project.deletedAt !== null || project.kind === "general-chat") continue;
+        const place = yield* resolveProjectPlace(identities, project.workspaceRoot);
+        if (place?.canonicalKey === repositoryKey) {
+          copyRoot = place.rootPath;
+          break;
+        }
       }
-      const destination = resolveDestination(input.destinationPath);
-      if (destination === null) {
-        return yield* failure("Give a full folder path, or one that starts with ~.");
-      }
-      if (input.remotes.every((remote) => remote.name !== input.primaryRemoteName)) {
-        return yield* failure("It has no remote to clone.");
-      }
-      const row = yield* admission.withPermits(1)(
+      return { exact, copyRoot };
+    });
+
+  const start: ProjectSetupsShape["start"] = (input) =>
+    admission
+      .withPermits(1)(
         Effect.gen(function* () {
-          const catalog = yield* snapshots
-            .getProjectCatalog()
-            .pipe(Effect.mapError(stored("read its projects")));
-          const have = yield* findProjectByPlace(
-            identities,
-            catalog.projects,
-            input.repositoryKey,
-            input.subdirectory,
-          );
-          if (have !== undefined) {
-            return yield* failure(`${ownLabel} already has ${have.title}.`);
+          // Under the lock: two starts with one id are one job.
+          const existing = yield* repo.get(input.setupId).pipe(Effect.mapError(stored("read it")));
+          if (Option.isSome(existing)) return toJob(existing.value);
+          const refusal = filesRefusal(input.files);
+          if (refusal !== null) return yield* failure(`Can't take the files: ${refusal}.`);
+          if (input.subdirectory !== "" && receivedPathRefusal(input.subdirectory) !== null) {
+            return yield* failure("The project's folder in the repository isn't valid.");
           }
+          let destination = resolveDestination(input.destinationPath);
+          if (destination === null) {
+            return yield* failure("Give a full folder path, or one that starts with ~.");
+          }
+          if (input.remotes.every((remote) => remote.name !== input.primaryRemoteName)) {
+            return yield* failure("It has no remote to clone.");
+          }
+          const here = yield* projectsHere(input.repositoryKey, input.subdirectory);
+          if (here.exact !== undefined) {
+            return yield* failure(`${ownLabel} already has ${here.exact.title}.`);
+          }
+          // Another folder of this repository is already here: add this one from that copy.
+          if (here.copyRoot !== null) destination = here.copyRoot;
           const rows = yield* repo.list.pipe(Effect.mapError(stored("read its project setups")));
           const busy = rows.find(
             (other) =>
@@ -693,21 +749,16 @@ export const makeProjectSetups = Effect.gen(function* () {
           }
           const adopted = state === "same-repository";
           const stagingPath = adopted ? null : stagingPathFor(destination, input.setupId);
-          if (stagingPath !== null) {
-            const made = yield* Effect.tryPromise(async () => {
-              await NodeFs.mkdir(NodePath.dirname(destination), { recursive: true });
-              // Exclusive: if anything is there, it isn't ours, and nothing here deletes it.
-              await NodeFs.mkdir(stagingPath);
-            }).pipe(Effect.result);
-            if (made._tag === "Failure") {
-              return yield* failure(`${ownLabel} couldn't make a folder next to ${destination}.`);
-            }
-          }
           const { files, ...rest } = input;
-          return yield* repo
+          // The record comes first: a crash after it leaves a row the restart cleans up.
+          const row = yield* repo
             .insert({
               setupId: input.setupId,
-              request: { ...rest, filePaths: files.map((file) => file.path) },
+              request: {
+                ...rest,
+                destinationPath: destination,
+                filePaths: files.map((f) => f.path),
+              },
               destinationPath: destination,
               stagingPath,
               adopted,
@@ -718,12 +769,29 @@ export const makeProjectSetups = Effect.gen(function* () {
               createdAt: yield* nowIso,
             })
             .pipe(Effect.mapError(stored("record the setup")));
+          if (stagingPath !== null) {
+            const made = yield* Effect.tryPromise(async () => {
+              await NodeFs.mkdir(NodePath.dirname(stagingPath), { recursive: true });
+              // Exclusive: if anything is there, it isn't ours, and nothing here deletes it.
+              await NodeFs.mkdir(stagingPath);
+              await NodeFs.writeFile(NodePath.join(stagingPath, OWNER_MARK), row.setupId, {
+                flag: "wx",
+              });
+            }).pipe(Effect.result);
+            if (made._tag === "Failure") {
+              yield* removeStaging(row);
+              yield* setStage(row, "failed", {
+                error: `${ownLabel} couldn't make a folder next to ${destination}.`,
+              });
+              return toJob({ ...row, stage: "failed" });
+            }
+          }
+          yield* launch(row, files);
+          yield* notify;
+          return toJob(row);
         }),
-      );
-      yield* launch(row, input.files);
-      yield* notify;
-      return toJob(row);
-    });
+      )
+      .pipe(Effect.uninterruptible);
 
   const cancel: ProjectSetupsShape["cancel"] = (setupId) =>
     Effect.gen(function* () {
@@ -756,18 +824,30 @@ export const makeProjectSetups = Effect.gen(function* () {
   /** Finishes a job whose copy is in place; undoes one whose copy isn't. */
   const recover = (row: ProjectSetupRow) =>
     Effect.gen(function* () {
-      const staging = row.stagingPath === null ? null : yield* statOf(row.stagingPath);
+      const copy = row.stagingPath === null ? null : yield* statOf(copyPathOf(row.stagingPath));
       const placed = yield* statOf(NodePath.join(row.destinationPath, ".git"));
       const published =
         PUBLISHED.has(row.stage) ||
         row.adopted ||
-        (row.stage === "publishing" && staging === null && placed !== null);
+        (row.stage === "publishing" && copy === null && placed !== null);
       if (!published) {
         yield* removeStaging(row);
         yield* setStage(row, "failed", {
           error: `Stopped when ${ownLabel} restarted. Retry starts it again.`,
         });
         return;
+      }
+      yield* removeStaging(row);
+      if (row.adopted) {
+        const folder = yield* requireSubdirectory(
+          row,
+          row.destinationPath,
+          `${row.request.subdirectory} isn't in ${row.destinationPath}.`,
+        ).pipe(Effect.result);
+        if (folder._tag === "Failure") {
+          yield* setStage(row, "failed", { error: folder.failure.reason });
+          return;
+        }
       }
       if (row.stage === "copying") {
         yield* addWarning(row, `${ownLabel} restarted while copying files; some may be missing.`);

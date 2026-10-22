@@ -52,6 +52,9 @@ export async function writeReceivedFile(
     | { readonly bytes: Uint8Array; readonly mode: number }
     | { readonly symlinkTarget: string },
 ): Promise<void> {
+  // The root itself must be a real folder: a link there would carry every file elsewhere.
+  const rootStat = await NodeFs.lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("root");
   const segments = path.split("/");
   let current = root;
   for (const segment of segments.slice(0, -1)) {
