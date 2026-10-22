@@ -1626,7 +1626,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       if (computer === undefined) {
         return {
           outcome: "refused",
-          detail: `This computer is no longer linked to ${remoteLabel(thread, child.environmentId)}.`,
+          detail: `This computer is no longer linked to ${child.label}.`,
         } satisfies ThreadSendResult;
       }
       const callerTurnId = thread.session?.activeTurnId ?? NO_TURN;
@@ -1721,7 +1721,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           }
           return {
             outcome: "stopped",
-            detail: `Stopped. ${remoteLabel(thread, child.environmentId)} is told to stop it; nothing more comes back from it for what you asked. A later thread_send starts it again.`,
+            detail: `Stopped. ${child.label} is told to stop it; nothing more comes back from it for what you asked. A later thread_send starts it again.`,
             threadId: child.threadId,
           } satisfies ThreadStopResult;
         }),
