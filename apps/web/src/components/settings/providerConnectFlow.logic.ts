@@ -35,9 +35,9 @@ export interface ProviderConnectFlowState {
    */
   readonly signInUrl: string | null;
   /**
-   * Recent output not yet holding a finished URL. Terminal output arrives in
-   * arbitrary chunks, so a device-code URL can be split mid-code; it is only
-   * taken once something follows it.
+   * Recent raw output not yet holding a finished URL. Terminal output arrives
+   * in arbitrary chunks, so a device-code URL (or the code around a link) can
+   * be split mid-way; it is only taken once something follows it.
    */
   readonly urlScanTail: string;
   /**
@@ -83,24 +83,102 @@ const SIGN_IN_URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/gu;
 const URL_SCAN_TAIL_CHARS = 2048;
 
 /**
+ * Whether `url` is a page to open: it parses, and its host is not the machine
+ * the CLI runs on. A local address (`codex login`'s `localhost:1455`) is where
+ * the CLI waits for the browser to come back.
+ */
+function isOpenablePage(url: string): boolean {
+  let hostname: string;
+  try {
+    // WHATWG parsing writes every IPv4 form (`127.1`, `2130706433`) as dotted.
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    // Cut short, like `http://[::1` where the pattern stops at `]`.
+    return false;
+  }
+  return !(
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname === "0.0.0.0" ||
+    /^127\.\d+\.\d+\.\d+$/u.test(hostname)
+  );
+}
+
+/**
  * The first http(s) URL in `text` that something follows (so it cannot still
- * be streaming in), minus trailing punctuation.
+ * be streaming in), minus trailing punctuation, skipping any that is not a
+ * page to open.
  */
 export function extractSignInUrl(text: string): string | null {
   for (const match of text.matchAll(SIGN_IN_URL_PATTERN)) {
-    if (match.index + match[0].length < text.length) {
-      return match[0].replace(/[.,;:!?]+$/u, "");
-    }
+    if (match.index + match[0].length >= text.length) continue;
+    const url = match[0].replace(/[.,;:!?]+$/u, "");
+    if (isOpenablePage(url)) return url;
   }
   return null;
 }
 
 const ANSI_ESCAPE_PATTERN =
   /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|\u001B[@-Z\\-_]/gu;
+/**
+ * Cursor moves to another row. Windows terminals (ConPTY) draw blank lines as
+ * such a jump instead of line breaks, so dropping it would run a printed URL
+ * into the words of the next line.
+ */
+// oxlint-disable-next-line no-control-regex -- matching escape sequences is the point
+const CURSOR_ROW_MOVE_PATTERN = /\u001B\[[0-9;]*[ABEFHdf]/gu;
 const OTHER_CONTROL_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu;
 
+/** Terminal output as plain text: a jump to another row reads as a line break. */
 export function stripTerminalControlSequences(value: string): string {
-  return value.replace(ANSI_ESCAPE_PATTERN, "").replace(OTHER_CONTROL_PATTERN, "");
+  return value
+    .replace(CURSOR_ROW_MOVE_PATTERN, "\n")
+    .replace(ANSI_ESCAPE_PATTERN, "")
+    .replace(OTHER_CONTROL_PATTERN, "");
+}
+
+/**
+ * A hyperlink's opening code (OSC 8) and its target. A TUI that wraps a long
+ * link (`/login` in Pi) cuts the visible address into rows, but each row's
+ * link still carries the whole address.
+ */
+const HYPERLINK_TARGET_PATTERN =
+  // oxlint-disable-next-line no-control-regex -- matching escape sequences is the point
+  /\u001B\]8;[^;\u0007\u001B]*;([^\u0007\u001B]*)(?:\u0007|\u001B\\)/gu;
+
+/** Output as the URL scan reads it: each hyperlink's target on a line of its own. */
+function urlScanText(raw: string): string {
+  return stripTerminalControlSequences(
+    raw.replace(HYPERLINK_TARGET_PATTERN, (_, target: string) => (target ? `\n${target}\n` : "")),
+  );
+}
+
+/**
+ * One whole code at a given index: an OSC string with its end, a CSI
+ * sequence, or a two-character escape (never `ESC ]`, which starts an OSC).
+ */
+const ESCAPE_CODE_AT =
+  // oxlint-disable-next-line no-control-regex -- matching escape sequences is the point
+  /\u001B(?:\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\^_])/uy;
+/** The longest code kept whole across the cut: a link's target is one address. */
+const OPEN_CODE_MAX_CHARS = 16_384;
+
+/**
+ * The raw output the scan keeps for the next chunk: the last
+ * `URL_SCAN_TAIL_CHARS`, unless that cut lands inside a code. Then the tail
+ * starts at the code instead, so a link's target is never split from its
+ * code and run into the text after it.
+ */
+function nextUrlScanTail(raw: string): string {
+  const cut = raw.length - URL_SCAN_TAIL_CHARS;
+  if (cut <= 0) return raw;
+  const codeStart = raw.lastIndexOf("\u001B", cut - 1);
+  if (codeStart === -1) return raw.slice(cut);
+  ESCAPE_CODE_AT.lastIndex = codeStart;
+  // An unfinished code runs to the end of the output so far.
+  const codeEnd = ESCAPE_CODE_AT.test(raw) ? ESCAPE_CODE_AT.lastIndex : raw.length;
+  if (codeEnd <= cut) return raw.slice(cut);
+  return raw.length - codeStart <= OPEN_CODE_MAX_CHARS ? raw.slice(codeStart) : raw.slice(codeEnd);
 }
 
 /**
@@ -140,14 +218,14 @@ export function applyProviderAuthEvent(
       if (state.signInUrl !== null) {
         return { ...state, lastLine, openLine };
       }
-      const scanned = `${state.urlScanTail}${stripTerminalControlSequences(event.data)}`;
-      const signInUrl = extractSignInUrl(scanned);
+      const scanned = `${state.urlScanTail}${event.data}`;
+      const signInUrl = extractSignInUrl(urlScanText(scanned));
       return {
         ...state,
         lastLine,
         openLine,
         signInUrl,
-        urlScanTail: signInUrl === null ? scanned.slice(-URL_SCAN_TAIL_CHARS) : "",
+        urlScanTail: signInUrl === null ? nextUrlScanTail(scanned) : "",
       };
     }
     case "status":

@@ -46,6 +46,7 @@ import {
   deriveClaudeLongLivedOAuthTokenState,
   GROK_DRIVER_KIND,
   sanitizeClaudeLongLivedOAuthTokenInput,
+  SELF_OPENING_SIGN_IN_DRIVERS,
   upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "@threadlines/shared/providerAuthCommands";
 
@@ -562,6 +563,8 @@ function ClaudeLongLivedAuthSection(props: {
   readonly idPrefix: string;
   readonly instanceId: ProviderInstanceId;
   readonly setupCommand: string;
+  /** `claude setup-token` opens the authorization page itself. */
+  readonly commandOpensBrowser: boolean;
   readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
   readonly onChange: (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => void;
 }) {
@@ -630,6 +633,7 @@ function ClaudeLongLivedAuthSection(props: {
           displayName="Claude"
           actionLabel={tokenState.configured ? "Generate new token" : "Generate token"}
           command={props.setupCommand}
+          commandOpensBrowser={props.commandOpensBrowser}
           buttonVariant={tokenState.configured ? "outline" : "default"}
           description="Threadlines saves the token for you when it appears."
         />
@@ -881,6 +885,9 @@ function ProviderAccountSignInSection(props: {
   const browserSignIn =
     props.driverKind !== null && BROWSER_SIGN_IN_DRIVERS.has(String(props.driverKind));
   const signOut = browserSignIn ? browserSignOutCopy(props.driverKind, props.instance) : null;
+  // Codex, Claude, Cursor, OpenCode and Pi open their sign-in page themselves.
+  const commandOpensBrowser =
+    props.driverKind !== null && SELF_OPENING_SIGN_IN_DRIVERS.has(String(props.driverKind));
   const hasClaudeCredentialOverride =
     isClaude && hasClaudeCredentialOverrideEnvironment(props.environment);
   const claudeLongLivedTokenConfigured =
@@ -954,6 +961,7 @@ function ProviderAccountSignInSection(props: {
             autoShowTerminal={(props.signInHandoffActive ?? false) || signInStartsInTerminal}
             surface={browserSignIn || isPi ? "browser" : "terminal"}
             acceptsRedirect={!isPi}
+            commandOpensBrowser={commandOpensBrowser}
             terminalFallback={
               isPi
                 ? {
@@ -1072,6 +1080,7 @@ function ProviderAccountSignInSection(props: {
             idPrefix={props.idPrefix}
             instanceId={props.instanceId}
             setupCommand={props.claudeSetupTokenCommand}
+            commandOpensBrowser={commandOpensBrowser}
             environment={props.environment}
             onChange={props.onEnvironmentChange}
           />
