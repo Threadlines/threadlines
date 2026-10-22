@@ -298,6 +298,36 @@ describe("LinkMoves", () => {
   });
 });
 
+describe("LinkMoves, a clean thread", () => {
+  it.live("moves a thread with nothing unpushed and no changes, carrying no bytes", () => {
+    const repos = makeRepos();
+    // `a` as pushed, nothing changed: the move carries only its history.
+    run(repos.a, "reset", "--hard", "origin/main");
+    run(repos.a, "clean", "-fdx");
+    run(repos.a, "checkout", "main");
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const { manifest, checkout } = yield* pack(repos);
+      assert.equal(manifest.totalBytes, 0);
+      assert.isNull(manifest.git.baseSha);
+      const moves = yield* LinkMoves;
+      let state = yield* moves.prepare(link("allowed"), { transferId: TRANSFER, manifest });
+      assert.equal(state.status, "receiving");
+      state = yield* moves.finish(link("allowed"), { transferId: TRANSFER });
+      for (let tries = 0; tries < 200 && state.status === "importing"; tries += 1) {
+        yield* Effect.sleep("50 millis");
+        state = yield* moves.status(link("allowed"), { transferId: TRANSFER });
+      }
+      assert.equal(state.status, "committed", state.reason);
+      const command = dispatched.find((entry) => entry.type === "thread.import");
+      assert(command?.type === "thread.import");
+      // `main` is checked out in b already, so the move takes another name.
+      assert.equal(command.branch, "main-from-windows-pc");
+      assert.equal(run(command.worktreePath!, "rev-parse", "HEAD"), checkout.headSha);
+    }).pipe(Effect.provide(testLayer(repos, dispatched)));
+  });
+});
+
 describe("what a move may write here", () => {
   it("refuses paths that leave the worktree or touch git, and a manifest that doesn't add up", () => {
     for (const bad of [

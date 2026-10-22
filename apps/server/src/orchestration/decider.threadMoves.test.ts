@@ -281,5 +281,26 @@ describe("moving a thread to a linked computer", () => {
       createdAt: now,
     });
     expect(threadOf(seeded2, ARRIVED).historySeedOwed).toBe(false);
+
+    // Undone back to where it arrived: the turn that gave its agent the
+    // conversation is gone, so it is owed again, and the history stays.
+    sequence += 1;
+    const reverted = await Effect.runPromise(
+      projectEvent(seeded2, {
+        sequence,
+        eventId: EventId.make("evt-revert-to-arrival"),
+        aggregateKind: "thread",
+        aggregateId: ARRIVED,
+        type: "thread.reverted",
+        occurredAt: now,
+        commandId: nextCommandId(),
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: { threadId: ARRIVED, turnCount: 0 },
+      } as OrchestrationEvent),
+    );
+    expect(threadOf(reverted, ARRIVED).historySeedOwed).toBe(true);
+    expect(threadOf(reverted, ARRIVED).messages).toHaveLength(2);
   });
 });

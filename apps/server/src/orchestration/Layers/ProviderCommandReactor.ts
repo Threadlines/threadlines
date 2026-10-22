@@ -554,6 +554,12 @@ const make = Effect.gen(function* () {
        * imported conversation.
        */
       readonly moved?: true;
+      /**
+       * The session was started seeded with the conversation: the next send
+       * adds no seed of its own, and once the provider takes that send the
+       * debt is paid. Lost with the process, so a restart seeds the send.
+       */
+      readonly carried?: true;
     }
   >();
 
@@ -1386,13 +1392,21 @@ const make = Effect.gen(function* () {
       yield* bindSessionToThread(handoffSession);
       if (contextSeed !== undefined) {
         owedHistorySeeds.delete(sessionKey);
-        // A start seeded with the conversation pays a moved thread's debt too.
+        // A moved thread's debt is paid once a turn reaches the provider on
+        // this seeded session, not when it starts: some adapters keep the
+        // seed in memory until their first send.
         if (
           participantId === null &&
           thread.historySeedOwed === true &&
           contextSeed.entries.length > 0
         ) {
-          yield* markHistorySeedDelivered(threadId);
+          owedHistorySeeds.set(sessionKey, {
+            driverKind: desiredDriverKind,
+            cwd: effectiveCwd ?? undefined,
+            claimed: false,
+            moved: true,
+            carried: true,
+          });
         }
       }
       return { sessionThreadId: handoffSession.threadId, nativeForkApplied: false };
@@ -1806,7 +1820,7 @@ const make = Effect.gen(function* () {
     // context-seed preamble and re-sent source attachments would duplicate it.
     const forkContextText = !nativeForkApplied ? input.providerContext : undefined;
     const builtSeed =
-      owedCandidate === undefined || roomPaysHistory
+      owedCandidate === undefined || roomPaysHistory || owedCandidate.carried === true
         ? undefined
         : yield* seedBuilder
             .build({
@@ -1822,6 +1836,7 @@ const make = Effect.gen(function* () {
     // transcript, and that send must leave the debt owed.
     const movedSeedEmpty =
       owedCandidate?.moved === true &&
+      owedCandidate.carried !== true &&
       (builtSeed === undefined || builtSeed.entries.length === 0) &&
       thread.messages.some((message) => message.imported === true);
     const owedSeed = movedSeedEmpty ? undefined : owedCandidate;

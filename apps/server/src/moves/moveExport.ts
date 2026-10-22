@@ -197,13 +197,44 @@ export function summarizeMoveChanges(git: GitVcsDriverShape, root: string) {
   });
 }
 
-/** What the checkout looks like right now: the status, and each untracked file's size and time. */
+/** The flags that make `git diff` a faithful, applicable patch whatever the checkout's config says. */
+const TRANSPORT_DIFF_FLAGS = [
+  "diff",
+  "--binary",
+  "--full-index",
+  "--no-textconv",
+  "--no-ext-diff",
+  "--no-color",
+  "--no-relative",
+  "--no-renames",
+];
+
+/**
+ * What the checkout looks like right now: its head, the hash of its tracked
+ * changes as they would be packed, its status, and each untracked file's size
+ * and time. Equal before and after packing means nothing changed meanwhile.
+ */
 function checkoutFingerprint(
   git: GitVcsDriverShape,
   root: string,
   untracked: ReadonlyArray<string>,
+  scratch: string,
 ) {
   return Effect.gen(function* () {
+    const head = yield* gitOk(
+      git,
+      root,
+      ["rev-parse", "HEAD"],
+      "Couldn't read this thread's checkout.",
+    );
+    yield* gitOk(
+      git,
+      root,
+      [...TRANSPORT_DIFF_FLAGS, `--output=${scratch}`, "HEAD"],
+      "Couldn't read this thread's changes.",
+    );
+    const diffHash = yield* sha256OfFile(scratch);
+    yield* fsCall("Couldn't tidy up.", () => NodeFs.rm(scratch, { force: true }));
     const status = yield* gitOk(
       git,
       root,
@@ -216,14 +247,18 @@ function checkoutFingerprint(
         Effect.map((stat) => `${path}:${stat.size}:${stat.mtimeMs}`),
       ),
     );
-    return `${status}\n${stats.join("\n")}`;
+    return { head: head.trim(), key: `${head}\n${diffHash}\n${status}\n${stats.join("\n")}` };
   });
 }
 
-/** One part waiting to be written into the payload. */
+/**
+ * One part of the payload, known by its size before any of it is read, so a
+ * move over the limit is refused without loading it; read one at a time.
+ */
 interface PendingPart {
   readonly kind: PeerMovePart["kind"];
-  readonly bytes: Buffer;
+  readonly size: number;
+  readonly read: () => Promise<Buffer>;
   readonly path?: string;
   readonly mode?: NonNullable<PeerMovePart["mode"]>;
   readonly attachmentId?: string;
@@ -321,8 +356,9 @@ export function sha256OfFile(path: string) {
 
 /**
  * Packs the thread. The checkout is read twice around the packing; if it
- * changed meanwhile (a terminal, another writer), the packing runs once more,
- * then gives up.
+ * changed meanwhile (a terminal, another writer, a new commit), the packing
+ * runs once more, then gives up. Sizes are checked before anything is read,
+ * and parts are written one at a time.
  */
 export function writeMoveExport(
   input: MoveExportInput,
@@ -333,8 +369,10 @@ export function writeMoveExport(
     yield* fsCall("Couldn't make room to pack this thread.", () =>
       NodeFs.mkdir(dir, { recursive: true }),
     );
+    const scratch = NodePath.join(dir, "fingerprint.tmp");
     const { tracked, untracked } = yield* summarizeMoveChanges(git, root);
-    const before = yield* checkoutFingerprint(git, root, untracked);
+    const before = yield* checkoutFingerprint(git, root, untracked, scratch);
+    if (before.head !== checkout.headSha) return yield* new CheckoutChanged();
 
     // Submodule and Git LFS changes can't travel as a diff.
     const raw = yield* gitOk(
@@ -379,6 +417,10 @@ export function writeMoveExport(
     }
 
     const parts: PendingPart[] = [];
+    const fileSize = (path: string) =>
+      fsCall("Couldn't read the packed thread.", () => NodeFs.stat(path)).pipe(
+        Effect.map((stat) => stat.size),
+      );
     if (checkout.baseSha !== null) {
       const ref = `refs/threadlines/move/${input.transferId}`;
       const bundlePath = NodePath.join(dir, "bundle.tmp");
@@ -396,57 +438,49 @@ export function writeMoveExport(
       ).pipe(Effect.ensuring(gitMaybe(git, root, ["update-ref", "-d", ref])));
       parts.push({
         kind: "bundle",
-        bytes: yield* fsCall("Couldn't read the packed commits.", () =>
-          NodeFs.readFile(bundlePath),
-        ),
+        size: yield* fileSize(bundlePath),
+        read: () => NodeFs.readFile(bundlePath),
       });
-      yield* fsCall("Couldn't tidy up.", () => NodeFs.rm(bundlePath, { force: true }));
     }
-
     if (tracked.length > 0) {
       const diffPath = NodePath.join(dir, "diff.tmp");
       yield* gitOk(
         git,
         root,
-        [
-          "diff",
-          "--binary",
-          "--full-index",
-          "--no-textconv",
-          "--no-ext-diff",
-          "--no-color",
-          "--no-relative",
-          "--no-renames",
-          `--output=${diffPath}`,
-          "HEAD",
-        ],
+        [...TRANSPORT_DIFF_FLAGS, `--output=${diffPath}`, "HEAD"],
         "Couldn't pack this thread's changes.",
       );
       parts.push({
         kind: "diff",
-        bytes: yield* fsCall("Couldn't read the packed changes.", () => NodeFs.readFile(diffPath)),
+        size: yield* fileSize(diffPath),
+        read: () => NodeFs.readFile(diffPath),
       });
-      yield* fsCall("Couldn't tidy up.", () => NodeFs.rm(diffPath, { force: true }));
     }
-
     for (const path of untracked) {
       const absolute = NodePath.join(root, path);
       const stat = yield* fsCall(`Couldn't read ${path}.`, () => NodeFs.lstat(absolute));
       if (stat.isSymbolicLink()) {
         const target = yield* fsCall(`Couldn't read ${path}.`, () => NodeFs.readlink(absolute));
-        parts.push({ kind: "file", path, mode: "symlink", bytes: Buffer.from(target, "utf8") });
+        const bytes = Buffer.from(target, "utf8");
+        parts.push({
+          kind: "file",
+          path,
+          mode: "symlink",
+          size: bytes.length,
+          read: async () => bytes,
+        });
       } else if (stat.isFile()) {
         parts.push({
           kind: "file",
           path,
           mode: (stat.mode & 0o111) !== 0 ? "executable" : "file",
-          bytes: yield* fsCall(`Couldn't read ${path}.`, () => NodeFs.readFile(absolute)),
+          size: stat.size,
+          read: () => NodeFs.readFile(absolute),
         });
       } else {
         return yield* fail(`${path} isn't a regular file, so it can't move.`);
       }
     }
-
     const history = exportThreadHistory(input.thread);
     const attachmentIds = new Set<string>();
     for (const message of history.messages) {
@@ -454,55 +488,69 @@ export function writeMoveExport(
         if (attachmentIds.has(attachment.id)) continue;
         attachmentIds.add(attachment.id);
         const path = resolveAttachmentPath({ attachmentsDir: input.attachmentsDir, attachment });
-        const bytes =
-          path === null
-            ? null
-            : yield* fsCall("Couldn't read an attachment.", () => NodeFs.readFile(path)).pipe(
-                Effect.orElseSucceed(() => null),
-              );
         // A missing attachment travels as its name alone.
-        if (bytes !== null) parts.push({ kind: "attachment", attachmentId: attachment.id, bytes });
+        const size =
+          path === null ? null : yield* fileSize(path).pipe(Effect.orElseSucceed(() => null));
+        if (path !== null && size !== null) {
+          parts.push({
+            kind: "attachment",
+            attachmentId: attachment.id,
+            size,
+            read: () => NodeFs.readFile(path),
+          });
+        }
       }
     }
 
-    const totalBytes = parts.reduce((sum, part) => sum + part.bytes.length, 0);
+    const totalBytes = parts.reduce((sum, part) => sum + part.size, 0);
     if (totalBytes > MOVE_MAX_BYTES) {
       return yield* fail(
         `This thread's changes come to ${Math.ceil(totalBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
       );
     }
 
-    const after = yield* checkoutFingerprint(git, root, untracked);
-    if (after !== before) {
-      return yield* new CheckoutChanged();
-    }
-
     const payloadTemp = NodePath.join(dir, "payload.bin.tmp");
     const whole = createHash("sha256");
     let offset = 0;
     const table: PeerMovePart[] = [];
+    let resized = false;
     yield* fsCall("Couldn't write the packed thread.", async () => {
       const handle = await NodeFs.open(payloadTemp, "w");
       try {
         for (const part of parts) {
-          await handle.write(part.bytes);
-          whole.update(part.bytes);
+          const bytes = await part.read();
+          // Changed since it was sized: pack it again.
+          if (bytes.length !== part.size) {
+            resized = true;
+            break;
+          }
+          await handle.write(bytes);
+          whole.update(bytes);
           table.push({
             kind: part.kind,
             offset,
-            length: part.bytes.length,
-            sha256: createHash("sha256").update(part.bytes).digest("hex"),
+            length: bytes.length,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
             ...(part.path !== undefined ? { path: part.path } : {}),
             ...(part.mode !== undefined ? { mode: part.mode } : {}),
             ...(part.attachmentId !== undefined ? { attachmentId: part.attachmentId } : {}),
           });
-          offset += part.bytes.length;
+          offset += bytes.length;
         }
         await handle.sync();
       } finally {
         await handle.close();
       }
     });
+    yield* fsCall("Couldn't tidy up.", async () => {
+      await NodeFs.rm(NodePath.join(dir, "bundle.tmp"), { force: true });
+      await NodeFs.rm(NodePath.join(dir, "diff.tmp"), { force: true });
+    });
+    if (resized) return yield* new CheckoutChanged();
+
+    const after = yield* checkoutFingerprint(git, root, untracked, scratch);
+    if (after.key !== before.key) return yield* new CheckoutChanged();
+
     const manifest: PeerMoveManifest = {
       totalBytes,
       sha256: whole.digest("hex"),
@@ -533,10 +581,9 @@ export function writeMoveExport(
     });
     return manifest;
   });
+  const changedReason = "The checkout changed while this thread was being packed. Try again.";
   return attempt.pipe(
     Effect.catchTag("CheckoutChanged", () => attempt),
-    Effect.catchTag("CheckoutChanged", () =>
-      fail("The checkout changed while this thread was being packed. Try again."),
-    ),
+    Effect.catchTag("CheckoutChanged", () => fail(changedReason)),
   );
 }

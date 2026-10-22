@@ -1899,6 +1899,11 @@ export function projectEvent(
               activities,
               subagents,
               latestTurn,
+              // Back to where a moved thread arrived: the turn that gave its
+              // agent the conversation is undone, so it is owed again.
+              ...(payload.turnCount === 0 && (thread.movedFrom ?? null) !== null
+                ? { historySeedOwed: true }
+                : {}),
               updatedAt: event.occurredAt,
             }),
           };

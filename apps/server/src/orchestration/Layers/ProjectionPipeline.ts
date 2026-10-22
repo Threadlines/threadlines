@@ -1404,6 +1404,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId,
+            // Back to where a moved thread arrived: the turn that gave its
+            // agent the conversation is undone, so it is owed again.
+            ...(event.payload.turnCount === 0 && (existingRow.value.movedFrom ?? null) !== null
+              ? { historySeedOwed: 1 }
+              : {}),
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

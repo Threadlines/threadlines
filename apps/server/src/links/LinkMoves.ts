@@ -71,6 +71,11 @@ export const LINK_MOVE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_OPEN_MOVES_PER_LINK = 2;
 const MAX_OPEN_MOVES = 4;
 const MAX_MOVE_PARTS = 20_000;
+/**
+ * The most a move may unpack to here: new objects its commits bring, binary
+ * patch literals, and new files. A small compressed payload can't grow past it.
+ */
+const MOVE_MAX_EXPANDED_BYTES = 1024 * 1024 * 1024;
 const SWEEP_EVERY = "1 hour";
 const GIT_FETCH_TIMEOUT_MS = 5 * 60 * 1000;
 const GIT_TIMEOUT_MS = 2 * 60 * 1000;
@@ -81,9 +86,16 @@ export interface LinkMovesShape {
     link: PeerLink,
     input: PeerMoveChunkInput,
   ) => Effect.Effect<PeerMoveState, PeerRpcError>;
-  readonly finish: (link: PeerLink, input: PeerMoveInput) => Effect.Effect<PeerMoveState>;
+  readonly finish: (
+    link: PeerLink,
+    input: PeerMoveInput,
+  ) => Effect.Effect<PeerMoveState, PeerRpcError>;
   readonly status: (link: PeerLink, input: PeerMoveInput) => Effect.Effect<PeerMoveState>;
-  readonly abort: (link: PeerLink, input: PeerMoveInput) => Effect.Effect<PeerMoveState>;
+  /** Fails when the outcome couldn't be recorded: the asking computer asks again. */
+  readonly abort: (
+    link: PeerLink,
+    input: PeerMoveInput,
+  ) => Effect.Effect<PeerMoveState, PeerRpcError>;
   /** This computer's user answers a waiting move; false when no move has that id. */
   readonly respond: (input: LinksRespondRequestInput) => Effect.Effect<boolean, ComputerLinkError>;
   readonly pending: Effect.Effect<ReadonlyArray<ComputerLinkPendingRequest>>;
@@ -191,8 +203,11 @@ const make = Effect.gen(function* () {
   const pendingHub = yield* PubSub.sliding<void>(1);
   const announcePending = PubSub.publish(pendingHub, undefined).pipe(Effect.asVoid);
   const lock = makeKeyedLock();
+  /** Imports run in the service's own scope, so they end with it. */
+  const scope = yield* Effect.scope;
   /** Imports running in this process, so a second `finish` doesn't start another. */
   const importing = new Set<string>();
+  const peerFailure = (detail: string) => new PeerRpcError({ detail });
 
   const stagingDir = (row: Pick<LinkMoveRow, "transferKey">) =>
     NodePath.join(config.stateDir, "link-moves", row.transferKey);
@@ -234,7 +249,7 @@ const make = Effect.gen(function* () {
   const threadExists = (threadId: ThreadId) =>
     snapshots.getThreadShellById(threadId).pipe(
       Effect.map(Option.isSome),
-      Effect.orElseSucceed(() => false),
+      Effect.mapError(() => peerFailure(`${ownLabel} couldn't check its threads.`)),
     );
 
   /** The project here a move lands in, and the remote it fetches from. */
@@ -256,26 +271,52 @@ const make = Effect.gen(function* () {
 
   /**
    * Removes what an aborted move made here: its staging, its worktree and
-   * branch (unless a thread points at that folder), its temp ref. Recorded
-   * when done, so startup and the sweep finish one cut short.
+   * branch, its temp ref. A folder a thread here uses since is left alone,
+   * and so is a branch that no longer points at the moved commit (not ours).
+   * Recorded only when all of it went, so startup and the sweep retry the rest.
    */
   const cleanUp = (row: LinkMoveRow) =>
     Effect.gen(function* () {
-      yield* Effect.tryPromise(() =>
+      let clean = yield* Effect.tryPromise(() =>
         NodeFs.rm(stagingDir(row), { recursive: true, force: true }),
-      ).pipe(Effect.ignore);
+      ).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
       const land = yield* landing(row.manifest);
       if (land !== null) {
-        if (row.worktreePath !== null && !(yield* pathInUse(row.worktreePath))) {
-          yield* runGit(land.root, ["worktree", "remove", "--force", row.worktreePath]);
-          yield* Effect.tryPromise(() =>
-            NodeFs.rm(row.worktreePath!, { recursive: true, force: true }),
-          ).pipe(Effect.ignore);
-          yield* runGit(land.root, ["worktree", "prune"]);
-          if (row.branch !== null) yield* runGit(land.root, ["branch", "-D", row.branch]);
+        if (row.worktreePath !== null) {
+          const inUse = yield* pathInUse(row.worktreePath);
+          if (inUse === null) {
+            clean = false;
+          } else if (!inUse) {
+            yield* runGit(land.root, ["worktree", "remove", "--force", row.worktreePath]);
+            const removed = yield* Effect.tryPromise(async () => {
+              await NodeFs.rm(row.worktreePath!, { recursive: true, force: true });
+              return NodeFs.access(row.worktreePath!).then(
+                () => false,
+                () => true,
+              );
+            }).pipe(Effect.orElseSucceed(() => false));
+            if (!removed) clean = false;
+            yield* runGit(land.root, ["worktree", "prune"]);
+            if (row.branch !== null) {
+              const at = yield* runGit(land.root, [
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                `refs/heads/${row.branch}^{commit}`,
+              ]);
+              if (at.ok && at.out === row.manifest.git.headSha) {
+                const deleted = yield* runGit(land.root, ["branch", "-D", row.branch]);
+                if (!deleted.ok) clean = false;
+              }
+            }
+          }
         }
         yield* runGit(land.root, ["update-ref", "-d", tempRef(row)]);
       }
+      if (!clean) return;
       yield* moves
         .markCleaned({
           linkDeviceId: row.linkDeviceId,
@@ -285,20 +326,27 @@ const make = Effect.gen(function* () {
         .pipe(Effect.ignore);
     });
 
-  /** Whether any thread here works in `path`: then nothing a move does may touch it. */
+  /**
+   * Whether any thread here works in `path`: then nothing a move does may
+   * touch it. Null when that couldn't be read.
+   */
   const pathInUse = (path: string) =>
     snapshots.getCommandReadModel().pipe(
-      Effect.map((model) =>
+      Effect.map((model): boolean | null =>
         model.threads.some(
           (thread) =>
             thread.deletedAt === null &&
             (thread.worktreePath === path || thread.effectiveCwd === path),
         ),
       ),
-      Effect.orElseSucceed(() => true),
+      Effect.orElseSucceed((): boolean | null => null),
     );
 
-  /** Ends a move here (unless it committed) and cleans up after it. */
+  /**
+   * Ends a move here (unless it committed or ended already) and cleans up
+   * after it. True when this call ended it; fails when that couldn't be
+   * recorded, so nobody is told it ended.
+   */
   const abortRow = (row: LinkMoveRow, reason: string) =>
     Effect.gen(function* () {
       const settled = yield* moves
@@ -309,11 +357,12 @@ const make = Effect.gen(function* () {
           reason,
           now: yield* nowIso,
         })
-        .pipe(Effect.orElseSucceed(() => false));
+        .pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't record that.`)));
       if (settled) {
         if (row.status === "awaiting_approval") yield* announcePending;
         yield* cleanUp({ ...row, status: "aborted", reason });
       }
+      return settled;
     });
 
   // ---------------------------------------------------------------------------
@@ -354,26 +403,33 @@ const make = Effect.gen(function* () {
             interactionMode: manifest.thread.interactionMode,
           });
           if ("refused" in agent) return gone(agent.refused);
-          const open = yield* moves.listOpen.pipe(Effect.orElseSucceed(() => []));
-          if (
-            open.filter((row) => row.linkDeviceId === link.deviceId).length >=
-              MAX_OPEN_MOVES_PER_LINK ||
-            open.length >= MAX_OPEN_MOVES
-          ) {
+          // Counting and recording under one lock, so offers made at once
+          // can't all fit under the caps.
+          const row = yield* lock("admission")(
+            Effect.gen(function* () {
+              const open = yield* moves.listOpen;
+              if (
+                open.filter((entry) => entry.linkDeviceId === link.deviceId).length >=
+                  MAX_OPEN_MOVES_PER_LINK ||
+                open.length >= MAX_OPEN_MOVES
+              ) {
+                return null;
+              }
+              return yield* moves.insert({
+                linkDeviceId: link.deviceId,
+                transferId,
+                transferKey,
+                status: link.access === "ask" ? "awaiting_approval" : "receiving",
+                manifest,
+                threadId: linkMoveThreadId(transferKey),
+                now: yield* nowIso,
+              });
+            }),
+          ).pipe(Effect.option);
+          if (Option.isNone(row)) return gone(`${ownLabel} couldn't record the move.`);
+          if (row.value === null) {
             return gone(`${ownLabel} is already taking other moves. Try again once they're done.`);
           }
-          const row = yield* moves
-            .insert({
-              linkDeviceId: link.deviceId,
-              transferId,
-              transferKey,
-              status: link.access === "ask" ? "awaiting_approval" : "receiving",
-              manifest,
-              threadId: linkMoveThreadId(transferKey),
-              now: yield* nowIso,
-            })
-            .pipe(Effect.option);
-          if (Option.isNone(row)) return gone(`${ownLabel} couldn't record the move.`);
           if (row.value.status === "awaiting_approval") yield* announcePending;
           return stateOf(row.value);
         }),
@@ -434,7 +490,9 @@ const make = Effect.gen(function* () {
   /** Whether the staged payload is whole: every part's hash and the payload's. */
   const verifyPayload = (row: LinkMoveRow) =>
     Effect.tryPromise(async () => {
-      const bytes = await NodeFs.readFile(payloadPath(row));
+      // Nothing to carry (a clean, pushed thread): there is no payload file.
+      const bytes =
+        row.manifest.totalBytes === 0 ? Buffer.alloc(0) : await NodeFs.readFile(payloadPath(row));
       if (bytes.length !== row.manifest.totalBytes) return false;
       if (createHash("sha256").update(bytes).digest("hex") !== row.manifest.sha256) return false;
       return row.manifest.parts.every(
@@ -472,7 +530,7 @@ const make = Effect.gen(function* () {
         }),
       );
       if (answer.status === "importing") {
-        yield* runImport(link.deviceId, input.transferId).pipe(Effect.forkDetach);
+        yield* runImport(link.deviceId, input.transferId).pipe(Effect.forkIn(scope));
       }
       return answer;
     });
@@ -485,11 +543,20 @@ const make = Effect.gen(function* () {
   const abort: LinkMovesShape["abort"] = (link, input) =>
     abortMove(link.deviceId, input.transferId);
 
-  /** Drop a move unless it committed: answers which one it is now. */
+  /**
+   * Drop a move unless it committed: answers which one it is now. Answers
+   * `aborted` only once that is recorded here, and fails when anything it
+   * needs to know couldn't be read, so the asking computer asks again rather
+   * than unfreezing a thread that may still arrive here.
+   */
   const abortMove = (linkDeviceId: string, transferId: string, reason?: string) =>
     lock(linkMoveKey(linkDeviceId, transferId))(
       Effect.gen(function* () {
-        const found = yield* readRow(linkDeviceId, transferId);
+        const found = yield* moves
+          .get(linkDeviceId, transferId)
+          .pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't read its moves.`)));
+        // Never offered here: nothing can arrive without the bytes the asking
+        // computer stops sending.
         if (Option.isNone(found)) return gone(reason);
         const row = found.value;
         if (row.status === "committed" || row.status === "aborted") return stateOf(row);
@@ -497,11 +564,16 @@ const make = Effect.gen(function* () {
         if (yield* threadExists(row.threadId)) {
           yield* moves
             .settle({ linkDeviceId, transferId, status: "committed", now: yield* nowIso })
-            .pipe(Effect.ignore);
+            .pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't record that.`)));
           return stateOf({ ...row, status: "committed" });
         }
         const why = reason ?? "The move was cancelled.";
-        yield* abortRow(row, why);
+        if (!(yield* abortRow(row, why))) {
+          const now = yield* moves
+            .get(linkDeviceId, transferId)
+            .pipe(Effect.mapError(() => peerFailure(`${ownLabel} couldn't read its moves.`)));
+          return Option.isSome(now) ? stateOf(now.value) : gone(why);
+        }
         return stateOf({ ...row, status: "aborted", reason: why });
       }),
     );
@@ -514,7 +586,7 @@ const make = Effect.gen(function* () {
   const stage = <A>(
     linkDeviceId: string,
     transferId: string,
-    run: (row: LinkMoveRow) => Effect.Effect<A, ImportStop>,
+    run: (row: LinkMoveRow) => Effect.Effect<A, ImportStop | PeerRpcError>,
   ) =>
     lock(linkMoveKey(linkDeviceId, transferId))(
       Effect.gen(function* () {
@@ -591,6 +663,11 @@ const make = Effect.gen(function* () {
           GIT_FETCH_TIMEOUT_MS,
         );
         if (!fetched.ok) return yield* stop(`${ownLabel} couldn't take the commits.`);
+        const unpacked = yield* newObjectBytes(land.root, tempRef(row), baseSha);
+        if (unpacked === null || unpacked > MOVE_MAX_EXPANDED_BYTES) {
+          yield* runGit(land.root, ["update-ref", "-d", tempRef(row)]);
+          return yield* stop(`The commits it brings are too big for ${ownLabel} to unpack.`);
+        }
       }
       const has = yield* runGit(land.root, ["cat-file", "-e", `${headSha}^{commit}`]);
       if (!has.ok) {
@@ -599,6 +676,46 @@ const make = Effect.gen(function* () {
         );
       }
       yield* setStage(row, { stage: "fetched" });
+    });
+
+  /** How many bytes the objects `ref` brings past `base` unpack to; null when that can't be read. */
+  const newObjectBytes = (root: string, ref: string, base: string | null) =>
+    Effect.gen(function* () {
+      const listed = yield* git
+        .execute({
+          operation: "LinkMoves.sizeObjects",
+          cwd: root,
+          args: ["rev-list", "--objects", ref, ...(base !== null ? [`^${base}`] : [])],
+          allowNonZeroExit: true,
+          timeoutMs: GIT_TIMEOUT_MS,
+          maxOutputBytes: 64_000_000,
+        })
+        .pipe(Effect.option);
+      if (Option.isNone(listed) || listed.value.exitCode !== 0 || listed.value.stdoutTruncated) {
+        return null;
+      }
+      const ids = listed.value.stdout
+        .split("\n")
+        .map((line) => line.split(" ")[0] ?? "")
+        .filter((id) => id.length > 0);
+      if (ids.length === 0) return 0;
+      const sized = yield* git
+        .execute({
+          operation: "LinkMoves.sizeObjects",
+          cwd: root,
+          args: ["cat-file", "--batch-check=%(objectsize)"],
+          stdin: `${ids.join("\n")}\n`,
+          allowNonZeroExit: true,
+          timeoutMs: GIT_TIMEOUT_MS,
+          maxOutputBytes: 64_000_000,
+        })
+        .pipe(Effect.option);
+      if (Option.isNone(sized) || sized.value.exitCode !== 0) return null;
+      return sized.value.stdout
+        .split("\n")
+        .map((line) => Number.parseInt(line, 10))
+        .filter((size) => Number.isFinite(size))
+        .reduce((sum, size) => sum + size, 0);
     });
 
   /** The branch name the move takes here: its own, else one marked with where it came from. */
@@ -660,19 +777,28 @@ const make = Effect.gen(function* () {
           yield* setStage(row, { stage: "worktree" });
           return;
         }
-        if (yield* pathInUse(path))
+        if ((yield* pathInUse(path)) !== false) {
           return yield* stop(`A thread on ${ownLabel} is using that folder.`);
+        }
         yield* runGit(land.root, ["worktree", "remove", "--force", path]);
       }
-      const branchExists = yield* runGit(land.root, [
-        "show-ref",
+      // The saved name is ours only while it is free or at the moved commit
+      // (made before a crash); one taken since gets another name.
+      const at = yield* runGit(land.root, [
+        "rev-parse",
         "--verify",
         "--quiet",
-        `refs/heads/${branch}`,
+        `refs/heads/${branch}^{commit}`,
       ]);
-      const created = branchExists.ok
-        ? yield* runGit(land.root, ["worktree", "add", path, branch])
-        : yield* runGit(land.root, ["worktree", "add", "--no-track", "-b", branch, path, headSha]);
+      const adopt = at.ok && at.out === headSha;
+      let name = branch;
+      if (at.ok && !adopt) {
+        name = yield* pickBranch(land.root, row);
+        yield* setStage(row, { branch: name });
+      }
+      const created = adopt
+        ? yield* runGit(land.root, ["worktree", "add", path, name])
+        : yield* runGit(land.root, ["worktree", "add", "--no-track", "-b", name, path, headSha]);
       if (!created.ok) return yield* stop(`${ownLabel} couldn't make a worktree for it.`);
       const head = yield* runGit(path, ["rev-parse", "HEAD"]);
       if (!head.ok || head.out !== headSha) {
@@ -720,15 +846,31 @@ const make = Effect.gen(function* () {
       const status = yield* runGit(path, ["status", "--porcelain"]);
       if (status.out.length > 0) {
         // Ours, uncommitted, never handed to a thread: back to the moved commit.
-        if (yield* pathInUse(path))
+        if ((yield* pathInUse(path)) !== false) {
           return yield* stop(`A thread on ${ownLabel} is using that folder.`);
+        }
         yield* runGit(path, ["reset", "--hard", headSha]);
         yield* runGit(path, ["clean", "-fdx"]);
       }
       const diff = row.manifest.parts.find((part) => part.kind === "diff");
-      if (diff !== undefined && diff.length > 0) {
+      const files = row.manifest.parts.filter((part) => part.kind === "file");
+      const diffBytes = diff !== undefined && diff.length > 0 ? yield* partBytes(row, diff) : null;
+      // What the changes unpack to: a binary patch states each literal's
+      // size, so a small compressed patch can't grow past the budget.
+      const literalBytes =
+        diffBytes === null
+          ? 0
+          : [...diffBytes.toString("latin1").matchAll(/^(?:literal|delta) (\d+)$/gm)].reduce(
+              (sum, match) => sum + Number.parseInt(match[1]!, 10),
+              0,
+            );
+      const fileBytes = files.reduce((sum, part) => sum + part.length, 0);
+      if (literalBytes + fileBytes > MOVE_MAX_EXPANDED_BYTES) {
+        return yield* stop(`Its changes are too big for ${ownLabel} to unpack.`);
+      }
+      if (diffBytes !== null) {
         const diffPath = NodePath.join(stagingDir(row), "changes.diff");
-        const bytes = yield* partBytes(row, diff);
+        const bytes = diffBytes;
         yield* Effect.tryPromise(() => NodeFs.writeFile(diffPath, bytes)).pipe(
           Effect.mapError(
             () => new ImportStop({ reason: `${ownLabel} couldn't unpack the changes.` }),
@@ -737,7 +879,6 @@ const make = Effect.gen(function* () {
         const applied = yield* runGit(path, ["apply", "--binary", "--whitespace=nowarn", diffPath]);
         if (!applied.ok) return yield* stop(`${ownLabel} couldn't apply the changes.`);
       }
-      const files = row.manifest.parts.filter((part) => part.kind === "file");
       if (files.length > 0) {
         const tracked = yield* runGit(path, ["ls-files", "-z"]);
         const trackedFolded = new Set(
@@ -925,6 +1066,8 @@ const make = Effect.gen(function* () {
       }
     });
     return steps.pipe(
+      // A stage that can't go on ends the move. Anything else (a read that
+      // failed) leaves it importing for the sweep to pick up again.
       Effect.catchTag("ImportStop", (failure) =>
         Effect.gen(function* () {
           const found = yield* readRow(linkDeviceId, transferId);
@@ -964,7 +1107,12 @@ const make = Effect.gen(function* () {
                 })
                 .pipe(Effect.ignore);
             })
-          : abortRow(row, `${ownLabel} didn't allow the move.`),
+          : abortRow(row, `${ownLabel} didn't allow the move.`).pipe(
+              Effect.mapError(
+                () =>
+                  new ComputerLinkError({ detail: "That answer couldn't be recorded. Try again." }),
+              ),
+            ),
       );
       yield* announcePending;
       return true;
@@ -1027,8 +1175,14 @@ const make = Effect.gen(function* () {
   const dropLink: LinkMovesShape["dropLink"] = (deviceId) =>
     Effect.gen(function* () {
       const open = yield* moves.listOpen.pipe(Effect.orElseSucceed(() => []));
+      // One that can't be dropped now ends anyway: its link is gone, so its
+      // next stage refuses it, and the sweep drops it within the day.
       for (const row of open.filter((entry) => entry.linkDeviceId === deviceId)) {
-        yield* abortMove(row.linkDeviceId, row.transferId, `${ownLabel} removed the link.`);
+        yield* abortMove(row.linkDeviceId, row.transferId, `${ownLabel} removed the link.`).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("link move drop failed", { detail: error.message }),
+          ),
+        );
       }
     });
 
@@ -1048,7 +1202,7 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.ignore);
         } else {
-          yield* runImport(row.linkDeviceId, row.transferId).pipe(Effect.forkDetach);
+          yield* runImport(row.linkDeviceId, row.transferId).pipe(Effect.forkIn(scope));
         }
       } else if (Date.parse(row.updatedAt) + LINK_MOVE_TTL_MS < now) {
         yield* abortMove(

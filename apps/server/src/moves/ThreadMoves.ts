@@ -348,7 +348,8 @@ const make = Effect.gen(function* () {
   /**
    * Calls the other computer, waiting through outages (every 15 seconds): a
    * move never gives up on its own, so the thread stays frozen until that
-   * computer answers.
+   * computer answers. An answer that refuses the call (PeerRpcError) is final
+   * and fails the call.
    */
   const peerCall = <A>(
     environmentId: EnvironmentId,
@@ -358,7 +359,10 @@ const make = Effect.gen(function* () {
       Effect.tapError((error) =>
         Effect.logInfo("thread move waits for the other computer", { detail: error.message }),
       ),
-      Effect.retry(Schedule.spaced(Duration.seconds(15))),
+      Effect.retry({
+        schedule: Schedule.spaced(Duration.seconds(15)),
+        while: (error) => error._tag === "ComputerLinkUnavailableError",
+      }),
     );
 
   /** Waits while the other computer is at `while`, backing off; a cancel asked meanwhile is honoured. */
@@ -412,11 +416,17 @@ const make = Effect.gen(function* () {
       return true;
     });
 
-  /** The export to send: the one made earlier when it is whole, else a new one. */
+  /**
+   * The export to send: the one made earlier when it is whole. A new one is
+   * made only before the offer (`offered: false`); once the other computer
+   * has the manifest, a lost or damaged export can't be rebuilt (it would
+   * differ), and the move is dropped there instead.
+   */
   const exportFor = (
     thread: OrchestrationThread,
     agent: ModelSelection,
     transferId: ThreadMoveId,
+    offered: boolean,
   ) =>
     Effect.gen(function* () {
       const dir = moveDir(transferId);
@@ -427,6 +437,11 @@ const make = Effect.gen(function* () {
           const hash = yield* sha256OfFile(movePayloadPath(dir)).pipe(Effect.option);
           if (Option.isSome(hash) && hash.value === manifest.value.sha256) return manifest.value;
         }
+      }
+      if (offered) {
+        return yield* new ThreadMoveFailure({
+          reason: "This computer lost the packed thread. Start the move again.",
+        });
       }
       const model = yield* readModel.pipe(
         Effect.mapError(() => new ThreadMoveFailure({ reason: "This thread couldn't be read." })),
@@ -543,7 +558,9 @@ const make = Effect.gen(function* () {
         }
         const thread = (yield* readModel).threads.find((entry) => entry.id === threadId);
         if (thread === undefined) return;
-        const manifest = yield* exportFor(thread, move.agent, transferId).pipe(Effect.result);
+        const manifest = yield* exportFor(thread, move.agent, transferId, false).pipe(
+          Effect.result,
+        );
         if (manifest._tag === "Failure") {
           yield* dispatchStep(threadId, transferId, {
             kind: "abort",
@@ -569,7 +586,9 @@ const make = Effect.gen(function* () {
           case "receiving": {
             const thread = (yield* readModel).threads.find((entry) => entry.id === threadId);
             if (thread === undefined) return;
-            const manifest = yield* exportFor(thread, move.agent, transferId).pipe(Effect.result);
+            const manifest = yield* exportFor(thread, move.agent, transferId, true).pipe(
+              Effect.result,
+            );
             if (manifest._tag === "Failure") {
               // The other computer has part of it: drop it there first.
               const dropped = yield* peerCall(environmentId, (peer) =>
@@ -597,6 +616,18 @@ const make = Effect.gen(function* () {
       }
     });
     return steps.pipe(
+      // The other computer refused a step outright: drop the move there, and
+      // record what it answers. Unanswered, the thread stays frozen.
+      Effect.catchTag("PeerRpcError", (error) =>
+        Effect.gen(function* () {
+          const move = yield* currentMove(threadId, transferId);
+          if (move === null) return;
+          const dropped = yield* peerCall(move.target.environmentId, (peer) =>
+            peer["peer.move.abort"]({ transferId }),
+          );
+          yield* settle(threadId, transferId, dropped, error.detail);
+        }),
+      ),
       Effect.catchCause((cause) => Effect.logWarning("thread move stopped", { transferId, cause })),
       Effect.ensuring(Effect.sync(() => running.delete(transferId))),
     );

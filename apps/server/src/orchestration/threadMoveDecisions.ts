@@ -91,6 +91,18 @@ export function threadMoveRefusal(
   ) {
     return "Wait for this thread to finish what it's doing, then move it.";
   }
+  const runRequestIds = new Set(
+    (thread.commandRuns ?? []).flatMap((run) =>
+      run.source.kind === "request" ? [run.source.requestId] : [],
+    ),
+  );
+  if (
+    (thread.commandRequests ?? []).some(
+      (request) => request.dismissedAt === null && !runRequestIds.has(request.requestId),
+    )
+  ) {
+    return "A command in this thread is waiting for you to run or dismiss it. Do that first.";
+  }
   if (thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null) {
     return "Turn off pull request auto-fix and auto-merge for this thread first.";
   }
@@ -116,11 +128,15 @@ export function threadMoveRefusal(
  * Commands a moving or moved thread still takes: filing it away, the
  * server's own bookkeeping that can't change what moves, and the move's
  * own steps. Everything else is refused (`threadMoveGuardRefusal`).
+ * Archiving and deleting wait until it moved: a move under way runs on the
+ * thread being there.
  */
-const FROZEN_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
+const MOVED_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
   "thread.delete",
   "thread.archive",
   "thread.unarchive",
+]);
+const FROZEN_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
   "thread.pin",
   "thread.unpin",
   "thread.done-override.set",
@@ -163,7 +179,13 @@ export function threadMoveGuardRefusal(
   };
   if ("threadId" in command && command.type !== "thread.import") {
     const thread = frozen(command.threadId);
-    if (thread !== null && !FROZEN_THREAD_COMMANDS.has(command.type)) return frozenWords(thread);
+    if (
+      thread !== null &&
+      !FROZEN_THREAD_COMMANDS.has(command.type) &&
+      !(thread.move?.movedAway !== undefined && MOVED_THREAD_COMMANDS.has(command.type))
+    ) {
+      return frozenWords(thread);
+    }
   }
   if (command.type === "thread.create") {
     const parent = frozen(command.parentThreadId);
