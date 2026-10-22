@@ -29,6 +29,7 @@ import {
 import type { ChatMessage, ProposedPlan } from "../../types";
 import { useChatFindStore } from "../../chatFindStore";
 import { CHAT_FIND_CURRENT_HIGHLIGHT, CHAT_FIND_MATCH_HIGHLIGHT } from "./chatFind/chatFindDom";
+import { TIMELINE_ENTRANCE_ANIMATION_ID } from "./timelineEntrance";
 
 const ACTIVE_TURN_ID = "turn-active" as TurnId;
 const queryClient = new QueryClient();
@@ -906,7 +907,18 @@ describe("MessagesTimeline with the real virtual list", () => {
       </div>,
     );
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // The entrance runs on the page's animation clock, which a busy or
+      // background tab advances late: wait for it to end and for a frame
+      // painted after that, not for a fixed time a slow machine may miss.
+      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0), { timeout: 5_000 });
+      await Promise.all(
+        document
+          .getAnimations()
+          .filter((animation) => animation.id === TIMELINE_ENTRANCE_ANIMATION_ID)
+          .map((animation) => animation.finished),
+      );
+      const endedAt = frames.length;
+      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(endedAt), { timeout: 5_000 });
       expect(frames[0]!.opacity, "the reply fades in as it arrives").toBeLessThan(1);
       const settled = frames.at(-1)!;
       expect(settled.opacity).toBe(1);
