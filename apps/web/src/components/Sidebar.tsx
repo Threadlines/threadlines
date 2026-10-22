@@ -1473,8 +1473,8 @@ export default function Sidebar() {
               ]
             : []),
           ...(moveOffered ? [{ id: "move" as const, label: "Move to another computer" }] : []),
-          { id: "copy-path", label: "Copy Path" },
-          { id: "copy-thread-id", label: "Copy Thread ID" },
+          { id: "copy-path", label: "Copy path" },
+          { id: "copy-thread-id", label: "Copy thread ID" },
           { id: "delete", label: "Delete", destructive: true },
         ],
         position,
