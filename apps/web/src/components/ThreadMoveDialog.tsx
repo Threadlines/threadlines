@@ -7,15 +7,21 @@
  */
 import type {
   EnvironmentId,
+  ScopedProjectRef,
   ScopedThreadRef,
   ThreadMovePreview,
   ThreadMoveTargetPreview,
 } from "@threadlines/contracts";
-import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 
 import { describeComputerLinkFailure } from "../environments/links/computerLinks";
 import { requireThreadMovesClient } from "../environments/links/threadMoves";
+import {
+  useProjectSetupComputerReady,
+  useProjectSetupTargets,
+} from "../environments/projectSetups/projectSetupTargets";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import {
   formatThreadMoveChanges,
@@ -25,6 +31,7 @@ import {
   threadMoveAgentSelection,
   type ThreadMoveAgentChoice,
 } from "../threadMove";
+import { openProjectSetupDialog } from "./ProjectSetupDialog";
 import { useComputerLabel } from "./sidebar/linkedComputers";
 import { Button } from "./ui/button";
 import {
@@ -92,12 +99,19 @@ function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThreadRef }) 
   const title = useStore(
     (state) => selectSidebarThreadSummaryByRef(state, threadRef)?.title ?? null,
   );
+  const projectId = useStore(
+    (state) => selectSidebarThreadSummaryByRef(state, threadRef)?.projectId ?? null,
+  );
   const computerLabel = useComputerLabel()(threadRef.environmentId, threadRef.environmentId);
   const [previewState, setPreviewState] = useState<PreviewState>({ status: "loading" });
   const [targetId, setTargetId] = useState<EnvironmentId | null>(null);
   const [agent, setAgent] = useState<ThreadMoveAgentChoice | null>(null);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  // Asked again when a computer that lacked the project has been set up.
+  const [previewRound, setPreviewRound] = useState(0);
+  // The computer the user chose, kept through a fresh preview.
+  const pickedTargetRef = useRef<EnvironmentId | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -108,12 +122,19 @@ function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThreadRef }) 
           computerLabel,
         ).preview({ threadId: threadRef.threadId });
         if (!active) return;
-        const target = pickDefaultMoveTarget(preview.targets);
+        // A fresh preview keeps the computer the user picked, now that it may take the thread.
+        const target =
+          preview.targets.find(
+            (candidate) =>
+              candidate.environmentId === pickedTargetRef.current &&
+              candidate.refusal === undefined,
+          ) ?? pickDefaultMoveTarget(preview.targets);
         setTargetId(target?.environmentId ?? null);
         setAgent(target ? pickDefaultMoveAgent(target) : null);
         setPreviewState({ status: "ready", preview });
       } catch (error) {
-        if (!active) return;
+        // A refresh that fails keeps the preview it was refreshing.
+        if (!active || previewRound > 0) return;
         setPreviewState({
           status: "failed",
           message: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
@@ -123,7 +144,7 @@ function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThreadRef }) 
     return () => {
       active = false;
     };
-  }, [computerLabel, threadRef.environmentId, threadRef.threadId]);
+  }, [computerLabel, previewRound, threadRef.environmentId, threadRef.threadId]);
 
   const preview = previewState.status === "ready" ? previewState.preview : null;
   const target = preview?.targets.find((candidate) => candidate.environmentId === targetId) ?? null;
@@ -186,15 +207,28 @@ function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThreadRef }) 
               target={target}
               disabled={starting}
               onChange={(next) => {
+                pickedTargetRef.current = next.environmentId;
                 setTargetId(next.environmentId);
                 setAgent(pickDefaultMoveAgent(next));
                 setStartError(null);
               }}
             />
             {target?.refusal !== undefined ? (
-              <p className="text-sm text-foreground" data-testid="thread-move-target-refusal">
-                {target.refusal}
-              </p>
+              <div className="space-y-2">
+                <p className="text-sm text-foreground" data-testid="thread-move-target-refusal">
+                  {target.refusal}
+                </p>
+                {target.refusalCode === "no_project" && projectId !== null ? (
+                  <SetUpThereAction
+                    project={{ environmentId: threadRef.environmentId, projectId }}
+                    target={target}
+                    onOpen={() => {
+                      pickedTargetRef.current = target.environmentId;
+                    }}
+                    onSetUp={() => setPreviewRound((round) => round + 1)}
+                  />
+                ) : null}
+              </div>
             ) : target ? (
               <>
                 <div
@@ -292,7 +326,8 @@ function TargetField({
             <SelectItem
               key={candidate.environmentId}
               value={candidate.environmentId}
-              disabled={candidate.refusal !== undefined}
+              // One without the project can be picked: the dialog offers to set it up there.
+              disabled={candidate.refusal !== undefined && candidate.refusalCode !== "no_project"}
               data-testid={`thread-move-target-${candidate.environmentId}`}
             >
               <span className="flex min-w-0 flex-col">
@@ -385,5 +420,63 @@ function AgentField({
         </SelectPopup>
       </Select>
     </div>
+  );
+}
+
+/**
+ * For a computer that lacks the thread's project: set it up there (the move
+ * is asked again once that's done), or, when this app can't reach that
+ * computer to do it, the way to connect to it first.
+ */
+function SetUpThereAction({
+  project,
+  target,
+  onOpen,
+  onSetUp,
+}: {
+  readonly project: ScopedProjectRef;
+  readonly target: ThreadMoveTargetPreview;
+  readonly onOpen: () => void;
+  readonly onSetUp: () => void;
+}) {
+  const navigate = useNavigate();
+  const setupTargets = useProjectSetupTargets(project);
+  const reachable = useProjectSetupComputerReady(target.environmentId);
+  if (setupTargets.some((candidate) => candidate.environmentId === target.environmentId)) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        data-testid="thread-move-set-up"
+        onClick={() => {
+          onOpen();
+          openProjectSetupDialog({
+            project,
+            targetEnvironmentId: target.environmentId,
+            onDone: onSetUp,
+          });
+        }}
+      >
+        Set it up there
+      </Button>
+    );
+  }
+  if (reachable) return null;
+  return (
+    <Button
+      size="sm"
+      variant="link"
+      className="h-auto px-0"
+      data-testid="thread-move-connect-first"
+      onClick={() => {
+        closeThreadMoveDialog();
+        void navigate({
+          to: "/fleet/$environmentId",
+          params: { environmentId: target.environmentId },
+        });
+      }}
+    >
+      Connect to {target.label} in this app first
+    </Button>
   );
 }

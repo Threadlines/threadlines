@@ -28,6 +28,7 @@ import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateI
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { QuitConfirmationDialog } from "../components/desktop/QuitConfirmationDialog";
 import { ThreadDeleteDialogHost } from "../components/ThreadDeleteDialog";
+import { ProjectSetupDialogHost } from "../components/ProjectSetupDialog";
 import { ThreadMoveDialogHost } from "../components/ThreadMoveDialog";
 import { ThreadRenameDialogHost } from "../components/ThreadRenameDialog";
 import { ConnectComputerDialogHost } from "../components/settings/connections/JoinComputerDialog";
@@ -101,6 +102,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import { startComputerLinksSync } from "../environments/links/computerLinks";
+import { startProjectSetupsSync } from "../environments/projectSetups/projectSetups";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
   ensurePrimaryEnvironmentReady,
@@ -217,6 +219,7 @@ function RootRouteView() {
         <DesktopUpdateInstallDialog />
         <ThreadDeleteDialogHost />
         <ThreadMoveDialogHost />
+        <ProjectSetupDialogHost />
         <ThreadRenameDialogHost />
         <ConnectComputerDialogHost />
         <HostedStaticEnvironmentBootstrap />
@@ -625,12 +628,16 @@ function EnvironmentConnectionManagerBootstrap() {
     // Each connected computer's links, for Fleet, the inbox's link requests
     // and Settings' linked computers.
     const stopComputerLinks = startComputerLinksSync();
+    // Each connected computer's project setups, for the setup dialog, its
+    // toasts and Fleet.
+    const stopProjectSetups = startProjectSetupsSync();
     // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
     // rather than by the sidebar, which on a phone unmounts the moment a tap
     // closes it, mid-prewarm.
     const unbindRowIntent = bindThreadRowIntentPrewarm(document);
     return () => {
       unbindRowIntent();
+      stopProjectSetups();
       stopComputerLinks();
       stopRelayJoins();
       stopConnections();

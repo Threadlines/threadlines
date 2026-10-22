@@ -45,6 +45,7 @@ import {
 import { useFleetData } from "./FleetLayout";
 import { FleetThreadList } from "./FleetThreadList";
 import { LinkRequestRow } from "./LinkRequestRow";
+import { ProjectSetupsGroup } from "./ProjectSetupsGroup";
 import { useFleetLabels } from "./useFleetLabels";
 import { LinkSettingsControls, WorksWithGroup } from "./WorksWithGroup";
 
@@ -515,6 +516,10 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
               </h2>
               {workingNow}
             </section>
+          ) : null}
+
+          {entry.environmentId !== null && !isFleetDeviceEntry(entry) ? (
+            <ProjectSetupsGroup environmentId={entry.environmentId} label={entry.displayLabel} />
           ) : null}
 
           {entry.kind === "this" ? (

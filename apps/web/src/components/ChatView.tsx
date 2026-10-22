@@ -199,6 +199,7 @@ import { roomsEnabledFor } from "../hooks/useRoomsEnabled";
 import {
   applyMovedDraftDefaults,
   buildNewThreadParticipants,
+  moveDraftToSetUpProject,
   canRunOnComputer,
   resolveNewThreadDefaults,
 } from "../newThreadDefaults";
@@ -299,6 +300,8 @@ import { useProviderConnectFlow } from "./settings/useProviderConnectFlow";
 import { buildThreadErrorNotice } from "./chat/threadErrorNotice";
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
 import { useThreadMoveNotice } from "./chat/threadMoveNotice";
+import { openProjectSetupDialog } from "./ProjectSetupDialog";
+import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
 import { useComputerLabel } from "./sidebar/linkedComputers";
 import { threadMoveLockReason } from "../threadMove";
 import {
@@ -3234,6 +3237,30 @@ export default function ChatView(props: ChatViewProps) {
     },
     [draftId, envLocked, logicalProjectEnvironments, setDraftThreadContext],
   );
+
+  // A new thread can also go to a computer that hasn't got the project yet:
+  // the picker offers to set it up there, and once that's done the draft
+  // moves to the new copy if it is still on this project.
+  const setupTargets = useProjectSetupTargets(
+    !envLocked && draftId && activeProject
+      ? scopeProjectRef(activeProject.environmentId, activeProject.id)
+      : null,
+  );
+  const onSetUpElsewhere = useCallback(() => {
+    if (!draftId || !activeProject) return;
+    const draft = useComposerDraftStore.getState().getDraftSession(draftId);
+    if (!draft) return;
+    const logicalProjectKey = draft.logicalProjectKey;
+    openProjectSetupDialog({
+      project: scopeProjectRef(activeProject.environmentId, activeProject.id),
+      onDone: (result) =>
+        void moveDraftToSetUpProject(
+          draftId,
+          logicalProjectKey,
+          scopeProjectRef(result.environmentId, result.projectId),
+        ),
+    });
+  }, [activeProject, draftId]);
 
   const activeTerminalGroup =
     terminalState.terminalGroups.find(
@@ -8056,7 +8083,10 @@ export default function ChatView(props: ChatViewProps) {
                 {...(canCheckoutPullRequestIntoThread
                   ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                   : {})}
-                {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
+                {...(hasMultipleEnvironments || setupTargets.length > 0
+                  ? { onEnvironmentChange }
+                  : {})}
+                {...(setupTargets.length > 0 ? { onSetUpElsewhere } : {})}
                 availableEnvironments={logicalProjectEnvironments}
               />
             )}

@@ -6,6 +6,7 @@ import {
   FolderGit2Icon,
   FolderGitIcon,
   FolderIcon,
+  FolderSyncIcon,
   MonitorIcon,
 } from "lucide-react";
 import { memo, useMemo } from "react";
@@ -34,6 +35,7 @@ import {
   Menu,
   MenuGroup,
   MenuGroupLabel,
+  MenuItem,
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
@@ -55,6 +57,11 @@ interface BranchToolbarProps {
   onComposerFocusRequest?: () => void;
   availableEnvironments?: readonly EnvironmentOption[];
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
+  /**
+   * Offers "Set up on another computer…" in the "Runs on" picker, which then
+   * shows even while the project is on one computer only.
+   */
+  onSetUpElsewhere?: () => void;
 }
 
 interface MobileRunContextSelectorProps {
@@ -64,6 +71,7 @@ interface MobileRunContextSelectorProps {
   availableEnvironments: readonly EnvironmentOption[] | undefined;
   showEnvironmentPicker: boolean;
   onEnvironmentChange: ((environmentId: EnvironmentId) => void) | undefined;
+  onSetUpElsewhere: (() => void) | undefined;
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
   onEnvModeChange: (mode: EnvMode) => void;
@@ -76,6 +84,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   availableEnvironments,
   showEnvironmentPicker,
   onEnvironmentChange,
+  onSetUpElsewhere,
   effectiveEnvMode,
   activeWorktreePath,
   onEnvModeChange,
@@ -158,6 +167,14 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
                   );
                 })}
               </MenuRadioGroup>
+              {onSetUpElsewhere && !envLocked ? (
+                <MenuItem onClick={onSetUpElsewhere} data-testid="runs-on-set-up-elsewhere">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <FolderSyncIcon className="size-3" />
+                    <span className="min-w-0 truncate">Set up on another computer…</span>
+                  </span>
+                </MenuItem>
+              ) : null}
             </MenuGroup>
             <MenuSeparator />
           </>
@@ -206,6 +223,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   onComposerFocusRequest,
   availableEnvironments,
   onEnvironmentChange,
+  onSetUpElsewhere,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -255,8 +273,11 @@ export const BranchToolbar = memo(function BranchToolbar({
     });
   const envModeLocked = envLocked || (serverThread !== undefined && activeWorktreePath !== null);
 
+  // Two computers to pick from, or one and a way to add another.
   const showEnvironmentPicker = Boolean(
-    availableEnvironments && availableEnvironments.length > 1 && onEnvironmentChange,
+    availableEnvironments &&
+    onEnvironmentChange &&
+    (availableEnvironments.length > 1 || (onSetUpElsewhere && availableEnvironments.length > 0)),
   );
   const isMobile = useIsMobile();
 
@@ -284,6 +305,7 @@ export const BranchToolbar = memo(function BranchToolbar({
               environmentId={environmentId}
               availableEnvironments={availableEnvironments}
               onEnvironmentChange={onEnvironmentChange}
+              onSetUpElsewhere={onSetUpElsewhere}
             />{" "}
           </>
         ) : null}
@@ -323,6 +345,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           availableEnvironments={availableEnvironments}
           showEnvironmentPicker={showEnvironmentPicker}
           onEnvironmentChange={onEnvironmentChange}
+          onSetUpElsewhere={onSetUpElsewhere}
           effectiveEnvMode={effectiveEnvMode}
           activeWorktreePath={displayWorktreePath}
           onEnvModeChange={onEnvModeChange}
@@ -336,6 +359,7 @@ export const BranchToolbar = memo(function BranchToolbar({
                 environmentId={environmentId}
                 availableEnvironments={availableEnvironments}
                 onEnvironmentChange={onEnvironmentChange}
+                onSetUpElsewhere={onSetUpElsewhere}
               />
               <Separator orientation="vertical" className="mx-0.5 h-3.5!" />
             </>
