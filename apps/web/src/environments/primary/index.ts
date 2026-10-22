@@ -37,7 +37,11 @@ export {
   __resetServerAuthBootstrapForTests,
 } from "./auth";
 
-export { resolvePrimaryEnvironmentHttpUrl, isLoopbackHostname } from "./target";
+export {
+  isLoopbackHostname,
+  isPrimaryEnvironmentOnThisComputer,
+  resolvePrimaryEnvironmentHttpUrl,
+} from "./target";
 
 export { watchDesktopSessionExpiry } from "./desktopSession";
 

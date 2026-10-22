@@ -113,6 +113,7 @@ const waitFor = <E, R>(
 
 const CLAUDE_INSTANCE = ProviderInstanceId.make("claude-work");
 const CODEX_INSTANCE = ProviderInstanceId.make("codex-work");
+const FX_INSTANCE = ProviderInstanceId.make("fx");
 
 const settingsLayer = ServerSettingsService.layerTest({
   providerInstances: {
@@ -124,6 +125,7 @@ const settingsLayer = ServerSettingsService.layerTest({
       driver: "codex",
       config: { binaryPath: "codex", shadowHomePath: "/tmp/codex-home" },
     },
+    [FX_INSTANCE]: { driver: "fx", config: { binaryPath: "fx" } },
   },
 });
 
@@ -283,6 +285,41 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
     }).pipe(Effect.provide(settingsLayer)),
   );
 
+  it.effect("tells panels whether a login command opens its sign-in page itself", () =>
+    Effect.gen(function* () {
+      const harness = yield* createSessions();
+      yield* harness.subscribeTo(CODEX_INSTANCE);
+      yield* harness.subscribeTo(FX_INSTANCE);
+      yield* harness.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+      yield* harness.sessions.start({ instanceId: FX_INSTANCE, flow: "login" });
+      // A panel that opens mid-run hears it too.
+      yield* harness.subscribeTo(CODEX_INSTANCE);
+
+      const commands = (yield* harness.getEvents).flatMap((event) =>
+        event.type === "command" ? [[String(event.instanceId), event.opensPageItself]] : [],
+      );
+      expect(commands).toEqual([
+        [String(CODEX_INSTANCE), true],
+        [String(FX_INSTANCE), false],
+        [String(CODEX_INSTANCE), true],
+      ]);
+
+      // A sign-in the instance runs itself says so too (Grok opens its page).
+      const browserFlows: ProviderInstanceAuthFlows = {
+        flows: ["login"],
+        describe: () => "Sign in with Grok",
+        opensPageItself: true,
+        run: () => Effect.never,
+        completeRedirect: () => Effect.void,
+      };
+      const browser = yield* createSessions(() => Effect.succeed(browserFlows));
+      yield* browser.subscribeTo(CODEX_INSTANCE);
+      yield* browser.sessions.start({ instanceId: CODEX_INSTANCE, flow: "login" });
+      const command = (yield* browser.getEvents).find((event) => event.type === "command");
+      expect(command).toMatchObject({ surface: "browser", opensPageItself: true });
+    }).pipe(Effect.provide(settingsLayer)),
+  );
+
   it.effect("runs an instance's own flow only once the instance has the saved settings", () =>
     Effect.gen(function* () {
       // The instance is still the one built before the last save on the first
@@ -368,6 +405,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
       });
       const command = (yield* harness.getEvents).find((event) => event.type === "command");
       expect(command).toMatchObject({ surface: "terminal", command: "agent login --device" });
+      // The agent didn't say whether it opens a browser: panels open nothing.
+      expect(command).not.toHaveProperty("opensPageItself");
       // Keystrokes reach the command, like any terminal sign-in.
       yield* harness.sessions.write({ instanceId: CODEX_INSTANCE, data: "1234\r" });
       expect(harness.ptyAdapter.processes[0]!.writes).toEqual(["1234\r"]);
