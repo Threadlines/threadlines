@@ -1,0 +1,1061 @@
+import {
+  EventId,
+  ORCHESTRATION_WS_METHODS,
+  MessageId,
+  ProviderInstanceId,
+  type TurnId,
+} from "@threadlines/contracts";
+import { createModelCapabilities } from "@threadlines/shared/model";
+import { page } from "vite-plus/test/browser";
+import { describe, expect, it, vi } from "vite-plus/test";
+
+import { updateSettings } from "../hooks/useSettings";
+import { useComposerDraftStore } from "../composerDraftStore";
+import { COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX } from "../rightPanelLayout";
+import {
+  COMPOSER_FOOTER_RESERVE_ATTRIBUTE,
+  measureComposerFooterReserve,
+} from "./composerFooterLayout";
+
+import {
+  THREAD_ID,
+  LOCAL_ENVIRONMENT_ID,
+  THREAD_REF,
+  THREAD_KEY,
+  NOW_ISO,
+  fixture,
+  rpcHarness,
+  wsRequests,
+  DEFAULT_VIEWPORT,
+  WIDE_FOOTER_VIEWPORT,
+  PHONE_VIEWPORT,
+  NARROW_DESKTOP_COMPOSER_WIDTH,
+  isoAt,
+  createSnapshotForTargetUser,
+  createSnapshotWithLongProposedPlan,
+  createSnapshotWithPendingUserInput,
+  createSnapshotWithPlanFollowUpPrompt,
+  waitForElement,
+  waitForComposerEditor,
+  waitForComposerText,
+  findComposerProviderModelPicker,
+  findVisibleComposerFooter,
+  setVisibleComposerFormWidth,
+  waitForButtonByText,
+  waitForButtonByAriaLabel,
+  waitForButtonByTextWithin,
+  waitForButtonContainingText,
+  expectComposerActionsContained,
+  expectQuestionActionsContained,
+  dragRightPanelFarWider,
+  waitForServerConfigToApply,
+  mountChatView,
+  registerChatViewSuiteHooks,
+} from "./ChatView.browser-harness";
+
+vi.mock("../lib/gitStatusState", () => ({
+  // Read synchronously by the draft seeder to skip a checkout already known
+  // to be missing; these suites never exercise a deleted checkout.
+  getGitStatusSnapshot: () => ({ data: null, error: null, cause: null, isPending: false }),
+  GIT_STATUS_STALE_MESSAGE: "Source control status isn't updating.",
+  useGitStatus: () => ({ data: null, error: null, cause: null, isPending: false }),
+  useGitStatuses: () => new Map(),
+  rebuildGitStatusSubscription: () => undefined,
+  refreshGitStatus: () => Promise.resolve(null),
+  refreshLocalGitStatus: () => Promise.resolve(null),
+  resetGitStatusStateForTests: () => undefined,
+}));
+
+describe("ChatView (full app): plans, questions and turn controls", () => {
+  registerChatViewSuiteHooks();
+
+  it("uses the active worktree path when saving a proposed plan to the workspace", async () => {
+    const snapshot = createSnapshotWithLongProposedPlan();
+    const threads = snapshot.threads.slice();
+    const targetThreadIndex = threads.findIndex((thread) => thread.id === THREAD_ID);
+    const targetThread = targetThreadIndex >= 0 ? threads[targetThreadIndex] : undefined;
+    if (targetThread) {
+      threads[targetThreadIndex] = {
+        ...targetThread,
+        worktreePath: "/repo/worktrees/plan-thread",
+      };
+    }
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads,
+      },
+    });
+
+    try {
+      const planActionsButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Plan actions"]'),
+        "Unable to find proposed plan actions button.",
+      );
+      planActionsButton.click();
+
+      const saveToWorkspaceItem = await waitForElement(
+        () =>
+          (Array.from(document.querySelectorAll('[data-slot="menu-item"]')).find(
+            (item) => item.textContent?.trim() === "Save to workspace",
+          ) ?? null) as HTMLElement | null,
+        'Unable to find "Save to workspace" menu item.',
+      );
+      saveToWorkspaceItem.click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain(
+            "Enter a path relative to /repo/worktrees/plan-thread.",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps pending-question actions inside the question panel after a real resize", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+    });
+
+    try {
+      const firstOption = await waitForButtonContainingText("Tight");
+      firstOption.click();
+      (await waitForButtonByText("Next question")).click();
+
+      await waitForButtonByText("Previous");
+      await waitForButtonByText("Submit answers");
+
+      await mounted.setComposerWidth(NARROW_DESKTOP_COMPOSER_WIDTH);
+      await expectQuestionActionsContained();
+      expect(document.querySelector('[data-chat-composer-footer="true"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("stops dragging the right panel wider while a waiting question's buttons still fit", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}?sourceControl=1`,
+    });
+
+    try {
+      // The second question shows both Previous and Submit answers.
+      (await waitForButtonContainingText("Tight")).click();
+      (await waitForButtonByText("Next question")).click();
+      await waitForButtonByText("Submit answers");
+      // As when a thread opens with the question already waiting: no footer
+      // has shown, so only the question's buttons say how much room to keep.
+      const form = document.querySelector<HTMLElement>('[data-chat-composer-form="true"]')!;
+      form.removeAttribute(COMPOSER_FOOTER_RESERVE_ATTRIBUTE);
+      await dragRightPanelFarWider();
+
+      const questionActions = document.querySelector<HTMLElement>(
+        '[data-chat-composer-question-actions="true"]',
+      )!;
+      expect(form.clientWidth).toBeGreaterThanOrEqual(
+        COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX +
+          questionActions.getBoundingClientRect().width -
+          0.5,
+      );
+      await expectQuestionActionsContained();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps room for the footer while an approval hides it and the right panel is dragged", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-approval-drag" as MessageId,
+        targetText: "approval drag target",
+        sessionStatus: "running",
+        sessionActiveTurnId: "turn-approval-drag" as TurnId,
+      }),
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}?sourceControl=1`,
+    });
+
+    try {
+      const footer = await waitForElement(
+        findVisibleComposerFooter,
+        "Unable to find composer footer.",
+      );
+      const footerReserve = measureComposerFooterReserve(footer);
+      const appendActivity = (sequence: number, kind: string) =>
+        rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+          kind: "event",
+          event: {
+            sequence: fixture.snapshot.snapshotSequence + sequence,
+            eventId: EventId.make(`evt-approval-drag-${sequence}`),
+            aggregateKind: "thread",
+            aggregateId: THREAD_ID,
+            occurredAt: NOW_ISO,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.activity-appended",
+            payload: {
+              threadId: THREAD_ID,
+              activity: {
+                id: EventId.make(`activity-approval-drag-${sequence}`),
+                kind,
+                tone: "info",
+                summary: kind,
+                payload: {
+                  requestId: "req-approval-drag",
+                  requestKind: "command",
+                  detail: "git status",
+                },
+                turnId: "turn-approval-drag" as TurnId,
+                createdAt: isoAt(sequence),
+              },
+            },
+          },
+        });
+
+      // An approval arrives and replaces the footer; the panel is dragged.
+      appendActivity(1, "approval.requested");
+      await expect.element(page.getByText("Command approval requested")).toBeVisible();
+      expect(document.querySelector('[data-chat-composer-footer="true"]')).toBeNull();
+      await dragRightPanelFarWider();
+      const form = document.querySelector<HTMLElement>('[data-chat-composer-form="true"]')!;
+      expect(form.clientWidth).toBeGreaterThanOrEqual(
+        COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX + footerReserve - 1,
+      );
+
+      // Once it's answered the footer comes back, and it still fits.
+      appendActivity(2, "approval.resolved");
+      const returned = await waitForElement(
+        findVisibleComposerFooter,
+        "The footer should come back once the approval is answered.",
+      );
+      const leftActions = returned.querySelector<HTMLElement>(
+        '[data-chat-composer-actions="left"]',
+      )!;
+      await vi.waitFor(
+        () => {
+          expect(returned.scrollWidth).toBeLessThanOrEqual(returned.clientWidth + 1);
+          expect(leftActions.scrollWidth).toBeLessThanOrEqual(leftActions.clientWidth + 1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await expectComposerActionsContained();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Real phone viewports (touch-size buttons) and desktop composers squeezed
+  // by panels beside the chat. The stash bookmark used to hide in the
+  // overflow menu below the compact breakpoint; now it stays in the row, so
+  // the row must still fit without the bookmark shoving the overflow trigger
+  // off-screen or squeezing the model picker down to nothing. 300px is about
+  // the narrowest desktop composer the row supports. One test per viewport:
+  // the full app only mounts cleanly once per test.
+  it.each([
+    { name: "phone", viewport: PHONE_VIEWPORT, composerWidth: null },
+    { name: "small phone", viewport: { ...PHONE_VIEWPORT, width: 360 }, composerWidth: null },
+    { name: "narrow pane", viewport: WIDE_FOOTER_VIEWPORT, composerWidth: 320 },
+    { name: "extra-narrow pane", viewport: WIDE_FOOTER_VIEWPORT, composerWidth: 300 },
+  ])(
+    "keeps one composer row with the stash bookmark and overflow menu both visible ($name)",
+    async ({ viewport, composerWidth }) => {
+      const mounted = await mountChatView({
+        viewport,
+        // The shared fixture snapshot does not render at phone viewports in
+        // this harness; the target-user snapshot does.
+        snapshot:
+          viewport === WIDE_FOOTER_VIEWPORT
+            ? fixture.snapshot
+            : createSnapshotForTargetUser({
+                targetMessageId: "msg-user-narrow-footer" as MessageId,
+                targetText: "narrow footer",
+              }),
+      });
+
+      try {
+        if (composerWidth !== null) {
+          await mounted.setComposerWidth(composerWidth);
+        }
+
+        const footer = await waitForElement(
+          findVisibleComposerFooter,
+          "Unable to find composer footer.",
+        );
+        const leftActions = await waitForElement(
+          () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="left"]'),
+          "Unable to find left composer actions.",
+        );
+        const rightActions = await waitForElement(
+          () => footer.querySelector<HTMLElement>('[data-chat-composer-actions="right"]'),
+          "Unable to find right composer actions.",
+        );
+        const moreControlsButton = await waitForElement(
+          () =>
+            footer.querySelector<HTMLButtonElement>('button[aria-label="More composer controls"]'),
+          "Unable to find compact composer controls.",
+        );
+        const stashButton = await waitForElement(
+          () =>
+            rightActions.querySelector<HTMLButtonElement>('button[aria-label^="Stashed prompts"]'),
+          "Unable to find the stash bookmark in the composer row.",
+        );
+        const modelButton = await waitForElement(
+          () =>
+            leftActions.querySelector<HTMLButtonElement>(
+              '[data-chat-provider-model-picker="true"]',
+            ),
+          "Unable to find provider model picker.",
+        );
+
+        await vi.waitFor(
+          () => {
+            const footerRect = footer.getBoundingClientRect();
+            const leftRect = leftActions.getBoundingClientRect();
+            const rightRect = rightActions.getBoundingClientRect();
+            const moreRect = moreControlsButton.getBoundingClientRect();
+            const stashRect = stashButton.getBoundingClientRect();
+
+            const leftCenter = (leftRect.top + leftRect.bottom) / 2;
+            const rightCenter = (rightRect.top + rightRect.bottom) / 2;
+            expect(Math.abs(leftCenter - rightCenter)).toBeLessThanOrEqual(1);
+            expect(moreRect.left).toBeGreaterThanOrEqual(leftRect.left - 0.5);
+            expect(moreRect.right).toBeLessThanOrEqual(leftRect.right + 0.5);
+            expect(leftRect.right).toBeLessThanOrEqual(rightRect.left + 0.5);
+            expect(stashRect.left).toBeGreaterThanOrEqual(rightRect.left - 0.5);
+            expect(stashRect.right).toBeLessThanOrEqual(rightRect.right + 0.5);
+            expect(rightRect.right).toBeLessThanOrEqual(footerRect.right + 0.5);
+            expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
+            expect(leftActions.scrollWidth).toBeLessThanOrEqual(leftActions.clientWidth + 1);
+            expect(footer.dataset.chatComposerFooterCompact).toBe("true");
+            // The provider icon plus at least a few characters of model name.
+            expect(modelButton.getBoundingClientRect().width).toBeGreaterThan(48);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("drops traits, mode, and access to icons together when the labels stop fitting, and restores them", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: fixture.snapshot,
+      configureFixture: (nextFixture) => {
+        const [codexProvider] = nextFixture.serverConfig.providers;
+        if (!codexProvider) return;
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            {
+              ...codexProvider,
+              models: [
+                {
+                  slug: "gpt-5",
+                  name: "GPT-5",
+                  isCustom: false,
+                  capabilities: createModelCapabilities({
+                    optionDescriptors: [
+                      {
+                        id: "reasoningEffort",
+                        label: "Reasoning",
+                        type: "select" as const,
+                        options: [
+                          { id: "low", label: "Low" },
+                          { id: "medium", label: "Medium", isDefault: true },
+                          { id: "high", label: "High" },
+                        ],
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const footer = await waitForElement(
+        findVisibleComposerFooter,
+        "Unable to find composer footer.",
+      );
+      const modelButton = await waitForElement(
+        () => footer.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find provider model picker.",
+      );
+      await waitForButtonByTextWithin(footer, "Medium");
+      await waitForButtonByText("Full access");
+
+      await setVisibleComposerFormWidth(560);
+      await vi.waitFor(() => {
+        expect(footer.dataset.chatComposerFooterIconOnly).toBe("true");
+        expect(footer.dataset.chatComposerFooterCompact).toBe("false");
+      });
+      const iconButtons = await Promise.all(
+        [
+          'button[aria-label^="Reasoning settings:"]',
+          'button[aria-label^="Interaction mode:"]',
+          'button[aria-label^="Access level:"]',
+        ].map((selector) =>
+          waitForElement(
+            () => footer.querySelector<HTMLButtonElement>(selector),
+            `Unable to find icon-only control ${selector}.`,
+          ),
+        ),
+      );
+      const visibleSeparators = Array.from(
+        footer.querySelectorAll<HTMLElement>('[data-slot="separator"]'),
+      ).filter((separator) => getComputedStyle(separator).display !== "none");
+
+      expect(document.querySelector('button[aria-label="More composer controls"]')).toBeNull();
+      expect(visibleSeparators.length).toBeGreaterThanOrEqual(2);
+      expect(modelButton.textContent).toContain("GPT-5");
+      expect(modelButton.getBoundingClientRect().width).toBeGreaterThan(32);
+      for (const button of iconButtons) {
+        expect(button.getBoundingClientRect().width).toBeLessThanOrEqual(32);
+      }
+      expect(footer.scrollWidth).toBeLessThanOrEqual(footer.clientWidth + 1);
+
+      // The way back: room returns, so do the labels.
+      await setVisibleComposerFormWidth(900);
+      await vi.waitFor(() => {
+        expect(footer.dataset.chatComposerFooterIconOnly).toBe("false");
+      });
+      await waitForButtonByTextWithin(footer, "Medium");
+      await waitForButtonByText("Full access");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("submits pending user input only after explicitly reviewing the final answer", async () => {
+    let resolveDispatch!: (value: { sequence: number }) => void;
+    const pendingDispatch = new Promise<{ sequence: number }>((resolve) => {
+      resolveDispatch = resolve;
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return pendingDispatch;
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      const firstOption = await waitForButtonContainingText("Tight");
+      firstOption.click();
+      (await waitForButtonByText("Next question")).click();
+
+      const finalOption = await waitForButtonContainingText("Conservative");
+      finalOption.click();
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.user-input.respond",
+        ),
+      ).toBe(false);
+      (await waitForButtonByText("Submit answers")).click();
+
+      await vi.waitFor(
+        () => {
+          const dispatchRequest = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.user-input.respond",
+          ) as
+            | {
+                _tag: string;
+                type?: string;
+                requestId?: string;
+                answers?: Record<string, unknown>;
+              }
+            | undefined;
+
+          expect(dispatchRequest).toMatchObject({
+            _tag: ORCHESTRATION_WS_METHODS.dispatchCommand,
+            type: "thread.user-input.respond",
+            requestId: "req-browser-user-input",
+            answers: {
+              scope: "Tight",
+              risk: "Conservative",
+            },
+          });
+          expect(finalOption.disabled).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      finalOption.click();
+      expect(
+        wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.user-input.respond",
+        ),
+      ).toHaveLength(1);
+      resolveDispatch({ sequence: fixture.snapshot.snapshotSequence + 1 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([
+    { name: "async desktop", viewport: DEFAULT_VIEWPORT, isBlocking: false },
+    { name: "async phone", viewport: PHONE_VIEWPORT, isBlocking: false },
+    { name: "blocking desktop", viewport: DEFAULT_VIEWPORT, isBlocking: true },
+    { name: "blocking phone", viewport: PHONE_VIEWPORT, isBlocking: true },
+  ])(
+    "keeps answer typing separate from the Stop-to-Steer composer switch ($name)",
+    async ({ name, viewport, isBlocking }) => {
+      useComposerDraftStore
+        .getState()
+        .setPrompt(THREAD_REF, isBlocking ? "Keep checking the repository while I sign in." : "");
+      const mounted = await mountChatView({
+        viewport,
+        snapshot: createSnapshotWithPendingUserInput({ isBlocking, running: true, signIn: true }),
+        configureFixture: (nextFixture) => {
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            environment: {
+              ...nextFixture.serverConfig.environment,
+              serverVersion: import.meta.env.APP_VERSION,
+            },
+          };
+          nextFixture.welcome = {
+            ...nextFixture.welcome,
+            environment: {
+              ...nextFixture.welcome.environment,
+              serverVersion: import.meta.env.APP_VERSION,
+            },
+          };
+        },
+      });
+      try {
+        document.documentElement.classList.add("dark");
+        const stop = await waitForElement(
+          () => document.querySelector<HTMLButtonElement>('button[aria-label="Stop generation"]'),
+          "Stop must remain available when only the answer field has text.",
+        );
+        (await waitForButtonContainingText("Only one worked")).click();
+        await page
+          .getByLabelText("Custom answer", { exact: true })
+          .fill("Codex is ready. Claude still needs help.", { timeout: 5_000 });
+        expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt ?? "").toBe(
+          isBlocking ? "Keep checking the repository while I sign in." : "",
+        );
+        // Plain DOM clicks: Playwright hit-tests the click point, and on phone
+        // the scroll-to-bottom pill can cover the panel header while the
+        // timeline is still settling to the end.
+        (await waitForButtonByAriaLabel("Collapse questions")).click();
+        await expect.element(stop, { timeout: 5_000 }).toBeVisible();
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.user-input.respond",
+          ),
+        ).toBe(false);
+        (await waitForButtonByAriaLabel("Expand questions")).click();
+        await expect
+          .element(page.getByLabelText("Custom answer", { exact: true }), { timeout: 5_000 })
+          .toHaveValue("Codex is ready. Claude still needs help.");
+        if (!isBlocking) {
+          const editor = page.getByTestId("composer-editor");
+          await editor.fill("Keep checking the repository while I sign in.", { timeout: 5_000 });
+          await waitForComposerText("Keep checking the repository while I sign in.");
+          await waitForButtonByAriaLabel("Steer active turn");
+          expect(document.querySelector('button[aria-label="Stop generation"]')).toBeNull();
+          // Clear through the draft store. Playwright's empty fill presses Delete
+          // over a select-all, which the editor does not reliably turn into an
+          // empty draft, and the point here is the empty-draft state, not the key.
+          useComposerDraftStore.getState().setPrompt(THREAD_REF, "");
+          await waitForButtonByAriaLabel("Stop generation");
+          expect(document.querySelector('button[aria-label="Steer active turn"]')).toBeNull();
+          await editor.fill("Keep checking the repository while I sign in.", { timeout: 5_000 });
+          await waitForComposerText("Keep checking the repository while I sign in.");
+          await waitForButtonByAriaLabel("Steer active turn");
+        }
+        await expectQuestionActionsContained();
+        if (isBlocking) {
+          // The blocked row keeps the saved draft readable and Stop inside it.
+          const blockedRow = await waitForElement(
+            () =>
+              document.querySelector<HTMLElement>(
+                '[data-chat-composer-blocked-by-question="true"]',
+              ),
+            "Unable to find the blocked composer row.",
+          );
+          expect(blockedRow.textContent).toContain("Keep checking the repository while I sign in.");
+          expect(blockedRow.contains(stop)).toBe(true);
+          expect(document.querySelector('[data-chat-composer-footer="true"]')).toBeNull();
+          // The draft check above is the regression guard; the screenshot shows
+          // the common case of an empty composer.
+          useComposerDraftStore.getState().setPrompt(THREAD_REF, "");
+          await vi.waitFor(() => {
+            expect(blockedRow.textContent).toContain("Answer the question above, or stop the turn");
+          });
+        } else {
+          await expectComposerActionsContained();
+        }
+        await page.screenshot({
+          path: `__screenshots__/question-${name.replaceAll(" ", "-")}.png`,
+        });
+        if (isBlocking) {
+          expect(document.querySelector('[contenteditable="true"]')).toBeNull();
+          stop.click();
+          await vi.waitFor(() => {
+            expect(
+              wsRequests.find(
+                (request) =>
+                  request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                  request.type === "thread.turn.interrupt",
+              ),
+            ).toMatchObject({ turnId: "turn-pending-input" });
+          });
+        } else {
+          expect(document.body.textContent).toContain("The agent keeps working while you answer.");
+          await expect
+            .element(await waitForComposerEditor(), { timeout: 5_000 })
+            .toMatchTextContent("Keep checking the repository while I sign in.");
+          (await waitForButtonByText("Submit answer")).click();
+          await vi.waitFor(() => {
+            expect(
+              wsRequests.find(
+                (request) =>
+                  request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                  request.type === "thread.user-input.respond",
+              ),
+            ).toMatchObject({ answers: { sign_in: "Codex is ready. Claude still needs help." } });
+          });
+          await page.getByLabelText("Steer active turn").click({ timeout: 5_000 });
+          await vi.waitFor(() => {
+            expect(
+              wsRequests.find(
+                (request) =>
+                  request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                  request.type === "thread.follow-up.submit",
+              ),
+            ).toMatchObject({ message: { text: "Keep checking the repository while I sign in." } });
+          });
+        }
+      } finally {
+        document.documentElement.classList.remove("dark");
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it.each([
+    { name: "desktop", viewport: DEFAULT_VIEWPORT },
+    { name: "phone", viewport: PHONE_VIEWPORT },
+  ])(
+    "keeps Stop reachable when an approval overlaps an async question ($name)",
+    async ({ viewport }) => {
+      const snapshot = createSnapshotWithPendingUserInput({ isBlocking: false, running: true });
+      const mounted = await mountChatView({
+        viewport,
+        snapshot: {
+          ...snapshot,
+          threads: snapshot.threads.map((thread) =>
+            thread.id !== THREAD_ID
+              ? thread
+              : {
+                  ...thread,
+                  activities: [
+                    ...thread.activities,
+                    {
+                      id: EventId.make("activity-overlapping-approval"),
+                      kind: "approval.requested",
+                      tone: "info",
+                      summary: "Approval requested",
+                      payload: {
+                        requestId: "req-overlapping-approval",
+                        requestKind: "command",
+                        detail: "git status",
+                      },
+                      turnId: "turn-pending-input" as TurnId,
+                      sequence: 2,
+                      createdAt: isoAt(1_001),
+                    },
+                  ],
+                },
+          ),
+        },
+      });
+      try {
+        await expect.element(page.getByText("Command approval requested")).toBeVisible();
+        const stop = page.getByLabelText("Stop generation");
+        await expect.element(stop).toBeVisible();
+        expect(document.querySelectorAll('button[aria-label="Stop generation"]')).toHaveLength(1);
+        await stop.click();
+        await vi.waitFor(() => {
+          expect(
+            wsRequests.find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.turn.interrupt",
+            ),
+          ).toMatchObject({ turnId: "turn-pending-input" });
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("stops one background command through the agent from the runs list", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-stop-one-task" as MessageId,
+      targetText: "stop one task target",
+      sessionStatus: "ready",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                session: thread.session
+                  ? { ...thread.session, pendingBackgroundTaskCount: 1 }
+                  : thread.session,
+                activities: [
+                  ...thread.activities,
+                  {
+                    id: EventId.make("activity-dev-server-started"),
+                    kind: "task.started",
+                    tone: "info",
+                    summary: "background-command task started",
+                    payload: {
+                      taskId: "task-dev-server",
+                      taskType: "background-command",
+                      detail: "Start the web dev server",
+                      stoppable: true,
+                    },
+                    turnId: null,
+                    sequence: 50,
+                    createdAt: isoAt(1_050),
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+    try {
+      await page.getByRole("button", { name: "1 background run" }).click();
+      await page.getByRole("button", { name: "Stop Start the web dev server" }).click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.background-task.stop",
+          ),
+        ).toMatchObject({ threadId: THREAD_ID, taskId: "task-dev-server" });
+      });
+      // One task, not the session.
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.session.stop",
+        ),
+      ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers Stop for the background work a failed turn left running", async () => {
+    // A turn that died on a usage limit while two dev servers it started kept
+    // going: the thread still waits on them, and the agent can't be asked to
+    // stop them, so the composer has to.
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-background-stop" as MessageId,
+      targetText: "background stop target",
+      sessionStatus: "error",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                latestTurn: {
+                  turnId: "turn-background-stop" as TurnId,
+                  state: "error",
+                  requestedAt: NOW_ISO,
+                  startedAt: NOW_ISO,
+                  completedAt: NOW_ISO,
+                  assistantMessageId: null,
+                },
+                session: thread.session
+                  ? {
+                      ...thread.session,
+                      activeTurnId: null,
+                      lastError: "You've hit your session limit",
+                      pendingBackgroundTaskCount: 2,
+                      awaitedBackgroundTaskCount: 2,
+                      awaitedBackgroundTasks: [
+                        { kind: "command" as const, description: "Start the web dev server" },
+                        { kind: "command" as const, description: "Start the test server" },
+                      ],
+                    }
+                  : thread.session,
+              }
+            : thread,
+        ),
+      },
+    });
+    try {
+      const stop = page.getByLabelText("Stop background work");
+      await expect.element(stop).toBeVisible();
+      await stop.click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.session.stop",
+          ),
+        ).toMatchObject({ threadId: THREAD_ID });
+      });
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.turn.interrupt",
+        ),
+        "There is no turn to interrupt.",
+      ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("queues a message for after the turn, and Stop puts queued messages back in the box", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-queue-test" as MessageId,
+      targetText: "queue target",
+      sessionStatus: "running",
+      sessionActiveTurnId: "turn-queue-test" as TurnId,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                queuedFollowUps: [
+                  {
+                    messageId: "msg-queued-earlier" as MessageId,
+                    text: "then run the tests",
+                    attachments: [],
+                    runtimeMode: "full-access" as const,
+                    interactionMode: "default" as const,
+                    createdAt: NOW_ISO,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+    const dispatched = (type: string) =>
+      wsRequests.find(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand && request.type === type,
+      );
+    try {
+      await expect.element(page.getByText("then run the tests"), { timeout: 5_000 }).toBeVisible();
+
+      const editor = page.getByTestId("composer-editor");
+      await editor.fill("and update the changelog", { timeout: 5_000 });
+      await waitForComposerText("and update the changelog");
+      await page.getByLabelText("Choose how this message is sent").click({ timeout: 5_000 });
+      await page.getByRole("menuitemradio", { name: "Send when done" }).click({ timeout: 5_000 });
+      await page.getByLabelText("Send when this reply finishes").click({ timeout: 5_000 });
+      await vi.waitFor(() => {
+        expect(dispatched("thread.follow-up.submit")).toMatchObject({
+          delivery: "queue",
+          message: { text: "and update the changelog" },
+        });
+      });
+
+      await page.getByLabelText("Stop generation").click({ timeout: 5_000 });
+      await vi.waitFor(() => {
+        expect(dispatched("thread.follow-up.unqueue")).toMatchObject({
+          messageId: "msg-queued-earlier",
+        });
+        expect(dispatched("thread.turn.interrupt")).toBeDefined();
+      });
+      await waitForComposerText("then run the tests");
+    } finally {
+      updateSettings({ followUpDelivery: "steer" });
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps plan follow-up footer actions fused and aligned after a real resize", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPlanFollowUpPrompt(),
+    });
+
+    try {
+      const footer = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
+        "Unable to find composer footer.",
+      );
+      const initialModelPicker = await waitForElement(
+        findComposerProviderModelPicker,
+        "Unable to find provider model picker.",
+      );
+      const initialModelPickerOffset =
+        initialModelPicker.getBoundingClientRect().left - footer.getBoundingClientRect().left;
+      const initialImplementButton = await waitForButtonByTextWithin(footer, "Implement");
+      const initialImplementWidth = initialImplementButton.getBoundingClientRect().width;
+
+      await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>('button[aria-label="Implementation actions"]'),
+        "Unable to find implementation actions trigger.",
+      );
+
+      await mounted.setComposerWidth(NARROW_DESKTOP_COMPOSER_WIDTH);
+      await expectComposerActionsContained();
+
+      const implementButton = await waitForButtonByTextWithin(footer, "Implement");
+      const implementActionsButton = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>('button[aria-label="Implementation actions"]'),
+        "Unable to find implementation actions trigger.",
+      );
+
+      await vi.waitFor(
+        () => {
+          const implementRect = implementButton.getBoundingClientRect();
+          const implementActionsRect = implementActionsButton.getBoundingClientRect();
+          const compactModelPicker = findComposerProviderModelPicker();
+          expect(compactModelPicker).toBeTruthy();
+
+          const compactModelPickerOffset =
+            compactModelPicker!.getBoundingClientRect().left - footer.getBoundingClientRect().left;
+
+          expect(Math.abs(implementRect.right - implementActionsRect.left)).toBeLessThanOrEqual(1);
+          expect(Math.abs(implementRect.top - implementActionsRect.top)).toBeLessThanOrEqual(1);
+          expect(Math.abs(implementRect.width - initialImplementWidth)).toBeLessThanOrEqual(1);
+          expect(Math.abs(compactModelPickerOffset - initialModelPickerOffset)).toBeLessThanOrEqual(
+            1,
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the wide desktop follow-up layout expanded when the footer still fits", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPlanFollowUpPrompt({
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.3-codex-spark",
+        },
+        planMarkdown:
+          "# Imaginary Long-Range Plan: Threadlines Adaptive Orchestration and Safe-Delay Execution Initiative",
+      }),
+    });
+
+    try {
+      await waitForButtonByText("Implement");
+
+      await vi.waitFor(
+        () => {
+          const footer = document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]');
+          const actions = document.querySelector<HTMLElement>(
+            '[data-chat-composer-actions="right"]',
+          );
+
+          expect(footer?.dataset.chatComposerFooterCompact).toBe("false");
+          expect(actions?.dataset.chatComposerPrimaryActionsCompact).toBe("false");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the footer on one row when a wide desktop follow-up layout starts overflowing", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPlanFollowUpPrompt({
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.3-codex-spark",
+        },
+        planMarkdown:
+          "# Imaginary Long-Range Plan: Threadlines Adaptive Orchestration and Safe-Delay Execution Initiative",
+      }),
+    });
+
+    try {
+      await waitForButtonByText("Implement");
+
+      await mounted.setContainerSize({
+        width: 804,
+        height: WIDE_FOOTER_VIEWPORT.height,
+      });
+
+      await expectComposerActionsContained();
+
+      await vi.waitFor(
+        () => {
+          const footer = document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]');
+          const actions = document.querySelector<HTMLElement>(
+            '[data-chat-composer-actions="right"]',
+          );
+          expect(actions?.dataset.chatComposerPrimaryActionsCompact).toBe("true");
+          expect(footer).toBeTruthy();
+          expect(footer!.scrollWidth).toBeLessThanOrEqual(footer!.clientWidth + 1);
+          const leftActions = footer!.querySelector<HTMLElement>(
+            '[data-chat-composer-actions="left"]',
+          );
+          expect(leftActions).toBeTruthy();
+          expect(leftActions!.scrollWidth).toBeLessThanOrEqual(leftActions!.clientWidth + 1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+});
