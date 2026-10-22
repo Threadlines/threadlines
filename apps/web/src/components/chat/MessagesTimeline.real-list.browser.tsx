@@ -1427,17 +1427,26 @@ function dragSelectWord(messageId: string, word: string) {
   throw new Error(`"${word}" is not in ${messageId}`);
 }
 
+// Scrolls the list by `delta` the way a reader's wheel does: the wheel comes
+// first and tells the list the reader left its end. A bare scrollTop write
+// does not. The list hears that scroll a frame later (longer on a busy
+// machine), and a row it measures in between snaps it back to the end.
+function wheelScroll(list: HTMLElement, delta: number) {
+  list.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: delta }));
+  list.scrollTop += delta;
+}
+
 // Scrolls `step` pixels at a time until the list draws message-51, then puts
 // its word in the middle of the list. A saved scroll position cannot stand in
 // for this: the list measures rows as they come into view, and every row it
 // measures moves the ones below it.
 async function scrollPelicanIntoView(list: HTMLElement, step: number) {
   for (let count = 0; count < 40 && !wordRect("message-51", "pelican"); count += 1) {
-    list.scrollTop += step;
+    wheelScroll(list, step);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const listTop = list.getBoundingClientRect().top;
-  list.scrollTop += wordRect("message-51", "pelican")!.top - listTop - 180;
+  wheelScroll(list, wordRect("message-51", "pelican")!.top - listTop - 180);
   await new Promise((resolve) => setTimeout(resolve, 200));
 }
 
