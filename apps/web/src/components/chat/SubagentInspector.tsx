@@ -326,7 +326,7 @@ function SubagentInputComposer({
       <div className="flex items-end gap-2">
         <textarea
           aria-label="Message this agent"
-          className="min-h-5 flex-1 resize-none bg-transparent text-[13px] leading-5 text-foreground outline-none placeholder:text-muted-foreground/45 disabled:opacity-60"
+          className="min-h-5 flex-1 resize-none bg-transparent text-[13px] leading-5 text-foreground outline-none placeholder:text-muted-foreground/45 placeholder:not-italic disabled:opacity-60"
           disabled={sending}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {

@@ -120,7 +120,7 @@ export const RoomAgentsSection = memo(function RoomAgentsSection(props: {
                     placeholder="Name"
                     size={1}
                     maxLength={ROOM_AGENT_ROLE_MAX_LENGTH}
-                    className="field-sizing-content h-5 min-w-20 max-w-40 rounded-sm border border-border bg-transparent px-1.5 outline-none placeholder:text-muted-foreground/60 focus:border-ring"
+                    className="field-sizing-content h-5 min-w-20 max-w-40 rounded-sm border border-border bg-transparent px-1.5 outline-none focus:border-ring"
                     onClick={(event) => event.stopPropagation()}
                     onKeyDown={(event) => {
                       event.stopPropagation();

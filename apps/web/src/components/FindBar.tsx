@@ -106,7 +106,7 @@ export function FindBar({
         onChange={(event) => onQueryChange(event.target.value)}
         placeholder={placeholder}
         aria-label={placeholder}
-        className="h-6 w-44 min-w-0 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
+        className="h-6 w-44 min-w-0 bg-transparent text-xs text-foreground outline-none"
         data-testid={`${testIdPrefix}-input`}
         spellCheck={false}
         autoComplete="off"

@@ -322,7 +322,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             }}
             disabled={isResponding}
             rows={1}
-            className="field-sizing-content max-h-32 min-w-0 flex-1 resize-none bg-transparent py-1 text-[13px] leading-snug text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50"
+            className="field-sizing-content max-h-32 min-w-0 flex-1 resize-none bg-transparent py-1 text-[13px] leading-snug text-foreground placeholder:text-muted-foreground/60 placeholder:not-italic focus:outline-none disabled:opacity-50"
           />
           <div
             data-chat-composer-question-actions="true"

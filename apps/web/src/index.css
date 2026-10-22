@@ -188,6 +188,13 @@ html.electron.mac:not([data-marketing-capture]) {
     @apply text-foreground relative;
     background-color: var(--app-chrome-background);
   }
+  /* Every text field's placeholder reads as a hint. The composer draws its own
+     placeholder element and keeps its look. */
+  ::placeholder {
+    color: var(--placeholder);
+    font-style: italic;
+    opacity: 1;
+  }
 }
 
 /* Safe-area inset utilities for surfaces that opt into edge-to-edge rendering.
@@ -317,9 +324,13 @@ html.electron.mac:not([data-marketing-capture]) {
   --control-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 1px 1.5px rgb(0 0 0 / 0.1);
   /* Pressed (and open-menu) face: the edge stays, the drop goes. */
   --control-shadow-pressed: 0 0 0 0.5px rgb(0 0 0 / 0.16);
-  /* Pressed-in text fields. */
-  --field: var(--color-white);
-  --field-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), inset 0 1px 1px rgb(0 0 0 / 0.05);
+  /* Pressed-in text fields: a shallow slot, a shade off the group, with a thin
+     shadow along the top edge. Raised controls stand up; fields sink in. */
+  --field: oklch(0.985 0 0);
+  --field-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.13), inset 0 1px 2px rgb(0 0 0 / 0.07);
+  /* Placeholder text: a dim fixed grey (and italic, base layer), so a hint is
+     never mistaken for something typed. */
+  --placeholder: oklch(0.79 0 0);
   --switch-off: --alpha(var(--color-black) / 20%);
   /* Segmented-control track: grey under the white chosen piece in light (a white
      field would swallow it), pressed in like a field in dark. */
@@ -426,8 +437,9 @@ html.electron.mac:not([data-marketing-capture]) {
     /* Dark solidity comes from a 0.5px top highlight plus a 1px drop. */
     --control-shadow: inset 0 0.5px 0 rgb(255 255 255 / 0.16), 0 1px 1.5px rgb(0 0 0 / 0.35);
     --control-shadow-pressed: inset 0 0.5px 0 rgb(255 255 255 / 0.08);
-    --field: --alpha(var(--color-black) / 24%);
-    --field-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12), inset 0 1px 2px rgb(0 0 0 / 0.3);
+    --field: --alpha(var(--color-black) / 12%);
+    --field-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08), inset 0 1px 1.5px rgb(0 0 0 / 0.45);
+    --placeholder: oklch(0.45 0.004 286);
     --switch-off: --alpha(var(--color-white) / 22%);
     --segmented-track: var(--field);
     --segmented-track-shadow: var(--field-shadow);

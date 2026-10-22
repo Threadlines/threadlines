@@ -187,7 +187,7 @@ function DrawingChip({
             }
           }}
           placeholder="What about this?"
-          className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-ring"
+          className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition-colors focus:border-ring"
           data-testid={`drawing-note-${context.id}`}
         />
         <div className="mt-1.5 flex items-center gap-2">

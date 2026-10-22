@@ -133,7 +133,7 @@ function ChoiceQuestion(props: {
               }}
               placeholder="Search"
               aria-label="Search the choices"
-              className="h-7 min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+              className="h-7 min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none"
             />
             {query.length > 0 ? (
               <Button
