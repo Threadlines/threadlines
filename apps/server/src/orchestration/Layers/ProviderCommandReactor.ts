@@ -1387,7 +1387,11 @@ const make = Effect.gen(function* () {
       if (contextSeed !== undefined) {
         owedHistorySeeds.delete(sessionKey);
         // A start seeded with the conversation pays a moved thread's debt too.
-        if (participantId === null && thread.historySeedOwed === true && contextSeed.entries.length > 0) {
+        if (
+          participantId === null &&
+          thread.historySeedOwed === true &&
+          contextSeed.entries.length > 0
+        ) {
           yield* markHistorySeedDelivered(threadId);
         }
       }
