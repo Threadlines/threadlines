@@ -11,7 +11,7 @@ import {
 } from "@threadlines/client-runtime";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { usePrimaryEnvironmentId } from "../environments/primary";
-import type { EnvironmentId } from "@threadlines/contracts";
+import type { ComputerLinkPendingRequest, EnvironmentId } from "@threadlines/contracts";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
 import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebar/sidebarListField";
@@ -1316,6 +1316,26 @@ export default function Sidebar() {
     [clearSelection, isMobile, navigate, setOpenMobile, setSelectionAnchor],
   );
 
+  // A request opens where it can be read in full: the thread that asked, when
+  // this app has it, else the Fleet page of the computer it would run on.
+  const openLinkRequest = useCallback(
+    (environmentId: EnvironmentId, request: ComputerLinkPendingRequest) => {
+      const asking =
+        useStore.getState().environmentStateById[request.parentEnvironmentId]?.threadShellById[
+          request.parentThreadId
+        ];
+      if (asking !== undefined) {
+        navigateToThread(scopeThreadRef(request.parentEnvironmentId, request.parentThreadId));
+        return;
+      }
+      if (isMobile) {
+        setOpenMobile(false);
+      }
+      void navigate({ to: "/fleet/$environmentId", params: { environmentId } });
+    },
+    [isMobile, navigate, navigateToThread, setOpenMobile],
+  );
+
   const navigateToDraft = useCallback(
     (draftId: DraftId) => {
       // Unconditional: also drops a stale selection anchor left by plain-click
@@ -2113,7 +2133,9 @@ export default function Sidebar() {
                           key={`${environmentId}:${request.deviceId}:${request.requestId}`}
                           environmentId={environmentId}
                           computerLabel={computerLabel(environmentId, environmentId)}
+                          askerLabel={computerLabel(request.parentEnvironmentId, request.fromLabel)}
                           request={request}
+                          onOpen={() => openLinkRequest(environmentId, request)}
                         />
                       ))}
                     </ul>

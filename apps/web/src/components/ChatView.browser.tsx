@@ -1098,10 +1098,15 @@ function fleetPendingRequest(
     deviceId: `device-${from}`,
     requestId: ChildRequestId.make(requestId),
     fromLabel: "Mac mini",
+    parentEnvironmentId: from,
+    parentThreadId: `thread-asking-${requestId}` as ThreadId,
     parentThreadTitle: "Release checklist",
+    askedBy: "Codex",
     title,
     prompt: "Run the tests and tell me what fails.",
     projectName: "Orbit",
+    agent: { instanceId: "codex", model: "gpt-5" },
+    runtimeMode: "auto",
     createdAt: NOW_ISO,
     expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
   };
@@ -4192,6 +4197,79 @@ describe("ChatView timeline estimator parity (full app)", () => {
         expect(linkCalls).toHaveLength(1);
         expect(windowsLinks.accept).toHaveBeenCalledWith({
           invite: fleetInvite(LOCAL_ENVIRONMENT_ID, "Local environment"),
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a request from the inbox in the thread that asked, where its card decides it", async () => {
+    const askingThreadId = "thread-asking-windows" as ThreadId;
+    const windowsLinks = fakeComputerLinksClient();
+    const request = {
+      ...fleetPendingRequest(
+        LOCAL_ENVIRONMENT_ID,
+        "request-ask",
+        "Run the Windows installer tests",
+      ),
+      parentEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      parentThreadId: askingThreadId,
+      parentThreadTitle: "Release checklist",
+      prompt: "Run the installer tests on Windows\nand say which ones fail.",
+    };
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-request-card" as MessageId,
+          targetText: "request card",
+        }),
+        askingThreadId,
+      ),
+      configureFixture: withComputerLinksFixture,
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_REMOTE_ENVIRONMENT_ID,
+          label: "Windows PC",
+          os: "windows",
+          state: "connected",
+        },
+      ]);
+      __setComputerLinksClientForTests(FLEET_REMOTE_ENVIRONMENT_ID, windowsLinks.client);
+      useComputerLinksStore
+        .getState()
+        .put(FLEET_REMOTE_ENVIRONMENT_ID, fleetLinksSnapshot({ pending: [request] }));
+
+      // The inbox row reads as a request; clicking it opens the thread that asked.
+      await expect
+        .element(page.getByTestId("link-request-where-request-ask"))
+        .toHaveTextContent("Asked by “Release checklist”");
+      await page.getByTestId("link-request-title-request-ask").click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === `/${LOCAL_ENVIRONMENT_ID}/${askingThreadId}`,
+        "The request should open the thread that asked.",
+      );
+
+      // There its card says everything, and answers on the computer it would run on.
+      const card = page.getByTestId("remote-start-panel");
+      await expect.element(card).toHaveTextContent("needs your OK on Windows PC");
+      await expect.element(card).toHaveTextContent("Run the Windows installer tests");
+      await expect.element(card).toHaveTextContent("with up to Auto access");
+      await expect
+        .element(page.getByTestId("remote-start-panel-prompt"))
+        .toHaveTextContent("and say which ones fail.");
+      await page.getByTestId("remote-start-panel-allow").click();
+      await vi.waitFor(() => {
+        expect(windowsLinks.respondRequest).toHaveBeenCalledWith({
+          deviceId: request.deviceId,
+          requestId: request.requestId,
+          allow: true,
         });
       });
     } finally {
