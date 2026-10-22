@@ -29,6 +29,8 @@ import type {
   RemoteChildStart,
   RemoteChildThread,
   ThreadRemoteOrigin,
+  OrchestrationThreadMove,
+  ThreadMovedFrom,
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
@@ -117,6 +119,12 @@ export interface ChatMessage {
   fromThread?: ThreadMessageOrigin | undefined;
   /** See OrchestrationMessage.agentModels: the agents it names, as they were. */
   agentModels?: Readonly<Record<string, MessageAgentModel>> | undefined;
+  /**
+   * See OrchestrationMessage.imported: brought over when the thread moved
+   * here from another computer. Outside this computer's turns, so it never
+   * offers a revert.
+   */
+  imported?: true | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;
@@ -232,6 +240,10 @@ export interface Thread {
   pendingChildApproval?: boolean;
   /** See ThreadShell.remoteOrigin. */
   remoteOrigin?: ThreadRemoteOrigin | null;
+  /** See ThreadShell.move. */
+  move?: OrchestrationThreadMove | null;
+  /** See ThreadShell.movedFrom. */
+  movedFrom?: ThreadMovedFrom | null;
   /** See ThreadShell.doneOverride. */
   doneOverride: OrchestrationThreadDoneOverride | null;
   /** See ThreadShell.lastSeenAt. */
@@ -336,6 +348,14 @@ export interface ThreadShell {
   /** On a parent: starts asked of linked computers with no thread there yet. */
   remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
   /**
+   * Moving, or moved, to a linked computer (OrchestrationThreadMove): frozen
+   * here from the start, and read-only once `movedAway` is set. Absent or
+   * null: neither.
+   */
+  move?: OrchestrationThreadMove | null;
+  /** Moved here from another computer (ThreadMovedFrom). Absent or null: started here. */
+  movedFrom?: ThreadMovedFrom | null;
+  /**
    * The user's last explicit Mark done / Reopen, held on the server so every
    * device agrees on the inbox's Active/Wrapped split. Null when never filed.
    */
@@ -361,6 +381,9 @@ export interface ThreadTurnState {
   latestTurn: OrchestrationLatestTurn | null;
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
 }
+
+/** A thread moving to a linked computer, or moved there (ThreadShell.move). */
+export type ThreadMoveStatus = "moving" | "moved";
 
 export interface SidebarThreadSummary {
   id: ThreadId;
@@ -429,6 +452,8 @@ export interface SidebarThreadSummary {
   remoteChildStarts?: ReadonlyArray<RemoteChildStart>;
   /** Messages queued behind the running turn; a child with any is not finished. */
   queuedFollowUpCount?: number;
+  /** See ThreadShell.move: only how far it got, for the row's status word. Absent: neither. */
+  moveStatus?: ThreadMoveStatus;
   /** See Thread.checkBacks. */
   checkBacks?: ReadonlyArray<OrchestrationCheckBack>;
 }

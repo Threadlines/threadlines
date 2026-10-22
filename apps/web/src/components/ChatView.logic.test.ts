@@ -3320,6 +3320,7 @@ describe("a chat's derivations remembered per thread", () => {
         [],
         [],
         [],
+        [],
       ).map((entry) => entry.kind);
 
     expect(kinds([])).toEqual(["message"]);

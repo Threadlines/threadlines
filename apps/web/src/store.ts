@@ -27,11 +27,13 @@ import type {
   OrchestrationThreadActivity,
   OrchestrationCheckBack,
   OrchestrationThreadGoal,
+  OrchestrationThreadMove,
   ProjectId,
   RemoteChildStart,
   RemoteChildThread,
   ScopedProjectRef,
   ScopedThreadRef,
+  ThreadMovedFrom,
   ThreadRemoteOrigin,
 } from "@threadlines/contracts";
 import {
@@ -77,6 +79,7 @@ import {
   sumTurnDiffStats,
 } from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
+import { threadMoveStatus } from "./threadMove";
 import {
   roomSideModelSelection,
   roomSideRole,
@@ -333,6 +336,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.invite ? { invite: message.invite } : {}),
     ...(message.fromThread ? { fromThread: message.fromThread } : {}),
     ...(message.agentModels ? { agentModels: message.agentModels } : {}),
+    ...(message.imported ? { imported: true as const } : {}),
   };
 }
 
@@ -467,6 +471,57 @@ function remoteChildStartsEqual(
   );
 }
 
+/**
+ * A thread's move either way (docs/design/fleet.md, Part 3): leaving for a
+ * linked computer, or arrived from one. Nulls are left out, so two copies of
+ * the same thread compare alike.
+ */
+function threadMoves(thread: {
+  readonly move?: OrchestrationThreadMove | null | undefined;
+  readonly movedFrom?: ThreadMovedFrom | null | undefined;
+}): Pick<ThreadShell, "move" | "movedFrom"> {
+  return {
+    ...(thread.move ? { move: thread.move } : {}),
+    ...(thread.movedFrom ? { movedFrom: thread.movedFrom } : {}),
+  };
+}
+
+function threadMovesEqual(
+  left: OrchestrationThreadMove | null | undefined,
+  right: OrchestrationThreadMove | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.transferId === b.transferId &&
+        a.target.environmentId === b.target.environmentId &&
+        a.target.label === b.target.label &&
+        a.agent.instanceId === b.agent.instanceId &&
+        a.agent.model === b.agent.model &&
+        a.phase === b.phase &&
+        a.sentBytes === b.sentBytes &&
+        a.totalBytes === b.totalBytes &&
+        a.cancelRequested === b.cancelRequested &&
+        a.startedAt === b.startedAt &&
+        a.movedAway?.threadId === b.movedAway?.threadId &&
+        a.movedAway?.movedAt === b.movedAway?.movedAt;
+}
+
+function movedFromEqual(
+  left: ThreadMovedFrom | null | undefined,
+  right: ThreadMovedFrom | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.environmentId === b.environmentId &&
+        a.label === b.label &&
+        a.threadId === b.threadId &&
+        a.movedAt === b.movedAt;
+}
+
 /** The child-thread fields a sidebar row reads, from a shell or a loaded thread. */
 function sidebarLineage(
   thread: Pick<
@@ -481,6 +536,7 @@ function sidebarLineage(
     | "remoteOrigin"
     | "remoteChildren"
     | "remoteChildStarts"
+    | "move"
   >,
 ): Pick<
   SidebarThreadSummary,
@@ -494,7 +550,9 @@ function sidebarLineage(
   | "remoteOrigin"
   | "remoteChildren"
   | "remoteChildStarts"
+  | "moveStatus"
 > {
+  const moveStatus = threadMoveStatus(thread.move);
   return {
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
@@ -504,6 +562,7 @@ function sidebarLineage(
     pendingChildApproval: thread.pendingChildApproval ?? false,
     queuedFollowUpCount: thread.queuedFollowUps?.length ?? 0,
     ...remoteFamily(thread),
+    ...(moveStatus !== undefined ? { moveStatus } : {}),
   };
 }
 
@@ -593,6 +652,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     ...threadLineage(thread),
     ...childRequestCounts(thread),
     ...(thread.remoteOrigin ? { remoteOrigin: thread.remoteOrigin } : {}),
+    ...threadMoves(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -646,6 +706,7 @@ function mapThreadShell(
     awaitedChildThreadCount: thread.awaitedChildThreadCount,
     pendingChildApproval: thread.pendingChildApproval,
     ...remoteFamily(thread),
+    ...threadMoves(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -728,6 +789,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     ...threadLineage(thread),
     ...childRequestCounts(thread),
     ...remoteFamily(thread),
+    ...threadMoves(thread),
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     updatedAt: thread.updatedAt,
@@ -827,6 +889,7 @@ function toSidebarThreadSummary(
       ...threadLineage(thread),
       ...childRequestCounts(thread),
       ...remoteFamily(thread),
+      ...threadMoves(thread),
       queuedFollowUps: thread.queuedFollowUps ?? [],
     }),
   };
@@ -1010,7 +1073,8 @@ function sidebarThreadSummariesEqual(
     (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
     remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
-    remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts)
+    remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
+    left.moveStatus === right.moveStatus
   );
 }
 
@@ -1062,6 +1126,8 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
     remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
     remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
+    threadMovesEqual(left.move, right.move) &&
+    movedFromEqual(left.movedFrom, right.movedFrom) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
     left.updatedAt === right.updatedAt &&
@@ -1730,6 +1796,7 @@ function upsertThreadMessage(
     ...(message.reviewInput !== undefined ? { reviewInput: message.reviewInput } : {}),
     ...(message.invite !== undefined ? { invite: message.invite } : {}),
     ...(message.fromThread !== undefined ? { fromThread: message.fromThread } : {}),
+    ...(message.imported ? { imported: true as const } : {}),
     // The write that created the message stamps it; an optimistic copy has
     // none, so the server's first write fills it in.
     ...(existingMessage.agentModels === undefined && message.agentModels !== undefined
@@ -1909,6 +1976,26 @@ function updateChildRequestState(
     const current = thread.childRequests ?? EMPTY_CHILD_REQUEST_STATE;
     const next = change(current);
     return next === current ? thread : { ...thread, childRequests: next };
+  });
+}
+
+/**
+ * Apply a step of one move to a thread's `move`: only while that move is the
+ * thread's own, so a late step of a move that already ended changes nothing.
+ * The change returns null to clear it (the move was dropped).
+ */
+function updateThreadMove(
+  state: EnvironmentState,
+  threadId: ThreadId,
+  transferId: OrchestrationThreadMove["transferId"],
+  change: (current: OrchestrationThreadMove) => OrchestrationThreadMove | null,
+): EnvironmentState {
+  return updateThreadState(state, threadId, (thread) => {
+    if (!thread.move || thread.move.transferId !== transferId) return thread;
+    const next = change(thread.move);
+    if (next !== null) return { ...thread, move: next };
+    const { move: _dropped, ...rest } = thread;
+    return rest;
   });
 }
 
@@ -2220,6 +2307,7 @@ function applyEnvironmentOrchestrationEvent(
           handedBackTurnId: null,
           archivedWithParentAt: null,
           childRequests: EMPTY_CHILD_REQUEST_STATE,
+          ...(event.payload.movedFrom ? { movedFrom: event.payload.movedFrom } : {}),
         },
         environmentId,
       );
@@ -2585,12 +2673,18 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.agentModels !== undefined
             ? { agentModels: event.payload.agentModels }
             : {}),
+          ...(event.payload.imported ? { imported: true } : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
         });
         const messages = upsertThreadMessage(thread.messages, message);
+        // Brought over by a move: the turns it names are the other
+        // computer's, never this one's latest.
+        if (event.payload.imported) {
+          return { ...thread, messages, updatedAt: event.occurredAt };
+        }
         const turnDiffSummaries =
           event.payload.role === "assistant" && event.payload.turnId !== null
             ? rebindTurnDiffSummariesForAssistantMessage(
@@ -3117,6 +3211,55 @@ function applyEnvironmentOrchestrationEvent(
       return updateChildRequestState(state, event.payload.threadId, (current) =>
         childRequestStateOn.remoteCancelsDelivered(current, event.payload.requestIds),
       );
+
+    // Moving to a linked computer (docs/design/fleet.md, Part 3). Each step
+    // names its move, so a late one from a move that already ended is
+    // dropped. Like a done mark, none moves `updatedAt`.
+    case "thread.move-started":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        move: {
+          transferId: event.payload.transferId,
+          target: event.payload.target,
+          agent: event.payload.agent,
+          phase: "exporting",
+          cancelRequested: false,
+          startedAt: event.payload.startedAt,
+        },
+      }));
+
+    case "thread.move-progressed":
+      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => {
+        const { sentBytes: _sent, totalBytes: _total, ...rest } = move;
+        return {
+          ...rest,
+          phase: event.payload.phase,
+          ...(event.payload.sentBytes !== undefined ? { sentBytes: event.payload.sentBytes } : {}),
+          ...(event.payload.totalBytes !== undefined
+            ? { totalBytes: event.payload.totalBytes }
+            : {}),
+        };
+      });
+
+    case "thread.move-cancel-requested":
+      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => ({
+        ...move,
+        cancelRequested: true,
+      }));
+
+    // Its activity ("Couldn't move to …") arrives on its own.
+    case "thread.move-aborted":
+      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, () => null);
+
+    case "thread.moved-away":
+      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => ({
+        ...move,
+        movedAway: { threadId: event.payload.movedThreadId, movedAt: event.payload.movedAt },
+      }));
+
+    // The seed debt is the server's alone; nothing here shows it.
+    case "thread.history-seed-delivered":
+      return state;
 
     // On a child. Like a done mark, neither moves `updatedAt`: the inbox
     // weighs both against real activity.
