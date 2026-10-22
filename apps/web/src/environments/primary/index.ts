@@ -3,6 +3,7 @@ export {
   readPrimaryEnvironmentDescriptor,
   resetPrimaryEnvironmentDescriptorForTests,
   resolveInitialPrimaryEnvironmentDescriptor,
+  subscribePrimaryEnvironmentDescriptor,
   usePrimaryEnvironmentDescriptor,
   usePrimaryEnvironmentId,
   writePrimaryEnvironmentDescriptor,

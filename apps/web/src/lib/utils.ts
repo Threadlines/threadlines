@@ -1,4 +1,4 @@
-import { CommandId, MessageId, ProjectId, ThreadId } from "@threadlines/contracts";
+import { CommandId, MessageId, ProjectId, ProjectSetupId, ThreadId } from "@threadlines/contracts";
 import { type CxOptions, cx } from "class-variance-authority";
 import { twMerge } from "tailwind-merge";
 import { randomUUIDv4Sync } from "@threadlines/shared/uuid";
@@ -41,3 +41,5 @@ export const newThreadId = (): ThreadId => ThreadId.make(randomUUID());
 export const newDraftId = (): DraftId => DraftId.make(randomUUID());
 
 export const newMessageId = (): MessageId => MessageId.make(randomUUID());
+
+export const newProjectSetupId = (): ProjectSetupId => ProjectSetupId.make(randomUUID());

@@ -46,6 +46,7 @@ import {
   SquarePenIcon,
   UsersRoundIcon,
   MonitorUpIcon,
+  FolderSyncIcon,
   WaypointsIcon,
   CalendarClockIcon,
   CalendarPlusIcon,
@@ -164,6 +165,8 @@ import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
 import { openThreadMoveDialog } from "./ThreadMoveDialog";
+import { openProjectSetupDialog } from "./ProjectSetupDialog";
+import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
 import { useThreadMoveOffered } from "../environments/links/threadMoves";
 import { threadMoveStatus } from "../threadMove";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
@@ -563,6 +566,13 @@ export function OpenCommandPaletteDialog() {
   const activeThreadRoomsEnabled = useRoomsEnabled(
     activeThread?.environmentId ?? activeDraftThread?.environmentId,
   );
+  // The open thread's project, where another computer could take a copy of it.
+  const openThreadProjectRef = activeThread
+    ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
+    : activeDraftThread
+      ? scopeProjectRef(activeDraftThread.environmentId, activeDraftThread.projectId)
+      : null;
+  const projectSetupTargets = useProjectSetupTargets(openThreadProjectRef);
   const activeThreadMoveOffered = useThreadMoveOffered(
     activeThread?.environmentId ?? null,
     threadMoveStatus(activeThread?.move),
@@ -1883,6 +1893,21 @@ export function OpenCommandPaletteDialog() {
       icon: <MonitorUpIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         openThreadMoveDialog(threadRef);
+      },
+    });
+  }
+
+  if (openThreadProjectRef !== null && projectSetupTargets.length > 0) {
+    const projectRef = openThreadProjectRef;
+    actionItems.push({
+      kind: "action",
+      value: "action:set-up-project-elsewhere",
+      searchTerms: ["set up", "project", "computer", "clone", "copy", "another machine"],
+      title: "Set up project on another computer",
+      description: "Clone this project on another computer, with the ignored files you pick",
+      icon: <FolderSyncIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openProjectSetupDialog({ project: projectRef });
       },
     });
   }

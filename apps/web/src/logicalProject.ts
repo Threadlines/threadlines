@@ -36,7 +36,11 @@ function uniqueNonEmptyValues(values: ReadonlyArray<string | null | undefined>):
   return unique;
 }
 
-function deriveRepositoryRelativeProjectPath(
+/**
+ * A project's folder from its repository's root, `/`-separated: "" at the
+ * root, null when the root isn't known or the project isn't under it.
+ */
+export function deriveRepositoryRelativeProjectPath(
   project: Pick<Project, "cwd" | "repositoryIdentity">,
 ): string | null {
   const rootPath = project.repositoryIdentity?.rootPath?.trim();

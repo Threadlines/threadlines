@@ -24,6 +24,7 @@ import { cn, newCommandId } from "../../lib/utils";
 import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebarListField";
 import { readLocalApi } from "../../localApi";
 import { readEnvironmentApi } from "../../environmentApi";
+import { readProjectSetupSourceAmong } from "../../environments/projectSetups/projectSetupTargets";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { selectSidebarThreadsForProjectRefs, useStore } from "../../store";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -38,6 +39,7 @@ import type {
 } from "../../sidebarProjectGrouping";
 import type { ProjectScopeOption } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { openProjectSetupDialog } from "../ProjectSetupDialog";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -91,6 +93,8 @@ function formatProjectMemberActionLabel(
 
   return member.environmentLabel ? `${member.environmentLabel} — ${member.cwd}` : member.cwd;
 }
+
+const SET_UP_ELSEWHERE_ITEM_ID = "set-up-elsewhere";
 
 const SCOPE_ITEM_CLASS_NAME = MENU_PICK_ITEM_CLASS_NAME;
 const SCOPE_ITEM_SELECTED = MENU_PICK_ITEM_SELECTED_CLASS_NAME;
@@ -397,11 +401,23 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
           };
         };
 
+        // Offered only where another computer could take a copy; the copy
+        // it starts from is the one on this app's own computer when it can.
+        const setupSource = readProjectSetupSourceAmong(project.memberProjects);
+        if (setupSource !== null) {
+          actionHandlers.set(SET_UP_ELSEWHERE_ITEM_ID, () =>
+            openProjectSetupDialog({ project: setupSource }),
+          );
+        }
+
         const clicked = await api.contextMenu.show(
           [
             buildTargetedItem("rename", "Rename project"),
             buildTargetedItem("grouping", "Project grouping…"),
             buildTargetedItem("copy-path", "Copy Project Path"),
+            ...(setupSource !== null
+              ? [{ id: SET_UP_ELSEWHERE_ITEM_ID, label: "Set up on another computer…" }]
+              : []),
             buildTargetedItem("delete", "Remove project", { destructive: true }),
           ],
           position,

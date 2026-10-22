@@ -20,6 +20,13 @@ import {
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type ProjectId,
+  type ProjectSetupDestination,
+  ProjectSetupId,
+  type ProjectSetupInspectDestinationInput,
+  type ProjectSetupJob,
+  type ProjectSetupSource,
+  type ProjectSetupStartInput,
+  type RepositoryIdentity,
   type ScopedThreadRef,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -59,7 +66,12 @@ import {
   type ComputerLinksClient,
 } from "../environments/links/computerLinks";
 import { __resetThreadMovesForTests } from "../environments/links/threadMoves";
+import {
+  __resetProjectSetupsForTests,
+  type ProjectSetupsClient,
+} from "../environments/projectSetups/projectSetups";
 import { closeConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
+import { closeProjectSetupDialog } from "./ProjectSetupDialog";
 import { closeThreadMoveDialog } from "./ThreadMoveDialog";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import { connectEnvironmentBrowserHost } from "./browser/previewAutomationHost";
@@ -1058,6 +1070,192 @@ export function fakeComputerLinksClient() {
       respondRequest,
       createInvite,
     } as unknown as ComputerLinksClient,
+  };
+}
+
+/** This computer's server, and the computers saved from its config, set up projects. */
+export function withProjectSetupFixture(nextFixture: TestFixture): void {
+  const capabilities = {
+    ...nextFixture.serverConfig.environment.capabilities,
+    projectSetup: true,
+  };
+  nextFixture.serverConfig = {
+    ...nextFixture.serverConfig,
+    environment: { ...nextFixture.serverConfig.environment, capabilities },
+  };
+  nextFixture.welcome = {
+    ...nextFixture.welcome,
+    environment: { ...nextFixture.welcome.environment, capabilities },
+  };
+}
+
+export const PROJECT_REPOSITORY_KEY = "github.com/acme/project";
+
+/** The test project's repository, as its computer resolves it. */
+export function projectRepositoryIdentity(
+  overrides: Partial<RepositoryIdentity> = {},
+): RepositoryIdentity {
+  return {
+    canonicalKey: PROJECT_REPOSITORY_KEY,
+    locator: {
+      source: "git-remote",
+      remoteName: "origin",
+      remoteUrl: "git@github.com:acme/project.git",
+    },
+    rootPath: "/repo/project",
+    ...overrides,
+  };
+}
+
+/** The test project with a git repository behind it, so it can be set up elsewhere. */
+export function withProjectRepository(snapshot: OrchestrationReadModel): OrchestrationReadModel {
+  return {
+    ...snapshot,
+    projects: snapshot.projects.map((project) =>
+      project.id === PROJECT_ID
+        ? { ...project, repositoryIdentity: projectRepositoryIdentity() }
+        : project,
+    ),
+  };
+}
+
+/**
+ * A second computer's projects, as its shell stream would leave them in the
+ * store: a copy of this computer's state holding only the given projects.
+ */
+export function injectRemoteEnvironmentProjects(
+  environmentId: EnvironmentId,
+  projects: ReadonlyArray<{
+    readonly id: ProjectId;
+    readonly name: string;
+    readonly cwd: string;
+    readonly repositoryIdentity: RepositoryIdentity | null;
+  }>,
+): void {
+  useStore.setState((state) => {
+    const local = state.environmentStateById[LOCAL_ENVIRONMENT_ID]!;
+    const template = local.projectById[PROJECT_ID]!;
+    return {
+      environmentStateById: {
+        ...state.environmentStateById,
+        [environmentId]: {
+          ...local,
+          projectIds: projects.map((project) => project.id),
+          projectById: Object.fromEntries(
+            projects.map((project) => [project.id, { ...template, ...project, environmentId }]),
+          ),
+          threadIds: [],
+          threadIdsByProjectId: {},
+          sidebarThreadSummaryById: {},
+          threadShellById: {},
+        },
+      },
+    };
+  });
+}
+
+/** What the test project's computer says another computer needs to copy it. */
+export const PROJECT_SETUP_SOURCE: ProjectSetupSource = {
+  projectId: PROJECT_ID,
+  title: "Project",
+  repositoryKey: PROJECT_REPOSITORY_KEY,
+  subdirectory: "",
+  remotes: [{ name: "origin", url: "git@github.com:acme/project.git", protocol: "ssh" }],
+  primaryRemoteName: "origin",
+  scripts: [],
+  homeRelativePath: "code/project",
+  folderName: "project",
+  files: [
+    { path: "notes.txt", size: 120, suggested: false, tooLarge: false },
+    { path: ".env", size: 64, suggested: true, tooLarge: false },
+    { path: "fixtures/big.bin", size: 3_000_000, suggested: false, tooLarge: true },
+    { path: "apps/web/.env.local", size: 2_048, suggested: true, tooLarge: false },
+  ],
+  filesTruncated: false,
+};
+
+/** A job on the computer that gets the copy, as its stream would list it. */
+export function projectSetupJob(overrides: Partial<ProjectSetupJob> = {}): ProjectSetupJob {
+  return {
+    setupId: ProjectSetupId.make("setup-browser"),
+    source: { environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID, label: "This Mac" },
+    title: "Project",
+    repositoryKey: PROJECT_REPOSITORY_KEY,
+    subdirectory: "",
+    protocol: "ssh",
+    destinationPath: "~/code/project",
+    filePaths: [],
+    stage: "cloning",
+    progress: { phase: null, percent: null, detail: null, stalled: false },
+    projectId: null,
+    error: null,
+    warnings: [],
+    createdAt: NOW_ISO,
+    updatedAt: NOW_ISO,
+    ...overrides,
+  };
+}
+
+/**
+ * A saved computer's projectSetups calls, as its server would take them. A
+ * start answers a job that has begun cloning; `push` sends the computer's
+ * job list down its stream.
+ */
+export function fakeProjectSetupsClient(options?: {
+  readonly destination?: (
+    input: ProjectSetupInspectDestinationInput,
+  ) => ProjectSetupDestination["state"];
+}) {
+  let listener: ((snapshot: { readonly jobs: ReadonlyArray<ProjectSetupJob> }) => void) | null =
+    null;
+  const inspectDestination = vi.fn(async (input: ProjectSetupInspectDestinationInput) => ({
+    resolvedPath: input.path.replace(/^~/, "/Users/me"),
+    state: options?.destination?.(input) ?? ("missing" as const),
+  }));
+  const start = vi.fn(async (input: ProjectSetupStartInput) =>
+    projectSetupJob({
+      setupId: input.setupId,
+      source: input.source,
+      title: input.title,
+      destinationPath: input.destinationPath,
+      protocol: input.protocol,
+      filePaths: input.files.map((file) => file.path),
+      progress: {
+        phase: "Receiving objects",
+        percent: 12,
+        detail: "1.20 MiB | 600 KiB/s",
+        stalled: false,
+      },
+    }),
+  );
+  const cancel = vi.fn(async () => undefined);
+  const dismiss = vi.fn(async () => undefined);
+  return {
+    inspectDestination,
+    start,
+    cancel,
+    dismiss,
+    /** The job list the computer streams, as it changes. */
+    push: (jobs: ReadonlyArray<ProjectSetupJob>) => listener?.({ jobs }),
+    subscribed: () => listener !== null,
+    client: {
+      source: async () => {
+        throw new Error("Not the source computer.");
+      },
+      readFiles: async () => {
+        throw new Error("Not the source computer.");
+      },
+      inspectDestination,
+      start,
+      cancel,
+      dismiss,
+      subscribe: (next: (snapshot: { readonly jobs: ReadonlyArray<ProjectSetupJob> }) => void) => {
+        listener = next;
+        return () => {
+          if (listener === next) listener = null;
+        };
+      },
+    } as unknown as ProjectSetupsClient,
   };
 }
 
@@ -3042,6 +3240,8 @@ export function registerChatViewSuiteHooks(): void {
     closeConnectComputerDialog();
     closeThreadMoveDialog();
     __resetThreadMovesForTests();
+    closeProjectSetupDialog();
+    __resetProjectSetupsForTests();
     __resetEnvironmentApiOverridesForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();

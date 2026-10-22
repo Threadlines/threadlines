@@ -6,6 +6,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type OrchestrationThreadMove,
+  ProjectId,
   ProviderInstanceId,
   type ThreadId,
   ThreadMoveError,
@@ -25,6 +26,8 @@ import {
   __setThreadMovesClientForTests,
   readThreadMoveOffered,
 } from "../environments/links/threadMoves";
+import { __setProjectSetupsClientForTests } from "../environments/projectSetups/projectSetups";
+import { useSavedEnvironmentRuntimeStore } from "../environments/runtime";
 import { type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
 import {
@@ -53,6 +56,11 @@ import {
   openCommandPaletteFromTrigger,
   mountChatView,
   registerChatViewSuiteHooks,
+  PROJECT_SETUP_SOURCE,
+  fakeProjectSetupsClient,
+  projectSetupJob,
+  withProjectRepository,
+  withProjectSetupFixture,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -355,6 +363,120 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           agent: { instanceId: "codex", model: "gpt-5" },
         }),
       ]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("sets up a computer that lacks the project from the move, then offers it", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const mac = fakeProjectSetupsClient();
+    __setProjectSetupsClientForTests(FLEET_OFFLINE_ENVIRONMENT_ID, mac.client);
+    const macMini = FLEET_MOVE_PREVIEW.targets[1]!;
+    let macHasProject = false;
+    const previews: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: withProjectRepository(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-move-set-up" as MessageId,
+          targetText: "move set up",
+        }),
+      ),
+      configureFixture: (next) => {
+        withThreadMoveFixture(next);
+        withProjectSetupFixture(next);
+      },
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesPreview) {
+          previews.push(body);
+          return {
+            targets: [
+              macHasProject
+                ? macMini
+                : {
+                    environmentId: macMini.environmentId,
+                    label: "Mac mini",
+                    refusal: "Mac mini doesn't have this project.",
+                    refusalCode: "no_project",
+                    agents: [],
+                  },
+            ],
+          } satisfies ThreadMovePreview;
+        }
+        if (body._tag === WS_METHODS.projectSetupsSource) return PROJECT_SETUP_SOURCE;
+        if (body._tag === WS_METHODS.projectSetupsReadFiles) return { files: [] };
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("disconnected");
+      await vi.waitFor(() => {
+        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+      });
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move to another computer", { exact: true })
+        .click();
+      const dialog = page.getByTestId("thread-move-dialog");
+      await expect
+        .element(dialog.getByTestId("thread-move-target-refusal"))
+        .toMatchTextContent("Mac mini doesn't have this project.");
+      await expect.element(dialog.getByTestId("thread-move-confirm")).toBeDisabled();
+      // This app can't reach Mac mini to set it up: it says to connect first.
+      await expect
+        .element(dialog.getByTestId("thread-move-connect-first"))
+        .toHaveTextContent("Connect to Mac mini in this app first");
+
+      // Connected now, Mac mini can be set up from here.
+      useSavedEnvironmentRuntimeStore
+        .getState()
+        .patch(FLEET_OFFLINE_ENVIRONMENT_ID, { connectionState: "connected", route: "direct" });
+      await dialog.getByTestId("thread-move-set-up").click();
+      const setup = page.getByTestId("project-setup-dialog");
+      await expect
+        .element(setup.getByTestId("project-setup-destination"))
+        .toHaveTextContent("A new folder.");
+      await setup.getByTestId("project-setup-start").click();
+      await expect
+        .element(setup.getByTestId("project-setup-stage"))
+        .toHaveTextContent("Downloading · 12%");
+      const started = mac.start.mock.calls[0]![0];
+      expect(started).toEqual(
+        expect.objectContaining({
+          source: expect.objectContaining({ environmentId: LOCAL_ENVIRONMENT_ID }),
+        }),
+      );
+
+      // Done: the move asks again, and Mac mini can take the thread.
+      macHasProject = true;
+      mac.push([
+        projectSetupJob({
+          setupId: started.setupId,
+          stage: "done",
+          projectId: ProjectId.make("project-mac-copy"),
+          updatedAt: isoAt(9),
+        }),
+      ]);
+      await expect
+        .element(setup.getByTestId("project-setup-done"))
+        .toMatchTextContent("Project is ready on Mac mini");
+      await vi.waitFor(() => {
+        expect(previews).toHaveLength(2);
+      });
+      await setup.getByTestId("project-setup-close").click();
+      await expect.element(page.getByTestId("project-setup-dialog")).not.toBeInTheDocument();
+      await expect
+        .element(dialog.getByTestId("thread-move-preview"))
+        .toMatchTextContent("Lands in threadlines on Mac mini");
+      await expect.element(dialog.getByTestId("thread-move-confirm")).toBeEnabled();
     } finally {
       await mounted.cleanup();
     }

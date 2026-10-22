@@ -1,5 +1,5 @@
 import type { EnvironmentId } from "@threadlines/contracts";
-import { CloudIcon, MonitorIcon } from "lucide-react";
+import { CloudIcon, FolderSyncIcon, MonitorIcon } from "lucide-react";
 import { memo, useMemo } from "react";
 
 import type { EnvironmentOption } from "./BranchToolbar.logic";
@@ -10,6 +10,7 @@ import {
   SelectInlineTrigger,
   SelectItem,
   SelectPopup,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
@@ -21,7 +22,12 @@ interface BranchToolbarEnvironmentSelectorProps {
   environmentId: EnvironmentId;
   availableEnvironments: readonly EnvironmentOption[];
   onEnvironmentChange: (environmentId: EnvironmentId) => void;
+  /** Offers "Set up on another computer…" at the list's end. */
+  onSetUpElsewhere?: (() => void) | undefined;
 }
+
+/** The value of the list's last item: not a computer, the way to add one. */
+const SET_UP_ELSEWHERE_VALUE = "\u0000set-up-elsewhere";
 
 export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvironmentSelector({
   presentation = "chip",
@@ -29,6 +35,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   environmentId,
   availableEnvironments,
   onEnvironmentChange,
+  onSetUpElsewhere,
 }: BranchToolbarEnvironmentSelectorProps) {
   const activeEnvironment = useMemo(() => {
     return availableEnvironments.find((env) => env.environmentId === environmentId) ?? null;
@@ -64,7 +71,13 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
     <Select
       modal={false}
       value={environmentId}
-      onValueChange={(value) => onEnvironmentChange(value as EnvironmentId)}
+      onValueChange={(value) => {
+        if (value === SET_UP_ELSEWHERE_VALUE) {
+          onSetUpElsewhere?.();
+          return;
+        }
+        onEnvironmentChange(value as EnvironmentId);
+      }}
       items={environmentItems}
     >
       {presentation === "sentence" ? (
@@ -101,6 +114,17 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
             </SelectItem>
           ))}
         </SelectGroup>
+        {onSetUpElsewhere ? (
+          <>
+            <SelectSeparator />
+            <SelectItem value={SET_UP_ELSEWHERE_VALUE} data-testid="runs-on-set-up-elsewhere">
+              <span className="inline-flex items-center gap-1.5">
+                <FolderSyncIcon className="size-3" />
+                Set up on another computer…
+              </span>
+            </SelectItem>
+          </>
+        ) : null}
       </SelectPopup>
     </Select>
   );
