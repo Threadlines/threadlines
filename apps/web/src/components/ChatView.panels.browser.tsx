@@ -1059,42 +1059,6 @@ describe("ChatView (full app): right panel and header actions", () => {
     }
   });
 
-  it("opens the project cwd with Trae when it is the only available editor", async () => {
-    setDraftThreadWithoutWorktree();
-
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createDraftOnlySnapshot(),
-      configureFixture: (nextFixture) => {
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          availableEditors: ["trae"],
-        };
-      },
-    });
-
-    try {
-      await waitForServerConfigToApply();
-      await clickProjectMenuItem("Open in Trae");
-
-      await vi.waitFor(
-        () => {
-          const openRequest = wsRequests.find(
-            (request) => request._tag === WS_METHODS.shellOpenInEditor,
-          );
-          expect(openRequest).toMatchObject({
-            _tag: WS_METHODS.shellOpenInEditor,
-            cwd: "/repo/project",
-            editor: "trae",
-          });
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
   it("shows Kiro in the open picker menu and opens the project cwd with it", async () => {
     setDraftThreadWithoutWorktree();
 

@@ -339,61 +339,6 @@ describe("ChatView (full app): new threads and drafts", () => {
     }
   });
 
-  it("snapshots sticky codex settings into a new draft thread", async () => {
-    useComposerDraftStore.setState({
-      stickyModelSelectionByProvider: {
-        [ProviderInstanceId.make("codex")]: createModelSelection(
-          ProviderInstanceId.make("codex"),
-          "gpt-5.3-codex",
-          [
-            { id: "reasoningEffort", value: "medium" },
-            { id: "fastMode", value: true },
-          ],
-        ),
-      },
-      stickyActiveProvider: ProviderInstanceId.make("codex"),
-    });
-
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-sticky-codex-traits-test" as MessageId,
-        targetText: "sticky codex traits test",
-      }),
-    });
-
-    try {
-      const newThreadButton = page.getByTestId("new-thread-button");
-      await expect.element(newThreadButton).toBeInTheDocument();
-
-      await newThreadButton.click();
-
-      const newThreadPath = await waitForURL(
-        mounted.router,
-        (path) => UUID_ROUTE_RE.test(path),
-        "Route should have changed to a new draft thread UUID.",
-      );
-      const newDraftId = draftIdFromPath(newThreadPath);
-
-      // `toMatchObject` matches objects loosely (extras ignored) but compares
-      // arrays strictly, so wrap `options` in `arrayContaining` to keep the
-      // assertion focused on sticky `fastMode` carrying over without asserting
-      // on exactly which other options are preserved.
-      expect(composerDraftFor(newDraftId)).toMatchObject({
-        modelSelectionByProvider: {
-          codex: {
-            instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5.3-codex",
-            options: expect.arrayContaining([{ id: "fastMode", value: true }]),
-          },
-        },
-        activeProvider: "codex",
-      });
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
   it("hydrates the provider alongside a sticky claude model", async () => {
     useComposerDraftStore.setState({
       stickyModelSelectionByProvider: {

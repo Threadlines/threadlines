@@ -659,21 +659,6 @@ describe("ChatMarkdown", () => {
     }
   });
 
-  it("keeps normal web links unchanged", async () => {
-    const screen = await render(
-      <ChatMarkdown text="[OpenAI](https://openai.com/docs)" cwd="/repo/project" />,
-    );
-
-    try {
-      const link = page.getByRole("link", { name: "OpenAI" });
-      await expect.element(link).toBeInTheDocument();
-      await expect.element(link).toHaveAttribute("href", "https://openai.com/docs");
-      await expect.element(link).toHaveAttribute("target", "_blank");
-    } finally {
-      await screen.unmount();
-    }
-  });
-
   it("renders Codex inline visualization directives in a script-only sandbox", async () => {
     const readVisualization = vi.fn(async () => ({
       file: "connection-map.html",

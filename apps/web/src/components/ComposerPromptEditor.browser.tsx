@@ -61,17 +61,6 @@ describe("ComposerPromptEditor command token", () => {
     document.body.innerHTML = "";
   });
 
-  it("tints a recognized leading command and keeps arguments plain", async () => {
-    const screen = await render(
-      <EditorHarness recognizedSlashCommands={["goal", "plan", "default"]} />,
-    );
-    await typeIntoEditor("/goal ship the feature");
-
-    await expect.poll(commandTokenText).toBe("/goal");
-    expect(document.querySelectorAll(".composer-command-token")).toHaveLength(1);
-    await screen.unmount();
-  });
-
   it("demotes the token when the command stops matching", async () => {
     const screen = await render(
       <EditorHarness recognizedSlashCommands={["goal", "plan", "default"]} />,

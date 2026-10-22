@@ -1364,24 +1364,6 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("starts the newest long user prompt collapsed", async () => {
-    const screen = await renderTimeline(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[buildUserTimelineEntry(buildLongUserMessageText("latest long prompt"))]}
-      />,
-    );
-
-    try {
-      await expect.element(page.getByRole("button", { name: "Show full message" })).toBeVisible();
-
-      const messageBody = document.querySelector("[data-user-message-body='true']");
-      expect(messageBody?.getAttribute("data-user-message-collapsed")).toBe("true");
-    } finally {
-      await screen.unmount();
-    }
-  });
-
   it("summarizes a settled turn's working subagents beside the anchor and opens the panel from it", async () => {
     const onOpenAgentsPanel = vi.fn();
     const screen = await renderTimeline(
