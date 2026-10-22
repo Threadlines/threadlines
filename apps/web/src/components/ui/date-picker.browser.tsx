@@ -39,7 +39,7 @@ describe("DatePicker", () => {
 
     try {
       const trigger = page.getByRole("button", { name: "Run date" });
-      await expect.element(trigger).toHaveTextContent("Fri, Oct 30, 2026");
+      await expect.element(trigger).toMatchTextContent("Fri, Oct 30, 2026");
 
       await trigger.click();
       await expect.element(page.getByRole("grid", { name: "October 2026" })).toBeVisible();
@@ -63,7 +63,7 @@ describe("DatePicker", () => {
       expect(onChange).toHaveBeenCalledExactlyOnceWith("2026-11-05");
       await expect.element(page.getByRole("grid")).not.toBeInTheDocument();
       await expect.element(trigger).toHaveFocus();
-      await expect.element(trigger).toHaveTextContent("Thu, Nov 5, 2026");
+      await expect.element(trigger).toMatchTextContent("Thu, Nov 5, 2026");
     } finally {
       await screen.unmount();
     }
@@ -88,7 +88,7 @@ describe("DatePicker", () => {
       await userEvent.keyboard("{Escape}");
       await expect.element(page.getByRole("grid")).not.toBeInTheDocument();
       await expect.element(trigger).toHaveFocus();
-      await expect.element(trigger).toHaveTextContent("Fri, Oct 30, 2026");
+      await expect.element(trigger).toMatchTextContent("Fri, Oct 30, 2026");
       expect(onChange).not.toHaveBeenCalled();
 
       // Reopening starts from the chosen day again, not where focus was left.

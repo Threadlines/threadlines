@@ -45,18 +45,18 @@ describe("TimeZonePicker", () => {
       await expect
         .poll(() => options.nth(0).element().textContent)
         .toMatch(/New York · Eastern Time/u);
-      await expect.element(options.nth(0)).toHaveTextContent("This computer");
-      await expect.element(options.nth(0)).toHaveTextContent("America/New_York");
-      await expect.element(options.nth(1)).toHaveTextContent("You");
-      await expect.element(options.nth(2)).toHaveTextContent("UTC");
+      await expect.element(options.nth(0)).toMatchTextContent("This computer");
+      await expect.element(options.nth(0)).toMatchTextContent("America/New_York");
+      await expect.element(options.nth(1)).toMatchTextContent("You");
+      await expect.element(options.nth(2)).toMatchTextContent("UTC");
 
       // Typing searches every zone, by city; Enter picks the first match.
       await userEvent.keyboard("tokyo");
       await expect.poll(() => options.elements().length).toBe(1);
-      await expect.element(options.nth(0)).toHaveTextContent("Asia/Tokyo");
+      await expect.element(options.nth(0)).toMatchTextContent("Asia/Tokyo");
       await userEvent.keyboard("{Enter}");
       expect(onChange).toHaveBeenCalledExactlyOnceWith("Asia/Tokyo");
-      await expect.element(trigger).toHaveTextContent("Tokyo (UTC+9)");
+      await expect.element(trigger).toMatchTextContent("Tokyo (UTC+9)");
 
       // By offset too, with a plain hyphen; Escape closes without a change.
       await trigger.click();

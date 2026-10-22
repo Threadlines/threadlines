@@ -46,17 +46,17 @@ describe("TimePicker", () => {
 
     try {
       const trigger = page.getByRole("button", { name: "Run time" });
-      await expect.element(trigger).toHaveTextContent("9:45 AM");
+      await expect.element(trigger).toMatchTextContent("9:45 AM");
 
       await trigger.click();
-      await expect.element(chosenOption("Hour")).toHaveTextContent("9");
+      await expect.element(chosenOption("Hour")).toMatchTextContent("9");
       await expect.element(chosenOption("Hour")).toHaveFocus();
       // A minute far down its column is scrolled into view on open.
       await expect.element(chosenOption("Minute")).toBeInViewport();
 
       await userEvent.keyboard("{ArrowDown}");
       expect(onChange).toHaveBeenLastCalledWith({ hour: 10, minute: 45 });
-      await expect.element(chosenOption("Hour")).toHaveTextContent("10");
+      await expect.element(chosenOption("Hour")).toMatchTextContent("10");
       await expect.element(chosenOption("Hour")).toHaveFocus();
 
       await userEvent.keyboard("{ArrowRight}");
@@ -69,7 +69,7 @@ describe("TimePicker", () => {
       await expect.element(chosenOption("AM or PM")).toHaveFocus();
       await userEvent.keyboard("{ArrowDown}");
       expect(onChange).toHaveBeenLastCalledWith({ hour: 22, minute: 44 });
-      await expect.element(chosenOption("Hour")).toHaveTextContent("10");
+      await expect.element(chosenOption("Hour")).toMatchTextContent("10");
 
       await userEvent.keyboard("{ArrowLeft}");
       await expect.element(chosenOption("Minute")).toHaveFocus();
@@ -77,7 +77,7 @@ describe("TimePicker", () => {
       await userEvent.keyboard("{Enter}");
       await expect.element(page.getByRole("listbox", { name: "Hour" })).not.toBeInTheDocument();
       await expect.element(trigger).toHaveFocus();
-      await expect.element(trigger).toHaveTextContent("10:44 PM");
+      await expect.element(trigger).toMatchTextContent("10:44 PM");
     } finally {
       await screen.unmount();
     }
@@ -97,11 +97,11 @@ describe("TimePicker", () => {
         .click();
 
       expect(onChange).toHaveBeenCalledExactlyOnceWith({ hour: 21, minute: 5 });
-      await expect.element(chosenOption("AM or PM")).toHaveTextContent("PM");
-      await expect.element(chosenOption("Hour")).toHaveTextContent("9");
+      await expect.element(chosenOption("AM or PM")).toMatchTextContent("PM");
+      await expect.element(chosenOption("Hour")).toMatchTextContent("9");
       await expect
         .element(page.getByRole("button", { name: "Run time" }))
-        .toHaveTextContent("9:05 PM");
+        .toMatchTextContent("9:05 PM");
     } finally {
       await screen.unmount();
     }
@@ -120,10 +120,10 @@ describe("TimePicker", () => {
 
     try {
       const trigger = page.getByRole("button", { name: "Run time" });
-      await expect.element(trigger).toHaveTextContent("21:45");
+      await expect.element(trigger).toMatchTextContent("21:45");
 
       await trigger.click();
-      await expect.element(chosenOption("Hour")).toHaveTextContent("21");
+      await expect.element(chosenOption("Hour")).toMatchTextContent("21");
       await expect.element(chosenOption("Hour")).toHaveFocus();
       await expect.element(page.getByRole("listbox", { name: "AM or PM" })).not.toBeInTheDocument();
       expect(
@@ -137,7 +137,7 @@ describe("TimePicker", () => {
       await userEvent.keyboard("{Escape}");
       await expect.element(page.getByRole("listbox", { name: "Hour" })).not.toBeInTheDocument();
       await expect.element(trigger).toHaveFocus();
-      await expect.element(trigger).toHaveTextContent("21:00");
+      await expect.element(trigger).toMatchTextContent("21:00");
     } finally {
       await screen.unmount();
     }

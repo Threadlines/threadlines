@@ -88,18 +88,14 @@ function GeneralChatsPage() {
   return (
     <ThreadHoverCardProvider side="bottom">
       <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="chats-view">
-        <PageTitlebar label="General chats" />
+        {/* The strip names the page and holds its one action. */}
+        <PageTitlebar label="General chats">
+          <div className="ml-auto">{newChatButton}</div>
+        </PageTitlebar>
         {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
             (like Settings); the reading column centers inside it. */}
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 py-8">
-            {/* On a phone the strip above names the page. */}
-            <div className="mb-1 flex items-center justify-end gap-3 md:justify-start">
-              <h1 className="hidden flex-1 text-lg font-medium tracking-tight md:block">
-                General chats
-              </h1>
-              {newChatButton}
-            </div>
+          <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 py-6">
             <p className="text-sm text-muted-foreground/70">
               Conversations that aren&apos;t tied to a project.
             </p>

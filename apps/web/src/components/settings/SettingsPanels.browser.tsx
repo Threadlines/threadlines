@@ -1876,7 +1876,7 @@ describe("GeneralSettingsPanel observability", () => {
 
     await expect
       .element(page.getByTestId("connections-computers-summary"))
-      .toHaveTextContent("No computers yet");
+      .toMatchTextContent("No computers yet");
     await page.getByRole("button", { name: "Connect to a computer", exact: true }).click();
     const addEnvironmentDialog = page.getByRole("dialog", { name: "Connect to a computer" });
     await addEnvironmentDialog.getByRole("button", { name: /^Other ways to connect/ }).click();
@@ -2107,12 +2107,12 @@ describe("GeneralSettingsPanel observability", () => {
     const otherRow = page.getByTestId(`linked-computer-row-${otherSession}`);
     await expect
       .element(linkedRow)
-      .toHaveTextContent("Linked computer · its agents: Allowed · Connected now");
+      .toMatchTextContent("Linked computer · its agents: Allowed · Connected now");
     await expect
       .element(linkedRow.getByRole("button", { name: "Manage in Fleet", exact: true }))
       .toBeInTheDocument();
     // Same name, no link of its own: it is never mistaken for the other.
-    await expect.element(otherRow).toHaveTextContent("Linked computer · Connected now");
+    await expect.element(otherRow).toMatchTextContent("Linked computer · Connected now");
     await expect
       .element(otherRow.getByRole("button", { name: "Manage in Fleet", exact: true }))
       .not.toBeInTheDocument();
@@ -2218,7 +2218,7 @@ describe("GeneralSettingsPanel observability", () => {
       .toBeInTheDocument();
     await expect
       .element(dialog.getByRole("combobox", { name: "Link with" }))
-      .toHaveTextContent("Mac");
+      .toMatchTextContent("Mac");
     await dialog.getByRole("button", { name: "Link (Ask first)", exact: true }).click();
     await vi.waitFor(() => {
       expect(windowsClient.accept).toHaveBeenCalledWith({ invite: invite(mac, "Mac") });

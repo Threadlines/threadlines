@@ -398,13 +398,13 @@ describe("child thread families in the inbox", () => {
 
     await expect
       .element(page.getByTestId(`thread-detail-${remoteChild.id}`))
-      .toHaveTextContent("from Ship the 0.6 release on Mac mini");
+      .toMatchTextContent("from Ship the 0.6 release on Mac mini");
     await expect
       .element(page.getByTestId(`child-computer-${remoteChild.id}`))
       .toHaveAttribute("aria-label", "On Windows PC");
     await expect
       .element(page.getByTestId("remote-child-meta-start:environment-windows:request-notes"))
-      .toHaveTextContent("Waiting for Windows PC to allow it");
+      .toMatchTextContent("Waiting for Windows PC to allow it");
   });
 });
 
@@ -480,10 +480,10 @@ describe("a thread another computer asked to start", () => {
 
     await expect
       .element(page.getByTestId(`link-request-title-${REQUEST.requestId}`))
-      .toHaveTextContent("Write the changelog");
+      .toMatchTextContent("Write the changelog");
     await expect
       .element(page.getByTestId(`link-request-where-${REQUEST.requestId}`))
-      .toHaveTextContent("Asked by “Ship the 0.6 release” on Windows PC");
+      .toMatchTextContent("Asked by “Ship the 0.6 release” on Windows PC");
 
     // Allow answers the request; it doesn't open it.
     await userEvent.click(page.getByTestId(`link-request-allow-${REQUEST.requestId}`));
@@ -519,13 +519,13 @@ describe("a thread another computer asked to start", () => {
 
     await expect
       .element(page.getByTestId(`link-request-title-${move.requestId}`))
-      .toHaveTextContent("Fix the login bug");
+      .toMatchTextContent("Fix the login bug");
     await expect
       .element(page.getByTestId(`link-request-where-${move.requestId}`))
-      .toHaveTextContent("Windows PC wants to move a thread to Mac mini");
+      .toMatchTextContent("Windows PC wants to move a thread to Mac mini");
     await expect
       .element(page.getByTestId(`link-request-move-${move.requestId}`))
-      .toHaveTextContent(
+      .toMatchTextContent(
         "12 messages · branch fix/login · 3 changed files · 1 new file · 2 commits not pushed" +
           "Lands in threadlines with up to Auto access",
       );
