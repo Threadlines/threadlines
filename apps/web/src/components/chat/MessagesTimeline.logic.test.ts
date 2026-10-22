@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EventId, TurnId, type OrchestrationThreadActivity } from "@threadlines/contracts";
 import { deriveWorkLogEntries, type WorkLogEntry } from "../../session-logic";
+import type { ChatMessage } from "../../types";
 import {
   computeStableMessagesTimelineRows,
+  NO_STABLE_TIMELINE_ROWS,
   deriveMessagesTimelineRows,
   resolveAssistantMessageCopyState,
 } from "./MessagesTimeline.logic";
@@ -1920,10 +1922,7 @@ describe("computeStableMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    const initial = computeStableMessagesTimelineRows(rows, {
-      byId: new Map(),
-      result: [],
-    });
+    const initial = computeStableMessagesTimelineRows(rows, NO_STABLE_TIMELINE_ROWS);
 
     const repeated = computeStableMessagesTimelineRows(rows, initial);
 
@@ -1970,10 +1969,7 @@ describe("computeStableMessagesTimelineRows", () => {
       });
 
     const firstRows = createRows();
-    const initial = computeStableMessagesTimelineRows(firstRows, {
-      byId: new Map(),
-      result: [],
-    });
+    const initial = computeStableMessagesTimelineRows(firstRows, NO_STABLE_TIMELINE_ROWS);
     const secondRows = createRows();
 
     expect(secondRows[0]).not.toBe(firstRows[0]);
@@ -1982,6 +1978,68 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(repeated).toBe(initial);
     expect(repeated.result[0]).toBe(initial.result[0]);
+  });
+
+  it("keeps what the rows share with every row while a reply streams in", () => {
+    const question = {
+      id: "user-1" as never,
+      role: "user" as const,
+      text: "Is the lock released?",
+      turnId: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      streaming: false,
+    };
+    const ask = {
+      id: "ask-1" as never,
+      role: "user" as const,
+      text: "Check the retry path.",
+      fromAgent: { participantId: null },
+      requestId: "request-1" as never,
+      requestKind: "ask" as const,
+      turnId: null,
+      createdAt: "2026-01-01T00:00:20Z",
+      streaming: false,
+    };
+    const entry = (message: ChatMessage) => ({
+      id: `entry-${message.id}`,
+      kind: "message" as const,
+      createdAt: message.createdAt,
+      message,
+    });
+    const rowsWith = (replyText: string, extra: ReadonlyArray<ChatMessage> = []) =>
+      deriveMessagesTimelineRows({
+        timelineEntries: [
+          entry(question),
+          entry({
+            id: "reply-1" as never,
+            role: "assistant",
+            text: replyText,
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:10Z",
+            streaming: true,
+          }),
+          ...extra.map(entry),
+        ],
+        isWorking: true,
+        activeTurnId: "turn-1" as never,
+        activeTurnStartedAt: "2026-01-01T00:00:01Z",
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
+
+    const initial = computeStableMessagesTimelineRows(rowsWith("Reading"), NO_STABLE_TIMELINE_ROWS);
+    // Only the streaming reply changed: the rows are new, what they share is
+    // not, so the rows that did not change are not drawn again.
+    const streamed = computeStableMessagesTimelineRows(rowsWith("Reading the lock"), initial);
+    expect(streamed.result).not.toBe(initial.result);
+    expect(streamed.shared).toBe(initial.shared);
+
+    // A change to what they share gives a new part, and keeps the rest.
+    const asked = computeStableMessagesTimelineRows(rowsWith("Reading the lock", [ask]), streamed);
+    expect(asked.shared).not.toBe(streamed.shared);
+    expect([...asked.shared.sideAnswerRequests.keys()]).toEqual(["request-1"]);
+    expect(asked.shared.authorLineMessageIds).toBe(streamed.shared.authorLineMessageIds);
+    expect(asked.shared.threadStartCallsByTurn).toBe(streamed.shared.threadStartCallsByTurn);
   });
 
   it("returns a new result when row order changes without content changes", () => {
@@ -2023,10 +2081,7 @@ describe("computeStableMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    const initial = computeStableMessagesTimelineRows(firstRows, {
-      byId: new Map(),
-      result: [],
-    });
+    const initial = computeStableMessagesTimelineRows(firstRows, NO_STABLE_TIMELINE_ROWS);
 
     const reordered = computeStableMessagesTimelineRows([firstRows[1]!, firstRows[0]!], initial);
 

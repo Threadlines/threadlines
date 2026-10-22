@@ -240,6 +240,17 @@ export function roomAgentNames(
   return previous !== null && shallow(previous, names) ? previous : names;
 }
 
+/** Whether two sets of room labels say the same about every agent. */
+export function sameRoomAgentLabels(
+  a: ReadonlyMap<string, RoomAgentLabel> | null,
+  b: ReadonlyMap<string, RoomAgentLabel> | null,
+): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  return a.size === b.size && [...a].every(([key, label]) => shallow(label, b.get(key)));
+}
+
 /** `roomAgentNames`, kept across renders. */
 export function useRoomAgentNames(
   labels: ReadonlyMap<string, RoomAgentLabel> | null,
