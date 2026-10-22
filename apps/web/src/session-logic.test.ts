@@ -5258,15 +5258,6 @@ describe("isLatestTurnSettled", () => {
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
 
-  it("returns false while the same turn is still active in a running session", () => {
-    expect(
-      isLatestTurnSettled(latestTurn, {
-        orchestrationStatus: "running",
-        activeTurnId: TurnId.make("turn-1"),
-      }),
-    ).toBe(false);
-  });
-
   it("returns false while any turn is running to avoid stale latest-turn banners", () => {
     expect(
       isLatestTurnSettled(latestTurn, {

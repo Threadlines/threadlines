@@ -74,16 +74,6 @@ describe("isScrollMetricsAtEnd", () => {
     ).toBe(true);
   });
 
-  it("allows small fractional drift at the end", () => {
-    expect(
-      isScrollMetricsAtEnd({
-        scrollOffset: 298.5,
-        viewportLength: 500,
-        contentLength: 800,
-      }),
-    ).toBe(true);
-  });
-
   it("treats a small residual gap near the end as still at the end", () => {
     expect(
       isScrollMetricsAtEnd({

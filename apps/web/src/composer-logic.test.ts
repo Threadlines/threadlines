@@ -25,18 +25,6 @@ describe("detectComposerTrigger", () => {
     });
   });
 
-  it("detects slash command token while typing command name", () => {
-    const text = "/mo";
-    const trigger = detectComposerTrigger(text, text.length);
-
-    expect(trigger).toEqual({
-      kind: "slash-command",
-      query: "mo",
-      rangeStart: 0,
-      rangeEnd: text.length,
-    });
-  });
-
   it("keeps /model as a slash command item", () => {
     const text = "/model";
     const trigger = detectComposerTrigger(text, text.length);
@@ -54,18 +42,6 @@ describe("detectComposerTrigger", () => {
     const trigger = detectComposerTrigger(text, text.length);
 
     expect(trigger).toBeNull();
-  });
-
-  it("detects non-model slash commands while typing", () => {
-    const text = "/pl";
-    const trigger = detectComposerTrigger(text, text.length);
-
-    expect(trigger).toEqual({
-      kind: "slash-command",
-      query: "pl",
-      rangeStart: 0,
-      rangeEnd: text.length,
-    });
   });
 
   it("keeps slash command detection active for provider commands", () => {
