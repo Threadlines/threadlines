@@ -3246,19 +3246,28 @@ export default function ChatView(props: ChatViewProps) {
       ? scopeProjectRef(activeProject.environmentId, activeProject.id)
       : null,
   );
+  // Which draft is on screen now: a setup that ends later moves only that one.
+  const openDraftIdRef = useRef(draftId);
+  openDraftIdRef.current = draftId;
+  useEffect(
+    () => () => {
+      openDraftIdRef.current = null;
+    },
+    [],
+  );
   const onSetUpElsewhere = useCallback(() => {
     if (!draftId || !activeProject) return;
-    const draft = useComposerDraftStore.getState().getDraftSession(draftId);
-    if (!draft) return;
-    const logicalProjectKey = draft.logicalProjectKey;
+    if (!useComposerDraftStore.getState().getDraftSession(draftId)) return;
+    const from = scopeProjectRef(activeProject.environmentId, activeProject.id);
     openProjectSetupDialog({
-      project: scopeProjectRef(activeProject.environmentId, activeProject.id),
+      project: from,
       onDone: (result) =>
-        void moveDraftToSetUpProject(
+        void moveDraftToSetUpProject({
           draftId,
-          logicalProjectKey,
-          scopeProjectRef(result.environmentId, result.projectId),
-        ),
+          from,
+          to: scopeProjectRef(result.environmentId, result.projectId),
+          isOpen: () => openDraftIdRef.current === draftId,
+        }),
     });
   }, [activeProject, draftId]);
 

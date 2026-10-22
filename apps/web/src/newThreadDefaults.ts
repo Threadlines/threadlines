@@ -378,32 +378,36 @@ export function applyMovedDraftDefaults(
 }
 
 /**
- * Moves a draft to the project a setup just made on another computer
- * (docs/design/fleet.md, Part 8), once that project reaches the app: only a
- * draft still unsent and still on the same project, and only when the new
- * copy groups with it. Its words stay; it takes that computer's defaults as
- * any move does.
+ * After a setup made a copy of the draft's project on another computer: the
+ * draft moves to that copy, keeping its text, when it is still the one on
+ * screen (`isOpen`), still unsent, still on the project it started from, and
+ * the copy is the same repository. It joins the copy's sidebar project (in
+ * "Separate" grouping, another one) and takes that computer's defaults.
  */
-export async function moveDraftToSetUpProject(
-  draftId: DraftId,
-  logicalProjectKey: string,
-  to: ScopedProjectRef,
-): Promise<void> {
+export async function moveDraftToSetUpProject(input: {
+  readonly draftId: DraftId;
+  readonly from: ScopedProjectRef;
+  readonly to: ScopedProjectRef;
+  readonly isOpen: () => boolean;
+}): Promise<void> {
+  const { draftId, from, to } = input;
   if (!(await waitForSetUpProject(to))) return;
+  if (!input.isOpen()) return;
   const draft = useComposerDraftStore.getState().getDraftSession(draftId);
-  if (!draft || draft.promotedTo != null || draft.logicalProjectKey !== logicalProjectKey) return;
-  if (draft.environmentId === to.environmentId && draft.projectId === to.projectId) return;
-  const project = selectProjectByRef(useStore.getState(), to);
+  if (!draft || draft.promotedTo != null) return;
+  if (draft.environmentId !== from.environmentId || draft.projectId !== from.projectId) return;
+  const state = useStore.getState();
+  const source = selectProjectByRef(state, from);
+  const project = selectProjectByRef(state, to);
+  const key = source?.repositoryIdentity?.canonicalKey;
+  if (!project || key == null || project.repositoryIdentity?.canonicalKey !== key) return;
   const grouping = getClientSettings();
-  if (
-    !project ||
-    deriveLogicalProjectKeyFromSettings(project, {
+  useComposerDraftStore.getState().setDraftThreadContext(draftId, {
+    projectRef: to,
+    logicalProjectKey: deriveLogicalProjectKeyFromSettings(project, {
       sidebarProjectGroupingMode: grouping.sidebarProjectGroupingMode,
       sidebarProjectGroupingOverrides: grouping.sidebarProjectGroupingOverrides,
-    }) !== logicalProjectKey
-  ) {
-    return;
-  }
-  useComposerDraftStore.getState().setDraftThreadContext(draftId, { projectRef: to });
+    }),
+  });
   await applyMovedDraftDefaults(draftId, to.environmentId);
 }

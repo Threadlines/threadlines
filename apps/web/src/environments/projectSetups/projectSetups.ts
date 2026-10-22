@@ -391,6 +391,13 @@ export async function startProjectSetup(
       ? []
       : (await sourceClient.readFiles({ projectId: plan.source.projectId, paths: plan.filePaths }))
           .files;
+  // The files leave only over protected connections, checked again now that
+  // they are in hand: a connection may have changed while they were read.
+  if (files.length > 0 && !projectSetupFilesAllowed(plan.source, plan.target)) {
+    throw new Error(
+      `The connection to ${plan.target.label} or ${plan.source.label} isn't encrypted now, so the files weren't sent.`,
+    );
+  }
   useProjectSetupsStore.setState((state) => ({
     started: {
       ...state.started,
@@ -425,6 +432,19 @@ export async function startProjectSetup(
   return job;
 }
 
+/** Whether files may go from `source`'s project to `target`: both connections protected now. */
+function projectSetupFilesAllowed(
+  source: ProjectSetupComputerRef & { readonly projectId: ProjectId },
+  target: ProjectSetupComputerRef,
+): boolean {
+  return (
+    readProjectSetupTargets({
+      environmentId: source.environmentId,
+      projectId: source.projectId,
+    }).find((candidate) => candidate.environmentId === target.environmentId)?.unprotected === null
+  );
+}
+
 /**
  * The `onDone` a setup this app started carries, for a retry to pass on: a
  * new job for the same purpose finishes what the first one was for.
@@ -453,21 +473,25 @@ export async function retryProjectSetup(
     sourceInfo.files.filter((file) => !file.tooLarge).map((file) => file.path),
   );
   // Files travel only where both connections are protected, now as at the start.
-  const filesAllowed =
-    readProjectSetupTargets({
-      environmentId: job.source.environmentId,
-      projectId: job.source.projectId,
-    }).find((candidate) => candidate.environmentId === target.environmentId)?.unprotected === null;
+  const filesAllowed = projectSetupFilesAllowed(job.source, target);
   const setupId = newProjectSetupId();
-  await startProjectSetup(setupId, {
-    source: job.source,
-    target,
-    sourceInfo,
-    protocol: job.protocol,
-    destinationPath: job.destinationPath,
-    filePaths: filesAllowed ? job.filePaths.filter((path) => sendable.has(path)) : [],
-    onDone: startedOnDone(job.setupId),
-  });
+  // A retry of the job on screen is on screen too: its end raises no toast.
+  const shown = useProjectSetupsStore.getState().shownSetupId === job.setupId;
+  if (shown) setShownProjectSetup(setupId);
+  try {
+    await startProjectSetup(setupId, {
+      source: job.source,
+      target,
+      sourceInfo,
+      protocol: job.protocol,
+      destinationPath: job.destinationPath,
+      filePaths: filesAllowed ? job.filePaths.filter((path) => sendable.has(path)) : [],
+      onDone: startedOnDone(job.setupId),
+    });
+  } catch (error) {
+    if (shown) setShownProjectSetup(job.setupId);
+    throw error;
+  }
   void dismissProjectSetup(target, job.setupId).catch(() => undefined);
   return setupId;
 }

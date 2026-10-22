@@ -50,6 +50,8 @@ import {
 } from "../environments/projectSetups/projectSetups";
 import {
   readDefaultProjectSetupFolder,
+  readExistingProjectSetupCopy,
+  readProjectSetupTargets,
   useProjectSetupTargets,
 } from "../environments/projectSetups/projectSetupTargets";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
@@ -293,9 +295,20 @@ function ProjectSetupForm({
     request.project.environmentId,
   );
   const targets = useProjectSetupTargets(request.project);
-  const [pickedTargetId, setPickedTargetId] = useState(request.targetEnvironmentId);
-  const target =
-    targets.find((candidate) => candidate.environmentId === pickedTargetId) ?? targets[0] ?? null;
+  // The computer stays the one asked for or first shown: if it drops out, the
+  // dialog says so rather than quietly sending the files somewhere else.
+  const [pickedTargetId, setPickedTargetId] = useState<EnvironmentId | null>(
+    () =>
+      request.targetEnvironmentId ??
+      readProjectSetupTargets(request.project)[0]?.environmentId ??
+      null,
+  );
+  const chosenTargetId = pickedTargetId ?? targets[0]?.environmentId ?? null;
+  const target = targets.find((candidate) => candidate.environmentId === chosenTargetId) ?? null;
+  const lostTargetLabel = useComputerLabel()(
+    chosenTargetId ?? request.project.environmentId,
+    request.project.environmentId,
+  );
   const [sourceState, setSourceState] = useState<SourceState>({ status: "loading" });
   // What the user typed, per computer: switching computers shows each one's own folder.
   const [typedFolders, setTypedFolders] = useState<Readonly<Record<string, string>>>({});
@@ -330,12 +343,17 @@ function ProjectSetupForm({
   const source = sourceState.status === "ready" ? sourceState.source : null;
   const targetId = target?.environmentId ?? null;
   const targetLabel = target?.label ?? "";
-  const defaultFolder = useMemo(
-    () =>
-      source !== null && targetId !== null ? readDefaultProjectSetupFolder(targetId, source) : "",
-    [source, targetId],
-  );
-  const folder = (targetId !== null ? typedFolders[targetId] : undefined) ?? defaultFolder;
+  // Both read the stores as they are: cheap, and current on every render.
+  const defaultFolder =
+    source !== null && targetId !== null ? readDefaultProjectSetupFolder(targetId, source) : "";
+  // A copy of the repository already there is where the project is added from,
+  // whatever folder is named (the server holds to that too): show it, fixed.
+  const existingCopy =
+    source !== null && targetId !== null
+      ? readExistingProjectSetupCopy(targetId, source.repositoryKey)
+      : null;
+  const folder =
+    existingCopy ?? (targetId !== null ? typedFolders[targetId] : undefined) ?? defaultFolder;
   const path = folder.trim();
   const currentKey = targetId !== null && path.length > 0 ? destinationKey(targetId, path) : null;
   const check = destinationCheck?.key === currentKey ? destinationCheck : null;
@@ -412,6 +430,8 @@ function ProjectSetupForm({
     setStarting(true);
     setStartError(null);
     const setupId = newProjectSetupId();
+    // On screen from now: an end heard before start answers raises no toast.
+    setShownProjectSetup(setupId);
     try {
       await startProjectSetup(setupId, {
         source: {
@@ -428,6 +448,7 @@ function ProjectSetupForm({
       });
       onStarted(target.environmentId, setupId);
     } catch (error) {
+      setShownProjectSetup(null);
       setStartError(describeProjectSetupFailure(error, `${target.label} couldn't start it.`));
       setStarting(false);
     }
@@ -451,10 +472,27 @@ function ProjectSetupForm({
           <p role="alert" className="text-sm text-foreground" data-testid="project-setup-refusal">
             {sourceState.message}
           </p>
-        ) : target === null ? (
+        ) : targets.length === 0 ? (
           <p className="text-sm text-foreground" data-testid="project-setup-refusal">
             No other computer can take it right now.
           </p>
+        ) : target === null ? (
+          <>
+            <TargetField
+              targets={targets}
+              target={null}
+              disabled={starting}
+              onChange={(next) => {
+                setPickedTargetId(next);
+                setStartError(null);
+              }}
+            />
+            {chosenTargetId !== null ? (
+              <p className="text-sm text-foreground" data-testid="project-setup-target-lost">
+                {lostTargetLabel} isn't available right now. Pick another computer.
+              </p>
+            ) : null}
+          </>
         ) : source !== null ? (
           <>
             {targets.length > 1 ? (
@@ -476,6 +514,7 @@ function ProjectSetupForm({
                 id="project-setup-folder"
                 value={folder}
                 disabled={starting}
+                readOnly={existingCopy !== null}
                 spellCheck={false}
                 autoComplete="off"
                 data-testid="project-setup-folder"
@@ -492,13 +531,15 @@ function ProjectSetupForm({
                 )}
                 data-testid="project-setup-destination"
               >
-                {path.length === 0
-                  ? "Name a folder."
-                  : check === null
-                    ? "Checking the folder…"
-                    : check.destination !== null
-                      ? describeProjectSetupDestination(check.destination.state, target.label)
-                      : check.error}
+                {existingCopy !== null
+                  ? `${target.label} already has this repository here. The project is added from it, keeping its own files.`
+                  : path.length === 0
+                    ? "Name a folder."
+                    : check === null
+                      ? "Checking the folder…"
+                      : check.destination !== null
+                        ? describeProjectSetupDestination(check.destination.state, target.label)
+                        : check.error}
               </p>
             </div>
             {cloneOptions.length > 1 && protocol !== null ? (
@@ -583,7 +624,8 @@ function TargetField({
   onChange,
 }: {
   readonly targets: ReadonlyArray<ProjectSetupTarget>;
-  readonly target: ProjectSetupTarget;
+  /** Null: none picked (the one picked dropped out). */
+  readonly target: ProjectSetupTarget | null;
   readonly disabled: boolean;
   readonly onChange: (environmentId: EnvironmentId) => void;
 }) {
@@ -591,7 +633,7 @@ function TargetField({
     <div className="grid gap-1.5">
       <span className={FIELD_LABEL_CLASS}>Computer</span>
       <Select
-        value={target.environmentId}
+        value={target?.environmentId ?? null}
         disabled={disabled}
         onValueChange={(value) => {
           const next = targets.find((candidate) => candidate.environmentId === value);
@@ -599,7 +641,7 @@ function TargetField({
         }}
       >
         <SelectTrigger className="w-full" aria-label="Computer" data-testid="project-setup-target">
-          <SelectValue>{target.label}</SelectValue>
+          <SelectValue>{target?.label ?? "Pick a computer"}</SelectValue>
         </SelectTrigger>
         <SelectPopup alignItemWithTrigger={false}>
           {targets.map((candidate) => (

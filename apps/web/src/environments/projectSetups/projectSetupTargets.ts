@@ -211,6 +211,24 @@ export function useProjectSetupComputerReady(environmentId: EnvironmentId | null
  * otherwise, from that computer's own copy of the repository (another
  * folder of it is a project there), its setting and its projects.
  */
+/**
+ * The root of the copy of this repository a computer already has (for
+ * another of its folders), or null: a setup there adds the project from it.
+ */
+export function readExistingProjectSetupCopy(
+  environmentId: EnvironmentId,
+  repositoryKey: string,
+): string | null {
+  const existing = selectProjectsAcrossEnvironments(useStore.getState()).find(
+    (project) =>
+      project.environmentId === environmentId &&
+      project.kind !== "general-chat" &&
+      project.repositoryIdentity?.canonicalKey === repositoryKey &&
+      project.repositoryIdentity.rootPath !== undefined,
+  );
+  return existing?.repositoryIdentity?.rootPath ?? null;
+}
+
 export function readDefaultProjectSetupFolder(
   environmentId: EnvironmentId,
   source: Pick<ProjectSetupSource, "folderName" | "homeRelativePath" | "repositoryKey">,
@@ -223,16 +241,11 @@ export function readDefaultProjectSetupFolder(
   const projects = selectProjectsAcrossEnvironments(useStore.getState()).filter(
     (project) => project.environmentId === environmentId && project.kind !== "general-chat",
   );
-  const existingCopy = projects.find(
-    (project) =>
-      project.repositoryIdentity?.canonicalKey === source.repositoryKey &&
-      project.repositoryIdentity.rootPath !== undefined,
-  );
   const projectRoots = projects.map(
     (project) => project.repositoryIdentity?.rootPath ?? project.cwd,
   );
   return defaultProjectSetupFolder({
-    existingCopyRoot: existingCopy?.repositoryIdentity?.rootPath ?? null,
+    existingCopyRoot: readExistingProjectSetupCopy(environmentId, source.repositoryKey),
     baseDirectory: settings?.addProjectBaseDirectory,
     projectRoots,
     folderName: source.folderName,

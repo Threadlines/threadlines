@@ -516,6 +516,8 @@ interface ComposerDraftStoreState {
       branch?: string | null;
       worktreePath?: string | null;
       projectRef?: ScopedProjectRef;
+      /** The sidebar project the draft now belongs to, when `projectRef` moves it to another. */
+      logicalProjectKey?: string;
       createdAt?: string;
       envMode?: DraftThreadEnvMode;
       runtimeMode?: RuntimeMode;
@@ -2843,7 +2845,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               threadId: existing.threadId,
               environmentId: nextProjectRef.environmentId,
               projectId: nextProjectRef.projectId,
-              logicalProjectKey: existing.logicalProjectKey,
+              logicalProjectKey: options.logicalProjectKey ?? existing.logicalProjectKey,
               createdAt:
                 options.createdAt === undefined
                   ? existing.createdAt

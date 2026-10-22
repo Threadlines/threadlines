@@ -110,6 +110,8 @@ function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThreadRef }) 
   const [startError, setStartError] = useState<string | null>(null);
   // Asked again when a computer that lacked the project has been set up.
   const [previewRound, setPreviewRound] = useState(0);
+  /** A refresh (after a setup there) that failed: the old preview stays, with a way to ask again. */
+  const [refreshFailed, setRefreshFailed] = useState<string | null>(null);
   // The computer the user chose, kept through a fresh preview.
   const pickedTargetRef = useRef<EnvironmentId | null>(null);
 
@@ -132,9 +134,14 @@ function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThreadRef }) 
         setTargetId(target?.environmentId ?? null);
         setAgent(target ? pickDefaultMoveAgent(target) : null);
         setPreviewState({ status: "ready", preview });
+        setRefreshFailed(null);
       } catch (error) {
-        // A refresh that fails keeps the preview it was refreshing.
-        if (!active || previewRound > 0) return;
+        if (!active) return;
+        // A refresh that fails keeps the preview it was refreshing, and says so.
+        if (previewRound > 0) {
+          setRefreshFailed(describeComputerLinkFailure(error, `${computerLabel} didn't answer.`));
+          return;
+        }
         setPreviewState({
           status: "failed",
           message: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
@@ -218,7 +225,24 @@ function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThreadRef }) 
                 <p className="text-sm text-foreground" data-testid="thread-move-target-refusal">
                   {target.refusal}
                 </p>
-                {target.refusalCode === "no_project" && projectId !== null ? (
+                {refreshFailed !== null ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p
+                      className="text-sm text-muted-foreground"
+                      data-testid="thread-move-refresh-failed"
+                    >
+                      Couldn't check again: {refreshFailed}
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      data-testid="thread-move-check-again"
+                      onClick={() => setPreviewRound((round) => round + 1)}
+                    >
+                      Check again
+                    </Button>
+                  </div>
+                ) : target.refusalCode === "no_project" && projectId !== null ? (
                   <SetUpThereAction
                     project={{ environmentId: threadRef.environmentId, projectId }}
                     target={target}

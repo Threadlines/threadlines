@@ -455,8 +455,18 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         }),
       );
 
-      // Done: the move asks again, and Mac mini can take the thread.
+      // Done: the move asks again. That first ask fails: the dialog says so
+      // and offers to check again, instead of sitting on the old answer.
       macHasProject = true;
+      const preview = vi
+        .fn<() => Promise<ThreadMovePreview>>()
+        .mockRejectedValueOnce(new ThreadMoveError({ detail: "Mac mini didn't answer." }))
+        .mockResolvedValue({ targets: [macMini] });
+      __setThreadMovesClientForTests(LOCAL_ENVIRONMENT_ID, {
+        preview,
+        start: async () => ({ transferId: ThreadMoveId.make("move-after-setup") }),
+        cancel: async () => undefined,
+      });
       mac.push([
         projectSetupJob({
           setupId: started.setupId,
@@ -468,14 +478,17 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       await expect
         .element(setup.getByTestId("project-setup-done"))
         .toMatchTextContent("Project is ready on Mac mini");
-      await vi.waitFor(() => {
-        expect(previews).toHaveLength(2);
-      });
       await setup.getByTestId("project-setup-close").click();
       await expect.element(page.getByTestId("project-setup-dialog")).not.toBeInTheDocument();
       await expect
+        .element(dialog.getByTestId("thread-move-refresh-failed"))
+        .toMatchTextContent("Mac mini didn't answer.");
+      await dialog.getByTestId("thread-move-check-again").click();
+      await expect
         .element(dialog.getByTestId("thread-move-preview"))
         .toMatchTextContent("Lands in threadlines on Mac mini");
+      expect(preview).toHaveBeenCalledTimes(2);
+      expect(previews).toHaveLength(1);
       await expect.element(dialog.getByTestId("thread-move-confirm")).toBeEnabled();
     } finally {
       await mounted.cleanup();
