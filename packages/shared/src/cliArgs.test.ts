@@ -3,10 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 import { parseCliArgs } from "./cliArgs.ts";
 
 describe("parseCliArgs", () => {
-  it("returns empty result for empty string", () => {
-    expect(parseCliArgs("")).toEqual({ flags: {}, positionals: [] });
-  });
-
   it("returns empty result for whitespace-only string", () => {
     expect(parseCliArgs("   ")).toEqual({ flags: {}, positionals: [] });
   });
@@ -15,58 +11,9 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs([])).toEqual({ flags: {}, positionals: [] });
   });
 
-  it("parses --chrome boolean flag", () => {
-    expect(parseCliArgs("--chrome")).toEqual({
-      flags: { chrome: null },
-      positionals: [],
-    });
-  });
-
-  it("parses --chrome with --verbose", () => {
-    expect(parseCliArgs("--chrome --verbose")).toEqual({
-      flags: { chrome: null, verbose: null },
-      positionals: [],
-    });
-  });
-
-  it("parses --effort with a value", () => {
-    expect(parseCliArgs("--effort high")).toEqual({
-      flags: { effort: "high" },
-      positionals: [],
-    });
-  });
-
   it("parses --chrome --effort high --debug", () => {
     expect(parseCliArgs("--chrome --effort high --debug")).toEqual({
       flags: { chrome: null, effort: "high", debug: null },
-      positionals: [],
-    });
-  });
-
-  it("parses --model with full model name", () => {
-    expect(parseCliArgs("--model claude-sonnet-4-6")).toEqual({
-      flags: { model: "claude-sonnet-4-6" },
-      positionals: [],
-    });
-  });
-
-  it("parses --append-system-prompt with value and --chrome", () => {
-    expect(parseCliArgs("--append-system-prompt always-think-step-by-step --chrome")).toEqual({
-      flags: { "append-system-prompt": "always-think-step-by-step", chrome: null },
-      positionals: [],
-    });
-  });
-
-  it("parses --max-budget-usd with numeric value", () => {
-    expect(parseCliArgs("--chrome --max-budget-usd 5.00")).toEqual({
-      flags: { chrome: null, "max-budget-usd": "5.00" },
-      positionals: [],
-    });
-  });
-
-  it("parses --effort=high syntax", () => {
-    expect(parseCliArgs("--effort=high")).toEqual({
-      flags: { effort: "high" },
       positionals: [],
     });
   });

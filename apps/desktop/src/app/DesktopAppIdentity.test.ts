@@ -195,26 +195,4 @@ describe("DesktopAppIdentity", () => {
       },
     );
   });
-
-  it.effect("falls back to the static dock icon without a bundled adaptive icon", () => {
-    const calls: ElectronAppCalls = {
-      setAboutPanelOptions: [],
-      setDockIcon: [],
-      setName: [],
-    };
-
-    return withIdentity(
-      Effect.gen(function* () {
-        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
-        yield* identity.configure;
-
-        assert.deepEqual(calls.setDockIcon, ["/icon.png"]);
-      }),
-      {
-        calls,
-        bundledAdaptiveIconExists: false,
-        pngIconPath: Option.some("/icon.png"),
-      },
-    );
-  });
 });

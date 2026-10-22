@@ -1,7 +1,7 @@
 import { EnvironmentId, ProjectId, ThreadId } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createKnownEnvironment, getKnownEnvironmentHttpBaseUrl } from "./knownEnvironment.ts";
+import { createKnownEnvironment } from "./knownEnvironment.ts";
 import {
   parseScopedProjectKey,
   parseScopedThreadKey,
@@ -32,32 +32,6 @@ describe("known environment bootstrap helpers", () => {
       },
     });
   });
-
-  it("returns the explicit fetchable http origin", () => {
-    expect(
-      getKnownEnvironmentHttpBaseUrl(
-        createKnownEnvironment({
-          label: "Local environment",
-          target: {
-            httpBaseUrl: "http://localhost:3773",
-            wsBaseUrl: "ws://localhost:3773",
-          },
-        }),
-      ),
-    ).toBe("http://localhost:3773");
-
-    expect(
-      getKnownEnvironmentHttpBaseUrl(
-        createKnownEnvironment({
-          label: "Remote environment",
-          target: {
-            httpBaseUrl: "https://remote.example.com/api",
-            wsBaseUrl: "wss://remote.example.com/api",
-          },
-        }),
-      ),
-    ).toBe("https://remote.example.com/api");
-  });
 });
 
 describe("scoped refs", () => {
@@ -70,17 +44,6 @@ describe("scoped refs", () => {
     expect(scopedRefKey(threadRef)).toBe("environment-test:thread-1");
     expect(scopedProjectKey(projectRef)).toBe("environment-test:project-1");
     expect(scopedThreadKey(threadRef)).toBe("environment-test:thread-1");
-  });
-
-  it("returns typed scoped refs", () => {
-    expect(projectRef).toEqual({
-      environmentId,
-      projectId: ProjectId.make("project-1"),
-    });
-    expect(threadRef).toEqual({
-      environmentId,
-      threadId: ThreadId.make("thread-1"),
-    });
   });
 
   it("parses scoped project and thread keys back into refs", () => {

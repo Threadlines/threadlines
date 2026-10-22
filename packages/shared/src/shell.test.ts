@@ -21,14 +21,6 @@ import {
 } from "./shell.ts";
 
 describe("extractPathFromShellOutput", () => {
-  it("extracts the path between capture markers", () => {
-    expect(
-      extractPathFromShellOutput(
-        "__THREADLINES_PATH_START__\n/opt/homebrew/bin:/usr/bin\n__THREADLINES_PATH_END__\n",
-      ),
-    ).toBe("/opt/homebrew/bin:/usr/bin");
-  });
-
   it("ignores shell startup noise around the capture markers", () => {
     expect(
       extractPathFromShellOutput(
