@@ -70,8 +70,9 @@ export interface InboxViewMenuProps {
  *
  * These are set once and left, unlike the projects you switch between all day,
  * so they sit behind their own small button instead of lengthening the project
- * menu. While one of them hides part of the list the button turns the "on"
- * color and carries a dot, so a narrowed list never looks like a short one.
+ * menu. While one of them hides part of the list the button sits filled, the
+ * way a selected rail button does, so a narrowed list never looks like a short
+ * one.
  */
 export const InboxViewMenu = memo(function InboxViewMenu(props: InboxViewMenuProps) {
   const {
@@ -201,8 +202,8 @@ export const InboxViewMenu = memo(function InboxViewMenu(props: InboxViewMenuPro
                   data-testid="inbox-view-trigger"
                   data-filtered={activeFilters ? "true" : undefined}
                   className={cn(
-                    "relative inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring",
-                    activeFilters && "text-primary hover:text-primary",
+                    "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring",
+                    activeFilters && "bg-sidebar-accent text-foreground hover:bg-sidebar-accent",
                   )}
                 />
               }
@@ -210,12 +211,6 @@ export const InboxViewMenu = memo(function InboxViewMenu(props: InboxViewMenuPro
           }
         >
           <SlidersHorizontalIcon className="size-3.5" />
-          {activeFilters ? (
-            <span
-              aria-hidden
-              className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary"
-            />
-          ) : null}
         </TooltipTrigger>
         <TooltipPopup side="bottom">{activeFilters ?? "View options"}</TooltipPopup>
       </Tooltip>
