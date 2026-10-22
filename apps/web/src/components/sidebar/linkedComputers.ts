@@ -91,25 +91,35 @@ export function usePendingLinkRequests(): readonly PendingLinkRequest[] {
   return useMemo(() => listPendingLinkRequests(byEnvironmentId, nowMs), [byEnvironmentId, nowMs]);
 }
 
+/** One answer sent for a request; `attempt` tells it from a later one. */
+interface LinkRequestAnswer {
+  readonly answer: "allow" | "deny";
+  readonly attempt: number;
+  /** The computer took it. Until then it is on its way. */
+  readonly landed: boolean;
+}
+
 /**
- * Answers on their way to the computer a request would run on, by
+ * Answers sent to the computer a request would run on, by
  * `environmentId:requestId`. One per request across every place that shows
  * it (the inbox row, the card in the thread that asked), so a second click
- * anywhere can't send a second answer. Kept once it lands: the request is
- * done, and leaves when that computer's next snapshot drops it.
+ * anywhere can't send a second answer. An answer on its way stays whatever
+ * the snapshots say; one that landed stays until its request is gone from
+ * every computer's list, and is forgotten then.
  */
 const useLinkRequestAnswersStore = create<{
-  readonly byKey: Readonly<Record<string, "allow" | "deny">>;
+  readonly byKey: Readonly<Record<string, LinkRequestAnswer>>;
 }>(() => ({ byKey: {} }));
+
+let nextAnswerAttempt = 0;
 
 const answerKey = (environmentId: EnvironmentId, requestId: string) =>
   `${environmentId}:${requestId}`;
 
-// An answer is forgotten once its request is gone from every computer's list.
 useComputerLinksStore.subscribe((state) => {
   const { byKey } = useLinkRequestAnswersStore.getState();
-  const keys = Object.keys(byKey);
-  if (keys.length === 0) return;
+  const landed = Object.entries(byKey).filter(([, entry]) => entry.landed);
+  if (landed.length === 0) return;
   const pending = new Set(
     Object.entries(state.byEnvironmentId).flatMap(([environmentId, entry]) =>
       entry.snapshot.pending.map((request) =>
@@ -117,16 +127,25 @@ useComputerLinksStore.subscribe((state) => {
       ),
     ),
   );
-  if (keys.every((key) => pending.has(key))) return;
+  const gone = landed.filter(([key]) => !pending.has(key)).map(([key]) => key);
+  if (gone.length === 0) return;
   useLinkRequestAnswersStore.setState({
-    byKey: Object.fromEntries(Object.entries(byKey).filter(([key]) => pending.has(key))),
+    byKey: Object.fromEntries(Object.entries(byKey).filter(([key]) => !gone.includes(key))),
   });
 });
 
-function setLinkRequestAnswer(key: string, answer: "allow" | "deny" | null) {
+/** Changes the answer for `key` only while it is still `attempt`'s. */
+function updateLinkRequestAnswer(
+  key: string,
+  attempt: number,
+  next: (entry: LinkRequestAnswer) => LinkRequestAnswer | null,
+) {
   useLinkRequestAnswersStore.setState((state) => {
+    const entry = state.byKey[key];
+    if (entry?.attempt !== attempt) return state;
     const { [key]: _previous, ...rest } = state.byKey;
-    return { byKey: answer === null ? rest : { ...rest, [key]: answer } };
+    const updated = next(entry);
+    return { byKey: updated === null ? rest : { ...rest, [key]: updated } };
   });
 }
 
@@ -144,18 +163,25 @@ export function useLinkRequestAnswer(
 } {
   const { environmentId, request } = pending;
   const key = answerKey(environmentId, request.requestId);
-  const answering = useLinkRequestAnswersStore((state) => state.byKey[key] ?? null);
+  const answering = useLinkRequestAnswersStore((state) => state.byKey[key]?.answer ?? null);
   const respond = useCallback(
     async (allow: boolean) => {
       if (useLinkRequestAnswersStore.getState().byKey[key] !== undefined) return;
-      setLinkRequestAnswer(key, allow ? "allow" : "deny");
+      const attempt = ++nextAnswerAttempt;
+      useLinkRequestAnswersStore.setState((state) => ({
+        byKey: {
+          ...state.byKey,
+          [key]: { answer: allow ? "allow" : "deny", attempt, landed: false },
+        },
+      }));
       try {
         await respondToComputerLinkRequest(
           { environmentId, label: computerLabel },
           { deviceId: request.deviceId, requestId: request.requestId, allow },
         );
+        updateLinkRequestAnswer(key, attempt, (entry) => ({ ...entry, landed: true }));
       } catch (error) {
-        setLinkRequestAnswer(key, null);
+        updateLinkRequestAnswer(key, attempt, () => null);
         toastManager.add({
           type: "error",
           title: allow ? `Couldn't allow ${request.title}` : `Couldn't deny ${request.title}`,
