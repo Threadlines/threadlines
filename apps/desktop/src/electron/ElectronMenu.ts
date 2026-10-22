@@ -76,41 +76,7 @@ const normalizePosition = (
     ({ x, y }) => Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0,
   ).pipe(Option.map(({ x, y }) => ({ x: Math.floor(x), y: Math.floor(y) })));
 
-const DESTRUCTIVE_MENU_ICON_DATA_URLS = {
-  dark: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAApElEQVR4nGP4n5LOgAU7AHEWFDtgU4NNUwQQ/wDiA1D8AyqGVSMXEItC8QsgrkbiV0PFYHwuZI37gfg/kXg/uo0bgbgLyWR03AVVg2IjCK8C4gYoWxiIWaFYGCrWAFWDETjIGncBcSoU7yJF436k6Ng/uDX6ArEyFPsS0rgcKsGIJAbDjFC55dg0av+HpJAzUOch4zNQOW1sGkFYDclv6FgNWS0AsdqaYq+R+y4AAAAASUVORK5CYII=",
-  light:
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAApElEQVR4nGM4yMDOgAU7AHEWFDtgU4NNUwQQ/wDiA1D8AyqGVSMXEItC8QsgrkbiV0PFYHwuZI37gfg/kXg/uo0bgbgLyWR03AVVg2IjCK8C4gYoWxiIWaFYGCrWAFWDETjIGncBcSoU7yJF436k6Ng/uDX6ArEyFPsS0rgcKsGIJAbDjFC55dg0ah+EpJAzUOch4zNQOW1sGkFYDclv6FgNWS0AeBrUy/yE688AAAAASUVORK5CYII=",
-} as const;
-
-type DestructiveMenuIconTone = keyof typeof DESTRUCTIVE_MENU_ICON_DATA_URLS;
-
 export const layer = Layer.sync(ElectronMenu, () => {
-  const destructiveMenuIconCache: Partial<
-    Record<DestructiveMenuIconTone, Option.Option<Electron.NativeImage>>
-  > = {};
-
-  const getDestructiveMenuIcon = (): Option.Option<Electron.NativeImage> => {
-    if (process.platform !== "darwin") {
-      return Option.none();
-    }
-    const tone: DestructiveMenuIconTone = Electron.nativeTheme.shouldUseDarkColors
-      ? "dark"
-      : "light";
-    const cachedIcon = destructiveMenuIconCache[tone];
-    if (cachedIcon !== undefined) {
-      return cachedIcon;
-    }
-
-    try {
-      const icon = Electron.nativeImage.createFromDataURL(DESTRUCTIVE_MENU_ICON_DATA_URLS[tone]);
-      destructiveMenuIconCache[tone] = icon.isEmpty() ? Option.none() : Option.some(icon);
-    } catch {
-      destructiveMenuIconCache[tone] = Option.none();
-    }
-
-    return destructiveMenuIconCache[tone] ?? Option.none();
-  };
-
   const buildTemplate = (
     entries: readonly ContextMenuItem[],
     complete: (selectedItemId: Option.Option<string>) => void,
@@ -142,13 +108,6 @@ export const layer = Layer.sync(ElectronMenu, () => {
       } else {
         itemOption.click = () => complete(Option.some(item.id));
       }
-      if (item.destructive && (!item.children || item.children.length === 0)) {
-        const destructiveIcon = getDestructiveMenuIcon();
-        if (Option.isSome(destructiveIcon)) {
-          itemOption.icon = destructiveIcon.value;
-        }
-      }
-
       template.push(itemOption);
     }
 

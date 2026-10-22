@@ -83,15 +83,11 @@ export function showContextMenuFallback<T extends string>(
         const button = document.createElement("button");
         button.type = "button";
         const hasChildren = Array.isArray(item.children) && item.children.length > 0;
-        const isLeafDestructive =
-          !hasChildren && (item.destructive === true || item.id === ("delete" as T));
         const isDisabled = item.disabled === true;
         button.disabled = isDisabled;
         button.className = isDisabled
           ? `flex w-full items-center gap-2 ${itemSize} text-left text-muted-foreground/60 cursor-not-allowed`
-          : isLeafDestructive
-            ? `flex w-full items-center gap-2 ${itemSize} text-left text-destructive hover:bg-accent cursor-default`
-            : `flex w-full items-center gap-2 ${itemSize} text-left text-popover-foreground hover:bg-accent cursor-default`;
+          : `flex w-full items-center gap-2 ${itemSize} text-left text-popover-foreground hover:bg-accent cursor-default`;
 
         const label = document.createElement("span");
         label.className = "min-w-0 flex-1 truncate";
