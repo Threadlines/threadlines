@@ -181,6 +181,7 @@ import {
 import {
   claudeCheckBackTrigger,
   claudeCheckBacksFromSessionCrons,
+  isClaudeCheckBackTool,
   makeClaudeCheckBackState,
   recordClaudeScheduleTool,
   type ClaudeCheckBackState,
@@ -1716,6 +1717,11 @@ function classifyToolItemType(toolName: string): CanonicalItemType {
   // Task tracker tools are a planning surface too; "TaskCreate" must not
   // fall into the file-change "create" keyword bucket below.
   if (taskTrackerToolKind(normalized) !== undefined) {
+    return "dynamic_tool_call";
+  }
+  // Check-back tools schedule Claude's own return; "CronCreate" and
+  // "CronDelete" must not fall into the "create"/"delete" keywords either.
+  if (isClaudeCheckBackTool(toolName)) {
     return "dynamic_tool_call";
   }
   if (normalized.includes("agent")) {
