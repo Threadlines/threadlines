@@ -1,11 +1,12 @@
 import type { ScheduledTask } from "@threadlines/contracts";
-import { CalendarPlusIcon } from "lucide-react";
+import { CalendarPlusIcon, LayersIcon } from "lucide-react";
 
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { useScheduledTaskGroups } from "../../lib/scheduledTasksState";
 import { cn } from "../../lib/utils";
 import { ChromeIconButton, ChromeTooltip } from "../sidebar/ChromeIconButton";
 import { DestinationListHeader } from "../sidebar/DestinationListHeader";
+import { DestinationListRow } from "../sidebar/DestinationListRow";
 import { SidebarContent } from "../ui/sidebar";
 import {
   describeNextRun,
@@ -73,9 +74,10 @@ function TaskRow({
 }
 
 /**
- * The Scheduled page's list beside the rail: every task on every connected
- * computer that runs them, grouped by computer when there are several.
- * Choosing one opens it in the page; New task opens the form.
+ * The Scheduled page's list beside the rail: All tasks (the page's own
+ * overview), then every task on every connected computer that runs them,
+ * grouped by computer when there are several. Choosing one opens it in the
+ * page; New task opens the form.
  */
 export function ScheduledTasksList() {
   const nowMs = useRelativeTimeTick(30_000);
@@ -83,7 +85,9 @@ export function ScheduledTasksList() {
   const search = useScheduledSearch();
   const navigation = useScheduledNavigation();
   const grouped = groups.length > 1;
-  const empty = groups.every((group) => (group.tasks ?? []).length === 0);
+  const tasks = groups.flatMap((group) => group.tasks ?? []);
+  const empty = tasks.length === 0;
+  const active = tasks.filter((task) => task.status === "active").length;
 
   return (
     <>
@@ -110,6 +114,20 @@ export function ScheduledTasksList() {
       />
       <SidebarContent className="px-2 pb-3" data-testid="scheduled-tasks-list">
         {/* With no tasks the page itself says so; the list stays quiet. */}
+        {empty ? null : (
+          <ul className="flex flex-col gap-0.5">
+            <DestinationListRow
+              testId="scheduled-list-all"
+              selected={search.task === undefined && search.view === undefined}
+              icon={<LayersIcon aria-hidden="true" className="size-4" />}
+              title="All tasks"
+              meta={active === 0 ? null : `${active} active`}
+              needsYou={tasks.filter((task) => task.status === "error").length}
+              working={tasks.filter((task) => task.workingRuns > 0).length}
+              onSelect={() => navigation.showAll()}
+            />
+          </ul>
+        )}
         {empty
           ? null
           : groups.map((group) =>

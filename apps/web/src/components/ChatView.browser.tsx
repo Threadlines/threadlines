@@ -27,6 +27,7 @@ import {
   type ServerLifecycleWelcomePayload,
   type ServerProvider,
   type RoomAgentRequestId,
+  type ScheduledTaskId,
   type SideTurnId,
   type ThreadId,
   type ThreadParticipantId,
@@ -3790,6 +3791,90 @@ describe("ChatView timeline estimator parity (full app)", () => {
         (pathname) => pathname === `/${FLEET_REMOTE_ENVIRONMENT_ID}/${remoteThreadId}`,
         "A Fleet row should open its thread.",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("lists All tasks first on the Scheduled page, selected on its overview", async () => {
+    const taskId = "task-all-tasks-row" as ScheduledTaskId;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-scheduled" as MessageId,
+        targetText: "scheduled",
+      }),
+      initialPath: "/scheduled",
+      configureFixture: (nextFixture) => {
+        const capabilities = { repositoryIdentity: true, scheduledTasks: true } as const;
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await vi.waitFor(
+        () =>
+          expect(
+            wsRequests.some((request) => request._tag === WS_METHODS.scheduledTasksSubscribe),
+          ).toBe(true),
+        { timeout: 8_000, interval: 16 },
+      );
+      rpcHarness.emitStreamValue(WS_METHODS.scheduledTasksSubscribe, {
+        tasks: [
+          {
+            id: taskId,
+            name: "Morning review",
+            prompt: "Review yesterday's commits.",
+            projectId: PROJECT_ID,
+            checkout: "local",
+            modelSelection: { instanceId: "codex", model: "gpt-5" },
+            runtimeMode: "auto",
+            interactionMode: "default",
+            cadence: { kind: "daily", time: { hour: 9, minute: 0 } },
+            timeZone: "UTC",
+            target: { kind: "new_thread" },
+            status: "error",
+            error: "Its agent left the thread. Pick another agent or remove the task.",
+            nextRunAt: null,
+            lastRun: null,
+            workingRuns: 0,
+            originThreadId: null,
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+          },
+        ],
+        requests: [],
+        timeZone: "UTC",
+      });
+
+      const allTasks = page.getByTestId("scheduled-list-all");
+      await expect.element(allTasks).toHaveTextContent("All tasks");
+      await expect.element(allTasks).toHaveAttribute("aria-pressed", "true");
+      // The stopped task needs the user, counted on the row.
+      await expect.element(allTasks).toHaveTextContent("1 needs you");
+
+      // Inside a task, the row is the way back to the overview.
+      await page.getByTestId(`scheduled-list-task-${taskId}`).click();
+      await vi.waitFor(
+        () => expect(mounted.router.state.location.search).toMatchObject({ task: taskId }),
+        { timeout: 8_000, interval: 16 },
+      );
+      await expect.element(allTasks).toHaveAttribute("aria-pressed", "false");
+      await allTasks.click();
+      await vi.waitFor(
+        () => expect(mounted.router.state.location.search).not.toHaveProperty("task"),
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(mounted.router.state.location.pathname).toBe("/scheduled");
+      await expect.element(allTasks).toHaveAttribute("aria-pressed", "true");
     } finally {
       await mounted.cleanup();
     }
