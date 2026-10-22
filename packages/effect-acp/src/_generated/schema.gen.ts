@@ -730,8 +730,9 @@ export const ToolKind = Schema.Literals([
 // HAND-PATCHED after generation: usage is unstable in the spec and agents
 // report only the counts they have (fx 0.0.10 omits `totalTokens` and names
 // its cache/reasoning counts differently). A missing count must not fail the
-// whole prompt response, so every field is optional. Keep this patch when
-// regenerating.
+// whole prompt response, so every field is optional, and fx's own names
+// (`cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`) are kept so a
+// decode doesn't drop them. Keep this patch when regenerating.
 export type Usage = {
   readonly cachedReadTokens?: number | null;
   readonly cachedWriteTokens?: number | null;
@@ -739,6 +740,9 @@ export type Usage = {
   readonly outputTokens?: number;
   readonly thoughtTokens?: number | null;
   readonly totalTokens?: number;
+  readonly cacheReadTokens?: number | null;
+  readonly cacheWriteTokens?: number | null;
+  readonly reasoningTokens?: number | null;
 };
 export const Usage = Schema.Struct({
   cachedReadTokens: Schema.optionalKey(
@@ -788,6 +792,30 @@ export const Usage = Schema.Struct({
     })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
+  ),
+  cacheReadTokens: Schema.optionalKey(
+    Schema.Union([
+      Schema.Number.annotate({ description: "fx's name for cachedReadTokens.", format: "uint64" })
+        .check(Schema.isInt())
+        .check(Schema.isGreaterThanOrEqualTo(0)),
+      Schema.Null,
+    ]),
+  ),
+  cacheWriteTokens: Schema.optionalKey(
+    Schema.Union([
+      Schema.Number.annotate({ description: "fx's name for cachedWriteTokens.", format: "uint64" })
+        .check(Schema.isInt())
+        .check(Schema.isGreaterThanOrEqualTo(0)),
+      Schema.Null,
+    ]),
+  ),
+  reasoningTokens: Schema.optionalKey(
+    Schema.Union([
+      Schema.Number.annotate({ description: "fx's name for thoughtTokens.", format: "uint64" })
+        .check(Schema.isInt())
+        .check(Schema.isGreaterThanOrEqualTo(0)),
+      Schema.Null,
+    ]),
   ),
 }).annotate({
   description:

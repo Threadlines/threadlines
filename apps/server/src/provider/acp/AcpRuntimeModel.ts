@@ -1,6 +1,6 @@
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { deriveToolActivityPresentation } from "@threadlines/shared/toolActivity";
-import type { ToolLifecycleItemType } from "@threadlines/contracts";
+import type { ToolLifecycleItemType, UsageTokenTotals } from "@threadlines/contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -86,6 +86,11 @@ export type AcpParsedSessionEvent =
       readonly _tag: "ContextUsage";
       readonly usedTokens: number;
       readonly maxTokens?: number;
+    }
+  | {
+      /** The session's running cost in USD so far, from ACP `usage_update`. */
+      readonly _tag: "SessionCost";
+      readonly totalUsd: number;
     };
 
 type AcpSessionSetupResponse =
@@ -684,6 +689,16 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           ...(isCount(upd.size) && upd.size > 0 ? { maxTokens: upd.size } : {}),
         });
       }
+      // Only dollars: the usage page adds costs up, and has no exchange rate.
+      const cost = upd.cost;
+      if (
+        cost &&
+        cost.currency.trim().toUpperCase() === "USD" &&
+        Number.isFinite(cost.amount) &&
+        cost.amount >= 0
+      ) {
+        events.push({ _tag: "SessionCost", totalUsd: cost.amount });
+      }
       break;
     }
     default:
@@ -691,4 +706,44 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
   }
 
   return { ...(modeId !== undefined ? { modeId } : {}), events };
+}
+
+/**
+ * A turn's token counts from the `usage` an agent puts on its
+ * `session/prompt` result, in the usage page's terms, or `null` when it
+ * reported none.
+ *
+ * Read as a turn's own spend, the way fx reports it. `inputTokens` is taken to
+ * include the cached part, as OpenAI-style counts do (fx's does). An agent
+ * that counts it apart is undercounted by the clamp, never double counted,
+ * where the other reading would count every cached token twice for the rest.
+ * Reasoning sits inside output.
+ * fx names its cache and reasoning counts its own way; both spellings are read.
+ */
+export function acpTurnUsageTotals(
+  usage: EffectAcpSchema.Usage | null | undefined,
+): UsageTokenTotals | null {
+  if (!usage) return null;
+  const count = (value: number | null | undefined) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+  const outputTokens = count(usage.outputTokens);
+  const cachedInputTokens = count(usage.cachedReadTokens ?? usage.cacheReadTokens);
+  const cacheCreationTokens = count(usage.cachedWriteTokens ?? usage.cacheWriteTokens);
+  const inputTokens =
+    usage.inputTokens !== undefined
+      ? count(usage.inputTokens)
+      : Math.max(0, count(usage.totalTokens) - outputTokens);
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheCreationTokens),
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    reasoningTokens: Math.min(outputTokens, count(usage.thoughtTokens ?? usage.reasoningTokens)),
+  };
+  const any =
+    totals.uncachedInputTokens +
+    totals.cachedInputTokens +
+    totals.cacheCreationTokens +
+    totals.outputTokens;
+  return any > 0 ? totals : null;
 }

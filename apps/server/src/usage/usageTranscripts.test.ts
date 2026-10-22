@@ -2,9 +2,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   initialCodexScanState,
+  initialMuseScanState,
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parseMuseLine,
   parsePiLine,
   piSessionIdFromFileName,
   totalTokens,
@@ -433,5 +435,106 @@ describe("parsePiLine", () => {
     expect(piSessionIdFromFileName("2026-10-18T18-04-31-383Z_01a1502f-c916.jsonl")).toBe(
       "01a1502f-c916",
     );
+  });
+});
+
+describe("parseMuseLine", () => {
+  // Records as Muse Code 1.4.11 writes them to its session logs.
+  const museLine = (input: {
+    id: string;
+    streamKind: string;
+    streamId: string;
+    recordedAt: number;
+    event: Record<string, unknown>;
+  }) =>
+    JSON.stringify({
+      schema_version: 1,
+      id: input.id,
+      stream: { kind: input.streamKind, id: input.streamId },
+      recorded_at: input.recordedAt,
+      record_type: "event",
+      payload_type: "runtime.session",
+      payload: { kind: "run", run_id: "run-1", event: input.event },
+    });
+  const usage = {
+    input_tokens: 36_401,
+    output_tokens: 29,
+    cached_tokens: 36_081,
+    cache_write_tokens: 0,
+    cache_read_tokens: 36_081,
+    reasoning_tokens: 14,
+  };
+
+  it("reads a model call with the cached part split out of input", () => {
+    const record = parseMuseLine(
+      museLine({
+        id: "01a14355-850f",
+        streamKind: "session",
+        streamId: "01a14355-7325",
+        recordedAt: 1_792_131_040_527_451,
+        event: { kind: "model_completed", usage, model: "muse-spark-1.3" },
+      }),
+      initialMuseScanState(),
+      0,
+    );
+
+    expect(record).toEqual({
+      provider: "muse",
+      timestampMs: 1_792_131_040_527,
+      model: "muse-spark-1.3",
+      sessionId: "01a14355-7325",
+      totals: {
+        uncachedInputTokens: 320,
+        cachedInputTokens: 36_081,
+        cacheCreationTokens: 0,
+        outputTokens: 29,
+        reasoningTokens: 14,
+      },
+      cacheCreation1hTokens: 0,
+      reportedCostUsd: null,
+      dedupeKey: "01a14355-850f",
+    });
+  });
+
+  it("dates an approval check by its file and names its model from the status line", () => {
+    // Approval checks record on a fixed replay clock and name their model
+    // only in an earlier status line.
+    const state = initialMuseScanState();
+    const replay = { streamKind: "approval.review.runtime", streamId: "9845cea2" };
+    const status = museLine({
+      ...replay,
+      id: "status-1",
+      recordedAt: 1_780_531_500_000_014,
+      event: {
+        kind: "status",
+        details: {
+          facets: [{ kind: "stream" }, { kind: "producer", detail: { model: "muse-wonder-1.0" } }],
+        },
+      },
+    });
+    const call = museLine({
+      ...replay,
+      id: "call-1",
+      recordedAt: 1_780_531_500_000_016,
+      event: { kind: "model_completed", usage },
+    });
+
+    expect(parseMuseLine(status, state, 1_792_090_000_000)).toBeNull();
+    expect(parseMuseLine(call, state, 1_792_090_000_000)).toMatchObject({
+      timestampMs: 1_792_090_000_000,
+      model: "muse-wonder-1.0",
+    });
+  });
+
+  it("ignores Muse's own usage accounting, which repeats the model calls", () => {
+    const attribution = museLine({
+      id: "attr-1",
+      streamKind: "session",
+      streamId: "01a14355-7325",
+      recordedAt: 1_792_131_040_516_000,
+      event: { kind: "goal_usage_attribution", record: { quantity: usage } },
+    });
+
+    expect(parseMuseLine(attribution, initialMuseScanState(), 0)).toBeNull();
   });
 });

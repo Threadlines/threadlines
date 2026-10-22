@@ -2,8 +2,14 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-import { DEFAULT_SERVER_SETTINGS, UsageDay, type UsageSummary } from "@threadlines/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  UsageDay,
+  UsageProviderKind,
+  type UsageSummary,
+} from "@threadlines/contracts";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -15,6 +21,7 @@ import { afterEach, vi } from "vite-plus/test";
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "../config.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { UsageService, UsageServiceLive } from "./UsageService.ts";
+import { appendUsageLedgerEntry } from "./usageLedger.ts";
 
 const CLAUDE_MODEL = "claude-fable-5";
 const CODEX_MODEL = "gpt-5.6-sol";
@@ -134,6 +141,9 @@ const makeFixture = Effect.fn("makeFixture")(function* () {
   // Point both at empty folders so this machine's own sessions stay out.
   vi.stubEnv("PI_CODING_AGENT_DIR", NodePath.join(root, "pi-agent"));
   vi.stubEnv("GROK_HOME", NodePath.join(root, "grok-home"));
+  // Muse's sessions and OpenCode's database live under the XDG data folder.
+  vi.stubEnv("XDG_DATA_HOME", NodePath.join(root, "xdg-data"));
+  vi.stubEnv("OPENCODE_DB", "");
   const claudeHome = NodePath.join(root, "claude-home");
   const claudeProjects = NodePath.join(claudeHome, ".claude", "projects", "-tmp-project");
   const codexHome = NodePath.join(root, "codex-home");
@@ -330,6 +340,107 @@ describe("UsageService.readSummary", () => {
       expect(claudeBuckets.map((bucket) => bucket.day)).toEqual(["2026-08-07", "2026-08-08"]);
       expect(claudeBuckets[1]?.totals.outputTokens).toBe(7);
 
+      yield* Effect.promise(() => NodeFSP.rm(fixture.root, { recursive: true, force: true }));
+    }),
+  );
+
+  it.live("reads Muse, OpenCode and the turn ledger for a client that names them", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture();
+      const dataHome = NodePath.join(fixture.root, "xdg-data");
+      const museSession = NodePath.join(dataHome, "muse", "sessions", "2026", "08", "07", "m-1");
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(museSession, { recursive: true });
+        await NodeFSP.writeFile(
+          NodePath.join(museSession, "session.jsonl"),
+          `${JSON.stringify({
+            id: "rec-1",
+            stream: { kind: "session", id: "m-1" },
+            recorded_at: Date.parse("2026-08-07T12:00:00.000Z") * 1000,
+            payload_type: "runtime.session",
+            payload: {
+              kind: "run",
+              event: {
+                kind: "model_completed",
+                model: "muse-spark-1.3",
+                usage: { input_tokens: 300, cache_read_tokens: 200, output_tokens: 9 },
+              },
+            },
+          })}\n`,
+        );
+        // A stable build's database and another channel's, side by side.
+        await NodeFSP.mkdir(NodePath.join(dataHome, "opencode"), { recursive: true });
+        for (const [fileName, output] of [
+          ["opencode.db", 6],
+          ["opencode-local.db", 4],
+        ] as const) {
+          const database = new DatabaseSync(NodePath.join(dataHome, "opencode", fileName));
+          database.exec(`
+            CREATE TABLE session_v2 (id text PRIMARY KEY, fork_session_id text, time_created integer NOT NULL);
+            CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, time_created integer NOT NULL, data text NOT NULL);
+            INSERT INTO session_v2 VALUES ('ses_${output}', NULL, 0);
+          `);
+          database
+            .prepare(
+              `INSERT INTO session_message VALUES ('msg_${output}', 'ses_${output}', 'assistant', ?, ?)`,
+            )
+            .run(
+              Date.parse("2026-08-07T12:00:00.000Z"),
+              JSON.stringify({
+                model: { providerID: "opencode", id: "big-pickle" },
+                cost: 0,
+                tokens: { input: 40, output, reasoning: 0, cache: { read: 0, write: 0 } },
+              }),
+            );
+          database.close();
+        }
+      });
+      yield* appendUsageLedgerEntry({
+        stateDir: fixture.config.stateDir,
+        provider: "fx",
+        entry: {
+          atMs: Date.parse("2026-08-07T12:00:00.000Z"),
+          sessionId: "fx-session",
+          turnId: "turn-1",
+          model: "openai/gpt-5.2",
+          totals: {
+            uncachedInputTokens: 1_111,
+            cachedInputTokens: 4_000,
+            cacheCreationTokens: 0,
+            outputTokens: 53,
+            reasoningTokens: 5,
+          },
+          costUsd: null,
+        },
+      }).pipe(Effect.provide(NodeServices.layer));
+
+      const read = (providers?: readonly string[]) =>
+        Effect.provide(
+          Effect.flatMap(UsageService, (usage) =>
+            usage.readSummary(providers === undefined ? window : { ...window, providers }),
+          ),
+          fixture.layer,
+        );
+      const summary = yield* read(UsageProviderKind.literals);
+
+      const outputBy = (provider: string) =>
+        summary.buckets
+          .filter((bucket) => bucket.provider === provider)
+          .reduce((sum, bucket) => sum + bucket.totals.outputTokens, 0);
+      expect([outputBy("muse"), outputBy("opencode"), outputBy("fx")]).toEqual([9, 10, 53]);
+      // Every bucket names the source it was read from.
+      for (const bucket of summary.buckets) {
+        expect(summary.sources[bucket.source ?? -1]?.fingerprint.provider).toBe(bucket.provider);
+      }
+      // A client from before these providers gets none of them.
+      const legacy = yield* read();
+      expect(new Set(legacy.buckets.map((bucket) => bucket.provider))).toEqual(
+        new Set(["claude", "codex"]),
+      );
+      expect(legacy.sources.map((source) => source.fingerprint.provider)).toEqual([
+        "claude",
+        "codex",
+      ]);
       yield* Effect.promise(() => NodeFSP.rm(fixture.root, { recursive: true, force: true }));
     }),
   );

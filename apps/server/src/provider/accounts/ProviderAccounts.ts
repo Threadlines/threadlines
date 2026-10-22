@@ -54,6 +54,7 @@ import { removeLinkIfPresent } from "../accountOverlay.ts";
 import { antigravityInstancePaths } from "../antigravity/AntigravityProfile.ts";
 import { grokProcessEnvironment } from "../acp/GrokAcpSupport.ts";
 import { resolveGrokBinary } from "../grok/GrokBinary.ts";
+import { openCodeDataFolder } from "../opencode/OpenCodeDataPaths.ts";
 import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
 import { claudeInstanceBaseEnvironment, resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../Drivers/CodexHomeLayout.ts";
@@ -221,9 +222,7 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
         case "opencode": {
           const accountFolder = readConfigString(instance.config, "accountFolder");
           if (accountFolder) return [path.resolve(expandHomePath(accountFolder))];
-          const dataHome =
-            environment.XDG_DATA_HOME?.trim() || path.join(NodeOS.homedir(), ".local", "share");
-          return [path.join(dataHome, "opencode")];
+          return [openCodeDataFolder(environment)];
         }
         case "antigravity":
           return [antigravityInstancePaths(serverConfig.stateDir, instanceId).profileDir];

@@ -1,11 +1,13 @@
 /**
  * Usage reporting contract.
  *
- * Each environment scans the provider CLIs' own on-disk session transcripts
- * (`~/.claude/projects/**\/*.jsonl`, `~/.codex/sessions/**\/*.jsonl`) rather
- * than Threadlines' orchestration projections, so usage stays complete even for
- * turns that were driven by the CLI, an editor extension, or another tool
- * entirely. `ccusage` takes the same approach.
+ * Each environment scans the provider CLIs' own on-disk session records
+ * (`~/.claude/projects/**\/*.jsonl`, `~/.codex/sessions/**\/*.jsonl`, OpenCode's
+ * database, and so on) rather than Threadlines' orchestration projections, so
+ * usage stays complete even for turns that were driven by the CLI, an editor
+ * extension, or another tool entirely. `ccusage` takes the same approach. An
+ * agent that keeps no record of its own (fx) is counted from the turn usage
+ * Threadlines writes down for it.
  *
  * Environments return pre-aggregated `(day, provider, model)` buckets, plus
  * `(hour, provider, model)` buckets for the trailing hours. Raw transcript
@@ -30,8 +32,37 @@ import { ProviderInstanceId } from "./providerInstance.ts";
  */
 export const USAGE_CONTRACT_VERSION = 1 as const;
 
-export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "pi"]);
+export const UsageProviderKind = Schema.Literals([
+  "claude",
+  "codex",
+  "grok",
+  "pi",
+  "muse",
+  "opencode",
+  "fx",
+]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
+
+/**
+ * The providers a client that sends no `providers` list knows: the ones from
+ * before the list existed. A server answers such a client with only these, so
+ * a provider added later never fails its decode.
+ */
+export const USAGE_LEGACY_PROVIDER_KINDS: readonly UsageProviderKind[] = [
+  "claude",
+  "codex",
+  "grok",
+  "pi",
+];
+
+/**
+ * Which of a summary's `sources` a bucket's records came from, as an index.
+ * A provider can have several sources (OpenCode keeps a database per account),
+ * and two environments can share only some of them, so the merge drops a
+ * duplicate by source rather than by provider. Absent from servers that
+ * predate it.
+ */
+const UsageBucketSource = Schema.optional(NonNegativeInt);
 
 /**
  * A calendar day in the reporting time zone, formatted `YYYY-MM-DD`.
@@ -111,6 +142,7 @@ export const UsageBucket = Schema.Struct({
   unpricedRecords: NonNegativeInt,
   /** Distinct transcript sessions that contributed to this cell. */
   sessions: NonNegativeInt,
+  source: UsageBucketSource,
 });
 export type UsageBucket = typeof UsageBucket.Type;
 
@@ -140,6 +172,7 @@ export const UsageHourBucket = Schema.Struct({
   /** API list-price equivalent, like every cost in this module. */
   costUsd: Schema.Number,
   records: NonNegativeInt,
+  source: UsageBucketSource,
 });
 export type UsageHourBucket = typeof UsageHourBucket.Type;
 
@@ -217,6 +250,13 @@ export const UsageSummaryInput = Schema.Struct({
    * often not the machine holding the transcripts.
    */
   timeZone: TrimmedNonEmptyString,
+  /**
+   * The providers this client can show. The server leaves out the rest, so a
+   * provider added after the client was built never fails its decode. Plain
+   * strings, so a client newer than the server can name ones the server does
+   * not know. Absent means {@link USAGE_LEGACY_PROVIDER_KINDS}.
+   */
+  providers: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
 

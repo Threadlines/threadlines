@@ -64,8 +64,9 @@ the work or let it finish, then send again.
 Streaming replies and thinking summaries, commands with their output, file edits with line counts,
 approvals (including multi-step ones), questions, subagents and workflows, background commands,
 the to-do list, context usage and compaction, steering a running turn, Stop (which also stops
-subagents, workflows and background commands), the browser panel and room tools, images, and your
-plan's 5-hour and weekly usage on the Usage page.
+subagents, workflows and background commands), the browser panel and room tools, images, and on
+the Usage page both your plan's 5-hour and weekly usage and Muse's tokens by model. Muse reports no
+prices, so its tokens carry no cost.
 
 ## Known Limits
 

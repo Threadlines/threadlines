@@ -13,7 +13,8 @@
  *
  * @module usageScanCache
  */
-import type { UsageProviderKind } from "@threadlines/contracts";
+import { UsageProviderKind } from "@threadlines/contracts";
+import * as Schema from "effect/Schema";
 
 import type { UsageRecord } from "./usageTranscripts.ts";
 
@@ -111,6 +112,8 @@ function isArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value);
 }
 
+const isUsageProviderKind = Schema.is(UsageProviderKind);
+
 /**
  * Rebuilds the cache from a parsed document.
  *
@@ -138,10 +141,10 @@ export function decodeScanCache(document: unknown): ScanCache {
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
-    if (entry.p !== "claude" && entry.p !== "codex") continue;
+    if (!isUsageProviderKind(entry.p)) continue;
     if (!isArray(entry.r)) continue;
 
-    const provider: UsageProviderKind = entry.p;
+    const provider = entry.p;
     const records: UsageRecord[] = [];
     // Any corrupt row disqualifies the whole entry. Keeping the survivors under
     // the original (size, mtime) would read as a valid warm hit and the file
