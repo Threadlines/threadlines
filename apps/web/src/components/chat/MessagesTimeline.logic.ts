@@ -53,6 +53,11 @@ import {
 } from "./sideAnswers";
 import { NO_LIVE_AGENT_TRACKER_KEYS, type LiveAgentTrackerKeys } from "./agentsPanel.logic";
 import type { LiveCommandOutput } from "./backgroundRunOutput";
+import {
+  deriveTimelineRowsShared,
+  NO_TIMELINE_ROWS_SHARED,
+  type TimelineRowsShared,
+} from "./timelineRowsShared";
 
 /** What a finished turn's footer says under its last message. */
 export interface TurnSummary {
@@ -297,7 +302,15 @@ export type MessagesTimelineRow = TimelineRowPlacement &
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
   result: MessagesTimelineRow[];
+  /** What the rows share with every row, kept as stable as the rows. */
+  shared: TimelineRowsShared;
 }
+
+export const NO_STABLE_TIMELINE_ROWS: StableMessagesTimelineRowsState = {
+  byId: new Map(),
+  result: [],
+  shared: NO_TIMELINE_ROWS_SHARED,
+};
 
 export function resolveAssistantMessageCopyState({
   text,
@@ -2162,6 +2175,11 @@ function workRowMatchesActiveTurn(
   return row.groupedEntries.some((entry) => entry.turnId === activeTurnId);
 }
 
+/**
+ * The rows with each unchanged row's previous object reused, and what they
+ * share with every row (timelineRowsShared.ts); `previous` itself while
+ * nothing changed.
+ */
 export function computeStableMessagesTimelineRows(
   rows: MessagesTimelineRow[],
   previous: StableMessagesTimelineRowsState,
@@ -2179,7 +2197,9 @@ export function computeStableMessagesTimelineRows(
     return nextRow;
   });
 
-  return anyChanged ? { byId: next, result } : previous;
+  return anyChanged
+    ? { byId: next, result, shared: deriveTimelineRowsShared(result, previous.shared) }
+    : previous;
 }
 
 /** Shallow field comparison per row variant — avoids deep equality cost. */

@@ -854,7 +854,7 @@ function queuedFollowUpsEqual(
   );
 }
 
-/** Participants change rarely and are replaced wholesale, so identity is enough. */
+/** Whether two participant lists say the same about every agent, by what the chat shows of them. */
 function participantsEqual(
   left: ThreadShell["participants"],
   right: ThreadShell["participants"],
@@ -946,6 +946,21 @@ function sideTurnsEqual(
         a.kind === b.kind &&
         a.askedBy?.participantId === b.askedBy?.participantId &&
         a.requestId === b.requestId;
+}
+
+/**
+ * A changed shell, keeping the participants it had while they are the same.
+ * The server pushes a whole shell again on every update a streaming turn
+ * makes, and what the chat builds from the participants (agent names and
+ * labels) should keep its identity across them.
+ */
+function withKeptParticipants(previous: ThreadShell | undefined, next: ThreadShell): ThreadShell {
+  const kept = previous?.participants;
+  return kept !== undefined &&
+    kept !== next.participants &&
+    participantsEqual(kept, next.participants)
+    ? { ...next, participants: kept }
+    : next;
 }
 
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
@@ -1197,7 +1212,7 @@ function writeThreadState(
       ...nextState,
       threadShellById: {
         ...nextState.threadShellById,
-        [nextThread.id]: nextShell,
+        [nextThread.id]: withKeptParticipants(previousShell, nextShell),
       },
     };
   }
@@ -1414,7 +1429,7 @@ function writeThreadShellState(
       ...nextState,
       threadShellById: {
         ...nextState.threadShellById,
-        [nextThread.shell.id]: nextThread.shell,
+        [nextThread.shell.id]: withKeptParticipants(previousShell, nextThread.shell),
       },
     };
   }

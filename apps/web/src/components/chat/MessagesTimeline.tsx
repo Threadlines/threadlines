@@ -136,6 +136,7 @@ import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
+  NO_STABLE_TIMELINE_ROWS,
   deriveMessagesTimelineRows,
   deriveRememberedMessagesTimelineRows,
   estimateTimelineRowHeight,
@@ -148,6 +149,11 @@ import {
   type TurnSummary,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
+import {
+  isSettledThreadStartEntry,
+  type SideAnswerContext,
+  threadStartTurnKey,
+} from "./timelineRowsShared";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import {
   PickedElementContextChip,
@@ -216,8 +222,11 @@ import {
   type RoomAgentLabel,
   type RoomAgentNames,
   roomAgentKey,
+  sameRoomAgentLabels,
   useRoomAgentNames,
 } from "../../rooms";
+import { useKept, useStableHandlers } from "../../hooks/useStableIdentity";
+import { shallow } from "zustand/vanilla/shallow";
 import { RoomReviewTag } from "./RoomReviewTag";
 import { foldedAnsweringSideTurnIds, type SideAnswerView } from "./sideAnswers";
 import { ChatFind } from "./chatFind/ChatFind";
@@ -245,7 +254,7 @@ interface TimelineRowSharedState {
   /** Agent messages that start a new speaker's stretch and carry an author line. */
   authorLineMessageIds: ReadonlySet<MessageId>;
   /** A side answer's review or question, for the name its steps carry. */
-  sideAnswerContext: ReadonlyMap<SideTurnId, { review?: ChatMessage; replyTo?: ChatMessage }>;
+  sideAnswerContext: ReadonlyMap<SideTurnId, SideAnswerContext>;
   /** Room requests still open, by their request message. */
   openAgentRequestByMessageId: ReadonlyMap<MessageId, OrchestrationAgentRequest>;
   /**
@@ -291,7 +300,6 @@ interface TimelineRowSharedState {
   findOpenRequests: ReadonlyMap<string, number>;
   activeSearchTargetMessageId: MessageId | null;
   proposedPlanState: TimelineProposedPlanState | null;
-  turnAgents: TimelineTurnAgentsState | null;
   onOpenAgentsPanel: ((agentThreadId: string | null) => void) | null;
   /** See MessagesTimelineProps.workflowRunActions. */
   workflowRunActions: WorkflowRunActions | null;
@@ -338,6 +346,9 @@ interface TimelineRowActivityState {
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
+/** The turn's spawned agents. A context of its own: they report progress
+ *  often, and only the rows that show agents read them. */
+const TimelineTurnAgentsCtx = createContext<TimelineTurnAgentsState | null>(null);
 
 /**
  * The name an author line gives an agent: `agent` is a room agent, or null for
@@ -816,8 +827,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isWaitingOnBackgroundTasks = false,
   awaitedTasks = null,
   checkBacks,
-  onCancelCheckBack,
-  onPutMcpAppMessage,
+  onCancelCheckBack: onCancelCheckBackProp,
+  onPutMcpAppMessage: onPutMcpAppMessageProp,
   activeStatusLabel,
   activeTurnInProgress,
   activeTurnId,
@@ -826,23 +837,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   stickToBottomRequestKey = 0,
   timelineEntries,
   sideAnswers = EMPTY_SIDE_ANSWERS,
-  onStopSideAnswer,
-  turnDiffSummaryByAssistantMessageId,
+  onStopSideAnswer: onStopSideAnswerProp,
+  turnDiffSummaryByAssistantMessageId: turnDiffSummaryByAssistantMessageIdProp,
   routeThreadKey,
-  onOpenTurnDiff,
+  onOpenTurnDiff: onOpenTurnDiffProp,
   revertTurnCountByUserMessageId,
-  roomAgents = null,
+  roomAgents: roomAgentsProp = null,
   agentModelLabeler = null,
   ownAgentLabels = null,
   workingParticipantId = null,
   openAgentRequests = EMPTY_AGENT_REQUESTS,
-  onRevertUserMessage,
-  onContinueInNewThread,
-  onRevealPickedElement,
+  onRevertUserMessage: onRevertUserMessageProp,
+  onContinueInNewThread: onContinueInNewThreadProp,
+  onRevealPickedElement: onRevealPickedElementProp,
   onAddTranscriptHighlightContext,
   isRevertingCheckpoint,
-  onImageExpand,
-  onPreviewFile,
+  onImageExpand: onImageExpandProp,
+  onPreviewFile: onPreviewFileProp,
   activeThreadEnvironmentId,
   activeThreadId = null,
   markdownCwd,
@@ -850,21 +861,62 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
-  providerAuthReconnect = null,
-  failedTurnRetry = null,
-  onRunProviderAuthReconnect,
+  providerAuthReconnect: providerAuthReconnectProp = null,
+  failedTurnRetry: failedTurnRetryProp = null,
+  onRunProviderAuthReconnect: onRunProviderAuthReconnectProp,
   mcpAuthReconnectStatusByServerName = EMPTY_MCP_AUTH_RECONNECT_STATUS,
-  onRunMcpAuthReconnect,
+  onRunMcpAuthReconnect: onRunMcpAuthReconnectProp,
   onIsAtEndChange,
   onVisibleTurnIdsChange,
   searchTarget = null,
   planScrollTarget = null,
-  proposedPlanState = null,
+  proposedPlanState: proposedPlanStateProp = null,
   turnAgents = null,
-  onOpenAgentsPanel = null,
-  workflowRunActions = null,
-  onOpenThread = null,
+  onOpenAgentsPanel: onOpenAgentsPanelProp = null,
+  workflowRunActions: workflowRunActionsProp = null,
+  onOpenThread: onOpenThreadProp = null,
 }: MessagesTimelineProps) {
+  // What every row reads changes only when something rows show changes: the
+  // chat rebuilds its callbacks and some of its lookups on every update to
+  // the thread, and a new context value would redraw every row on screen.
+  const {
+    onCancelCheckBack,
+    onPutMcpAppMessage,
+    onStopSideAnswer,
+    onOpenTurnDiff,
+    onRevertUserMessage,
+    onContinueInNewThread,
+    onRevealPickedElement,
+    onImageExpand,
+    onPreviewFile,
+    onRunProviderAuthReconnect,
+    onRunMcpAuthReconnect,
+    onOpenAgentsPanel,
+    onOpenThread,
+  } = useStableHandlers({
+    onCancelCheckBack: onCancelCheckBackProp,
+    onPutMcpAppMessage: onPutMcpAppMessageProp,
+    onStopSideAnswer: onStopSideAnswerProp,
+    onOpenTurnDiff: onOpenTurnDiffProp,
+    onRevertUserMessage: onRevertUserMessageProp,
+    onContinueInNewThread: onContinueInNewThreadProp,
+    onRevealPickedElement: onRevealPickedElementProp,
+    onImageExpand: onImageExpandProp,
+    onPreviewFile: onPreviewFileProp,
+    onRunProviderAuthReconnect: onRunProviderAuthReconnectProp,
+    onRunMcpAuthReconnect: onRunMcpAuthReconnectProp,
+    onOpenAgentsPanel: onOpenAgentsPanelProp,
+    onOpenThread: onOpenThreadProp,
+  });
+  const proposedPlanState = useStableHandlers(proposedPlanStateProp);
+  const workflowRunActions = useStableHandlers(workflowRunActionsProp);
+  const failedTurnRetry = useStableHandlers(failedTurnRetryProp);
+  const providerAuthReconnect = useKept(providerAuthReconnectProp, shallow);
+  const turnDiffSummaryByAssistantMessageId = useKept(
+    turnDiffSummaryByAssistantMessageIdProp,
+    shallow,
+  );
+  const roomAgents = useKept(roomAgentsProp, sameRoomAgentLabels);
   const liveAgentCount = useMemo(
     () =>
       (turnAgents?.subagents ?? []).filter((item) => isActiveSubagentStatus(item.status)).length,
@@ -956,7 +1008,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     () => deriveRememberedMessagesTimelineRows(routeThreadKey, rowsInput),
     [routeThreadKey, rowsInput],
   );
-  const rows = useStableRows(rawRows);
+  const { result: rows, shared: rowsShared } = useStableRows(rawRows);
+  // Kept as stable as the rows, so a live update to one row does not hand
+  // every row a new context.
+  const {
+    anchorOwnsLiveAgents,
+    authorLineMessageIds,
+    sideAnswerContext,
+    sideAnswerRequests,
+    threadStartCallsByTurn,
+    resolvedProviderAuthReconnectIds,
+  } = rowsShared;
   // Find in chat searches the rows as drawn, plus answers still being written
   // under a folded side question: they open where they already sit.
   const findOpen = useChatFindStore((state) => state.open);
@@ -1013,59 +1075,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       }, VISIBLE_TURN_SETTLE_MS);
     },
     [],
-  );
-  const anchorOwnsLiveAgents = rows.some((row) => row.kind === "working");
-  // Which agent messages carry an author line: the ones that head their
-  // agent's stretch or side answer (AgentLine.heads). A hand-off or a reply
-  // names its writer in its own header.
-  const authorLineMessageIds = useMemo(() => {
-    const ids = new Set<MessageId>();
-    for (const row of rows) {
-      if (
-        row.kind === "message" &&
-        row.message.role === "assistant" &&
-        (row.agentLine !== undefined ? row.agentLine.heads : row.message.sideTurnId !== undefined)
-      ) {
-        ids.add(row.message.id);
-      }
-    }
-    return ids;
-  }, [rows]);
-  // What a side answer's name says when its steps carry it: the review it
-  // answers, or the question it links back to.
-  const sideAnswerContext = useMemo(() => {
-    const context = new Map<SideTurnId, { review?: ChatMessage; replyTo?: ChatMessage }>();
-    for (const row of rows) {
-      if (row.kind === "message" && row.message.sideTurnId !== undefined) {
-        if (row.sideReview !== undefined || row.sideReplyTo !== undefined) {
-          context.set(row.message.sideTurnId, {
-            ...(row.sideReview !== undefined ? { review: row.sideReview } : {}),
-            ...(row.sideReplyTo !== undefined ? { replyTo: row.sideReplyTo } : {}),
-          });
-        }
-      }
-    }
-    return context;
-  }, [rows]);
-  const sideAnswerRequests = useMemo(() => {
-    const requests = new Map<RoomAgentRequestId, ChatMessage>();
-    for (const row of rows) {
-      if (
-        row.kind === "message" &&
-        (row.message.requestKind === "invite" ||
-          row.message.requestKind === "ask" ||
-          row.message.requestKind === "review") &&
-        row.message.requestId !== undefined
-      ) {
-        requests.set(row.message.requestId, row.message);
-      }
-    }
-    return requests;
-  }, [rows]);
-  const threadStartCallsByTurn = useMemo(() => collectThreadStartCalls(rows), [rows]);
-  const resolvedProviderAuthReconnectIds = useMemo(
-    () => deriveResolvedProviderAuthReconnectIds(rows),
-    [rows],
   );
   const turnDiffSummaryByTurnId = useMemo(() => {
     const next = new Map<TurnId, TurnDiffSummary>();
@@ -1799,7 +1808,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       findOpenRequests,
       activeSearchTargetMessageId,
       proposedPlanState,
-      turnAgents,
       onOpenAgentsPanel,
       workflowRunActions,
       onOpenThread,
@@ -1845,7 +1853,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       findOpenRequests,
       activeSearchTargetMessageId,
       proposedPlanState,
-      turnAgents,
       onOpenAgentsPanel,
       workflowRunActions,
       onOpenThread,
@@ -1905,75 +1912,79 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     <TimelineRowCtx value={sharedState}>
       <TimelineAgentLabelCtx value={resolveAgentLabel}>
         <TimelineRowActivityCtx value={activityState}>
-          <div className="relative h-full">
-            <div ref={timelineContainerRef} className="relative h-full">
-              <LegendList<MessagesTimelineRow>
-                key={`${routeThreadKey}:${legendListEpoch}`}
-                ref={assignLegendListRef}
-                data={rows}
-                keyExtractor={keyExtractor}
-                renderItem={renderItem}
-                estimatedItemSize={90}
-                getEstimatedItemSize={getEstimatedItemSize}
-                initialScrollAtEnd={searchTargetRowIndex < 0}
-                {...(searchTargetRowIndex >= 0
-                  ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
-                  : {})}
-                maintainScrollAtEnd={
-                  searchTargetRowIndex < 0 &&
-                  ((autoStickToBottom && !touchScrollActive) || stickToBottomRequestPending)
-                    ? MAINTAIN_SCROLL_AT_END
-                    : false
-                }
-                maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
-                // Anchoring and bottom-following both adjust for streamed line wraps.
-                // Use anchoring only while reading above the tail to avoid overshoot.
-                maintainVisibleContentPosition={
-                  !autoStickToBottom && !stickToBottomRequestPending ? HOLD_READING_POSITION : false
-                }
-                onScroll={handleScroll}
-                {...(onVisibleTurnIdsChange
-                  ? { onViewableItemsChanged: handleViewableItemsChanged }
-                  : {})}
-                onWheelCapture={handleWheelCapture}
-                onPointerDownCapture={handlePointerDownCapture}
-                onTouchStartCapture={handleTouchStartCapture}
-                onTouchMoveCapture={handleTouchMoveCapture}
-                onTouchEndCapture={handleTouchEndCapture}
-                onTouchCancelCapture={handleTouchEndCapture}
-                onKeyDownCapture={handleKeyDownCapture}
-                data-chat-messages-list="true"
-                className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
-                ListHeaderComponent={TIMELINE_LIST_HEADER}
-                ListFooterComponent={TIMELINE_LIST_FOOTER}
-              />
-              {/* Dissolve rows into the background at the viewport's bottom edge so
+          <TimelineTurnAgentsCtx value={turnAgents}>
+            <div className="relative h-full">
+              <div ref={timelineContainerRef} className="relative h-full">
+                <LegendList<MessagesTimelineRow>
+                  key={`${routeThreadKey}:${legendListEpoch}`}
+                  ref={assignLegendListRef}
+                  data={rows}
+                  keyExtractor={keyExtractor}
+                  renderItem={renderItem}
+                  estimatedItemSize={90}
+                  getEstimatedItemSize={getEstimatedItemSize}
+                  initialScrollAtEnd={searchTargetRowIndex < 0}
+                  {...(searchTargetRowIndex >= 0
+                    ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
+                    : {})}
+                  maintainScrollAtEnd={
+                    searchTargetRowIndex < 0 &&
+                    ((autoStickToBottom && !touchScrollActive) || stickToBottomRequestPending)
+                      ? MAINTAIN_SCROLL_AT_END
+                      : false
+                  }
+                  maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
+                  // Anchoring and bottom-following both adjust for streamed line wraps.
+                  // Use anchoring only while reading above the tail to avoid overshoot.
+                  maintainVisibleContentPosition={
+                    !autoStickToBottom && !stickToBottomRequestPending
+                      ? HOLD_READING_POSITION
+                      : false
+                  }
+                  onScroll={handleScroll}
+                  {...(onVisibleTurnIdsChange
+                    ? { onViewableItemsChanged: handleViewableItemsChanged }
+                    : {})}
+                  onWheelCapture={handleWheelCapture}
+                  onPointerDownCapture={handlePointerDownCapture}
+                  onTouchStartCapture={handleTouchStartCapture}
+                  onTouchMoveCapture={handleTouchMoveCapture}
+                  onTouchEndCapture={handleTouchEndCapture}
+                  onTouchCancelCapture={handleTouchEndCapture}
+                  onKeyDownCapture={handleKeyDownCapture}
+                  data-chat-messages-list="true"
+                  className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
+                  ListHeaderComponent={TIMELINE_LIST_HEADER}
+                  ListFooterComponent={TIMELINE_LIST_FOOTER}
+                />
+                {/* Dissolve rows into the background at the viewport's bottom edge so
               scrolled-under content fades out instead of hard-clipping right
               above the composer. */}
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
-              />
-              {onAddTranscriptHighlightContext ? (
-                <TranscriptSelectionLayer
-                  containerRef={timelineContainerRef}
-                  onAddHighlight={onAddTranscriptHighlightContext}
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-background to-transparent"
                 />
-              ) : null}
-            </div>
-            {/* Beside the list rather than in it: the bar's own keys and its count
+                {onAddTranscriptHighlightContext ? (
+                  <TranscriptSelectionLayer
+                    containerRef={timelineContainerRef}
+                    onAddHighlight={onAddTranscriptHighlightContext}
+                  />
+                ) : null}
+              </div>
+              {/* Beside the list rather than in it: the bar's own keys and its count
               changing are not the transcript's. */}
-            <ChatFind
-              rows={rows}
-              findRows={findRows}
-              rowContext={findRowContext}
-              listRef={listRef}
-              containerRef={timelineContainerRef}
-              onOpenRow={onFindOpenRow}
-              onOpenSideExchange={onFindOpenSideExchange}
-              onStopFollowing={onFindStopFollowing}
-            />
-          </div>
+              <ChatFind
+                rows={rows}
+                findRows={findRows}
+                rowContext={findRowContext}
+                listRef={listRef}
+                containerRef={timelineContainerRef}
+                onOpenRow={onFindOpenRow}
+                onOpenSideExchange={onFindOpenSideExchange}
+                onStopFollowing={onFindStopFollowing}
+              />
+            </div>
+          </TimelineTurnAgentsCtx>
         </TimelineRowActivityCtx>
       </TimelineAgentLabelCtx>
     </TimelineRowCtx>
@@ -2003,53 +2014,6 @@ function PendingThreadDetailState(props: { savedEnvironmentConnected: boolean | 
 
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
-}
-
-function isResolvedProviderAuthRecoverySignal(row: MessagesTimelineRow): boolean {
-  if (row.kind !== "message" || row.message.role !== "assistant" || row.message.streaming) {
-    return false;
-  }
-  return row.message.text.trim().length > 0 && !isProviderAuthErrorChatMessage(row.message);
-}
-
-function deriveResolvedProviderAuthReconnectIds(
-  rows: ReadonlyArray<MessagesTimelineRow>,
-): ReadonlySet<string> {
-  const resolvedIds = new Set<string>();
-  let hasLaterAssistantSuccess = false;
-
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    const row = rows[index];
-    if (!row) {
-      continue;
-    }
-
-    if (isResolvedProviderAuthRecoverySignal(row)) {
-      hasLaterAssistantSuccess = true;
-      continue;
-    }
-
-    if (!hasLaterAssistantSuccess) {
-      continue;
-    }
-
-    if (row.kind === "message" && row.message.role === "assistant") {
-      if (isProviderAuthErrorChatMessage(row.message)) {
-        resolvedIds.add(row.id);
-      }
-      continue;
-    }
-
-    if (row.kind === "work") {
-      for (const entry of row.groupedEntries) {
-        if (entry.authReconnect) {
-          resolvedIds.add(entry.id);
-        }
-      }
-    }
-  }
-
-  return resolvedIds;
 }
 
 // ---------------------------------------------------------------------------
@@ -3491,8 +3455,8 @@ function McpAppTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mcp-app
  *  the state the turn is in ("Thinking", "Waiting for approval"). While the
  *  agent thinks out loud, its newest thought sits under the word. */
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { turnAgents, onOpenAgentsPanel, activeThreadEnvironmentId, activeThreadId } =
-    use(TimelineRowCtx);
+  const { onOpenAgentsPanel, activeThreadEnvironmentId, activeThreadId } = use(TimelineRowCtx);
+  const turnAgents = use(TimelineTurnAgentsCtx);
   const commandOutputLine = useLiveCommandOutputLine(
     activeThreadEnvironmentId,
     activeThreadId,
@@ -3993,38 +3957,6 @@ const WorkGroupSection = memo(function WorkGroupSection({
   );
 });
 
-/** A finished `thread_start` call: the steps leave it to its own record. */
-function isSettledThreadStartEntry(entry: TimelineWorkEntry): boolean {
-  return entry.executionState !== "running" && threadlinesRoomToolOf(entry) === "thread_start";
-}
-
-/** The turn a `thread_start` call is grouped by; a call no turn names stands alone. */
-function threadStartTurnKey(entry: Pick<TimelineWorkEntry, "id" | "turnId">): string {
-  return entry.turnId ? `turn:${entry.turnId}` : `entry:${entry.id}`;
-}
-
-/** Every finished `thread_start` call in the chat, by turn, in order. */
-function collectThreadStartCalls(
-  rows: ReadonlyArray<MessagesTimelineRow>,
-): ReadonlyMap<string, ReadonlyArray<ThreadStartCall>> {
-  const byTurn = new Map<string, ThreadStartCall[]>();
-  for (const row of rows) {
-    if (row.kind !== "work") continue;
-    for (const entry of row.groupedEntries) {
-      if (!isSettledThreadStartEntry(entry)) continue;
-      const key = threadStartTurnKey(entry);
-      const calls = byTurn.get(key) ?? [];
-      calls.push({
-        id: entry.id,
-        turnId: entry.turnId ?? null,
-        result: parseThreadStartResult(entry.toolResult ?? entry.outputPreview),
-      });
-      byTurn.set(key, calls);
-    }
-  }
-  return byTurn;
-}
-
 /**
  * Where the agent started threads of its own (child threads): one line for
  * the call, then each thread with its live status, a click from its chat. In
@@ -4262,7 +4194,7 @@ function useTurnAgents(
   trackerTurnIds: ReadonlyArray<TurnId>,
   trackerAgentSpawnIds: ReadonlyArray<string> = [],
 ): ReadonlyArray<SubagentProgressItem> {
-  const { turnAgents } = use(TimelineRowCtx);
+  const turnAgents = use(TimelineTurnAgentsCtx);
   const turnIds = useMemo(() => new Set(trackerTurnIds), [trackerTurnIds]);
   const spawnCallIds = useMemo(() => new Set(trackerAgentSpawnIds), [trackerAgentSpawnIds]);
   return useMemo(
@@ -5019,17 +4951,15 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 // ---------------------------------------------------------------------------
 
 /** Returns a structurally-shared copy of `rows`: for each row whose content
- *  hasn't changed since last call, the previous object reference is reused. */
-function useStableRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
-  const prevState = useRef<StableMessagesTimelineRowsState>({
-    byId: new Map<string, MessagesTimelineRow>(),
-    result: [],
-  });
+ *  hasn't changed since last call, the previous object reference is reused,
+ *  and so is each part of what the rows share with every row. */
+function useStableRows(rows: MessagesTimelineRow[]): StableMessagesTimelineRowsState {
+  const prevState = useRef<StableMessagesTimelineRowsState>(NO_STABLE_TIMELINE_ROWS);
 
   return useMemo(() => {
     const nextState = computeStableMessagesTimelineRows(rows, prevState.current);
     prevState.current = nextState;
-    return nextState.result;
+    return nextState;
   }, [rows]);
 }
 
