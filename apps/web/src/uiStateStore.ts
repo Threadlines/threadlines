@@ -124,7 +124,7 @@ export interface UiInboxState {
   childThreadFamilyOpenById: Record<string, boolean>;
   /** The projects the list is narrowed to, in the order they were picked; empty is All. */
   inboxProjectScopeKeys: readonly string[];
-  /** Which machine the list is narrowed to; null is All machines. */
+  /** Which computer the list is narrowed to; null is All computers. */
   inboxEnvironmentScopeId: string | null;
   /**
    * Which group headers the user folded while the inbox is grouped by project

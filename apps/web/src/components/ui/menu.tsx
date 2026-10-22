@@ -1,7 +1,7 @@
 "use client";
 
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
-import { ChevronRightIcon } from "lucide-react";
+import { ChevronRightIcon, SearchIcon } from "lucide-react";
 import type * as React from "react";
 
 import { cn } from "~/lib/utils";
@@ -302,6 +302,49 @@ function MenuSubTrigger({
   );
 }
 
+/** Makes the menu it wraps filterable: give its popup a MenuFilterInput. */
+const MenuFilterProvider = MenuPrimitive.FilterProvider;
+
+/**
+ * Holds a menu's rows apart from other content in the popup, such as a
+ * MenuFilterInput, so the rows alone carry the menu role.
+ */
+const MenuList = MenuPrimitive.List;
+
+/**
+ * The search line at the top of a filterable menu. It stays put while the rows
+ * scroll beneath it, and holds focus while the menu is open so typing filters
+ * at once; the arrow keys and Enter still move through and pick the rows.
+ */
+function MenuFilterInput({ className, ...props }: MenuPrimitive.Input.Props) {
+  return (
+    <div className="sticky top-0 z-10 -mx-1 -mt-1 mb-1 bg-popover p-1" data-slot="menu-filter">
+      <div className="flex h-7 items-center gap-2 rounded-md bg-muted/50 px-2">
+        <SearchIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground/70" />
+        <MenuPrimitive.Input
+          className={cn(
+            "min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none",
+            className,
+          )}
+          data-slot="menu-filter-input"
+          {...props}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** The line a filterable menu shows in place of its rows when nothing matches. */
+function MenuEmpty({ className, ...props }: MenuPrimitive.Empty.Props) {
+  return (
+    <MenuPrimitive.Empty
+      className={cn("px-2 py-1.5 text-sm text-muted-foreground", className)}
+      data-slot="menu-empty"
+      {...props}
+    />
+  );
+}
+
 function MenuSubPopup({
   className,
   sideOffset = 0,
@@ -346,6 +389,10 @@ export {
   MenuItem as DropdownMenuItem,
   MenuCheckboxItem,
   MenuCheckboxItem as DropdownMenuCheckboxItem,
+  MenuEmpty,
+  MenuFilterInput,
+  MenuFilterProvider,
+  MenuList,
   MenuRadioGroup,
   MenuRadioGroup as DropdownMenuRadioGroup,
   MenuRadioItem,

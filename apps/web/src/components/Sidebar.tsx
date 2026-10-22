@@ -110,7 +110,8 @@ import {
   useFrozenOpenDraftRow,
   type SidebarDraftProjectInfo,
 } from "./sidebar/SidebarDrafts";
-import { ProjectScopeMenu, type EnvironmentScopeOption } from "./sidebar/ProjectScopeMenu";
+import type { EnvironmentScopeOption } from "./sidebar/InboxViewMenu";
+import { ProjectScopeMenu } from "./sidebar/ProjectScopeMenu";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
 import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";

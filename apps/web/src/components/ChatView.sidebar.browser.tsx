@@ -175,7 +175,7 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
-  it("narrows the live list to rooms from the scope menu and marks the trigger while it does", async () => {
+  it("narrows the live list to rooms from the View button and lights it while it does", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -194,24 +194,25 @@ describe("ChatView (full app): sidebar", () => {
     try {
       await waitForElement(threadRow, "Unable to find thread row.");
 
-      await page.getByTestId("inbox-scope-trigger").click();
+      const viewTrigger = () => document.querySelector('[data-testid="inbox-view-trigger"]');
+      await page.getByTestId("inbox-view-trigger").click();
       await page.getByTestId("inbox-rooms-filter-only").click();
       await vi.waitFor(
         () => {
           // The fixture thread has no added agent, so it is not a room.
           expect(threadRow()).toBeNull();
-          expect(document.querySelector('[data-testid="inbox-rooms-filter-mark"]')).not.toBeNull();
+          expect(viewTrigger()?.getAttribute("data-filtered")).toBe("true");
         },
         { timeout: 4_000, interval: 16 },
       );
       await expect.element(page.getByText("No active rooms")).toBeInTheDocument();
 
-      await page.getByTestId("inbox-scope-trigger").click();
+      await page.getByTestId("inbox-view-trigger").click();
       await page.getByTestId("inbox-rooms-filter-all").click();
       await vi.waitFor(
         () => {
           expect(threadRow()).not.toBeNull();
-          expect(document.querySelector('[data-testid="inbox-rooms-filter-mark"]')).toBeNull();
+          expect(viewTrigger()?.hasAttribute("data-filtered")).toBe(false);
         },
         { timeout: 4_000, interval: 16 },
       );
