@@ -63,11 +63,6 @@ jobs:
       - name: Typecheck
         run: vp exec vp run -r --concurrency-limit 2 typecheck
 
-      - name: Test
-        # The server suite runs in the `server_test` shards. --parallel drops
-        # package ordering, so no suite waits for a package it depends on.
-        run: vp exec vp run --parallel --concurrency-limit 4 --filter '!@threadlines/server' --filter '!@threadlines/monorepo' test
-
       - name: Build desktop pipeline
         run: vp exec vp run build:desktop
 
@@ -79,6 +74,36 @@ jobs:
         run: |
           test -f apps/desktop/dist-electron/preload.cjs
           grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
+
+  # Every package's unit tests except the server's, which run in the
+  # `server_test` shards. Its own job so a failing test never hides a broken
+  # build behind it, and both finish sooner side by side.
+  # scripts/verify-release-ci.ts requires this job by name.
+  unit_test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af # v1.21.2
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Ensure Electron binary is installed
+        run: node scripts/ensure-electron-binary.ts
+
+      - name: Test
+        # --parallel drops package ordering, so no suite waits for a package it
+        # depends on.
+        run: vp exec vp run --parallel --concurrency-limit 4 --filter '!@threadlines/server' --filter '!@threadlines/monorepo' test
 
   # apps/server runs its test files one at a time (`fileParallelism: false`):
   # side by side they hit load-sensitive flakes. Sharding spreads the files over
@@ -137,7 +162,7 @@ jobs:
   quality_gate:
     name: Format, Lint, Typecheck, Test, Build
     if: ${{ always() }}
-    needs: [quality, server_test]
+    needs: [quality, unit_test, server_test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -149,8 +174,8 @@ jobs:
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null
 
   browser:
-    # Runs beside `quality` rather than after it: the browser suite is the
-    # second-longest step and shares nothing with the unit suite.
+    # Its own job: the browser suite needs a browser runtime and shares
+    # nothing with the unit suites.
     name: Browser Test
     runs-on: ubuntu-latest
     timeout-minutes: 30
