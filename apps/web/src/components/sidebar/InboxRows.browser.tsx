@@ -450,7 +450,10 @@ describe("a thread another computer asked to start", () => {
     );
   }
 
-  function stubMacMini(respondRequest: ComputerLinksClient["respondRequest"]) {
+  function stubMacMini(
+    respondRequest: ComputerLinksClient["respondRequest"],
+    pending: ReadonlyArray<ComputerLinkPendingRequest> = [REQUEST],
+  ) {
     const unused = () => {
       throw new Error("Not part of this test.");
     };
@@ -462,9 +465,7 @@ describe("a thread another computer asked to start", () => {
       remove: unused,
       respondRequest,
     });
-    useComputerLinksStore
-      .getState()
-      .put(MAC_MINI, { outbound: [], inbound: [], pending: [REQUEST] });
+    useComputerLinksStore.getState().put(MAC_MINI, { outbound: [], inbound: [], pending });
   }
 
   afterEach(() => {
@@ -494,6 +495,48 @@ describe("a thread another computer asked to start", () => {
     expect(opened).toEqual([]);
     // Answered: nothing more to press while Mac mini drops the request.
     await expect.element(page.getByTestId(`link-request-deny-${REQUEST.requestId}`)).toBeDisabled();
+  });
+
+  it("reads a move as a move: which computers, what goes, and where it lands", async () => {
+    const move: ComputerLinkPendingRequest = {
+      ...REQUEST,
+      requestId: ChildRequestId.make("transfer-login"),
+      kind: "move",
+      title: "Fix the login bug",
+      parentThreadTitle: "Fix the login bug",
+      prompt: "",
+      move: {
+        messageCount: 12,
+        branch: "fix/login",
+        trackedFiles: 3,
+        untrackedFiles: 1,
+        unpushedCommits: 2,
+      },
+    };
+    const respondRequest = vi.fn<ComputerLinksClient["respondRequest"]>(async () => undefined);
+    stubMacMini(respondRequest, [move]);
+    render(<PendingRequestRows />);
+
+    await expect
+      .element(page.getByTestId(`link-request-title-${move.requestId}`))
+      .toHaveTextContent("Fix the login bug");
+    await expect
+      .element(page.getByTestId(`link-request-where-${move.requestId}`))
+      .toHaveTextContent("Windows PC wants to move a thread to Mac mini");
+    await expect
+      .element(page.getByTestId(`link-request-move-${move.requestId}`))
+      .toHaveTextContent(
+        "12 messages · branch fix/login · 3 changed files · 1 new file · 2 commits not pushed" +
+          "Lands in threadlines with up to Auto access",
+      );
+
+    await userEvent.click(page.getByTestId(`link-request-allow-${move.requestId}`));
+    expect(respondRequest).toHaveBeenCalledWith({
+      deviceId: move.deviceId,
+      requestId: move.requestId,
+      allow: true,
+    });
+    expect(opened).toEqual([]);
   });
 
   it("opens the request when the row is clicked", async () => {
