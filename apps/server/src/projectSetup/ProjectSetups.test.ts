@@ -16,6 +16,8 @@ import {
 import { normalizeGitRemoteUrl } from "@threadlines/shared/git";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as PubSub from "effect/PubSub";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
@@ -31,6 +33,7 @@ import {
   cloneUrls,
   filesRefusal,
   makeProjectSetups,
+  snapshotsOnChange,
   ProjectSetups,
   ProjectSetupsLive,
   stagingPathFor,
@@ -413,6 +416,33 @@ describe("ProjectSetups", () => {
         assert.isTrue(fs.existsSync(path.join(repos.b, ".git")));
       }).pipe(Effect.provide(testLayer(repos, dispatched)));
     },
+  );
+
+  it.live("keeps telling the app the latest progress while git reports it nonstop", () =>
+    Effect.gen(function* () {
+      // A change every 10 ms for most of a second, as a large download reports.
+      const changed = yield* PubSub.sliding<void>(1);
+      let latest = 0;
+      const heard: number[] = [];
+      const listening = yield* snapshotsOnChange(
+        Stream.fromPubSub(changed),
+        "100 millis",
+        Effect.sync(() => latest),
+      ).pipe(
+        Stream.runForEach((value) => Effect.sync(() => heard.push(value))),
+        Effect.forkChild,
+      );
+      for (latest = 1; latest <= 80; latest += 1) {
+        yield* PubSub.publish(changed, undefined);
+        yield* Effect.sleep("10 millis");
+      }
+      latest = 80;
+      yield* Effect.sleep("300 millis");
+      yield* Fiber.interrupt(listening);
+      // Heard along the way, not only once it went quiet, and ending on the latest.
+      assert.isAtLeast(heard.filter((value) => value > 1 && value < 80).length, 4);
+      assert.equal(heard.at(-1), 80);
+    }),
   );
 
   it("reads git's progress, picks clone URLs and checks the files it is sent", () => {

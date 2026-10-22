@@ -91,6 +91,26 @@ export class ProjectSetups extends Context.Service<ProjectSetups, ProjectSetupsS
 const STALLED_AFTER = Duration.seconds(20);
 /** Git said nothing for this long: the job fails. */
 const GIVE_UP_AFTER = Duration.minutes(15);
+/** The most often a client hears of a job while git reports progress nonstop. */
+const SNAPSHOT_EVERY = Duration.millis(250);
+
+/**
+ * A snapshot right away, then one after changes: at most one per `every`
+ * while they keep coming, always reading the latest. (A debounce would wait
+ * for a quiet moment, and git reporting a large download never pauses, so
+ * the progress froze until the end.) `changes` must hold only its latest
+ * signal while this waits, as a sliding PubSub of one does.
+ */
+export const snapshotsOnChange = <A, E, R>(
+  changes: Stream.Stream<void>,
+  every: Duration.Input,
+  read: Effect.Effect<A, E, R>,
+): Stream.Stream<A, E, R> =>
+  Stream.concat(Stream.make(undefined), changes).pipe(
+    Stream.throttle({ cost: () => 1, units: 1, duration: every, strategy: "shape" }),
+    Stream.mapEffect(() => read),
+  );
+
 /** Finished jobs stay listed this long unless dismissed. */
 const KEEP_FINISHED = Duration.hours(24);
 /** Git's last words kept for an error. */
@@ -257,12 +277,10 @@ export const makeProjectSetups = Effect.gen(function* () {
     return { jobs: kept.map(toJob) } satisfies ProjectSetupsSnapshot;
   }).pipe(Effect.mapError(stored("read its project setups")));
 
-  const changes: ProjectSetupsShape["changes"] = Stream.concat(
-    Stream.make(undefined),
+  const changes: ProjectSetupsShape["changes"] = snapshotsOnChange(
     Stream.fromPubSub(changed),
-  ).pipe(
-    Stream.debounce(Duration.millis(150)),
-    Stream.mapEffect(() => snapshot),
+    SNAPSHOT_EVERY,
+    snapshot,
   );
 
   const setStage = (row: ProjectSetupRow, stage: ProjectSetupStage, extra = {}) =>
