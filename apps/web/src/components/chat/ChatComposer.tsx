@@ -600,6 +600,11 @@ export interface ChatComposerProps {
     readonly label: string;
     readonly connectionState: "connecting" | "disconnected" | "error";
   } | null;
+  /**
+   * The thread takes no messages here: it is moving, or moved, to another
+   * computer (docs/design/fleet.md, Part 3). `reason` is the placeholder.
+   */
+  threadLocked?: { readonly reason: string } | null;
 
   // Pending approvals / inputs
   activePendingApproval: PendingApproval | null;
@@ -738,6 +743,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isSendBusy,
     isPreparingWorktree,
     environmentUnavailable,
+    threadLocked = null,
     activePendingApproval,
     pendingApprovals,
     pendingUserInputs,
@@ -1931,6 +1937,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const attachmentsDisabledReason = attachmentsDisabled
     ? "Finish the pending prompt before adding attachments"
     : null;
+  // Nothing can be sent from here: the thread's computer is out of reach, or
+  // the thread is moving or moved away.
+  const composerUnavailable = environmentUnavailable !== null || threadLocked !== null;
   // Dictation writes into the prompt, so it is blocked by everything that
   // blocks typing, named the way the placeholder names it.
   const dictationDisabledReason = isComposerApprovalState
@@ -1941,7 +1950,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         ? `${environmentUnavailable.label} is ${
             environmentUnavailable.connectionState === "connecting" ? "connecting" : "disconnected"
           }`
-        : null;
+        : (threadLocked?.reason ?? null);
 
   // ------------------------------------------------------------------
   // Prompt helpers
@@ -2860,7 +2869,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       isConnecting ||
       isComposerApprovalState ||
       hasBlockingQuestion ||
-      environmentUnavailable !== null
+      composerUnavailable
     ) {
       return null;
     }
@@ -2877,7 +2886,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [
     acceptPromptSuggestion,
     composerCapabilityHint,
-    environmentUnavailable,
+    composerUnavailable,
     hasBlockingQuestion,
     isComposerApprovalState,
     isConnecting,
@@ -3678,7 +3687,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               hasComposerDockContent({ pullRequests, notices: dockedNotices }) &&
               "rounded-t-none",
             isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
-            environmentUnavailable ? "opacity-75" : null,
+            composerUnavailable ? "opacity-75" : null,
             composerProviderState.composerSurfaceClassName,
           )}
           onFocusCapture={(event) => {
@@ -3721,7 +3730,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   {...(onRespondToUserInput ? { onRespond: onRespondToUserInput } : {})}
                   onPrevious={onPreviousActivePendingUserInputQuestion}
                   onCustomAnswerChange={onChangeActivePendingUserInputCustomAnswer}
-                  isUnavailable={environmentUnavailable !== null}
+                  isUnavailable={composerUnavailable}
                   isAgentRunning={hasActiveTurn}
                 />
               </div>
@@ -4038,25 +4047,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onPaste={onComposerPaste}
                     suggestion={promptSuggestionDisplay}
                     placeholder={
-                      isComposerApprovalState
-                        ? "Resolve this approval request to continue"
-                        : hasBlockingQuestion
-                          ? "Answer the question above, or stop the turn"
-                          : showPlanFollowUpPrompt && activeProposedPlan
-                            ? "Add feedback to refine the plan, or leave this blank to implement it"
-                            : environmentUnavailable
-                              ? `${environmentUnavailable.label} is ${
-                                  environmentUnavailable.connectionState === "connecting"
-                                    ? "connecting"
-                                    : "disconnected"
-                                }`
-                              : defaultComposerPlaceholder
+                      threadLocked
+                        ? threadLocked.reason
+                        : isComposerApprovalState
+                          ? "Resolve this approval request to continue"
+                          : hasBlockingQuestion
+                            ? "Answer the question above, or stop the turn"
+                            : showPlanFollowUpPrompt && activeProposedPlan
+                              ? "Add feedback to refine the plan, or leave this blank to implement it"
+                              : environmentUnavailable
+                                ? `${environmentUnavailable.label} is ${
+                                    environmentUnavailable.connectionState === "connecting"
+                                      ? "connecting"
+                                      : "disconnected"
+                                  }`
+                                : defaultComposerPlaceholder
                     }
                     disabled={
                       isConnecting ||
                       isComposerApprovalState ||
                       hasBlockingQuestion ||
-                      environmentUnavailable !== null
+                      composerUnavailable
                     }
                   />
                 </div>
@@ -4294,7 +4305,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       promptHasText={prompt.trim().length > 0}
                       isSendBusy={isSendBusy}
                       isConnecting={isConnecting}
-                      isEnvironmentUnavailable={environmentUnavailable !== null}
+                      isEnvironmentUnavailable={composerUnavailable}
                       isPreparingWorktree={isPreparingWorktree}
                       hasSendableContent={
                         !hasBlockingQuestion && composerSendState.hasSendableContent

@@ -25,6 +25,7 @@ import {
   deriveSubagentResultEntries,
   deriveThreadSubagentHistory,
   deriveForkContextEntries,
+  deriveMovedInEntries,
   deriveTimelineEntries,
   deriveTurnDispatchedModelSelections,
   deriveWorkLogEntries,
@@ -5172,6 +5173,101 @@ describe("deriveRevertTurnCountByUserMessageId", () => {
       ["prompt-1", 0],
       ["prompt-2", 1],
     ]);
+  });
+
+  it("offers no revert on history a move brought, even when this computer's turn follows it", () => {
+    const reverts = deriveRevertTurnCountByUserMessageId({
+      timelineEntries: [
+        messageEntry("imported-prompt", "user", null, { imported: true }),
+        messageEntry("imported-answer", "assistant", "turn-there", { imported: true }),
+        // Never answered there: the agent here picked it up on its own.
+        messageEntry("imported-unanswered", "user", null, { imported: true }),
+        messageEntry("answer-here", "assistant", "turn-1"),
+        messageEntry("prompt-here", "user", null),
+        messageEntry("answer-here-2", "assistant", "turn-2"),
+      ],
+      turnDiffSummaryByAssistantMessageId: new Map([
+        [MessageId.make("answer-here"), summary("turn-1", 1)],
+        [MessageId.make("answer-here-2"), summary("turn-2", 2)],
+      ]),
+      inferredCheckpointTurnCountByTurnId: {},
+    });
+    expect([...reverts]).toEqual([["prompt-here", 1]]);
+  });
+});
+
+describe("a thread that moved here from another computer", () => {
+  it("draws the boundary after the history it brought, and never as a step", () => {
+    const movedIn = makeActivity({
+      id: "moved-in",
+      createdAt: "2026-02-23T00:05:00.000Z",
+      kind: "thread.moved-in",
+      summary: "Moved here from Mac mini",
+      tone: "info",
+      eventSequence: 3,
+      payload: {
+        fromEnvironmentId: "environment-mac-mini",
+        fromLabel: "Mac mini",
+        fromThreadId: "thread-there",
+        movedAt: "2026-02-23T00:04:00.000Z",
+      },
+    });
+    const entries = deriveMovedInEntries([movedIn]);
+    expect(entries).toEqual([
+      expect.objectContaining({ fromLabel: "Mac mini", movedAt: "2026-02-23T00:04:00.000Z" }),
+    ]);
+    expect(deriveWorkLogEntries([movedIn])).toEqual([]);
+
+    const message = (id: string, eventSequence: number, createdAt: string) => ({
+      id: MessageId.make(id),
+      role: "user" as const,
+      text: id,
+      createdAt,
+      eventSequence,
+      streaming: false,
+    });
+    const timeline = deriveTimelineEntries(
+      [
+        message("imported-1", 1, "2026-02-20T00:00:00.000Z"),
+        message("imported-2", 2, "2026-02-21T00:00:00.000Z"),
+        message("here-1", 4, "2026-02-23T00:06:00.000Z"),
+      ],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      entries,
+    );
+    expect(timeline.map((entry) => entry.id)).toEqual([
+      "imported-1",
+      "imported-2",
+      "moved-in",
+      "here-1",
+    ]);
+  });
+
+  it("tells a dropped move as a failed step that says why", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "move-failed",
+        kind: "thread.move-failed",
+        summary: "Couldn't move to Mac mini",
+        tone: "error",
+        payload: {
+          targetLabel: "Mac mini",
+          reason: "Mac mini has no project for this repository.",
+        },
+      }),
+    ]);
+    expect(entry).toMatchObject({
+      label: "Couldn't move to Mac mini",
+      tone: "error",
+      detail: "Mac mini has no project for this repository.",
+    });
   });
 });
 

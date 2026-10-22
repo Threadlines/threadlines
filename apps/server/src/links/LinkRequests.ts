@@ -33,6 +33,7 @@ import {
   type LinksRespondRequestInput,
   type MessageId,
   type ModelSelection,
+  type OrchestrationProjectCatalogEntry,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationThread,
@@ -224,7 +225,35 @@ export interface LinkRequestsShape {
   readonly messageVerdict: RemoteRequestGateShape["messageVerdict"];
   /** Start reacting to thread events and settle what the previous process left. */
   readonly startReactor: () => Effect.Effect<void, never, Scope.Scope>;
+  /**
+   * Shared with moves (LinkMoves): whether the link still lets its work go
+   * on, read afresh; the project here for a canonical key; and the agent
+   * here a linked computer named, with its model.
+   */
+  readonly authority: (deviceId: string) => Effect.Effect<LinkAuthority>;
+  readonly projectForKey: (
+    canonicalKey: string,
+  ) => Effect.Effect<OrchestrationProjectCatalogEntry | undefined>;
+  readonly resolveAgentFor: (input: AgentAsked) => Effect.Effect<AgentResolution>;
 }
+
+/** What a link still allows, read afresh before each stage of its work. */
+export type LinkAuthority =
+  | {
+      readonly ok: true;
+      readonly maxRuntimeMode: RuntimeMode;
+      /** The computer the link was made for, when pinned by its invite. */
+      readonly pinnedEnvironmentId: string | null;
+    }
+  | { readonly ok: false; readonly outcome: PeerRequestOutcome; readonly text: string };
+
+/** An agent a linked computer named, by this computer's instance id. */
+export interface AgentAsked {
+  readonly agent: Pick<PeerStartInput["agent"], "instanceId" | "model" | "options">;
+  readonly interactionMode: PeerStartInput["interactionMode"];
+}
+
+export type AgentResolution = { readonly selection: ModelSelection } | { readonly refused: string };
 
 export class LinkRequests extends Context.Service<LinkRequests, LinkRequestsShape>()(
   "threadlines/links/LinkRequests",
@@ -345,45 +374,34 @@ const make = Effect.gen(function* () {
    * before every stage, so a change made while it waited (or across a
    * restart) holds.
    */
-  const linkAuthority = (deviceId: string) =>
+  const linkAuthority = (deviceId: string): Effect.Effect<LinkAuthority> =>
     devices.getDevice(deviceId).pipe(
-      Effect.map(
-        (
-          found,
-        ):
-          | {
-              readonly ok: true;
-              readonly maxRuntimeMode: RuntimeMode;
-              /** The computer the link was made for, when pinned by its invite. */
-              readonly pinnedEnvironmentId: string | null;
-            }
-          | { readonly ok: false; readonly outcome: PeerRequestOutcome; readonly text: string } => {
-          if (
-            Option.isNone(found) ||
-            found.value.state !== "active" ||
-            found.value.grant !== "peer"
-          ) {
-            return { ok: false, outcome: "cancelled", text: `${ownLabel} removed the link.` };
-          }
-          if (found.value.linkAccess === "off") {
-            return {
-              ok: false,
-              outcome: "denied",
-              text: `${ownLabel} doesn't take work from ${found.value.label}.`,
-            };
-          }
+      Effect.map((found): LinkAuthority => {
+        if (
+          Option.isNone(found) ||
+          found.value.state !== "active" ||
+          found.value.grant !== "peer"
+        ) {
+          return { ok: false, outcome: "cancelled", text: `${ownLabel} removed the link.` };
+        }
+        if (found.value.linkAccess === "off") {
           return {
-            ok: true,
-            maxRuntimeMode: found.value.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE,
-            pinnedEnvironmentId: found.value.linkEnvironmentPinned
-              ? found.value.linkEnvironmentId
-              : null,
+            ok: false,
+            outcome: "denied",
+            text: `${ownLabel} doesn't take work from ${found.value.label}.`,
           };
-        },
-      ),
-      Effect.orElseSucceed(() => ({
-        ok: false as const,
-        outcome: "failed" as const,
+        }
+        return {
+          ok: true,
+          maxRuntimeMode: found.value.linkMaxRuntimeMode ?? DEFAULT_LINK_MAX_RUNTIME_MODE,
+          pinnedEnvironmentId: found.value.linkEnvironmentPinned
+            ? found.value.linkEnvironmentId
+            : null,
+        };
+      }),
+      Effect.orElseSucceed((): LinkAuthority => ({
+        ok: false,
+        outcome: "failed",
         text: `${ownLabel} couldn't check the link.`,
       })),
     );
@@ -683,7 +701,7 @@ const make = Effect.gen(function* () {
     });
 
   /** The agent the asking computer named, with a model: this computer's own instance ids. */
-  const resolveAgent = (input: PeerStartInput) =>
+  const resolveAgent = (input: AgentAsked): Effect.Effect<AgentResolution> =>
     Effect.gen(function* () {
       const all = yield* providers.getProviders;
       const provider = all.find((entry) => entry.instanceId === input.agent.instanceId);
@@ -2102,6 +2120,9 @@ const make = Effect.gen(function* () {
     onTurnEnd,
     messageVerdict,
     startReactor,
+    authority: linkAuthority,
+    projectForKey,
+    resolveAgentFor: resolveAgent,
   });
 });
 

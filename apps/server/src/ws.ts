@@ -139,6 +139,7 @@ import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentit
 import { RelayHost } from "./relay/RelayHost.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
+import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput.ts";
@@ -360,6 +361,7 @@ const makeWsRpcLayer = (currentSession: {
       const relayHost = yield* RelayHost;
       const computerLinks = yield* ComputerLinks;
       const scheduledTasks = yield* ScheduledTasks;
+      const threadMoves = yield* ThreadMoves;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const agentPages = yield* AgentPages;
       const mcpApps = yield* McpApps;
@@ -2659,6 +2661,19 @@ const makeWsRpcLayer = (currentSession: {
             scheduledTasks.respondRequest(input),
             { "rpc.aggregate": "scheduledTasks" },
           ),
+        // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
+        [WS_METHODS.movesPreview]: (input) =>
+          observeRpcEffect(WS_METHODS.movesPreview, threadMoves.preview(input.threadId), {
+            "rpc.aggregate": "moves",
+          }),
+        [WS_METHODS.movesStart]: (input) =>
+          observeRpcEffect(WS_METHODS.movesStart, threadMoves.start(input), {
+            "rpc.aggregate": "moves",
+          }),
+        [WS_METHODS.movesCancel]: (input) =>
+          observeRpcEffect(WS_METHODS.movesCancel, threadMoves.cancel(input.threadId), {
+            "rpc.aggregate": "moves",
+          }),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,

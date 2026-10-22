@@ -6,12 +6,20 @@ import {
   ChildRequestId,
   EnvironmentId,
   IsoDateTime,
+  NonNegativeInt,
   ThreadId,
+  ThreadMoveId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ComputerLinkAccess } from "./links.ts";
 import { ProviderOptionSelections } from "./model.ts";
-import { ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
+import {
+  ModelSelection,
+  OrchestrationThreadActivity,
+  ProviderInteractionMode,
+  RuntimeMode,
+  ThreadImportMessage,
+} from "./orchestration.ts";
 
 /**
  * What one linked computer's server may ask of another (docs/design/fleet.md,
@@ -136,6 +144,8 @@ export const PeerDescriptor = Schema.Struct({
   /** The agent new threads here use when none is named. */
   defaultAgent: Schema.NullOr(Schema.Struct({ instanceId: Schema.String, model: Schema.String })),
   projects: Schema.Array(PeerProject),
+  /** Takes threads moved here (`peer.move.*`). Absent: an older server that can't. */
+  moves: Schema.optional(Schema.Boolean),
 });
 export type PeerDescriptor = typeof PeerDescriptor.Type;
 
@@ -312,6 +322,106 @@ export type PeerWatchEvent = typeof PeerWatchEvent.Type;
 export const PeerReportAckInput = Schema.Struct({ reportId: TrimmedNonEmptyString });
 export type PeerReportAckInput = typeof PeerReportAckInput.Type;
 
+// ----- moving a thread here (docs/design/fleet.md, Part 3) ---------------------------------
+
+/**
+ * One piece of a move's payload: a slice of one byte stream, described by
+ * where it sits and its hash. `bundle` is the git bundle of the commits the
+ * remote doesn't have, `diff` the tracked changes (`git diff --binary`),
+ * `file` one untracked file, `attachment` one message attachment.
+ */
+export const PeerMovePart = Schema.Struct({
+  kind: Schema.Literals(["bundle", "diff", "file", "attachment"]),
+  offset: NonNegativeInt,
+  length: NonNegativeInt,
+  sha256: TrimmedNonEmptyString,
+  /** `file`: its path from the repository root, `/`-separated. */
+  path: Schema.optional(TrimmedNonEmptyString),
+  mode: Schema.optional(Schema.Literals(["file", "executable", "symlink"])),
+  /** `attachment`: the id the moved messages use for it on the sending computer. */
+  attachmentId: Schema.optional(TrimmedNonEmptyString),
+});
+export type PeerMovePart = typeof PeerMovePart.Type;
+
+/** What a moved thread brings and how to rebuild it here. */
+export const PeerMoveManifest = Schema.Struct({
+  totalBytes: NonNegativeInt,
+  sha256: TrimmedNonEmptyString,
+  parts: Schema.Array(PeerMovePart),
+  source: Schema.Struct({
+    environmentId: EnvironmentId,
+    environmentLabel: TrimmedNonEmptyString,
+    threadId: ThreadId,
+  }),
+  project: Schema.Struct({
+    canonicalKey: TrimmedNonEmptyString,
+    title: TrimmedNonEmptyString,
+  }),
+  git: Schema.Struct({
+    headSha: TrimmedNonEmptyString,
+    /** Null: a detached head. */
+    branch: Schema.NullOr(TrimmedNonEmptyString),
+    /** The commit the bundle starts after; null when there is no bundle (nothing unpushed). */
+    baseSha: Schema.NullOr(TrimmedNonEmptyString),
+  }),
+  thread: Schema.Struct({
+    title: TrimmedNonEmptyString,
+    runtimeMode: RuntimeMode,
+    interactionMode: ProviderInteractionMode,
+    messages: Schema.Array(ThreadImportMessage),
+    activities: Schema.Array(OrchestrationThreadActivity),
+  }),
+  /** The agent to run it with here, by this computer's instance id. */
+  agent: ModelSelection,
+  summary: Schema.Struct({
+    messageCount: NonNegativeInt,
+    trackedFiles: NonNegativeInt,
+    untrackedFiles: NonNegativeInt,
+    unpushedCommits: NonNegativeInt,
+  }),
+});
+export type PeerMoveManifest = typeof PeerMoveManifest.Type;
+
+export const PeerMoveStatus = Schema.Literals([
+  "awaiting_approval",
+  "receiving",
+  "importing",
+  "committed",
+  "aborted",
+]);
+export type PeerMoveStatus = typeof PeerMoveStatus.Type;
+
+/** Where a move stands here: every `peer.move.*` call answers with it. */
+export const PeerMoveState = Schema.Struct({
+  status: PeerMoveStatus,
+  bytesReceived: NonNegativeInt,
+  /** `committed`: the thread it became here. */
+  threadId: Schema.optional(ThreadId),
+  /** `aborted`: why, for the user on the sending computer. */
+  reason: Schema.optional(TrimmedNonEmptyString),
+});
+export type PeerMoveState = typeof PeerMoveState.Type;
+
+export const PeerMovePrepareInput = Schema.Struct({
+  transferId: ThreadMoveId,
+  manifest: PeerMoveManifest,
+});
+export type PeerMovePrepareInput = typeof PeerMovePrepareInput.Type;
+
+/** At most this much decoded data per chunk. */
+export const PEER_MOVE_CHUNK_MAX_BYTES = 1024 * 1024;
+
+export const PeerMoveChunkInput = Schema.Struct({
+  transferId: ThreadMoveId,
+  offset: NonNegativeInt,
+  /** Base64. */
+  data: Schema.String,
+});
+export type PeerMoveChunkInput = typeof PeerMoveChunkInput.Type;
+
+export const PeerMoveInput = Schema.Struct({ transferId: ThreadMoveId });
+export type PeerMoveInput = typeof PeerMoveInput.Type;
+
 export class PeerRpcError extends Schema.TaggedError<PeerRpcError>()("PeerRpcError", {
   detail: TrimmedNonEmptyString,
 }) {
@@ -331,6 +441,11 @@ export const PEER_METHODS = {
   watch: "peer.watch",
   reportAck: "peer.report.ack",
   unlink: "peer.unlink",
+  movePrepare: "peer.move.prepare",
+  moveChunk: "peer.move.chunk",
+  moveFinish: "peer.move.finish",
+  moveStatus: "peer.move.status",
+  moveAbort: "peer.move.abort",
 } as const;
 
 export const PeerDescribeRpc = Rpc.make(PEER_METHODS.describe, {
@@ -404,6 +519,40 @@ export const PeerUnlinkRpc = Rpc.make(PEER_METHODS.unlink, {
   error: PeerRpcError,
 });
 
+/** Offer a thread to move here. Ask first holds it for this computer's user. */
+export const PeerMovePrepareRpc = Rpc.make(PEER_METHODS.movePrepare, {
+  payload: PeerMovePrepareInput,
+  success: PeerMoveState,
+  error: PeerRpcError,
+});
+
+/** The next slice of the payload; only `offset == bytesReceived` is written. */
+export const PeerMoveChunkRpc = Rpc.make(PEER_METHODS.moveChunk, {
+  payload: PeerMoveChunkInput,
+  success: PeerMoveState,
+  error: PeerRpcError,
+});
+
+/** Every byte is here: check it and start the import. */
+export const PeerMoveFinishRpc = Rpc.make(PEER_METHODS.moveFinish, {
+  payload: PeerMoveInput,
+  success: PeerMoveState,
+  error: PeerRpcError,
+});
+
+export const PeerMoveStatusRpc = Rpc.make(PEER_METHODS.moveStatus, {
+  payload: PeerMoveInput,
+  success: PeerMoveState,
+  error: PeerRpcError,
+});
+
+/** Drop the move: answers `aborted`, or `committed` when it already landed. */
+export const PeerMoveAbortRpc = Rpc.make(PEER_METHODS.moveAbort, {
+  payload: PeerMoveInput,
+  success: PeerMoveState,
+  error: PeerRpcError,
+});
+
 export const PeerRpcGroup = RpcGroup.make(
   PeerDescribeRpc,
   PeerRequestStartRpc,
@@ -415,4 +564,9 @@ export const PeerRpcGroup = RpcGroup.make(
   PeerWatchRpc,
   PeerReportAckRpc,
   PeerUnlinkRpc,
+  PeerMovePrepareRpc,
+  PeerMoveChunkRpc,
+  PeerMoveFinishRpc,
+  PeerMoveStatusRpc,
+  PeerMoveAbortRpc,
 );

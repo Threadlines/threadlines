@@ -120,6 +120,8 @@ import {
 import { useComputerLabel, usePendingLinkRequests } from "./sidebar/linkedComputers";
 import type { ThreadHoverCardLineage } from "./sidebar/ThreadHoverCard";
 import { confirmThreadDeleteWithChildren } from "./ThreadDeleteDialog";
+import { openThreadMoveDialog } from "./ThreadMoveDialog";
+import { readThreadMoveOffered } from "../environments/links/threadMoves";
 import { childAttachRefusal } from "@threadlines/shared/childThreads";
 import { EMPTY_CHILD_REQUEST_STATE } from "@threadlines/contracts";
 import {
@@ -1645,6 +1647,7 @@ export default function Sidebar() {
                 thread.pendingChildApproval === true,
             )
           : undefined;
+      const moveOffered = readThreadMoveOffered(thread.environmentId, thread.moveStatus);
       const clicked = await api.contextMenu.show(
         [
           { id: "rename", label: "Rename thread" },
@@ -1676,6 +1679,7 @@ export default function Sidebar() {
                 },
               ]
             : []),
+          ...(moveOffered ? [{ id: "move" as const, label: "Move to another computer" }] : []),
           { id: "copy-path", label: "Copy Path" },
           { id: "copy-thread-id", label: "Copy Thread ID" },
           { id: "delete", label: "Delete", destructive: true },
@@ -1734,6 +1738,10 @@ export default function Sidebar() {
 
       if (clicked === "mark-unread") {
         markThreadUnreadByKey(threadKey, thread.latestTurn?.completedAt);
+        return;
+      }
+      if (clicked === "move") {
+        openThreadMoveDialog(threadRef);
         return;
       }
       if (clicked === "copy-path") {

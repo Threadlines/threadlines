@@ -1123,6 +1123,79 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
+  it("gives a thread moved here its conversation with its first send, once", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const moved = ThreadId.make("thread-moved");
+    const own = (await harness.readModel()).threads.find((thread) => thread.id === "thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.import",
+        commandId: CommandId.make("cmd-thread-import"),
+        threadId: moved,
+        projectId: asProjectId("project-1"),
+        title: "Moved here",
+        modelSelection: own!.modelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        movedFrom: {
+          environmentId: EnvironmentId.make("environment-windows"),
+          label: "Windows PC",
+          threadId: ThreadId.make("thread-there"),
+          movedAt: now,
+        },
+        messages: [
+          {
+            messageId: asMessageId("moved-question"),
+            role: "user",
+            text: "what we said there",
+            turnId: null,
+            createdAt: now,
+          },
+        ],
+        activities: [],
+        createdAt: now,
+      }),
+    );
+    const turnStart = (id: string, text: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-moved-turn-${id}`),
+          threadId: moved,
+          message: {
+            messageId: asMessageId(`moved-message-${id}`),
+            role: "user",
+            text,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+
+    await turnStart("1", "first here");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const sent = harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string } | undefined;
+    expect(sent?.input).toContain("prior context");
+    expect(sent?.input?.endsWith("first here")).toBe(true);
+    await waitFor(
+      async () =>
+        (await harness.readModel()).threads.find((thread) => thread.id === moved)
+          ?.historySeedOwed !== true,
+    );
+
+    // Paid: the next message goes out as written.
+    await turnStart("2", "second here");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect((harness.sendTurn.mock.calls[1]?.[0] as { readonly input?: string })?.input).toBe(
+      "second here",
+    );
+  });
+
   it("says in the chat why an access change could not restart the session", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

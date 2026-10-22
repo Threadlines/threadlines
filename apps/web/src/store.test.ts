@@ -17,6 +17,7 @@ import {
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
+  ThreadMoveId,
   TurnId,
   OrchestrationThread,
   type OrchestrationEvent,
@@ -2021,6 +2022,141 @@ describe("incremental orchestration updates", () => {
       parentThreadId: parentId,
       attachedToParent: false,
     });
+  });
+
+  it("follows a move to a linked computer, and drops steps of a move that already ended", () => {
+    const threadId = ThreadId.make("thread-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const transferId = ThreadMoveId.make("move-1");
+    const macMini = {
+      environmentId: EnvironmentId.make("environment-mac-mini"),
+      label: "Mac mini",
+    };
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+    const summaryOf = (state: AppState) =>
+      localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+
+    let state = makeState(makeThread({ id: threadId }));
+    state = apply(
+      state,
+      makeEvent("thread.move-started", {
+        threadId,
+        transferId,
+        target: macMini,
+        agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        startedAt: "2026-02-27T00:00:01.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move).toMatchObject({
+      phase: "exporting",
+      cancelRequested: false,
+      target: macMini,
+    });
+    expect(summaryOf(state)?.moveStatus).toBe("moving");
+
+    state = apply(
+      state,
+      makeEvent("thread.move-progressed", {
+        threadId,
+        transferId,
+        phase: "sending",
+        sentBytes: 400,
+        totalBytes: 1_000,
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    // A step from another move is not this one's.
+    state = apply(
+      state,
+      makeEvent("thread.move-progressed", {
+        threadId,
+        transferId: ThreadMoveId.make("move-old"),
+        phase: "importing",
+        updatedAt: "2026-02-27T00:00:03.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move).toMatchObject({
+      phase: "sending",
+      sentBytes: 400,
+      totalBytes: 1_000,
+    });
+
+    state = apply(
+      state,
+      makeEvent("thread.move-cancel-requested", {
+        threadId,
+        transferId,
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move?.cancelRequested).toBe(true);
+
+    // The other computer confirmed it dropped the move: the thread is its own again.
+    state = apply(
+      state,
+      makeEvent("thread.move-aborted", {
+        threadId,
+        transferId,
+        reason: "The user stopped it.",
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move).toBeUndefined();
+    expect(summaryOf(state)?.moveStatus).toBeUndefined();
+
+    // A second move that lands: the thread lives on Mac mini now.
+    const secondTransferId = ThreadMoveId.make("move-2");
+    state = apply(
+      state,
+      makeEvent("thread.move-started", {
+        threadId,
+        transferId: secondTransferId,
+        target: macMini,
+        agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        startedAt: "2026-02-27T00:00:06.000Z",
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.moved-away", {
+        threadId,
+        transferId: secondTransferId,
+        movedThreadId: ThreadId.make("thread-on-mac-mini"),
+        movedAt: "2026-02-27T00:00:07.000Z",
+      }),
+    );
+    expect(selectThreadByRef(state, ref)?.move?.movedAway).toEqual({
+      threadId: ThreadId.make("thread-on-mac-mini"),
+      movedAt: "2026-02-27T00:00:07.000Z",
+    });
+    expect(summaryOf(state)?.moveStatus).toBe("moved");
+  });
+
+  it("keeps a moved thread's imported history marked, and out of its latest turn", () => {
+    const threadId = ThreadId.make("thread-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    let state = makeState(makeThread({ id: threadId }));
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId: MessageId.make("imported-answer"),
+        role: "assistant",
+        text: "Done on the other computer.",
+        turnId: TurnId.make("turn-imported"),
+        streaming: false,
+        imported: true,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const thread = selectThreadByRef(state, ref);
+    expect(thread?.messages).toEqual([
+      expect.objectContaining({ id: MessageId.make("imported-answer"), imported: true }),
+    ]);
+    expect(thread?.latestTurn).toBeNull();
   });
 
   it("shows an agent's new name and reasoning as soon as they are saved", () => {

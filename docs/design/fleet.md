@@ -396,6 +396,193 @@ The environment descriptor's `capabilities` gains `computerLinks`, `scheduledTas
 
 v2 (carrying the provider's own session files) stays open on #48.
 
+### Build plan (Oct 22, against the code on `feat/fleet-links-ui`)
+
+Branch `feat/move-thread`, cut from `feat/fleet-links-ui`. The move dialog needs that branch's links store, computer names and agent lists; computer-links alone has no web links code. Merge order becomes 1, 2, 3, 5, 4, 6.
+
+Sol reviewed the first draft of this plan (16 findings). All of them held against the code, and this version fixes them. Where it differs from the protocol above, this plan wins.
+
+Names used below: `L` is the authenticated link device id on B, `T` the transfer id, and `K = hash(L, T)` the transfer key. Every B-side resource (row, lock, staging folder, git ref, thread id, message and activity ids, attachment ids) derives from `K`, never from `T` alone.
+
+#### Who may move (one shared pure check, used by `moves.preview` and by the decider in the freeze decision)
+
+Refused, each with a plain reason:
+
+- archived, or deleted;
+- a room (`isRoomThread`), or open agent requests;
+- a child (attached `parentThreadId`), or `remoteOrigin` set;
+- attached children, local or remote (`childRequests.remoteChildren`);
+- `childHasLiveWork`, or either background count above 0;
+- an active goal, any check-backs, a running command run, pending command requests, a running workflow run, voice active;
+- PR auto-fix or auto-merge on ("turn it off first": A's automation would act on a frozen thread);
+- a General Chats project, or a project without a `canonicalKey` (v1);
+- already moving or moved.
+
+#### Freeze on A
+
+`moves.start { threadId, targetEnvironmentId, agent }` is a WS method, never a client orchestration command, because the decider can't see links. `ThreadMoveService` re-runs the preview (link active, B answers `moves: true` in `PeerDescriptor`, project and agent valid on B), then dispatches the internal `thread.move.start`. The decider runs the eligibility check and emits `thread.move-started { transferId, target { environmentId, label }, agent, startedAt }`.
+
+The reactor then stops the thread's provider session, so no runtime can start a turn. `ProviderRuntimeIngestion` refuses provider-initiated turns on a moving or moved thread.
+
+**One move guard, used everywhere a thread can change.** A thread with `move` set refuses:
+
+- in the decider: every command whose `threadId` is the thread, except archive, unarchive, delete, pin, unpin, read, unread, wrap, unwrap and the move's internal commands;
+- every command that names it as a parent to attach to (`thread.child.attach`'s parent);
+- the typing warm-up (ws.ts:705) and every direct reactor entry.
+
+Reading and forking a moving or moved thread stay allowed: a fork is a new thread, and it is the honest way to keep working here. Terminals in A's worktree stay the user's own shell. The snapshot rule below covers them.
+
+#### Export on A (`ThreadMoveReactor`)
+
+Everything runs from the git top level (`rev-parse --show-toplevel`) of the thread's cwd.
+
+1. **A consistent snapshot.** Eligibility also refuses a move while another thread with live work shares the same checkout. Around the export, take `git status --porcelain=v2 -z --untracked-files=all` plus each untracked file's size and mtime, before and after. Regenerate the diff and compare its hash. If anything differs (a terminal or another writer changed files), retry once, then abort with "the checkout changed while exporting".
+2. `headSha`, and the branch from `symbolic-ref`, or detached.
+3. The remote is the one the project's `RepositoryIdentity` came from, not hard-coded `origin`. The base is `merge-base(head, <remote>/<upstream branch>)` when there is an upstream, else `merge-base(head, <remote>/HEAD)`. These commits exist on the remote. When base ≠ head, write `refs/threadlines/move/<T>` at head and run `git bundle create <file> refs/threadlines/move/<T> ^<base>`. Then delete the temp ref.
+4. Tracked changes: `git diff --binary --full-index --no-textconv --no-ext-diff --no-color --no-relative HEAD --output=<file>`.
+5. Untracked files: `ls-files --others --exclude-standard -z`. For each, `lstat`. A regular file goes with its executable bit; a symlink goes as its target text, written as a symlink on B, or refused on Windows B. Anything else is refused.
+6. Refused: gitlink (mode 160000) changes, paths whose `filter` attribute is `lfs`, and a total over 100 MiB.
+7. Attachments of every message are copied in by id, with name and mime type kept only as display metadata.
+
+All of it goes into `<stateDir>/moves/<T>/`: `payload.bin` (the parts, concatenated), then `manifest.json`. The manifest lists:
+
+- the part table `{ kind, offset, length, sha256, path?, mode?, attachment? }` and the payload's sha256;
+- `headSha`, the branch, the remote's canonical key, the base;
+- the thread export: title, model selection, runtime and interaction modes, and messages with their roles, text, turn ids, `createdAt`, attachment references and `completesTurn`;
+- the tool-activity summaries the seed builder reads;
+- the project's title.
+
+Both files are written to temp names and renamed, so a finished export is atomic. On resume, A re-reads them. If either is missing or the hash is wrong, A aborts the move.
+
+#### The transfer (`peer.move.*`, all idempotent under `(L, T)`)
+
+- **`prepare { T, manifest }` → `awaiting_approval | receiving | refused { reason }`.** B checks that the manifest is valid and bounded: total ≤ 100 MiB, parts contiguous and inside the total, at most 20 000 parts, valid paths (below). B checks its current authority: `off` refuses, `ask` waits, `allowed` receives. A peer may have at most 2 unfinished moves, and B at most 4 in all. Reusing `(L, T)` with a different manifest is refused.
+- **`chunk { T, offset, data }` → `{ bytesReceived }`.** Decoded data is at most 1 MiB, and `offset + length` must stay within the declared total. B accepts only `offset == bytesReceived`; any other offset just answers `bytesReceived`. B writes, fsyncs, then updates the row. At resume, a file longer than `bytes_received` is truncated to it.
+- **`finish { T }` → `importing`.** All bytes are present, and every part's hash and the whole payload's hash match. The import runs in the background.
+- **`status { T }` → the row's status**, plus `bytesReceived`, `threadId` once committed, and `reason`.
+- **`abort { T }` → `aborted | committed`.**
+
+A polls `status`, backing off from 2 s to 15 s, while waiting for approval and while B imports. `peer.watch` stays tied to remote requests.
+
+The pending move is listed to B's user through `ComputerLinkPendingRequest`, which gains `kind: "start" | "move"` (absent means start) and a `move { messageCount, branch, changes }` summary. It is answered with `links.respondRequest`, as starts are.
+
+#### Import on B (`LinkMoves`, beside `LinkRequests`)
+
+Table `link_moves` (migration 079): `link_device_id, transfer_id, transfer_key, status (awaiting_approval|receiving|importing|committed|aborted), stage, manifest_json, bytes_received, thread_id, branch, worktree_path, reason, cleaned_at, created_at, updated_at`, unique on `(link_device_id, transfer_id)`. Staging lives in `<stateDir>/link-moves/<K>/`.
+
+**Path rules** (B's filesystem semantics, checked at prepare and again before writing):
+
+- relative only, with no `..`, no empty or `.` segments, no absolute paths, and no drive, UNC or `:` stream syntax;
+- nothing under `.git`;
+- no collision, case-insensitive on Windows and macOS, with a tracked path or another incoming path;
+- no symlinked parent: every parent directory is `lstat`-checked inside the worktree;
+- files are created exclusively (`wx`).
+
+Attachments get B's own ids (`createAttachmentId(B's thread id)`) and are written through `attachmentStore` helpers; the incoming name is display text only.
+
+**Stages**, each recorded in `stage` before the next starts, with authority re-checked (`linkAuthority`) before each stage and before the commit:
+
+1. **`fetched`**: `git fetch <remote>`, using the remote of B's project whose canonical key matched. With a bundle: `git bundle verify`, then `git -c transfer.fsckObjects=true fetch <bundle> refs/threadlines/move/<T>:refs/threadlines/move/<K>`. Without one: `headSha` must exist after the fetch. A missing prerequisite aborts with "<computer> can't find commit <short sha> on <remote>. Push it, or fetch on <computer>, then try again."
+2. **`worktree`**: the branch and path are chosen and saved in the row first. Occupied means it exists at any SHA or is checked out anywhere. The order is `<branch>`, then `<branch>-from-<computer>`, then `-2` … `-100`; a detached head becomes `moved/<slug>`. Creating the worktree: when a worktree is already registered at the saved path with `HEAD == headSha`, keep it; otherwise run `createWorktree`.
+3. **`applied`**: `git apply --binary` when the diff isn't empty, then write the untracked files. The worktree path is unique to `K` (`moved-<K8>` under the worktrees folder) and is recorded in the row before it is created. When resuming a crashed apply, B first checks that no thread's `worktreePath` or `effectiveCwd` points at that path; if one does, it aborts the move instead. Only then does it run `reset --hard headSha` and `clean -fdx` in that worktree, and re-apply.
+4. **Commit**: copy the attachments, then dispatch `thread.import`.
+
+**Commit and abort exclude each other under one lock that an interruption can't release early.** Both run under the per-transfer lock keyed by `K` (the `withRequestLock` pattern in `LinkRequests`).
+
+- **Commit.** Under the lock, re-read the row. If it's `aborted`, stop. Otherwise dispatch `thread.import` and await the engine's answer _uninterruptibly_, then write `committed`, and only then release the lock. An interrupted caller can't leave a queued import behind an unlocked transfer. The thread id is deterministic, so a duplicate dispatch is refused as "already exists" and read as committed.
+- **Abort.** Under the lock, look the thread up in the engine's read model. If it exists, answer `committed`. Otherwise write `aborted` durably, then release the lock and clean up.
+- **Startup.** The process died, so nothing is queued. Reconcile each `importing` row from the read model: the thread exists means committed, else resume the import.
+
+After an abort, B removes the staging folder, the worktree, and any branch it made, then sets `cleaned_at`. An aborted row without `cleaned_at` is cleanup still owed: startup and the hourly sweep retry it. B never touches anything once committed.
+
+**`thread.import` writes, in one decision:**
+
+- `thread.created`, with `movedFrom { environmentId, label, threadId, importedTurnIds }`;
+- every message as `thread.message-sent`, with fresh ids derived from `(K, original id)`, turn ids remapped the same way, and attachments remapped;
+- the tool-activity summaries as activities, with fresh ids;
+- one `thread.moved-in` activity, the boundary.
+
+The runtime mode is capped at `link_max_runtime_mode`, and the agent is the one B resolved. The thread gets `historySeedOwed: true`.
+
+**Cleanup.** An hourly sweep (and the one at startup) aborts `awaiting_approval` or `receiving` rows older than 24 h, and removes staging folders of committed or aborted rows. `ComputerLinks`' unlink drain covers moves: unfinished moves are aborted, committed ones are left alone.
+
+#### After the commit, on A
+
+The reactor sees `committed { threadId }` and records `thread.moved-away { environmentId, label, threadId, movedAt }`. The thread stays read-only under the move guard. If A crashed after B committed, startup asks `status`, gets `committed`, and records `moved-away`.
+
+A unfreezes only after B confirms an abort (`thread.move-aborted { reason }`, plus an activity "Couldn't move to Mac mini: <reason>"). When B can't be reached, or the link is gone, the thread stays frozen. The notice says why and offers "Continue here as a new thread", which is a fork: an explicit second thread, never an unfrozen original.
+
+#### The seed (fixes D5)
+
+`historySeedOwed` is persisted on the thread, set by `thread.import`. Delivery is send-time, through the existing owed-history path (`withContextSeedPreamble` with a `ThreadContextSeedBuilder` seed). So a warm-up session, a restart between bind and send, or a provider switch all still deliver it on the first real send. The reactor dispatches `thread.history-seed.delivered` once the provider accepted that turn. A crash in between re-sends the seed: at least once, never zero. Owed-history delivery uses a strict build: if the transcript can't be read, or the seed has no entries while the thread has imported messages, the debt stays and that send goes without it. Today's builder falls back to a workspace-only seed, and that must not count as delivered. Also fix `hasProviderBinding` so that a null `projectedSession` reads as no binding.
+
+#### The revert boundary (fixes D6)
+
+**Imported history is outside B's revert accounting.** Every imported message carries `imported: true`: a new optional field on `OrchestrationMessage` and on the `thread.message-sent` payload, stored in a `projection_thread_messages.imported` column. Imported activities have `turnId: null`, so revert already keeps them.
+
+The shared `revertMessages` (`packages/shared/src/transcriptRevert.ts`) keeps imported messages unconditionally and leaves them out of its count-based fallback. That's one rule for all three revert sites: `projector.ts`, `ProjectionPipeline.ts`, and the web.
+
+B's turn numbering starts at 1. Revert to count 0, the state right after the import, is valid and keeps all imported history. There is no decider fence. The web hides revert controls on imported messages.
+
+#### Web
+
+- **Entry points**, all through one request store (the `ThreadDeleteDialog` pattern): the sidebar row menu, the command palette, and the chat view's "Continue in" area. They show when the thread's computer has `capabilities.threadMove` and at least one active outbound link.
+- **The dialog:**
+  - a computer `Select`;
+  - the preview: "Lands in <project> on <computer> · branch <name>", the change summary, "Staged changes arrive unstaged", and "Your copy here stays, read-only";
+  - B's agents in the agent picker;
+  - the refusal text, when there is one;
+  - Cancel and Move.
+- **A's composer notice and lock while moving:** "Moving to Mac mini · waiting for it to allow it / sending 40% / setting up", with Cancel. Once moved: "Moved to Mac mini", with Open when the app has that thread, else "Connect to Mac mini to open it". The sidebar row shows "moved".
+- **On B:**
+  - a "Moved here from <computer>" boundary row;
+  - the move request card and inbox row ("wants to move a thread here: <title>"), reusing PR 5's request components.
+- `ServerEnvironment` sets `threadMove: true`, and `PeerDescriptor` gains `moves: true`.
+
+#### Tests
+
+- **Decider:**
+  - eligibility, one case per reason;
+  - the move guard, including attach-to-frozen-parent;
+  - start, cancel, abort and moved-away;
+  - `thread.import` refused for an existing thread id.
+- **`LinkMoves`:**
+  - off, ask and allowed;
+  - bounded manifest and path rules (traversal, `.git`, case collision, symlinked parent);
+  - chunk offsets and truncate-on-resume;
+  - hash refusal;
+  - restart at each stage;
+  - abort vs commit, both orders, and an interrupted commit caller;
+  - authority revoked mid-import;
+  - per-link and global caps.
+- **A real-git round trip on temp repos:**
+  - unpushed commits;
+  - staged, unstaged and deleted changes;
+  - untracked binary and executable files;
+  - a clean tree;
+  - untracked-only changes;
+  - a detached head;
+  - a branch collision;
+  - a missing prerequisite.
+- **Projection:** a revert to count 0 and to count 1 keeps every imported message and activity, and B's own messages are kept or dropped correctly around them, in both projectors and in `transcriptRevert` unit tests.
+- **`ProviderCommandReactor`:** the first send of a moved thread carries the seed, after a warm-up and after a restart before the send.
+- **Web:**
+  - menu and palette gating;
+  - the dialog's preview and refusals;
+  - the moving and moved notices;
+  - the boundary row;
+  - the move request card.
+
+#### Live
+
+The two test servers:
+
+- Move a thread with unpushed commits and changes, under Ask first and then Allowed.
+- Cancel while waiting.
+- Kill A mid-send.
+- Kill B mid-import.
+- A real Codex turn on the moved thread, to see the seed.
+
 ## Part 4: The rail and the Fleet page
 
 ### Rail

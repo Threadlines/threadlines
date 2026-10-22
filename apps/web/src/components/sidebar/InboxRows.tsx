@@ -7,6 +7,7 @@ import {
   CloudIcon,
   CornerDownRightIcon,
   LinkIcon,
+  MonitorUpIcon,
   GitForkIcon,
   PinIcon,
   TerminalIcon,
@@ -64,6 +65,8 @@ import {
 } from "../Sidebar.logic";
 import { Button } from "../ui/button";
 import { useLinkRequestAnswer } from "./linkedComputers";
+import { runtimeModeConfig } from "../../runtimeModeOptions";
+import { formatThreadMoveAccess, formatThreadMoveChanges } from "../../threadMove";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   ThreadHoverCard,
@@ -375,7 +378,10 @@ export function ThreadProviderGlyph({ thread }: { thread: SidebarThreadSummary }
  * rows read it the same way, so a thread says the same thing wherever it sits.
  */
 function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatusPill | null) {
-  const statusWord = inboxStatusWord(status);
+  // Moving to a linked computer, or moved there: frozen here either way, so
+  // the one quiet word wins the slot over whatever it last did.
+  const moveWord = thread.moveStatus ?? null;
+  const statusWord = moveWord ?? inboxStatusWord(status);
   const isInFlight = status?.label === "Working" || status?.label === "Starting";
   // In a room, an agent answering on the side while the others are idle: its
   // own name, and a clock from when it was asked.
@@ -418,6 +424,8 @@ function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatu
   const checkBackAt = status?.label === "Checking back" ? (status.checkBackAt ?? null) : null;
   return {
     statusWord,
+    /** The status slot's colour while it says something; null leaves the resting tone. */
+    statusTone: moveWord !== null ? "text-muted-foreground" : (status?.colorClass ?? null),
     checkBackAt,
     isAnswering,
     isLive,
@@ -485,14 +493,21 @@ export function ThreadStatusText({
   restingClassName?: string;
   testId?: string | undefined;
 }) {
-  const { statusWord, checkBackAt, isLive, liveWord, liveClockStartedAt, hasStatusLabel } =
-    resolveRowStatusParts(thread, status);
+  const {
+    statusWord,
+    statusTone,
+    checkBackAt,
+    isLive,
+    liveWord,
+    liveClockStartedAt,
+    hasStatusLabel,
+  } = resolveRowStatusParts(thread, status);
   return (
     <span
       data-testid={testId}
       className={cn(
         "shrink-0 font-mono text-[11px] leading-none tabular-nums",
-        hasStatusLabel ? (status?.colorClass ?? restingClassName) : restingClassName,
+        hasStatusLabel ? (statusTone ?? restingClassName) : restingClassName,
       )}
     >
       {statusWord !== null ? (
@@ -763,6 +778,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const isRenaming = renamingThreadKey === threadKey;
   const {
     statusWord,
+    statusTone,
     checkBackAt,
     isAnswering,
     isLive,
@@ -983,7 +999,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     "shrink-0 font-mono text-[11px] leading-none tabular-nums",
                     namesRoomAgent && "flex min-w-0 shrink items-baseline",
                     hasStatusLabel
-                      ? (status?.colorClass ?? "text-muted-foreground/50")
+                      ? (statusTone ?? "text-muted-foreground/50")
                       : "text-muted-foreground/50",
                   )}
                 >
@@ -1488,7 +1504,9 @@ export interface InboxLinkRequestRowProps {
  * A thread another computer's agent asked to start, waiting for the user
  * (docs/design/fleet.md, Part 2 "Ask first"). Marked as a request, not a
  * thread: it leads with what would start, then which thread on which
- * computer asked, with Deny and Allow. Clicking it opens the thread that
+ * computer asked, with Deny and Allow. A move (Part 3) leads with the thread,
+ * then which computer wants to move it where, what goes with it and where it
+ * lands. Clicking it opens the thread that
  * asked, where a card above the message box shows everything (the full
  * instructions, the agent, the access it would get). The answer goes to the
  * computer it would run on; the row leaves when that computer drops the
@@ -1510,6 +1528,7 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
     event.stopPropagation();
     void respond(allow);
   };
+  const isMove = request.kind === "move";
   return (
     <li
       role="button"
@@ -1519,7 +1538,11 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
         "cursor-pointer px-3 pt-1.5 pb-1 hover:bg-sidebar-accent/60 focus-ring",
       )}
       data-testid={`link-request-${request.requestId}`}
-      aria-label={`Request from ${askerLabel}: ${request.title}. Open it.`}
+      aria-label={
+        isMove
+          ? `${askerLabel} wants to move ${request.title} to ${computerLabel}. Open it.`
+          : `Request from ${askerLabel}: ${request.title}. Open it.`
+      }
       onClick={onOpen}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) return;
@@ -1549,14 +1572,38 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
         </span>
       </div>
       <div
-        className="mt-0.5 flex min-w-0 items-center gap-1 ps-[13px] text-[11px] text-muted-foreground/60"
+        className={cn(
+          "mt-0.5 flex min-w-0 items-center gap-1 ps-[13px] text-[11px]",
+          // A move's lines below are opaque: this one reads with them.
+          isMove ? "text-muted-foreground" : "text-muted-foreground/60",
+        )}
         data-testid={`link-request-where-${request.requestId}`}
       >
-        <LinkIcon aria-hidden className="size-2.5 shrink-0" />
+        {isMove ? (
+          <MonitorUpIcon aria-hidden className="size-2.5 shrink-0" />
+        ) : (
+          <LinkIcon aria-hidden className="size-2.5 shrink-0" />
+        )}
         <span className="min-w-0 truncate">
-          Asked by “{request.parentThreadTitle}” on {askerLabel}
+          {isMove
+            ? `${askerLabel} wants to move a thread to ${computerLabel}`
+            : `Asked by “${request.parentThreadTitle}” on ${askerLabel}`}
         </span>
       </div>
+      {isMove ? (
+        <div
+          className="ps-[13px] text-[11px] text-muted-foreground"
+          data-testid={`link-request-move-${request.requestId}`}
+        >
+          {request.move ? (
+            <p className="truncate">{formatThreadMoveChanges(request.move)}</p>
+          ) : null}
+          <p className="truncate">
+            Lands in {request.projectName} with up to{" "}
+            {formatThreadMoveAccess(runtimeModeConfig[request.runtimeMode].label)}
+          </p>
+        </div>
+      ) : null}
       <div className="flex min-w-0 items-center gap-1 ps-[13px]">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/50 tabular-nums">
           {formatRelativeTimeLabel(request.createdAt)}
@@ -1846,8 +1893,14 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                 />
               </span>
             ) : null}
-            <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45">
-              {doneAt ? formatRelativeTimeLabel(doneAt) : null}
+            {/* A thread that moved away says so instead of when it wrapped. */}
+            <span
+              className={cn(
+                "shrink-0 font-mono text-[11px] tabular-nums",
+                thread.moveStatus ? "text-muted-foreground" : "text-muted-foreground/45",
+              )}
+            >
+              {thread.moveStatus ?? (doneAt ? formatRelativeTimeLabel(doneAt) : null)}
             </span>
             {isConfirmingArchive ? (
               <RowFloatingActions isActive={isActive} isSelected={false} alwaysVisible>

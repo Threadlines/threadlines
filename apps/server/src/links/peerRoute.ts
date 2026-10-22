@@ -38,6 +38,7 @@ import { RelayHost } from "../relay/RelayHost.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { isLoopbackHost } from "../startupAccess.ts";
 import { ComputerLinks } from "./ComputerLinks.ts";
+import { LinkMoves } from "./LinkMoves.ts";
 import {
   LinkRequests,
   linkIdentityRefusal,
@@ -59,6 +60,7 @@ export const makePeerRpcLayer = (input: {
   PeerRpcGroup.toLayer(
     Effect.gen(function* () {
       const linkRequests = yield* LinkRequests;
+      const linkMoves = yield* LinkMoves;
       const computerLinks = yield* ComputerLinks;
       const devices = yield* RelayDeviceRepository;
       const relayHost = yield* RelayHost;
@@ -144,6 +146,7 @@ export const makePeerRpcLayer = (input: {
                 ? null
                 : { instanceId: defaultAgent.instanceId, model: defaultAgent.model },
             projects,
+            moves: true,
           } satisfies PeerDescriptor;
         });
 
@@ -183,6 +186,26 @@ export const makePeerRpcLayer = (input: {
           Stream.unwrap(Effect.map(currentLink, (link) => linkRequests.watch(link))),
         "peer.report.ack": (payload) =>
           guarded(Effect.flatMap(currentLink, (link) => linkRequests.ack(link, payload.reportId))),
+        // Moving a thread here (LinkMoves). An offer names the computer it
+        // comes from, like a start does.
+        "peer.move.prepare": (payload) =>
+          guarded(
+            Effect.gen(function* () {
+              const link = yield* currentLink;
+              if (linkIdentityRefusal(link, payload.manifest.source.environmentId) === null) {
+                yield* computerLinks.linkInUse(link);
+              }
+              return yield* linkMoves.prepare(link, payload);
+            }),
+          ),
+        "peer.move.chunk": (payload) =>
+          guarded(Effect.flatMap(currentLink, (link) => linkMoves.chunk(link, payload))),
+        "peer.move.finish": (payload) =>
+          guarded(Effect.flatMap(currentLink, (link) => linkMoves.finish(link, payload))),
+        "peer.move.status": (payload) =>
+          guarded(Effect.flatMap(currentLink, (link) => linkMoves.status(link, payload))),
+        "peer.move.abort": (payload) =>
+          guarded(Effect.flatMap(currentLink, (link) => linkMoves.abort(link, payload))),
         // The other computer removed its link: what it still had open here is
         // cancelled (with `stopRunning`, its running threads stop too); with
         // `reverse` this computer's own link back to it goes as well. Then its

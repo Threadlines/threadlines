@@ -28,6 +28,8 @@ import {
   TurnId,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationThreadMove,
+  ThreadMovedFrom,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
 } from "@threadlines/contracts";
@@ -145,6 +147,12 @@ export const ProjectionThread = Schema.Struct({
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
   /** See `OrchestrationThread.scheduledRun`. Absent or null reads as none. */
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
+  /** See `OrchestrationThread.move`. Absent or null reads as none. */
+  move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** See `OrchestrationThread.movedFrom`. Absent or null reads as none. */
+  movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
+  /** See `OrchestrationThread.historySeedOwed`, as 0 or 1. Absent or null reads as 0. */
+  historySeedOwed: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** On a parent: see `OrchestrationThread.childRequests`. Absent or null reads as none. */
   childRequests: Schema.optional(Schema.NullOr(OrchestrationChildRequestState)),
   /**

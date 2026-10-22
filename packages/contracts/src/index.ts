@@ -34,5 +34,6 @@ export * from "./filesystem.ts";
 export * from "./usage.ts";
 export * from "./links.ts";
 export * from "./scheduledTasks.ts";
+export * from "./moves.ts";
 export * from "./peerRpc.ts";
 export * from "./rpc.ts";

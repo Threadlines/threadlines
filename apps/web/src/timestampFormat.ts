@@ -48,6 +48,22 @@ export function formatShortTimestamp(isoDate: string, timestampFormat: Timestamp
   return getTimestampFormatter(timestampFormat, false).format(new Date(isoDate));
 }
 
+const dateTimeFormatterCache = new Map<TimestampFormat, Intl.DateTimeFormat>();
+
+/** A moment on any day, in the user's clock style: "Oct 22, 3:14 PM". */
+export function formatDateAndTime(isoDate: string, timestampFormat: TimestampFormat): string {
+  let formatter = dateTimeFormatterCache.get(timestampFormat);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      ...getTimestampFormatOptions(timestampFormat, false),
+    });
+    dateTimeFormatterCache.set(timestampFormat, formatter);
+  }
+  return formatter.format(new Date(isoDate));
+}
+
 /**
  * Format a relative time string from an ISO date.
  * Returns `{ value: "20s", suffix: "ago" }` or `{ value: "just now", suffix: null }`

@@ -11,6 +11,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 
+import { ThreadMoves } from "../moves/ThreadMoves.ts";
+import { LinkMoves } from "./LinkMoves.ts";
 import { LinkRequests } from "./LinkRequests.ts";
 import { RemoteChildReactor } from "./RemoteChildReactor.ts";
 
@@ -28,10 +30,14 @@ export const ComputerLinkReactorsLive = Layer.effect(
   Effect.gen(function* () {
     const remoteChildren = yield* RemoteChildReactor;
     const linkRequests = yield* LinkRequests;
+    const linkMoves = yield* LinkMoves;
+    const threadMoves = yield* ThreadMoves;
     return ComputerLinkReactors.of({
       start: () =>
         Effect.gen(function* () {
           yield* linkRequests.startReactor();
+          yield* linkMoves.startReactor();
+          yield* threadMoves.startReactor();
           yield* remoteChildren.start();
         }),
     });

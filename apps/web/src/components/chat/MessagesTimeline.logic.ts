@@ -7,6 +7,7 @@ import {
   type ModelFallbackState,
   type ForkContextEntry,
   type McpAppEntry,
+  type MovedInEntry,
   type SubagentResultEntry,
   type TimelineEntry,
   type WorkLogEntry,
@@ -222,6 +223,13 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         id: string;
         createdAt: string;
         forkContext: ForkContextEntry;
+      }
+    | {
+        /** Where a thread that moved here starts being this computer's (MovedInTimelineRow). */
+        kind: "moved-in";
+        id: string;
+        createdAt: string;
+        movedIn: MovedInEntry;
       }
     | {
         /** An agent page as one turn left it (AgentPageRow). */
@@ -638,6 +646,17 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         forkContext: timelineEntry.forkContext,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "moved-in") {
+      nextRows.push({
+        ...UNPLACED,
+        kind: "moved-in",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        movedIn: timelineEntry.movedIn,
       });
       continue;
     }
@@ -1065,6 +1084,7 @@ function placeAgentLines(
   };
   const breaksStretch = (row: MessagesTimelineRow) =>
     row.kind === "fork-context" ||
+    row.kind === "moved-in" ||
     (row.kind === "message" &&
       !isSideRow(row) &&
       (startsExchange(row.message) || row.message.fromAgent !== undefined));
@@ -2135,6 +2155,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "fork-context":
       return a.forkContext === (b as typeof a).forkContext;
 
+    case "moved-in":
+      return a.movedIn === (b as typeof a).movedIn;
+
     case "page":
       return a.page === (b as typeof a).page && a.updated === (b as typeof a).updated;
 
@@ -2270,6 +2293,9 @@ const rowHeightEstimates = new WeakMap<
   { readonly width: number; readonly height: number }
 >();
 
+/** The moved-here boundary (MovedInTimelineRow): an 18px line and the row's 16px bottom padding. */
+const MOVED_IN_ROW_ESTIMATED_PX = 34;
+
 /** An agent page's panel around its frame (AgentPageRow): padding, and the
  *  title line above the frame with its margin. */
 const AGENT_PAGE_PANEL_PX = { sides: 28, chrome: 50 } as const;
@@ -2365,6 +2391,8 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return MCP_APP_CARD_ESTIMATED_PX;
     case "fork-context":
       return 90;
+    case "moved-in":
+      return MOVED_IN_ROW_ESTIMATED_PX;
     case "proposed-plan":
       return 240;
     case "page":

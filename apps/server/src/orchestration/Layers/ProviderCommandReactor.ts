@@ -550,8 +550,32 @@ const make = Effect.gen(function* () {
       readonly driverKind: ProviderDriverKind;
       readonly cwd: string | undefined;
       claimed: boolean;
+      /**
+       * Owed because the thread moved here from another computer
+       * (OrchestrationThread.historySeedOwed), which is recorded: paying it
+       * clears that too, and it is only paid with a seed that holds the
+       * imported conversation.
+       */
+      readonly moved?: true;
+      /**
+       * The session was started seeded with the conversation: the next send
+       * adds no seed of its own, and once the provider takes that send the
+       * debt is paid. Lost with the process, so a restart seeds the send.
+       */
+      readonly carried?: true;
     }
   >();
+
+  /** A moved thread's agent was given its conversation: the recorded debt is paid. */
+  const markHistorySeedDelivered = (threadId: ThreadId) =>
+    orchestrationEngine
+      .dispatch({
+        type: "thread.history-seed.delivered",
+        commandId: serverCommandId("history-seed-delivered"),
+        threadId,
+        createdAt: new Date().toISOString(),
+      })
+      .pipe(Effect.ignore);
 
   /**
    * Checkout path most recently reported missing per thread, so the same dead
@@ -1377,7 +1401,25 @@ const make = Effect.gen(function* () {
         "handoff",
       );
       yield* bindSessionToThread(handoffSession);
-      if (contextSeed !== undefined) owedHistorySeeds.delete(sessionKey);
+      if (contextSeed !== undefined) {
+        owedHistorySeeds.delete(sessionKey);
+        // A moved thread's debt is paid once a turn reaches the provider on
+        // this seeded session, not when it starts: some adapters keep the
+        // seed in memory until their first send.
+        if (
+          participantId === null &&
+          thread.historySeedOwed === true &&
+          contextSeed.entries.length > 0
+        ) {
+          owedHistorySeeds.set(sessionKey, {
+            driverKind: desiredDriverKind,
+            cwd: effectiveCwd ?? undefined,
+            claimed: false,
+            moved: true,
+            carried: true,
+          });
+        }
+      }
       return { sessionThreadId: handoffSession.threadId, nativeForkApplied: false };
     }
 
@@ -1781,9 +1823,24 @@ const make = Effect.gen(function* () {
     // what, own messages included); elsewhere the transcript seed does. The
     // caller claims the debt as it hands the request to the provider: builds
     // for one thread run one at a time, so the next build sees the claim.
+    // A thread moved here owes its agent the conversation until a send
+    // carries it (recorded on the thread, so a restart still owes it).
+    if (
+      !owedHistorySeeds.has(sessionKey) &&
+      thread.historySeedOwed === true &&
+      input.participantId === null &&
+      activeSession !== undefined
+    ) {
+      owedHistorySeeds.set(sessionKey, {
+        driverKind: activeSession.provider,
+        cwd: thread.worktreePath ?? undefined,
+        claimed: false,
+        moved: true,
+      });
+    }
     const owed = owedHistorySeeds.get(sessionKey);
-    const owedSeed = owed !== undefined && !owed.claimed ? owed : undefined;
-    const roomPaysHistory = owedSeed !== undefined && isRoomThread(thread);
+    const owedCandidate = owed !== undefined && !owed.claimed ? owed : undefined;
+    const roomPaysHistory = owedCandidate !== undefined && isRoomThread(thread);
     const roomCatchUp = buildRoomCatchUp({
       thread,
       participantId: input.participantId,
@@ -1800,18 +1857,28 @@ const make = Effect.gen(function* () {
     // A natively forked session already holds the full source history; the
     // context-seed preamble and re-sent source attachments would duplicate it.
     const forkContextText = !nativeForkApplied ? input.providerContext : undefined;
-    const resumeSeed =
-      owedSeed === undefined || roomPaysHistory
+    const builtSeed =
+      owedCandidate === undefined || roomPaysHistory || owedCandidate.carried === true
         ? undefined
         : yield* seedBuilder
             .build({
               threadId: input.threadId,
-              fromProvider: owedSeed.driverKind,
-              toProvider: owedSeed.driverKind,
+              fromProvider: owedCandidate.driverKind,
+              toProvider: owedCandidate.driverKind,
               excludeMessageId: input.messageId,
-              ...(owedSeed.cwd ? { cwd: owedSeed.cwd } : {}),
+              ...(owedCandidate.cwd ? { cwd: owedCandidate.cwd } : {}),
             })
             .pipe(Effect.map(Option.getOrUndefined));
+    // A moved thread's debt is only paid with the conversation itself: the
+    // builder falls back to a workspace pointer when it can't read the
+    // transcript, and that send must leave the debt owed.
+    const movedSeedEmpty =
+      owedCandidate?.moved === true &&
+      owedCandidate.carried !== true &&
+      (builtSeed === undefined || builtSeed.entries.length === 0) &&
+      thread.messages.some((message) => message.imported === true);
+    const owedSeed = movedSeedEmpty ? undefined : owedCandidate;
+    const resumeSeed = movedSeedEmpty ? undefined : builtSeed;
     const resumeContextText =
       resumeSeed !== undefined ? renderThreadContextSeed(resumeSeed) : undefined;
     // Child threads: who this message is from, and what this agent's threads
@@ -1939,10 +2006,11 @@ const make = Effect.gen(function* () {
       historyDebtPaid:
         owedSeed === undefined
           ? Effect.void
-          : Effect.sync(() => {
+          : Effect.gen(function* () {
               if (owedHistorySeeds.get(sessionKey) === owedSeed) {
                 owedHistorySeeds.delete(sessionKey);
               }
+              if (owedSeed.moved === true) yield* markHistorySeedDelivered(input.threadId);
             }),
       // A send that failed before the provider took it delivered nothing.
       historyDebtReturned:
@@ -5365,7 +5433,8 @@ const make = Effect.gen(function* () {
         return;
       }
       const thread = yield* resolveThread(input.threadId);
-      if (!thread || thread.archivedAt !== null) {
+      // Moving or moved to another computer: frozen here, nothing to start.
+      if (!thread || thread.archivedAt !== null || (thread.move ?? null) !== null) {
         return;
       }
       // A turn running or on its way: the message will wait or steer anyway.

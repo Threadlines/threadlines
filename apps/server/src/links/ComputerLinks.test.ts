@@ -51,6 +51,7 @@ import {
   type ComputerLinkRow,
 } from "./ComputerLinkRepository.ts";
 import { ComputerLinks, ComputerLinksLive, UNLINK_RETRY_EVERY } from "./ComputerLinks.ts";
+import { LinkMoves } from "./LinkMoves.ts";
 import { LinkRequests, PEER_LINK_REMOVED, peerLinkOf } from "./LinkRequests.ts";
 import { makePeerRpcLayer } from "./peerRoute.ts";
 
@@ -231,6 +232,12 @@ const makeComputer = Effect.gen(function* () {
         [...owed].map((linkDeviceId) => ({ linkDeviceId, generation: 0, since: AT })),
       ),
       drainDone: (deviceId) => Effect.sync(() => void owed.delete(deviceId)),
+    }),
+    Layer.mock(LinkMoves)({
+      pending: Effect.succeed([]),
+      pendingChanges: Stream.empty,
+      respond: () => Effect.succeed(false),
+      dropLink: () => Effect.void,
     }),
   );
   /** Starts this computer's link service; booting again is a restart. */

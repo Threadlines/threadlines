@@ -45,6 +45,7 @@ import {
   SettingsIcon,
   SquarePenIcon,
   UsersRoundIcon,
+  MonitorUpIcon,
   WaypointsIcon,
   CalendarClockIcon,
   CalendarPlusIcon,
@@ -151,6 +152,9 @@ import { isHostedStaticApp } from "../hostedPairing";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
+import { openThreadMoveDialog } from "./ThreadMoveDialog";
+import { useThreadMoveOffered } from "../environments/links/threadMoves";
+import { threadMoveStatus } from "../threadMove";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
@@ -489,6 +493,10 @@ export function OpenCommandPaletteDialog() {
     : null;
   const activeThreadRoomsEnabled = useRoomsEnabled(
     activeThread?.environmentId ?? activeDraftThread?.environmentId,
+  );
+  const activeThreadMoveOffered = useThreadMoveOffered(
+    activeThread?.environmentId ?? null,
+    threadMoveStatus(activeThread?.move),
   );
   const activeThreadHasBranch = (activeThread?.branch ?? null) !== null;
   const activeThreadGitStatus = useGitStatus({
@@ -1785,6 +1793,23 @@ export function OpenCommandPaletteDialog() {
       icon: <UsersRoundIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         useRoomRecipientStore.getState().requestAddAgent(threadRef);
+      },
+    });
+  }
+
+  // Where its computer can move it: one linked computer at least, and the
+  // thread not already on its way. The dialog says why one can't go.
+  if (activeThread && activeThreadMoveOffered) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:move-thread",
+      searchTerms: ["move", "computer", "linked", "transfer", "send", "another machine"],
+      title: "Move to another computer",
+      description: "Move this thread and its changes to a linked computer",
+      icon: <MonitorUpIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openThreadMoveDialog(threadRef);
       },
     });
   }

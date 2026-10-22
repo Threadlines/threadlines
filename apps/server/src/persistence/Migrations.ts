@@ -98,6 +98,7 @@ import Migration0076 from "./Migrations/076_ComputerLinks.ts";
 import Migration0077 from "./Migrations/077_ScheduledTasks.ts";
 import Migration0078 from "./Migrations/078_ComputerLinkPinnedEnvironment.ts";
 import Migration0079 from "./Migrations/079_LinkStopsOwed.ts";
+import Migration0080 from "./Migrations/080_ThreadMoves.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -189,6 +190,7 @@ export const migrationEntries = [
   [77, "ScheduledTasks", Migration0077],
   [78, "ComputerLinkPinnedEnvironment", Migration0078],
   [79, "LinkStopsOwed", Migration0079],
+  [80, "ThreadMoves", Migration0080],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

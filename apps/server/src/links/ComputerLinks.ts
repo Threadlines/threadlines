@@ -66,6 +66,7 @@ import {
   isUsableLink,
 } from "./ComputerLinkRepository.ts";
 import { makeKeyedLock } from "./keyedLock.ts";
+import { LinkMoves } from "./LinkMoves.ts";
 import { LinkRequests, PEER_LINK_REMOVED, type PeerLink, peerLinkOf } from "./LinkRequests.ts";
 
 const APPROVAL_WAIT_MS = 30_000;
@@ -156,6 +157,7 @@ const make = Effect.gen(function* () {
   const sessions = yield* SessionCredentialService;
   const environment = yield* ServerEnvironment;
   const linkRequests = yield* LinkRequests;
+  const linkMoves = yield* LinkMoves;
   const sql = yield* SqlClient.SqlClient;
   const descriptor = yield* environment.getDescriptor;
   const changed = yield* PubSub.sliding<void>(1);
@@ -212,7 +214,7 @@ const make = Effect.gen(function* () {
     return {
       outbound: outbound.map((row) => outboundOf(row, statuses)),
       inbound: inbound.map(inboundOf),
-      pending: yield* linkRequests.pending,
+      pending: [...(yield* linkRequests.pending), ...(yield* linkMoves.pending)],
     };
   }).pipe(Effect.mapError(() => linkError("This computer's links couldn't be read.")));
 
@@ -222,6 +224,7 @@ const make = Effect.gen(function* () {
       [
         client.statuses.pipe(Stream.map(() => undefined)),
         linkRequests.pendingChanges,
+        linkMoves.pendingChanges,
         Stream.fromPubSub(changed),
         sessions.streamChanges.pipe(Stream.map(() => undefined)),
       ],
@@ -604,6 +607,7 @@ const make = Effect.gen(function* () {
         stopRunning: link.stopRunning,
         ...turnsBefore,
       });
+      yield* linkMoves.dropLink(link.deviceId);
       // Revoking the session takes it off the relay and closes its connection.
       if (link.sessionId !== null) {
         yield* sessions
@@ -681,8 +685,11 @@ const make = Effect.gen(function* () {
       return { otherComputer: "not_asked" } as const;
     });
 
+  // A waiting move answers to its transfer id, a waiting start to its request id.
   const respondRequest: ComputerLinksShape["respondRequest"] = (input) =>
-    linkRequests.respond(input);
+    linkMoves
+      .respond(input)
+      .pipe(Effect.flatMap((handled) => (handled ? Effect.void : linkRequests.respond(input))));
 
   /**
    * The other computer unlinked both ways: this computer drops its own links
@@ -833,6 +840,7 @@ const make = Effect.gen(function* () {
             const row = yield* devices.getDeviceBySession(change.sessionId);
             if (Option.isSome(row) && row.value.grant === "peer") {
               yield* linkRequests.dropLink(row.value.deviceId);
+              yield* linkMoves.dropLink(row.value.deviceId);
               yield* notify;
             }
           }).pipe(Effect.catchCause((cause) => Effect.logWarning("links.drop.failed", { cause })))

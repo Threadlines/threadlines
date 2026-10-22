@@ -102,6 +102,7 @@ import {
   KeyRoundIcon,
   LoaderIcon,
   LogInIcon,
+  MonitorDownIcon,
   RefreshCwIcon,
   ReplyIcon,
   PencilIcon,
@@ -193,7 +194,7 @@ import {
 import { cn, pluralize } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@threadlines/contracts/settings";
-import { formatTimestamp } from "../../timestampFormat";
+import { formatDateAndTime, formatTimestamp } from "../../timestampFormat";
 import { useSettings } from "../../hooks/useSettings";
 import { useStreamingHeightFloor } from "../../hooks/useStreamingHeightFloor";
 import { useStreamingTextReveal } from "../../hooks/useStreamingTextReveal";
@@ -2601,6 +2602,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "work" ? <WorkGroupSection row={row} /> : null}
       {row.kind === "message" ? <MessageTimelineRow row={row} /> : null}
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
+      {row.kind === "moved-in" ? <MovedInTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "page" ? <PageTimelineRow row={row} /> : null}
       {row.kind === "command-request" ? (
@@ -2705,6 +2707,33 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Where a thread that moved here from another computer starts being this
+ * computer's: a quiet rule across the conversation with one line in it. The
+ * history above came with the move, and revert stops at this line.
+ */
+function MovedInTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "moved-in" }> }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <div className="mx-auto max-w-4xl px-1">
+      <div
+        className="flex min-w-0 items-center gap-3 text-xs leading-[18px] text-muted-foreground"
+        data-testid="moved-in-boundary"
+      >
+        <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-border" />
+        <span className="flex min-w-0 items-center gap-1.5">
+          <MonitorDownIcon aria-hidden="true" className="size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">
+            Moved here from {row.movedIn.fromLabel} ·{" "}
+            {formatDateAndTime(row.movedIn.movedAt, ctx.timestampFormat)}
+          </span>
+        </span>
+        <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-border" />
       </div>
     </div>
   );

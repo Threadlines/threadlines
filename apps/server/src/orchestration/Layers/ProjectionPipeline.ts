@@ -574,6 +574,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
             remoteOrigin: event.payload.remoteOrigin ?? null,
             scheduledRun: event.payload.scheduledRun ?? null,
+            move: null,
+            movedFrom: event.payload.movedFrom ?? null,
+            historySeedOwed: event.payload.historySeedOwed === true ? 1 : 0,
             effectiveCwd: null,
             effectiveCwdSource: null,
             goal: null,
@@ -631,6 +634,72 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             archivedWithParentAt: null,
             updatedAt: event.payload.updatedAt,
           });
+          return;
+        }
+
+        // Moving a thread to a linked computer: the row keeps the move as
+        // OrchestrationThreadMove, applied the way the in-memory projector does.
+        case "thread.move-started":
+        case "thread.move-progressed":
+        case "thread.move-cancel-requested":
+        case "thread.move-aborted":
+        case "thread.moved-away": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const move = existingRow.value.move ?? null;
+          const nextMove =
+            event.type === "thread.move-started"
+              ? {
+                  transferId: event.payload.transferId,
+                  target: event.payload.target,
+                  agent: event.payload.agent,
+                  phase: "exporting" as const,
+                  cancelRequested: false,
+                  startedAt: event.payload.startedAt,
+                }
+              : move === null || move.transferId !== event.payload.transferId
+                ? move
+                : event.type === "thread.move-progressed"
+                  ? {
+                      ...move,
+                      phase: event.payload.phase,
+                      ...(event.payload.sentBytes !== undefined
+                        ? { sentBytes: event.payload.sentBytes }
+                        : {}),
+                      ...(event.payload.totalBytes !== undefined
+                        ? { totalBytes: event.payload.totalBytes }
+                        : {}),
+                    }
+                  : event.type === "thread.move-cancel-requested"
+                    ? { ...move, cancelRequested: true }
+                    : event.type === "thread.move-aborted"
+                      ? null
+                      : {
+                          ...move,
+                          movedAway: {
+                            threadId: event.payload.movedThreadId,
+                            movedAt: event.payload.movedAt,
+                          },
+                        };
+          if (nextMove === move) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({ ...existingRow.value, move: nextMove });
+          return;
+        }
+
+        case "thread.history-seed-delivered": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow) || (existingRow.value.historySeedOwed ?? 0) === 0) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({ ...existingRow.value, historySeedOwed: 0 });
           return;
         }
 
@@ -1336,6 +1405,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId,
+            // Back to where a moved thread arrived: the turn that gave its
+            // agent the conversation is undone, so it is owed again.
+            ...(event.payload.turnCount === 0 && (existingRow.value.movedFrom ?? null) !== null
+              ? { historySeedOwed: 1 }
+              : {}),
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
@@ -1462,6 +1536,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.fromThread !== undefined
               ? { fromThread: event.payload.fromThread }
               : {}),
+            ...(event.payload.imported === true ? { imported: true as const } : {}),
             ...(event.payload.agentModels !== undefined
               ? { agentModels: event.payload.agentModels }
               : {}),
