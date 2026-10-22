@@ -354,7 +354,7 @@ Schedules are configuration, not thread history, so they live in their own table
   - Saving requires `Cron.next` to find an occurrence within 366 days. Parse and next both run in a `try` at save time and at every tick, so one bad task can only fail itself (status `error` with the reason).
 - **Time.**
   - A slot is the UTC instant of a cron occurrence evaluated in the task's `timezone`. The timezone is stored on the task: the computer's zone at creation, editable.
-  - A wall time that doesn't exist on a DST spring-forward day fires the same distance past the jump (02:30 fires at 03:30). On a fall-back day, a cadence whose hour field is `*` (hourly, every 15 minutes) keeps to real time, so it fires in both passes of the repeated hour; one with set hours fires each wall time once (the first).
+  - A cadence whose hour field is `*` (hourly, every 15 minutes) keeps to real time through any clock change: it fires whenever the wall clock reads a matching time, in both passes of a repeated stretch and never for a skipped one. A cadence with set hours fires each wall time once: a time a spring-forward skips fires the same distance past the jump (02:30 fires at 03:30), and a repeated one at its first instant.
   - If the computer's zone changes, tasks keep their stored zone, and the UI names it when it differs from the viewer's.
 
 ### Scheduler (`ScheduledTaskReactor`)

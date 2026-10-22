@@ -1901,10 +1901,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             settledAt: command.createdAt,
           },
         })),
+        // A child's report, and a scheduled task's run, for the leaving agent:
+        // never handed to another (the task's run says its agent left).
         ...(thread.queuedFollowUps ?? [])
           .filter(
             (queued) =>
-              queued.fromThread?.kind === "report" && queued.participantId === participant.id,
+              (queued.fromThread?.kind === "report" || queued.scheduledTaskId !== undefined) &&
+              queued.participantId === participant.id,
           )
           .map((queued): PlannedOrchestrationEvent => ({
             ...leavingBase(thread.id),
@@ -2717,6 +2720,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 },
               ]),
         ];
+      }
+      // Likewise a scheduled task's run: it is taken back, and the run says
+      // its agent left.
+      if (queued.scheduledTaskId !== undefined && !queuedParticipantPresent) {
+        return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
       }
       if (agentQueued && !queuedParticipantPresent) {
         return [

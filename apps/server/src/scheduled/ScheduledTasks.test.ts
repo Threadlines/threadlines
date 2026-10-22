@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentId,
+  type ExecutionEnvironmentDescriptor,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -26,6 +27,7 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import { ServerConfig } from "../config.ts";
+import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import type { McpInvocationScope } from "../mcp/McpSessionRegistry.ts";
 import { roomToolsFor } from "../mcp/roomToolAccess.ts";
@@ -57,6 +59,8 @@ import { ScheduledTasks, ScheduledTasksLive } from "./ScheduledTasks.ts";
 const AT = "2026-10-20T10:00:00.000Z";
 const PROJECT = ProjectId.make("project-1");
 const CODEX = ProviderInstanceId.make("codex");
+/** A second agent in a room. */
+const AGENT_B = ThreadParticipantId.make("1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e");
 
 const PROVIDER = {
   instanceId: CODEX,
@@ -150,6 +154,8 @@ const makeComputer = Effect.gen(function* () {
     patch: {
       readonly bootstrap?: Partial<ThreadBootstrapShape>;
       readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
+      /** The agents the server reports; Codex, signed in, otherwise. */
+      readonly providers?: ReadonlyArray<ServerProvider>;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -157,9 +163,16 @@ const makeComputer = Effect.gen(function* () {
         Layer.provide(
           Layer.mergeAll(
             Layer.succeed(ThreadBootstrap, { ...realBootstrap, ...patch.bootstrap }),
-            Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([PROVIDER]) }),
+            Layer.mock(ProviderRegistry)({
+              getProviders: Effect.succeed(patch.providers ?? [PROVIDER]),
+            }),
             Layer.mock(GitVcsDriver)({}),
             Layer.mock(GitWorkflowService)({}),
+            Layer.mock(ServerEnvironment)({
+              getDescriptor: Effect.succeed({
+                label: "Test Mac",
+              } as ExecutionEnvironmentDescriptor),
+            }),
             ServerSettingsService.layerTest(patch.settings),
           ),
         ),
@@ -903,6 +916,287 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
     }),
   );
 
+  /** A thread to continue (a run of an opener task), its first turn done, with agent B in its room. */
+  const roomToContinue = (
+    computer: Effect.Success<typeof makeComputer>,
+    service: Effect.Success<ReturnType<Effect.Success<typeof makeComputer>["boot"]>>,
+  ) =>
+    Effect.gen(function* () {
+      const opener = yield* service.create(draft({ name: "Opener", cadence: { kind: "manual" } }));
+      const opened = yield* service.runNow({ id: opener.id });
+      const target = scheduledRunThreadId(opener.id, opened.slotUtc);
+      yield* eventually(
+        computer.thread(target).pipe(Effect.map((thread) => thread !== undefined)),
+        "the thread exists",
+      );
+      const openerTurn = TurnId.make("opener-turn");
+      yield* computer.turnRuns(target, openerTurn);
+      yield* computer.turnCompletes(target, openerTurn);
+      yield* computer.engine.dispatch({
+        type: "thread.participant.add",
+        commandId: CommandId.make("add-agent-b"),
+        threadId: target,
+        participant: {
+          id: AGENT_B,
+          handle: "sol",
+          modelSelection: { instanceId: CODEX, model: "gpt-6-sol" },
+        },
+        createdAt: AT,
+      });
+      return target;
+    });
+
+  /** Who holds the thread's session: `participantId` (null for its own agent), working or not. */
+  const sessionHeldBy = (
+    computer: Effect.Success<typeof makeComputer>,
+    threadId: ThreadId,
+    participantId: ThreadParticipantId | null,
+    activeTurnId: TurnId | null,
+  ) =>
+    computer.engine.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make(`session:${participantId ?? "own"}:${activeTurnId ?? "idle"}`),
+      threadId,
+      session: {
+        threadId,
+        status: activeTurnId === null ? "ready" : "running",
+        providerName: "codex",
+        providerInstanceId: CODEX,
+        runtimeMode: "auto",
+        activeTurnId,
+        lastError: null,
+        participantId,
+        updatedAt: AT,
+      },
+      createdAt: AT,
+    });
+
+  it.effect("a run for the thread's own agent goes to it, even while a room agent works", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const target = yield* roomToContinue(computer, service);
+      // Agent B holds the session when the run fires.
+      yield* sessionHeldBy(computer, target, AGENT_B, TurnId.make("b-turn"));
+      const task = yield* service.create(
+        draft({
+          name: "Own agent",
+          cadence: { kind: "manual" },
+          target: { kind: "thread", threadId: target },
+        }),
+      );
+      const run = yield* service.runNow({ id: task.id });
+      const messageId = scheduledRunMessageId(task.id, run.slotUtc);
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "queued")),
+        "the run was queued",
+      );
+      const queued = ((yield* computer.thread(target))!.queuedFollowUps ?? []).find(
+        (entry) => entry.messageId === messageId,
+      );
+      assert.equal(queued?.participantId ?? null, null);
+
+      // B finishes; the run's turn starts with the thread's own agent.
+      yield* sessionHeldBy(computer, target, AGENT_B, null);
+      yield* computer.engine.dispatch({
+        type: "thread.follow-up.send-queued",
+        commandId: CommandId.make("send-own-agent-run"),
+        threadId: target,
+        messageId,
+        createdAt: "2026-10-20T08:01:00.000Z",
+      });
+      const request = (yield* computer.events).find(
+        (event) =>
+          event.type === "thread.turn-start-requested" && event.payload.messageId === messageId,
+      );
+      assert.equal(request?.type, "thread.turn-start-requested");
+      if (request?.type === "thread.turn-start-requested") {
+        assert.equal(request.payload.participantId ?? null, null);
+      }
+    }),
+  );
+
+  it.effect("a run for a room agent that leaves is taken back and fails, never handed on", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const target = yield* roomToContinue(computer, service);
+      // The thread's own agent works while B's run waits behind it.
+      yield* sessionHeldBy(computer, target, null, TurnId.make("own-turn"));
+      const task = yield* service.create(
+        draft({
+          name: "For B",
+          cadence: { kind: "manual" },
+          target: { kind: "thread", threadId: target, participantId: AGENT_B },
+        }),
+      );
+      const run = yield* service.runNow({ id: task.id });
+      const messageId = scheduledRunMessageId(task.id, run.slotUtc);
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "queued")),
+        "the run was queued",
+      );
+      yield* sessionHeldBy(computer, target, null, null);
+      yield* computer.engine.dispatch({
+        type: "thread.participant.remove",
+        commandId: CommandId.make("remove-agent-b"),
+        threadId: target,
+        participantId: AGENT_B,
+        createdAt: "2026-10-20T08:01:00.000Z",
+      });
+      const after = (yield* computer.thread(target))!;
+      assert.isFalse((after.queuedFollowUps ?? []).some((entry) => entry.messageId === messageId));
+      assert.isFalse(after.messages.some((message) => message.id === messageId));
+      yield* service.tick;
+      const ended = (yield* computer.runs(task.id))[0];
+      assert.equal(ended?.status, "failed");
+      assert.equal(ended?.reason, "Its agent left the thread.");
+
+      // A later run for it is refused before it is sent.
+      yield* setClock("2026-10-20T08:02:00.000Z");
+      const later = yield* service.runNow({ id: task.id });
+      yield* eventually(
+        computer
+          .runs(task.id)
+          .pipe(
+            Effect.map((rows) =>
+              rows.some((row) => row.slotUtc === later.slotUtc && row.status === "failed"),
+            ),
+          ),
+        "the later run was refused",
+      );
+      const refused = (yield* computer.runs(task.id)).find((row) => row.slotUtc === later.slotUtc);
+      assert.equal(refused?.reason, "Its agent left the thread.");
+
+      // One that slipped into the queue as B left is taken back when it
+      // comes up, not handed to the thread's own agent.
+      const raced = MessageId.make("raced-scheduled-message");
+      yield* computer.engine.dispatch({
+        type: "thread.follow-up.submit",
+        commandId: CommandId.make("raced-submit"),
+        threadId: target,
+        turnId: TurnId.make("raced-turn"),
+        message: { messageId: raced, role: "user", text: "For B.", attachments: [] },
+        delivery: "queue",
+        participantId: AGENT_B,
+        scheduledTaskId: task.id,
+        createdAt: "2026-10-20T08:03:00.000Z",
+      });
+      yield* computer.engine.dispatch({
+        type: "thread.follow-up.send-queued",
+        commandId: CommandId.make("raced-send"),
+        threadId: target,
+        messageId: raced,
+        createdAt: "2026-10-20T08:03:10.000Z",
+      });
+      const unqueued = (yield* computer.events).find(
+        (event) => event.type === "thread.follow-up-unqueued" && event.payload.messageId === raced,
+      );
+      assert.equal(
+        unqueued?.type === "thread.follow-up-unqueued" ? unqueued.payload.reason : null,
+        "cancelled",
+      );
+      assert.isFalse((yield* computer.thread(target))!.messages.some((m) => m.id === raced));
+      assert.isFalse(
+        (yield* computer.events).some(
+          (event) =>
+            event.type === "thread.turn-start-requested" &&
+            event.payload.threadId === target &&
+            event.payload.participantId === null &&
+            (event.payload.messageId === messageId ||
+              event.payload.messageId === scheduledRunMessageId(task.id, later.slotUtc)),
+        ),
+      );
+    }),
+  );
+
+  it.effect("a task whose room agent left stops until it is pointed at another agent", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const target = yield* roomToContinue(computer, service);
+      const task = yield* service.create(
+        draft({
+          name: "Hourly for B",
+          cadence: { kind: "hourly", minute: 0 },
+          target: { kind: "thread", threadId: target, participantId: AGENT_B },
+        }),
+      );
+      // The 9:00 run waits behind the thread's own agent, then B leaves.
+      yield* sessionHeldBy(computer, target, null, TurnId.make("own-turn"));
+      yield* setClock("2026-10-20T09:00:05.000Z");
+      yield* service.tick;
+      yield* eventually(
+        computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "queued")),
+        "the 9:00 run was queued",
+      );
+      yield* sessionHeldBy(computer, target, null, null);
+      yield* computer.engine.dispatch({
+        type: "thread.participant.remove",
+        commandId: CommandId.make("remove-agent-b"),
+        threadId: target,
+        participantId: AGENT_B,
+        createdAt: "2026-10-20T09:00:30.000Z",
+      });
+      yield* service.tick;
+      assert.equal((yield* computer.runs(task.id))[0]?.reason, "Its agent left the thread.");
+      const stopped = yield* service.getTask(task.id);
+      assert.equal(stopped?.status, "error");
+      assert.equal(
+        stopped?.error,
+        "Its agent left the thread. Pick another agent or remove the task.",
+      );
+      assert.equal(stopped?.nextRunAt, null);
+
+      // It stops firing.
+      yield* setClock("2026-10-20T10:00:05.000Z");
+      yield* service.tick;
+      assert.equal((yield* computer.runs(task.id)).length, 1);
+
+      // An agent can't start it again into the same agent, even with agents
+      // on auto, and anything else it asks of the stopped task is the user's call.
+      const agentAsks = (
+        requestId: string,
+        input: { readonly name?: string; readonly status?: "paused" },
+      ) =>
+        service.propose({
+          requestId,
+          threadId: target,
+          participantId: null,
+          mode: Effect.succeed("auto"),
+          callerRuntimeMode: "full-access",
+          change: { kind: "update", input: { id: task.id, ...input } },
+        });
+      const renamed = yield* agentAsks("rename", { name: "Renamed" }).pipe(Effect.flip);
+      assert.equal(
+        renamed.message,
+        "Its agent left the thread. Pick another agent or remove the task.",
+      );
+      assert.equal((yield* agentAsks("pause", { status: "paused" })).outcome, "asked_user");
+      assert.equal((yield* service.getTask(task.id))?.status, "error");
+
+      // Nor can the user save it pointed at the agent that left; pointing it
+      // at the thread's own agent starts it again.
+      const sameAgent = yield* service
+        .update({
+          id: task.id,
+          target: { kind: "thread", threadId: target, participantId: AGENT_B },
+        })
+        .pipe(Effect.flip);
+      assert.include(sameAgent.message, "Its agent left the thread.");
+      const repointed = yield* service.update({
+        id: task.id,
+        target: { kind: "thread", threadId: target },
+      });
+      assert.equal(repointed.status, "active");
+      assert.equal(repointed.error, null);
+      assert.equal(repointed.nextRunAt, "2026-10-20T11:00:00.000Z");
+    }),
+  );
+
   it.effect("a launch cut off between stages resumes after a restart and makes one thread", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;
@@ -1108,6 +1402,51 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
       const ended = (yield* computer.runs(task.id))[0];
       assert.equal(ended?.status, "failed");
       assert.equal(ended?.reason, "Provider instance 'codex' is disabled in Threadlines settings.");
+    }),
+  );
+
+  it.effect("a run whose agent isn't signed in says so, naming the agent and the computer", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      /** A run whose turn fails with `lastError`, on a server reporting `providers`. */
+      const failedRun = (lastError: string, providers?: ReadonlyArray<ServerProvider>) =>
+        Effect.gen(function* () {
+          const service = yield* computer.boot(providers === undefined ? {} : { providers });
+          const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+          const run = yield* service.runNow({ id: task.id });
+          const threadId = scheduledRunThreadId(task.id, run.slotUtc);
+          yield* eventually(
+            computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+            "the run started",
+          );
+          const turnId = TurnId.make(`turn-${task.id}`);
+          yield* computer.turnRuns(threadId, turnId);
+          yield* service.onTurnEnd({
+            threadId,
+            turnId,
+            outcome: "failed",
+            error: lastError,
+            pendingMessageId: scheduledRunMessageId(task.id, run.slotUtc),
+          });
+          return (yield* computer.runs(task.id))[0]?.reason;
+        });
+      // The provider's own words, twice over, become one plain sentence.
+      assert.equal(
+        yield* failedRun(
+          "Not logged in · Please run /login Run `claude auth login` in a terminal, then retry.",
+        ),
+        "Codex isn't signed in on Test Mac. Sign in under Settings › Providers, then run it again.",
+      );
+      // So does any failure while the server reports the agent signed out.
+      assert.equal(
+        yield* failedRun("Stream closed.", [
+          { ...PROVIDER, auth: { status: "unauthenticated" } } as ServerProvider,
+        ]),
+        "Codex isn't signed in on Test Mac. Sign in under Settings › Providers, then run it again.",
+      );
+      // Any other failure keeps its own words.
+      assert.equal(yield* failedRun("Stream closed."), "Stream closed.");
     }),
   );
 

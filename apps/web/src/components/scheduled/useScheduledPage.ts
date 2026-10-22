@@ -6,7 +6,10 @@ import type {
   RuntimeMode,
   ScheduledTask,
   ScheduledTaskId,
+  ThreadId,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
+import { roomAgentKey } from "@threadlines/shared/threadParticipants";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -17,8 +20,10 @@ import {
   useScheduledTaskGroups,
 } from "../../lib/scheduledTasksState";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
+import { buildRoomAgentLabels } from "../../rooms";
 import { deriveAccessLevel, runtimeModeConfig } from "../../runtimeModeOptions";
-import { selectProjectsAcrossEnvironments, useStore } from "../../store";
+import { selectEnvironmentState, selectProjectsAcrossEnvironments, useStore } from "../../store";
+import { getPickerModelName } from "../chat/providerIconUtils";
 import {
   parseScheduledSearch,
   type ScheduledSearch,
@@ -153,4 +158,59 @@ export function useAgentLabels(): (
     },
     [providersOn],
   );
+}
+
+/** One agent a continued thread's runs can go to. */
+export interface ContinuedAgent {
+  /** Null: the thread's own agent. */
+  readonly id: ThreadParticipantId | null;
+  /** As the thread's room names it. */
+  readonly name: string;
+  readonly modelSelection: ModelSelection;
+  /** It left the thread: listed only because a task still points at it. */
+  readonly left: boolean;
+}
+
+/**
+ * The agents a continued thread's runs can go to, named as its room names
+ * them: the thread's own agent, then the agents in its room, and `kept` (the
+ * one a task points at) even after it left. Empty when the thread never had
+ * a room, or isn't loaded here: its runs go to its own agent.
+ */
+export function useContinuedAgents(
+  environmentId: EnvironmentId | null,
+  threadId: ThreadId | null,
+  kept: ThreadParticipantId | null,
+): ReadonlyArray<ContinuedAgent> {
+  const providersOn = useEnvironmentProviders();
+  const shell = useStore((state) =>
+    environmentId === null || threadId === null
+      ? undefined
+      : selectEnvironmentState(state, environmentId).threadShellById[threadId],
+  );
+  return useMemo(() => {
+    if (shell === undefined || environmentId === null) return [];
+    const labels = buildRoomAgentLabels(
+      shell,
+      deriveProviderInstanceEntries(providersOn(environmentId)),
+      (model, entry) => getPickerModelName(model, entry.driverKind),
+    );
+    if (labels === null) return [];
+    const nameOf = (id: ThreadParticipantId | null) =>
+      labels.get(roomAgentKey(id))?.name ?? "An agent that left";
+    return [
+      { id: null, name: nameOf(null), modelSelection: shell.modelSelection, left: false },
+      ...(shell.participants ?? [])
+        .filter(
+          (participant) =>
+            (participant.leftAt === null && participant.guest !== true) || participant.id === kept,
+        )
+        .map((participant) => ({
+          id: participant.id,
+          name: nameOf(participant.id),
+          modelSelection: participant.modelSelection,
+          left: participant.leftAt !== null,
+        })),
+    ];
+  }, [environmentId, kept, providersOn, shell]);
 }

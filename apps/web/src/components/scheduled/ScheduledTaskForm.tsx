@@ -8,6 +8,14 @@ import {
   type ServerProvider,
   type ThreadId,
 } from "@threadlines/contracts";
+import {
+  PROVIDER_NOT_READY_FIX,
+  providerAgentName,
+  providerNotReady,
+  providerNotReadySentence,
+} from "@threadlines/shared/providerAuth";
+import { roomAgentKey } from "@threadlines/shared/threadParticipants";
+import { MessagesSquareIcon } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -19,6 +27,7 @@ import {
   useScheduledTasksStore,
 } from "../../lib/scheduledTasksState";
 import { cn } from "../../lib/utils";
+import { uses12HourClock } from "../../timestampFormat";
 import {
   deriveProviderInstanceEntries,
   sortProviderInstanceEntries,
@@ -30,30 +39,39 @@ import {
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../../store";
+import type { Project } from "../../types";
+import { ProjectFavicon } from "../ProjectFavicon";
 import { SETTINGS_GROUP_ROW_CLASS, SettingsSection } from "../settings/settingsLayout";
 import { ModelSelectionControl } from "../settings/TextGenerationModelControl";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { DatePicker } from "../ui/date-picker";
 import { Textarea } from "../ui/textarea";
+import { TimePicker } from "../ui/time-picker";
+import { TimeZonePicker } from "../ui/time-zone-picker";
 import { toastManager } from "../ui/toast";
 import {
   CADENCE_KIND_LABELS,
   type CadenceKind,
-  clockInputValue,
   emptyTaskForm,
   formatWhen,
   formDraft,
   formProblems,
-  parseClockInput,
   previewRuns,
   type ScheduledTaskForm as FormState,
   taskForm,
+  todayIn,
   viewerTimeZone,
   WEEKDAY_LABELS,
 } from "./scheduled.logic";
-import { type LocatedTask, taskRef, useScheduledNavigation } from "./useScheduledPage";
+import {
+  type LocatedTask,
+  taskRef,
+  useContinuedAgents,
+  useScheduledNavigation,
+} from "./useScheduledPage";
 
 const CADENCE_KINDS: readonly CadenceKind[] = [
   "manual",
@@ -67,25 +85,20 @@ const CADENCE_KINDS: readonly CadenceKind[] = [
 
 const HOURLY_MINUTES = Array.from({ length: 12 }, (_, index) => index * 5);
 
-const TIME_ZONES: readonly string[] = (() => {
-  try {
-    return Intl.supportedValuesOf("timeZone");
-  } catch {
-    return [viewerTimeZone()];
-  }
-})();
-
 /** One labelled field: the label (and a hint) on the left, the control on the right. */
 function FieldRow({
   label,
   hint,
   problem,
+  warning,
   children,
   stacked = false,
 }: {
   readonly label: string;
   readonly hint?: ReactNode;
   readonly problem?: string | undefined;
+  /** Worth knowing before saving, but no reason not to. */
+  readonly warning?: string | null | undefined;
   readonly children: ReactNode;
   /** The control below the label, full width (text fields). */
   readonly stacked?: boolean;
@@ -114,7 +127,32 @@ function FieldRow({
         </div>
       </div>
       {problem ? <p className="pt-1.5 text-[12px] text-destructive-foreground">{problem}</p> : null}
+      {warning && !problem ? (
+        <p className="pt-1.5 text-[12px] text-warning-foreground">{warning}</p>
+      ) : null}
     </div>
+  );
+}
+
+const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
+
+/** A project as the app's other project pickers show it: its logo (General Chats its own glyph) and name. */
+function ProjectLabel({ project }: { readonly project: Project }) {
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      {project.kind === "general-chat" ? (
+        <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground" />
+      ) : (
+        <ProjectFavicon
+          cwd={project.cwd}
+          environmentId={project.environmentId}
+          name={project.name}
+        />
+      )}
+      <span className="truncate">
+        {project.kind === "general-chat" ? "General Chats" : project.name}
+      </span>
+    </span>
   );
 }
 
@@ -253,8 +291,46 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       })
     : null;
 
+  // In a room, which of its agents gets each run.
+  const continuedAgents = useContinuedAgents(
+    form.environmentId,
+    form.target === "thread" ? form.threadId : null,
+    form.threadParticipantId,
+  );
+  const goesTo = continuedAgents.find((agent) => agent.id === form.threadParticipantId);
+
+  // The chosen agent can't run on the chosen computer as things are: said
+  // before saving, though saving is still fine (it may be fixed by then).
+  const chosenProvider = providers.find(
+    (provider) => provider.instanceId === form.modelSelection?.instanceId,
+  );
+  const agentNotReady = providerNotReady(chosenProvider);
+  const agentWarning =
+    agentNotReady === null || form.modelSelection === null
+      ? null
+      : `${providerNotReadySentence(
+          agentNotReady,
+          providerAgentName(chosenProvider, form.modelSelection.instanceId),
+          environments.find((entry) => entry.environmentId === form.environmentId)?.label ??
+            "this computer",
+        )} Its runs will fail until you ${lowerFirst(PROVIDER_NOT_READY_FIX[agentNotReady])}.`;
+
+  // The zones the picker leads with: where the task runs, where you are, UTC.
+  const computerTimeZone =
+    form.environmentId === null ? undefined : computerZones[form.environmentId]?.timeZone;
+  const timeZoneSuggestions = useMemo(() => {
+    const viewer = viewerTimeZone();
+    return [
+      ...(computerTimeZone !== undefined
+        ? [{ timeZone: computerTimeZone, note: "This computer" }]
+        : []),
+      ...(viewer !== computerTimeZone ? [{ timeZone: viewer, note: "You" }] : []),
+      { timeZone: "UTC" },
+    ];
+  }, [computerTimeZone]);
+
   const now = new Date();
-  const problems = formProblems(form, now, editing?.task);
+  const problems = formProblems(form, now, editing?.task, goesTo?.left === true);
   const shownProblems = submitted ? problems : {};
   const upcoming = form.cadenceKind === "manual" ? [] : previewRuns(form, now, 3);
 
@@ -314,16 +390,13 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
   };
 
   const timeField = (
-    <Input
-      type="time"
+    <TimePicker
       size="sm"
-      className="w-32"
+      className="w-32 min-w-0"
       aria-label="Time"
-      value={clockInputValue(form.time)}
-      onChange={(event) => {
-        const clock = parseClockInput(event.target.value);
-        if (clock) update({ time: clock });
-      }}
+      value={form.time}
+      hour12={uses12HourClock(settings.timestampFormat)}
+      onChange={(time) => update({ time })}
       data-testid="scheduled-form-time"
     />
   );
@@ -419,17 +492,13 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
           >
             <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Project">
               <SelectValue>
-                {selectedProject
-                  ? selectedProject.kind === "general-chat"
-                    ? "General Chats"
-                    : selectedProject.name
-                  : "Choose a project"}
+                {selectedProject ? <ProjectLabel project={selectedProject} /> : "Choose a project"}
               </SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
               {environmentProjects.map((project) => (
                 <SelectItem key={project.id} value={project.id}>
-                  {project.kind === "general-chat" ? "General Chats" : project.name}
+                  <ProjectLabel project={project} />
                 </SelectItem>
               ))}
             </SelectPopup>
@@ -492,6 +561,44 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             </Select>
           ) : null}
         </FieldRow>
+        {form.target === "thread" && continuedAgents.length > 0 ? (
+          <FieldRow
+            label="Goes to"
+            hint="Which agent in that thread gets each run."
+            problem={shownProblems.goesTo ?? (goesTo?.left === true ? problems.goesTo : undefined)}
+          >
+            <Select
+              value={roomAgentKey(form.threadParticipantId)}
+              onValueChange={(value) => {
+                const agent = continuedAgents.find((entry) => roomAgentKey(entry.id) === value);
+                if (agent === undefined || agent.left) return;
+                // Its runs start from that agent's model.
+                update({ threadParticipantId: agent.id, modelSelection: agent.modelSelection });
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Goes to">
+                <SelectValue>
+                  {goesTo === undefined
+                    ? "Choose an agent"
+                    : goesTo.left
+                      ? `${goesTo.name} (left)`
+                      : goesTo.name}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {continuedAgents.map((agent) => (
+                  <SelectItem
+                    key={roomAgentKey(agent.id)}
+                    value={roomAgentKey(agent.id)}
+                    disabled={agent.left}
+                  >
+                    {agent.left ? `${agent.name} (left the thread)` : agent.name}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          </FieldRow>
+        ) : null}
         {form.target === "new_thread" && !isGeneralChats ? (
           <FieldRow
             label="Runs in"
@@ -514,7 +621,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       </SettingsSection>
 
       <SettingsSection title="Agent">
-        <FieldRow label="Model" problem={shownProblems.agent}>
+        <FieldRow label="Model" problem={shownProblems.agent} warning={agentWarning}>
           {form.modelSelection && instanceEntries.length > 0 ? (
             <ModelSelectionControl
               selection={form.modelSelection}
@@ -633,17 +740,15 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             </Select>
           ) : null}
           {form.cadenceKind === "once" ? (
-            <Input
-              type="date"
+            <DatePicker
               size="sm"
-              className="w-40"
+              className="w-44 min-w-0"
               aria-label="Date"
               value={form.date}
-              onChange={(event) => {
-                if (/^\d{4}-\d{2}-\d{2}$/u.test(event.target.value)) {
-                  update({ date: event.target.value });
-                }
-              }}
+              // Days are the task's own: today and earlier are as its zone sees them.
+              today={todayIn(form.timeZone)}
+              min={todayIn(form.timeZone)}
+              onChange={(date) => update({ date })}
               data-testid="scheduled-form-date"
             />
           ) : null}
@@ -676,26 +781,14 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             label="Time zone"
             hint="Times use this zone wherever you are. When clocks skip ahead, a skipped time runs right after. When they fall back, a set time runs once and hourly tasks still run every hour."
           >
-            <Select
+            <TimeZonePicker
               value={form.timeZone}
-              onValueChange={(value) => {
-                if (value) update({ timeZone: value, timeZoneChosen: true });
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Time zone">
-                <SelectValue>{form.timeZone}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {(TIME_ZONES.includes(form.timeZone)
-                  ? TIME_ZONES
-                  : [form.timeZone, ...TIME_ZONES]
-                ).map((zone) => (
-                  <SelectItem key={zone} value={zone}>
-                    {zone}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
+              onChange={(timeZone) => update({ timeZone, timeZoneChosen: true })}
+              suggestions={timeZoneSuggestions}
+              className="w-full sm:w-52"
+              aria-label="Time zone"
+              data-testid="scheduled-form-time-zone"
+            />
           </FieldRow>
         ) : null}
         {upcoming.length > 0 ? (

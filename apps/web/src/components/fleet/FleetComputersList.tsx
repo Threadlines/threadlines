@@ -1,73 +1,13 @@
 import { LayersIcon } from "lucide-react";
-import type { ReactNode } from "react";
 
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { cn } from "../../lib/utils";
-import { AttentionCounts } from "../sidebar/AttentionCounts";
 import { DestinationListHeader } from "../sidebar/DestinationListHeader";
+import { DestinationListRow } from "../sidebar/DestinationListRow";
 import { SidebarContent } from "../ui/sidebar";
 import { describeComputerLocation, type FleetComputer } from "./fleet.logic";
 import { FLEET_CONNECTION_DOT_CLASS, FLEET_GLYPH_ICONS } from "./FleetGraph";
 import { useFleetPageStore } from "./fleetPageStore";
-
-function ComputerRow({
-  testId,
-  selected,
-  disabled = false,
-  icon,
-  title,
-  meta,
-  needsYou,
-  working,
-  onSelect,
-}: {
-  readonly testId: string;
-  readonly selected: boolean;
-  readonly disabled?: boolean;
-  readonly icon: ReactNode;
-  readonly title: string;
-  readonly meta: string | null;
-  readonly needsYou: number;
-  readonly working: number;
-  readonly onSelect: () => void;
-}) {
-  return (
-    <li>
-      <button
-        type="button"
-        data-testid={testId}
-        aria-pressed={disabled ? undefined : selected}
-        disabled={disabled}
-        className={cn(
-          "flex w-full min-w-0 items-start gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors select-none focus-ring",
-          disabled
-            ? "cursor-default"
-            : selected
-              ? "cursor-pointer bg-sidebar-accent"
-              : "cursor-pointer hover:bg-sidebar-accent/60 active:bg-sidebar-accent/80",
-        )}
-        onClick={onSelect}
-      >
-        <span className="mt-px flex size-[18px] shrink-0 items-center justify-center text-muted-foreground">
-          {icon}
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-[13.5px] leading-[19px] font-medium text-foreground">
-              {title}
-            </span>
-            <AttentionCounts needsYou={needsYou} working={working} />
-          </span>
-          {meta ? (
-            <span className="truncate font-mono text-[10.5px] leading-4 text-muted-foreground">
-              {meta}
-            </span>
-          ) : null}
-        </span>
-      </button>
-    </li>
-  );
-}
 
 function ComputerGlyph({ computer }: { readonly computer: FleetComputer }) {
   const Glyph = FLEET_GLYPH_ICONS[computer.glyph];
@@ -105,7 +45,7 @@ export function FleetComputersList() {
       <DestinationListHeader title="Computers" />
       <SidebarContent className="px-2 pb-3">
         <ul className="flex flex-col gap-0.5" data-testid="fleet-computers-list">
-          <ComputerRow
+          <DestinationListRow
             testId="fleet-list-all"
             selected={!selected}
             icon={<LayersIcon aria-hidden="true" className="size-4" />}
@@ -116,7 +56,7 @@ export function FleetComputersList() {
             onSelect={() => select(null)}
           />
           {computers.map((computer) => (
-            <ComputerRow
+            <DestinationListRow
               key={computer.id}
               testId={`fleet-list-computer-${computer.id}`}
               selected={computer.id === selectedComputerId}

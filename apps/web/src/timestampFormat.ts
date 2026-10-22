@@ -199,3 +199,10 @@ export function formatExpiresInLabel(isoDate: string, nowMs: number = Date.now()
   if (seconds > 0) tail.push(`${seconds}s`);
   return tail.length > 0 ? `Expires in ${days}d ${tail.join(" ")}` : `Expires in ${days}d`;
 }
+
+/** Whether times read on the 12-hour clock: the user's choice, or their locale's. */
+export function uses12HourClock(timestampFormat: TimestampFormat): boolean {
+  if (timestampFormat !== "locale") return timestampFormat === "12-hour";
+  const options = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions();
+  return options.hour12 ?? (options.hourCycle === "h11" || options.hourCycle === "h12");
+}
