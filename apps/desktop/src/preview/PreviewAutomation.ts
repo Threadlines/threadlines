@@ -78,12 +78,14 @@ import {
   buildInjectedRuntimeScript,
   buildLocatorQueryScript,
   INJECTED_WORLD_NAME,
+  injectedRuntimeReadyExpression,
 } from "./injectedRuntime.ts";
 import {
   type Affine,
   applyAffine,
   composeAffine,
   frameAffine,
+  frameToParentAffine,
   IDENTITY_AFFINE,
 } from "./frameAffine.ts";
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
@@ -148,8 +150,20 @@ const FRAME_AUTO_ATTACH = {
   flatten: true,
   filter: [{ type: "iframe" }],
 };
-/** How deep `routePoint` follows frames inside frames. */
+/** How deep `routePoint` and `snapshot` follow frames inside frames. */
 const MAX_FRAME_DEPTH = 8;
+/** A snapshot ref in a frame: `f2e7` is element 7 in frame 2. */
+const FRAME_REF = /^f(\d+)e\d+$/;
+/**
+ * A frame's line in a snapshot: indent, the line up to its attributes' end, and
+ * its ref. Fallback text an `<iframe>` carries (`: Loading…`) is dropped when
+ * the frame's own content goes under it; a browser never shows that text.
+ */
+const SNAPSHOT_FRAME_LINE = /^(\s*)(- iframe\b[^\n]*?\[ref=([^\]\s]+)\][^:\n]*)(?::.*)?$/;
+/** How many frames a snapshot reads, how long each may take, and how long they may take in all. */
+const MAX_SNAPSHOT_FRAMES = 40;
+const SNAPSHOT_FRAME_TIMEOUT = "2 seconds";
+const SNAPSHOT_FRAMES_BUDGET_MS = 8_000;
 /** Elements whose content is a frame of its own. */
 const FRAME_OWNER_NODE_NAMES = new Set(["IFRAME", "FRAME", "OBJECT", "EMBED", "FENCEDFRAME"]);
 /** The world `frameViewportSize` reads in. */
@@ -208,7 +222,46 @@ interface AttachedTab {
   holdUserKeysUntil: number;
   /** Frame id -> its own CDP session, for frames in other processes; see `routePoint`. */
   frameSessions: Map<string, string>;
+  /**
+   * For each such session, the frame it is for and that frame's element in
+   * the session around it: how a point in the frame maps out to the page.
+   */
+  sessionOwners: Map<string, SessionOwner>;
+  /**
+   * The page's frames by the number their snapshot refs carry (`f2e7` is in
+   * frame 2), as the last snapshot found them; see `frameNumberingOf` for how
+   * numbers are given.
+   */
+  framesByOrdinal: Map<number, InjectedFrame>;
   dispose: () => void;
+}
+
+/**
+ * A frame the element engine runs in: its id, the session that reaches it (the
+ * page's when undefined), and the number its snapshot refs carry.
+ */
+interface InjectedFrame {
+  readonly sessionId: string | undefined;
+  readonly frameId: string;
+  readonly ordinal: number;
+}
+
+interface SessionOwner {
+  readonly frameId: string;
+  readonly parentSessionId: string | undefined;
+  readonly ownerBackendNodeId: number;
+}
+
+/** What one snapshot may still spend on frames: until when, and how many it has read. */
+interface SnapshotBudget {
+  readonly deadline: number;
+  frames: number;
+}
+
+/** An element, and the session its node id belongs to (the page's when undefined). */
+interface NodeRef {
+  readonly backendNodeId: number;
+  readonly sessionId: string | undefined;
 }
 
 /**
@@ -712,7 +765,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     method: string,
     params?: Record<string, unknown>,
     options?: {
-      readonly timeout?: Duration.Input;
+      readonly timeout?: Duration.Input | undefined;
       /** Asked in the same synchronous step as the send; a reason refuses it. */
       readonly refusal?: () => string | null;
       /** Why the page did not answer, when the caller knows better. */
@@ -852,22 +905,30 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * old one. Tracking it ourselves would mean holding an id that goes stale
    * exactly when a page changes, which is the moment this gets used.
    */
+  /** The engine's world in a frame (the page's top one when none is given), built on first use. */
   const injectedWorld = Effect.fn("PreviewAutomation.injectedWorld")(function* (
     contents: WebContents,
+    frame?: InjectedFrame,
+    timeout?: Duration.Input,
   ) {
-    yield* sendCommand(contents, "Page.enable", {});
-    const tree = (yield* sendCommand(contents, "Page.getFrameTree", {})) as {
-      frameTree?: { frame?: { id?: string } };
-    };
-    const frameId = tree.frameTree?.frame?.id;
+    const sessionId = frame?.sessionId;
+    let frameId = frame?.frameId;
     if (frameId === undefined) {
-      return yield* failCommand(contents, "Page.getFrameTree", "the page has no main frame");
+      yield* sendCommand(contents, "Page.enable", {});
+      const tree = (yield* sendCommand(contents, "Page.getFrameTree", {})) as {
+        frameTree?: { frame?: { id?: string } };
+      };
+      frameId = tree.frameTree?.frame?.id;
+      if (frameId === undefined) {
+        return yield* failCommand(contents, "Page.getFrameTree", "the page has no main frame");
+      }
     }
-    const world = (yield* sendCommand(contents, "Page.createIsolatedWorld", {
-      frameId,
-      worldName: INJECTED_WORLD_NAME,
-      grantUniveralAccess: false,
-    })) as { executionContextId?: number };
+    const world = (yield* sendCommand(
+      contents,
+      "Page.createIsolatedWorld",
+      { frameId, worldName: INJECTED_WORLD_NAME, grantUniveralAccess: false },
+      { sessionId, timeout },
+    )) as { executionContextId?: number };
     const contextId = world.executionContextId;
     if (contextId === undefined) {
       return yield* failCommand(
@@ -876,11 +937,29 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         "could not create an isolated world for the element engine",
       );
     }
-    yield* sendCommand(contents, "Runtime.evaluate", {
-      expression: buildInjectedRuntimeScript(),
-      contextId,
-      returnByValue: true,
-    });
+    // The engine's source is large; it is sent only to a world without it.
+    const built = (yield* sendCommand(
+      contents,
+      "Runtime.evaluate",
+      {
+        expression: injectedRuntimeReadyExpression(frame?.ordinal ?? 0),
+        contextId,
+        returnByValue: true,
+      },
+      { sessionId, timeout },
+    )) as { result?: { value?: unknown } };
+    if (built.result?.value !== true) {
+      yield* sendCommand(
+        contents,
+        "Runtime.evaluate",
+        {
+          expression: buildInjectedRuntimeScript(undefined, frame?.ordinal ?? 0),
+          contextId,
+          returnByValue: true,
+        },
+        { sessionId, timeout },
+      );
+    }
     return contextId;
   });
 
@@ -888,15 +967,26 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   const evaluateInjected = Effect.fn("PreviewAutomation.evaluateInjected")(function* (
     contents: WebContents,
     expression: string,
-    options?: { readonly returnByValue?: boolean },
+    options?: {
+      readonly returnByValue?: boolean;
+      /** A frame inside the page; its top one when absent. */
+      readonly frame?: InjectedFrame;
+      readonly timeout?: Duration.Input;
+    },
   ) {
-    const contextId = yield* injectedWorld(contents);
-    const result = (yield* sendCommand(contents, "Runtime.evaluate", {
-      expression,
-      contextId,
-      returnByValue: options?.returnByValue ?? false,
-      awaitPromise: true,
-    })) as {
+    const sessionId = options?.frame?.sessionId;
+    const contextId = yield* injectedWorld(contents, options?.frame, options?.timeout);
+    const result = (yield* sendCommand(
+      contents,
+      "Runtime.evaluate",
+      {
+        expression,
+        contextId,
+        returnByValue: options?.returnByValue ?? false,
+        awaitPromise: true,
+      },
+      { sessionId, timeout: options?.timeout },
+    )) as {
       result?: { objectId?: string; value?: unknown };
       exceptionDetails?: { exception?: { description?: string; value?: unknown }; text?: string };
     };
@@ -1127,6 +1217,188 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   });
 
   /**
+   * The element a target names, with the session its node id belongs to. A
+   * snapshot ref inside a frame (`f2e7`) resolves in that frame, through the
+   * engine there that issued it; everything else resolves in the page's top
+   * document, as `resolveTarget` does.
+   */
+  const resolveNode = Effect.fn("PreviewAutomation.resolveNode")(function* (
+    contents: WebContents,
+    target: PreviewAutomationTarget,
+  ) {
+    const frameRef = "ref" in target ? FRAME_REF.exec(target.ref) : null;
+    if (frameRef === null || !("ref" in target)) {
+      const backendNodeId = yield* resolveTarget(contents, target);
+      return { backendNodeId, sessionId: undefined } satisfies NodeRef;
+    }
+    const frame = attached.get(contents.id)?.framesByOrdinal.get(Number(frameRef[1]));
+    if (frame === undefined) {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        `ref ${target.ref} no longer resolves; take a new snapshot and use its refs`,
+      );
+    }
+    const handle = yield* evaluateInjected(
+      contents,
+      buildLocatorQueryScript(`aria-ref=${target.ref}`),
+      { frame },
+    );
+    const objectId = handle.objectId;
+    if (objectId === undefined) {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        `ref ${target.ref} no longer resolves; take a new snapshot and use its refs`,
+      );
+    }
+    const described = (yield* sendCommand(
+      contents,
+      "DOM.describeNode",
+      { objectId },
+      { sessionId: frame.sessionId },
+    ).pipe(Effect.ensuring(releaseInBackground(contents, objectId, frame.sessionId)))) as {
+      node?: { backendNodeId?: number };
+    };
+    const backendNodeId = described.node?.backendNodeId;
+    if (backendNodeId === undefined) {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        `the element at ref ${target.ref} disappeared; take a new snapshot and try again`,
+      );
+    }
+    return { backendNodeId, sessionId: frame.sessionId } satisfies NodeRef;
+  });
+
+  /**
+   * The page's content as text with refs, and its frames' content nested
+   * under each frame's line (see `snapshot`). Each frame is read in the
+   * engine there, under the number its refs carry. A frame that does not
+   * answer within what is left of the snapshot's budget, or past its frame
+   * count, stays a bare line.
+   */
+  const snapshotFrame = (
+    contents: WebContents,
+    tab: AttachedTab,
+    frame: InjectedFrame | undefined,
+    depth: number,
+    budget: SnapshotBudget,
+  ): Effect.Effect<string, PreviewCommandError | PreviewTargetMissingError> =>
+    Effect.gen(function* () {
+      const result = yield* evaluateInjected(contents, buildAriaSnapshotScript(), {
+        returnByValue: true,
+        ...(frame === undefined ? {} : { frame, timeout: SNAPSHOT_FRAME_TIMEOUT }),
+      });
+      const text = typeof result.value === "string" ? result.value : "";
+      if (depth >= MAX_FRAME_DEPTH) return text;
+      const lines: string[] = [];
+      for (const line of text.split("\n")) {
+        const match = SNAPSHOT_FRAME_LINE.exec(line);
+        const remaining = budget.deadline - Date.now();
+        if (match === null || remaining <= 0 || budget.frames >= MAX_SNAPSHOT_FRAMES) {
+          lines.push(line);
+          continue;
+        }
+        budget.frames += 1;
+        const [, indent = "", head = "", ref = ""] = match;
+        const inner = yield* frameContents(contents, tab, frame, ref, depth, budget).pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.millis(remaining),
+            orElse: () => Effect.succeed([] as ReadonlyArray<string>),
+          }),
+          Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
+        );
+        if (inner.length === 0) {
+          lines.push(line);
+          continue;
+        }
+        lines.push(`${indent}${head}:`);
+        for (const innerLine of inner) lines.push(`${indent}  ${innerLine}`);
+      }
+      return lines.join("\n");
+    });
+
+  /** The lines of the frame an `iframe` ref shows, numbered for its refs and recorded for them. */
+  const frameContents = (
+    contents: WebContents,
+    tab: AttachedTab,
+    frame: InjectedFrame | undefined,
+    ref: string,
+    depth: number,
+    budget: SnapshotBudget,
+  ): Effect.Effect<ReadonlyArray<string>, PreviewCommandError | PreviewTargetMissingError> =>
+    Effect.gen(function* () {
+      const child = yield* frameAtRef(contents, frame, ref);
+      if (child === null) return [];
+      const numbering = frameNumberingOf(contents.id);
+      const ordinal = numbering.ordinals.get(child.frameId) ?? numbering.next++;
+      const childFrame: InjectedFrame = {
+        sessionId: child.sessionId,
+        frameId: child.frameId,
+        ordinal,
+      };
+      numbering.ordinals.set(child.frameId, ordinal);
+      tab.framesByOrdinal.set(ordinal, childFrame);
+      if (child.sessionId !== undefined && child.sessionId !== frame?.sessionId) {
+        tab.sessionOwners.set(child.sessionId, {
+          frameId: child.frameId,
+          parentSessionId: frame?.sessionId,
+          ownerBackendNodeId: child.ownerBackendNodeId,
+        });
+      }
+      const inner = yield* snapshotFrame(contents, tab, childFrame, depth + 1, budget);
+      return inner.split("\n").filter((line) => line.trim() !== "");
+    });
+
+  /**
+   * Lets go of a page object without waiting on the page: a frame that stops
+   * answering must not hold up a snapshot past its budget.
+   */
+  const releaseInBackground = (
+    contents: WebContents,
+    objectId: string,
+    sessionId: string | undefined,
+  ) =>
+    Effect.sync(() => {
+      if (contents.isDestroyed() || !contents.debugger.isAttached()) return;
+      contents.debugger
+        .sendCommand("Runtime.releaseObject", { objectId }, sessionId)
+        .catch(() => {});
+    });
+
+  /** The frame an `iframe` ref in a snapshot of `frame` shows, and that frame's element. */
+  const frameAtRef = Effect.fn("PreviewAutomation.frameAtRef")(function* (
+    contents: WebContents,
+    frame: InjectedFrame | undefined,
+    ref: string,
+  ) {
+    const sessionId = frame?.sessionId;
+    const handle = yield* evaluateInjected(contents, buildLocatorQueryScript(`aria-ref=${ref}`), {
+      ...(frame === undefined ? {} : { frame }),
+      timeout: SNAPSHOT_FRAME_TIMEOUT,
+    });
+    const objectId = handle.objectId;
+    if (objectId === undefined) return null;
+    const described = (yield* sendCommand(
+      contents,
+      "DOM.describeNode",
+      { objectId },
+      { sessionId, timeout: SNAPSHOT_FRAME_TIMEOUT },
+    ).pipe(Effect.ensuring(releaseInBackground(contents, objectId, sessionId)))) as {
+      node?: { backendNodeId?: number; frameId?: string };
+    };
+    const frameId = described.node?.frameId;
+    const ownerBackendNodeId = described.node?.backendNodeId;
+    if (frameId === undefined || ownerBackendNodeId === undefined) return null;
+    const tab = attached.get(contents.id);
+    // A frame in a process of its own is reached through its own session;
+    // one in the same process, through the session around it.
+    const frameSession = tab?.frameSessions.get(frameId) ?? sessionId;
+    return { sessionId: frameSession, frameId, ownerBackendNodeId };
+  });
+
+  /**
    * Turns a picked node into something that still means something later.
    *
    * Everything is read in one page-side evaluation so the description matches a
@@ -1324,6 +1596,8 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       expectedAgentInputs: [],
       holdUserKeysUntil: 0,
       frameSessions: new Map(),
+      sessionOwners: new Map(),
+      framesByOrdinal: new Map(),
       dispose: () => {},
     };
 
@@ -1409,6 +1683,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         for (const [frameId, frameSession] of tab.frameSessions) {
           if (frameSession === params.sessionId) tab.frameSessions.delete(frameId);
         }
+        if (typeof params.sessionId === "string") tab.sessionOwners.delete(params.sessionId);
         return;
       }
       // A frame's own session reports nothing else this reads. The page's own
@@ -1488,12 +1763,17 @@ export const make = Effect.sync(function PreviewAutomationMake() {
           tab.console.length = 0;
           tab.networkFailures.length = 0;
           tab.requestUrls.clear();
+          // A new page's frames: refs into the old ones' stop resolving. The
+          // numbering runs on, so an old ref never matches a new frame.
+          tab.framesByOrdinal.clear();
+          frameNumbering.get(webContentsId)?.ordinals.clear();
         }
       }
     };
 
     contents.debugger.on("message", onMessage);
     const onDestroyed = () => {
+      frameNumbering.delete(webContentsId);
       attached.delete(webContentsId);
       lifecycles.delete(webContentsId);
     };
@@ -1560,6 +1840,27 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * ignored. So a page sent to the background loses it, and gets it back when
    * it is next shown or acted on.
    */
+  /**
+   * Each guest's frame numbers (the `2` in a ref `f2e7`), by frame id, and the
+   * next number to give. Kept for the life of the guest, not of a debugger
+   * attachment: DevTools opening and closing would otherwise start the count
+   * again, and an old ref would name a new frame. A frame keeps its number
+   * across snapshots; on a new page the numbers given so far are forgotten
+   * and the count runs on.
+   */
+  const frameNumbering = new Map<
+    number,
+    { readonly ordinals: Map<string, number>; next: number }
+  >();
+  const frameNumberingOf = (webContentsId: number) => {
+    let numbering = frameNumbering.get(webContentsId);
+    if (numbering === undefined) {
+      numbering = { ordinals: new Map(), next: 1 };
+      frameNumbering.set(webContentsId, numbering);
+    }
+    return numbering;
+  };
+
   const lifecycles = new Map<
     number,
     { state: DesktopPreviewLifecycleState; readonly lock: Semaphore.Semaphore }
@@ -1613,11 +1914,18 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     return yield* resolve(webContentsId);
   });
 
+  /** The centre of an element, in the page's top viewport. */
   const centerOf = Effect.fn("PreviewAutomation.centerOf")(function* (
     contents: WebContents,
-    backendNodeId: number,
+    node: NodeRef,
   ) {
-    const box = (yield* sendCommand(contents, "DOM.getBoxModel", { backendNodeId })) as {
+    const { backendNodeId, sessionId } = node;
+    const box = (yield* sendCommand(
+      contents,
+      "DOM.getBoxModel",
+      { backendNodeId },
+      { sessionId },
+    )) as {
       model?: { content?: ReadonlyArray<number> };
     };
     const quad = box.model?.content;
@@ -1631,10 +1939,55 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       );
     }
     // Centre of the border box: the quad is four corner pairs, clockwise.
-    return {
+    const center = {
       x: (quad[0]! + quad[2]! + quad[4]! + quad[6]!) / 4,
       y: (quad[1]! + quad[3]! + quad[5]! + quad[7]!) / 4,
     };
+    return yield* toPagePoint(contents, sessionId, center);
+  });
+
+  /**
+   * A point in a frame's session out to the page's top viewport, frame by
+   * frame through the elements the frames sit in (recorded by `snapshot`).
+   * Input then goes through `routePoint`, as any point does, so it lands in
+   * the frame the way a person's click would.
+   */
+  const toPagePoint = Effect.fn("PreviewAutomation.toPagePoint")(function* (
+    contents: WebContents,
+    sessionId: string | undefined,
+    point: { readonly x: number; readonly y: number },
+  ) {
+    const owners = attached.get(contents.id)?.sessionOwners;
+    let current = sessionId;
+    let at = point;
+    for (let depth = 0; current !== undefined; depth += 1) {
+      const owner = owners?.get(current);
+      if (owner === undefined || depth >= MAX_FRAME_DEPTH) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          "the frame this element is in has gone; take a new snapshot and try again",
+        );
+      }
+      const box = (yield* sendCommand(
+        contents,
+        "DOM.getBoxModel",
+        { backendNodeId: owner.ownerBackendNodeId },
+        { sessionId: owner.parentSessionId },
+      )) as { model?: { content?: ReadonlyArray<number> } };
+      const quad = box.model?.content;
+      const size = yield* frameViewportSize(contents, owner.frameId, current);
+      if (quad === undefined || quad.length < 8 || size === null) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          "the frame this element is in did not say where it is; try again",
+        );
+      }
+      at = applyAffine(frameToParentAffine(quad, size), at);
+      current = owner.parentSessionId;
+    }
+    return at;
   });
 
   const targetPoint = Effect.fn("PreviewAutomation.targetPoint")(function* (
@@ -1646,8 +1999,8 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     if ("point" in target) {
       return target.point;
     }
-    const backendNodeId = yield* resolveTarget(contents, target);
-    return yield* centerOf(contents, backendNodeId);
+    const node = yield* resolveNode(contents, target);
+    return yield* centerOf(contents, node);
   });
 
   /**
@@ -1858,10 +2211,17 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       // of what the page said -- asked what a paragraph read, it had to fall
       // back to running JavaScript. This carries the text, the structure and a
       // ref on everything, in one string that costs less than the array did.
-      const result = yield* evaluateInjected(contents, buildAriaSnapshotScript(), {
-        returnByValue: true,
-      });
-      const page = typeof result.value === "string" ? result.value : "";
+      //
+      // Frames are read too, each in the engine running inside it, and nested
+      // under the frame's own line; their refs carry the frame's number.
+      const tab = attached.get(contents.id);
+      const page =
+        tab === undefined
+          ? ""
+          : yield* snapshotFrame(contents, tab, undefined, 0, {
+              deadline: Date.now() + SNAPSHOT_FRAMES_BUDGET_MS,
+              frames: 0,
+            });
       return { ...buildStatus(webContentsId, contents), page };
     }),
     setViewport: Effect.fn("PreviewAutomation.setViewport")(function* (
@@ -2368,8 +2728,13 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     scroll: Effect.fn("PreviewAutomation.scroll")(function* (input: DesktopPreviewScrollInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       if (input.target !== undefined) {
-        const backendNodeId = yield* resolveTarget(contents, input.target);
-        yield* sendCommand(contents, "DOM.scrollIntoViewIfNeeded", { backendNodeId });
+        const node = yield* resolveNode(contents, input.target);
+        yield* sendCommand(
+          contents,
+          "DOM.scrollIntoViewIfNeeded",
+          { backendNodeId: node.backendNodeId },
+          { sessionId: node.sessionId },
+        );
         return;
       }
 
@@ -2439,7 +2804,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         unmet = [];
 
         if (input.target !== undefined) {
-          const found = yield* resolveTarget(contents, input.target).pipe(
+          const found = yield* resolveNode(contents, input.target).pipe(
             Effect.as(true),
             Effect.orElseSucceed(() => false),
           );

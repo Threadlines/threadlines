@@ -54,7 +54,7 @@ const changesThePage = <T extends Tool.Any>(tool: T): T =>
 export const BrowserSnapshotTool = readsOnly(
   Tool.make("browser_snapshot", {
     description:
-      'Read the page the user has open. Returns it as an accessibility tree -- nesting, roles, accessible names and the actual text -- with a `[ref=eN]` on every node, plus the URL, title, console output and failed requests. Call this before acting. Name things by their `ref` where you can; where you cannot, `locator` takes a Playwright locator and is the only way to say something like "the delete button in the third row". Console errors are included because they are usually the answer.',
+      'Read the page the user has open. Returns it as an accessibility tree -- nesting, roles, accessible names and the actual text -- with a `[ref=eN]` on every node, plus the URL, title, console output and failed requests. What a frame in the page shows is nested under its `iframe` line, with refs such as `f2e7` that work like any other. Call this before acting. Name things by their `ref` where you can; where you cannot, `locator` takes a Playwright locator and is the only way to say something like "the delete button in the third row". Console errors are included because they are usually the answer.',
     parameters: PreviewAutomationEmptyInputSchema,
     success: PreviewAutomationSnapshotSchema,
     failure: PreviewAutomationErrorSchema,
