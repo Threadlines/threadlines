@@ -70,6 +70,7 @@ import {
   CodeBlockRunScopeContext,
   CommandOutputMessage,
   CommandRequestRow,
+  commandRequestTitleMiddlePx,
   isCommandOutputMessage,
   type CodeBlockRunScope,
 } from "./CommandRuns";
@@ -2089,8 +2090,8 @@ type TimelineImagePreviewItem = {
 
 /**
  * Room below a row. A note sits right on top of its steps. The agent's work
- * and a page's panel leave half a gap and the row after it adds the other
- * half. Your messages and plans keep a full gap.
+ * and a page's or command card's panel leave half a gap and the row after it
+ * adds the other half. Your messages and plans keep a full gap.
  */
 function rowBottomPadding(row: TimelineRow): string {
   switch (row.kind) {
@@ -2109,6 +2110,7 @@ function rowBottomPadding(row: TimelineRow): string {
     case "mcp-app":
     case "working":
     case "page":
+    case "command-request":
       return "pb-2";
     default:
       return "pb-4";
@@ -2139,7 +2141,9 @@ function agentLineOffsets(row: TimelineRow): CSSProperties {
             : row.kind === "page"
               ? // The panel's padding, then its title line.
                 [0, AGENT_PAGE_TITLE_MIDDLE_PX]
-              : [2, 10];
+              : row.kind === "command-request"
+                ? [0, commandRequestTitleMiddlePx(row.request)]
+                : [2, 10];
   return {
     // Below the logo: the author line's 16px, less the logo's 1px inset.
     ["--agent-line-top" as string]: `${padTop + sectionTop + 18}px`,
@@ -2181,11 +2185,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "page" ? <PageTimelineRow row={row} /> : null}
-      {row.kind === "command-request" ? (
-        <div className="mx-auto max-w-4xl px-1">
-          <CommandRequestRow request={row.request} />
-        </div>
-      ) : null}
+      {row.kind === "command-request" ? <CommandRequestTimelineRow row={row} /> : null}
       {row.kind === "subagent-result" ? <SubagentReceiptTimelineRow row={row} /> : null}
       {row.kind === "workflow-run" ? <WorkflowRunTimelineRow row={row} /> : null}
       {row.kind === "mcp-app" ? <McpAppTimelineRow row={row} /> : null}
@@ -3460,6 +3460,26 @@ function PageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "page" }> 
         updated={row.updated}
       />
     </>
+  );
+}
+
+/** A command card; it carries its agent's name when its stretch starts there. */
+function CommandRequestTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "command-request" }>;
+}) {
+  return (
+    <div className="mx-auto max-w-4xl px-1">
+      {row.agentLine?.heads ? (
+        <AgentAuthorLine
+          agent={row.agentLine.agent}
+          turnId={row.agentLine.turnId}
+          asWritten={row.agentLine.asWritten}
+        />
+      ) : null}
+      <CommandRequestRow request={row.request} />
+    </div>
   );
 }
 
