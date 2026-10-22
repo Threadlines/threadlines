@@ -5,7 +5,7 @@ import type {
   ThreadId,
 } from "@threadlines/contracts";
 import { ChevronRightIcon, WorkflowIcon, XIcon } from "lucide-react";
-import { memo, useCallback, useMemo, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useMemo, type CSSProperties } from "react";
 
 import type {
   SubagentProgressItem,
@@ -30,7 +30,7 @@ import {
 } from "./workflowRunView";
 import { Button } from "../ui/button";
 import { LiveNode, SectionLabel } from "../ui/threadline";
-import { ProviderGlyph } from "./ProviderInstanceIcon";
+import { AgentProviderGlyph } from "./ProviderInstanceIcon";
 import { SubagentInspector } from "./SubagentInspector";
 import { deriveSubagentDisplayDetails, type ThreadBackgroundRunItem } from "./threadActivity";
 import {
@@ -39,6 +39,7 @@ import {
   formatAgentsHeaderMeta,
   formatAgentsPanelSummary,
   hasRunningAgentActivity,
+  resolveSubagentProvider,
   type AgentBranch,
   type AgentBranchStatus,
 } from "./agentsPanel.logic";
@@ -59,7 +60,8 @@ export interface AgentsPanelProps {
   /** Work attributed to spawned children. These rows are intentionally absent
    *  from the main conversation and belong in the selected child's inspector. */
   workEntries?: ReadonlyArray<WorkLogEntry> | undefined;
-  /** The instance the thread runs on: a spawned agent's row carries its glyph. */
+  /** The instance the thread runs on: the mark on a spawned agent's row when
+   *  nothing records which provider runs that agent. */
   providerInstanceId?: ProviderInstanceId | null | undefined;
   /** Drives the trunk hue and the provenance chip, e.g. `codex`; the glyph's
    *  fallback when the instance has no icon of its own. */
@@ -218,15 +220,17 @@ function RowDisclosure({ visible }: { visible: boolean }) {
 function BranchRow({
   branch,
   variant,
-  providerGlyph,
+  threadInstanceId,
+  threadDriverKind,
   onSelect,
   onStop,
 }: {
   branch: AgentBranch;
   variant: BranchRowVariant;
-  /** The thread provider's mark, drawn ahead of a spawned agent's name. Runs
-   *  are not the provider's own work, so they keep their text tag instead. */
-  providerGlyph: ReactNode;
+  /** The thread's provider: the mark ahead of an agent's name when nothing
+   *  records which provider runs it. No provider at all draws no mark. */
+  threadInstanceId: ProviderInstanceId | null | undefined;
+  threadDriverKind: string | null | undefined;
   onSelect: (branch: AgentBranch) => void;
   onStop: (branch: AgentBranch) => void;
 }) {
@@ -241,6 +245,9 @@ function BranchRow({
   // Flat rows carry no trunk to hang a status dot off, and a filed-away agent
   // that simply finished has nothing to say with one. Anything else does.
   const showNode = !flat || branch.status !== "completed";
+  const agentProvider = resolveSubagentProvider(branch.item);
+  const showProvider =
+    agentProvider !== null || Boolean(threadInstanceId) || Boolean(threadDriverKind?.trim());
 
   const body = (
     <>
@@ -259,12 +266,17 @@ function BranchRow({
             always cut off. It gets the full width underneath instead, paid for
             out of the row's vertical padding rather than its height. */}
         <span className={cn("flex min-w-0 items-baseline gap-2", canStop && "pr-9")}>
-          {branch.kind === "subagent" && providerGlyph ? (
+          {showProvider ? (
             <span
               className="translate-y-px shrink-0 text-muted-foreground/70"
               data-agent-branch-provider="true"
             >
-              {providerGlyph}
+              <AgentProviderGlyph
+                agentProvider={agentProvider}
+                threadInstanceId={threadInstanceId}
+                threadDriverKind={threadDriverKind}
+                className="size-3"
+              />
             </span>
           ) : null}
           <span className="min-w-0 flex-1 truncate text-[13px] leading-5 font-medium text-foreground/90">
@@ -483,17 +495,6 @@ export const AgentsPanel = memo(function AgentsPanel({
     () => formatAgentsPanelSummary(view, providerLabel),
     [providerLabel, view],
   );
-  const providerGlyph = useMemo(
-    () =>
-      providerInstanceId || providerLabel?.trim() ? (
-        <ProviderGlyph
-          instanceId={providerInstanceId}
-          driverKind={providerLabel}
-          className="size-3"
-        />
-      ) : null,
-    [providerInstanceId, providerLabel],
-  );
   const anyRunning = hasRunningAgentActivity({ subagents });
   const selectedSubagent = findAgentsPanelSubagent(view, selectedAgentId);
 
@@ -657,7 +658,8 @@ export const AgentsPanel = memo(function AgentsPanel({
                       key={branch.key}
                       branch={branch}
                       variant="branch"
-                      providerGlyph={providerGlyph}
+                      threadInstanceId={providerInstanceId}
+                      threadDriverKind={providerLabel}
                       onSelect={handleSelect}
                       onStop={handleStop}
                     />
@@ -676,7 +678,8 @@ export const AgentsPanel = memo(function AgentsPanel({
                       key={branch.key}
                       branch={branch}
                       variant="flat"
-                      providerGlyph={providerGlyph}
+                      threadInstanceId={providerInstanceId}
+                      threadDriverKind={providerLabel}
                       onSelect={handleSelect}
                       onStop={handleStop}
                     />

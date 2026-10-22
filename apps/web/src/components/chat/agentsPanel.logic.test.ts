@@ -304,6 +304,35 @@ describe("buildAgentsPanelView", () => {
       expect(formatAgentsPanelSummary(view, "claude")).toBe("Claude · 1 running");
     });
 
+    it("names the provider that runs each agent, not the thread's", () => {
+      // A Claude thread that launched a `codex exec` agent.
+      const codexAgent = buildSubagent({
+        id: "codex",
+        agentThreadId: "codex-exec:run-1",
+        agentProvider: ProviderDriverKind.make("codex"),
+        sessionProvider: ProviderDriverKind.make("claudeAgent"),
+      });
+      const claudeAgent = buildSubagent({ id: "claude", agentThreadId: "claude" });
+      const settled = historyOf(
+        buildSubagent({ id: "old", agentThreadId: "old", status: "completed" }),
+        "Done.",
+      );
+
+      expect(
+        formatAgentsPanelSummary(
+          viewOf({ subagents: [codexAgent], history: [settled] }),
+          "claudeAgent",
+        ),
+      ).toBe("Codex · 1 running · 1 earlier");
+      expect(
+        formatAgentsPanelSummary(viewOf({ subagents: [claudeAgent, codexAgent] }), "claudeAgent"),
+      ).toBe("Claude, Codex · 2 running");
+      // With nothing live, the finished agents are the ones named.
+      expect(formatAgentsPanelSummary(viewOf({ subagents: [], history: [settled] }), "codex")).toBe(
+        "Codex · 1 earlier",
+      );
+    });
+
     it("has nothing to say about a thread that has never run an agent", () => {
       expect(formatAgentsPanelSummary(viewOf({ subagents: [] }), "codex")).toBeNull();
     });

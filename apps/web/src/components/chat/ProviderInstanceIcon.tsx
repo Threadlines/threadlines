@@ -8,6 +8,7 @@ import { BotIcon } from "lucide-react";
 
 import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
 import { useServerProviders } from "../../rpc/serverState";
+import type { SubagentProviderRef } from "./agentsPanel.logic";
 import {
   PROVIDER_ICON_BY_PROVIDER,
   providerIconMaskImage,
@@ -108,6 +109,29 @@ export const ProviderGlyph = memo(function ProviderGlyph(props: {
     return props.fallback;
   }
   return <BotIcon className={props.className} aria-hidden="true" />;
+});
+
+/**
+ * A spawned agent's mark: the provider recorded as running it (a Claude thread
+ * can launch a Codex agent), drawn through its instance when one is known so
+ * an instance with an icon of its own keeps it. An agent with nothing recorded
+ * carries the thread's mark. Every surface that marks an agent draws it here.
+ */
+export const AgentProviderGlyph = memo(function AgentProviderGlyph(props: {
+  /** From `resolveSubagentProvider`. */
+  agentProvider: SubagentProviderRef | null;
+  threadInstanceId: ProviderInstanceId | null | undefined;
+  threadDriverKind: string | null | undefined;
+  className?: string | undefined;
+}) {
+  const { agentProvider } = props;
+  return (
+    <ProviderGlyph
+      instanceId={agentProvider === null ? props.threadInstanceId : agentProvider.instanceId}
+      driverKind={agentProvider === null ? props.threadDriverKind : agentProvider.driverKind}
+      className={props.className}
+    />
+  );
 });
 
 export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {

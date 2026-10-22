@@ -289,10 +289,13 @@ export interface AgentsPanelView {
 }
 
 /**
- * What the panel's own header says it is showing: the provider whose agents
- * these are, how many are working, how many want something, and how much of the
+ * What the panel's own header says it is showing: the providers running these
+ * agents, how many are working, how many want something, and how much of the
  * list is already finished. The row otherwise carried a pulsing dot and a
  * duration with nothing between them naming what was pulsing.
+ *
+ * `providerLabel` is the thread's provider, which names any agent with no
+ * provider of its own on record.
  */
 export function formatAgentsPanelSummary(
   view: AgentsPanelView,
@@ -309,7 +312,8 @@ export function formatAgentsPanelSummary(
   const waitingCount = subagents.filter((branch) => branch.status === "waiting").length;
 
   const parts = [
-    providerDisplayLabel(providerLabel),
+    // The turn's agents when it has any, else the ones before it.
+    formatAgentProviderNames(subagents.length > 0 ? subagents : view.earlier, providerLabel),
     runningCount > 0 ? `${runningCount} running` : null,
     waitingCount > 0 ? `${waitingCount} needs you` : null,
     view.earlier.length > 0 ? `${view.earlier.length} earlier` : null,
@@ -318,6 +322,27 @@ export function formatAgentsPanelSummary(
   // A finished turn whose agents have not aged into "earlier" yet would leave
   // only the provider's name, which says nothing the rows do not.
   return parts.length > 1 ? parts.join(" · ") : (parts[0] ?? null);
+}
+
+/**
+ * Who runs these agents, each provider named once in the order its first agent
+ * is listed: "Codex", or "Claude, Codex" for a Claude thread that launched a
+ * Codex agent beside its own.
+ */
+function formatAgentProviderNames(
+  branches: ReadonlyArray<AgentSubagentBranch>,
+  threadProviderLabel: string | null | undefined,
+): string | null {
+  const names = new Set<string>();
+  for (const branch of branches) {
+    const name = providerDisplayLabel(
+      resolveSubagentProvider(branch.item)?.driverKind ?? threadProviderLabel,
+    );
+    if (name !== null) {
+      names.add(name);
+    }
+  }
+  return names.size === 0 ? null : [...names].join(", ");
 }
 
 /** `codex` as the panel says it: the provider's own name, capitalised. */
