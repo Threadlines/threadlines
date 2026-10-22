@@ -105,7 +105,7 @@ export function TimeZonePicker({
       >
         {formatTimeZoneShort(timeZoneLabel(value, now))}
       </ComboboxTrigger>
-      <ComboboxPopup align="end" className="w-80">
+      <ComboboxPopup align="end" className="w-96">
         <div className="border-b p-1">
           <ComboboxInput
             className="rounded-md [&_input]:font-sans"
@@ -124,16 +124,14 @@ export function TimeZonePicker({
             const label = timeZoneLabel(zone, now);
             const note = searching ? undefined : notes.get(zone);
             return (
-              <ComboboxItem key={zone} index={index} value={zone}>
+              <ComboboxItem key={zone} index={index} value={zone} contentClassName="min-w-0">
                 <span className="flex min-w-0 flex-col py-0.5">
-                  <span className="flex min-w-0 items-baseline gap-2">
-                    <span className="min-w-0 flex-1 truncate">{formatTimeZoneLabel(label)}</span>
-                    {note ? (
-                      <span className="shrink-0 text-xs text-muted-foreground">{note}</span>
-                    ) : null}
-                  </span>
-                  <span className="truncate font-mono text-[10.5px] leading-4 text-muted-foreground">
-                    {zone}
+                  <span className="truncate">{formatTimeZoneLabel(label)}</span>
+                  <span className="flex min-w-0 items-baseline gap-2 text-muted-foreground">
+                    <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] leading-4">
+                      {zone}
+                    </span>
+                    {note ? <span className="shrink-0 text-xs">{note}</span> : null}
                   </span>
                 </span>
               </ComboboxItem>
