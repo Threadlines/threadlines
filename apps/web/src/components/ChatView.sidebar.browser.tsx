@@ -175,7 +175,7 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
-  it("narrows the live list to rooms from the View button and lights it while it does", async () => {
+  it("narrows the live list to rooms from the View button and marks it while it does", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({

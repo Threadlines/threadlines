@@ -99,7 +99,7 @@ describe("ProjectScopeMenu", () => {
     }
   });
 
-  it("offers no computer section with one computer, and lights the View button only while a filter narrows the list", async () => {
+  it("offers no computer section with one computer, and marks the View button only while a filter narrows the list", async () => {
     const { mounted } = await renderMenu({
       environmentOptions: [TWO_MACHINES[0]!],
       scopedEnvironmentId: null,
@@ -128,15 +128,17 @@ describe("ProjectScopeMenu", () => {
       );
       expect(viewTrigger()?.getAttribute("data-filtered")).toBe("true");
       expect(viewTrigger()?.getAttribute("aria-label")).toContain("Windows Desktop");
+      expect(document.querySelector("[data-testid='inbox-view-filter-dot']")).not.toBeNull();
     } finally {
       await scopedMounted.unmount();
     }
 
-    // Grouping hides nothing, so it never lights the button.
+    // Grouping hides nothing, so it never marks the button.
     const { mounted: groupedMounted } = await renderMenu({ grouping: "project" });
     try {
       await expect.element(page.getByTestId("inbox-view-trigger")).toBeVisible();
       expect(viewTrigger()?.hasAttribute("data-filtered")).toBe(false);
+      expect(document.querySelector("[data-testid='inbox-view-filter-dot']")).toBeNull();
     } finally {
       await groupedMounted.unmount();
     }
@@ -262,7 +264,7 @@ describe("ProjectScopeMenu", () => {
     }
   });
 
-  it("narrows to rooms from the View button and lights it while it does", async () => {
+  it("narrows to rooms from the View button and marks it while it does", async () => {
     const onRoomsOnlyChange = vi.fn();
     const { mounted } = await renderMenu({ roomsOnly: false, onRoomsOnlyChange });
     try {

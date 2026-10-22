@@ -11,7 +11,6 @@ import {
 import React, { memo } from "react";
 import type { EnvironmentId, SidebarGrouping } from "@threadlines/contracts";
 
-import { cn } from "../../lib/utils";
 import {
   Menu,
   MenuGroup,
@@ -70,9 +69,10 @@ export interface InboxViewMenuProps {
  *
  * These are set once and left, unlike the projects you switch between all day,
  * so they sit behind their own small button instead of lengthening the project
- * menu. While one of them hides part of the list the button sits filled, the
- * way a selected rail button does, so a narrowed list never looks like a short
- * one.
+ * menu. While one of them hides part of the list the button carries a small
+ * dot, so a narrowed list never looks like a short one. The dot is the
+ * foreground color, not blue: blue dots on the rows below mean an agent is
+ * working.
  */
 export const InboxViewMenu = memo(function InboxViewMenu(props: InboxViewMenuProps) {
   const {
@@ -201,16 +201,20 @@ export const InboxViewMenu = memo(function InboxViewMenu(props: InboxViewMenuPro
                   aria-label={activeFilters ? `View options: ${activeFilters}` : "View options"}
                   data-testid="inbox-view-trigger"
                   data-filtered={activeFilters ? "true" : undefined}
-                  className={cn(
-                    "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring",
-                    activeFilters && "bg-sidebar-accent text-foreground hover:bg-sidebar-accent",
-                  )}
+                  className="relative inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
                 />
               }
             />
           }
         >
           <SlidersHorizontalIcon className="size-3.5" />
+          {activeFilters ? (
+            <span
+              aria-hidden
+              data-testid="inbox-view-filter-dot"
+              className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-foreground"
+            />
+          ) : null}
         </TooltipTrigger>
         <TooltipPopup side="bottom">{activeFilters ?? "View options"}</TooltipPopup>
       </Tooltip>
