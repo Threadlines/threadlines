@@ -1318,6 +1318,11 @@ async function openFind(query: string) {
   await userEvent.fill(input, query);
 }
 
+// A find that has to scroll the list to its match, draw the row and unfold
+// it takes several frames. On a busy machine that runs past waitFor's default
+// second, as the list's other movements in this file do.
+const FIND_JUMP_WAIT = { timeout: 5_000 };
+
 describe("find in chat with the real virtual list", () => {
   afterEach(() => {
     useChatFindStore.setState({ available: false, open: false, query: "" });
@@ -1362,7 +1367,7 @@ describe("find in chat with the real virtual list", () => {
         expect(current?.text).toBe("pelican");
         expect(document.querySelector('[data-message-id="message-3"]')).not.toBeNull();
         expect(isInsideList(current!.rect)).toBe(true);
-      });
+      }, FIND_JUMP_WAIT);
       expect(CSS.highlights.get(CHAT_FIND_MATCH_HIGHLIGHT)?.size).toBeGreaterThan(0);
 
       // The count is the chat's, not the screen's: scrolling the first match
@@ -1539,7 +1544,7 @@ describe("find in chat with the real virtual list", () => {
         const current = currentFindHighlight();
         expect(current?.text).toBe("walrus");
         expect(isInsideList(current!.rect)).toBe(true);
-      });
+      }, FIND_JUMP_WAIT);
 
       await userEvent.keyboard("{Escape}");
       await vi.waitFor(() => {
@@ -1558,7 +1563,7 @@ describe("find in chat with the real virtual list", () => {
       await vi.waitFor(() => {
         expect(body()?.dataset.userMessageCollapsed).toBe("false");
         expect(currentFindHighlight()?.text).toBe("walrus");
-      });
+      }, FIND_JUMP_WAIT);
     } finally {
       await screen.unmount();
     }
@@ -1611,7 +1616,7 @@ describe("find in chat with the real virtual list", () => {
         const itemRect = item.getBoundingClientRect();
         expect(current!.rect.top).toBeGreaterThanOrEqual(itemRect.top - 1);
         expect(current!.rect.bottom).toBeLessThanOrEqual(itemRect.bottom + 1);
-      });
+      }, FIND_JUMP_WAIT);
     } finally {
       await screen.unmount();
     }
@@ -1664,7 +1669,7 @@ describe("find in chat with the real virtual list", () => {
       await vi.waitFor(() => {
         expect(document.querySelector("[data-run-message-fold]")).toBeNull();
         expect(currentFindHighlight()?.text).toBe("narwhal");
-      });
+      }, FIND_JUMP_WAIT);
     } finally {
       await screen.unmount();
     }
@@ -1712,7 +1717,7 @@ describe("find in chat with the real virtual list", () => {
       await vi.waitFor(() => {
         expect(document.querySelector("[data-chat-find-folded]")).toBeNull();
         expect(currentFindHighlight()?.text).toBe("narwhal");
-      });
+      }, FIND_JUMP_WAIT);
     } finally {
       await screen.unmount();
     }
@@ -1772,17 +1777,26 @@ function wheelScroll(list: HTMLElement, delta: number) {
 }
 
 // Scrolls `step` pixels at a time until the list draws message-51, then puts
-// its word in the middle of the list. A saved scroll position cannot stand in
-// for this: the list measures rows as they come into view, and every row it
-// measures moves the ones below it.
+// its word in the middle of the list and waits for it to hold still there. A
+// saved scroll position cannot stand in for this: the list measures rows as
+// they come into view, and every row it measures moves the ones below it. On
+// a busy machine those measurements can land after the scroll and carry the
+// word out of view, so each attempt aims again at where the word is now.
 async function scrollPelicanIntoView(list: HTMLElement, step: number) {
   for (let count = 0; count < 40 && !wordRect("message-51", "pelican"); count += 1) {
     wheelScroll(list, step);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  const listTop = list.getBoundingClientRect().top;
-  wheelScroll(list, wordRect("message-51", "pelican")!.top - listTop - 180);
-  await waitForPelicanToSettle(list);
+  await vi.waitFor(
+    async () => {
+      const word = wordRect("message-51", "pelican");
+      expect(word).not.toBeNull();
+      const offset = word!.top - list.getBoundingClientRect().top - 180;
+      if (Math.abs(offset) > 1) wheelScroll(list, offset);
+      await expectPelicanToHoldStill(list);
+    },
+    { timeout: 10_000 },
+  );
 }
 
 // The list keeps working after a scroll: it measures rows as they come into
@@ -1790,22 +1804,17 @@ async function scrollPelicanIntoView(list: HTMLElement, step: number) {
 // which can move the word. Selecting it before it holds still in view can
 // leave the actions hidden with the word out of view, or gone with a redrawn
 // row; a test that then stops the clock stops the list's fix-up with it.
-async function waitForPelicanToSettle(list: HTMLElement) {
-  await vi.waitFor(
-    async () => {
-      const before = wordRect("message-51", "pelican");
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      await nextFrame();
-      const after = wordRect("message-51", "pelican");
-      const listRect = list.getBoundingClientRect();
-      expect(before).not.toBeNull();
-      expect(after).not.toBeNull();
-      expect(after!.top).toBe(before!.top);
-      expect(after!.top).toBeGreaterThanOrEqual(listRect.top);
-      expect(after!.bottom).toBeLessThanOrEqual(listRect.bottom);
-    },
-    { timeout: 10_000 },
-  );
+async function expectPelicanToHoldStill(list: HTMLElement) {
+  const before = wordRect("message-51", "pelican");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await nextFrame();
+  const after = wordRect("message-51", "pelican");
+  const listRect = list.getBoundingClientRect();
+  expect(before).not.toBeNull();
+  expect(after).not.toBeNull();
+  expect(after!.top).toBe(before!.top);
+  expect(after!.top).toBeGreaterThanOrEqual(listRect.top);
+  expect(after!.bottom).toBeLessThanOrEqual(listRect.bottom);
 }
 
 function selectionPopover(): HTMLElement | null {
