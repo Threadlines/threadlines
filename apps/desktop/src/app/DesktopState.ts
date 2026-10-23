@@ -12,6 +12,11 @@ export interface DesktopStateShape {
    * window asks first. Threads on other computers never count here.
    */
   readonly localRunningThreadCount: Ref.Ref<number>;
+  /**
+   * Terminals on this computer's own server running a command, as the page
+   * last reported. Quitting stops them too, so they also make it ask.
+   */
+  readonly localBusyTerminalCount: Ref.Ref<number>;
 }
 
 export class DesktopState extends Context.Service<DesktopState, DesktopStateShape>()(
@@ -24,5 +29,6 @@ export const layer = Layer.effect(
     backendReady: Ref.make(false),
     quitting: Ref.make(false),
     localRunningThreadCount: Ref.make(0),
+    localBusyTerminalCount: Ref.make(0),
   }),
 );

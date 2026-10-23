@@ -89,6 +89,7 @@ export interface WsRpcClient {
     readonly clear: RpcUnaryMethod<typeof WS_METHODS.terminalClear>;
     readonly restart: RpcUnaryMethod<typeof WS_METHODS.terminalRestart>;
     readonly close: RpcUnaryMethod<typeof WS_METHODS.terminalClose>;
+    readonly resolveInterrupted: RpcUnaryMethod<typeof WS_METHODS.terminalResolveInterrupted>;
     readonly onEvent: RpcInputStreamMethod<typeof WS_METHODS.subscribeTerminalEvents>;
   };
   /** Settings-owned provider sign-in, run in an ephemeral server-side PTY. */
@@ -475,6 +476,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       clear: (input) => transport.request((client) => client[WS_METHODS.terminalClear](input)),
       restart: (input) => transport.request((client) => client[WS_METHODS.terminalRestart](input)),
       close: (input) => transport.request((client) => client[WS_METHODS.terminalClose](input)),
+      resolveInterrupted: (input) =>
+        transport.request((client) => client[WS_METHODS.terminalResolveInterrupted](input)),
       onEvent: (input, listener, options) =>
         transport.subscribe(
           (client) => client[WS_METHODS.subscribeTerminalEvents](input),

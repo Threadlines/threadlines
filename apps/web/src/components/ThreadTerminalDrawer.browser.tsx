@@ -302,6 +302,7 @@ function createEnvironmentApi(snapshot?: Partial<TerminalSessionSnapshot>) {
       })),
       write: vi.fn(async () => undefined),
       resize: vi.fn(async () => undefined),
+      resolveInterrupted: vi.fn(async () => undefined),
     },
   };
 }
@@ -353,7 +354,13 @@ function terminalOutputEvent(data: string, createdAt: string): TerminalEvent {
 type ViewportOverrides = Partial<
   Pick<
     Parameters<typeof TerminalViewport>[0],
-    "cwd" | "launchCwd" | "onRestart" | "onClose" | "onGone" | "onSessionExited"
+    | "cwd"
+    | "launchCwd"
+    | "interruptedCommand"
+    | "onRestart"
+    | "onClose"
+    | "onGone"
+    | "onSessionExited"
   >
 > & {
   /** This device just opened the tab (the server doesn't list it yet). */
@@ -375,6 +382,7 @@ function ViewportUnderTest(
       terminalLabel="Terminal"
       cwd={props.cwd ?? "/repo/project"}
       launchCwd={props.launchCwd ?? null}
+      interruptedCommand={props.interruptedCommand ?? null}
       stream={stream}
       onSessionExited={props.onSessionExited ?? (() => undefined)}
       onGone={props.onGone ?? (() => undefined)}
@@ -1108,6 +1116,54 @@ describe("TerminalViewport", () => {
       expect(environment.terminal.open).toHaveBeenCalledWith(
         expect.objectContaining({ cwd: "/repo/worktrees/feature" }),
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers to run again what a restart stopped, or to forget it", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const mounted = await mountTerminalViewport({
+      threadRef,
+      interruptedCommand: "npm run dev",
+    });
+
+    try {
+      await expect
+        .element(page.getByText("stopped when Threadlines restarted.", { exact: false }))
+        .toBeInTheDocument();
+      await page.getByRole("button", { name: "Dismiss" }).click();
+      expect(environment.terminal.resolveInterrupted).toHaveBeenCalledWith({
+        threadId: THREAD_ID,
+        terminalId: "default",
+        run: false,
+      });
+      await expect.element(page.getByRole("button", { name: "Run again" })).not.toBeInTheDocument();
+
+      // Another restart stopped something else.
+      await mounted.rerender({ threadRef, interruptedCommand: "pnpm test --watch" });
+      await page.getByRole("button", { name: "Run again" }).click();
+      expect(environment.terminal.resolveInterrupted).toHaveBeenLastCalledWith({
+        threadId: THREAD_ID,
+        terminalId: "default",
+        run: true,
+      });
+      await expect.element(page.getByRole("button", { name: "Run again" })).not.toBeInTheDocument();
+
+      // The server forgot it; a later restart cutting the same command off
+      // again is offered again.
+      await mounted.rerender({ threadRef, interruptedCommand: null });
+      await mounted.rerender({ threadRef, interruptedCommand: "pnpm test --watch" });
+      await expect.element(page.getByRole("button", { name: "Run again" })).toBeInTheDocument();
+
+      // Refused (something typed in the terminal): the offer comes back.
+      environment.terminal.resolveInterrupted.mockImplementationOnce(async () => {
+        throw new Error("Clear what's typed in the terminal first.");
+      });
+      await page.getByRole("button", { name: "Run again" }).click();
+      await expect.element(page.getByRole("button", { name: "Run again" })).toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

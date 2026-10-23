@@ -7,6 +7,7 @@ import {
   migratePersistedTerminalStateStoreState,
   noteTerminalLineEntered,
   noteTerminalMadeOnServer,
+  selectBusyTerminals,
   selectTerminalActivityCommand,
   selectThreadTerminalState,
   terminalKey,
@@ -505,6 +506,37 @@ describe("terminalStateStore actions", () => {
     noteTerminalMadeOnServer(THREAD_REF, "terminal-script");
     store.newTerminal(THREAD_REF, "terminal-script");
     expect(shouldMakeTerminal(THREAD_REF, "terminal-script")).toBe(false);
+  });
+
+  it("counts a server's terminals that run something or just had a command entered", () => {
+    const store = useTerminalStateStore.getState();
+    store.applyTerminalTabs(THREAD_REF, [serverTab("default", 1), serverTab("terminal-2", 2)]);
+    store.applyTerminalTabs(OTHER_THREAD_REF, [serverTab("default", 1)]);
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", { hasRunningSubprocess: true, command: "npm run dev" }),
+    );
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", {
+        terminalId: "terminal-2",
+        hasRunningSubprocess: false,
+        commandPending: true,
+      }),
+    );
+    store.applyTerminalEvent(
+      OTHER_THREAD_REF,
+      makeTerminalEvent("activity", { hasRunningSubprocess: true, command: "cargo watch" }),
+    );
+
+    expect(
+      selectBusyTerminals(useTerminalStateStore.getState(), THREAD_REF.environmentId).map(
+        (terminal) => [terminal.terminalId, terminal.command],
+      ),
+    ).toEqual([
+      ["default", "npm run dev"],
+      ["terminal-2", null],
+    ]);
   });
 
   it("forgets what a tab ran once the server says its shell is gone", () => {

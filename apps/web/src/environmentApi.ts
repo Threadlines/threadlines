@@ -15,6 +15,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       clear: (input) => rpcClient.terminal.clear(input as never),
       restart: (input) => rpcClient.terminal.restart(input as never),
       close: (input) => rpcClient.terminal.close(input as never),
+      resolveInterrupted: (input) => rpcClient.terminal.resolveInterrupted(input as never),
       onEvent: (input, callback) => rpcClient.terminal.onEvent(input, callback),
     },
     realtime: {

@@ -18,6 +18,8 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { describeAgentWorkElsewhere, describeRunningAgentSessions } from "./agentSessionCopy";
+import { BusyTerminalsSentence } from "./BusyTerminalsSentence";
+import { useBusyLocalTerminalCommands } from "./useBusyLocalTerminals";
 import { useRunningAgentWork } from "./useRunningAgentWork";
 
 function DesktopUpdateInstallDialogBody({
@@ -27,11 +29,14 @@ function DesktopUpdateInstallDialogBody({
   state: DesktopUpdateState;
   onConfirm: () => void;
 }) {
-  // Live count: a session that finishes while the prompt is open turns the
+  // Live counts: work that finishes while the prompt is open turns the
   // warning off, so the user never restarts against stale advice. Only this
-  // computer's threads count; the restart leaves other computers' work alone.
+  // computer's threads and terminals count; the restart leaves other
+  // computers' work alone.
   const { localCount: runningCount, remoteMachineLabels } = useRunningAgentWork();
-  const hasRunningSessions = runningCount > 0;
+  const busyTerminals = useBusyLocalTerminalCommands();
+  const stoppedCount = runningCount + busyTerminals.length;
+  const hasRunningSessions = stoppedCount > 0;
   const elsewhere = describeAgentWorkElsewhere(remoteMachineLabels);
   const version = state.downloadedVersion ?? state.availableVersion;
 
@@ -50,9 +55,17 @@ function DesktopUpdateInstallDialogBody({
             "the downloaded update"
           )}{" "}
           and reopen when it's done.{" "}
-          {describeRunningAgentSessions(runningCount, elsewhere !== null)}
+          {runningCount > 0 || busyTerminals.length === 0
+            ? describeRunningAgentSessions(runningCount, elsewhere !== null)
+            : null}
+          {busyTerminals.length > 0 ? (
+            <>
+              {runningCount > 0 ? " " : null}
+              <BusyTerminalsSentence commands={busyTerminals} onThisComputer={elsewhere !== null} />
+            </>
+          ) : null}
           {hasRunningSessions
-            ? ` Restarting now will stop ${runningCount === 1 ? "it" : "them"}.`
+            ? ` Restarting now will stop ${stoppedCount === 1 ? "it" : "them"}.`
             : null}
           {elsewhere ? ` ${elsewhere}` : null}
         </AlertDialogDescription>

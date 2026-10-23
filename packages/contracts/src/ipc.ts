@@ -181,6 +181,7 @@ import type {
 import type {
   TerminalClearInput,
   TerminalCloseInput,
+  TerminalResolveInterruptedInput,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
@@ -461,6 +462,11 @@ export interface DesktopTaskbarStatusInput {
    */
   localRunningThreadCount?: number;
   /**
+   * Terminals on this computer's own server running a command. Quitting
+   * stops those too, so they also make quitting ask first.
+   */
+  localBusyTerminalCount?: number;
+  /**
    * Finished threads the user has not opened yet, the inbox's unread finished
    * work. Sent with every status: the macOS Dock badge shows it throughout,
    * the Windows taskbar once nothing runs.
@@ -475,11 +481,14 @@ export interface DesktopQuitConfirmationRequest {
   requestId: string;
   /** Threads running on this computer, the work quitting would stop. */
   runningThreadCount: number;
+  /** Terminals on this computer running a command, which quitting stops too. */
+  busyTerminalCount?: number;
 }
 
 export const DesktopQuitConfirmationRequestSchema = Schema.Struct({
   requestId: Schema.String,
   runningThreadCount: Schema.Number,
+  busyTerminalCount: Schema.optionalKey(Schema.Number),
 });
 
 export const DesktopTaskbarStatusInputSchema = Schema.Struct({
@@ -487,6 +496,7 @@ export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   description: Schema.optionalKey(Schema.String),
   runningThreadCount: Schema.optionalKey(Schema.Number),
   localRunningThreadCount: Schema.optionalKey(Schema.Number),
+  localBusyTerminalCount: Schema.optionalKey(Schema.Number),
   completedThreadCount: Schema.optionalKey(Schema.Number),
   threads: Schema.optionalKey(Schema.Array(DesktopTaskbarThreadSummarySchema)),
 });
@@ -1645,6 +1655,7 @@ export interface EnvironmentApi {
     clear: (input: typeof TerminalClearInput.Encoded) => Promise<void>;
     restart: (input: typeof TerminalRestartInput.Encoded) => Promise<TerminalSessionSnapshot>;
     close: (input: typeof TerminalCloseInput.Encoded) => Promise<void>;
+    resolveInterrupted: (input: typeof TerminalResolveInterruptedInput.Encoded) => Promise<void>;
     onEvent: (
       input: TerminalSubscribeInput,
       callback: (event: TerminalStreamEvent) => void,

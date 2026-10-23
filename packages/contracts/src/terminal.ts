@@ -103,6 +103,19 @@ export type TerminalResizeInput = Schema.Codec.Encoded<typeof TerminalResizeInpu
 export const TerminalClearInput = TerminalSessionInput;
 export type TerminalClearInput = Schema.Codec.Encoded<typeof TerminalClearInput>;
 
+/**
+ * Settle the command a restart stopped in a tab (`TerminalTab.interruptedCommand`):
+ * run it again in the tab's shell, or forget it. Running it fails with
+ * `TerminalLineBusyError` while something is typed or running there.
+ */
+export const TerminalResolveInterruptedInput = Schema.Struct({
+  ...TerminalSessionInput.fields,
+  run: Schema.Boolean,
+});
+export type TerminalResolveInterruptedInput = Schema.Codec.Encoded<
+  typeof TerminalResolveInterruptedInput
+>;
+
 export const TerminalRestartInput = Schema.Struct({
   ...TerminalSessionInput.fields,
   cwd: TrimmedNonEmptyStringSchema,
@@ -227,6 +240,13 @@ export const TerminalTab = Schema.Struct({
   exitCode: Schema.NullOr(Schema.Int),
   exitSignal: Schema.NullOr(Schema.Int),
   createdAt: Schema.String,
+  /**
+   * The command line typed at the prompt that was still running when the
+   * server last stopped (an update, a crash, a quit), so it can be run again.
+   * Kept until a line is entered in the tab or it is dismissed. Absent from
+   * older servers.
+   */
+  interruptedCommand: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type TerminalTab = typeof TerminalTab.Type;
 
@@ -361,10 +381,27 @@ export class TerminalNotRunningError extends Schema.TaggedError<TerminalNotRunni
   }
 }
 
+/** The tab's shell is busy with something typed or running, so nothing is typed into it. */
+export class TerminalLineBusyError extends Schema.TaggedError<TerminalLineBusyError>()(
+  "TerminalLineBusyError",
+  {
+    threadId: Schema.String,
+    terminalId: Schema.String,
+    reason: Schema.Literals(["typing", "running"]),
+  },
+) {
+  override get message() {
+    return this.reason === "typing"
+      ? "Clear what's typed in the terminal first."
+      : "Something is still running in the terminal.";
+  }
+}
+
 export const TerminalError = Schema.Union([
   TerminalCwdError,
   TerminalHistoryError,
   TerminalSessionLookupError,
   TerminalNotRunningError,
+  TerminalLineBusyError,
 ]);
 export type TerminalError = typeof TerminalError.Type;

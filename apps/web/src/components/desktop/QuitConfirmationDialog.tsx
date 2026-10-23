@@ -13,20 +13,42 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { describeAgentWorkElsewhere, describeRunningAgentSessions } from "./agentSessionCopy";
+import { BusyTerminalsSentence } from "./BusyTerminalsSentence";
+import { useBusyLocalTerminalCommands } from "./useBusyLocalTerminals";
 import { useRunningAgentWork } from "./useRunningAgentWork";
 
 /**
- * The count is the one the app asked with: threads on this computer, the only
- * work quitting stops. Work on other computers is named so nobody keeps the
- * app open for threads that run fine without it.
+ * The counts are the ones the app asked with: threads and busy terminals on
+ * this computer, the only work quitting stops (terminals are named from the
+ * live list when it still has them). Work on other computers is named so
+ * nobody keeps the app open for threads that run fine without it.
  */
-function QuitConfirmationDescription({ runningThreadCount }: { runningThreadCount: number }) {
+function QuitConfirmationDescription({
+  runningThreadCount,
+  busyTerminalCount,
+}: {
+  runningThreadCount: number;
+  busyTerminalCount: number;
+}) {
   const { remoteMachineLabels } = useRunningAgentWork();
+  const liveTerminals = useBusyLocalTerminalCommands();
   const elsewhere = describeAgentWorkElsewhere(remoteMachineLabels);
+  const terminals =
+    liveTerminals.length > 0 || busyTerminalCount <= 0
+      ? liveTerminals
+      : Array.from({ length: busyTerminalCount }, () => null);
+  const stoppedCount = runningThreadCount + terminals.length;
   return (
     <AlertDialogDescription>
-      {describeRunningAgentSessions(runningThreadCount, elsewhere !== null)} Quitting now will stop{" "}
-      {runningThreadCount === 1 ? "it" : "them"} and the local Threadlines server.
+      {runningThreadCount > 0 || terminals.length === 0
+        ? `${describeRunningAgentSessions(runningThreadCount, elsewhere !== null)} `
+        : null}
+      {terminals.length > 0 ? (
+        <>
+          <BusyTerminalsSentence commands={terminals} onThisComputer={elsewhere !== null} />{" "}
+        </>
+      ) : null}
+      Quitting now will stop {stoppedCount === 1 ? "it" : "them"} and the local Threadlines server.
       {elsewhere ? ` ${elsewhere}` : null}
     </AlertDialogDescription>
   );
@@ -69,7 +91,10 @@ export function QuitConfirmationDialog() {
             Quit Threadlines?
           </AlertDialogTitle>
           {shownRequest ? (
-            <QuitConfirmationDescription runningThreadCount={shownRequest.runningThreadCount} />
+            <QuitConfirmationDescription
+              runningThreadCount={shownRequest.runningThreadCount}
+              busyTerminalCount={shownRequest.busyTerminalCount ?? 0}
+            />
           ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>

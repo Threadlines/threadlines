@@ -2391,6 +2391,12 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.terminalClose, terminalManager.close(input), {
             "rpc.aggregate": "terminal",
           }),
+        [WS_METHODS.terminalResolveInterrupted]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.terminalResolveInterrupted,
+            terminalManager.resolveInterrupted(input, viewerId),
+            { "rpc.aggregate": "terminal" },
+          ),
         [WS_METHODS.subscribeTerminalEvents]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalEvents,
