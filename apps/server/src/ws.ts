@@ -49,7 +49,7 @@ import {
   ProviderSubagentInputError,
   ProviderSubagentTranscriptError,
   ThreadId,
-  type TerminalEvent,
+  type TerminalStreamEvent,
   type SourceControlDiscoveryResult,
   SourceControlToolUpdateError,
   WS_METHODS,
@@ -126,6 +126,8 @@ import { ProviderAccounts } from "./provider/accounts/ProviderAccounts.ts";
 import { AcpRegistryAgents } from "./provider/acpRegistry/AcpRegistryAgents.ts";
 import { ProviderAuthSessions } from "./provider/auth/ProviderAuthSessions.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
+import { makeThreadStreamDelivery } from "./terminal/threadStreamDelivery.ts";
+import { randomUUIDv4Sync } from "@threadlines/shared/uuid";
 import { realtimeAudioHub } from "./realtime/RealtimeAudioHub.ts";
 import { DictationService } from "./dictation/DictationService.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
@@ -342,10 +344,14 @@ function toAuthAccessStreamEvent(
   }
 }
 
-const makeWsRpcLayer = (currentSession: {
-  readonly sessionId: AuthSessionId;
-  readonly role: "owner" | "client";
-}) =>
+const makeWsRpcLayer = (
+  currentSession: {
+    readonly sessionId: AuthSessionId;
+    readonly role: "owner" | "client";
+  },
+  /** This connection, as a terminal viewer (who controls a tab's size and replies). */
+  viewerId: string,
+) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
@@ -2366,11 +2372,11 @@ const makeWsRpcLayer = (currentSession: {
             "rpc.aggregate": "terminal",
           }),
         [WS_METHODS.terminalWrite]: (input) =>
-          observeRpcEffect(WS_METHODS.terminalWrite, terminalManager.write(input), {
+          observeRpcEffect(WS_METHODS.terminalWrite, terminalManager.write(input, viewerId), {
             "rpc.aggregate": "terminal",
           }),
         [WS_METHODS.terminalResize]: (input) =>
-          observeRpcEffect(WS_METHODS.terminalResize, terminalManager.resize(input), {
+          observeRpcEffect(WS_METHODS.terminalResize, terminalManager.resize(input, viewerId), {
             "rpc.aggregate": "terminal",
           }),
         [WS_METHODS.terminalClear]: (input) =>
@@ -2385,15 +2391,30 @@ const makeWsRpcLayer = (currentSession: {
           observeRpcEffect(WS_METHODS.terminalClose, terminalManager.close(input), {
             "rpc.aggregate": "terminal",
           }),
-        [WS_METHODS.subscribeTerminalEvents]: (_input) =>
+        [WS_METHODS.subscribeTerminalEvents]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalEvents,
-            Stream.callback<TerminalEvent>((queue) =>
-              Effect.acquireRelease(
-                terminalManager.subscribe((event) => Queue.offer(queue, event)),
+            Stream.callback<TerminalStreamEvent>((queue) => {
+              // One thread's output, bounded for a connection that falls
+              // behind (docs/terminal.md).
+              if (input.mode === "thread" && input.threadId !== undefined) {
+                const threadId = input.threadId;
+                return Effect.gen(function* () {
+                  const deliver = yield* makeThreadStreamDelivery(queue, threadId);
+                  yield* Effect.acquireRelease(
+                    terminalManager.subscribeThread(threadId, deliver),
+                    (unsubscribe) => Effect.sync(unsubscribe),
+                  );
+                });
+              }
+              // Tab lists and activity, or (no mode: older clients) everything.
+              return Effect.acquireRelease(
+                input.mode === "metadata"
+                  ? terminalManager.subscribeMetadata((event) => Queue.offer(queue, event))
+                  : terminalManager.subscribe((event) => Queue.offer(queue, event)),
                 (unsubscribe) => Effect.sync(unsubscribe),
-              ),
-            ),
+              );
+            }),
             { "rpc.aggregate": "terminal" },
           ),
         [WS_METHODS.providerAuthStart]: (input) =>
@@ -2633,6 +2654,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const providerMaintenance = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
     const githubSignIn = yield* GitHubAuth.GitHubAuth;
     const threadBootstrap = yield* ThreadBootstrap;
+    const terminalManager = yield* TerminalManager;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2641,11 +2663,12 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const serverAuth = yield* ServerAuth;
         const sessions = yield* SessionCredentialService;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
+        const viewerId = randomUUIDv4Sync();
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           disableTracing: true,
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session).pipe(
+            makeWsRpcLayer(session, viewerId).pipe(
               Layer.provide(
                 Layer.succeed(
                   SourceControlToolMaintenance.SourceControlToolMaintenance,
@@ -2711,7 +2734,10 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
           () => Effect.raceFirst(rpcWebSocketHttpEffect, closeWhenRevoked),
-          () => sessions.markDisconnected(session.sessionId),
+          () =>
+            sessions
+              .markDisconnected(session.sessionId)
+              .pipe(Effect.andThen(terminalManager.releaseViewer(viewerId))),
         );
       }).pipe(Effect.scoped, Effect.catchTag("AuthError", respondToAuthError)),
     );

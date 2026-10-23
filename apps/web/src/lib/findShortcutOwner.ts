@@ -1,7 +1,8 @@
 /**
  * Who answers Cmd/Ctrl+F: the chat's find, the browser panel's find in page,
- * or neither (the terminal keeps the key, and in the web build the browser's
- * own find opens).
+ * or neither (the terminal has its own find, `terminal.find`, which answers
+ * the key while the terminal has focus; elsewhere in the web build the
+ * browser's own find opens).
  *
  * Both finds listen on the window in the capture phase, so neither can rely
  * on running first; each asks this one function and acts only when it is the

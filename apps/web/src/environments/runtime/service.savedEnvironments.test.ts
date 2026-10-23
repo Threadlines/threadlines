@@ -32,6 +32,7 @@ vi.mock("../primary", () => ({
     },
     environmentId: EnvironmentId.make("env-1"),
   })),
+  readPrimaryEnvironmentDescriptor: vi.fn(() => null),
 }));
 
 vi.mock("../remote/api", () => ({

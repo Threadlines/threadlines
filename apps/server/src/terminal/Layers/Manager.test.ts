@@ -5,6 +5,7 @@ import {
   type TerminalEvent,
   type TerminalOpenInput,
   type TerminalRestartInput,
+  type TerminalStreamEvent,
 } from "@threadlines/contracts";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
@@ -219,6 +220,10 @@ interface CreateManagerOptions {
   maxRetainedInactiveSessions?: number;
   ptyAdapter?: FakePtyAdapter;
   processTree?: TerminalProcessTreeControl;
+  historyCharLimit?: number;
+  persistDebounceMs?: number;
+  /** Histories go here instead of a folder that goes with the manager's scope. */
+  logsDir?: string;
 }
 
 // Fake pids must never reach the real process table — the default control
@@ -250,7 +255,7 @@ const createManager = (
     Effect.gen(function* () {
       const { join } = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "threadlines-terminal-" });
-      const logsDir = join(baseDir, "userdata", "logs", "terminals");
+      const logsDir = options.logsDir ?? join(baseDir, "userdata", "logs", "terminals");
       const ptyAdapter = options.ptyAdapter ?? new FakePtyAdapter();
 
       const manager = yield* makeTerminalManagerWithOptions({
@@ -267,6 +272,10 @@ const createManager = (
           ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
           : {}),
         processKillGraceMs: options.processKillGraceMs ?? 1,
+        persistDebounceMs: options.persistDebounceMs ?? 5,
+        ...(options.historyCharLimit !== undefined
+          ? { historyCharLimit: options.historyCharLimit }
+          : {}),
         processTree: options.processTree ?? noopProcessTree,
         ...(options.maxRetainedInactiveSessions !== undefined
           ? { maxRetainedInactiveSessions: options.maxRetainedInactiveSessions }
@@ -289,6 +298,34 @@ const createManager = (
       };
     }),
   );
+
+/** What a POSIX shell's line editor prints when it shows a prompt and reads a line. */
+const PROMPT_READY = "$ \u001b[?2004h";
+
+/** Has the fake shell show its prompt, and waits until the manager has seen it. */
+const showPrompt = (
+  manager: TerminalManagerShape,
+  process: FakePtyProcess,
+  input: TerminalOpenInput = openInput(),
+) =>
+  Effect.gen(function* () {
+    process.emitData(PROMPT_READY);
+    yield* waitFor(
+      Effect.map(manager.open(input), (snapshot) => snapshot.history.includes("\u001b[?2004h")),
+    );
+  });
+
+/** Whether an activity event matching `later` follows one matching `first`. */
+const activityAfter = (
+  events: ReadonlyArray<TerminalEvent>,
+  first: (event: Extract<TerminalEvent, { type: "activity" }>) => boolean,
+  later: (event: Extract<TerminalEvent, { type: "activity" }>) => boolean,
+) => {
+  const index = events.findIndex((event) => event.type === "activity" && first(event));
+  return (
+    index >= 0 && events.slice(index + 1).some((event) => event.type === "activity" && later(event))
+  );
+};
 
 it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (it) => {
   const itEffectSkipOnWindows = process.platform === "win32" ? it.effect.skip : it.effect;
@@ -464,7 +501,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     }),
   );
 
-  it.effect("restarts terminal with empty transcript and respawns pty", () =>
+  it.effect("restarts a terminal below its earlier output and respawns the pty", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter, logsDir } = yield* createManager();
       yield* manager.open(openInput());
@@ -481,14 +518,15 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       );
 
       const snapshot = yield* manager.restart(restartInput());
-      assert.equal(snapshot.history, "");
+      assert.equal(snapshot.history, "before restart\n");
       assert.equal(snapshot.status, "running");
       expect(ptyAdapter.spawnInputs).toHaveLength(2);
+      ptyAdapter.processes[1]?.emitData("after restart\n");
       yield* waitFor(
         historyLogPath(logsDir).pipe(
           Effect.provideService(Path.Path, path),
           Effect.flatMap(readFileString),
-          Effect.map((text) => text === ""),
+          Effect.map((text) => text === "before restart\nafter restart\n"),
         ),
       );
     }),
@@ -575,10 +613,15 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     }),
   );
 
-  it.effect("emits exited event and reopens with clean transcript after exit", () =>
+  it.effect("closes a tab whose shell exits cleanly, everywhere and with its history", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter, logsDir, getEvents } = yield* createManager();
       const path = yield* Path.Path;
+      const streamed = yield* Ref.make<ReadonlyArray<TerminalStreamEvent>>([]);
+      const unsubscribe = yield* manager.subscribeMetadata((event) =>
+        Ref.update(streamed, (events) => [...events, event]),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
       yield* manager.open(openInput());
       const process = ptyAdapter.processes[0];
       expect(process).toBeDefined();
@@ -595,16 +638,53 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       yield* waitFor(
         Effect.map(getEvents, (events) => events.some((event) => event.type === "exited")),
       );
+      yield* waitFor(
+        historyLogPath(logsDir).pipe(
+          Effect.provideService(Path.Path, path),
+          Effect.flatMap(pathExists),
+          Effect.map((exists) => !exists),
+        ),
+      );
+      // Every device hears the tab is gone.
+      yield* waitFor(
+        Effect.map(Ref.get(streamed), (events) => {
+          const last = events.findLast((event) => event.type === "tabs");
+          return last?.type === "tabs" && last.tabs.length === 0;
+        }),
+      );
+      // Gone for a client that only attaches; a new one starts empty.
+      const attached = yield* Effect.exit(manager.open(openInput({ attach: true })));
+      assert.isTrue(Exit.isFailure(attached));
       const reopened = yield* manager.open(openInput());
-
       assert.equal(reopened.history, "");
       expect(ptyAdapter.spawnInputs).toHaveLength(2);
-      expect(
-        yield* historyLogPath(logsDir).pipe(
-          Effect.provideService(Path.Path, path),
-          Effect.flatMap(readFileString),
-        ),
-      ).toBe("");
+    }),
+  );
+
+  it.effect("keeps a tab whose shell failed, with its output, until it is restarted", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager();
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+      process.emitData("segfault\n");
+      process.emitExit({ exitCode: 139, signal: 0 });
+      yield* waitFor(
+        Effect.map(getEvents, (events) => events.some((event) => event.type === "exited")),
+      );
+
+      // Attaching shows how it ended instead of starting another shell.
+      const attached = yield* manager.open(openInput({ attach: true }));
+      assert.equal(attached.status, "exited");
+      assert.equal(attached.exitCode, 139);
+      assert.equal(attached.history, "segfault\n");
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+
+      const restarted = yield* manager.restart(restartInput());
+      assert.equal(restarted.status, "running");
+      assert.equal(restarted.history, "segfault\n");
+      expect(ptyAdapter.spawnInputs).toHaveLength(2);
     }),
   );
 
@@ -630,7 +710,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
   it.effect("emits subprocess activity events when child-process state changes", () =>
     Effect.gen(function* () {
       let hasRunningSubprocess = false;
-      const { manager, getEvents } = yield* createManager(5, {
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
         // Pin a non-Windows platform: this covers the poll-only path, and the
         // default platform would enable PowerShell prompt markers on a
         // Windows development machine.
@@ -641,6 +721,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
 
       yield* manager.open(openInput());
       expect((yield* getEvents).some((event) => event.type === "activity")).toBe(false);
+      const shell = ptyAdapter.processes[0];
+      if (!shell) return;
+      yield* showPrompt(manager, shell);
       yield* manager.write({
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
@@ -663,11 +746,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       hasRunningSubprocess = false;
       yield* waitFor(
         Effect.map(getEvents, (events) =>
-          events.some(
-            (event) =>
-              event.type === "activity" &&
-              event.hasRunningSubprocess === false &&
-              event.command === null,
+          activityAfter(
+            events,
+            (event) => event.hasRunningSubprocess,
+            (event) => !event.hasRunningSubprocess && event.command === null,
           ),
         ),
         "1200 millis",
@@ -972,12 +1054,16 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
 
   it.effect("replays current subprocess activity to a new subscriber", () =>
     Effect.gen(function* () {
-      const { manager, getEvents } = yield* createManager(5, {
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+        platform: "linux",
         subprocessChecker: () => Effect.succeed(true),
         subprocessPollIntervalMs: 20,
       });
 
       yield* manager.open(openInput());
+      const shell = ptyAdapter.processes[0];
+      if (!shell) return;
+      yield* showPrompt(manager, shell);
       yield* manager.write({
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
@@ -1061,7 +1147,11 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       hasRunningSubprocess = false;
       yield* waitFor(
         Effect.map(getEvents, (events) =>
-          events.some((event) => event.type === "activity" && !event.hasRunningSubprocess),
+          activityAfter(
+            events,
+            (event) => event.hasRunningSubprocess,
+            (event) => !event.hasRunningSubprocess,
+          ),
         ),
         "1200 millis",
       );
@@ -1397,9 +1487,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
           Effect.flatMap(pathExists),
         ),
       );
-      first.emitExit({ exitCode: 0, signal: 0 });
+      // Failed shells stay (a clean exit closes the tab).
+      first.emitExit({ exitCode: 1, signal: 0 });
       yield* Effect.sleep(Duration.millis(5));
-      second.emitExit({ exitCode: 0, signal: 0 });
+      second.emitExit({ exitCode: 1, signal: 0 });
 
       yield* waitFor(
         Effect.map(
@@ -1408,11 +1499,16 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         ),
       );
 
-      const reopenedSecond = yield* manager.open(openInput({ threadId: "thread-2" }));
-      const reopenedFirst = yield* manager.open(openInput({ threadId: "thread-1" }));
+      // The evicted one is let go but not forgotten: it comes back from its
+      // saved history as it ended, and no shell starts.
+      const reopenedSecond = yield* manager.open(openInput({ threadId: "thread-2", attach: true }));
+      const reopenedFirst = yield* manager.open(openInput({ threadId: "thread-1", attach: true }));
 
+      assert.equal(reopenedSecond.status, "exited");
+      assert.equal(reopenedFirst.status, "exited");
+      assert.equal(reopenedFirst.exitCode, 1);
       assert.equal(reopenedFirst.history, "first-history\n");
-      assert.equal(reopenedSecond.history, "");
+      expect(ptyAdapter.spawnInputs).toHaveLength(2);
     }),
   );
 
@@ -1814,6 +1910,33 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect("saves output still waiting to be saved when the server shuts down", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const logsDir = path.join(
+        yield* fileSystem.makeTempDirectoryScoped({ prefix: "threadlines-terminal-" }),
+        "terminals",
+      );
+      const scope = yield* Scope.make("sequential");
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        persistDebounceMs: 60_000,
+        logsDir,
+      }).pipe(Effect.provideService(Scope.Scope, scope));
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      if (!process) return;
+      process.emitData("last words\n");
+      yield* waitFor(
+        Effect.map(manager.open(openInput()), (snapshot) => snapshot.history === "last words\n"),
+      );
+
+      yield* Scope.close(scope, Exit.void);
+
+      expect(yield* readFileString(yield* historyLogPath(logsDir))).toBe("last words\n");
+    }),
+  );
+
   const commandRunInput = (
     overrides: Partial<TerminalCommandRunInput> = {},
   ): TerminalCommandRunInput => ({
@@ -2206,6 +2329,301 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         }),
       );
       expect(chosen).toBe("terminal-new");
+    }),
+  );
+  it.effect("never takes what is typed into a running program as the tab's command", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+        platform: "linux",
+        subprocessChecker: () => Effect.succeed(true),
+        subprocessPollIntervalMs: 20,
+      });
+      const write = (data: string) =>
+        manager.write({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID, data });
+      yield* manager.open(openInput());
+      const shell = ptyAdapter.processes[0];
+      if (!shell) return;
+      yield* showPrompt(manager, shell);
+      yield* write("sudo ls\r");
+      // The line editor hands the line over (bracketed paste off) and sudo asks.
+      shell.emitData("\u001b[?2004l\r\nPassword:");
+      yield* waitFor(
+        Effect.map(manager.open(openInput()), (snapshot) => snapshot.history.includes("Password:")),
+      );
+      yield* write("hunter2\r");
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.command === "sudo ls"),
+        ),
+        "1200 millis",
+      );
+      yield* Effect.sleep("120 millis");
+
+      // A program reading lines the way the shell does (a REPL, a shell over
+      // ssh) turns on the same bracketed paste switch.
+      shell.emitData("\r\n>>> \u001b[?2004h");
+      yield* waitFor(
+        Effect.map(manager.open(openInput()), (snapshot) => snapshot.history.includes(">>> ")),
+      );
+      yield* write("token = 'abc'\r");
+      yield* Effect.sleep("120 millis");
+
+      const commands = (yield* getEvents).flatMap((event) =>
+        event.type === "activity" ? [event.command] : [],
+      );
+      expect(commands).not.toContain("hunter2");
+      expect(commands.filter((command) => command?.includes("token"))).toEqual([]);
+    }),
+  );
+
+  it.effect("names a command from the process table when the shell never shows its prompt", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents } = yield* createManager(5, {
+        platform: "linux",
+        subprocessChecker: () => Effect.succeed(true),
+        subprocessPollIntervalMs: 20,
+      });
+      yield* manager.open(openInput());
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "secret-answer\r",
+      });
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.hasRunningSubprocess),
+        ),
+        "1200 millis",
+      );
+      const running = (yield* getEvents).find(
+        (event) => event.type === "activity" && event.hasRunningSubprocess,
+      );
+      expect(running?.type === "activity" ? running.command : undefined).toBeNull();
+    }),
+  );
+
+  it.effect("marks an entered command busy until polling sees it run or end", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+        platform: "linux",
+        subprocessChecker: () => Effect.succeed(false),
+        subprocessPollIntervalMs: 20,
+      });
+      yield* manager.open(openInput());
+      const shell = ptyAdapter.processes[0];
+      if (!shell) return;
+      yield* showPrompt(manager, shell);
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "cd ..\r",
+      });
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          activityAfter(
+            events,
+            (event) => event.commandPending === true,
+            (event) => event.commandPending === false,
+          ),
+        ),
+        "1200 millis",
+      );
+    }),
+  );
+
+  it.effect("shows a tab as it is when opened with another folder, never stopping its shell", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, baseDir } = yield* createManager();
+      yield* manager.open(openInput());
+      const shell = ptyAdapter.processes[0];
+      if (!shell) return;
+      shell.emitData("dev server running\n");
+      yield* waitFor(
+        Effect.map(manager.open(openInput()), (snapshot) =>
+          snapshot.history.includes("dev server running"),
+        ),
+      );
+
+      const moved = yield* manager.open(
+        openInput({ cwd: baseDir, env: { THREADLINES_WORKTREE_PATH: baseDir } }),
+      );
+      expect(moved.cwd).toBe(process.cwd());
+      expect(moved.history).toContain("dev server running");
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+      expect(shell.killed).toBe(false);
+
+      // Moving it is the user's call.
+      const restarted = yield* manager.restart(restartInput({ cwd: baseDir }));
+      expect(restarted.cwd).toBe(baseDir);
+      expect(restarted.history).toContain("dev server running");
+      expect(ptyAdapter.spawnInputs).toHaveLength(2);
+    }),
+  );
+
+  it.effect("bounds kept history in size, so a progress bar can't grow it forever", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, { historyCharLimit: 1_000 });
+      yield* manager.open(openInput());
+      const shell = ptyAdapter.processes[0];
+      if (!shell) return;
+      for (let step = 0; step < 500; step += 1) {
+        shell.emitData(`\r[${"#".repeat(step % 40)}] ${step}`);
+      }
+      // A sequence that never ends is dropped, not held.
+      shell.emitData(`\u001b]0;${"x".repeat(100_000)}`);
+      shell.emitData("\r\ndone\n");
+      yield* waitFor(
+        Effect.map(manager.open(openInput()), (snapshot) => snapshot.history.includes("done")),
+      );
+
+      const { history } = yield* manager.open(openInput());
+      expect(history.length).toBeLessThanOrEqual(1_100);
+      expect(history.startsWith("\r")).toBe(true);
+      expect(history).toContain("] 499");
+    }),
+  );
+
+  it.effect("lists a thread's tabs for every device, numbered for as long as they exist", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      const streamed = yield* Ref.make<ReadonlyArray<TerminalStreamEvent>>([]);
+      const unsubscribe = yield* manager.subscribeMetadata((event) =>
+        Ref.update(streamed, (events) => [...events, event]),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      expect((yield* Ref.get(streamed))[0]).toMatchObject({ type: "catalog", threads: [] });
+
+      yield* manager.open(openInput());
+      yield* manager.open(openInput({ terminalId: "terminal-b" }));
+      yield* manager.open(openInput({ terminalId: "terminal-c" }));
+      ptyAdapter.processes[0]?.emitData("not for this stream\n");
+      yield* manager.close({ threadId: "thread-1", terminalId: "terminal-b", deleteHistory: true });
+      yield* manager.open(openInput({ terminalId: "terminal-d" }));
+
+      const events = yield* Ref.get(streamed);
+      const lastTabs = events.findLast((event) => event.type === "tabs");
+      expect(
+        lastTabs?.type === "tabs"
+          ? lastTabs.tabs.map((tab) => [tab.terminalId, tab.number, tab.status])
+          : [],
+      ).toEqual([
+        [DEFAULT_TERMINAL_ID, 1, "running"],
+        ["terminal-c", 3, "running"],
+        ["terminal-d", 2, "running"],
+      ]);
+      expect(events.some((event) => event.type === "output")).toBe(false);
+      for (const event of events) {
+        if (event.type === "started") expect(event.snapshot.history).toBe("");
+      }
+    }),
+  );
+
+  it.effect("builds a thread's tab list from history saved before tab lists existed", () =>
+    Effect.gen(function* () {
+      const { manager, logsDir } = yield* createManager();
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const threadId = "3a28abe8-5c66-4815-95bb-72dbf4c33de4";
+      const historyFile = (terminalId: string) =>
+        multiTerminalHistoryLogPath(logsDir, threadId, terminalId).pipe(
+          Effect.provideService(Path.Path, path),
+        );
+      yield* fileSystem.writeFileString(yield* historyFile(DEFAULT_TERMINAL_ID), "first\n");
+      yield* fileSystem.writeFileString(yield* historyFile("terminal-x_y"), "second\n");
+      // The oldest name for a first tab's history.
+      const oldThreadId = "7c1f0e52-0d8e-4a8b-9a43-5b7e2b1f9d10";
+      yield* fileSystem.writeFileString(path.join(logsDir, `${oldThreadId}.log`), "oldest\n");
+
+      const streamed = yield* Ref.make<ReadonlyArray<TerminalStreamEvent>>([]);
+      const unsubscribe = yield* manager.subscribeMetadata((event) =>
+        Ref.update(streamed, (events) => [...events, event]),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      const catalog = (yield* Ref.get(streamed))[0];
+      const threads = catalog?.type === "catalog" ? catalog.threads : [];
+      expect(
+        [...threads].sort((left, right) =>
+          left.threadId === threadId ? -1 : right.threadId === threadId ? 1 : 0,
+        ),
+      ).toEqual([
+        {
+          threadId,
+          tabs: [
+            expect.objectContaining({
+              terminalId: DEFAULT_TERMINAL_ID,
+              number: 1,
+              status: "stopped",
+            }),
+            expect.objectContaining({ terminalId: "terminal-x_y", number: 2, status: "stopped" }),
+          ],
+        },
+        {
+          threadId: oldThreadId,
+          tabs: [expect.objectContaining({ terminalId: DEFAULT_TERMINAL_ID, number: 1 })],
+        },
+      ]);
+
+      const attached = yield* manager.open(
+        openInput({ threadId, terminalId: "terminal-x_y", attach: true }),
+      );
+      expect(attached.history).toBe("second\n");
+      expect(attached.status).toBe("running");
+    }),
+  );
+
+  it.effect("lets the device using a tab set its size and answer the terminal's queries", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput());
+      const shell = ptyAdapter.processes[0];
+      if (!shell) return;
+      const target = { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID };
+      const resize = (cols: number, viewerId: string, claim = false) =>
+        manager.resize({ ...target, cols, rows: 24, ...(claim ? { claim: true } : {}) }, viewerId);
+
+      yield* resize(80, "desktop", true);
+      yield* resize(40, "phone");
+      expect(shell.resizeCalls.at(-1)).toEqual({ cols: 80, rows: 24 });
+
+      const cursorReport = "\u001b[12;1R";
+      yield* manager.write({ ...target, data: cursorReport }, "phone");
+      yield* manager.write({ ...target, data: cursorReport }, "desktop");
+      expect(shell.writes).toEqual([cursorReport]);
+
+      // Typing on the phone hands the tab to it, at the phone's size.
+      yield* manager.write({ ...target, data: "l" }, "phone");
+      expect(shell.resizeCalls.at(-1)).toEqual({ cols: 40, rows: 24 });
+
+      yield* manager.releaseViewer("phone");
+      yield* resize(90, "desktop");
+      expect(shell.resizeCalls.at(-1)).toEqual({ cols: 90, rows: 24 });
+    }),
+  );
+
+  it.effect("streams one thread's events, output included, after a subscribed marker", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput());
+      yield* manager.open(openInput({ threadId: "thread-2" }));
+      const streamed = yield* Ref.make<ReadonlyArray<TerminalStreamEvent>>([]);
+      const unsubscribe = yield* manager.subscribeThread("thread-1", (event) =>
+        Ref.update(streamed, (events) => [...events, event]),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+
+      ptyAdapter.processes[1]?.emitData("other thread\n");
+      ptyAdapter.processes[0]?.emitData("this thread\n");
+      yield* waitFor(
+        Effect.map(Ref.get(streamed), (events) => events.some((event) => event.type === "output")),
+      );
+      const events = yield* Ref.get(streamed);
+      expect(events[0]).toMatchObject({ type: "subscribed", threadId: "thread-1" });
+      expect(events.every((event) => "threadId" in event && event.threadId === "thread-1")).toBe(
+        true,
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "output", data: "this thread\n" }),
+      );
     }),
   );
 });

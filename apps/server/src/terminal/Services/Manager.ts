@@ -20,6 +20,7 @@ import {
   TerminalSessionSnapshot,
   TerminalSessionLookupError,
   TerminalSessionStatus,
+  TerminalStreamEvent,
   TerminalWriteInput,
 } from "@threadlines/contracts";
 import type { TerminalCommandInputState } from "@threadlines/shared/terminalCommandTracker";
@@ -142,22 +143,38 @@ export interface TerminalManagerShape {
    * Open or attach to a terminal session.
    *
    * Reuses an existing session for the same thread/terminal id and restores
-   * persisted history on first open. With `reuseTerminalIds`, opens the first
-   * free one of those instead and claims it; the snapshot names the tab.
+   * persisted history on first open. A live shell is never stopped because
+   * the cwd or environment asked for differs; the snapshot says where it
+   * runs. With `attach`, never makes a tab the thread doesn't list and leaves
+   * an ended shell ended. With `reuseTerminalIds`, opens the first free one
+   * of those instead and claims it; the snapshot names the tab.
    */
   readonly open: (
     input: TerminalOpenInput,
   ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
 
   /**
-   * Write input bytes to a terminal session.
+   * Write input bytes to a terminal session. `viewerId` names the connection
+   * it came from: typing makes it the tab's controlling viewer, and the
+   * terminal's automatic replies from any other viewer are dropped.
    */
-  readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
+  readonly write: (
+    input: TerminalWriteInput,
+    viewerId?: string,
+  ) => Effect.Effect<void, TerminalError>;
 
   /**
-   * Resize the PTY backing a terminal session.
+   * Resize the PTY backing a terminal session. With a `viewerId`, a claiming
+   * resize makes it the controlling viewer, and another viewer's unclaimed
+   * resize is ignored while one holds the tab.
    */
-  readonly resize: (input: TerminalResizeInput) => Effect.Effect<void, TerminalError>;
+  readonly resize: (
+    input: TerminalResizeInput,
+    viewerId?: string,
+  ) => Effect.Effect<void, TerminalError>;
+
+  /** A connection went away: it no longer controls any tab. */
+  readonly releaseViewer: (viewerId: string) => Effect.Effect<void>;
 
   /**
    * Clear terminal output history.
@@ -165,9 +182,8 @@ export interface TerminalManagerShape {
   readonly clear: (input: TerminalClearInput) => Effect.Effect<void, TerminalError>;
 
   /**
-   * Restart a terminal session in place.
-   *
-   * Always resets history before spawning the new process.
+   * Restart a terminal session in place, in the cwd given. The new shell
+   * starts below what the old one printed (`clear` empties it).
    */
   readonly restart: (
     input: TerminalRestartInput,
@@ -190,6 +206,23 @@ export interface TerminalManagerShape {
    */
   readonly subscribe: (
     listener: (event: TerminalEvent) => Effect.Effect<void>,
+  ) => Effect.Effect<() => void>;
+
+  /**
+   * Every thread's tabs (a `catalog` event first, then `tabs` on change) and
+   * what their shells do, without output or history.
+   */
+  readonly subscribeMetadata: (
+    listener: (event: TerminalStreamEvent) => Effect.Effect<void>,
+  ) => Effect.Effect<() => void>;
+
+  /**
+   * Everything one thread's terminals do, output included, after a
+   * `subscribed` event sent once the listener can miss nothing.
+   */
+  readonly subscribeThread: (
+    threadId: string,
+    listener: (event: TerminalStreamEvent) => Effect.Effect<void>,
   ) => Effect.Effect<() => void>;
 
   /**

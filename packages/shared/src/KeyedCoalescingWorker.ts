@@ -2,8 +2,9 @@
  * KeyedCoalescingWorker - A keyed worker that keeps only the latest value per key.
  *
  * Enqueues for an active or already-queued key are merged atomically instead of
- * creating duplicate queued items. `drainKey()` resolves only when that key has
- * no queued, pending, or active work left.
+ * creating duplicate queued items. Keys take turns: new work for a key that is
+ * running waits behind the keys already queued. `drainKey()` resolves only when
+ * that key has no queued, pending, or active work left.
  *
  * @module KeyedCoalescingWorker
  */
@@ -35,24 +36,24 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
       activeKeys: new Set(),
     });
 
+    // A key that got new work while it ran goes back in line behind the
+    // keys already waiting, so one busy key can't starve the others.
     const processKey = (key: K, value: V): Effect.Effect<void, E, R> =>
       options.process(key, value).pipe(
         Effect.flatMap(() =>
           TxRef.modify(stateRef, (state) => {
-            const nextValue = state.latestByKey.get(key);
-            if (nextValue === undefined) {
-              const activeKeys = new Set(state.activeKeys);
-              activeKeys.delete(key);
-              return [null, { ...state, activeKeys }] as const;
+            const activeKeys = new Set(state.activeKeys);
+            activeKeys.delete(key);
+            if (!state.latestByKey.has(key) || state.queuedKeys.has(key)) {
+              return [false, { ...state, activeKeys }] as const;
             }
-
-            const latestByKey = new Map(state.latestByKey);
-            latestByKey.delete(key);
-            return [nextValue, { ...state, latestByKey }] as const;
-          }).pipe(Effect.tx),
-        ),
-        Effect.flatMap((nextValue) =>
-          nextValue === null ? Effect.void : processKey(key, nextValue),
+            const queuedKeys = new Set(state.queuedKeys);
+            queuedKeys.add(key);
+            return [true, { ...state, activeKeys, queuedKeys }] as const;
+          }).pipe(
+            Effect.flatMap((requeue) => (requeue ? TxQueue.offer(queue, key) : Effect.void)),
+            Effect.tx,
+          ),
         ),
       );
 

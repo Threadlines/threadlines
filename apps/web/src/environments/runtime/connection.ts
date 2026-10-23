@@ -1,14 +1,16 @@
 import type {
   EnvironmentId,
+  ExecutionEnvironmentDescriptor,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamEvent,
   ServerConfigStreamEvent,
   ServerLifecycleWelcomePayload,
-  TerminalEvent,
+  TerminalStreamEvent,
 } from "@threadlines/contracts";
 import type { KnownEnvironment } from "@threadlines/client-runtime";
 
 import type { WsRpcClient } from "~/rpc/wsRpcClient";
+import { connectTerminalStreams, noteTerminalServerCapabilities } from "~/terminalStreams";
 
 export interface EnvironmentConnection {
   readonly kind: "primary" | "saved";
@@ -29,7 +31,7 @@ interface OrchestrationHandlers {
     snapshot: OrchestrationShellSnapshot,
     environmentId: EnvironmentId,
   ) => void;
-  readonly applyTerminalEvent: (event: TerminalEvent, environmentId: EnvironmentId) => void;
+  readonly applyTerminalEvent: (event: TerminalStreamEvent, environmentId: EnvironmentId) => void;
 }
 
 interface EnvironmentConnectionInput extends OrchestrationHandlers {
@@ -37,6 +39,8 @@ interface EnvironmentConnectionInput extends OrchestrationHandlers {
   readonly knownEnvironment: KnownEnvironment;
   readonly client: WsRpcClient;
   readonly refreshMetadata?: () => Promise<void>;
+  /** What the server said about itself before connecting, when known. */
+  readonly descriptor?: ExecutionEnvironmentDescriptor | null;
   /**
    * Receives every server config event, not just the opening snapshot: live
    * provider status, keybinding, and settings updates keep the environment's
@@ -109,6 +113,7 @@ export function createEnvironmentConnection(
             event.payload.environment.environmentId,
             "server lifecycle welcome",
           );
+          noteTerminalServerCapabilities(environmentId, event.payload.environment.capabilities);
           input.onWelcome?.(event.payload);
         },
       )
@@ -122,6 +127,7 @@ export function createEnvironmentConnection(
               event.config.environment.environmentId,
               "server config snapshot",
             );
+            noteTerminalServerCapabilities(environmentId, event.config.environment.capabilities);
           }
           input.onConfigEvent?.(event);
         },
@@ -147,11 +153,14 @@ export function createEnvironmentConnection(
     },
   );
 
-  const unsubTerminalEvent = input.client.terminal.onEvent(
-    (event: Parameters<Parameters<WsRpcClient["terminal"]["onEvent"]>[0]>[0]) => {
-      input.applyTerminalEvent(event, environmentId);
-    },
-  );
+  // Tab lists and activity for every thread; output comes per thread, only
+  // where something shows it (docs/terminal.md).
+  if (input.descriptor) {
+    noteTerminalServerCapabilities(environmentId, input.descriptor.capabilities);
+  }
+  const unsubTerminalEvent = connectTerminalStreams(environmentId, input.client, (event) => {
+    input.applyTerminalEvent(event, environmentId);
+  });
 
   const cleanup = () => {
     disposed = true;

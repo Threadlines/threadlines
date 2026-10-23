@@ -558,7 +558,6 @@ describe("ChatView (full app): composer", () => {
           activeTerminalGroupId: "group-terminal-killed-context",
         },
       },
-      terminalLaunchContextByThreadKey: {},
     });
     useComposerDraftStore.getState().addTerminalContext(THREAD_REF, {
       ...createTerminalContext({

@@ -181,11 +181,12 @@ import type {
 import type {
   TerminalClearInput,
   TerminalCloseInput,
-  TerminalEvent,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
   TerminalSessionSnapshot,
+  TerminalStreamEvent,
+  TerminalSubscribeInput,
   TerminalWriteInput,
 } from "./terminal.ts";
 import type { ServerRemoveKeybindingInput, ServerUpsertKeybindingInput } from "./server.ts";
@@ -1644,7 +1645,10 @@ export interface EnvironmentApi {
     clear: (input: typeof TerminalClearInput.Encoded) => Promise<void>;
     restart: (input: typeof TerminalRestartInput.Encoded) => Promise<TerminalSessionSnapshot>;
     close: (input: typeof TerminalCloseInput.Encoded) => Promise<void>;
-    onEvent: (callback: (event: TerminalEvent) => void) => () => void;
+    onEvent: (
+      input: TerminalSubscribeInput,
+      callback: (event: TerminalStreamEvent) => void,
+    ) => () => void;
   };
   realtime: {
     appendAudio: (input: ProviderRealtimeAppendAudioInput) => Promise<void>;
