@@ -246,6 +246,8 @@ interface TerminalSessionState {
   shellName: string | null;
   /** A suggested command this tab is carrying out (docs/terminal-command-runs.md). */
   commandRun: ActiveCommandRun | null;
+  /** An `insert` the user pressed Enter on, followed until the command it started ends. */
+  followedInsert: FollowedInsert | null;
   /**
    * The user's input reached this shell (keys or a paste; not the terminal's
    * own replies, nor a script Threadlines typed). Its folder, variables and
@@ -304,6 +306,63 @@ interface ActiveCommandRun {
   outputStarted: boolean;
 }
 
+/**
+ * An `insert` after the user's Enter. The tab is theirs from then on, like any
+ * line they type; the run only watches for the command it started to end, to
+ * report its output. PowerShell's prompt marker says so. A POSIX shell that
+ * switches its line editor on and off says when it reads a line again, and
+ * the process table then says whether that is its own prompt (the shell is
+ * the terminal's foreground job again) or a program in front of it that reads
+ * lines too (a REPL, ssh, a nested shell). A shell that says neither is done
+ * once polling sees nothing run under it.
+ */
+interface FollowedInsert {
+  readonly runId: string;
+  /** The shell it was entered in; a restart spawns another. */
+  readonly pid: number;
+  /** When Enter was pressed. */
+  readonly startedAt: string;
+  /** The tab's command generation from that Enter on. */
+  readonly generation: number;
+  /**
+   * The shell reports its line editor, so the command ends only after it is
+   * back on: idle polls alone would end a builtin still waiting for input
+   * (`read`).
+   */
+  readonly promptSignals: boolean;
+  /** The line editor came back on since that Enter. */
+  promptBack: boolean;
+  /**
+   * A line was entered before the line editor came back: maybe typed ahead
+   * for the shell, which takes it the moment its prompt is back (and runs it
+   * in front, so the process table can't tell that prompt from a program),
+   * or maybe an answer to the command (a password).
+   */
+  typedAhead: boolean;
+  /**
+   * Where the first prompt after a line typed ahead began, while the line
+   * editor stays on there and nobody types: switching off then means the
+   * shell took the queued line, so the command ended at that prompt.
+   */
+  queuedLinePromptAt: number | null;
+}
+
+/** A followed insert ending: what the tab showed from the insert on, rendered off the drain loop. */
+interface FollowedInsertEnd {
+  readonly kind: "finished" | "interrupted";
+  readonly insert: FollowedInsert;
+  /** Null when the tab kept nothing from the insert on. */
+  readonly output: InsertOutput | null;
+}
+
+/** What a tab showed from an insert on, raw. */
+interface InsertOutput {
+  readonly raw: string;
+  /** The tab's history no longer reaches back to the insert. */
+  readonly clipped: boolean;
+  readonly cols: number;
+}
+
 /** When the process-table poll next looks at a terminal, and why sooner. */
 interface SubprocessPollSchedule {
   delayMs: number;
@@ -348,6 +407,10 @@ type DrainProcessEventAction =
       data: string;
       commandFinished: boolean;
       runEnd: CommandRunEnd | null;
+      /** A followed insert whose command the prompt just reported done. */
+      insertEnd: FollowedInsertEnd | null;
+      /** A followed insert whose shell's line editor just came back on, and where. */
+      insertAtPrompt: { insert: FollowedInsert; endAt: number } | null;
       /** An `insert` whose shell just reached its prompt. */
       insertReady: string | null;
       /** Ports this chunk says are taken, not yet looked up for this command. */
@@ -365,6 +428,7 @@ type DrainProcessEventAction =
       exitCode: number | null;
       exitSignal: number | null;
       runEnd: CommandRunEnd | null;
+      insertEnd: FollowedInsertEnd | null;
     };
 
 /** `now`, or a millisecond past `previous` when the clock has not moved on. */
@@ -383,6 +447,36 @@ function appendRunOutput(run: ActiveCommandRun, text: string): void {
   } else {
     run.output = next;
   }
+}
+
+/**
+ * What the tab has shown since an insert went in, up to `endAt` (a position
+ * in everything it ever showed) or now; null when it never went into this tab.
+ */
+function insertOutputOf(
+  session: TerminalSessionState,
+  runId: string,
+  endAt?: number,
+): InsertOutput | null {
+  const mark = session.insertMarks.get(runId);
+  if (mark === undefined) return null;
+  const base = session.historyAppendedTotal - session.history.length;
+  return {
+    raw: session.history.slice(
+      Math.max(0, mark - base),
+      endAt === undefined ? undefined : Math.max(0, endAt - base),
+    ),
+    clipped: mark < base,
+    cols: session.cols,
+  };
+}
+
+/** Takes the followed insert of this shell, if any, to end it. */
+function takeFollowedInsert(session: TerminalSessionState, pid: number): FollowedInsert | null {
+  const followed = session.followedInsert;
+  if (followed === null || followed.pid !== pid) return null;
+  session.followedInsert = null;
+  return followed;
 }
 
 /** A `run` is the tab's only activity while it lasts; clear it when the run ends. */
@@ -881,6 +975,8 @@ function sanitizeTerminalHistoryChunk(
   commandFinishedGenerations: number[];
   /** Line editor on/off switches, in order. */
   lineEditorSignals: boolean[];
+  /** The length of visible text before each of `lineEditorSignals`. */
+  lineEditorSignalOffsets: number[];
   /** End-of-run markers, with the length of visible text before each. */
   runMarkers: Array<CommandRunMarker & { visibleOffset: number }>;
 } {
@@ -889,6 +985,7 @@ function sanitizeTerminalHistoryChunk(
   let visibleText = "";
   const commandFinishedGenerations: number[] = [];
   const lineEditorSignals: boolean[] = [];
+  const lineEditorSignalOffsets: number[] = [];
   const runMarkers: Array<CommandRunMarker & { visibleOffset: number }> = [];
   let index = 0;
 
@@ -910,6 +1007,7 @@ function sanitizeTerminalHistoryChunk(
           : null,
       commandFinishedGenerations,
       lineEditorSignals,
+      lineEditorSignalOffsets,
       runMarkers,
     };
   };
@@ -934,7 +1032,10 @@ function sanitizeTerminalHistoryChunk(
             const sequence = input.slice(index, cursor + 1);
             const body = input.slice(index + 2, cursor);
             const lineEditorSignal = lineEditorSignalOf(body, input[cursor] ?? "");
-            if (lineEditorSignal !== null) lineEditorSignals.push(lineEditorSignal);
+            if (lineEditorSignal !== null) {
+              lineEditorSignals.push(lineEditorSignal);
+              lineEditorSignalOffsets.push(visibleText.length);
+            }
             if (!shouldStripCsiSequence(body, input[cursor] ?? "")) {
               append(sequence);
             }
@@ -991,7 +1092,10 @@ function sanitizeTerminalHistoryChunk(
           const sequence = input.slice(index, cursor + 1);
           const body = input.slice(index + 1, cursor);
           const lineEditorSignal = lineEditorSignalOf(body, input[cursor] ?? "");
-          if (lineEditorSignal !== null) lineEditorSignals.push(lineEditorSignal);
+          if (lineEditorSignal !== null) {
+            lineEditorSignals.push(lineEditorSignal);
+            lineEditorSignalOffsets.push(visibleText.length);
+          }
           if (!shouldStripCsiSequence(body, input[cursor] ?? "")) {
             append(sequence);
           }
@@ -1276,6 +1380,7 @@ function createSessionState(input: {
     historyAppendedTotal: input.history.length,
     shellName: null,
     commandRun: null,
+    followedInsert: null,
     insertMarks: new Map(),
     typedIn: false,
     scriptPending: false,
@@ -2508,6 +2613,99 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       }).pipe(Effect.forkIn(workerScope), Effect.asVoid);
 
     /**
+     * Renders what the tab showed from an insert on and reports how the command
+     * the user entered ended, off the drain loop. A shell can't say its exit
+     * code, so a finished insert has none.
+     */
+    const endFollowedInsert = (end: FollowedInsertEnd) =>
+      Effect.gen(function* () {
+        const at = yield* nowIso;
+        const { runId, startedAt } = end.insert;
+        const captured = end.output;
+        const output =
+          captured === null
+            ? null
+            : clipCommandOutput(
+                yield* Effect.promise(() => renderTerminalText(captured.raw, captured.cols)),
+                captured.clipped,
+              );
+        yield* publishRunUpdate(
+          end.kind === "finished"
+            ? { type: "finished", runId, at, startedAt, exitCode: null, output: output ?? "" }
+            : { type: "interrupted", runId, at, startedAt, output },
+        );
+      }).pipe(Effect.forkIn(workerScope), Effect.asVoid);
+
+    /**
+     * Whether a shell is its terminal's foreground job, from a fresh process
+     * table (`+` in its state): no program it started runs in front of it.
+     * Null where that can't be read (Windows, a failed read).
+     */
+    const shellInForeground = (pid: number) =>
+      platform === "win32"
+        ? Effect.succeed(null)
+        : freshProcessRowsReader(platform).pipe(
+            Effect.withTracerEnabled(false),
+            Effect.map((rows) => {
+              const row = rows.find((entry) => entry.pid === pid);
+              return row === undefined ? null : row.status.includes("+");
+            }),
+            Effect.catch((reason) =>
+              Effect.logWarning("failed to check the terminal's foreground job", {
+                pid,
+                reason,
+              }).pipe(Effect.as(null)),
+            ),
+          );
+
+    /**
+     * The line editor came back on after an entered insert (at `endAt`): when
+     * the shell is in front again, it is at its own prompt and the command is
+     * over (a job it left in the background is not part of it). Otherwise a
+     * program it started reads lines, and the next time the line editor comes
+     * back on looks again. When the table can't be read, polling looks
+     * instead (see publishSubprocessActivityIfChanged), armed again in case
+     * it had stopped. PowerShell's prompt marker ends it there.
+     */
+    const checkFollowedInsertAtPrompt = (
+      session: TerminalSessionState,
+      insert: FollowedInsert,
+      endAt: number,
+    ) =>
+      Effect.gen(function* () {
+        if (platform === "win32") return;
+        const inFront = yield* shellInForeground(insert.pid);
+        if (session.followedInsert !== insert || session.pid !== insert.pid) return;
+        if (inFront === null) {
+          session.subprocessPollingArmed = true;
+          session.consecutiveSubprocessIdlePolls = 0;
+          session.subprocessPoll = freshSubprocessPollSchedule();
+          return;
+        }
+        if (!inFront) return;
+        const ended = takeFollowedInsert(session, insert.pid);
+        if (ended === null) return;
+        yield* endFollowedInsert({
+          kind: "finished",
+          insert: ended,
+          output: insertOutputOf(session, ended.runId, endAt),
+        });
+      }).pipe(Effect.forkIn(workerScope), Effect.asVoid);
+
+    /** Ends a followed insert when its shell stops, with what the tab showed until then. */
+    const interruptFollowedInsert = (session: TerminalSessionState, pid: number | null) =>
+      Effect.suspend(() => {
+        const insert = pid === null ? null : takeFollowedInsert(session, pid);
+        return insert === null
+          ? Effect.void
+          : endFollowedInsert({
+              kind: "interrupted",
+              insert,
+              output: insertOutputOf(session, insert.runId),
+            });
+      });
+
+    /**
      * Types a pending `insert` at the prompt of the process it was meant for:
      * as a bracketed paste when the line editor is reading (so no line runs
      * on its own), as plain text when it is one line, otherwise not at all.
@@ -2661,6 +2859,37 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             for (const signal of sanitized.lineEditorSignals) {
               session.lineEditorActive = signal;
             }
+            // An entered insert's shell switching its line editor in output
+            // printed after that Enter (a line typed ahead since counts too).
+            // Back on, it may be at its next prompt: checked right away, before
+            // the user can start something else there. The output ends where
+            // that prompt's line editor began.
+            const followed = session.followedInsert;
+            let insertAtPrompt: { insert: FollowedInsert; endAt: number } | null = null;
+            let queuedLineTakenAt: number | null = null;
+            const signals = sanitized.lineEditorSignals;
+            if (
+              followed !== null &&
+              followed.pid === expectedPid &&
+              signals.length > 0 &&
+              nextEvent.commandGeneration >= followed.generation
+            ) {
+              const chunkStart = session.historyAppendedTotal - sanitized.visibleText.length;
+              const firstOn = signals.indexOf(true);
+              if (followed.queuedLinePromptAt !== null && signals[0] === false) {
+                queuedLineTakenAt = followed.queuedLinePromptAt;
+              } else if (firstOn >= 0) {
+                const endAt = chunkStart + sanitized.lineEditorSignalOffsets[firstOn]!;
+                const firstPrompt = !followed.promptBack;
+                followed.promptBack = true;
+                if (firstPrompt && followed.typedAhead && signals.slice(firstOn).includes(false)) {
+                  queuedLineTakenAt = endAt;
+                } else {
+                  if (firstPrompt && followed.typedAhead) followed.queuedLinePromptAt = endAt;
+                  insertAtPrompt = { insert: followed, endAt };
+                }
+              }
+            }
 
             // A suggested command in this tab: a `run` collects its output up
             // to its own end marker; an `insert` waits for the first prompt.
@@ -2731,6 +2960,26 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               session.consecutiveSubprocessIdlePolls = 0;
               session.terminalCommandInputState = createTerminalCommandInputState();
             }
+            // The prompt reported the entered command done (PowerShell), or the
+            // shell took a line typed ahead at its prompt. Read now, before later
+            // output belongs to whatever comes next.
+            const finishedInsert =
+              commandFinished || queuedLineTakenAt !== null
+                ? takeFollowedInsert(session, expectedPid)
+                : null;
+            if (finishedInsert !== null) insertAtPrompt = null;
+            const insertEnd: FollowedInsertEnd | null =
+              finishedInsert === null
+                ? null
+                : {
+                    kind: "finished",
+                    insert: finishedInsert,
+                    output: insertOutputOf(
+                      session,
+                      finishedInsert.runId,
+                      commandFinished ? undefined : (queuedLineTakenAt ?? undefined),
+                    ),
+                  };
             // The chunk's event carries the same time the snapshot now does,
             // later than anything before it: a client that opens the tab
             // after this chunk replays only the events its snapshot lacks.
@@ -2746,6 +2995,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               data: nextEvent.data,
               commandFinished: commandFinished || (runEnd !== null && runEnd.run.mode === "run"),
               runEnd,
+              insertEnd,
+              insertAtPrompt,
               insertReady,
               portsInUse,
               commandGeneration: session.commandGeneration,
@@ -2771,6 +3022,16 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
                     ? nextEvent.event.exitCode
                     : null,
                   cols: session.cols,
+                };
+          // So does a command the user entered from an insert.
+          const endedInsert = takeFollowedInsert(session, expectedPid);
+          const insertEnd: FollowedInsertEnd | null =
+            endedInsert === null
+              ? null
+              : {
+                  kind: "interrupted",
+                  insert: endedInsert,
+                  output: insertOutputOf(session, endedInsert.runId),
                 };
 
           const process = session.process;
@@ -2811,6 +3072,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             exitCode: session.exitCode,
             exitSignal: session.exitSignal,
             runEnd,
+            insertEnd,
           } as const;
         });
 
@@ -2846,6 +3108,16 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           if (action.runEnd !== null) {
             yield* endCommandRun(action.runEnd);
           }
+          if (action.insertEnd !== null) {
+            yield* endFollowedInsert(action.insertEnd);
+          }
+          if (action.insertAtPrompt !== null) {
+            yield* checkFollowedInsertAtPrompt(
+              session,
+              action.insertAtPrompt.insert,
+              action.insertAtPrompt.endAt,
+            );
+          }
           if (action.insertReady !== null) {
             yield* insertCommand(session, action.insertReady, expectedPid);
           }
@@ -2865,6 +3137,9 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
         if (action.runEnd !== null) {
           yield* endCommandRun(action.runEnd);
+        }
+        if (action.insertEnd !== null) {
+          yield* endFollowedInsert(action.insertEnd);
         }
         yield* clearKillFiber(action.process);
         const createdAt = yield* nowIso;
@@ -2921,6 +3196,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
       const updatedAt = yield* nowIso;
       const stoppedRun = session.commandRun;
+      // Before its pid goes: a command the user entered ends with the shell.
+      yield* interruptFollowedInsert(session, session.pid);
       yield* modifyManagerState((state) => {
         session.commandRun = null;
         session.lineEditorActive = null;
@@ -3275,6 +3552,9 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       const terminalPid = session.pid;
       const updatedAt = yield* nowIso;
       const createdAt = yield* nowIso;
+      // A command the user entered from an insert can end where polling stops
+      // looking. (Set inside the update; the cast keeps it from reading as null.)
+      let insertEnd = null as FollowedInsertEnd | null;
       const event = yield* modifyManagerState((state) => {
         const liveSession: Option.Option<TerminalSessionState> = Option.fromNullishOr(
           state.sessions.get(toSessionKey(session.threadId, session.terminalId)),
@@ -3308,6 +3588,21 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             return [Option.none(), state] as const;
           }
           liveSession.value.subprocessPollingArmed = false;
+          // Where the shell reports its line editor, only once it was back on
+          // (normally the prompt check ends it first; this covers a process
+          // table that couldn't be read).
+          const followed = liveSession.value.followedInsert;
+          const ended =
+            followed !== null && (!followed.promptSignals || followed.promptBack)
+              ? takeFollowedInsert(liveSession.value, terminalPid)
+              : null;
+          if (ended !== null) {
+            insertEnd = {
+              kind: "finished",
+              insert: ended,
+              output: insertOutputOf(liveSession.value, ended.runId),
+            };
+          }
         }
 
         const command = activity.hasRunningSubprocess
@@ -3370,6 +3665,9 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       if (Option.isSome(event)) {
         yield* publishEvent(event.value);
         yield* syncCatalogCommands(session.threadId, session.terminalId);
+      }
+      if (insertEnd !== null) {
+        yield* endFollowedInsert(insertEnd);
       }
     });
 
@@ -3932,12 +4230,16 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.commandRun?.mode === "insert" && session.commandRun.phase === "waiting"
             ? session.commandRun
             : null;
-        if (waitingInsert !== null && (result.didSubmit || input.data.includes("\u0003"))) {
-          // The user ran the command they were given (or cleared it); from here
-          // the tab is theirs, so the insert is no longer followed.
+        // The user ran the command they were given (followed below, once the
+        // line is counted) or cleared it. Either way the tab is theirs from
+        // here, like any line they type.
+        const enteredInsert = waitingInsert !== null && result.didSubmit ? waitingInsert : null;
+        if (enteredInsert !== null) {
+          session.commandRun = null;
+        } else if (waitingInsert !== null && input.data.includes("\u0003")) {
           session.commandRun = null;
           yield* publishRunUpdate({
-            type: result.didSubmit ? "submitted" : "cancelled",
+            type: "cancelled",
             runId: waitingInsert.runId,
             at: yield* nowIso,
           });
@@ -3986,6 +4288,35 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             // Busy until polling sees the command run or end: stopping the tab
             // asks first in between.
             yield* publishCommandPending(session as TerminalSessionState & { pid: number });
+          }
+        }
+        const followed = session.followedInsert;
+        if (followed !== null && !replyOnly) {
+          if (result.didSubmit && !followed.promptBack) followed.typedAhead = true;
+          // Typed at the prompt that came back: no queued line is taken there.
+          if (followed.promptBack) followed.queuedLinePromptAt = null;
+        }
+        if (enteredInsert !== null) {
+          const at = yield* nowIso;
+          // Followed while the tab follows the line just entered: PowerShell's
+          // prompt marker or the POSIX prompt coming back ends it (FollowedInsert).
+          if (
+            session.pid !== null &&
+            (!session.commandCompletionMarkersEnabled || session.hasRunningSubprocess)
+          ) {
+            session.followedInsert = {
+              runId: enteredInsert.runId,
+              pid: session.pid,
+              startedAt: at,
+              generation: session.commandGeneration,
+              promptSignals: session.lineEditorActive !== null,
+              promptBack: false,
+              typedAhead: false,
+              queuedLinePromptAt: null,
+            };
+            yield* publishRunUpdate({ type: "running", runId: enteredInsert.runId, at });
+          } else {
+            yield* publishRunUpdate({ type: "submitted", runId: enteredInsert.runId, at });
           }
         }
         yield* Effect.sync(() => process.write(input.data));
@@ -4360,15 +4691,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               if (run?.runId === runId && run.mode === "run") {
                 return { raw: run.output, clipped: run.outputClipped, cols: session.cols };
               }
-              const mark = session.insertMarks.get(runId);
-              if (mark !== undefined) {
-                const base = session.historyAppendedTotal - session.history.length;
-                return {
-                  raw: session.history.slice(Math.max(0, mark - base)),
-                  clipped: mark < base,
-                  cols: session.cols,
-                };
-              }
+              const inserted = insertOutputOf(session, runId);
+              if (inserted !== null) return inserted;
             }
             return null;
           }),

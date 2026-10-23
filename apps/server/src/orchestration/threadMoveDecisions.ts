@@ -84,7 +84,7 @@ export function threadMoveRefusal(
   }
   if (
     (thread.commandRuns ?? []).some((run) =>
-      ["starting", "running", "waiting", "submitted"].includes(run.status),
+      ["starting", "running", "waiting"].includes(run.status),
     ) ||
     (thread.workflowRuns ?? []).some((run) => run.status === "running") ||
     thread.voiceActive === true

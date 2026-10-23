@@ -987,17 +987,23 @@ export const OrchestrationCommandRequest = Schema.Struct({
 });
 export type OrchestrationCommandRequest = typeof OrchestrationCommandRequest.Type;
 
-/** `run`: started as its own process, tracked to the end. `insert`: typed in, Enter left to the user. */
+/**
+ * `run`: started as its own process, tracked to the end with its exit code.
+ * `insert`: typed in, Enter left to the user; followed from there to the end
+ * of the command it started, whose exit code the shell doesn't say.
+ */
 export const CommandRunMode = Schema.Literals(["run", "insert"]);
 export type CommandRunMode = typeof CommandRunMode.Type;
 
 /**
- * `starting`: the terminal is opening. `running`: a `run` is going.
- * `waiting`: an `insert` sits at the prompt for the user's Enter.
- * `submitted`: the user pressed Enter on it (an insert is not tracked further).
- * `finished`: a `run` ended (see exitCode). `cancelled`: the user cleared an
- * insert. `interrupted`: its terminal closed, restarted or the server stopped.
- * `failed`: it could not start (see error).
+ * `starting`: the terminal is opening. `running`: a `run` is going, or the
+ * command the user entered from an `insert`. `waiting`: an `insert` sits at
+ * the prompt for the user's Enter. `submitted`: the user pressed Enter on an
+ * insert its shell can't follow further (and on every insert, from older
+ * servers). `finished`: it ended (see exitCode; null for an insert).
+ * `cancelled`: the user cleared an insert. `interrupted`: its terminal
+ * closed, restarted or the server stopped. `failed`: it could not start (see
+ * error).
  */
 export const CommandRunStatus = Schema.Literals([
   "starting",
@@ -1043,7 +1049,10 @@ export const CommandRunStart = Schema.Struct({
   /** The agent its output goes to. Null: the thread's own agent. */
   participantId: Schema.NullOr(ThreadParticipantId),
   cwd: TrimmedNonEmptyString,
-  /** The output goes to the agent by itself when the run finishes (request runs started with Run). */
+  /**
+   * The output goes to the agent by itself when the run finishes: a request
+   * card's command, run or entered from the terminal (older servers: Run only).
+   */
   autoSend: Schema.Boolean,
 });
 export type CommandRunStart = typeof CommandRunStart.Type;

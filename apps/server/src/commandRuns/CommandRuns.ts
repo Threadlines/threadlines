@@ -4,7 +4,8 @@
  * block in a reply. This service records the request, starts each run in a
  * free terminal tab or a new one, follows the tab's run updates into the
  * thread, and hands a run's output to the agent it was for: by itself when a
- * request's Run finishes, or when the user asks.
+ * request's command finishes (run, or put in the terminal and entered), or
+ * when the user asks.
  *
  * The terminal does the running; orchestration keeps the record and decides
  * every send, so Stop, reverts, skips and rooms are respected in one place.
@@ -191,12 +192,12 @@ const make = Effect.gen(function* () {
       return {
         outcome: "shown" as const,
         detail: oneClick
-          ? "Shown to the user as a card with Run, Put in terminal and Skip. Nothing runs until they choose. If they click Run, the output comes back to you as a message when the command finishes. If you can't go on without it, say in a sentence what you're waiting for and end your turn."
+          ? "Shown to the user as a card with Run, Put in terminal and Skip. Nothing runs until they choose. When the command they run finishes, the output comes back to you as a message. If you can't go on without it, say in a sentence what you're waiting for and end your turn."
           : `Shown to the user as a card. It can't run with one click (${assessment.cautions
               .map((caution) => caution.label.replace(/\.$/, "").toLowerCase())
               .join(
                 "; ",
-              )}), so the user puts it in the terminal, checks it and presses Enter, then sends you the output when they're done. If you can't go on without it, say in a sentence what you're waiting for and end your turn.`,
+              )}), so the user puts it in the terminal, checks it and presses Enter. When it finishes, what the terminal showed comes back to you as a message (they may have changed the command first). If you can't go on without it, say in a sentence what you're waiting for and end your turn.`,
       };
     });
 
@@ -446,7 +447,8 @@ const make = Effect.gen(function* () {
                     turnId: origin.turnId,
                     participantId: origin.participantId,
                     cwd: input.cwd,
-                    autoSend: input.source.kind === "request" && input.mode === "run",
+                    // A card's command answers the agent that asked, however it ran.
+                    autoSend: input.source.kind === "request",
                   },
                   createdAt: yield* nowIso,
                 })
