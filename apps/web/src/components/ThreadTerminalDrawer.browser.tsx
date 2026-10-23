@@ -229,6 +229,7 @@ vi.mock("~/localApi", () => ({
 vi.mock("../env", () => ({ isElectron: true }));
 
 import { TerminalViewport } from "./ThreadTerminalDrawer";
+import { TerminalTabStrip } from "./terminal/TerminalTabStrip";
 import { updateSettings } from "../hooks/useSettings";
 import { useTerminalStateStore } from "../terminalStateStore";
 import {
@@ -1204,6 +1205,40 @@ describe("TerminalViewport", () => {
       await expect.element(page.getByRole("button", { name: "Add to chat" })).toBeInTheDocument();
     } finally {
       await mounted.cleanup();
+    }
+  });
+});
+
+describe("TerminalTabStrip", () => {
+  it("keeps a tab's width when the pointer brings up its kill button", async () => {
+    const tab = (terminalId: string, label: string) => ({
+      terminalId,
+      label,
+      running: false,
+      command: null,
+      exit: null,
+      cwd: null,
+    });
+    const screen = await render(
+      <TerminalTabStrip
+        groups={[[tab("default", "Terminal 1"), tab("second", "Terminal 2")]]}
+        activeTerminalId="default"
+        onSelect={() => undefined}
+        onClose={() => undefined}
+        onNew={() => undefined}
+        newLabel="New terminal tab"
+      />,
+    );
+    try {
+      const second = document.querySelector<HTMLElement>('[data-terminal-tab="second"]');
+      const before = second?.getBoundingClientRect().width;
+      await page.getByRole("tab", { name: "Terminal 2" }).hover();
+      await expect
+        .element(page.getByRole("button", { name: "Kill Terminal 2" }))
+        .toHaveStyle({ opacity: "1" });
+      expect(second?.getBoundingClientRect().width).toBe(before);
+    } finally {
+      await screen.unmount();
     }
   });
 });
