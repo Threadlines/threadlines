@@ -478,6 +478,15 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
         />
       ) : null}
 
+      {state?.githubProblem ? (
+        <AddressRow
+          label="Its old GitHub webhook is still there"
+          hint={state.githubProblem}
+          testId="scheduled-event-github-problem"
+          warning
+        />
+      ) : null}
+
       {state?.addressChanged && !connected ? (
         <AddressRow
           label="This task's address changed"
