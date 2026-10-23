@@ -30,6 +30,8 @@ const clientSettings: ClientSettings = {
   diffRenderMode: "stacked",
   diffWordWrap: true,
   fileViewerWordWrap: false,
+  terminalFontSize: 12,
+  terminalScreenReaderMode: false,
   followUpDelivery: "steer",
   favorites: [],
   openLinksIn: "browser-panel",

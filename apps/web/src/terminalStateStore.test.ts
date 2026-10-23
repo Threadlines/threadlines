@@ -1,13 +1,17 @@
 import { scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
-import { ThreadId, type TerminalEvent } from "@threadlines/contracts";
+import { ThreadId, type TerminalEvent, type TerminalTab } from "@threadlines/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  shouldMakeTerminal,
   migratePersistedTerminalStateStoreState,
+  noteTerminalLineEntered,
+  noteTerminalMadeOnServer,
   selectTerminalActivityCommand,
-  selectTerminalEventEntries,
-  selectTerminalSubmittedCommand,
   selectThreadTerminalState,
+  terminalKey,
+  terminalLineRecentlyEntered,
+  terminalTabNumbers,
   useTerminalStateStore,
 } from "./terminalStateStore";
 import { DEFAULT_THREAD_TERMINAL_HEIGHT } from "./types";
@@ -64,12 +68,11 @@ describe("terminalStateStore actions", () => {
     useTerminalStateStore.persist.clearStorage();
     useTerminalStateStore.setState({
       terminalStateByThreadKey: {},
-      terminalLaunchContextByThreadKey: {},
-      terminalEventEntriesByKey: {},
-      terminalSubmittedCommandByKey: {},
+      terminalTabsByThreadKey: {},
+      pendingTerminalIdsByThreadKey: {},
       terminalActivityCommandByKey: {},
-      terminalCommandHistoryByKey: {},
-      nextTerminalEventId: 1,
+      terminalActivityStartedAtByKey: {},
+      terminalCommandPendingByKey: {},
     });
   });
 
@@ -89,37 +92,32 @@ describe("terminalStateStore actions", () => {
     });
   });
 
-  it("stores submitted terminal commands outside persisted terminal layout state", () => {
+  it("marks a tab busy while an entered command is pending, until activity settles it", () => {
     const store = useTerminalStateStore.getState();
-    store.setTerminalSubmittedCommand(THREAD_REF, "default", "  vp   run dev:desktop  ");
-
-    expect(
-      selectTerminalSubmittedCommand(
-        useTerminalStateStore.getState().terminalSubmittedCommandByKey,
-        THREAD_REF,
-        "default",
-      ),
-    ).toBe("vp run dev:desktop");
-    expect(
-      migratePersistedTerminalStateStoreState(useTerminalStateStore.getState(), 2),
-    ).not.toHaveProperty("terminalSubmittedCommandByKey");
-  });
-
-  it("clears submitted terminal commands when subprocess activity stops", () => {
-    const store = useTerminalStateStore.getState();
-    store.setTerminalSubmittedCommand(THREAD_REF, "default", "vp run dev:desktop");
+    // Entered here: busy before the server has said anything about it. Word
+    // that the tab is idle may be about an earlier line.
+    noteTerminalLineEntered(THREAD_REF, "default");
     store.applyTerminalEvent(
       THREAD_REF,
-      makeTerminalEvent("activity", { hasRunningSubprocess: false }),
+      makeTerminalEvent("activity", { hasRunningSubprocess: false, commandPending: false }),
     );
-
+    expect(terminalLineRecentlyEntered(THREAD_REF, "default")).toBe(true);
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", { hasRunningSubprocess: false, commandPending: true }),
+    );
+    const key = terminalKey(THREAD_REF, "default");
+    expect(useTerminalStateStore.getState().terminalCommandPendingByKey[key]).toBe(true);
+    expect(terminalLineRecentlyEntered(THREAD_REF, "default")).toBe(false);
     expect(
-      selectTerminalSubmittedCommand(
-        useTerminalStateStore.getState().terminalSubmittedCommandByKey,
-        THREAD_REF,
-        "default",
-      ),
-    ).toBeNull();
+      migratePersistedTerminalStateStoreState(useTerminalStateStore.getState(), 2),
+    ).not.toHaveProperty("terminalCommandPendingByKey");
+
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", { hasRunningSubprocess: false, commandPending: false }),
+    );
+    expect(useTerminalStateStore.getState().terminalCommandPendingByKey[key]).toBeUndefined();
   });
 
   it("stores and clears terminal activity command fallbacks from activity events", () => {
@@ -150,21 +148,6 @@ describe("terminalStateStore actions", () => {
         useTerminalStateStore.getState().terminalActivityCommandByKey,
         THREAD_REF,
         "default",
-      ),
-    ).toBeNull();
-  });
-
-  it("clears submitted terminal commands when a terminal is closed", () => {
-    const store = useTerminalStateStore.getState();
-    store.splitTerminal(THREAD_REF, "terminal-2");
-    store.setTerminalSubmittedCommand(THREAD_REF, "terminal-2", "vp run dev:desktop");
-    store.closeTerminal(THREAD_REF, "terminal-2");
-
-    expect(
-      selectTerminalSubmittedCommand(
-        useTerminalStateStore.getState().terminalSubmittedCommandByKey,
-        THREAD_REF,
-        "terminal-2",
       ),
     ).toBeNull();
   });
@@ -354,24 +337,9 @@ describe("terminalStateStore actions", () => {
     ]);
   });
 
-  it("buffers terminal events outside persisted terminal UI state", () => {
+  it("never switches tabs or opens the drawer for a shell started elsewhere", () => {
     const store = useTerminalStateStore.getState();
-    store.recordTerminalEvent(THREAD_REF, makeTerminalEvent("output"));
-    store.recordTerminalEvent(THREAD_REF, makeTerminalEvent("activity"));
-
-    const entries = selectTerminalEventEntries(
-      useTerminalStateStore.getState().terminalEventEntriesByKey,
-      THREAD_REF,
-      "default",
-    );
-
-    expect(entries).toHaveLength(2);
-    expect(entries.map((entry) => entry.id)).toEqual([1, 2]);
-    expect(entries.map((entry) => entry.event.type)).toEqual(["output", "activity"]);
-  });
-
-  it("applies started terminal events to terminal state, launch context, and event buffer", () => {
-    const store = useTerminalStateStore.getState();
+    store.setTerminalOpen(THREAD_REF, false);
     store.applyTerminalEvent(
       THREAD_REF,
       makeTerminalEvent("started", {
@@ -395,28 +363,11 @@ describe("terminalStateStore actions", () => {
       useTerminalStateStore.getState().terminalStateByThreadKey,
       THREAD_REF,
     );
-    const entries = selectTerminalEventEntries(
-      useTerminalStateStore.getState().terminalEventEntriesByKey,
-      THREAD_REF,
-      "setup-bootstrap",
-    );
-
-    expect(terminalState.terminalOpen).toBe(true);
-    expect(terminalState.activeTerminalId).toBe("setup-bootstrap");
-    expect(terminalState.terminalIds).toEqual(["default", "setup-bootstrap"]);
-    expect(
-      useTerminalStateStore.getState().terminalLaunchContextByThreadKey[
-        scopedThreadKey(THREAD_REF)
-      ],
-    ).toEqual({
-      cwd: "/tmp/worktree",
-      worktreePath: "/tmp/worktree",
-    });
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.event.type).toBe("started");
+    expect(terminalState.terminalOpen).toBe(false);
+    expect(terminalState.activeTerminalId).toBe("default");
   });
 
-  it("applies activity and exited terminal events to subprocess state while buffering events", () => {
+  it("applies activity and exited terminal events to subprocess state", () => {
     const store = useTerminalStateStore.getState();
     store.ensureTerminal(THREAD_REF, "terminal-2", { open: true, active: true });
 
@@ -447,28 +398,7 @@ describe("terminalStateStore actions", () => {
       useTerminalStateStore.getState().terminalStateByThreadKey,
       THREAD_REF,
     );
-    const entries = selectTerminalEventEntries(
-      useTerminalStateStore.getState().terminalEventEntriesByKey,
-      THREAD_REF,
-      "terminal-2",
-    );
-
     expect(terminalState.runningTerminalIds).toEqual([]);
-    expect(entries.map((entry) => entry.event.type)).toEqual(["activity", "exited"]);
-  });
-
-  it("clears buffered terminal events when a thread terminal state is removed", () => {
-    const store = useTerminalStateStore.getState();
-    store.recordTerminalEvent(THREAD_REF, makeTerminalEvent("output"));
-    store.removeTerminalState(THREAD_REF);
-
-    const entries = selectTerminalEventEntries(
-      useTerminalStateStore.getState().terminalEventEntriesByKey,
-      THREAD_REF,
-      "default",
-    );
-
-    expect(entries).toEqual([]);
   });
 
   it("is a no-op when clearing terminal state for a thread with no state or buffered events", () => {
@@ -479,4 +409,147 @@ describe("terminalStateStore actions", () => {
 
     expect(useTerminalStateStore.getState()).toBe(before);
   });
+
+  it("takes a thread's tabs from the server, keeping this device's splits and active tab", () => {
+    const store = useTerminalStateStore.getState();
+    store.setTerminalOpen(THREAD_REF, true);
+    store.splitTerminal(THREAD_REF, "terminal-2");
+    store.applyTerminalTabs(THREAD_REF, [serverTab("default", 1), serverTab("terminal-2", 2)]);
+    // Another device opened a tab: it joins the list, and nothing else moves.
+    store.applyTerminalTabs(THREAD_REF, [
+      serverTab("default", 1),
+      serverTab("terminal-2", 2),
+      serverTab("terminal-other", 3),
+    ]);
+
+    const terminalState = selectThreadTerminalState(
+      useTerminalStateStore.getState().terminalStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(terminalState.terminalIds).toEqual(["default", "terminal-2", "terminal-other"]);
+    expect(terminalState.activeTerminalId).toBe("terminal-2");
+    expect(terminalState.terminalOpen).toBe(true);
+    expect(terminalState.terminalGroups).toEqual([
+      { id: "group-default", terminalIds: ["default", "terminal-2"] },
+      { id: "group-terminal-other", terminalIds: ["terminal-other"] },
+    ]);
+  });
+
+  it("keeps a tab this device just opened until the server lists it", () => {
+    const store = useTerminalStateStore.getState();
+    store.applyTerminalTabs(THREAD_REF, [serverTab("default", 1)]);
+    store.newTerminal(THREAD_REF, "terminal-new");
+    store.applyTerminalTabs(THREAD_REF, [serverTab("default", 1)]);
+
+    expect(
+      selectThreadTerminalState(
+        useTerminalStateStore.getState().terminalStateByThreadKey,
+        THREAD_REF,
+      ).terminalIds,
+    ).toEqual(["default", "terminal-new"]);
+  });
+
+  it("drops a tab closed on another device and moves to its neighbor", () => {
+    const store = useTerminalStateStore.getState();
+    store.newTerminal(THREAD_REF, "terminal-2");
+    store.newTerminal(THREAD_REF, "terminal-3");
+    store.applyTerminalTabs(THREAD_REF, [
+      serverTab("default", 1),
+      serverTab("terminal-2", 2),
+      serverTab("terminal-3", 3),
+    ]);
+    store.setActiveTerminal(THREAD_REF, "terminal-2");
+    store.applyTerminalTabs(THREAD_REF, [serverTab("default", 1), serverTab("terminal-3", 3)]);
+
+    const terminalState = selectThreadTerminalState(
+      useTerminalStateStore.getState().terminalStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(terminalState.terminalIds).toEqual(["default", "terminal-3"]);
+    expect(terminalState.activeTerminalId).toBe("terminal-3");
+  });
+
+  it("empties the tab lists of threads a server's catalog no longer has", () => {
+    const store = useTerminalStateStore.getState();
+    const newThreadRef = scopeThreadRef(THREAD_REF.environmentId, ThreadId.make("thread-2"));
+    store.setTerminalOpen(THREAD_REF, true);
+    store.applyTerminalTabs(THREAD_REF, [serverTab("default", 1), serverTab("terminal-2", 2)]);
+    store.setTerminalOpen(newThreadRef, true);
+    store.applyTerminalCatalog(THREAD_REF.environmentId, []);
+
+    const state = useTerminalStateStore.getState().terminalStateByThreadKey;
+    // Its tabs were closed elsewhere: the drawer closes rather than start a
+    // shell that undoes that.
+    expect(selectThreadTerminalState(state, THREAD_REF)).toMatchObject({
+      terminalIds: ["default"],
+      terminalOpen: false,
+    });
+    // A drawer just opened on a thread without tabs gets its first one.
+    expect(selectThreadTerminalState(state, newThreadRef)).toMatchObject({
+      terminalIds: ["default"],
+      terminalOpen: true,
+    });
+  });
+
+  it("asks for a first tab when its drawer opens on a thread without tabs", () => {
+    const store = useTerminalStateStore.getState();
+    const listedThreadRef = scopeThreadRef(THREAD_REF.environmentId, ThreadId.make("thread-2"));
+    store.applyTerminalTabs(listedThreadRef, [serverTab("default", 1)]);
+    store.setTerminalOpen(THREAD_REF, true);
+    store.setTerminalOpen(listedThreadRef, true);
+
+    expect(shouldMakeTerminal(THREAD_REF, "default")).toBe(true);
+    expect(shouldMakeTerminal(listedThreadRef, "default")).toBe(false);
+
+    // A tab the server made for a script is shown, never made again.
+    noteTerminalMadeOnServer(THREAD_REF, "terminal-script");
+    store.newTerminal(THREAD_REF, "terminal-script");
+    expect(shouldMakeTerminal(THREAD_REF, "terminal-script")).toBe(false);
+  });
+
+  it("forgets what a tab ran once the server says its shell is gone", () => {
+    const store = useTerminalStateStore.getState();
+    store.applyTerminalTabs(THREAD_REF, [serverTab("default", 1)]);
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", { hasRunningSubprocess: true, command: "npm run dev" }),
+    );
+    // The server restarted: its tabs come back with nothing running.
+    store.applyTerminalTabs(THREAD_REF, [{ ...serverTab("default", 1), status: "stopped" }]);
+
+    const state = useTerminalStateStore.getState();
+    expect(
+      selectThreadTerminalState(state.terminalStateByThreadKey, THREAD_REF).runningTerminalIds,
+    ).toEqual([]);
+    expect(
+      selectTerminalActivityCommand(state.terminalActivityCommandByKey, THREAD_REF, "default"),
+    ).toBeNull();
+  });
+
+  it("names tabs by the server's numbers, giving tabs it doesn't list yet the lowest free one", () => {
+    expect(
+      terminalTabNumbers(
+        ["default", "terminal-3", "terminal-new"],
+        [serverTab("default", 1), serverTab("terminal-3", 3)],
+      ),
+    ).toEqual(
+      new Map([
+        ["default", 1],
+        ["terminal-3", 3],
+        ["terminal-new", 2],
+      ]),
+    );
+  });
 });
+
+function serverTab(terminalId: string, number: number): TerminalTab {
+  return {
+    terminalId,
+    number,
+    cwd: "/tmp/workspace",
+    status: "running",
+    exitCode: null,
+    exitSignal: null,
+    createdAt: "2026-04-02T20:00:00.000Z",
+  };
+}

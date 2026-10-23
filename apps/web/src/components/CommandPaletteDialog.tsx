@@ -11,6 +11,7 @@ import {
   DEFAULT_NEW_THREAD_RUNTIME_MODE,
   type EnvironmentId,
   type FilesystemBrowseResult,
+  type KeybindingCommand,
   type ProviderExternalThreadCandidate,
   type ProviderInstanceId,
   type ProjectId,
@@ -29,6 +30,7 @@ import {
   ArrowUpIcon,
   BotIcon,
   CornerLeftUpIcon,
+  EraserIcon,
   FileTextIcon,
   FolderIcon,
   FolderPlusIcon,
@@ -38,9 +40,14 @@ import {
   LinkIcon,
   MessageSquareIcon,
   MessagesSquareIcon,
+  PlusIcon,
+  RotateCcwIcon,
   SearchIcon,
   SettingsIcon,
   SquarePenIcon,
+  SquareSplitHorizontalIcon,
+  TerminalSquareIcon,
+  Trash2Icon,
   UsersRoundIcon,
 } from "lucide-react";
 import {
@@ -57,6 +64,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useRoomRecipientStore } from "../rooms";
 import { useChatFindStore } from "../chatFindStore";
+import { type TerminalCommandKind, useTerminalCommandsStore } from "../terminalCommands";
 import { derivePendingApprovals } from "../session-logic";
 import { readEnvironmentApi } from "../environmentApi";
 import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
@@ -1648,6 +1656,91 @@ export function OpenCommandPaletteDialog() {
         window.requestAnimationFrame(() => useChatFindStore.getState().requestOpen(null));
       },
     });
+  }
+
+  // The terminal's actions, for the thread on screen (its drawer does them,
+  // with the same confirmations as its own buttons).
+  if (activeThread || activeDraftThread) {
+    const terminalActions: ReadonlyArray<{
+      readonly kind: TerminalCommandKind;
+      readonly title: string;
+      readonly description: string;
+      readonly searchTerms: ReadonlyArray<string>;
+      readonly icon: ReactNode;
+      readonly shortcutCommand?: KeybindingCommand;
+    }> = [
+      {
+        kind: "toggle",
+        title: "Toggle terminal",
+        description: "Show or hide this thread's terminal",
+        searchTerms: ["terminal", "toggle terminal", "show terminal", "hide terminal", "shell"],
+        icon: <TerminalSquareIcon className={ITEM_ICON_CLASS} />,
+        shortcutCommand: "terminal.toggle",
+      },
+      {
+        kind: "new",
+        title: "New terminal tab",
+        description: "Open another terminal for this thread",
+        searchTerms: ["new terminal", "terminal tab", "open terminal", "shell"],
+        icon: <PlusIcon className={ITEM_ICON_CLASS} />,
+        shortcutCommand: "terminal.new",
+      },
+      {
+        kind: "split",
+        title: "Split terminal",
+        description: "Open a terminal beside the current one",
+        searchTerms: ["split terminal", "side by side", "terminal"],
+        icon: <SquareSplitHorizontalIcon className={ITEM_ICON_CLASS} />,
+        shortcutCommand: "terminal.split",
+      },
+      {
+        kind: "find",
+        title: "Find in terminal",
+        description: "Search the terminal's output",
+        searchTerms: ["find in terminal", "search terminal", "terminal output", "find"],
+        icon: <SearchIcon className={ITEM_ICON_CLASS} />,
+        shortcutCommand: "terminal.find",
+      },
+      {
+        kind: "restart",
+        title: "Restart terminal",
+        description: "A new shell in the thread's folder, below the old output",
+        searchTerms: ["restart terminal", "reset terminal", "new shell", "terminal"],
+        icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+      },
+      {
+        kind: "clear",
+        title: "Clear terminal output",
+        description: "Empty the terminal and its saved output",
+        searchTerms: ["clear terminal", "clear output", "terminal"],
+        icon: <EraserIcon className={ITEM_ICON_CLASS} />,
+      },
+      {
+        kind: "kill",
+        title: "Kill terminal",
+        description: "Stop the terminal's shell and close its tab",
+        searchTerms: ["kill terminal", "close terminal", "stop terminal", "terminal"],
+        icon: <Trash2Icon className={ITEM_ICON_CLASS} />,
+        shortcutCommand: "terminal.close",
+      },
+    ];
+    for (const action of terminalActions) {
+      actionItems.push({
+        kind: "action",
+        value: `action:terminal-${action.kind}`,
+        searchTerms: [...action.searchTerms],
+        title: action.title,
+        description: action.description,
+        icon: action.icon,
+        ...(action.shortcutCommand ? { shortcutCommand: action.shortcutCommand } : {}),
+        run: async () => {
+          // After the palette has closed and handed focus back.
+          window.requestAnimationFrame(() =>
+            useTerminalCommandsStore.getState().requestTerminalCommand(action.kind),
+          );
+        },
+      });
+    }
   }
 
   // Where the composer's model picker lists agents: a thread (a new one

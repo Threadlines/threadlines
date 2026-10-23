@@ -287,11 +287,12 @@ import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalError,
-  TerminalEvent,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
   TerminalSessionSnapshot,
+  TerminalStreamEvent,
+  TerminalSubscribeInput,
   TerminalWriteInput,
 } from "./terminal.ts";
 import {
@@ -1574,8 +1575,9 @@ export const WsOrchestrationSubscribeThreadRpc = Rpc.make(
 );
 
 export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTerminalEvents, {
-  payload: Schema.Struct({}),
-  success: TerminalEvent,
+  // Old servers take `{}` and ignore the mode: they send every event.
+  payload: TerminalSubscribeInput,
+  success: TerminalStreamEvent,
   stream: true,
 });
 

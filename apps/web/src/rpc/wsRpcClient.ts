@@ -89,7 +89,7 @@ export interface WsRpcClient {
     readonly clear: RpcUnaryMethod<typeof WS_METHODS.terminalClear>;
     readonly restart: RpcUnaryMethod<typeof WS_METHODS.terminalRestart>;
     readonly close: RpcUnaryMethod<typeof WS_METHODS.terminalClose>;
-    readonly onEvent: RpcStreamMethod<typeof WS_METHODS.subscribeTerminalEvents>;
+    readonly onEvent: RpcInputStreamMethod<typeof WS_METHODS.subscribeTerminalEvents>;
   };
   /** Settings-owned provider sign-in, run in an ephemeral server-side PTY. */
   readonly providerAuth: {
@@ -475,11 +475,15 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       clear: (input) => transport.request((client) => client[WS_METHODS.terminalClear](input)),
       restart: (input) => transport.request((client) => client[WS_METHODS.terminalRestart](input)),
       close: (input) => transport.request((client) => client[WS_METHODS.terminalClose](input)),
-      onEvent: (listener, options) =>
-        transport.subscribe((client) => client[WS_METHODS.subscribeTerminalEvents]({}), listener, {
-          ...options,
-          tag: WS_METHODS.subscribeTerminalEvents,
-        }),
+      onEvent: (input, listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.subscribeTerminalEvents](input),
+          listener,
+          {
+            ...options,
+            tag: WS_METHODS.subscribeTerminalEvents,
+          },
+        ),
     },
     providerAuth: {
       start: (input) => transport.request((client) => client[WS_METHODS.providerAuthStart](input)),

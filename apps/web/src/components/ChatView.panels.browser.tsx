@@ -21,6 +21,7 @@ import {
   PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
   THREAD_KEY,
+  THREAD_REF,
   PROJECT_DRAFT_KEY,
   NOW_ISO,
   wsRequests,
@@ -810,10 +811,10 @@ describe("ChatView (full app): right panel and header actions", () => {
     }
   });
 
-  it("does not leak a server worktree path into drawer runtime env when launch context clears it", async () => {
+  it("opens a new terminal tab in the thread's worktree, with that worktree's environment", async () => {
     const snapshot = createSnapshotForTargetUser({
-      targetMessageId: "msg-user-launch-context-target" as MessageId,
-      targetText: "launch context worktree override",
+      targetMessageId: "msg-user-terminal-worktree-target" as MessageId,
+      targetText: "terminal follows the worktree",
     });
     const targetThread = snapshot.threads.find((thread) => thread.id === THREAD_ID);
     if (targetThread) {
@@ -823,25 +824,8 @@ describe("ChatView (full app): right panel and header actions", () => {
       });
     }
 
-    useTerminalStateStore.setState({
-      terminalStateByThreadKey: {
-        [THREAD_KEY]: {
-          terminalOpen: true,
-          terminalHeight: 280,
-          terminalIds: ["default"],
-          runningTerminalIds: [],
-          activeTerminalId: "default",
-          terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
-          activeTerminalGroupId: "group-default",
-        },
-      },
-      terminalLaunchContextByThreadKey: {
-        [THREAD_KEY]: {
-          cwd: "/repo/project",
-          worktreePath: null,
-        },
-      },
-    });
+    // Opened the way a person opens it, so its first tab is one to make.
+    useTerminalStateStore.getState().setTerminalOpen(THREAD_REF, true);
 
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -858,18 +842,21 @@ describe("ChatView (full app): right panel and header actions", () => {
                 _tag: string;
                 cwd?: string;
                 worktreePath?: string | null;
+                attach?: boolean;
                 env?: Record<string, string>;
               }
             | undefined;
           expect(openRequest).toMatchObject({
             _tag: WS_METHODS.terminalOpen,
-            cwd: "/repo/project",
-            worktreePath: null,
+            cwd: "/repo/worktrees/feature-branch",
+            worktreePath: "/repo/worktrees/feature-branch",
             env: {
               THREADLINES_PROJECT_ROOT: "/repo/project",
+              THREADLINES_WORKTREE_PATH: "/repo/worktrees/feature-branch",
             },
           });
-          expect(openRequest?.env?.THREADLINES_WORKTREE_PATH).toBeUndefined();
+          // A tab the server doesn't list yet is made, not attached to.
+          expect(openRequest?.attach).toBeUndefined();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -891,7 +878,6 @@ describe("ChatView (full app): right panel and header actions", () => {
           activeTerminalGroupId: "group-default",
         },
       },
-      terminalLaunchContextByThreadKey: {},
     });
 
     const mounted = await mountChatView({
