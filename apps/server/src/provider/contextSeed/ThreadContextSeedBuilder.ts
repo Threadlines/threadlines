@@ -15,6 +15,7 @@
  * @module ThreadContextSeedBuilder
  */
 import type {
+  OrchestrationMessage,
   ProviderDriverKind,
   TextGenerationError,
   ThreadContextSeed,
@@ -27,6 +28,7 @@ import {
   type SeedBudget,
   splitSeedEntriesByBudget,
 } from "@threadlines/shared/contextSeed";
+import { transcriptAuthor } from "@threadlines/shared/messageAuthor";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -91,7 +93,8 @@ function compareIso(a: string, b: string): number {
 }
 
 /**
- * Flatten messages + tool activities into one oldest-first entry list. Only
+ * Flatten messages + tool activities into one oldest-first entry list, each
+ * message under its author when that isn't its role (an outside agent's). Only
  * `tone === "tool"` activities are included (concrete actions); thinking/info/
  * warning/error tones are noise for a handoff and are skipped. A message's
  * attachments are named after its text (their bytes aren't carried), so a
@@ -103,6 +106,7 @@ function buildEntries(input: {
     readonly role: "user" | "assistant" | "system";
     readonly text: string;
     readonly attachments?: ReadonlyArray<{ readonly name: string }> | undefined;
+    readonly fromOutside?: OrchestrationMessage["fromOutside"];
     readonly createdAt: string;
   }>;
   readonly activities: ReadonlyArray<{
@@ -128,9 +132,15 @@ function buildEntries(input: {
     if (text.length === 0) {
       continue;
     }
+    const author = transcriptAuthor(message);
     items.push({
       createdAt: message.createdAt,
-      entry: { kind: "message", role: message.role, text },
+      entry: {
+        kind: "message",
+        role: message.role,
+        ...(author !== undefined ? { author } : {}),
+        text,
+      },
     });
   }
 

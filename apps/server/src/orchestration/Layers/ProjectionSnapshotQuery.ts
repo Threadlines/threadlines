@@ -61,6 +61,7 @@ import {
   ThreadMovedFrom,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
+  OutsideAgentRef,
   RoomReviewInput,
   TrimmedNonEmptyString,
 } from "@threadlines/contracts";
@@ -157,6 +158,7 @@ type ThreadLineageRow = Pick<
   | "childRequests"
   | "remoteOrigin"
   | "scheduledRun"
+  | "outsideOrigin"
   | "move"
   | "movedFrom"
   | "historySeedOwed"
@@ -175,6 +177,7 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
   ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
   ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
+  ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
   ...threadMoveFields(row),
   ...((row.historySeedOwed ?? 0) > 0 ? { historySeedOwed: true } : {}),
   ...(row.historySeedMessageId ? { historySeedMessageId: row.historySeedMessageId } : {}),
@@ -206,6 +209,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     pendingChildApproval: hasPendingChildApproval(childRequests),
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
     ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
+    ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
     ...threadMoveFields(row),
     ...(remoteChildren.length > 0 ? { remoteChildren } : {}),
     ...(remoteChildStarts.length > 0 ? { remoteChildStarts } : {}),
@@ -228,6 +232,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     reviewInput: Schema.NullOr(Schema.fromJsonString(RoomReviewInput)),
     invite: Schema.NullOr(Schema.fromJsonString(RoomAgentInvite)),
     fromThread: Schema.NullOr(Schema.fromJsonString(ThreadMessageOrigin)),
+    fromOutside: Schema.NullOr(Schema.fromJsonString(OutsideAgentRef)),
     imported: Schema.NullOr(Schema.Number),
     agentModels: Schema.NullOr(
       Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
@@ -266,6 +271,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     ),
     remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
     scheduledRun: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun))),
+    outsideOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(OutsideAgentRef))),
     move: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove))),
     movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
   }),
@@ -531,6 +537,7 @@ function mapThreadMessageRow(
     ...(row.reviewInput !== null ? { reviewInput: row.reviewInput } : {}),
     ...(row.invite !== null ? { invite: row.invite } : {}),
     ...(row.fromThread !== null ? { fromThread: row.fromThread } : {}),
+    ...(row.fromOutside !== null ? { fromOutside: row.fromOutside } : {}),
     ...(row.imported === 1 ? { imported: true as const } : {}),
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     ...(row.composer !== null ? { composer: row.composer } : {}),
@@ -832,6 +839,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          outside_origin_json AS "outsideOrigin",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -896,6 +904,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          outside_origin_json AS "outsideOrigin",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -962,6 +971,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          outside_origin_json AS "outsideOrigin",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -1000,6 +1010,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          from_outside AS "fromOutside",
           imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
@@ -1057,6 +1068,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          from_outside AS "fromOutside",
           imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",
@@ -1750,6 +1762,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           child_requests AS "childRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          outside_origin_json AS "outsideOrigin",
           move_json AS "move",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
@@ -1789,6 +1802,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           side_turn_id AS "sideTurnId",
           from_agent AS "fromAgent",
           from_thread AS "fromThread",
+          from_outside AS "fromOutside",
           imported AS "imported",
           request_id AS "requestId",
           request_kind AS "requestKind",

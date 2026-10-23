@@ -93,11 +93,14 @@ export function startProviderReviewForThread(
           message: `Cannot start a code review for thread '${input.threadId}' because the thread has not been created yet.`,
         });
       }
+      // A client never claims an outside agent's thread
+      // (docs/design/outside-agents.md); only `/mcp/connect` sets outsideOrigin.
+      const { outsideOrigin: _outsideOrigin, ...createThread } = bootstrap;
       yield* services.orchestrationEngine.dispatch({
         type: "thread.create",
         commandId: CommandId.make(`server:provider-review:thread-create:${crypto.randomUUID()}`),
         threadId: input.threadId,
-        ...bootstrap,
+        ...createThread,
       });
       threadShell = yield* loadThreadShell();
     }

@@ -64,6 +64,7 @@ import {
   listThreadAgents,
   modelLabel,
   readThreadPage,
+  relatedThreadTitles,
   requestedAgent,
   summarizeThread,
   THREAD_PROMPT_CHAR_LIMIT,
@@ -1127,25 +1128,11 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         return { outcome: "refused", detail: NOT_FOUND, ...none } satisfies ThreadReadResult;
       }
       const providers = yield* deps.providers;
-      // Titles for the author lines and "started by": the threads its
-      // cross-thread messages came from, and its parent.
-      const related = new Set<ThreadId>();
-      for (const message of target.messages) {
-        if (message.fromThread !== undefined) related.add(message.fromThread.threadId);
-      }
-      if (target.parentThreadId !== null) related.add(target.parentThreadId);
-      const titles = new Map<string, string>([[caller.id, caller.title]]);
-      yield* Effect.forEach(
-        [...related].filter((threadId) => !titles.has(threadId)),
-        (threadId) =>
-          deps.readThreadShell(threadId).pipe(
-            Effect.tap((shell) =>
-              Effect.sync(() => {
-                if (shell !== undefined) titles.set(threadId, shell.title);
-              }),
-            ),
-          ),
-        { discard: true },
+      // Titles for the author lines and "started by".
+      const titles = yield* relatedThreadTitles(
+        target,
+        deps.readThreadShell,
+        new Map([[caller.id, caller.title]]),
       );
       const shell = yield* deps.readThreadShell(target.id);
       const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;

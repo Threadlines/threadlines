@@ -288,6 +288,8 @@ export function exportThreadHistory(thread: OrchestrationThread): {
         : {}),
       turnId: message.turnId,
       ...(message.agentModels !== undefined ? { agentModels: message.agentModels } : {}),
+      // Who wrote it only; the thread's own outsideOrigin stays here.
+      ...(message.fromOutside !== undefined ? { fromOutside: message.fromOutside } : {}),
       createdAt: message.createdAt,
     }));
   const activities = thread.activities

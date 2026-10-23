@@ -14,6 +14,7 @@
  *   `dispatchOutcome` (a refused or failed dispatch, as a tool outcome).
  */
 import type {
+  OutsideAgentConnectionId,
   OrchestrationEvent,
   OrchestrationThread,
   OrchestrationThreadShell,
@@ -24,13 +25,17 @@ import type {
   ThreadId,
 } from "@threadlines/contracts";
 import { ProviderInstanceId } from "@threadlines/contracts";
-import { messageAuthor } from "@threadlines/shared/messageAuthor";
+import { messageAuthor, outsideAgentAuthor } from "@threadlines/shared/messageAuthor";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { inviteBilling } from "../orchestration/agentInvites.ts";
-import { childAgentProviderName, childAgentRefusal } from "../orchestration/childThreadAgents.ts";
+import {
+  childAgentProviderName,
+  childAgentRefusal,
+  childModelRefusal,
+} from "../orchestration/childThreadAgents.ts";
 import { coalesceLatestAggregateEvents } from "../orchestration/shellStreamCoalescing.ts";
 import { roomAgentEntries, roomAgentName } from "../mcp/roomAgents.ts";
 import type {
@@ -221,14 +226,16 @@ export const watchThreadStatus = (
 // ---------------------------------------------------------------------------
 
 /**
- * One thread as the list tools report it. `caller` is the asking thread here;
- * absent when another computer reads it (peer.thread.read), where a thread
- * its link started is "started by" that computer's thread.
+ * One thread as the list tools report it. `caller` is the asking thread here,
+ * or `outsideCaller` the asking outside agent's connection; neither when
+ * another computer reads it (peer.thread.read), where a thread its link
+ * started is "started by" that computer's thread.
  */
 export const summarizeThread = (
   thread: OrchestrationThreadShell,
   input: {
     readonly caller?: Pick<OrchestrationThread, "id">;
+    readonly outsideCaller?: OutsideAgentConnectionId;
     readonly providers: ReadonlyArray<ServerProvider>;
     readonly titleOf: (threadId: ThreadId) => string | undefined;
     /** Threads a scheduled-task card waits in (ScheduledTasks.waitingThreadIds). */
@@ -236,6 +243,7 @@ export const summarizeThread = (
   },
 ): ThreadSummary => {
   const remoteOrigin = thread.remoteOrigin ?? null;
+  const outsideOrigin = thread.outsideOrigin ?? null;
   return {
     threadId: thread.id,
     title: thread.title,
@@ -246,14 +254,49 @@ export const summarizeThread = (
     startedBy:
       remoteOrigin !== null
         ? `${remoteOrigin.threadTitle} (on ${remoteOrigin.environmentLabel})`
-        : thread.parentThreadId === null
-          ? null
-          : thread.parentThreadId === input.caller?.id
+        : outsideOrigin !== null
+          ? outsideOrigin.connectionId === input.outsideCaller
             ? "you"
-            : (input.titleOf(thread.parentThreadId) ?? thread.parentThreadId),
+            : outsideAgentAuthor(outsideOrigin)
+          : thread.parentThreadId === null
+            ? null
+            : thread.parentThreadId === input.caller?.id
+              ? "you"
+              : (input.titleOf(thread.parentThreadId) ?? thread.parentThreadId),
     ...(input.caller !== undefined && thread.id === input.caller.id ? { you: true } : {}),
   };
 };
+
+/**
+ * Titles a read of `target` names threads by: the threads its cross-thread
+ * messages came from, and its parent. `known` are titles already at hand.
+ */
+export const relatedThreadTitles = (
+  target: Pick<OrchestrationThread, "messages" | "parentThreadId">,
+  readShell: (threadId: ThreadId) => Effect.Effect<OrchestrationThreadShell | undefined>,
+  known: ReadonlyMap<string, string> = new Map(),
+): Effect.Effect<Map<string, string>> =>
+  Effect.gen(function* () {
+    const related = new Set<ThreadId>();
+    for (const message of target.messages) {
+      if (message.fromThread !== undefined) related.add(message.fromThread.threadId);
+    }
+    if (target.parentThreadId !== null) related.add(target.parentThreadId);
+    const titles = new Map(known);
+    yield* Effect.forEach(
+      [...related].filter((threadId) => !titles.has(threadId)),
+      (threadId) =>
+        readShell(threadId).pipe(
+          Effect.tap((shell) =>
+            Effect.sync(() => {
+              if (shell !== undefined) titles.set(threadId, shell.title);
+            }),
+          ),
+        ),
+      { discard: true },
+    );
+    return titles;
+  });
 
 /**
  * The agents a thread here can run on, as thread_agents and a linked
@@ -410,6 +453,40 @@ export const requestedAgent = (
     ...(options.length > 0 ? { options } : {}),
   };
 };
+
+/**
+ * The agent a new thread runs on when a caller names none, as the composer
+ * would pick it: the user's default for new threads (Settings), else the
+ * project's own default, else the first agent ready to take a thread. Each
+ * must be able to take one now (childModelRefusal). Null when none can.
+ */
+export function defaultThreadAgent(
+  providers: ReadonlyArray<ServerProvider>,
+  input: {
+    readonly userDefault: ModelSelection | null;
+    readonly projectDefault: ModelSelection | null;
+    readonly interactionMode: ProviderInteractionMode;
+  },
+): ModelSelection | null {
+  for (const candidate of [input.userDefault, input.projectDefault]) {
+    if (
+      candidate !== null &&
+      childModelRefusal({
+        selection: candidate,
+        providers,
+        interactionMode: input.interactionMode,
+        knownModel: true,
+      }) === null
+    ) {
+      return candidate;
+    }
+  }
+  const first = listThreadAgents(providers, { interactionMode: input.interactionMode }).agents[0];
+  const model = first?.models[0]?.model;
+  return first !== undefined && model !== undefined
+    ? { instanceId: ProviderInstanceId.make(first.instanceId), model }
+    : null;
+}
 
 /** The decider's own words for a refused command, or `failed` for anything else. */
 export const dispatchOutcome = (error: {
