@@ -23,7 +23,14 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * - `webhook_events`: the queue and the log in one table, by `status`
  *   (received and waiting are the queue). `body` is the raw body, so a
  *   signature can be checked over the exact bytes; `verified` is whether its
- *   signature passed (or the task checks none), null until checked.
+ *   signature passed (or the task checks none), null until checked;
+ *   `signature_checked` whether that check was a signature (1) or the task
+ *   checked none then (0): a replay keeps its original's, and is refused once
+ *   the task checks a signature the original never had.
+ * - `webhook_github_removals`: webhooks Threadlines added on GitHub and has
+ *   to remove (the task moved to another repository, stopped being a GitHub
+ *   task, or was deleted) but couldn't yet, with why. Removal is tried again
+ *   until it works; the row outlives its task.
  * - `webhook_seen`: the duplicate check's record of events that ran, kept 7
  *   days whatever happens to the log.
  * - `scheduled_webhook_subjects`: "the same issue continues its thread": the
@@ -94,6 +101,7 @@ export default Effect.gen(function* () {
       status TEXT NOT NULL,
       reason TEXT,
       verified INTEGER,
+      signature_checked INTEGER,
       event_name TEXT,
       subject TEXT,
       sender TEXT,
@@ -138,6 +146,22 @@ export default Effect.gen(function* () {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (task_id, subject)
     )
+  `;
+
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS webhook_github_removals (
+      repository TEXT NOT NULL,
+      hook_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (repository, hook_id)
+    )
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_webhook_github_removals_task
+    ON webhook_github_removals(task_id)
   `;
 
   const runColumns = yield* sql<{
