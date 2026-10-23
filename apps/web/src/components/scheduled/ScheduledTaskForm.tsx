@@ -16,7 +16,7 @@ import {
 } from "@threadlines/shared/providerAuth";
 import { roomAgentKey } from "@threadlines/shared/threadParticipants";
 import { MessagesSquareIcon } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { readEnvironmentConnection } from "../../environments/runtime";
@@ -48,6 +48,7 @@ import { Input } from "../ui/input";
 import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { DatePicker } from "../ui/date-picker";
+import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { TimePicker } from "../ui/time-picker";
 import { TimeZonePicker } from "../ui/time-zone-picker";
@@ -55,7 +56,10 @@ import { toastManager } from "../ui/toast";
 import {
   CADENCE_KIND_LABELS,
   type CadenceKind,
+  cadenceKindsFor,
+  EVENT_TASK_RUNTIME_MODE,
   emptyTaskForm,
+  eventTaskAccessWarning,
   formatWhen,
   formDraft,
   formProblems,
@@ -65,74 +69,20 @@ import {
   todayIn,
   viewerTimeZone,
   WEEKDAY_LABELS,
+  type WebhookForm,
+  webhookFormWithContext,
 } from "./scheduled.logic";
+import { ScheduledEventFields } from "./ScheduledEventFields";
+import { FieldRow } from "./ScheduledFormRow";
 import {
   type LocatedTask,
   taskRef,
   useContinuedAgents,
+  useGitHubContext,
   useScheduledNavigation,
 } from "./useScheduledPage";
 
-const CADENCE_KINDS: readonly CadenceKind[] = [
-  "manual",
-  "once",
-  "hourly",
-  "daily",
-  "weekdays",
-  "weekly",
-  "custom",
-];
-
 const HOURLY_MINUTES = Array.from({ length: 12 }, (_, index) => index * 5);
-
-/** One labelled field: the label (and a hint) on the left, the control on the right. */
-function FieldRow({
-  label,
-  hint,
-  problem,
-  warning,
-  children,
-  stacked = false,
-}: {
-  readonly label: string;
-  readonly hint?: ReactNode;
-  readonly problem?: string | undefined;
-  /** Worth knowing before saving, but no reason not to. */
-  readonly warning?: string | null | undefined;
-  readonly children: ReactNode;
-  /** The control below the label, full width (text fields). */
-  readonly stacked?: boolean;
-}) {
-  return (
-    <div className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5")}>
-      <div
-        className={cn(
-          "flex gap-2.5",
-          stacked ? "flex-col" : "flex-col sm:flex-row sm:items-center sm:justify-between",
-        )}
-      >
-        <div className={cn("min-w-0 space-y-0.5", !stacked && "sm:max-w-[45%]")}>
-          <h3 className="text-[13.5px] leading-[19px] font-medium text-foreground">{label}</h3>
-          {hint ? (
-            <p className="text-[12.5px] leading-[18px] text-muted-foreground">{hint}</p>
-          ) : null}
-        </div>
-        <div
-          className={cn(
-            "flex min-w-0 flex-wrap items-center gap-2",
-            stacked ? "w-full" : "w-full sm:w-auto sm:justify-end",
-          )}
-        >
-          {children}
-        </div>
-      </div>
-      {problem ? <p className="pt-1.5 text-[12px] text-destructive-foreground">{problem}</p> : null}
-      {warning && !problem ? (
-        <p className="pt-1.5 text-[12px] text-warning-foreground">{warning}</p>
-      ) : null}
-    </div>
-  );
-}
 
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
 
@@ -214,7 +164,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
   // opened (right after a reload) is filled in once it arrives; a choice the
   // user made is never replaced. Until the user picks a time zone, a new task
   // is in the chosen computer's own: it runs there, by that computer's clock.
-  const form = useMemo((): FormState => {
+  const baseForm = useMemo((): FormState => {
     if (editing) return draftForm;
     const environmentId = draftForm.environmentId ?? environments[0]?.environmentId ?? null;
     if (environmentId === null) return draftForm;
@@ -247,9 +197,32 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     providersOn,
     settings.newThreadModelSelection,
   ]);
+  const chosenEnvironment = environments.find(
+    (entry) => entry.environmentId === baseForm.environmentId,
+  );
+  const eventTasks = chosenEnvironment?.eventTasks === true;
+  const isEvent = baseForm.cadenceKind === "webhook";
+  // An event task's GitHub repository and sender come from the project, until
+  // the user sets them; a new one asks before changes until access is picked.
+  const gitHubContext = useGitHubContext(
+    baseForm.environmentId,
+    baseForm.projectId,
+    isEvent && eventTasks,
+  );
+  const form = useMemo(
+    (): FormState => ({
+      ...baseForm,
+      runtimeMode:
+        isEvent && !baseForm.runtimeModeChosen ? EVENT_TASK_RUNTIME_MODE : baseForm.runtimeMode,
+      webhook: webhookFormWithContext(baseForm.webhook, gitHubContext),
+    }),
+    [baseForm, gitHubContext, isEvent],
+  );
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const update = (patch: Partial<FormState>) => setForm((current) => ({ ...current, ...patch }));
+  const updateWebhook = (patch: Partial<WebhookForm>) =>
+    setForm((current) => ({ ...current, webhook: { ...current.webhook, ...patch } }));
 
   const environmentProjects = useMemo(
     () => projects.filter((project) => project.environmentId === form.environmentId),
@@ -330,9 +303,16 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
   }, [computerTimeZone]);
 
   const now = new Date();
-  const problems = formProblems(form, now, editing?.task, goesTo?.left === true);
+  const problems = {
+    ...formProblems(form, now, editing?.task, goesTo?.left === true),
+    // The computer stopped offering event tasks (an older Threadlines took its place).
+    ...(isEvent && !eventTasks
+      ? { schedule: "This computer doesn't run event tasks. Update Threadlines on it first." }
+      : {}),
+  };
   const shownProblems = submitted ? problems : {};
-  const upcoming = form.cadenceKind === "manual" ? [] : previewRuns(form, now, 3);
+  const upcoming = form.cadenceKind === "manual" || isEvent ? [] : previewRuns(form, now, 3);
+  const accessWarning = eventTaskAccessWarning(form);
 
   const chooseEnvironment = (environmentId: EnvironmentId) => {
     const environment = environments.find((entry) => entry.environmentId === environmentId);
@@ -344,6 +324,10 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       projectId: project?.id ?? null,
       threadId: null,
       threadParticipantId: null,
+      // A computer without event tasks can't take one: back to a clock.
+      ...(form.cadenceKind === "webhook" && environment?.eventTasks !== true
+        ? { cadenceKind: "weekdays" as const }
+        : {}),
       modelSelection: defaultModelFor(
         providersOn(environmentId),
         environment?.isPrimary === true ? settings.newThreadModelSelection : null,
@@ -415,8 +399,9 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
           {editing ? `Edit ${editing.task.name}` : "New task"}
         </h1>
         <p className="text-[13px] leading-[18px] text-muted-foreground">
-          It runs while Threadlines is running on its computer. A time missed while the computer was
-          off or asleep gets one catch-up run.
+          {isEvent
+            ? "It runs when an event arrives, while Threadlines is running on its computer. Events wait up to a day while it's off."
+            : "It runs while Threadlines is running on its computer. A time missed while the computer was off or asleep gets one catch-up run."}
         </p>
       </header>
 
@@ -505,7 +490,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
           </Select>
         </FieldRow>
         <FieldRow
-          label="Each run"
+          label={isEvent ? "Each event" : "Each run"}
           hint={
             form.target === "thread"
               ? "Goes to that thread as a message, run with the agent and access below, never more access than the thread has then."
@@ -516,7 +501,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
           <SegmentedControl
             value={form.target}
             onValueChange={(value) => update({ target: value })}
-            aria-label="Each run"
+            aria-label={isEvent ? "Each event" : "Each run"}
           >
             <SegmentedControlItem value="new_thread">New thread</SegmentedControlItem>
             <SegmentedControlItem value="thread">Continue a thread</SegmentedControlItem>
@@ -561,6 +546,19 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             </Select>
           ) : null}
         </FieldRow>
+        {isEvent && form.webhook.source === "github" && form.target === "new_thread" ? (
+          <FieldRow
+            label="Same issue, same thread"
+            hint="Later events about an issue or pull request continue its thread."
+          >
+            <Switch
+              checked={form.webhook.onePerSubject}
+              aria-label="Same issue, same thread"
+              data-testid="scheduled-event-one-per-subject"
+              onCheckedChange={(checked) => updateWebhook({ onePerSubject: Boolean(checked) })}
+            />
+          </FieldRow>
+        ) : null}
         {form.target === "thread" && continuedAgents.length > 0 ? (
           <FieldRow
             label="Goes to"
@@ -642,11 +640,12 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             access?.options.find((option) => option.mode === access.shown)?.description ??
             "What the agent may do without asking."
           }
+          warning={accessWarning}
         >
           <Select
             value={form.runtimeMode}
             onValueChange={(value) => {
-              if (value) update({ runtimeMode: value as RuntimeMode });
+              if (value) update({ runtimeMode: value as RuntimeMode, runtimeModeChosen: true });
             }}
           >
             <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Access">
@@ -680,7 +679,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       <SettingsSection title="Schedule">
         <FieldRow
           label="Runs"
-          problem={form.cadenceKind === "custom" ? undefined : shownProblems.schedule}
+          problem={form.cadenceKind === "custom" || isEvent ? undefined : shownProblems.schedule}
         >
           <Select
             value={form.cadenceKind}
@@ -688,11 +687,16 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
               if (value) update({ cadenceKind: value as CadenceKind });
             }}
           >
-            <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Runs">
+            <SelectTrigger
+              size="sm"
+              className={cn("w-full", isEvent ? "sm:w-56" : "sm:w-36")}
+              aria-label="Runs"
+              data-testid="scheduled-form-runs"
+            >
               <SelectValue>{CADENCE_KIND_LABELS[form.cadenceKind]}</SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
-              {CADENCE_KINDS.map((kind) => (
+              {cadenceKindsFor(eventTasks || isEvent).map((kind) => (
                 <SelectItem key={kind} value={kind}>
                   {CADENCE_KIND_LABELS[kind]}
                 </SelectItem>
@@ -776,7 +780,15 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             />
           </FieldRow>
         ) : null}
-        {form.cadenceKind !== "manual" ? (
+        {isEvent ? (
+          <ScheduledEventFields
+            webhook={form.webhook}
+            onChange={updateWebhook}
+            context={gitHubContext}
+            problem={shownProblems.schedule}
+          />
+        ) : null}
+        {form.cadenceKind !== "manual" && !isEvent ? (
           <FieldRow
             label="Time zone"
             hint="Times use this zone wherever you are. When clocks skip ahead, a skipped time runs right after. When they fall back, a set time runs once and hourly tasks still run every hour."

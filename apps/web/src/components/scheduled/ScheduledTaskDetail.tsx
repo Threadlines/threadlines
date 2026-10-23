@@ -1,5 +1,5 @@
-import type { ScheduledRun, ThreadId } from "@threadlines/contracts";
-import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
+import type { ScheduledRun, ThreadId, WebhookEventDetail } from "@threadlines/contracts";
+import { keepPreviousData, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronLeftIcon } from "lucide-react";
 import { useState } from "react";
@@ -23,12 +23,20 @@ import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { toastManager } from "../ui/toast";
 import {
+  EventAddressSection,
+  EventHistory,
+  EventTestSection,
+  refreshEventHistory,
+} from "./EventTaskPanels";
+import {
   describeNextRun,
   describeTaskSchedule,
+  eventTaskDetailRows,
   formatWhen,
   RUN_STATUS_DOT_CLASSES,
   RUN_STATUS_LABELS,
   RUN_TRIGGER_LABELS,
+  webhookCadenceOfTask,
 } from "./scheduled.logic";
 import { setTaskActive } from "./ScheduledView";
 import {
@@ -55,6 +63,8 @@ function RunRow({
   const navigate = useNavigate();
   const trigger = RUN_TRIGGER_LABELS[run.trigger];
   const note = run.summary ?? run.reason;
+  // An event task's run says which event started it.
+  const eventSummary = run.event?.summary ?? null;
   return (
     <li
       className={cn(SETTINGS_GROUP_ROW_CLASS, "flex items-start gap-3 px-3.5 py-2.5")}
@@ -79,6 +89,14 @@ function RunRow({
             <span className="font-mono text-[11px] text-muted-foreground">{trigger}</span>
           ) : null}
         </span>
+        {eventSummary ? (
+          <span
+            className="text-[12.5px] leading-[18px] text-foreground"
+            data-testid={`scheduled-run-event-${run.slotUtc}`}
+          >
+            {eventSummary}
+          </span>
+        ) : null}
         {note ? (
           <span className="text-[12.5px] leading-[18px] text-muted-foreground">{note}</span>
         ) : null}
@@ -185,7 +203,8 @@ function DetailRow({
 
 /**
  * One task: what it runs, where and when, its run history, and Run now,
- * Edit, Pause or Resume, and Delete.
+ * Edit, Pause or Resume, and Delete. An event task (docs/design/event-tasks.md)
+ * swaps Run now for Send a test event, and adds its address and its events.
  */
 export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask }) {
   const nowMs = useRelativeTimeTick(30_000);
@@ -214,7 +233,14 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
       to: "/$environmentId/$threadId",
       params: { environmentId: environment.environmentId, threadId },
     });
-  const [busy, setBusy] = useState<"run" | "active" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"run" | "test" | "active" | "delete" | null>(null);
+  const eventCadence = webhookCadenceOfTask(task);
+  const queryClient = useQueryClient();
+  // The last test event's outcome and message, shown until closed.
+  const [testResult, setTestResult] = useState<{
+    readonly detail: WebhookEventDetail;
+    readonly started: boolean;
+  } | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [archiveRunThreads, setArchiveRunThreads] = useState(false);
   // Archiving a run thread stops it, as archiving any thread does.
@@ -242,6 +268,28 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
       toastManager.add({
         type: "error",
         title: "Couldn't start a run",
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sendTestEvent = async () => {
+    const connection = client();
+    if (!connection) {
+      toastManager.add({ type: "error", title: `${environment.label} isn't connected.` });
+      return;
+    }
+    setBusy("test");
+    try {
+      const detail = await connection.scheduledTasks.testWebhook({ id: task.id, startRun: false });
+      setTestResult({ detail, started: false });
+      refreshEventHistory(queryClient, located);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Couldn't send a test event",
         description: error instanceof Error ? error.message : undefined,
       });
     } finally {
@@ -294,15 +342,27 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy !== null}
-            onClick={() => void runNow()}
-            data-testid="scheduled-run-now"
-          >
-            Run now
-          </Button>
+          {eventCadence === null ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy !== null}
+              onClick={() => void runNow()}
+              data-testid="scheduled-run-now"
+            >
+              Run now
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy !== null}
+              onClick={() => void sendTestEvent()}
+              data-testid="scheduled-send-test-event"
+            >
+              Send a test event
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -345,11 +405,32 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
         ) : null}
       </header>
 
+      {eventCadence !== null && testResult !== null ? (
+        <EventTestSection
+          located={located}
+          result={testResult}
+          onResult={(detail, started) => setTestResult({ detail, started })}
+          onClose={() => setTestResult(null)}
+        />
+      ) : null}
+      {eventCadence !== null ? <EventAddressSection located={located} /> : null}
+      {eventCadence !== null ? <EventHistory located={located} /> : null}
+
       <SettingsSection title="Instructions">
         <p className="px-3.5 py-2.5 text-[13px] leading-[19px] whitespace-pre-wrap text-foreground">
           {task.prompt}
         </p>
       </SettingsSection>
+
+      {eventCadence !== null ? (
+        <SettingsSection title="What starts it">
+          {eventTaskDetailRows(eventCadence).map((row) => (
+            <DetailRow key={row.label} label={row.label}>
+              {row.value}
+            </DetailRow>
+          ))}
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title="Where it runs">
         <DetailRow label="Computer">{environment.label}</DetailRow>
@@ -358,11 +439,17 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
         </DetailRow>
         <DetailRow label="Each run">
           {task.target.kind === "new_thread" ? (
-            task.checkout === "worktree" ? (
-              "Starts a new thread in a new worktree"
-            ) : (
-              "Starts a new thread in the project folder"
-            )
+            <>
+              {task.checkout === "worktree"
+                ? "Starts a new thread in a new worktree"
+                : "Starts a new thread in the project folder"}
+              {eventCadence?.github?.onePerSubject ? (
+                <span className="text-muted-foreground">
+                  {" "}
+                  · later events about the same issue or pull request continue it
+                </span>
+              ) : null}
+            </>
           ) : (
             <span>
               Continues{" "}
@@ -405,7 +492,7 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
             <span className="text-muted-foreground"> · never more than the thread has</span>
           ) : null}
         </DetailRow>
-        <DetailRow label="Time zone">{task.timeZone}</DetailRow>
+        {eventCadence === null ? <DetailRow label="Time zone">{task.timeZone}</DetailRow> : null}
         {task.originThreadId !== null ? (
           <DetailRow label="Set up by">
             {originTitle === null ? (

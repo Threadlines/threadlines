@@ -1,6 +1,5 @@
 import {
   ArchiveIcon,
-  CalendarClockIcon,
   CheckIcon,
   ChevronRightIcon,
   Clock3Icon,
@@ -33,7 +32,8 @@ import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import type { ThreadRowSwipeHandler } from "../../hooks/useThreadRowSwipes";
 import { SwipeableRow, threadRowSwipeAction } from "./SwipeableRow";
 import { useGitStatus } from "../../lib/gitStatusState";
-import { useScheduledRunTaskName } from "../../lib/scheduledTasksState";
+import { useScheduledRunLabel } from "../../lib/scheduledTasksState";
+import { ScheduledRunIcon } from "../scheduled/ScheduledRunIcon";
 import { isThreadSessionStarting } from "../../lib/threadSort";
 import { selectProjectByRef, useStore } from "../../store";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
@@ -706,14 +706,6 @@ export interface RemoteParentLine {
  * only the line's truncatable middle — never the status, and never blank
  * reserved width.
  */
-/** "Scheduled · <task>" for a scheduled task's run, else null. */
-function useScheduledRunLabel(
-  thread: Pick<SidebarThreadSummary, "environmentId" | "scheduledRun">,
-): string | null {
-  const taskName = useScheduledRunTaskName(thread.environmentId, thread.scheduledRun);
-  return taskName === null ? null : `Scheduled · ${taskName}`;
-}
-
 export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRowProps) {
   const {
     thread,
@@ -755,7 +747,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
       selectThreadTerminalState(state.terminalStateByThreadKey, threadRef).runningTerminalIds,
   );
   const threadProject = useThreadProject(thread);
-  const scheduledRunLabel = useScheduledRunLabel(thread);
+  const scheduledRunLabel = useScheduledRunLabel(thread.environmentId, thread.scheduledRun);
   const gitCwd = resolveThreadWorkingCwd({
     projectCwd: threadProject?.cwd ?? null,
     worktreePath: thread.worktreePath,
@@ -984,7 +976,10 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
                     data-testid={`thread-scheduled-run-${thread.id}`}
                   >
-                    <CalendarClockIcon aria-hidden className="size-2.5 shrink-0" />
+                    <ScheduledRunIcon
+                      event={thread.scheduledRun?.event === true}
+                      className="size-2.5 shrink-0"
+                    />
                     <span className="min-w-0 truncate">{scheduledRunLabel}</span>
                   </span>
                 ) : remoteParent !== null ? (
@@ -1779,7 +1774,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
   const threadProject = useThreadProject(thread);
-  const scheduledRunLabel = useScheduledRunLabel(thread);
+  const scheduledRunLabel = useScheduledRunLabel(thread.environmentId, thread.scheduledRun);
   // Wrapping a thread settles the conversation, not its terminals: a dev
   // server started there keeps running, and this is the icon that finds it.
   const runningTerminalIds = useTerminalStateStore(
@@ -1948,7 +1943,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                 data-testid={`done-scheduled-run-${thread.id}`}
                 className="inline-flex shrink-0 items-center text-muted-foreground/60"
               >
-                <CalendarClockIcon aria-hidden className="size-3" />
+                <ScheduledRunIcon event={thread.scheduledRun?.event === true} className="size-3" />
               </span>
             ) : null}
             <span
