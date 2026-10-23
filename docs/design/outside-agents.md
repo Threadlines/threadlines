@@ -460,10 +460,14 @@ which Claude Code builds on.
   show in the app like any check-back. A deliberate narrowing, also listed
   under Honest limits.
 - **Retries.** `requestId` on start and send.
-  - The command, thread and message ids are derived from `(connectionId,
-    requestId)`. A retry is the same command, which the app's path joins in
-    flight or answers from its receipt (see Starting).
-  - The same id with different input gets `conflict`.
+  - A newly claimed request row gets fresh random thread, message and
+    command ids, stored on the row. A retry of a live row reuses them, so it is
+    the same command, which the app's path joins in flight or answers from its
+    receipt (see Starting). An id reused after its row was pruned (24 hours)
+    gets new ids, so it can never overwrite an old message (Sol, tools
+    review).
+  - The same id with a different tool or input gets `conflict`, also while
+    the first call is still in flight.
   - Without a `requestId`, the server makes one, so a client retry isn't
     deduplicated.
 
@@ -496,7 +500,7 @@ new thread, a `thread.turn.start` with a `bootstrap`, and runs it through
 - **On the command:**
   - `outsideOrigin { connectionId, name }` on `bootstrap.createThread`;
   - `fromOutside` on the turn start;
-  - ids derived from `(connectionId, requestId)`.
+  - the ids stored on the request row.
 
 **A restart in the middle.** `runTurnStart` is not resumable: only its final
 turn start has a stable command id. If the server restarts after it made the
