@@ -1,7 +1,11 @@
 name: Docker Image
 
-run-name: Docker image ${{ inputs.version || github.event.release.tag_name }}
+run-name: Docker image ${{ inputs.version }}
 
+# npm-package.yml starts this after each stable npm publish. It can't listen
+# for the GitHub release: release.yml publishes the release with GITHUB_TOKEN,
+# and GitHub doesn't start workflows from that token's release events (only
+# workflow_dispatch and repository_dispatch are exempt).
 on:
   workflow_dispatch:
     inputs:
@@ -14,22 +18,18 @@ on:
         required: false
         type: boolean
         default: true
-  release:
-    types: [published]
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: docker-image-${{ inputs.version || github.event.release.tag_name }}
+  group: docker-image-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
   build:
     name: Build, smoke, publish
-    # Nightlies are not published to npm, so only stable releases build images.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -42,11 +42,10 @@ jobs:
         id: meta
         env:
           DISPATCH_VERSION: ${{ inputs.version }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
           TAG_LATEST: ${{ inputs.tag_latest }}
         run: |
           set -euo pipefail
-          version="${DISPATCH_VERSION:-${RELEASE_TAG#v}}"
+          version="${DISPATCH_VERSION#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Docker images build from plain stable versions, got '${version}'."
             exit 1
@@ -58,9 +57,9 @@ jobs:
       - name: Wait for the npm package
         env:
           VERSION: ${{ steps.meta.outputs.version }}
-        # The GitHub release and the npm publish are separate lanes of the
-        # same cut; whichever lands second, the image build waits rather than
-        # failing on ordering.
+        # The npm registry can take a little while to serve a version it just
+        # accepted, and a manual run may name a version still publishing, so
+        # the build waits rather than failing on ordering.
         run: |
           set -euo pipefail
           for attempt in $(seq 1 60); do
