@@ -136,6 +136,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
     readonly workflowSizeGuideline?: string | null;
+    readonly env?: Readonly<Record<string, string>> | null;
   }> = [];
   public readonly getContextUsageCalls: Array<void> = [];
   public readonly rewindFilesCalls: Array<{
@@ -260,6 +261,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
     readonly workflowSizeGuideline?: string | null;
+    readonly env?: Readonly<Record<string, string>> | null;
   }): Promise<void> => {
     this.applyFlagSettingsCalls.push(settings);
   };
@@ -368,6 +370,7 @@ function makeHarness(config?: {
   readonly resolveModelMetadata?: ClaudeAdapterLiveOptions["resolveModelMetadata"];
   readonly workflowSize?: ClaudeAdapterLiveOptions["workflowSize"];
   readonly installedCliVersion?: string;
+  readonly suggestionsWhenUsageRunsFast?: ClaudeAdapterLiveOptions["suggestionsWhenUsageRunsFast"];
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -401,6 +404,9 @@ function makeHarness(config?: {
     ...(config?.workflowSize ? { workflowSize: config.workflowSize } : {}),
     ...(config?.installedCliVersion
       ? { installedCliVersion: Effect.succeed(config.installedCliVersion) }
+      : {}),
+    ...(config?.suggestionsWhenUsageRunsFast
+      ? { suggestionsWhenUsageRunsFast: config.suggestionsWhenUsageRunsFast }
       : {}),
   };
 
@@ -1432,6 +1438,53 @@ describe("ClaudeAdapterLive", () => {
             workflowSizeGuideline: null,
           },
         ]);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "keeps suggestions while usage runs fast as Settings says, from the next message both ways",
+    () => {
+      let keepSuggestions = true;
+      const harness = makeHarness({
+        suggestionsWhenUsageRunsFast: Effect.sync(() => keepSuggestions),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-opus-5-5",
+            [],
+          ),
+          runtimeMode: "full-access",
+        });
+        assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
+          env: { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true" },
+        });
+
+        // Claude keeps a flag `env` value after the key is cleared, so off
+        // writes an empty value (read as unset), then clears the key so a
+        // value from Claude's settings files comes back.
+        keepSuggestions = false;
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "one", attachments: [] });
+        keepSuggestions = true;
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "two", attachments: [] });
+        // Unchanged: the env is left alone.
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "three", attachments: [] });
+        assert.deepEqual(
+          harness.query.applyFlagSettingsCalls.map((call) => call.env),
+          [
+            { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "" },
+            null,
+            { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true" },
+          ],
+        );
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),

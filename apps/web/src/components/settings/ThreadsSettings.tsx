@@ -70,6 +70,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <AgentPagesRow />
         <ClaudeArtifactsRow />
         <ClaudeWorkflowSizeRow />
+        <ClaudeSuggestionsRow />
         <CommandRequestsRow />
         <StartAgentsWhileTypingRow />
       </SettingsSection>
@@ -650,6 +651,40 @@ function ClaudeWorkflowSizeRow() {
             ))}
           </SelectPopup>
         </Select>
+      }
+    />
+  );
+}
+
+/**
+ * Claude skips suggesting the user's next message while the user is on track
+ * to run out of usage early; on keeps the suggestions coming. For every Claude
+ * account, read before each message, so running threads follow it from their
+ * next message.
+ */
+function ClaudeSuggestionsRow() {
+  const on = useSettings((settings) => settings.claudeSuggestionsWhenUsageRunsFast);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Keep Claude's suggestions when you're using a lot"
+      description="Claude stops suggesting your next message (the gray text you can take with Tab) when you're on track to run out of usage early. Turn this on to keep them. Each one uses a little usage."
+      resetAction={
+        on ? (
+          <SettingResetButton
+            label="Keep Claude's suggestions when you're using a lot"
+            onClick={() => updateSettings({ claudeSuggestionsWhenUsageRunsFast: false })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={on}
+          onCheckedChange={(checked) =>
+            updateSettings({ claudeSuggestionsWhenUsageRunsFast: Boolean(checked) })
+          }
+          aria-label="Keep Claude's suggestions when you're using a lot"
+        />
       }
     />
   );

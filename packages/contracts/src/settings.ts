@@ -971,6 +971,16 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("default" as const)),
   ),
   /**
+   * Claude suggests the user's next message after a turn, but skips it while
+   * it warns that usage runs fast (ahead of pace for the week, or close to
+   * the five-hour limit). On keeps them coming then, at a little usage each,
+   * for every Claude account. Read when a Claude session starts and before
+   * each turn, so a change applies from the next message. Never chosen: off.
+   */
+  claudeSuggestionsWhenUsageRunsFast: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  /**
    * Command requests: agents may ask the user to run a shell command with
    * `ask_user_to_run`, shown as a card with Run, Put in terminal and Skip
    * (docs/terminal-command-runs.md). Read when a provider session starts and
@@ -1162,6 +1172,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableAgentPages: Schema.optionalKey(Schema.Boolean),
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
   claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
+  claudeSuggestionsWhenUsageRunsFast: Schema.optionalKey(Schema.Boolean),
   enableCommandRequests: Schema.optionalKey(Schema.Boolean),
   startAgentsWhileTyping: Schema.optionalKey(Schema.Boolean),
   // Whole values, replaced as sent: a new default never keeps an old one's
