@@ -368,32 +368,46 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
     };
 
     /**
-     * The connection's threads running now, by name: live state, archived
-     * threads included, plus its starts and sends still in flight (`inFlight`).
+     * The connection's threads running now: live state, archived threads
+     * included, plus its starts and sends still in flight (`inFlight`). Each is
+     * named only when its project is still in the grant (null otherwise), so
+     * a limit answer can't show titles from projects the user took away.
      */
-    const runningThreads = (caller: OutsideAgentCaller, inFlight: ReadonlySet<ThreadId>) =>
+    const runningThreads = (
+      caller: OutsideAgentCaller,
+      grant: OutsideAgentLiveGrant,
+      inFlight: ReadonlySet<ThreadId>,
+    ) =>
       Effect.gen(function* () {
         // Archived ones too: archiving a thread doesn't stop its turn.
         const own = yield* deps.listThreads({
           outsideConnectionId: caller.connectionId,
           includeArchived: true,
         });
-        const titles = new Map<string, string>();
+        const names = new Map<string, string | null>();
         for (const thread of own) {
           if (countsAsRunning(thread) || inFlight.has(thread.id)) {
-            titles.set(thread.id, thread.title);
+            names.set(thread.id, grantsProject(grant, thread.projectId) ? thread.title : null);
           }
         }
         for (const threadId of inFlight) {
-          if (!titles.has(threadId)) titles.set(threadId, "a thread still being set up");
+          if (!names.has(threadId)) names.set(threadId, "a thread still being set up");
         }
-        return [...titles.values()];
+        return [...names.values()];
       });
 
-    const runningLimit = (running: ReadonlyArray<string>) => ({
-      outcome: "limit" as const,
-      detail: `${plural(running.length, "thread")} you started ${running.length === 1 ? "is" : "are"} running (${running.map((title) => `"${title}"`).join(", ")}), the most at once is ${CONNECT_RUNNING_THREADS}. Wait for one with thread_wait, then try again.`,
-    });
+    const runningLimit = (running: ReadonlyArray<string | null>) => {
+      const named = running.filter((name): name is string => name !== null);
+      const hidden = running.length - named.length;
+      const listed = [
+        ...named.map((title) => `"${title}"`),
+        ...(hidden > 0 ? [`${plural(hidden, "thread")} in projects you can no longer see`] : []),
+      ];
+      return {
+        outcome: "limit" as const,
+        detail: `${plural(running.length, "thread")} you started ${running.length === 1 ? "is" : "are"} running (${listed.join(", ")}), the most at once is ${CONNECT_RUNNING_THREADS}. Wait for one with thread_wait, then try again.`,
+      };
+    };
 
     // -------------------------------------------------------------------------
     // projects, agents
@@ -947,7 +961,7 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
           threadId: ids.threadId,
           decide: (inFlight) =>
             Effect.gen(function* () {
-              const running = yield* runningThreads(caller, inFlight);
+              const running = yield* runningThreads(caller, grant, inFlight);
               if (running.length >= CONNECT_RUNNING_THREADS) return runningLimit(running);
               const starts = yield* deps.requests
                 .countStartsSince({
@@ -1130,7 +1144,7 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
               if (stillBusy !== null) {
                 return { outcome: "busy" as const, detail: stillBusy, threadId: thread.id };
               }
-              const running = yield* runningThreads(caller, inFlight);
+              const running = yield* runningThreads(caller, grant, inFlight);
               if (running.length >= CONNECT_RUNNING_THREADS) return runningLimit(running);
               return yield* claim(caller, {
                 connectionId: caller.connectionId,

@@ -674,6 +674,27 @@ describe("connect tools: review fixes", () => {
     }),
   );
 
+  it.effect("doesn't name running threads in projects the connection no longer sees", () =>
+    Effect.gen(function* () {
+      const runningIn = (id: string, projectId: ProjectId) =>
+        ownThread(id, {
+          projectId,
+          title: `secret ${id}`,
+          session: { ...running!, threadId: ThreadId.make(id) },
+        });
+      const world = yield* makeWorld({
+        threads: [runningIn("a", PRIVATE), runningIn("b", PRIVATE), runningIn("c", APP)].concat(
+          runningIn("d", APP),
+        ),
+      });
+      const refused = yield* world.handlers.thread_start(CALLER, start());
+      expect(refused.outcome).toBe("limit");
+      expect(refused.detail).toContain('"secret c"');
+      expect(refused.detail).not.toContain("secret a");
+      expect(refused.detail).toContain("2 threads in projects you can no longer see");
+    }),
+  );
+
   it.effect("searches only the projects the connection sees", () =>
     Effect.gen(function* () {
       const world = yield* makeWorld();
