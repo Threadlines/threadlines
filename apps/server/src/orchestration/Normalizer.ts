@@ -20,6 +20,7 @@ import {
   withContextSeedPreamble,
 } from "@threadlines/shared/contextSeed";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
+import { transcriptAuthor } from "@threadlines/shared/messageAuthor";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -286,6 +287,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
         ...sourceMessages.map((message) => ({
           kind: "message" as const,
           role: message.role,
+          author: transcriptAuthor(message),
           text:
             message.attachments && message.attachments.length > 0
               ? `${message.text.trim()}\n[${message.attachments.length} attachment${
@@ -334,7 +336,12 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       const split = splitSeedEntriesByBudget(
         entries.map((entry) =>
           entry.kind === "message"
-            ? { kind: "message" as const, role: entry.role, text: entry.text }
+            ? {
+                kind: "message" as const,
+                role: entry.role,
+                ...(entry.author !== undefined ? { author: entry.author } : {}),
+                text: entry.text,
+              }
             : { kind: "tool" as const, text: entry.text },
         ),
         DEFAULT_SEED_BUDGET,

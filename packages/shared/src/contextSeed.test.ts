@@ -1,4 +1,8 @@
-import { ProviderDriverKind, type ThreadContextSeedEntry } from "@threadlines/contracts";
+import {
+  OutsideAgentConnectionId,
+  ProviderDriverKind,
+  type ThreadContextSeedEntry,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -8,6 +12,7 @@ import {
   splitSeedEntriesByBudget,
   withContextSeedPreamble,
 } from "./contextSeed.ts";
+import { transcriptAuthor } from "./messageAuthor.ts";
 
 const CODEX = ProviderDriverKind.make("codex");
 
@@ -61,6 +66,27 @@ describe("renderSeedEntries", () => {
     expect(rendered).toContain("**Assistant:** Done.");
     // the empty assistant message produced no line
     expect(rendered.split("\n")).toHaveLength(3);
+  });
+});
+
+describe("renderSeedEntries with authors", () => {
+  it("names an outside agent's message by the agent, never as the user", () => {
+    const fromOutside = {
+      connectionId: OutsideAgentConnectionId.make("connection-1"),
+      name: "Claude Code",
+    };
+    const author = transcriptAuthor({ role: "user", fromOutside });
+    const rendered = renderSeedEntries([
+      {
+        kind: "message",
+        role: "user",
+        ...(author !== undefined ? { author } : {}),
+        text: "Fix it",
+      },
+      message("user", "Thanks"),
+    ]);
+    expect(rendered).toContain("**Claude Code (outside agent):** Fix it");
+    expect(rendered).toContain("**User:** Thanks");
   });
 });
 

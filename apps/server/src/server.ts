@@ -92,6 +92,9 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import * as McpPagesServer from "./mcp/McpPagesServer.ts";
 import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
+import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
+import { OutsideAgentConnectionsStandIn } from "./outsideAgents/OutsideAgentConnectionsStandIn.ts";
+import { OutsideAgentRequestsLive } from "./outsideAgents/OutsideAgentRequests.ts";
 import * as AgentPages from "./pages/AgentPages.ts";
 import * as McpApps from "./mcpApps/McpApps.ts";
 import { McpAppCallRepositoryLive } from "./persistence/Layers/McpAppCalls.ts";
@@ -509,6 +512,10 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       CommandRuns.layer,
       // The calls' table also serves thread deletion's cleanup.
       McpApps.layer.pipe(Layer.provideMerge(McpAppCallRepositoryLive)),
+      // Outside agents' starts and sends by request id (`/mcp/connect`);
+      // building it marks the ones a restart cut off.
+      OutsideAgentRequestsLive,
+      OutsideAgentConnectionsStandIn, // TEMPORARY until OutsideAgentConnectionsLive lands
     ),
   ),
   Layer.provideMerge(ProviderRuntimeLayerLive),
@@ -597,6 +604,8 @@ export const makeRoutesLayer = Layer.mergeAll(
   McpRoomServer.layer,
   McpPagesServer.layer,
   McpCommandsServer.layer,
+  // Outside agents' tools (docs/design/outside-agents.md).
+  McpConnectServer.layer,
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,

@@ -39,7 +39,10 @@ import { ProjectSetupScriptRunner } from "../../project/Services/ProjectSetupScr
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { childRequestCommandId, childWorktreeBranch, derivedUuid } from "../childRequestIds.ts";
 import { withinModeCeiling } from "../childThreadDecisions.ts";
-import { OrchestrationCommandPreviouslyRejectedError } from "../Errors.ts";
+import {
+  OrchestrationCommandInvariantError,
+  OrchestrationCommandPreviouslyRejectedError,
+} from "../Errors.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -57,6 +60,7 @@ import {
 } from "./BootstrapTurnStartRuns.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvariantError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -151,6 +155,8 @@ const make = Effect.gen(function* () {
           cause,
         });
 
+  // A refusal the caller acts on by type (an outside agent's turn on a busy
+  // thread, or one above its ceiling) keeps its type through the bootstrap.
   const toBootstrapDispatchCommandCauseError = (cause: Cause.Cause<unknown>) => {
     const error = Cause.squash(cause);
     return isOrchestrationDispatchCommandError(error)
@@ -158,6 +164,9 @@ const make = Effect.gen(function* () {
       : new OrchestrationDispatchCommandError({
           message:
             error instanceof Error ? error.message : "Failed to bootstrap thread turn start.",
+          ...(isOrchestrationCommandInvariantError(error) && error.refusal !== undefined
+            ? { refusal: error.refusal }
+            : {}),
           cause,
         });
   };

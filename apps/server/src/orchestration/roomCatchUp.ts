@@ -318,9 +318,12 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
                 : `${from} asked ${to}, on the user's behalf${onTheSide ? " (answered on the side)" : ""}`;
       return `${label}:\n${text}`;
     }
-    // Another thread's request or report (child threads) is an agent's word,
-    // never the user's.
-    if (message.role === "user" && message.fromThread !== undefined) {
+    // Another thread's request or report (child threads), or an outside
+    // agent's message, is an agent's word, never the user's.
+    if (
+      message.role === "user" &&
+      (message.fromThread !== undefined || message.fromOutside !== undefined)
+    ) {
       const { author } = messageAuthor(message, {
         agentName: (id) => nameOf(id ?? null),
         threadTitle: () => undefined,

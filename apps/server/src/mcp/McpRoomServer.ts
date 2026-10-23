@@ -23,7 +23,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpServer, Toolkit } from "effect/unstable/ai";
-import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/unstable/http";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -38,6 +38,7 @@ import { makeThreadToolLinks } from "../links/threadToolLinks.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
 import {
+  listOnlyGrantedTools,
   MCP_ROOM_ROUTE_PATH,
   normalizeMcpHttpResponse,
   readBearerToken,
@@ -54,56 +55,6 @@ import { ThreadToolkit } from "./threadTools.ts";
 
 /** Every tool the endpoint serves. */
 const RoomEndpointToolkit = Toolkit.merge(RoomToolkit, ThreadToolkit, ScheduleToolkit);
-
-const jsonDecoder = new TextDecoder();
-const jsonEncoder = new TextEncoder();
-
-/**
- * A `tools/list` answer cut down to the tools the credential may call. The
- * toolkit is one for the whole endpoint, so without this every runtime would
- * see every tool, including a side runtime's forbidden ones and a scheduled
- * run's own `scheduled_run_finish`; each handler still refuses a caller it
- * doesn't serve. Anything that isn't a JSON body with a tool list passes as is.
- */
-export function listOnlyGrantedTools(
-  response: HttpServerResponse.HttpServerResponse,
-  granted: ReadonlySet<string>,
-): HttpServerResponse.HttpServerResponse {
-  const body = response.body;
-  if (body._tag !== "Uint8Array" || !body.contentType.includes("json")) return response;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonDecoder.decode(body.body));
-  } catch {
-    return response;
-  }
-  let changed = false;
-  const narrow = (message: unknown): unknown => {
-    if (typeof message !== "object" || message === null || !("result" in message)) {
-      return message;
-    }
-    const result = message.result;
-    if (typeof result !== "object" || result === null || !("tools" in result)) return message;
-    if (!Array.isArray(result.tools)) return message;
-    const tools = result.tools.filter(
-      (tool: unknown) =>
-        typeof tool === "object" &&
-        tool !== null &&
-        "name" in tool &&
-        typeof tool.name === "string" &&
-        granted.has(tool.name),
-    );
-    if (tools.length === result.tools.length) return message;
-    changed = true;
-    return { ...message, result: { ...result, tools } };
-  };
-  const narrowed = Array.isArray(parsed) ? parsed.map(narrow) : narrow(parsed);
-  if (!changed) return response;
-  return HttpServerResponse.setBody(
-    response,
-    HttpBody.uint8Array(jsonEncoder.encode(JSON.stringify(narrowed)), body.contentType),
-  );
-}
 
 const authenticate = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;

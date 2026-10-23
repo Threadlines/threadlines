@@ -69,7 +69,6 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
-import { readThreadPage, summarizeThread, threadStatusWord } from "../mcp/threadToolHandlers.ts";
 import { childRequestCommandId } from "../orchestration/childRequestIds.ts";
 import { childAgentProviderName, childAgentRefusal } from "../orchestration/childThreadAgents.ts";
 import { clampLaunchToCeiling } from "../orchestration/childThreadDecisions.ts";
@@ -100,6 +99,7 @@ import { findProjectByPlace } from "../project/projectPlace.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { RelayDeviceRepository, type RelayDeviceRow } from "../relay/RelayDeviceRepository.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { readThreadPage, summarizeThread, threadStatus } from "../threads/threadOperations.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { makeKeyedLock } from "./keyedLock.ts";
 import { linkBootstrapKey, linkCommandId, linkMessageId, linkThreadId } from "./linkIds.ts";
@@ -1686,7 +1686,7 @@ const make = Effect.gen(function* () {
       );
       const origin = shell?.remoteOrigin ?? null;
       if (shell === undefined || origin === null) return;
-      const word = threadStatusWord(shell);
+      const word = threadStatus(shell).word;
       if (lastThreadStatus.get(threadId) === word) return;
       lastThreadStatus.set(threadId, word);
       yield* publish(origin.linkDeviceId, {

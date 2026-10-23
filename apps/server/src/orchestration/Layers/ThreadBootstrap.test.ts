@@ -2,10 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   ChildRequestId,
   type ChildThreadLaunch,
+  CommandId,
   MessageId,
   type OrchestrationCommand,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
+  OutsideAgentConnectionId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -24,7 +26,11 @@ import { childWorktreeBranch } from "../childRequestIds.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
-import { type ChildBootstrapInput, ThreadBootstrap } from "../Services/ThreadBootstrap.ts";
+import {
+  type ChildBootstrapInput,
+  ThreadBootstrap,
+  type ThreadTurnStartCommand,
+} from "../Services/ThreadBootstrap.ts";
 import { ThreadBootstrapLive } from "./ThreadBootstrap.ts";
 
 const AT = "2026-10-04T10:00:00.000Z";
@@ -73,6 +79,7 @@ const makeWorld = () => {
   const createWorktreeCalls: unknown[] = [];
   const setupRuns: unknown[] = [];
   let crashOn: ((command: OrchestrationCommand) => boolean) | undefined;
+  let refuseWith: OrchestrationCommandInvariantError["refusal"];
 
   const apply = (command: OrchestrationCommand) => {
     switch (command.type) {
@@ -83,6 +90,7 @@ const makeWorld = () => {
           title: command.title,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.outsideOrigin !== undefined ? { outsideOrigin: command.outsideOrigin } : {}),
           activities: [] as ReadonlyArray<OrchestrationThreadActivity>,
           messages: [],
         } as unknown as OrchestrationThread);
@@ -138,6 +146,7 @@ const makeWorld = () => {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
             detail: "The server went away.",
+            ...(refuseWith !== undefined ? { refusal: refuseWith } : {}),
           });
         }
         apply(command);
@@ -208,8 +217,12 @@ const makeWorld = () => {
     branches,
     createWorktreeCalls,
     setupRuns,
-    crashOn: (predicate: (command: OrchestrationCommand) => boolean) => {
+    crashOn: (
+      predicate: (command: OrchestrationCommand) => boolean,
+      refusal?: OrchestrationCommandInvariantError["refusal"],
+    ) => {
       crashOn = predicate;
+      refuseWith = refusal;
     },
     of: (type: OrchestrationCommand["type"]) => accepted.filter((command) => command.type === type),
   };
@@ -298,6 +311,72 @@ describe("ThreadBootstrap.startChild", () => {
         "setup-script.skipped",
       ]);
       expect(world.of("thread.turn.start")).toHaveLength(1);
+    }).pipe(Effect.provide(world.layer));
+  });
+});
+
+describe("ThreadBootstrap.runTurnStart", () => {
+  const OUTSIDE_THREAD = ThreadId.make("outside-thread");
+  const AGENT = {
+    connectionId: OutsideAgentConnectionId.make("connection-1"),
+    name: "Claude Code",
+  };
+  const outsideStart: ThreadTurnStartCommand = {
+    type: "thread.turn.start",
+    commandId: CommandId.make("server:outside:start"),
+    threadId: OUTSIDE_THREAD,
+    message: {
+      messageId: MessageId.make("outside-message"),
+      role: "user",
+      text: "Go",
+      attachments: [],
+    },
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+    bootstrap: {
+      createThread: {
+        projectId: ProjectId.make("project-1"),
+        title: "Fix the flaky test",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        outsideOrigin: AGENT,
+        createdAt: AT,
+      },
+    },
+    createdAt: AT,
+  };
+  const runTurnStart = (command: ThreadTurnStartCommand) =>
+    Effect.gen(function* () {
+      const bootstrap = yield* ThreadBootstrap;
+      return yield* bootstrap.runTurnStart(command);
+    });
+
+  it.effect("labels an outside agent's thread before its first turn is asked for", () => {
+    const world = makeWorld();
+    return Effect.gen(function* () {
+      yield* runTurnStart(outsideStart);
+      // The reactor gives a session its tools when it takes the turn; the
+      // thread it reads by then is already the agent's.
+      const order = world.accepted.map((command) => command.type);
+      expect(order.indexOf("thread.create")).toBeLessThan(order.indexOf("thread.turn.start"));
+      expect(world.of("thread.create")[0]).toMatchObject({ outsideOrigin: AGENT });
+      expect(world.threads.get(OUTSIDE_THREAD)?.outsideOrigin).toEqual(AGENT);
+      expect(world.of("thread.turn.start")[0]).toMatchObject({
+        fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+      });
+    }).pipe(Effect.provide(world.layer));
+  });
+
+  it.effect("keeps the decider's typed refusal of the first turn", () => {
+    const world = makeWorld();
+    world.crashOn((command) => command.type === "thread.turn.start", "above_ceiling");
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(runTurnStart(outsideStart));
+      expect(error.refusal).toBe("above_ceiling");
     }).pipe(Effect.provide(world.layer));
   });
 });

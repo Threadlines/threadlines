@@ -109,6 +109,7 @@ import {
   threadMoveGuardRefusal,
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
+import { outsideTurnRefusal } from "./outsideTurns.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -705,6 +706,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "A scheduled run's thread is started by its schedule alone.",
         });
       }
+      // Nor does one an outside agent starts: it has no other origin.
+      if (
+        command.outsideOrigin !== undefined &&
+        (parentThreadId !== undefined ||
+          command.remoteOrigin !== undefined ||
+          command.scheduledRun !== undefined)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A thread an outside agent starts has no other origin.",
+        });
+      }
       // A thread set up as a room before its first message starts with its
       // agents: all of them are checked before any is recorded.
       const startingAgents = command.participants ?? [];
@@ -756,6 +769,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.remoteOrigin !== undefined ? { remoteOrigin: command.remoteOrigin } : {}),
           ...(command.scheduledRun !== undefined ? { scheduledRun: command.scheduledRun } : {}),
+          ...(command.outsideOrigin !== undefined ? { outsideOrigin: command.outsideOrigin } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -2238,6 +2252,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "The request this turn answers was cancelled.",
         });
       }
+      // An outside agent's turn (docs/design/outside-agents.md): only in a
+      // thread it started, never above its ceiling, never into a busy thread.
+      // Checked here, in order with the user's own sends and access changes.
+      if (command.fromOutside !== undefined) {
+        if (targetThread.outsideOrigin?.connectionId !== command.fromOutside.connectionId) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `${command.fromOutside.name} didn't start this thread.`,
+          });
+        }
+        const outsideRefusal = outsideTurnRefusal(targetThread, command.fromOutside);
+        if (outsideRefusal !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: outsideRefusal.detail,
+            refusal: outsideRefusal.refusal,
+          });
+        }
+      }
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
@@ -2339,6 +2372,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           ...(participantId !== null ? { participantId } : {}),
           ...(command.fromThread !== undefined ? { fromThread: command.fromThread } : {}),
+          ...(command.fromOutside !== undefined
+            ? {
+                fromOutside: {
+                  connectionId: command.fromOutside.connectionId,
+                  name: command.fromOutside.name,
+                },
+              }
+            : {}),
           ...(command.composer !== undefined ? { composer: command.composer } : {}),
           // Named as the turn is sent (recordTurnModel). A queued message an
           // agent wrote is already recorded, with its own stamps; sending it
@@ -2460,6 +2501,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { handoverFromTurnId: targetThread.latestTurn.turnId }
             : {}),
           ...(command.fromThread !== undefined ? { fromThread: command.fromThread } : {}),
+          ...(command.fromOutside !== undefined ? { fromOutside: command.fromOutside } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -2506,8 +2548,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...requestRunningEvents,
         // The user wrote: agents may make requests again. (A queued message
         // sent later drops these; it counted when the user queued it.) An
-        // agent's message is not the user writing.
-        ...(command.fromThread === undefined
+        // agent's message, another thread's or an outside agent's, is not
+        // the user writing.
+        ...(command.fromThread === undefined && command.fromOutside === undefined
           ? [
               ...resetAgentRequestsForUser(targetThread, turnBase, command.createdAt),
               ...resetChildRequestsForUser(targetThread, turnBase, command.createdAt),
