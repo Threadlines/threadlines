@@ -82,6 +82,7 @@ function makeSnapshotQuery(
     listThreadDiffStatBaselines: () => Effect.sync(() => baselines()),
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
     listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
+    listThreadShells: () => Effect.succeed([]),
     getThreadShellById: () => Effect.succeed(Option.none()),
     getTurnActivities: () => Effect.succeed([]),
     getThreadDetailById: () => Effect.succeed(Option.none()),

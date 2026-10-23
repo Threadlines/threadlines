@@ -5,6 +5,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationProjectShell,
   type OrchestrationThread,
+  type OrchestrationThreadSearchInput,
   type OrchestrationThreadShell,
   OutsideAgentConnectionId as ConnectionId,
   ProjectId,
@@ -183,8 +184,11 @@ const makeWorld = (
   options: {
     readonly grant?: Partial<OutsideAgentLiveGrant>;
     readonly threads?: ReadonlyArray<OrchestrationThread>;
-    /** The decider's typed refusal of the next turn start. */
-    readonly refuseTurn?: "thread_busy" | "above_ceiling";
+    /** The decider's typed refusal of every command of this type. */
+    readonly refuse?: {
+      readonly type: OrchestrationCommand["type"];
+      readonly refusal: "thread_busy" | "above_ceiling";
+    };
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -205,6 +209,7 @@ const makeWorld = (
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     let gate: Deferred.Deferred<void> | null = null;
     const requests = makeRequests();
+    const searched: OrchestrationThreadSearchInput[] = [];
 
     const touch = (threadId: ThreadId) =>
       PubSub.publish(events, {
@@ -219,11 +224,11 @@ const makeWorld = (
       engine: {
         dispatch: (command) =>
           Effect.gen(function* () {
-            if (options.refuseTurn !== undefined && command.type === "thread.turn.start") {
+            if (options.refuse !== undefined && command.type === options.refuse.type) {
               return yield* new OrchestrationCommandInvariantError({
                 commandType: command.type,
                 detail: "Refused by the decider.",
-                refusal: options.refuseTurn,
+                refusal: options.refuse.refusal,
               });
             }
             dispatched.push(command);
@@ -253,25 +258,48 @@ const makeWorld = (
             return { sequence: 1 };
           }),
       },
-      shellSnapshot: Effect.sync(() => ({
-        projects,
-        threads: [...threads.values()].map(shellOf),
-      })),
+      projects: Effect.succeed(projects),
+      // As ProjectionSnapshotQuery.listThreadShells picks them.
+      listThreads: (input) =>
+        Effect.sync(() =>
+          [...threads.values()]
+            .filter((thread) => input.includeArchived === true || thread.archivedAt == null)
+            .filter(
+              (thread) =>
+                input.projectIds === undefined || input.projectIds.includes(thread.projectId),
+            )
+            .filter(
+              (thread) =>
+                input.outsideConnectionId === undefined ||
+                thread.outsideOrigin?.connectionId === input.outsideConnectionId,
+            )
+            .map(shellOf),
+        ),
+      threadProject: (threadId) => Effect.sync(() => threads.get(threadId)?.projectId),
       readProject: (projectId) =>
         Effect.sync(() => projects.find((entry) => entry.id === projectId)),
-      readThread: (threadId) => Effect.sync(() => threads.get(threadId)),
+      readThread: (threadId) =>
+        Effect.sync(() => {
+          const thread = threads.get(threadId);
+          return thread?.archivedAt != null ? undefined : thread;
+        }),
       status: {
         subscribeEvents: Effect.map(PubSub.subscribe(events), Stream.fromSubscription),
         readShell: (threadId) =>
           Effect.sync(() => {
             const thread = threads.get(threadId);
-            return thread === undefined ? undefined : shellOf(thread);
+            return thread === undefined || thread.archivedAt != null ? undefined : shellOf(thread);
           }),
         scheduleAnswerWaiting: Effect.succeed(new Set()),
         scheduleAnswerChanges: Stream.empty,
       },
       providers: Effect.succeed(PROVIDERS),
       userDefaultModel: Effect.succeed(null),
+      searchThreads: (input) =>
+        Effect.sync(() => {
+          searched.push(input);
+          return [];
+        }),
       git: {
         execute: (input) =>
           Effect.succeed({
@@ -293,6 +321,7 @@ const makeWorld = (
       handlers,
       dispatched,
       bootstrapped,
+      searched,
       threads,
       requests,
       setGrant: (next: OutsideAgentLiveGrant | null) => {
@@ -457,7 +486,10 @@ describe("connect tools: busy and limits", () => {
         expect(world.dispatched).toHaveLength(0);
 
         // The user's own send landed in between: the decider refuses, by type.
-        const raced = yield* makeWorld({ threads: [ownThread("idle")], refuseTurn: "thread_busy" });
+        const raced = yield* makeWorld({
+          threads: [ownThread("idle")],
+          refuse: { type: "thread.turn.start", refusal: "thread_busy" },
+        });
         const result = yield* raced.handlers.thread_send(CALLER, {
           threadId: "idle",
           message: "x",
@@ -550,6 +582,128 @@ describe("connect tools: request ids", () => {
         message: "Go",
       });
       expect(send.outcome).toBe("failed");
+    }),
+  );
+});
+
+describe("connect tools: review fixes", () => {
+  it.effect(
+    "gives a request id reused after its row is gone new ids, never the old message's",
+    () =>
+      Effect.gen(function* () {
+        const world = yield* makeWorld({ threads: [ownThread("mine")] });
+        const forgetRows = () => world.requests.rows.clear();
+        yield* world.handlers.thread_send(CALLER, {
+          threadId: "mine",
+          message: "Go",
+          requestId: "r",
+        });
+        forgetRows();
+        yield* world.handlers.thread_send(CALLER, {
+          threadId: "mine",
+          message: "Go",
+          requestId: "r",
+        });
+        const [first, second] = world.dispatched.filter(
+          (command) => command.type === "thread.turn.start",
+        ) as ReadonlyArray<Extract<OrchestrationCommand, { type: "thread.turn.start" }>>;
+        expect(second?.message.messageId).not.toBe(first?.message.messageId);
+        expect(second?.commandId).not.toBe(first?.commandId);
+
+        const started = yield* world.handlers.thread_start(CALLER, start({ requestId: "s" }));
+        forgetRows();
+        const again = yield* world.handlers.thread_start(CALLER, start({ requestId: "s" }));
+        expect(again.thread?.threadId).not.toBe(started.thread?.threadId);
+      }),
+  );
+
+  it.live("answers conflict to other work under a request id still in flight", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld({ threads: [ownThread("mine")] });
+      const gate = yield* world.hold();
+      const first = yield* world.handlers
+        .thread_start(CALLER, start({ requestId: "same" }))
+        .pipe(Effect.forkChild);
+      yield* Effect.sleep("20 millis");
+      const otherStart = yield* world.handlers.thread_start(
+        CALLER,
+        start({ requestId: "same", prompt: "Something else" }),
+      );
+      const send = yield* world.handlers.thread_send(CALLER, {
+        threadId: "mine",
+        message: "More",
+        requestId: "same",
+      });
+      expect([otherStart.outcome, send.outcome]).toEqual(["conflict", "conflict"]);
+      yield* Deferred.succeed(gate, undefined);
+      expect((yield* Fiber.join(first)).outcome).toBe("started");
+      expect(world.bootstrapped).toHaveLength(1);
+    }),
+  );
+
+  it.effect("won't replay a request whose thread left the connection's projects", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld();
+      expect((yield* world.handlers.thread_start(CALLER, start({ requestId: "r" }))).outcome).toBe(
+        "started",
+      );
+      world.setGrant({
+        connectionId: CONNECTION,
+        name: "Claude Code",
+        access: "start",
+        maxRuntimeMode: "auto-accept-edits",
+        projectIds: [PRIVATE],
+      });
+      const retry = yield* world.handlers.thread_start(CALLER, start({ requestId: "r" }));
+      expect(retry.outcome).toBe("not_found");
+      expect(retry.thread).toBeUndefined();
+    }),
+  );
+
+  it.effect("counts a running thread toward the cap after it was archived", () =>
+    Effect.gen(function* () {
+      const archivedRunning = (id: string) =>
+        ownThread(id, {
+          archivedAt: AT,
+          session: { ...running!, threadId: ThreadId.make(id) },
+        });
+      const world = yield* makeWorld({
+        threads: ["a", "b", "c", "d"].map(archivedRunning),
+      });
+      expect((yield* world.handlers.thread_start(CALLER, start())).outcome).toBe("limit");
+    }),
+  );
+
+  it.effect("searches only the projects the connection sees", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld();
+      yield* world.handlers.threads_list(CALLER, { query: "flaky" });
+      expect(world.searched).toMatchObject([{ query: "flaky", projectIds: [APP] }]);
+    }),
+  );
+
+  it.effect("won't stop a thread the user raised above the ceiling", () =>
+    Effect.gen(function* () {
+      const raised = ownThread("raised", {
+        runtimeMode: "full-access",
+        session: { ...running!, threadId: ThreadId.make("raised") },
+      });
+      const world = yield* makeWorld({ threads: [raised] });
+      expect((yield* world.handlers.thread_stop(CALLER, { threadId: "raised" })).outcome).toBe(
+        "not_allowed",
+      );
+      expect(world.dispatched).toHaveLength(0);
+
+      // Raised between the check and the stop: the decider refuses it, by type.
+      const racing = yield* makeWorld({
+        threads: [
+          ownThread("racing", { session: { ...running!, threadId: ThreadId.make("racing") } }),
+        ],
+        refuse: { type: "thread.turn.interrupt", refusal: "above_ceiling" },
+      });
+      expect((yield* racing.handlers.thread_stop(CALLER, { threadId: "racing" })).outcome).toBe(
+        "not_allowed",
+      );
     }),
   );
 });

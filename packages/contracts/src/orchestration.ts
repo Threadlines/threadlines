@@ -2909,12 +2909,21 @@ const ClientThreadFollowUpSubmitCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadTurnInterruptCommand = Schema.Struct({
+const ClientThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
+});
+
+const ThreadTurnInterruptCommand = Schema.Struct({
+  ...ClientThreadTurnInterruptCommand.fields,
+  /**
+   * An outside agent's Stop (server only, set by `/mcp/connect`): refused,
+   * like its turns, when the thread's access is above `maxRuntimeMode`.
+   */
+  fromOutside: Schema.optional(OutsideTurnOrigin),
 });
 
 /**
@@ -3233,7 +3242,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnStartCommand,
   ClientThreadFollowUpSubmitCommand,
   ThreadFollowUpUnqueueCommand,
-  ThreadTurnInterruptCommand,
+  ClientThreadTurnInterruptCommand,
   ThreadSideTurnStartCommand,
   ThreadSideTurnInterruptCommand,
   ThreadRealtimeStartCommand,
