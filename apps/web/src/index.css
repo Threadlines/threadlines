@@ -1365,6 +1365,21 @@ label:has(> select#reasoning-effort) select {
   }
 }
 
+/* The rail update card's words roll: the new ones up from below, the old up and out. */
+@keyframes update-card-roll-in {
+  from {
+    opacity: 0;
+    transform: translateY(70%);
+  }
+}
+
+@keyframes update-card-roll-out {
+  to {
+    opacity: 0;
+    transform: translateY(-70%);
+  }
+}
+
 /* Diffs theme bridge (match diff surfaces to app palette) */
 .diff-panel-viewport {
   background: color-mix(in srgb, var(--background) 94%, var(--card));

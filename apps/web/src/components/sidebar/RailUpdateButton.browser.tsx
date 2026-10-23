@@ -84,7 +84,46 @@ describe("RailUpdateButton", () => {
     await button().click();
     await vi.waitFor(() => expect(bridge.checkForUpdate).toHaveBeenCalledTimes(1));
     // The card stays up through the click and shows the answer.
-    await expect.element(page.getByText(/^Checked .+ · click to check$/u)).toBeVisible();
+    await expect.element(page.getByText("Up to date · checked just now")).toBeVisible();
+  });
+
+  it("lands the card's version on the one a check finds", async () => {
+    const bridge = stubDesktopBridge(idleUpdateState);
+    vi.mocked(bridge.checkForUpdate).mockResolvedValue({
+      checked: true,
+      state: {
+        ...idleUpdateState,
+        status: "available",
+        availableVersion: "9.8.7",
+        checkedAt: new Date().toISOString(),
+      },
+    });
+    await mountButton();
+
+    await button().hover();
+    const card = page.getByTestId("rail-update-card");
+    await expect.element(card.getByText("Threadlines", { exact: true })).toBeVisible();
+    await button().click();
+    await expect.element(card.getByText("Update to", { exact: true })).toBeVisible();
+    await expect
+      .element(card.getByText("Click to download · you have", { exact: false }))
+      .toBeVisible();
+    // Each digit rolls on and rests on the new version, in the update color.
+    const version = page.getByTestId("rail-update-card-version");
+    await vi.waitFor(
+      () => {
+        const digits = [
+          ...version.element().querySelectorAll<HTMLElement>(".will-change-transform"),
+        ]
+          .map(
+            (strip) => Math.round(-new DOMMatrix(getComputedStyle(strip).transform).m42 / 16) % 10,
+          )
+          .join(".");
+        expect(digits).toBe("9.8.7");
+      },
+      { timeout: 4_000 },
+    );
+    await expect.element(version).toHaveAttribute("data-changed", "");
   });
 
   it("marks an available update and downloads it in one click", async () => {

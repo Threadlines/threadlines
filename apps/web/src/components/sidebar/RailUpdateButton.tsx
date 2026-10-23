@@ -1,17 +1,18 @@
 import { CircleArrowUpIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { APP_VERSION } from "../../branding";
+import { APP_BUILD_CHANNEL_LABEL, APP_VERSION } from "../../branding";
 import { useDesktopUpdateAction } from "../../hooks/useDesktopUpdateAction";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import {
-  getDesktopUpdateStatusLine,
+  describeRailUpdateCard,
   getSidebarDesktopUpdateTagPresentation,
   shouldShowDesktopUpdaterControls,
   type SidebarDesktopUpdateTagTone,
 } from "../desktopUpdate.logic";
-import { ChromeIconButton, ChromeTooltip } from "./ChromeIconButton";
+import { ChromeIconButton } from "./ChromeIconButton";
+import { RailUpdateCard } from "./RailUpdateCard";
 import { UPDATE_STATUS_DOT_STYLES, type UpdateStatusTone } from "./updateStatusVisuals";
 import { cn } from "~/lib/utils";
 
@@ -25,14 +26,6 @@ const DOT_TONE: Record<SidebarDesktopUpdateTagTone, UpdateStatusTone | null> = {
   downloading: null,
   downloaded: "success",
   error: "error",
-};
-
-const ACTION_HINT: Record<SidebarDesktopUpdateTagTone, string | null> = {
-  idle: "Click to check",
-  available: "Click to download",
-  downloading: null,
-  downloaded: "Click to restart. Running work is listed first.",
-  error: "Click to try again",
 };
 
 /**
@@ -50,7 +43,7 @@ const ACTION_HINT: Record<SidebarDesktopUpdateTagTone, string | null> = {
  */
 export function RailUpdateButton() {
   const { state, kind, disabled, run } = useDesktopUpdateAction();
-  useRelativeTimeTick(30_000);
+  const nowMs = useRelativeTimeTick(30_000);
   const checking = state?.status === "checking";
   // One full turn each time a check starts.
   const [turns, setTurns] = useState(0);
@@ -63,36 +56,32 @@ export function RailUpdateButton() {
   if (!shouldShowDesktopUpdaterControls(state)) return null;
 
   const presentation = getSidebarDesktopUpdateTagPresentation(state, APP_VERSION);
-  const statusLine = getDesktopUpdateStatusLine(state);
   const dotTone = DOT_TONE[presentation.tone];
   const downloading = presentation.tone === "downloading";
   const runs = kind !== "none" && !disabled;
-
-  const checkedLabel = state?.checkedAt
-    ? `Checked ${formatRelativeTimeLabel(state.checkedAt)}`
-    : "Not checked yet";
-  const label = checking
-    ? "Checking for updates…"
-    : presentation.tone === "idle"
-      ? `Threadlines v${APP_VERSION}`
-      : (statusLine?.text ?? presentation.tooltip);
-  const detail = checking
-    ? null
-    : presentation.tone === "idle"
-      ? runs
-        ? `${checkedLabel} · click to check`
-        : checkedLabel
-      : runs
-        ? ACTION_HINT[presentation.tone]
-        : null;
+  const card = describeRailUpdateCard({
+    state,
+    appVersion: APP_VERSION,
+    buildChannel: APP_BUILD_CHANNEL_LABEL,
+    checkedAgo: state?.checkedAt ? formatRelativeTimeLabel(state.checkedAt, nowMs) : null,
+    nowMs,
+    runs,
+  });
+  const versionLabel = [
+    card.lead,
+    `v${card.version.triple}`,
+    card.channel ? [card.channel, card.version.build].filter(Boolean).join(" ") : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <ChromeIconButton
       size="rail"
-      label={detail ? `${label}. ${detail}` : label}
+      label={`${versionLabel}. ${card.line}`}
       testId="rail-update"
       side="right"
-      tooltip={<ChromeTooltip label={label} detail={detail} />}
+      tooltip={<RailUpdateCard card={card} />}
       // Its card says what the click started ("Checking for updates…", then
       // the answer), so it stays up while the pointer does. Restarting opens
       // its confirmation instead.

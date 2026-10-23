@@ -334,3 +334,136 @@ export function getDesktopUpdateStatusLine(
 export function shouldShowDesktopUpdaterControls(state: DesktopUpdateState | null): boolean {
   return state !== null && state.enabled && state.status !== "disabled";
 }
+
+/** A version as the rail's update card rolls it: the release triple, and a nightly's build. */
+export interface RailUpdateCardVersion {
+  /** "0.8.0": the digits that roll in the title. */
+  readonly triple: string;
+  /** A nightly's run number ("352"), rolling in its tag; null for any other build. */
+  readonly build: string | null;
+}
+
+/** What the rail's update card says, from the updater's state. */
+export interface RailUpdateCard {
+  /** "Update to" while it names a version the user doesn't have yet. */
+  readonly lead: "Threadlines" | "Update to";
+  readonly version: RailUpdateCardVersion;
+  /** The build's tag beside the version; null for a stable build. */
+  readonly channel: "Nightly" | "Dev" | null;
+  /** Which parts differ from the running build: they show in the update color. */
+  readonly changed: { readonly triple: boolean; readonly build: boolean };
+  /** The second line: where things stand, and what a click does. */
+  readonly line: string;
+  readonly lineTone: "muted" | "error";
+  /** A check is running: the digits spin until its answer lands them. */
+  readonly checking: boolean;
+}
+
+/** "0.8.0-nightly.20261023.345" → triple 0.8.0, build 345; a stable version has no build. */
+export function parseRailUpdateCardVersion(version: string): RailUpdateCardVersion {
+  const nightly = NIGHTLY_VERSION_PATTERN.exec(version);
+  if (nightly) return { triple: nightly[1] ?? version, build: nightly[3] ?? null };
+  const triple = /^v?(\d+\.\d+\.\d+)/.exec(version)?.[1] ?? version.replace(/^v/, "");
+  return { triple, build: null };
+}
+
+/** How long after a check its answer still reads "Up to date · checked just now". */
+const RAIL_UPDATE_FRESH_CHECK_MS = 60_000;
+
+/**
+ * The rail's update card. The title always reads as one version, the one
+ * the running build is, or the one an update would bring ("Update to
+ * v0.8.0"), with a nightly's build in its tag; the second line keeps to
+ * about one length in every state, so the card barely changes width.
+ */
+export function describeRailUpdateCard(input: {
+  readonly state: DesktopUpdateState | null;
+  readonly appVersion: string;
+  readonly buildChannel: "Stable" | "Nightly" | "Dev";
+  /** "5 min ago", for the last check; null before any. */
+  readonly checkedAgo: string | null;
+  readonly nowMs: number;
+  /** A click runs the updater's pending action. */
+  readonly runs: boolean;
+}): RailUpdateCard {
+  const { state, runs } = input;
+  const running = parseRailUpdateCardVersion(input.appVersion);
+  const channelOf = (version: RailUpdateCardVersion) =>
+    version.build !== null
+      ? ("Nightly" as const)
+      : input.buildChannel === "Stable"
+        ? null
+        : input.buildChannel;
+  const current = (
+    line: string,
+    lineTone: RailUpdateCard["lineTone"] = "muted",
+  ): RailUpdateCard => ({
+    lead: "Threadlines",
+    version: running,
+    channel: channelOf(running),
+    changed: { triple: false, build: false },
+    line,
+    lineTone,
+    checking: state?.status === "checking",
+  });
+
+  if (state?.status === "checking") return current("Checking for a newer version…");
+
+  const targetVersion = state?.downloadedVersion ?? state?.availableVersion ?? null;
+  const target = targetVersion ? parseRailUpdateCardVersion(targetVersion) : null;
+  const toTarget = (
+    line: string,
+    lineTone: RailUpdateCard["lineTone"] = "muted",
+  ): RailUpdateCard =>
+    target
+      ? {
+          lead: "Update to",
+          version: target,
+          channel: channelOf(target),
+          changed: {
+            triple: target.triple !== running.triple,
+            build: target.build !== null && target.build !== running.build,
+          },
+          line,
+          lineTone,
+          checking: false,
+        }
+      : current(line, lineTone);
+
+  if (state?.status === "error") {
+    const message = state.message ?? "Update failed";
+    const line = runs ? `${message} · click to try again` : message;
+    const aboutTarget = state.errorContext === "download" || state.errorContext === "install";
+    return aboutTarget ? toTarget(line, "error") : current(line, "error");
+  }
+  if (state && (state.downloadedVersion || state.status === "downloaded")) {
+    return toTarget(runs ? "Click to restart · running work is listed first" : "Downloaded");
+  }
+  if (state?.status === "downloading") {
+    return toTarget(
+      typeof state.downloadPercent === "number"
+        ? `Downloading · ${Math.floor(state.downloadPercent)}%`
+        : "Downloading…",
+    );
+  }
+  if (state?.status === "available" && target) {
+    // A nightly a build ahead names only the build the user has: the tag
+    // above already says "Nightly".
+    const have =
+      target.build !== null && running.build !== null && target.triple === running.triple
+        ? running.build
+        : `v${running.triple}`;
+    return toTarget(runs ? `Click to download · you have ${have}` : "Ready to download");
+  }
+
+  const checkedAt = state?.checkedAt ? new Date(state.checkedAt).getTime() : null;
+  if (
+    state?.status === "up-to-date" &&
+    checkedAt !== null &&
+    input.nowMs - checkedAt < RAIL_UPDATE_FRESH_CHECK_MS
+  ) {
+    return current("Up to date · checked just now");
+  }
+  const checked = input.checkedAgo ? `Checked ${input.checkedAgo}` : "Not checked yet";
+  return current(runs ? `${checked} · click to check` : checked);
+}

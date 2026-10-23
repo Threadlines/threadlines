@@ -3,6 +3,7 @@ import type { DesktopUpdateActionResult, DesktopUpdateState } from "@threadlines
 
 import {
   canCheckForUpdate,
+  describeRailUpdateCard,
   discriminatingVersionLabel,
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
@@ -608,5 +609,111 @@ describe("shouldShowDesktopUpdaterControls", () => {
     expect(shouldShowDesktopUpdaterControls({ ...baseState, status: "disabled" })).toBe(false);
     expect(shouldShowDesktopUpdaterControls(baseState)).toBe(true);
     expect(shouldShowDesktopUpdaterControls({ ...baseState, status: "downloading" })).toBe(true);
+  });
+});
+
+describe("describeRailUpdateCard", () => {
+  const now = Date.parse("2026-10-23T12:00:00.000Z");
+  const card = (
+    state: Partial<DesktopUpdateState> | null,
+    appVersion = "0.7.1",
+    buildChannel: "Stable" | "Nightly" | "Dev" = "Stable",
+  ) =>
+    describeRailUpdateCard({
+      state: state === null ? null : { ...baseState, currentVersion: appVersion, ...state },
+      appVersion,
+      buildChannel,
+      checkedAgo: "5 min ago",
+      nowMs: now,
+      runs: true,
+    });
+
+  it("names the version the user has, then the one an update brings, in the same place", () => {
+    expect(card({ status: "idle" })).toMatchObject({
+      lead: "Threadlines",
+      version: { triple: "0.7.1", build: null },
+      channel: null,
+      line: "Checked 5 min ago · click to check",
+    });
+    expect(card({ status: "checking" })).toMatchObject({
+      version: { triple: "0.7.1" },
+      checking: true,
+      line: "Checking for a newer version…",
+    });
+    expect(card({ status: "available", availableVersion: "0.8.0" })).toMatchObject({
+      lead: "Update to",
+      version: { triple: "0.8.0" },
+      changed: { triple: true, build: false },
+      checking: false,
+      line: "Click to download · you have v0.7.1",
+    });
+    // A fresh answer says so; an old one goes back to when it was checked.
+    const justNow = new Date(now - 10_000).toISOString();
+    expect(card({ status: "up-to-date", checkedAt: justNow }).line).toBe(
+      "Up to date · checked just now",
+    );
+    const earlier = new Date(now - 5 * 60_000).toISOString();
+    expect(card({ status: "up-to-date", checkedAt: earlier }).line).toBe(
+      "Checked 5 min ago · click to check",
+    );
+  });
+
+  it("tags a nightly with its build, and rolls the version too when it changes", () => {
+    const nightly = "0.8.0-nightly.20261022.345";
+    expect(card({ status: "idle" }, nightly, "Nightly")).toMatchObject({
+      version: { triple: "0.8.0", build: "345" },
+      channel: "Nightly",
+    });
+    expect(
+      card(
+        { status: "available", availableVersion: "0.8.0-nightly.20261023.352" },
+        nightly,
+        "Nightly",
+      ),
+    ).toMatchObject({
+      version: { triple: "0.8.0", build: "352" },
+      changed: { triple: false, build: true },
+      line: "Click to download · you have 345",
+    });
+    expect(
+      card(
+        { status: "available", availableVersion: "0.8.1-nightly.20261023.352" },
+        nightly,
+        "Nightly",
+      ),
+    ).toMatchObject({
+      version: { triple: "0.8.1", build: "352" },
+      changed: { triple: true, build: true },
+      line: "Click to download · you have v0.8.0",
+    });
+    expect(card({ status: "idle" }, "0.7.1-dev", "Dev").channel).toBe("Dev");
+  });
+
+  it("keeps the target in view while it downloads, waits, or fails to install", () => {
+    expect(
+      card({ status: "downloading", availableVersion: "0.8.0", downloadPercent: 42.7 }),
+    ).toMatchObject({ lead: "Update to", line: "Downloading · 42%" });
+    expect(card({ status: "downloaded", downloadedVersion: "0.8.0" })).toMatchObject({
+      lead: "Update to",
+      version: { triple: "0.8.0" },
+      line: "Click to restart · running work is listed first",
+    });
+    expect(
+      card({
+        status: "error",
+        errorContext: "install",
+        downloadedVersion: "0.8.0",
+        message: "Couldn't install",
+      }),
+    ).toMatchObject({
+      lead: "Update to",
+      lineTone: "error",
+      line: "Couldn't install · click to try again",
+    });
+    // A check that failed is about the version the user has.
+    expect(card({ status: "error", errorContext: "check", message: "Offline" })).toMatchObject({
+      lead: "Threadlines",
+      line: "Offline · click to try again",
+    });
   });
 });
