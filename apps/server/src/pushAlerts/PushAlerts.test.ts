@@ -112,6 +112,7 @@ const makeHarness = Effect.gen(function* () {
           getThreadDetailById: () => Effect.succeed(Option.some(state.thread)),
         }),
         Layer.mock(RelayHost)({
+          admitDirect: () => null,
           activeClientDeviceForSession: (sessionId) =>
             Effect.succeed(sessionId === PHONE_SESSION && state.phoneActive ? PHONE : null),
           isActiveClientDevice: () => Effect.succeed(state.phoneActive),

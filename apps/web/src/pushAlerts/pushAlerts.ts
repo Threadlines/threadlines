@@ -17,9 +17,10 @@ import {
   type SavedEnvironmentRecord,
   readEnvironmentConnection,
   readEnvironmentDescriptor,
-  readRelayDeviceCredentials,
   subscribeEnvironmentConnections,
 } from "../environments/runtime";
+// From its own module: the settings browser test replaces the runtime index.
+import { readRelayDeviceCredentials } from "../environments/runtime/relayCredentials";
 
 export const DEFAULT_ALERT_KINDS: PushAlertKinds = {
   needs_you: true,
