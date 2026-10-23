@@ -3,7 +3,7 @@
  *
  * @module sessionStartupNotice
  */
-import type { ServerProvider } from "@threadlines/contracts";
+import type { EnvironmentId, ServerProvider } from "@threadlines/contracts";
 import { useEffect, useMemo, useState } from "react";
 
 import type { ComposerNotice } from "./composerNotices";
@@ -65,15 +65,19 @@ export function useSessionStartupNotice(input: {
   /** The provider whose status the notice offers to refresh: while an agent's
    *  program starts, that agent's. */
   readonly providerStatus: ServerProvider | null;
+  /** The computer the thread runs on, which Refresh asks. */
+  readonly environmentId: EnvironmentId | null;
   /** While the wait is the agent's program starting, that agent's name (see
    *  sessionStartupNoticeMessage); null otherwise. */
   readonly launching: { readonly agentName: string | null } | null;
 }): ComposerNotice | null {
-  const { isSessionStarting, launching, providerStatus, startedAt, suppressed } = input;
+  const { environmentId, isSessionStarting, launching, providerStatus, startedAt, suppressed } =
+    input;
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh(
-    providerStatus?.instanceId ?? null,
-  );
+  const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh({
+    environmentId,
+    instanceId: providerStatus?.instanceId ?? null,
+  });
 
   useEffect(() => {
     setNowMs(Date.now());

@@ -1,6 +1,7 @@
 import "../../index.css";
 
 import {
+  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -18,16 +19,20 @@ import {
 } from "@tanstack/react-router";
 
 const { refreshProvidersMock } = vi.hoisted(() => ({
-  refreshProvidersMock: vi.fn(async () => ({ providers: [] })),
+  refreshProvidersMock: vi.fn(
+    async (_input: { readonly environmentId: unknown; readonly instanceId: unknown }) => ({
+      providers: [],
+    }),
+  ),
 }));
 
-vi.mock("../../localApi", () => ({
-  ensureLocalApi: vi.fn(() => ({
-    server: {
-      refreshProviders: refreshProvidersMock,
-    },
-  })),
+// Refresh asks the computer the thread runs on, through this module.
+vi.mock("../../environments/providerStatusRefresh", () => ({
+  refreshProviderStatus: refreshProvidersMock,
 }));
+
+/** The computer the thread runs on in these tests. */
+const THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-mac-mini");
 
 import { ComposerNoticeDock } from "./ComposerNoticeDock";
 import type { ProviderSignInFlowView } from "./providerSignIn";
@@ -61,7 +66,13 @@ function ProviderStatusNoticeHarness({
   suppressed?: boolean;
   signIn?: ProviderSignInFlowView;
 }) {
-  const notice = useProviderStatusNotice({ activeTurnInProgress, status, suppressed, signIn });
+  const notice = useProviderStatusNotice({
+    activeTurnInProgress,
+    status,
+    environmentId: THREAD_ENVIRONMENT_ID,
+    suppressed,
+    signIn,
+  });
   return <ComposerNoticeDock notices={notice ? [notice] : []} />;
 }
 
@@ -143,7 +154,10 @@ describe("provider status composer notice", () => {
       await page.getByRole("button", { name: "Refresh provider status" }).click();
 
       await vi.waitFor(() => {
-        expect(refreshProvidersMock).toHaveBeenCalledWith({ instanceId: provider.instanceId });
+        expect(refreshProvidersMock).toHaveBeenCalledWith({
+          environmentId: THREAD_ENVIRONMENT_ID,
+          instanceId: provider.instanceId,
+        });
       });
     } finally {
       await screen.unmount();

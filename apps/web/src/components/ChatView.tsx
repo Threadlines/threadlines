@@ -376,11 +376,11 @@ import { BrowserPanel } from "./browser/BrowserPanel";
 import { BrowserSplitHandle } from "./browser/BrowserSplitHandle";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
-  applyProvidersUpdated,
   useServerAvailableEditors,
   useServerConfig,
   useServerKeybindings,
 } from "~/rpc/serverState";
+import { refreshProviderStatus } from "../environments/providerStatusRefresh";
 import {
   selectOptimisticThreadMessages,
   useOptimisticThreadMessagesStore,
@@ -1791,6 +1791,13 @@ export default function ChatView(props: ChatViewProps) {
     primaryEnvironmentId && activeThread?.environmentId === primaryEnvironmentId
       ? primaryServerConfig
       : (activeEnvRuntimeState?.serverConfig ?? primaryServerConfig);
+  // The computer the thread runs on, which a provider refresh asks, also
+  // while its config hasn't arrived and the one above stands in; null is the
+  // app's own backend.
+  const threadComputerEnvironmentId =
+    activeThread !== undefined && activeThread.environmentId !== primaryEnvironmentId
+      ? activeThread.environmentId
+      : null;
   // Rooms follows the computer the thread lives on.
   const roomsEnabled = roomsEnabledFor(serverConfig?.settings);
   // Agents added before the first message: the thread is created with them.
@@ -5930,10 +5937,10 @@ export default function ChatView(props: ChatViewProps) {
     }
     setIsRecheckingProviderSendPreflight(true);
     try {
-      const payload = await ensureLocalApi().server.refreshProviders({
+      const payload = await refreshProviderStatus({
+        environmentId: threadComputerEnvironmentId,
         instanceId: prompt.instanceId,
       });
-      applyProvidersUpdated(payload);
       providerStatusesRef.current = payload.providers;
       const stillUnusable = deriveProviderSendPreflight({
         instanceId: prompt.instanceId,
@@ -6530,6 +6537,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const providerStatusNotice = useProviderStatusNotice({
     status: activeProviderStatus,
+    environmentId: threadComputerEnvironmentId,
     activeTurnInProgress,
     signIn: composerSignInView,
     // The held-send notice already states this provider's problem with the
@@ -6548,6 +6556,7 @@ export default function ChatView(props: ChatViewProps) {
         ? providerStatuses.find((status) => status.instanceId === launchingInstanceId)
         : undefined) ?? activeProviderStatus,
     launching: launchingStartupNotice,
+    environmentId: threadComputerEnvironmentId,
   });
   const threadErrorNotice = useMemo(
     () =>

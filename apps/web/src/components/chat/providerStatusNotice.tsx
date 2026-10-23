@@ -10,7 +10,7 @@
  *
  * @module providerStatusNotice
  */
-import type { ServerProvider } from "@threadlines/contracts";
+import type { EnvironmentId, ServerProvider } from "@threadlines/contracts";
 import { Link } from "@tanstack/react-router";
 import { SettingsIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -143,6 +143,8 @@ export function resolveProviderStatusNoticeActions(
  */
 export function useProviderStatusNotice(input: {
   readonly status: ServerProvider | null;
+  /** The computer `status` came from, which Refresh asks again. */
+  readonly environmentId: EnvironmentId | null;
   readonly activeTurnInProgress: boolean;
   /**
    * Live state of this instance's sign-in flow, supplied by the surface that
@@ -157,12 +159,13 @@ export function useProviderStatusNotice(input: {
    */
   readonly suppressed?: boolean;
 }): ComposerNotice | null {
-  const { activeTurnInProgress, signIn, status, suppressed = false } = input;
+  const { activeTurnInProgress, environmentId, signIn, status, suppressed = false } = input;
   const offerSetup = useNoAgentReady();
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh(
-    status?.instanceId ?? null,
-  );
+  const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh({
+    environmentId,
+    instanceId: status?.instanceId ?? null,
+  });
 
   const checkedAt = status?.checkedAt;
   const instanceId = status?.instanceId;
