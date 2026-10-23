@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import {
+  FindMyWay,
   HttpMiddleware,
   type HttpServerRequest,
   HttpServerRequest as HttpServerRequestTag,
@@ -21,40 +22,44 @@ import {
 import { LOCAL_HOOK_ROUTE_PREFIX } from "./scheduled/EventTaskHooks.ts";
 
 /** Path prefixes whose remainder is a credential. */
-const SECRET_PATH_PREFIXES: ReadonlyArray<string> = [`${LOCAL_HOOK_ROUTE_PREFIX}/`];
+const SECRET_PATH_PREFIXES: ReadonlyArray<string> = [LOCAL_HOOK_ROUTE_PREFIX];
 
 /**
- * A request's path as routing sees it: without query or fragment, from an
- * absolute-form URL too, percent-escapes decoded where they decode.
+ * The router's own matcher, set up as the server's router is (its defaults:
+ * any case, duplicate and trailing slashes ignored, escapes decoded, a query
+ * after `?`, `;` or `#`), so a path is secret exactly when the router could
+ * hand it to a secret route, however it is spelled.
  */
-const requestPath = (url: string): string => {
-  let path = url;
-  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(path)) {
+const secretPaths = (() => {
+  const router = FindMyWay.make<string>();
+  for (const prefix of SECRET_PATH_PREFIXES) {
+    router.on("GET", `${prefix}/*` as FindMyWay.PathInput, prefix);
+  }
+  return router;
+})();
+
+/** The secret prefix a request URL's path falls under, if any. */
+const secretPrefixOf = (url: string): string | undefined => {
+  let target = url;
+  // An absolute-form request URL: the router reads its path.
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(target)) {
     try {
-      path = new URL(path).pathname;
+      const parsed = new URL(target);
+      target = `${parsed.pathname}${parsed.search}`;
     } catch {
       // Not a URL after all: read it as a path.
     }
   }
-  path = path.split(/[?#]/u, 1)[0] ?? "";
-  try {
-    return decodeURI(path);
-  } catch {
-    return path;
-  }
+  return secretPaths.find("GET", target)?.handler;
 };
 
 /** Whether a request URL's path carries a credential. */
-export const hasSecretPath = (url: string): boolean => {
-  const path = requestPath(url);
-  return SECRET_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
-};
+export const hasSecretPath = (url: string): boolean => secretPrefixOf(url) !== undefined;
 
 /** A request URL's path as logs may show it: a credential-carrying one cut to its prefix. */
 export const redactedRequestPath = (url: string): string => {
-  const path = requestPath(url);
-  const prefix = SECRET_PATH_PREFIXES.find((candidate) => path.startsWith(candidate));
-  return prefix === undefined ? path : `${prefix}…`;
+  const prefix = secretPrefixOf(url);
+  return prefix !== undefined ? `${prefix}/…` : (url.split(/[?#;]/u, 1)[0] ?? "");
 };
 
 /**

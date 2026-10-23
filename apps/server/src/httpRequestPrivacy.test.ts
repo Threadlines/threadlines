@@ -22,10 +22,16 @@ const TOKEN = "s3cr3t-token-that-must-never-be-logged-0000000";
 
 describe("request privacy", () => {
   it("finds a credential-carrying path however it is written, and cuts it", () => {
+    // Every spelling the router hands to the route.
     for (const url of [
       `/api/hooks/task-1/${TOKEN}`,
       `/api/hooks/task-1/${TOKEN}?ref=main`,
+      `/api/hooks/task-1/${TOKEN};x=1`,
       `/api/hook%73/task-1/${TOKEN}`,
+      `/API/HOOKS/task-1/${TOKEN}`,
+      `/Api/Hooks/task-1/${TOKEN}/`,
+      `/api//hooks/task-1/${TOKEN}`,
+      `//api///hooks//task-1/${TOKEN}`,
       `http://127.0.0.1:3773/api/hooks/task-1/${TOKEN}`,
     ]) {
       assert.isTrue(hasSecretPath(url), url);
@@ -73,10 +79,17 @@ describe("request privacy", () => {
         fetch(`${origin}${path}?ref=main`, { method: "POST", body: "{}" }),
       );
       assert.equal(posted.status, 202);
+      // Spellings the router also routes here: a different case, doubled slashes.
+      for (const spelling of [`/API/HOOKS/task-1/${TOKEN}`, `/api//hooks/task-1/${TOKEN}`]) {
+        const response = yield* Effect.promise(() =>
+          fetch(`${origin}${spelling}`, { method: "POST", body: "{}" }),
+        );
+        assert.equal(response.status, 202);
+      }
 
       for (const line of lines) assert.notInclude(line, TOKEN);
       const responses = lines.filter((line) => line.includes("Sent HTTP response"));
-      assert.equal(responses.length, 2);
+      assert.equal(responses.length, 4);
       assert.isTrue(responses.every((line) => line.includes('"http.url":"/api/hooks/…"')));
     }).pipe(
       Effect.provide(NodeHttpServer.layer(() => NodeHttp.createServer(), { port: 0 })),
