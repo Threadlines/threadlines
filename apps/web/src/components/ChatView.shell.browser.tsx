@@ -493,6 +493,55 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
+  it("hides and shows the list from the rail button of the page on screen, and a double-click that opens a page leaves it showing", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-reclick" as MessageId,
+        targetText: "rail reclick",
+      }),
+    });
+    const listOpen = (open: boolean) =>
+      vi.waitFor(() => {
+        expect(useUiStateStore.getState().sidebarListOpen).toBe(open);
+        expect(
+          document
+            .querySelector('[data-slot="sidebar-wrapper"]')
+            ?.getAttribute("data-sidebar-state"),
+        ).toBe(open ? "expanded" : "collapsed");
+      });
+    // A click as the n-th of a run of quick clicks, the way a double-click lands.
+    const clickRail = (testId: string, detail: number) =>
+      document
+        .querySelector(`[data-testid="${testId}"]`)!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail }));
+
+    try {
+      await expect
+        .element(page.getByTestId("rail-threads"))
+        .toHaveAttribute("aria-expanded", "true");
+      await page.getByTestId("rail-threads").click();
+      await listOpen(false);
+      await expect
+        .element(page.getByTestId("rail-threads"))
+        .toHaveAttribute("aria-expanded", "false");
+      await page.getByTestId("rail-threads").click();
+      await listOpen(true);
+
+      clickRail("rail-chats", 1);
+      await waitForURL(mounted.router, (pathname) => pathname === "/chats", "Chats should open.");
+      await expect.element(page.getByTestId("rail-chats")).toHaveAttribute("aria-current", "page");
+      clickRail("rail-chats", 2);
+      expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+
+      // A click of its own, on the page now open, hides the list.
+      clickRail("rail-chats", 1);
+      await listOpen(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("counts the pull requests waiting on the user on the rail", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
