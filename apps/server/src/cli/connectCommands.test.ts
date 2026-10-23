@@ -1,6 +1,5 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - NodeHttpServer.layer takes a Node server
 import * as NodeHttp from "node:http";
-import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,10 +8,14 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as NetService from "@threadlines/shared/Net";
+import { OutsideAgentConnectionId, OutsideAgentRequestId } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import * as TestConsole from "effect/testing/TestConsole";
 import { McpProtocol, McpServer } from "effect/unstable/ai";
@@ -26,16 +29,34 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 
+import { ServerSecretStoreLive } from "../auth/Layers/ServerSecretStore.ts";
 import { cli } from "../bin.ts";
+import { ServerConfig } from "../config.ts";
+import { browserApiCorsLayer } from "../http.ts";
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadBootstrap } from "../orchestration/Services/ThreadBootstrap.ts";
 import {
   ConnectToolkit,
   McpConnectInvocation,
   type OutsideThreadStartResult,
   type OutsideThreadSummary,
+  ProjectsTool,
   type ThreadWaitResult,
 } from "../outsideAgents/connectTools.ts";
-import { OutsideAgentConnectionId } from "@threadlines/contracts";
-import { ProjectsTool } from "../outsideAgents/connectTools.ts";
+import * as McpConnectServer from "../outsideAgents/McpConnectServer.ts";
+import { outsideAgentSignInRouteLayer } from "../outsideAgents/oauthHttp.ts";
+import { OutsideAgentConnectionsLive } from "../outsideAgents/OutsideAgentConnectionsLive.ts";
+import { OutsideAgentRequests } from "../outsideAgents/OutsideAgentRequests.ts";
+import {
+  OutsideAgentSignIn,
+  type OutsideAgentSignInShape,
+} from "../outsideAgents/OutsideAgentSignIn.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
+import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { findJsonRpcReply, makeConnectClient } from "./connectClient.ts";
 import { CommandExit, EXIT } from "./connectExit.ts";
 import { signIn } from "./connectSignIn.ts";
@@ -51,17 +72,12 @@ interface Script {
   token: string;
   /** Forget the session after this many tool calls (a restart). */
   forgetSessionAfterCalls: number | null;
-  /** How authorize answers: approve, or deny. */
-  approve: boolean;
 }
 
 /** What the stand-in saw. */
 interface Seen {
   initializes: number;
   toolCalls: Array<{ readonly name: string; readonly params: unknown }>;
-  registrations: Array<Record<string, unknown>>;
-  authorizeClientIds: string[];
-  tokenRequests: Array<Record<string, string>>;
 }
 
 const thread = (overrides: Partial<OutsideThreadSummary> = {}): OutsideThreadSummary => ({
@@ -110,14 +126,12 @@ const defaultScript = (): Script => ({
   waits: [done()],
   token: TOKEN,
   forgetSessionAfterCalls: null,
-  approve: true,
 });
 
 /**
- * A stand-in for this computer's Threadlines: the real MCP transport at
- * `/mcp/connect` (Effect's McpServer, as the server mounts it) with the
- * connect tools answering from `script`, behind a bearer check, plus the
- * OAuth endpoints the sign-in uses, answering as the plan says.
+ * A stand-in for `/mcp/connect` whose tools answer from `script`: the real
+ * MCP transport (Effect's McpServer, as the server mounts it) behind a bearer
+ * check, so a test can choose how a thread ends and when a session is lost.
  */
 const standIn = (script: Script, seen: Seen) => {
   const forgotten = new Set<string>();
@@ -207,85 +221,10 @@ const standIn = (script: Script, seen: Seen) => {
     ),
   );
 
-  const originOf = (request: HttpServerRequest.HttpServerRequest) =>
-    `http://${request.headers.host}`;
-  const challenges = new Map<string, string>();
-  const oauth = Layer.mergeAll(
-    HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp/connect", (request) =>
-      Effect.succeed(
-        HttpServerResponse.jsonUnsafe({
-          resource: `${originOf(request)}/mcp/connect`,
-          authorization_servers: [originOf(request)],
-        }),
-      ),
-    ),
-    HttpRouter.add("GET", "/.well-known/oauth-authorization-server", (request) =>
-      Effect.succeed(
-        HttpServerResponse.jsonUnsafe({
-          issuer: originOf(request),
-          authorization_endpoint: `${originOf(request)}/oauth/authorize`,
-          token_endpoint: `${originOf(request)}/oauth/token`,
-          registration_endpoint: `${originOf(request)}/oauth/register`,
-        }),
-      ),
-    ),
-    HttpRouter.add("POST", "/oauth/register", (request) =>
-      Effect.gen(function* () {
-        const body = (yield* request.json) as Record<string, unknown>;
-        seen.registrations.push(body);
-        return HttpServerResponse.jsonUnsafe(
-          { client_id: `client-${seen.registrations.length}` },
-          { status: 201 },
-        );
-      }),
-    ),
-    HttpRouter.add("GET", "/oauth/authorize", (request) =>
-      Effect.sync(() => {
-        const url = new URL(request.url, originOf(request));
-        const params = url.searchParams;
-        seen.authorizeClientIds.push(params.get("client_id") ?? "");
-        const redirect = new URL(params.get("redirect_uri") ?? "");
-        redirect.searchParams.set("state", params.get("state") ?? "");
-        redirect.searchParams.set("iss", originOf(request));
-        if (script.approve && params.get("code_challenge_method") === "S256") {
-          challenges.set("code-1", params.get("code_challenge") ?? "");
-          redirect.searchParams.set("code", "code-1");
-        } else {
-          redirect.searchParams.set("error", "access_denied");
-          redirect.searchParams.set("error_description", "You denied it in Threadlines.");
-        }
-        return HttpServerResponse.redirect(redirect.toString(), { status: 302 });
-      }),
-    ),
-    HttpRouter.add("POST", "/oauth/token", (request) =>
-      Effect.gen(function* () {
-        const form = Object.fromEntries(new URLSearchParams(yield* request.text));
-        seen.tokenRequests.push(form);
-        const verified =
-          createHash("sha256")
-            .update(form.code_verifier ?? "")
-            .digest("base64url") === challenges.get(form.code ?? "");
-        if (!verified || form.resource !== `${originOf(request)}/mcp/connect`) {
-          return HttpServerResponse.jsonUnsafe({ error: "invalid_grant" }, { status: 400 });
-        }
-        return HttpServerResponse.jsonUnsafe({
-          access_token: TOKEN,
-          token_type: "Bearer",
-          scope: "threads:read threads:start",
-        });
-      }),
-    ),
-  );
-  return Layer.mergeAll(mcp, oauth);
+  return mcp;
 };
 
-const newSeen = (): Seen => ({
-  initializes: 0,
-  toolCalls: [],
-  registrations: [],
-  authorizeClientIds: [],
-  tokenRequests: [],
-});
+const newSeen = (): Seen => ({ initializes: 0, toolCalls: [] });
 
 /** A data folder whose runtime state names `port`, signed in with `token` when given. */
 function dataFolder(port: number, token: string | null): string {
@@ -357,67 +296,167 @@ const withStandIn = <A, E, R>(
     }),
   );
 
+const unused = () => Effect.die("not used by this test");
+
+/** What `/mcp/connect`'s tools read besides the connections: one project, nothing started. */
+const toolStubs = Layer.mergeAll(
+  Layer.succeed(OrchestrationEngineService, {
+    dispatch: unused,
+    getCommandReceipt: unused,
+    subscribeDomainEvents: Effect.succeed(Stream.empty),
+  } as never),
+  Layer.succeed(ProjectionSnapshotQuery, {
+    getShellSnapshot: () =>
+      Effect.succeed({
+        snapshotSequence: 0,
+        projects: [
+          { id: "project-web", kind: "workspace", title: "web", workspaceRoot: "/repo/web" },
+        ],
+        threads: [],
+        updatedAt: "",
+      }),
+    getThreadShellById: () => Effect.succeed(Option.none()),
+  } as never),
+  Layer.succeed(ThreadBootstrap, { runTurnStart: unused, startChild: unused } as never),
+  Layer.succeed(ProviderRegistry, { getProviders: Effect.succeed([]) } as never),
+  Layer.succeed(GitVcsDriver, {} as never),
+  Layer.succeed(OutsideAgentRequests, {} as never),
+  ServerSettingsService.layerTest(),
+);
+
+/**
+ * This computer's Threadlines as agents meet it: its own sign-in routes and
+ * `/mcp/connect`, over real HTTP on loopback, with the connections kept in
+ * an in-memory database.
+ */
+const serveThreadlines = Effect.gen(function* () {
+  const server = yield* HttpServer.HttpServer;
+  const port = (server.address as HttpServer.TcpAddress).port;
+  const config = Layer.effect(
+    ServerConfig,
+    Effect.map(Effect.service(ServerConfig), (base) => ({ ...base, port })),
+  ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "threadlines-cli-" })));
+  const services = yield* Layer.build(
+    OutsideAgentConnectionsLive.pipe(
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provide(ServerSecretStoreLive),
+      Layer.provide(
+        Layer.succeed(AnalyticsService, { record: () => Effect.void, flush: Effect.void }),
+      ),
+      Layer.provideMerge(config),
+    ),
+  );
+  yield* HttpRouter.serve(
+    Layer.mergeAll(
+      outsideAgentSignInRouteLayer.pipe(Layer.provide(browserApiCorsLayer)),
+      McpConnectServer.layer.pipe(Layer.provide(toolStubs)),
+    ),
+    { disableLogger: true, disableListenLog: true },
+  ).pipe(Layer.provide(Layer.succeedContext(services)), Layer.build);
+  return { port, signIn: Context.get(services, OutsideAgentSignIn) };
+});
+
+/**
+ * The browser the command opens, and the user in the app: loads the waiting
+ * page, allows (or denies) the sign-in in Threadlines, and follows the page
+ * back to the command once Threadlines says where.
+ */
+const browserAndUser =
+  (signInService: OutsideAgentSignInShape, answer: "allow" | "deny") => (url: string) =>
+    Effect.gen(function* () {
+      const page = yield* Effect.promise(() => fetch(url).then((response) => response.text()));
+      const config = /<script type="application\/json" id="sign-in-config">(.*?)<\/script>/su.exec(
+        page,
+      );
+      const status = new URL(
+        String((JSON.parse(config?.[1] ?? "{}") as { status?: string }).status),
+        url,
+      );
+      const requestId = OutsideAgentRequestId.make(status.searchParams.get("request") ?? "");
+      yield* answer === "allow"
+        ? signInService.approve({
+            requestId,
+            access: "start",
+            maxRuntimeMode: "approval-required",
+            projectIds: null,
+          })
+        : signInService.deny({ requestId });
+      const polled = yield* Effect.promise(() =>
+        fetch(status, { headers: { "sec-fetch-site": "same-origin" } }).then(
+          (response) => response.json() as Promise<{ readonly redirect?: string }>,
+        ),
+      );
+      yield* Effect.promise(() =>
+        fetch(String(polled.redirect)).then((response) => response.text()),
+      );
+    }).pipe(Effect.orDie, Effect.forkDetach, Effect.as(true));
+
 describe("threadlines connect", () => {
-  it.live("signs in once as the same agent, and keeps the token only for the user", () => {
-    const script = defaultScript();
-    const seen = newSeen();
-    return withStandIn(script, seen, (port) =>
+  it.live(
+    "signs in to Threadlines' own sign-in as one agent, uses /mcp/connect, and asks to connect again once removed",
+    () =>
       Effect.gen(function* () {
-        const base = dataFolder(port, null);
+        const threadlines = yield* serveThreadlines;
+        const base = dataFolder(threadlines.port, null);
         const credentialsPath = join(base, "userdata", "cli", "connections.json");
+        const resource = `http://127.0.0.1:${threadlines.port}/mcp/connect`;
         const said: string[] = [];
-        const target = {
-          origin: `http://127.0.0.1:${port}`,
-          resource: `http://127.0.0.1:${port}/mcp/connect`,
-        };
-        const signInOnce = signIn({
-          target,
-          credentialsPath,
-          clientVersion: "0.0.0",
-          noBrowser: false,
-          // The browser: follows the authorize page's redirect back to the command.
-          openBrowser: (url) =>
-            Effect.promise(() => fetch(url)).pipe(
-              Effect.flatMap((response) => Effect.promise(() => response.text())),
-              Effect.forkDetach,
-              Effect.as(true),
-            ),
-          say: (text) => Effect.sync(() => void said.push(text)),
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(Layer.mergeAll(FetchHttpClient.layer, NodeServices.layer)),
+        const connect = (answer: "allow" | "deny") =>
+          signIn({
+            target: { origin: `http://127.0.0.1:${threadlines.port}`, resource },
+            credentialsPath,
+            clientVersion: "0.0.0",
+            noBrowser: false,
+            openBrowser: browserAndUser(threadlines.signIn, answer),
+            say: (text) => Effect.sync(() => void said.push(text)),
+          }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer));
+        const connections = Stream.runHead(threadlines.signIn.changes).pipe(
+          Effect.map((snapshot) => Option.getOrThrow(snapshot).connections),
         );
 
-        const first = yield* signInOnce;
-        assert.equal(first.scope, "threads:read threads:start");
-        const second = yield* signInOnce;
-        assert.equal(second.scope, "threads:read threads:start");
-
-        // One registration, as "Threadlines command"; both sign-ins used it.
-        assert.equal(seen.registrations.length, 1);
-        assert.equal(seen.registrations[0]?.client_name, "Threadlines command");
-        assert.equal(seen.registrations[0]?.software_id, "threadlines-cli");
-        assert.deepEqual(seen.authorizeClientIds, ["client-1", "client-1"]);
-        assert.equal(seen.tokenRequests[1]?.resource, target.resource);
-
-        const credentials = readCredentials(base);
-        assert.deepEqual(credentials.resources[target.resource], {
-          clientId: "client-1",
-          accessToken: TOKEN,
-          scope: "threads:read threads:start",
-        });
+        assert.equal((yield* connect("allow")).scope, "threads:read threads:start");
+        const first = readCredentials(base).resources[resource];
         assert.equal(statSync(credentialsPath).mode & 0o777, 0o600);
         assert.equal(statSync(join(base, "userdata", "cli")).mode & 0o777, 0o700);
-        assert.isFalse(said.join("\n").includes(TOKEN));
+        const listed = yield* run(["projects", "--base-dir", base]);
+        assert.equal(listed.code, EXIT.done);
+        assert.equal(listed.stdout, "web  /repo/web  project-web");
 
-        // Denied: the registration and the earlier token stay as they were.
-        script.approve = false;
-        const denied = yield* signInOnce.pipe(Effect.flip);
+        // Again, from a new loopback port: the same registration, so the
+        // approval replaces the connection instead of adding one.
+        yield* connect("allow");
+        const second = readCredentials(base).resources[resource];
+        assert.equal(second?.clientId, first?.clientId);
+        assert.notEqual(second?.accessToken, first?.accessToken);
+        const [connection, ...others] = yield* connections;
+        assert.equal(connection?.name, "Threadlines command");
+        assert.deepEqual(others, []);
+        assert.isFalse(said.join("\n").includes(second?.accessToken ?? "-"));
+
+        // Denied: the stored sign-in stays as it was.
+        const denied = yield* connect("deny").pipe(Effect.flip);
         assert.equal(denied._tag, "SignInEnded");
-        assert.equal(readCredentials(base).resources[target.resource]?.accessToken, TOKEN);
-      }),
-    );
-  });
+        assert.deepEqual(readCredentials(base).resources[resource], second);
+
+        // Removed in the app: the next call is refused, the token forgotten,
+        // the registration kept for the next sign-in.
+        yield* threadlines.signIn.remove({ connectionId: connection!.connectionId });
+        const refused = yield* run(["projects", "--base-dir", base]);
+        assert.equal(refused.code, EXIT.notConnected);
+        assert.include(refused.stderr, "Run threadlines connect");
+        assert.deepEqual(readCredentials(base).resources[resource], {
+          clientId: second?.clientId ?? "",
+        });
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeHttpServer.layer(() => NodeHttp.createServer(), { port: 0, host: "127.0.0.1" }),
+            NodeServices.layer,
+          ),
+        ),
+        Effect.scoped,
+      ),
+  );
 });
 
 describe("threadlines thread", () => {
@@ -499,22 +538,6 @@ describe("threadlines thread", () => {
     ].join("\n\n");
     assert.deepEqual(findJsonRpcReply(body, "text/event-stream", 7)?.result, { ok: true });
     assert.isNull(findJsonRpcReply(body, "text/event-stream", 8));
-  });
-
-  it.live("forgets the token on a 401 and asks to connect again, keeping its registration", () => {
-    const script = defaultScript();
-    const seen = newSeen();
-    return withStandIn(script, seen, (port) =>
-      Effect.gen(function* () {
-        const base = dataFolder(port, "tlc1.removed.1.mac");
-        const result = yield* run(["projects", "--base-dir", base]);
-        assert.equal(result.code, EXIT.notConnected);
-        assert.include(result.stderr, "Run threadlines connect");
-        assert.deepEqual(readCredentials(base).resources[`http://127.0.0.1:${port}/mcp/connect`], {
-          clientId: "client-1",
-        });
-      }),
-    );
   });
 
   it.live("says Threadlines isn't running when nothing answers", () =>
