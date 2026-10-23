@@ -13,7 +13,9 @@
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import type * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
@@ -42,6 +44,7 @@ import { type ConnectClient, makeConnectClient } from "./connectClient.ts";
 import {
   forgetAllConnectTokens,
   forgetConnectToken,
+  rememberConnectSession,
   readConnectCredential,
 } from "./connectCredentials.ts";
 import {
@@ -145,10 +148,18 @@ const withClient = <A, E, R>(
     if (token === undefined) {
       return yield* new ConnectError({ reason: "signed_out", message: SIGNED_OUT_MESSAGE });
     }
+    // The session is kept from inside the client's own calls.
+    const files = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const client = yield* makeConnectClient({
       resource: target.resource,
       token,
       clientVersion: CLIENT_VERSION,
+      sessionId: credential?.sessionId,
+      onSession: (sessionId) =>
+        rememberConnectSession(location.credentialsPath, target.resource, token, sessionId).pipe(
+          Effect.ignore,
+          Effect.provideContext(files),
+        ),
     });
     return yield* use(client).pipe(
       Effect.tapError((error) =>

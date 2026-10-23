@@ -15,6 +15,7 @@
  *   Refusals are outcomes in those results, never errors.
  */
 import * as Data from "effect/Data";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -122,13 +123,32 @@ export interface ConnectClient {
   ) => Effect.Effect<Tool.Success<T>, ConnectError>;
 }
 
+/**
+ * How long one call may take, request and whole reply: a start sets up a
+ * worktree and runs the setup script first, a wait holds for up to 50 s by
+ * design, and everything else answers at once.
+ */
+const callDeadline = (toolName: string): Duration.Duration =>
+  toolName === "thread_start"
+    ? Duration.minutes(5)
+    : toolName === "thread_wait"
+      ? Duration.seconds(75)
+      : Duration.seconds(60);
+const INITIALIZE_DEADLINE = Duration.seconds(15);
+/** Tools that change something: when one times out, it may still have happened. */
+const CHANGES = new Set(["thread_start", "thread_send", "thread_stop"]);
+
 export const makeConnectClient = Effect.fn("cli.connect.makeClient")(function* (input: {
   readonly resource: string;
   readonly token: string;
   readonly clientVersion: string;
+  /** A session an earlier command opened with this token; tried before opening another. */
+  readonly sessionId?: string | null | undefined;
+  /** Told about each session this client opens, to keep for the next command. */
+  readonly onSession?: ((sessionId: string) => Effect.Effect<void>) | undefined;
 }) {
   const httpClient = yield* HttpClient.HttpClient;
-  const session = yield* Ref.make<string | null>(null);
+  const session = yield* Ref.make<string | null>(input.sessionId ?? null);
   const nextId = yield* Ref.make(1);
 
   const post = (message: unknown, sessionId: string | null) =>
@@ -201,14 +221,32 @@ export const makeConnectClient = Effect.fn("cli.connect.makeClient")(function* (
       sessionId,
     );
     yield* checkStatus(initialized, sessionId);
+    if (sessionId !== null && input.onSession !== undefined) yield* input.onSession(sessionId);
   }).pipe(
     Effect.catchTag("SessionLost", () =>
       Effect.fail(failed("Threadlines dropped the session as it began.")),
     ),
+    Effect.timeoutOrElse({
+      duration: INITIALIZE_DEADLINE,
+      orElse: () => Effect.fail(failed("Threadlines didn't answer in time. Is it busy or stuck?")),
+    }),
   );
 
   const callTool = (name: string, args: unknown) =>
-    request("tools/call", { name, arguments: args }).pipe(Effect.map(({ result }) => result));
+    request("tools/call", { name, arguments: args }).pipe(
+      Effect.map(({ result }) => result),
+      Effect.timeoutOrElse({
+        duration: callDeadline(name),
+        orElse: () =>
+          Effect.fail(
+            failed(
+              CHANGES.has(name)
+                ? "Threadlines didn't answer in time. It may still have done it: check with threadlines thread list --mine before trying again."
+                : "Threadlines didn't answer in time. Is it busy or stuck?",
+            ),
+          ),
+      }),
+    );
 
   const call = <T extends Tool.Any>(tool: T, parameters: Tool.ParametersEncoded<T>) =>
     Effect.gen(function* () {

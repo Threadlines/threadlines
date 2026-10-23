@@ -28,6 +28,12 @@ export const ConnectCredential = Schema.Struct({
   accessToken: Schema.optional(Schema.String),
   /** What the user allowed at sign-in: `threads:read`, maybe with `threads:start`. */
   scope: Schema.optional(Schema.String),
+  /**
+   * The MCP session the last command opened with this token. The next
+   * command picks it up instead of opening another, since the server keeps
+   * every session it opened until it restarts.
+   */
+  sessionId: Schema.optional(Schema.String),
 });
 export type ConnectCredential = typeof ConnectCredential.Type;
 
@@ -148,6 +154,19 @@ export const keepConnectRegistration = (filePath: string, resource: string, clie
   updateCredentials(filePath, (resources) =>
     resources[resource] === undefined ? { ...resources, [resource]: { clientId } } : resources,
   );
+
+/** Keeps the MCP session a command opened, for the next command with the same token. */
+export const rememberConnectSession = (
+  filePath: string,
+  resource: string,
+  token: string,
+  sessionId: string,
+) =>
+  updateCredentials(filePath, (resources) => {
+    const existing = resources[resource];
+    if (existing?.accessToken !== token || existing.sessionId === sessionId) return resources;
+    return { ...resources, [resource]: { ...existing, sessionId } };
+  });
 
 /**
  * After a 401: forgets `token`, keeping the registration so the next

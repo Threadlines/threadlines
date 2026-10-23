@@ -523,6 +523,35 @@ describe("threadlines thread", () => {
     );
   });
 
+  it.live("picks up the session an earlier command opened instead of opening another", () => {
+    const script = defaultScript();
+    const seen = newSeen();
+    return withStandIn(script, seen, (port) =>
+      Effect.gen(function* () {
+        const resource = `http://127.0.0.1:${port}/mcp/connect`;
+        const kept: Array<string> = [];
+        const first = yield* makeConnectClient({
+          resource,
+          token: TOKEN,
+          clientVersion: "0.0.0",
+          onSession: (sessionId) => Effect.sync(() => kept.push(sessionId)),
+        }).pipe(Effect.provide(FetchHttpClient.layer));
+        yield* first.call(ProjectsTool, {});
+        assert.equal(kept.length, 1);
+        // A later command, with what the first one kept.
+        const second = yield* makeConnectClient({
+          resource,
+          token: TOKEN,
+          clientVersion: "0.0.0",
+          sessionId: kept[0],
+        }).pipe(Effect.provide(FetchHttpClient.layer));
+        yield* second.call(ProjectsTool, {});
+        assert.equal(seen.initializes, 1);
+        assert.equal(seen.toolCalls.length, 2);
+      }),
+    );
+  });
+
   it.live("initializes again when Threadlines forgets the session", () => {
     const script = defaultScript();
     const seen = newSeen();
