@@ -1582,6 +1582,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { agentModels: event.payload.agentModels }
               : {}),
             ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
+            ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1617,6 +1618,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { agentModels: event.payload.agentModels }
               : {}),
             ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
+            ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
             isStreaming: false,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.createdAt,

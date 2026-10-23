@@ -80,6 +80,7 @@ import { ServerRuntimeStartup, ServerRuntimeStartupLive } from "./serverRuntimeS
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { RealtimeVoiceDevicesLive } from "./orchestration/Layers/RealtimeVoiceDevices.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { ChildThreadReactorLive } from "./orchestration/Layers/ChildThreadReactor.ts";
 import { ThreadContextSeedBuilderLive } from "./provider/contextSeed/ThreadContextSeedBuilder.ts";
@@ -323,6 +324,8 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ProviderCommandReactorLive),
   // Both reactors above take these (optionally), so they come after them.
   Layer.provideMerge(Layer.mergeAll(RemoteRequestTurnEndsLive, RemoteRequestGateLive)),
+  // Ingestion reads who spoke; the WebSocket route notes it.
+  Layer.provideMerge(RealtimeVoiceDevicesLive),
   Layer.provideMerge(ScheduledTasksLayerLive),
   Layer.provideMerge(ProjectSetupsLayerLive),
   Layer.provideMerge(ComputerLinksLayerLive),

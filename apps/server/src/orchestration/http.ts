@@ -9,6 +9,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 
 import { ServerAuth } from "../auth/Services/ServerAuth.ts";
 import { normalizeDispatchCommand } from "./Normalizer.ts";
+import { messageSentFromClient, withMessageSentFrom } from "./messageSentFrom.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
@@ -67,7 +68,7 @@ export const orchestrationDispatchRouteLayer = HttpRouter.add(
   "POST",
   "/api/orchestration/dispatch",
   Effect.gen(function* () {
-    yield* authenticateOwnerSession;
+    const session = yield* authenticateOwnerSession;
     const orchestrationEngine = yield* OrchestrationEngineService;
     const command = yield* HttpServerRequest.schemaBodyJson(ClientOrchestrationCommand).pipe(
       Effect.mapError(
@@ -78,7 +79,10 @@ export const orchestrationDispatchRouteLayer = HttpRouter.add(
           }),
       ),
     );
-    const normalizedCommand = yield* normalizeDispatchCommand(command);
+    const normalizedCommand = withMessageSentFrom(
+      yield* normalizeDispatchCommand(command),
+      messageSentFromClient(session.client),
+    );
     const result = yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
       Effect.mapError(
         (cause) =>

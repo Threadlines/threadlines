@@ -288,6 +288,7 @@ export function exportThreadHistory(thread: OrchestrationThread): {
         : {}),
       turnId: message.turnId,
       ...(message.agentModels !== undefined ? { agentModels: message.agentModels } : {}),
+      ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
       createdAt: message.createdAt,
     }));
   const activities = thread.activities
