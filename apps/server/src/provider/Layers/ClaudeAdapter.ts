@@ -722,6 +722,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
     readonly workflowSizeGuideline?: ClaudeWorkflowSizeGuideline | null;
+    readonly env?: Readonly<Record<string, string>> | null;
   }) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
   /** Optional: absent on CLIs that predate in-session plugin and skill reloads. */
@@ -823,6 +824,12 @@ export interface ClaudeAdapterLiveOptions {
    * version known to take it, so it asks this until then.
    */
   readonly installedCliVersion?: Effect.Effect<string | undefined>;
+  /**
+   * Whether Claude keeps suggesting the next message while it warns that
+   * usage runs fast (Settings › Threads). Read like the workflow size.
+   * Absent: Claude's own rule, which skips them then.
+   */
+  readonly suggestionsWhenUsageRunsFast?: Effect.Effect<boolean>;
 }
 
 /**
@@ -1064,9 +1071,9 @@ function getEffectiveClaudeAgentEffort(effort: string | null | undefined): Claud
 }
 
 /** Session option knobs that map to the SDK's flag-settings layer. Derived
- *  from the model selection and the workflow size setting at session start
- *  and re-derived per turn so changes apply in-session via
- *  `applyFlagSettings` instead of a restart. */
+ *  from the model selection and the Settings choices at session start and
+ *  re-derived per turn so changes apply in-session via `applyFlagSettings`
+ *  instead of a restart. */
 interface ClaudeFlagSettingsSnapshot {
   readonly effortLevel: ClaudeSdkEffort | null;
   readonly alwaysThinkingEnabled: boolean | null;
@@ -1077,26 +1084,71 @@ interface ClaudeFlagSettingsSnapshot {
   readonly workflowSizeSupported: boolean;
   /** Null: Claude's own default (and a size set in its settings files) stands. */
   readonly workflowSizeGuideline: ClaudeWorkflowSizeGuideline | null;
+  /** Keep suggesting the next message while Claude warns usage runs fast. */
+  readonly suggestionsWhenUsageRunsFast: boolean;
 }
 
 type ClaudeWorkflowSizeGuideline = Exclude<ClaudeWorkflowSize, "default">;
 
-/** The size as Claude takes it, where it takes one. */
-function withWorkflowSize(
+/** What Settings › Threads chooses for every Claude session. */
+interface ClaudeSettingsChoices {
+  readonly workflowSize: ClaudeWorkflowSize;
+  readonly suggestionsWhenUsageRunsFast: boolean;
+}
+
+/**
+ * Claude skips its next-message suggestion while its usage status is a
+ * warning (ahead of pace for the week, or close to the five-hour limit)
+ * unless this variable is true. Set through the flag layer's `env`, which a
+ * running session takes without a restart.
+ */
+const CLAUDE_PROMPT_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION";
+
+/** The Settings choices as Claude takes them; the size only where it takes one. */
+function withSettingsChoices(
   snapshot: ClaudeFlagSettingsSnapshot,
-  workflowSize: ClaudeWorkflowSize,
+  choices: ClaudeSettingsChoices,
 ): ClaudeFlagSettingsSnapshot {
   return {
     ...snapshot,
     workflowSizeGuideline:
-      snapshot.workflowSizeSupported && workflowSize !== "default" ? workflowSize : null,
+      snapshot.workflowSizeSupported && choices.workflowSize !== "default"
+        ? choices.workflowSize
+        : null,
+    suggestionsWhenUsageRunsFast: choices.suggestionsWhenUsageRunsFast,
   };
+}
+
+/**
+ * The flag layer's `env` values to send, in order, when the suggestions choice
+ * changed; none when it did not. Claude copies flag `env` into its own
+ * environment and keeps a copied value after the key is cleared, though
+ * clearing it lays the `env` of Claude's settings files back on top. So off
+ * first writes back the value the session started with (empty reads as
+ * unset), then clears the key to bring back a value the user's settings
+ * files set.
+ */
+function suggestionsEnvSteps(
+  current: ClaudeFlagSettingsSnapshot,
+  desired: ClaudeFlagSettingsSnapshot,
+  sessionEnvironment: NodeJS.ProcessEnv,
+): ReadonlyArray<Readonly<Record<string, string>> | null> {
+  if (desired.suggestionsWhenUsageRunsFast === current.suggestionsWhenUsageRunsFast) {
+    return [];
+  }
+  if (desired.suggestionsWhenUsageRunsFast) {
+    return [{ [CLAUDE_PROMPT_SUGGESTION_ENV]: "true" }];
+  }
+  return [
+    { [CLAUDE_PROMPT_SUGGESTION_ENV]: sessionEnvironment[CLAUDE_PROMPT_SUGGESTION_ENV] ?? "" },
+    null,
+  ];
 }
 
 function deriveClaudeFlagSettings(
   modelSelection: ModelSelection | undefined,
   capabilities: ModelCapabilities,
-  workflowSize: ClaudeWorkflowSize,
+  choices: ClaudeSettingsChoices,
 ): ClaudeFlagSettingsSnapshot {
   // Resolving every option together lets a selection saved with the old
   // "ultracode" effort level land as Extra High plus the Ultracode switch.
@@ -1109,7 +1161,7 @@ function deriveClaudeFlagSettings(
   const effortValue = currentValue("effort");
   const effort = typeof effortValue === "string" ? effortValue : null;
   const thinking = currentValue("thinking");
-  return withWorkflowSize(
+  return withSettingsChoices(
     {
       effortLevel: getEffectiveClaudeAgentEffort(effort),
       alwaysThinkingEnabled: typeof thinking === "boolean" ? thinking : null,
@@ -1117,8 +1169,9 @@ function deriveClaudeFlagSettings(
       ultracode: isClaudeUltracodeEffort(effort) || currentValue("ultracode") === true,
       workflowSizeSupported: descriptors.some((descriptor) => descriptor.id === "ultracode"),
       workflowSizeGuideline: null,
+      suggestionsWhenUsageRunsFast: false,
     },
-    workflowSize,
+    choices,
   );
 }
 
@@ -1132,7 +1185,8 @@ function claudeFlagSettingsEqual(
     left.fastMode === right.fastMode &&
     left.ultracode === right.ultracode &&
     left.workflowSizeSupported === right.workflowSizeSupported &&
-    left.workflowSizeGuideline === right.workflowSizeGuideline
+    left.workflowSizeGuideline === right.workflowSizeGuideline &&
+    left.suggestionsWhenUsageRunsFast === right.suggestionsWhenUsageRunsFast
   );
 }
 
@@ -3849,8 +3903,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   options?: ClaudeAdapterLiveOptions,
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("claudeAgent");
-  const currentWorkflowSize =
-    options?.workflowSize ?? Effect.succeed<ClaudeWorkflowSize>("default");
+  const currentSettingsChoices = Effect.all({
+    workflowSize: options?.workflowSize ?? Effect.succeed<ClaudeWorkflowSize>("default"),
+    suggestionsWhenUsageRunsFast: options?.suggestionsWhenUsageRunsFast ?? Effect.succeed(false),
+  });
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
@@ -8858,7 +8914,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const flagSettings = deriveClaudeFlagSettings(
         modelSelection,
         modelCapabilities,
-        yield* currentWorkflowSize,
+        yield* currentSettingsChoices,
       );
       const effectiveEffort = flagSettings.effortLevel;
       const permissionMode = claudePermissionModeFor(
@@ -8875,6 +8931,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(flagSettings.ultracode ? { ultracode: true } : {}),
         ...(flagSettings.workflowSizeGuideline !== null
           ? { workflowSizeGuideline: flagSettings.workflowSizeGuideline }
+          : {}),
+        ...(flagSettings.suggestionsWhenUsageRunsFast
+          ? { env: { [CLAUDE_PROMPT_SUGGESTION_ENV]: "true" } }
           : {}),
       };
       // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
@@ -9431,16 +9490,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     // Apply option changes (effort, thinking, fast mode, ultracode, and the
-    // workflow size from Settings) to the running query instead of
-    // restarting the session. Best-effort: a failed apply must not block the
-    // user's turn, and an un-updated snapshot means the next turn retries.
+    // Settings choices) to the running query instead of restarting the
+    // session. Best-effort: a failed apply must not block the user's turn,
+    // and an un-updated snapshot means the next turn retries.
     {
-      const workflowSize = yield* currentWorkflowSize;
+      const choices = yield* currentSettingsChoices;
       const desiredFlagSettings =
         modelSelection !== undefined
-          ? deriveClaudeFlagSettings(modelSelection, modelCapabilities, workflowSize)
-          : withWorkflowSize(context.currentFlagSettings, workflowSize);
+          ? deriveClaudeFlagSettings(modelSelection, modelCapabilities, choices)
+          : withSettingsChoices(context.currentFlagSettings, choices);
       if (!claudeFlagSettingsEqual(desiredFlagSettings, context.currentFlagSettings)) {
+        const [suggestionsEnv, ...laterSuggestionsEnvs] = suggestionsEnvSteps(
+          context.currentFlagSettings,
+          desiredFlagSettings,
+          claudeEnvironment,
+        );
         const applyFlagSettings = context.query.applyFlagSettings?.bind(context.query);
         if (applyFlagSettings === undefined) {
           yield* Effect.logWarning("claude adapter cannot apply option changes in-session", {
@@ -9449,15 +9513,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           });
         } else {
           yield* Effect.tryPromise({
-            try: () =>
-              applyFlagSettings({
+            try: async () => {
+              await applyFlagSettings({
                 effortLevel: desiredFlagSettings.effortLevel,
                 alwaysThinkingEnabled: desiredFlagSettings.alwaysThinkingEnabled,
                 fastMode: desiredFlagSettings.fastMode ? true : null,
                 ultracode: desiredFlagSettings.ultracode ? true : null,
                 // Null clears an earlier choice; leaving the key out would keep it.
                 workflowSizeGuideline: desiredFlagSettings.workflowSizeGuideline,
-              }),
+                ...(suggestionsEnv !== undefined ? { env: suggestionsEnv } : {}),
+              });
+              for (const env of laterSuggestionsEnvs) {
+                await applyFlagSettings({ env });
+              }
+            },
             catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings", cause),
           }).pipe(
             Effect.tap(() =>

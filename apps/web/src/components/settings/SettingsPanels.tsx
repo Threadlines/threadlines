@@ -470,6 +470,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.claudeWorkflowSize !== DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize
         ? ["Claude workflow size"]
         : []),
+      ...(settings.claudeSuggestionsWhenUsageRunsFast !==
+      DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast
+        ? ["Keep Claude's suggestions when you're using a lot"]
+        : []),
       ...(settings.enableCommandRequests === false ? ["Command requests"] : []),
       ...(settings.startAgentsWhileTyping === false ? ["Start agents while you type"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
@@ -501,6 +505,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableAgentPages,
       settings.enableClaudeArtifacts,
       settings.claudeWorkflowSize,
+      settings.claudeSuggestionsWhenUsageRunsFast,
       settings.enableCommandRequests,
       settings.startAgentsWhileTyping,
       settings.agentInvites,
@@ -569,6 +574,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       enableAgentPages: true,
       enableClaudeArtifacts: false,
       claudeWorkflowSize: DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize,
+      claudeSuggestionsWhenUsageRunsFast:
+        DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast,
       enableCommandRequests: true,
       startAgentsWhileTyping: true,
       agentInvites: "ask",

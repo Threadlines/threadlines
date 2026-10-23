@@ -587,6 +587,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         installedCliVersion: snapshot.getSnapshot.pipe(
           Effect.map((provider) => provider.version ?? undefined),
         ),
+        // Read live as well. Unreadable settings leave Claude's own rule.
+        suggestionsWhenUsageRunsFast: serverSettings.getSettings.pipe(
+          Effect.map((settings) => settings.claudeSuggestionsWhenUsageRunsFast),
+          Effect.orElseSucceed(() => false),
+        ),
         onAccountRateLimitsUpdated: (rateLimitInfo) =>
           Effect.gen(function* () {
             const checkedAt = DateTime.formatIso(yield* DateTime.now);
