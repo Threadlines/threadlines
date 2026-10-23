@@ -168,6 +168,20 @@ export function parseProviderSettingsSearch(
 }
 
 /**
+ * `?section=agents` on the connections page brings its Agents group into
+ * view: the command palette's "Connect an agent" opens it there.
+ */
+export interface ConnectionsSettingsSearch {
+  readonly section?: "agents";
+}
+
+export function parseConnectionsSettingsSearch(
+  search: Record<string, unknown>,
+): ConnectionsSettingsSearch {
+  return search["section"] === "agents" ? { section: "agents" } : {};
+}
+
+/**
  * Resolves where the settings `beforeLoad` guard should redirect, or null to
  * render the requested path. Mobile viewports render a full-page section
  * index at `/settings` (drill-in navigation) instead of teleporting to a

@@ -2,6 +2,8 @@ import {
   ORCHESTRATION_WS_METHODS,
   MessageId,
   type OrchestrationReadModel,
+  OutsideAgentConnectionId,
+  OutsideAgentRequestId,
   ProviderInstanceId,
   type ThreadId,
   WS_METHODS,
@@ -45,6 +47,9 @@ import {
   dispatchInputKey,
   mountChatView,
   registerChatViewSuiteHooks,
+  setPrimaryOutsideAgentsSnapshot,
+  setPrimarySessionRole,
+  withOutsideAgentsFixture,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -89,6 +94,82 @@ describe("ChatView (full app): command palette and search", () => {
         expect(field).not.toBeNull();
         expect(document.activeElement).toBe(field);
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows an agent's sign-in over the thread to this computer's owner, and opens its group from the palette", async () => {
+    const requestId = OutsideAgentRequestId.make("request-claude");
+    setPrimarySessionRole("owner");
+    setPrimaryOutsideAgentsSnapshot({
+      address: "http://127.0.0.1:3773/mcp/connect",
+      connections: [],
+      pending: [
+        {
+          requestId,
+          name: "Claude Code",
+          code: "K4D-82P",
+          callbackPort: 51_234,
+          requestedAccess: "start",
+          replaces: null,
+          createdAt: new Date(Date.now() - 5_000).toISOString(),
+          expiresAt: new Date(Date.now() + 295_000).toISOString(),
+        },
+      ],
+      quietUntil: null,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-outside-agent-sign-in" as MessageId,
+        targetText: "outside agent sign-in",
+      }),
+      configureFixture: withOutsideAgentsFixture,
+      resolveRpc: (body) =>
+        body._tag === WS_METHODS.outsideAgentsApprove
+          ? {
+              connectionId: OutsideAgentConnectionId.make("connection-claude"),
+              name: "Claude Code",
+              access: "see",
+              maxRuntimeMode: "approval-required",
+              projectIds: null,
+              createdAt: new Date().toISOString(),
+              lastUsedAt: null,
+            }
+          : undefined,
+    });
+
+    try {
+      const dialog = page.getByTestId("outside-agent-dialog");
+      await expect
+        .element(dialog.getByRole("heading", { name: "Claude Code wants to use Threadlines" }))
+        .toBeVisible();
+      await dialog.getByTestId("outside-agent-allow").click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find((request) => request._tag === WS_METHODS.outsideAgentsApprove),
+        ).toMatchObject({
+          requestId,
+          access: "see",
+          maxRuntimeMode: "approval-required",
+          projectIds: null,
+        });
+      });
+      await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
+
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Connect an agent", { exact: true })
+        .click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/settings/connections",
+        "Connect an agent should open Settings › Connections.",
+      );
+      expect(mounted.router.state.location.search).toEqual({ section: "agents" });
+      await expect.element(page.getByTestId("outside-agents-section")).toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

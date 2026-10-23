@@ -12,6 +12,12 @@ import {
   type DesktopUpdateChannel,
   type DesktopUpdateState,
   type LocalApi,
+  OutsideAgentConnectionId,
+  OutsideAgentRequestId,
+  type OutsideAgentConnection,
+  type OutsideAgentPendingRequest,
+  type OutsideAgentsSnapshot,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type RelayAccessSnapshot,
@@ -64,6 +70,8 @@ import {
   useComputerLinksStore,
 } from "../../environments/links/computerLinks";
 import { ComputerConnectionGroup } from "../fleet/ComputerConnectionGroup";
+import { OutsideAgentsHost } from "../outsideAgents/OutsideAgentsHost";
+import { useStore } from "../../store";
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import {
   closeConnectComputerDialog,
@@ -428,6 +436,52 @@ const relayAccessHarness = vi.hoisted(() => {
   };
 });
 
+/** This computer's agents outside Threadlines, as its server would stream and answer them. */
+const outsideAgentsHarness = vi.hoisted(() => {
+  let snapshot: OutsideAgentsSnapshot | null = null;
+  const listeners = new Set<(snapshot: OutsideAgentsSnapshot) => void>();
+  const client = {
+    subscribe: (listener: (snapshot: OutsideAgentsSnapshot) => void) => {
+      listeners.add(listener);
+      if (snapshot) listener(snapshot);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    approve: vi.fn(),
+    deny: vi.fn(),
+    denyAll: vi.fn(),
+    resumeRequests: vi.fn(),
+    update: vi.fn(),
+    remove: vi.fn(),
+  };
+  return {
+    client,
+    /** Streams open now. */
+    listenerCount: () => listeners.size,
+    reset() {
+      snapshot = null;
+      listeners.clear();
+      for (const call of [
+        client.approve,
+        client.deny,
+        client.denyAll,
+        client.resumeRequests,
+        client.update,
+        client.remove,
+      ]) {
+        call.mockReset().mockResolvedValue(undefined);
+      }
+    },
+    emit(next: OutsideAgentsSnapshot) {
+      snapshot = next;
+      for (const listener of listeners) {
+        listener(next);
+      }
+    },
+  };
+});
+
 vi.mock("../../environments/runtime", () => {
   const primaryConnection = {
     kind: "primary" as const,
@@ -449,6 +503,7 @@ vi.mock("../../environments/runtime", () => {
       },
       providerAuth: providerAuthHarness.client,
       relay: relayAccessHarness.client,
+      outsideAgents: outsideAgentsHarness.client,
     },
     ensureBootstrapped: async () => undefined,
     reconnect: async () => undefined,
@@ -4944,5 +4999,275 @@ describe("ProviderSettingsPanel community agents", () => {
     });
     expect(openExternal).toHaveBeenCalledTimes(1);
     expect(openExternal).toHaveBeenCalledWith("https://pi.example/device?code=ABCD");
+  });
+});
+
+describe("Agents outside Threadlines", () => {
+  const THIS_COMPUTER = EnvironmentId.make("environment-local");
+  const WEB = ProjectId.make("project-web");
+  const API = ProjectId.make("project-api");
+  const ADDRESS = "http://127.0.0.1:3773/mcp/connect";
+  let mounted: Awaited<ReturnType<typeof render>> | null = null;
+
+  function pendingRequest(
+    id: string,
+    overrides: Partial<OutsideAgentPendingRequest> = {},
+  ): OutsideAgentPendingRequest {
+    return {
+      requestId: OutsideAgentRequestId.make(id),
+      name: "Claude Code",
+      code: "K4D-82P",
+      callbackPort: 51_234,
+      requestedAccess: "start",
+      replaces: null,
+      createdAt: new Date(Date.now() - 10_000).toISOString(),
+      expiresAt: new Date(Date.now() + 290_000).toISOString(),
+      ...overrides,
+    };
+  }
+
+  function connection(overrides: Partial<OutsideAgentConnection> = {}): OutsideAgentConnection {
+    return {
+      connectionId: OutsideAgentConnectionId.make("connection-claude"),
+      name: "Claude Code",
+      access: "start",
+      maxRuntimeMode: "approval-required",
+      projectIds: [WEB],
+      createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+      lastUsedAt: new Date(Date.now() - 2 * 60_000 - 5_000).toISOString(),
+      ...overrides,
+    };
+  }
+
+  function snapshot(parts: Partial<OutsideAgentsSnapshot> = {}): OutsideAgentsSnapshot {
+    return { address: ADDRESS, connections: [], pending: [], quietUntil: null, ...parts };
+  }
+
+  async function mountConnectionsWithHost() {
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ConnectionsSettings />
+        <OutsideAgentsHost />
+      </TestAppProviders>,
+    );
+  }
+
+  beforeEach(async () => {
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    authAccessHarness.reset();
+    relayAccessHarness.reset();
+    savedComputersHarness.reset();
+    outsideAgentsHarness.reset();
+    writePrimaryEnvironmentDescriptor({
+      environmentId: THIS_COMPUTER,
+      label: "Local environment",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.0.0-test",
+      capabilities: { repositoryIdentity: true, outsideAgents: true },
+    });
+    useStore.getState().syncServerShellSnapshot(
+      {
+        snapshotSequence: 1,
+        projects: [WEB, API].map((id) => ({
+          id,
+          kind: "workspace" as const,
+          title: id === WEB ? "web" : "api",
+          workspaceRoot: `/repo/${id}`,
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-10-01T00:00:00.000Z",
+          updatedAt: "2026-10-01T00:00:00.000Z",
+        })),
+        threads: [],
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      },
+      THIS_COMPUTER,
+    );
+    // The desktop app's own window is its computer's owner.
+    window.desktopBridge = createDesktopBridgeStub();
+    setServerConfigSnapshot(createBaseServerConfig());
+  });
+
+  afterEach(async () => {
+    await mounted?.unmount();
+    mounted = null;
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(window, "desktopBridge");
+    document.body.innerHTML = "";
+    resetPrimaryEnvironmentDescriptorForTests();
+    useStore.setState({ environmentStateById: {}, activeEnvironmentId: null });
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    outsideAgentsHarness.reset();
+  });
+
+  it("allows a sign-in to start threads in the projects picked", async () => {
+    outsideAgentsHarness.emit(
+      snapshot({
+        pending: [
+          pendingRequest("request-1", {
+            replaces: { connectionId: connection().connectionId, name: "Claude Code" },
+          }),
+        ],
+      }),
+    );
+    outsideAgentsHarness.client.approve.mockResolvedValue(connection());
+    await mountConnectionsWithHost();
+
+    const dialog = page.getByTestId("outside-agent-dialog");
+    await expect
+      .element(dialog.getByRole("heading", { name: "Claude Code wants to use Threadlines" }))
+      .toBeVisible();
+    await expect.element(dialog.getByTestId("outside-agent-code")).toHaveTextContent("K4D-82P");
+    await expect
+      .element(
+        dialog.getByText("Name given by the agent. It signs in on this computer (port 51234)."),
+      )
+      .toBeVisible();
+    await expect
+      .element(dialog.getByTestId("outside-agent-replaces"))
+      .toHaveTextContent("Replaces your earlier Claude Code connection.");
+    // A sign-in starts at the least: see threads, every project.
+    await expect.element(dialog.getByTestId("outside-agent-ceiling")).not.toBeInTheDocument();
+
+    await dialog.getByTestId("outside-agent-access-start").click();
+    await expect
+      .element(dialog.getByTestId("outside-agent-ceiling"))
+      .toHaveTextContent("Supervised");
+    await dialog.getByTestId("outside-agent-projects-some").click();
+    // Nothing ticked yet: nothing to allow.
+    await expect.element(dialog.getByTestId("outside-agent-allow")).toBeDisabled();
+    await dialog.getByRole("checkbox", { name: "web" }).click();
+    await dialog.getByTestId("outside-agent-allow").click();
+
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.approve).toHaveBeenCalledWith({
+        requestId: "request-1",
+        access: "start",
+        maxRuntimeMode: "approval-required",
+        projectIds: [WEB],
+      });
+    });
+    await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
+  });
+
+  it("denies one sign-in, denies the rest, then takes requests again", async () => {
+    outsideAgentsHarness.emit(
+      snapshot({
+        pending: [
+          pendingRequest("request-1"),
+          pendingRequest("request-2", { name: "Gemini CLI", requestedAccess: "see" }),
+          pendingRequest("request-3", { name: "Codex" }),
+        ],
+      }),
+    );
+    await mountConnectionsWithHost();
+
+    const dialog = page.getByTestId("outside-agent-dialog");
+    await expect.element(dialog.getByText("2 more waiting")).toBeVisible();
+    await dialog.getByTestId("outside-agent-deny").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.deny).toHaveBeenCalledWith({ requestId: "request-1" });
+    });
+
+    // The next one asked only to see threads: it can't be allowed to start them.
+    await expect
+      .element(dialog.getByRole("heading", { name: "Gemini CLI wants to use Threadlines" }))
+      .toBeVisible();
+    await expect
+      .element(dialog.getByTestId("outside-agent-access-start"))
+      .toHaveAttribute("aria-disabled", "true");
+    await expect.element(dialog.getByText("It only asked to see threads.")).toBeVisible();
+    await expect.element(dialog.getByText("1 more waiting")).toBeVisible();
+
+    await dialog.getByTestId("outside-agent-deny-all").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.denyAll).toHaveBeenCalledTimes(1);
+    });
+    await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
+
+    outsideAgentsHarness.emit(
+      snapshot({ quietUntil: new Date(Date.now() + 9 * 60_000 + 30_000).toISOString() }),
+    );
+    const quiet = page.getByTestId("outside-agents-quiet");
+    await expect.element(quiet).toMatchTextContent("Not taking new agent sign-ins (10 min left)");
+    await quiet.getByRole("button", { name: "Take requests again" }).click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.resumeRequests).toHaveBeenCalledTimes(1);
+    });
+    await expect.element(page.getByTestId("outside-agents-quiet")).not.toBeInTheDocument();
+  });
+
+  it("changes what a connection may do, and removes it after asking", async () => {
+    const claude = connection();
+    outsideAgentsHarness.emit(snapshot({ connections: [claude] }));
+    outsideAgentsHarness.client.update.mockImplementation(
+      async (input: { access: "see" | "start" }) => ({ ...claude, ...input }),
+    );
+    await mountConnectionsWithHost();
+
+    await expect.element(page.getByTestId("outside-agents-address")).toHaveTextContent(ADDRESS);
+    const row = page.getByTestId(`outside-agent-row-${claude.connectionId}`);
+    await expect.element(row).toMatchTextContent("Starts threads · Supervised · web · Used 2m ago");
+
+    await row.getByRole("button", { name: "Change", exact: true }).click();
+    const dialog = page.getByTestId("outside-agent-dialog");
+    await expect
+      .element(dialog.getByRole("heading", { name: "Change what Claude Code can do" }))
+      .toBeVisible();
+    await expect.element(dialog.getByTestId("outside-agent-code")).not.toBeInTheDocument();
+    await expect.element(dialog.getByRole("checkbox", { name: "web" })).toBeChecked();
+    await dialog.getByTestId("outside-agent-access-see").click();
+    await dialog.getByTestId("outside-agent-save").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.update).toHaveBeenCalledWith({
+        connectionId: claude.connectionId,
+        access: "see",
+        maxRuntimeMode: "approval-required",
+        projectIds: [WEB],
+      });
+    });
+    await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
+    await expect.element(row).toMatchTextContent("Sees threads · web · Used 2m ago");
+
+    await row.getByRole("button", { name: "Remove", exact: true }).click();
+    await expect.element(page.getByText("Remove Claude Code?")).toBeVisible();
+    expect(outsideAgentsHarness.client.remove).not.toHaveBeenCalled();
+    await page.getByTestId("outside-agent-remove-confirm").click();
+    await vi.waitFor(() => {
+      expect(outsideAgentsHarness.client.remove).toHaveBeenCalledWith({
+        connectionId: claude.connectionId,
+      });
+    });
+    await expect
+      .element(page.getByTestId(`outside-agent-row-${claude.connectionId}`))
+      .not.toBeInTheDocument();
+  });
+
+  it("shows a device that isn't the computer's owner neither the group nor a sign-in", async () => {
+    Reflect.deleteProperty(window, "desktopBridge");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockImplementation(async (input) => {
+        if (String(input).endsWith("/api/auth/session")) {
+          return Response.json({
+            authenticated: true,
+            auth: createBaseServerConfig().auth,
+            role: "client",
+            sessionMethod: "browser-session-cookie",
+            expiresAt: "2036-05-07T00:00:00.000Z",
+          });
+        }
+        throw new Error(`Unhandled fetch GET ${String(input)}`);
+      }),
+    );
+    outsideAgentsHarness.emit(snapshot({ pending: [pendingRequest("request-1")] }));
+    await mountConnectionsWithHost();
+
+    await expect.element(page.getByText("Owner only")).toBeVisible();
+    await expect.element(page.getByTestId("outside-agents-section")).not.toBeInTheDocument();
+    await expect.element(page.getByTestId("outside-agent-dialog")).not.toBeInTheDocument();
+    expect(outsideAgentsHarness.listenerCount()).toBe(0);
   });
 });

@@ -39,6 +39,7 @@ const STREAM_METHODS = new Set<string>([
   WS_METHODS.scheduledTasksSubscribe,
   WS_METHODS.linksSubscribe,
   WS_METHODS.projectSetupsSubscribe,
+  WS_METHODS.outsideAgentsSubscribe,
 ]);
 
 const ALL_RPC_METHODS = Array.from(WsRpcGroup.requests.keys());

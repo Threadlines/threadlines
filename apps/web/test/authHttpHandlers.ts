@@ -1,4 +1,5 @@
 import {
+  type AuthSessionRole,
   EnvironmentId,
   type ExecutionEnvironmentDescriptor,
   type ServerAuthDescriptor,
@@ -19,7 +20,15 @@ const TEST_ENVIRONMENT_DESCRIPTOR: ExecutionEnvironmentDescriptor = {
   },
 };
 
-export function createAuthenticatedSessionHandlers(getAuthDescriptor: () => ServerAuthDescriptor) {
+/**
+ * The session endpoints of a server this app is signed in to. `getRole`
+ * says who the session is to it (the computer's owner, a device); absent,
+ * the answer names no role, as an older server's does.
+ */
+export function createAuthenticatedSessionHandlers(
+  getAuthDescriptor: () => ServerAuthDescriptor,
+  getRole: () => AuthSessionRole | null = () => null,
+) {
   return [
     http.get("*/.well-known/threadlines/environment", () =>
       HttpResponse.json(TEST_ENVIRONMENT_DESCRIPTOR),
@@ -28,6 +37,7 @@ export function createAuthenticatedSessionHandlers(getAuthDescriptor: () => Serv
       HttpResponse.json({
         authenticated: true,
         auth: getAuthDescriptor(),
+        ...(getRole() !== null ? { role: getRole() } : {}),
         sessionMethod: "browser-session-cookie",
         expiresAt: TEST_SESSION_EXPIRES_AT,
       }),

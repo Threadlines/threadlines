@@ -11,11 +11,11 @@ import { ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
 import { readEnvironmentConnection } from "../../environments/runtime";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { openExternalUrl } from "../../lib/externalLinks";
 import { useScheduledTasksStore } from "../../lib/scheduledTasksState";
 import { cn } from "../../lib/utils";
+import { CopyButton } from "../CopyButton";
 import { SETTINGS_GROUP_ROW_CLASS, SettingsSection } from "../settings/settingsLayout";
 import {
   AlertDialog,
@@ -78,22 +78,6 @@ const eventKeys = {
 /** Reads a task's events again: after a test event or a run again, which the log records. */
 export function refreshEventHistory(queryClient: QueryClient, located: LocatedTask): void {
   void queryClient.invalidateQueries({ queryKey: eventKeys.events(located) });
-}
-
-/** A solid Copy button for one value; says Copied for a moment after. */
-function CopyButton({ value, label }: { readonly value: string; readonly label: string }) {
-  const { copyToClipboard, isCopied } = useCopyToClipboard();
-  return (
-    <Button
-      type="button"
-      size="xs"
-      variant="outline"
-      aria-label={label}
-      onClick={() => copyToClipboard(value, undefined)}
-    >
-      {isCopied ? "Copied" : "Copy"}
-    </Button>
-  );
 }
 
 /** A row of the address panel: a label over a value (an address, a status) and its actions. */

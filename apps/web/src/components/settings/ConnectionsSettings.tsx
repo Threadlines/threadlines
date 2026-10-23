@@ -87,6 +87,7 @@ import {
   revokeServerClientSession,
   revokeServerPairingLink,
   isLoopbackHostname,
+  usePrimaryEnvironmentDescriptor,
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
 } from "~/environments/primary";
@@ -94,6 +95,7 @@ import { useSavedEnvironmentRegistryStore } from "~/environments/runtime";
 import { useUiStateStore } from "~/uiStateStore";
 import { resolveServerConfigVersionMismatch } from "~/versionSkew";
 import { useServerConfig } from "~/rpc/serverState";
+import { OutsideAgentsSection } from "../outsideAgents/OutsideAgentsSection";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
 
@@ -930,7 +932,14 @@ function NetworkAccessDescription({
  * - Connection options: Same network, Tailscale, one-time network links.
  * The hosted app (`surface="phone"`) only has the middle-but-one section.
  */
-export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "phone" }) {
+export function ConnectionsSettings({
+  surface = "full",
+  focusSection,
+}: {
+  surface?: "full" | "phone";
+  /** A group to bring into view on arrival (the command palette's "Connect an agent"). */
+  focusSection?: "agents" | undefined;
+}) {
   const isPhoneSurface = surface === "phone";
   const navigate = useNavigate();
   const desktopBridge = window.desktopBridge;
@@ -993,6 +1002,10 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     (state) => state.setDefaultAdvertisedEndpointKey,
   );
   const canManageLocalBackend = currentSessionRole === "owner";
+  // Agents outside Threadlines sign in to this computer's server; its owner
+  // manages them, where the server takes them.
+  const takesOutsideAgents = usePrimaryEnvironmentDescriptor()?.capabilities.outsideAgents === true;
+  const showsOutsideAgents = !isPhoneSurface && canManageLocalBackend && takesOutsideAgents;
   // How this computer is reachable is its owner's business, on the desktop app.
   const showsServerExposure = !isPhoneSurface && canManageLocalBackend && Boolean(desktopBridge);
   const desktopServerExposureState = showsServerExposure ? storedServerExposureState : null;
@@ -1687,6 +1700,10 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
           />
         </SettingsSection>
       )}
+
+      {showsOutsideAgents ? (
+        <OutsideAgentsSection revealOnArrival={focusSection === "agents"} />
+      ) : null}
 
       {computersSection}
 

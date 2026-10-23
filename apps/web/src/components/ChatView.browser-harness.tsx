@@ -41,6 +41,8 @@ import {
   type ComputerLinkPendingRequest,
   type ComputerLinksSnapshot,
   type OutboundComputerLink,
+  type OutsideAgentsSnapshot,
+  type AuthSessionRole,
   RelayHostId,
   RelayInviteId,
   CheckpointRef,
@@ -215,6 +217,10 @@ let customWsRpcResolver: ((body: NormalizedWsRpcRequestBody) => unknown | undefi
 let suppressInitialShellSnapshot = false;
 /** What this computer's server streams for `links.subscribe`; null sends nothing. */
 let primaryLinksSnapshot: ComputerLinksSnapshot | null = null;
+/** What this computer's server streams for `outsideAgents.subscribe`; null sends nothing. */
+let primaryOutsideAgentsSnapshot: OutsideAgentsSnapshot | null = null;
+/** Who this window's session is to this computer's server; null names no role. */
+let primarySessionRole: AuthSessionRole | null = null;
 const wsLink = ws.link(/ws(s)?:\/\/.*/);
 export const encodeServerConfig = Schema.encodeSync(ServerConfigSchema);
 
@@ -1015,20 +1021,30 @@ export async function saveFleetComputers(
   }
 }
 
-/** This computer's server, and the computers saved from its config, take links. */
-export function withComputerLinksFixture(nextFixture: TestFixture): void {
-  const capabilities = {
-    ...nextFixture.serverConfig.environment.capabilities,
-    computerLinks: true,
-  };
+/** Adds `capabilities` to this computer's server, in its config and its welcome alike. */
+function withPrimaryCapabilities(
+  nextFixture: TestFixture,
+  capabilities: Partial<ServerConfig["environment"]["capabilities"]>,
+): void {
+  const merged = { ...nextFixture.serverConfig.environment.capabilities, ...capabilities };
   nextFixture.serverConfig = {
     ...nextFixture.serverConfig,
-    environment: { ...nextFixture.serverConfig.environment, capabilities },
+    environment: { ...nextFixture.serverConfig.environment, capabilities: merged },
   };
   nextFixture.welcome = {
     ...nextFixture.welcome,
-    environment: { ...nextFixture.welcome.environment, capabilities },
+    environment: { ...nextFixture.welcome.environment, capabilities: merged },
   };
+}
+
+/** This computer's server takes agents outside Threadlines (docs/design/outside-agents.md). */
+export function withOutsideAgentsFixture(nextFixture: TestFixture): void {
+  withPrimaryCapabilities(nextFixture, { outsideAgents: true });
+}
+
+/** This computer's server, and the computers saved from its config, take links. */
+export function withComputerLinksFixture(nextFixture: TestFixture): void {
+  withPrimaryCapabilities(nextFixture, { computerLinks: true });
 }
 
 export function fleetLinksSnapshot(parts: Partial<ComputerLinksSnapshot>): ComputerLinksSnapshot {
@@ -1119,18 +1135,7 @@ export function fakeComputerLinksClient() {
 
 /** This computer's server, and the computers saved from its config, set up projects. */
 export function withProjectSetupFixture(nextFixture: TestFixture): void {
-  const capabilities = {
-    ...nextFixture.serverConfig.environment.capabilities,
-    projectSetup: true,
-  };
-  nextFixture.serverConfig = {
-    ...nextFixture.serverConfig,
-    environment: { ...nextFixture.serverConfig.environment, capabilities },
-  };
-  nextFixture.welcome = {
-    ...nextFixture.welcome,
-    environment: { ...nextFixture.welcome.environment, capabilities },
-  };
+  withPrimaryCapabilities(nextFixture, { projectSetup: true });
 }
 
 export const PROJECT_REPOSITORY_KEY = "github.com/acme/project";
@@ -2314,7 +2319,10 @@ const worker = setupWorker(
       void rpcHarness.onMessage(rawData);
     });
   }),
-  ...createAuthenticatedSessionHandlers(() => fixture.serverConfig.auth),
+  ...createAuthenticatedSessionHandlers(
+    () => fixture.serverConfig.auth,
+    () => primarySessionRole,
+  ),
   http.get("*/attachments/:attachmentId", () =>
     HttpResponse.text(ATTACHMENT_SVG, {
       headers: {
@@ -3187,6 +3195,16 @@ export function setPrimaryLinksSnapshot(snapshot: ComputerLinksSnapshot | null):
   primaryLinksSnapshot = snapshot;
 }
 
+/** Sets what this computer's server first streams for `outsideAgents.subscribe`; null sends nothing. */
+export function setPrimaryOutsideAgentsSnapshot(snapshot: OutsideAgentsSnapshot | null): void {
+  primaryOutsideAgentsSnapshot = snapshot;
+}
+
+/** Makes this window's session this computer's owner (or another role) to its server. */
+export function setPrimarySessionRole(role: AuthSessionRole | null): void {
+  primarySessionRole = role;
+}
+
 /**
  * Registers the hooks every ChatView browser spec shares: the mock service
  * worker, a fresh RPC harness for each test, and reset stores. Call it first
@@ -3240,6 +3258,9 @@ export function registerChatViewSuiteHooks(): void {
         if (request._tag === WS_METHODS.linksSubscribe) {
           return primaryLinksSnapshot === null ? [] : [primaryLinksSnapshot];
         }
+        if (request._tag === WS_METHODS.outsideAgentsSubscribe) {
+          return primaryOutsideAgentsSnapshot === null ? [] : [primaryOutsideAgentsSnapshot];
+        }
         if (request._tag === ORCHESTRATION_WS_METHODS.subscribeShell) {
           if (suppressInitialShellSnapshot) {
             return [];
@@ -3282,6 +3303,8 @@ export function registerChatViewSuiteHooks(): void {
     customWsRpcResolver = null;
     suppressInitialShellSnapshot = false;
     primaryLinksSnapshot = null;
+    primaryOutsideAgentsSnapshot = null;
+    primarySessionRole = null;
     __resetComputerLinksForTests();
     closeConnectComputerDialog();
     closeThreadMoveDialog();
