@@ -830,11 +830,16 @@ describe("ChatMarkdown", () => {
         "Start --> Done",
       );
 
-      // Closed, with nothing after it yet: drawn.
+      // Closed, with nothing after it yet: drawn. The renderer and its
+      // flowchart support are chunks of their own: their first load on a busy
+      // CI runner can outlast waitFor's one second.
       await screen.rerender(<ChatMarkdown text={diagram} cwd="/repo" isStreaming />);
-      await vi.waitFor(() => {
-        expect(document.querySelector("[data-chat-markdown-diagram] svg")).not.toBeNull();
-      });
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-chat-markdown-diagram] svg")).not.toBeNull();
+        },
+        { timeout: 10_000 },
+      );
 
       // And it stays drawn while the reply goes on.
       await screen.rerender(
@@ -875,11 +880,15 @@ describe("ChatMarkdown", () => {
       <ChatMarkdown text={"```mermaid\nflowchart LR\n  A -->\n```"} cwd="/repo" />,
     );
     try {
-      await vi.waitFor(() => {
-        expect(document.querySelector("[data-chat-markdown-diagram-error]")?.textContent).toMatch(
-          /^Couldn't draw this diagram/,
-        );
-      });
+      // Run alone, this is the renderer's first load (see the test above).
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-chat-markdown-diagram-error]")?.textContent).toMatch(
+            /^Couldn't draw this diagram/,
+          );
+        },
+        { timeout: 10_000 },
+      );
       expect(document.querySelector("[data-chat-markdown-diagram]")).toBeNull();
       expect(document.querySelector(".chat-markdown-codeblock pre")?.textContent).toContain(
         "A -->",
