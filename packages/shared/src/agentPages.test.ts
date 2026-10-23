@@ -133,6 +133,20 @@ describe("agentPageFrameHeight", () => {
     expect(agentPageFrameHeight({ height: 5000 }, 880, 9000)).toBe(AGENT_PAGE_MAX_HEIGHT);
   });
 
+  it("fits a page saved at the earlier 2,000px limit to its content", () => {
+    // Published with an automatic height before the limit was raised.
+    const tall = readAgentPageHeights([
+      [832, 2370],
+      [1000, 2323],
+    ]);
+    expect(agentPageFrameHeight({ height: 2000, heights: tall }, AGENT_PAGE_COLUMN_WIDTH)).toBe(
+      2370,
+    );
+    expect(agentPageFrameHeight({ height: 1500, heights: tall }, AGENT_PAGE_COLUMN_WIDTH)).toBe(
+      1500,
+    );
+  });
+
   it("reads a page published with an automatic height as uncapped at any column width", () => {
     // Published when the column was 880 wide: its height is the one measured there.
     const published = readAgentPageHeights([

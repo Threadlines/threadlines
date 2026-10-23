@@ -21,7 +21,14 @@ export const AGENT_PAGE_SHOW_TOOL_NAME = "show_page";
 export const AGENT_PAGE_PREVIEW_TOOL_NAME = "preview_page";
 
 export const AGENT_PAGE_MIN_HEIGHT = 80;
-export const AGENT_PAGE_MAX_HEIGHT = 2000;
+export const AGENT_PAGE_MAX_HEIGHT = 6000;
+/**
+ * The limit before it was raised to AGENT_PAGE_MAX_HEIGHT. A page published
+ * under it with an automatic height taller than that was saved at exactly this
+ * height, so a page saved at it fits its content, as automatic pages do. An
+ * agent that asks for a frame of exactly this height gets the same.
+ */
+const EARLIER_AGENT_PAGE_MAX_HEIGHT = 2000;
 export const AGENT_PAGE_MAX_TITLE_LENGTH = 120;
 /** A stored version, local images already inlined. */
 export const AGENT_PAGE_MAX_BYTES = 16 * 1024 * 1024;
@@ -100,7 +107,8 @@ function measuredHeightAt(heights: AgentPageHeights, width: number): number {
  * A page even a few pixels taller than its frame scrolls inside it and takes
  * the reader's wheel, so the frame fits the page. The agent's `height` caps
  * the frame only when it is below the page's automatic height (the agent
- * asked for a scrolling frame) or when the page was never measured.
+ * asked for a scrolling frame) or when the page was never measured. A page
+ * saved at the earlier limit fits its content (EARLIER_AGENT_PAGE_MAX_HEIGHT).
  */
 export function agentPageFrameHeight(
   page: { readonly height: number; readonly heights?: AgentPageHeights | undefined },
@@ -112,7 +120,8 @@ export function agentPageFrameHeight(
     return clampAgentPageHeight(contentHeight ?? page.height);
   }
   const cap =
-    measuredHeightAt(heights, AGENT_PAGE_AUTO_HEIGHT_WIDTH) > page.height
+    measuredHeightAt(heights, AGENT_PAGE_AUTO_HEIGHT_WIDTH) > page.height &&
+    page.height !== EARLIER_AGENT_PAGE_MAX_HEIGHT
       ? page.height
       : AGENT_PAGE_MAX_HEIGHT;
   return clampAgentPageHeight(Math.min(cap, contentHeight ?? measuredHeightAt(heights, width)));
@@ -458,6 +467,9 @@ export const HOST_CONTEXT_CHANGED_METHOD = "ui/notifications/host-context-change
 export const PAGE_LEFT_METHOD = "threadlines/page-left";
 // Threadlines' own: the reader clicked a picture in the page to see it bigger.
 export const OPEN_IMAGE_METHOD = "threadlines/open-image";
+// Threadlines' own: whether a page taller than its frame has more to scroll to
+// above or below what the frame shows.
+export const SCROLL_EDGES_METHOD = "threadlines/scroll-edges";
 
 /** The most pictures one request may hand the image viewer. Even. */
 export const MAX_OPEN_IMAGES = 200;
@@ -471,16 +483,42 @@ export interface AgentPageImage {
   readonly alt: string;
 }
 
-/** The content height in a framed page's `size-changed` notification. */
-export function readAgentPageContentHeight(data: unknown): number | undefined {
+/** A framed page's own height, and whether the page had finished loading. */
+export interface AgentPageContentSize {
+  readonly height: number;
+  /**
+   * False while the page's pictures and other loads are still coming in, when
+   * it can report less than it ends up needing. A notification that does not
+   * say counts as loaded.
+   */
+  readonly loaded: boolean;
+}
+
+/** The content size in a framed page's `size-changed` notification. */
+export function readAgentPageContentSize(data: unknown): AgentPageContentSize | undefined {
   if (typeof data !== "object" || data === null) return undefined;
   const { jsonrpc, method, params } = data as Record<string, unknown>;
   if (jsonrpc !== "2.0" || method !== SIZE_CHANGED_METHOD) return undefined;
-  const height =
-    typeof params === "object" && params !== null
-      ? (params as { height?: unknown }).height
-      : undefined;
-  return typeof height === "number" && Number.isFinite(height) && height > 0 ? height : undefined;
+  if (typeof params !== "object" || params === null) return undefined;
+  const { height, loaded } = params as { height?: unknown; loaded?: unknown };
+  if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) return undefined;
+  return { height, loaded: loaded !== false };
+}
+
+/** Whether a framed page has more to scroll to above and below what its frame shows. */
+export interface AgentPageScrollEdges {
+  readonly above: boolean;
+  readonly below: boolean;
+}
+
+/** A framed page's `scroll-edges` notification. */
+export function readAgentPageScrollEdges(data: unknown): AgentPageScrollEdges | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const { jsonrpc, method, params } = data as Record<string, unknown>;
+  if (jsonrpc !== "2.0" || method !== SCROLL_EDGES_METHOD) return undefined;
+  if (typeof params !== "object" || params === null) return undefined;
+  const { above, below } = params as { above?: unknown; below?: unknown };
+  return { above: above === true, below: below === true };
 }
 
 /** A page's `ui/open-link` request, if `data` is one with an http(s) URL. */

@@ -6,6 +6,7 @@ import type {
 } from "@threadlines/contracts";
 import {
   AGENT_PAGE_COLUMN_WIDTH,
+  type AgentPageContentSize,
   agentPageFileName,
   agentPageFrameHeight,
   agentPageShareLink,
@@ -75,8 +76,9 @@ const ROW_ACTION_CLASS =
  * content (a row title with the page's glyph), and once the turn ends the
  * agent's line bends into it. Clicking the title folds the panel to that line.
  * The frame keeps the server's measured height until the page reports its
- * own, so nothing below it moves while it loads. A page its provider also put
- * online (a Claude artifact) says where, and opens there.
+ * own, and a page still loading can only grow it, so nothing below it moves
+ * while it loads. A page its provider also put online (a Claude artifact) says
+ * where, and opens there.
  */
 export function AgentPageRow(props: {
   readonly environmentId: EnvironmentId;
@@ -216,6 +218,16 @@ function InlinePage(props: {
   }, []);
   const [contentHeight, setContentHeight] = useState<number>();
   const height = agentPageFrameHeight(props.page, width, contentHeight);
+  const heightRef = useRef(height);
+  useLayoutEffect(() => {
+    heightRef.current = height;
+  });
+  const onContentSize = useCallback(({ height: reported, loaded }: AgentPageContentSize) => {
+    // A page still loading can report less than it ends up needing, its
+    // pictures not in yet: it may grow the frame, but not shrink it until it
+    // has loaded, or the rows below would move up and straight back down.
+    setContentHeight(loaded ? reported : Math.max(reported, heightRef.current));
+  }, []);
   return (
     <div ref={boxRef} className="mt-1 w-full" style={{ height }}>
       {/* A new version of the page is a new document: a fresh frame loads it. */}
@@ -224,7 +236,7 @@ function InlinePage(props: {
         version={props.version}
         title={props.page.title}
         className="size-full"
-        onContentHeight={setContentHeight}
+        onContentSize={onContentSize}
       />
     </div>
   );

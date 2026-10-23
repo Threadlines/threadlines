@@ -1,13 +1,16 @@
 import type { AgentPageReadResult } from "@threadlines/contracts";
 import {
   AGENT_PAGE_FRAME_SANDBOX,
+  type AgentPageContentSize,
+  type AgentPageScrollEdges,
   type AgentPageTheme,
   agentPageResult,
   agentPageThemeMessage,
   isAgentPageLeftMessage,
-  readAgentPageContentHeight,
+  readAgentPageContentSize,
   readAgentPageImageRequest,
   readAgentPageLinkRequest,
+  readAgentPageScrollEdges,
 } from "@threadlines/shared/agentPages";
 import { buildAgentPageDocument } from "@threadlines/shared/agentPageDocument";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -46,6 +49,26 @@ const onAppFocusIn = (event: FocusEvent) => {
   }
 };
 const TYPING_WINDOW_MS = 1500;
+
+// Something a page waits for may never come: one still loading this long after
+// its last report is taken at its word.
+const LOADING_GRACE_MS = 2_000;
+
+const NO_SCROLL_EDGES: AgentPageScrollEdges = { above: false, below: false };
+// How far in from its edge a frame fades where its page scrolls on past it.
+const SCROLL_FADE = "min(48px, 20%)";
+
+/**
+ * The frame's mask: the edge a page scrolls on past fades out, so a page
+ * cut off by its frame reads as one that goes on, not as one that ends there.
+ * The page hides its scrollbar (agentPageDocument.ts), so this is the cue.
+ */
+function scrollEdgeMask(edges: AgentPageScrollEdges): string | undefined {
+  if (!edges.above && !edges.below) return undefined;
+  const top = edges.above ? `transparent, #000 ${SCROLL_FADE}` : "#000";
+  const bottom = edges.below ? `#000 calc(100% - ${SCROLL_FADE}), transparent` : "#000";
+  return `linear-gradient(to bottom, ${top}, ${bottom})`;
+}
 
 /**
  * Hands focus back when a page takes it by script. A page can focus itself
@@ -102,20 +125,26 @@ function useFocusGuard(frameRef: React.RefObject<HTMLIFrameElement | null>) {
  * timeline re-sorts its rows, and a browser that cannot move a frame in place
  * loads its page again from scratch, in a new window. That is the same page
  * under the same policy, so it stays.
+ *
+ * A page taller than its frame scrolls inside it, and the frame's edge fades
+ * on each side the page goes on past.
  */
 export function AgentPageFrame(props: {
   readonly version: AgentPageVersionRef;
   readonly title: string;
   readonly className?: string;
   readonly style?: React.CSSProperties;
-  /** The page's own height as it reports it, CSS px. */
-  readonly onContentHeight?: (height: number) => void;
+  /**
+   * The page's own height as it reports it, CSS px, and whether it had
+   * loaded. A page still loading a while after its last report counts as loaded.
+   */
+  readonly onContentSize?: (size: AgentPageContentSize) => void;
   /** Hands the loaded page up, for saving and viewing its source. */
   readonly onLoaded?: (page: AgentPageReadResult) => void;
   /** Draws the page bigger or smaller, laid out at the frame's width over this. */
   readonly zoom?: number;
 }) {
-  const { version, title, onContentHeight, onLoaded } = props;
+  const { version, title, onContentSize, onLoaded } = props;
   const theme = useAgentPageTheme();
   // The document is built with the theme current when the page loads; later
   // changes reach the running page as a message, so it keeps its state.
@@ -124,11 +153,13 @@ export function AgentPageFrame(props: {
     return cached ? { status: "loaded", page: cached, theme } : { status: "loading" };
   });
   const [stopped, setStopped] = useState(false);
+  const [scrollEdges, setScrollEdges] = useState(NO_SCROLL_EDGES);
   const frameRef = useRef<HTMLIFrameElement>(null);
   // The window the page last loaded in: kept through a page's own
   // navigations, new once the frame's element was put back into the document.
   const loadedWindowRef = useRef<Window | null>(null);
   const latestThemeRef = useRef(theme);
+  const loadingGraceRef = useRef<number | undefined>(undefined);
 
   const { environmentId, threadId, pageId, versionId } = version;
   useEffect(() => {
@@ -181,9 +212,21 @@ export function AgentPageFrame(props: {
         setStopped(true);
         return;
       }
-      const height = readAgentPageContentHeight(event.data);
-      if (height !== undefined) {
-        onContentHeight?.(height);
+      const size = readAgentPageContentSize(event.data);
+      if (size !== undefined) {
+        window.clearTimeout(loadingGraceRef.current);
+        if (!size.loaded) {
+          loadingGraceRef.current = window.setTimeout(
+            () => onContentSize?.({ ...size, loaded: true }),
+            LOADING_GRACE_MS,
+          );
+        }
+        onContentSize?.(size);
+        return;
+      }
+      const edges = readAgentPageScrollEdges(event.data);
+      if (edges !== undefined) {
+        setScrollEdges(edges);
         return;
       }
       // Only what the reader just clicked inside this page: the frame holds
@@ -208,7 +251,9 @@ export function AgentPageFrame(props: {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [onContentHeight, title]);
+  }, [onContentSize, title]);
+
+  useEffect(() => () => window.clearTimeout(loadingGraceRef.current), []);
 
   useFocusGuard(frameRef);
 
@@ -234,9 +279,12 @@ export function AgentPageFrame(props: {
           sandbox={AGENT_PAGE_FRAME_SANDBOX}
           referrerPolicy="no-referrer"
           className="block size-full border-0 bg-transparent"
-          // The frame's zoom reaches the page inside, which lays itself out
-          // at the frame's width over the zoom, as a browser's zoom does.
-          style={props.zoom === undefined || props.zoom === 1 ? undefined : { zoom: props.zoom }}
+          style={{
+            // The frame's zoom reaches the page inside, which lays itself out
+            // at the frame's width over the zoom, as a browser's zoom does.
+            ...(props.zoom === undefined || props.zoom === 1 ? {} : { zoom: props.zoom }),
+            maskImage: scrollEdgeMask(scrollEdges),
+          }}
           onLoad={(event) => {
             const loaded = event.currentTarget.contentWindow;
             // The page loads once in a window; a second load in the same
