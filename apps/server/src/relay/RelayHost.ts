@@ -40,7 +40,6 @@ import {
   claimSecrets,
   decodePublicKey,
   fromBase64Url,
-  generateStoredKeyPair,
   loadStoredKeyPair,
   type NoiseKeyPair,
   PAIRING_NONCE_BYTES,
@@ -62,6 +61,7 @@ import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import {
   DEFAULT_RELAY_URL,
+  isTransientRelayError,
   RelayApiError,
   relayApi,
   relayOriginFrom,
@@ -76,8 +76,12 @@ import {
   type RelayPairingRow,
 } from "./RelayDeviceRepository.ts";
 import { computeDirectOrigins, computeDirectRoutes } from "./directRoutes.ts";
+import { RelayHooks } from "./RelayHooks.ts";
+import { makeRelayHooks, RelayHookRegisterError, type RelayHooksClient } from "./RelayHooksLive.ts";
+import { RelayHookStateRepositoryLive } from "./RelayHookStateRepository.ts";
 import { openLoopbackSocket, openRelayPipeSocket } from "./relayPipe.ts";
 import { openSecurePipe, type SecureDuplex, type SecurePipeHandle } from "./securePipe.ts";
+import { loadOrCreateStoredKeyPair } from "./storedKeys.ts";
 
 const isRelayAccessError = Schema.is(RelayAccessError);
 
@@ -160,11 +164,6 @@ export class RelayHost extends Context.Service<RelayHost, RelayHostShape>()(
 ) {}
 
 const decodeControlEvent = Schema.decodeUnknownOption(Schema.fromJsonString(RelayControlEvent));
-const StoredKeyPairJson = Schema.fromJsonString(
-  Schema.Struct({ privateKey: Schema.String, publicKey: Schema.String }),
-);
-const decodeStoredKeyPair = Schema.decodeUnknownOption(StoredKeyPairJson);
-const encodeStoredKeyPair = Schema.encodeSync(StoredKeyPairJson);
 
 function deviceTypeFor(kind: string): AuthClientMetadataDeviceType {
   if (kind === "phone") return "mobile";
@@ -282,6 +281,10 @@ const make = Effect.gen(function* () {
   >();
   const pairingLock = yield* Semaphore.make(1);
   const hostKeyLock = yield* Semaphore.make(1);
+  /** One registration at a time, so two callers can't each register a host. */
+  const registerLock = yield* Semaphore.make(1);
+  /** One control-socket attempt at a time, so two can't both open one. */
+  const controlLock = yield* Semaphore.make(1);
   let hostKeyCache: { readonly stored: StoredKeyPair; readonly pair: NoiseKeyPair } | null = null;
   let tailscaleCache: { readonly value: string | null; readonly at: number } | null = null;
 
@@ -315,15 +318,7 @@ const make = Effect.gen(function* () {
     .withPermits(1)(
       Effect.gen(function* () {
         if (hostKeyCache) return hostKeyCache;
-        const existing = yield* secrets.get(HOST_KEY_NAME);
-        let stored = existing
-          ? Option.getOrNull(decodeStoredKeyPair(new TextDecoder().decode(existing)))
-          : null;
-        if (!stored) {
-          stored = yield* Effect.promise(() => generateStoredKeyPair());
-          yield* secrets.set(HOST_KEY_NAME, utf8(encodeStoredKeyPair(stored)));
-        }
-        const keyPair = stored;
+        const keyPair = yield* loadOrCreateStoredKeyPair(secrets, HOST_KEY_NAME);
         const pair = yield* Effect.tryPromise(() => loadStoredKeyPair(keyPair));
         hostKeyCache = { stored: keyPair, pair };
         return hostKeyCache;
@@ -357,26 +352,69 @@ const make = Effect.gen(function* () {
     return null;
   });
 
-  const ensureRegistered = Effect.gen(function* () {
-    const existing = yield* loadCredentials;
-    if (existing) return existing;
-    const origin = relayOrigin!;
-    const registered = yield* relayApi
-      .registerHost(origin, {
-        label: hostLabel,
-        environmentId: descriptor.environmentId,
-      })
-      .pipe(
-        Effect.mapError((error) => {
-          if (error.status !== 404) return error;
-          setStatus("unsupported", "This relay doesn't support device codes yet.");
-          return new RelayAccessError({ detail: "This relay doesn't support device codes yet." });
+  const ensureRegistered = registerLock.withPermits(1)(
+    Effect.gen(function* () {
+      const existing = yield* loadCredentials;
+      if (existing) return existing;
+      const origin = relayOrigin!;
+      const registered = yield* relayApi
+        .registerHost(origin, {
+          label: hostLabel,
+          environmentId: descriptor.environmentId,
+        })
+        .pipe(
+          Effect.mapError((error) => {
+            if (error.status !== 404) return error;
+            setStatus("unsupported", "This relay doesn't support device codes yet.");
+            return new RelayAccessError({ detail: "This relay doesn't support device codes yet." });
+          }),
+        );
+      yield* secrets.set(HOST_SECRET_NAME, new TextEncoder().encode(registered.hostSecret));
+      yield* repo.saveHost({ hostId: registered.hostId, relayOrigin: origin, createdAt: nowIso() });
+      credentials = { hostId: registered.hostId, hostSecret: registered.hostSecret };
+      return credentials;
+    }),
+  );
+
+  /**
+   * The relay confirmed it doesn't know `hostId` (not a network error): drop
+   * its credentials so the next registration makes a new host. Paired
+   * devices of the lost host keep their rows; they had to pair again anyway.
+   */
+  const forgetHost = (hostId: string) =>
+    registerLock
+      .withPermits(1)(
+        Effect.gen(function* () {
+          const stored = yield* repo.getHost;
+          if (Option.isSome(stored) && stored.value.hostId !== hostId) return;
+          if (credentials && credentials.hostId !== hostId) return;
+          credentials = null;
+          yield* secrets.remove(HOST_SECRET_NAME);
+          yield* repo.clearHost;
+          dropControl("Registering this computer with the relay again.");
         }),
-      );
-    yield* secrets.set(HOST_SECRET_NAME, new TextEncoder().encode(registered.hostSecret));
-    yield* repo.saveHost({ hostId: registered.hostId, relayOrigin: origin, createdAt: nowIso() });
-    credentials = { hostId: registered.hostId, hostSecret: registered.hostSecret };
-    return credentials;
+      )
+      .pipe(Effect.catchCause((cause) => Effect.logWarning("relay.host.forget-failed", { cause })));
+
+  // Event tasks' hooks ride on this registration and control socket.
+  const hooks: RelayHooksClient = yield* makeRelayHooks({
+    relayOrigin,
+    credentials: Effect.suspend(() => loadCredentials).pipe(Effect.orElseSucceed(() => null)),
+    register: Effect.suspend(() => ensureRegistered).pipe(
+      Effect.mapError(
+        (error) =>
+          new RelayHookRegisterError({
+            detail: toAccessError(error, "Couldn't register this computer with the relay.").detail,
+            transient: error instanceof RelayApiError && isTransientRelayError(error),
+          }),
+      ),
+    ),
+    forgetHost,
+    sendControl: (message) => sendControl(message),
+    isConnected: () => control !== null && control.readyState === WebSocket.OPEN,
+    wake: () => {
+      runFork(ensureControl);
+    },
   });
 
   // ----- control socket -----------------------------------------------------------
@@ -384,6 +422,8 @@ const make = Effect.gen(function* () {
   const hasRelayWork = Effect.gen(function* () {
     if (invite || [...requests.values()].some((request) => request.state === "pending"))
       return true;
+    // Event tasks wait for deliveries, and a hook change waits to be sent.
+    if (yield* hooks.wantsRelay) return true;
     // A computer-link invite is never the open code, but its claim still
     // arrives over the control socket.
     for (const inviteId of localInvites.keys()) {
@@ -421,13 +461,19 @@ const make = Effect.gen(function* () {
     }, delay);
   }
 
-  function sendControl(message: unknown): void {
+  function sendControl(message: unknown): boolean {
     if (control && control.readyState === WebSocket.OPEN) {
       control.send(JSON.stringify(message));
+      return true;
     }
+    return false;
   }
 
-  /** Opens the control socket if there is anything for it to do. */
+  /**
+   * Opens the control socket if there is anything for it to do. With event
+   * tasks it also registers this computer first when it isn't (pairing
+   * flows register on their own).
+   */
   const ensureControl: Effect.Effect<void> = Effect.gen(function* () {
     if (!localOrigin || !relayOrigin) return;
     if (control && control.readyState <= WebSocket.OPEN) return;
@@ -435,6 +481,12 @@ const make = Effect.gen(function* () {
       if (status !== "unsupported") setStatus("idle");
       return;
     }
+    if (!(yield* loadCredentials)) {
+      if (!(yield* hooks.wantsRelay)) return;
+      yield* ensureRegistered;
+    }
+    yield* hooks.beforeConnect;
+    // Read after the hook client had its say: it may have registered again.
     const creds = yield* loadCredentials;
     if (!creds) return;
 
@@ -444,9 +496,11 @@ const make = Effect.gen(function* () {
       `${RELAY_TOKEN_PROTOCOL_PREFIX}${creds.hostSecret}`,
     ]);
     control = socket;
+    let opened = false;
 
     socket.addEventListener("open", () => {
       if (control !== socket) return;
+      opened = true;
       reconnectAttempt = 0;
       lastPongAt = Date.now();
       setStatus("online");
@@ -476,7 +530,13 @@ const make = Effect.gen(function* () {
       lastPongAt = Date.now();
       const decoded = decodeControlEvent(event.data);
       if (Option.isSome(decoded)) {
-        void runPromise(handleControlEvent(decoded.value)).catch((error) => {
+        const controlEvent = decoded.value;
+        if (controlEvent.type === "hook.delivery" || controlEvent.type === "hook.pending") {
+          // Handed over in arrival order; the hook client takes them one at a time.
+          hooks.receive(controlEvent);
+          return;
+        }
+        void runPromise(handleControlEvent(controlEvent)).catch((error) => {
           void runPromise(
             Effect.logWarning("relay.control.event-failed", { error: String(error) }),
           );
@@ -487,6 +547,11 @@ const make = Effect.gen(function* () {
       if (control !== socket) return;
       clearControlTimers();
       control = null;
+      if (!opened) {
+        // Refused before it opened: with event tasks, ask the relay whether
+        // it still knows this computer, and register again if it doesn't.
+        runFork(hooks.refused(creds));
+      }
       if (event?.code === RELAY_CLOSE_CODE_REPLACED) {
         // Another process registered as this host took over; don't fight it.
         setStatus("offline", "Another Threadlines on this computer took over the relay link.");
@@ -502,6 +567,7 @@ const make = Effect.gen(function* () {
     socket.addEventListener("close", (event) => onGone(event));
     socket.addEventListener("error", () => onGone());
   }).pipe(
+    controlLock.withPermits(1),
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
         yield* Effect.logWarning("relay.control.connect-failed", { cause });
@@ -591,6 +657,7 @@ const make = Effect.gen(function* () {
             trackRequest(request);
           }
           publish();
+          runFork(hooks.connected);
           yield* reconcile(event.devices);
           for (const request of event.requests) {
             yield* processRequest(request);
@@ -618,6 +685,11 @@ const make = Effect.gen(function* () {
         }
         case "device.connecting": {
           yield* handleDeviceConnecting(event.deviceId, event.pipeId);
+          return;
+        }
+        case "hook.delivery":
+        case "hook.pending": {
+          hooks.receive(event);
           return;
         }
       }
@@ -1430,19 +1502,28 @@ const make = Effect.gen(function* () {
     }
   }).pipe(Effect.catchCause((cause) => Effect.logWarning("relay.cleanup.failed", { cause })));
 
-  return RelayHost.of({
-    snapshots: SubscriptionRef.changes(snapshotRef),
-    createInvite,
-    createLinkInvite,
-    isRevokedDevice,
-    cancelInvite,
-    respondToJoinRequest,
-    submitJoin,
-    start,
-    admitDirect,
-    acceptDirect,
-    directRoutes,
-  });
+  return Context.make(
+    RelayHost,
+    RelayHost.of({
+      snapshots: SubscriptionRef.changes(snapshotRef),
+      createInvite,
+      createLinkInvite,
+      isRevokedDevice,
+      cancelInvite,
+      respondToJoinRequest,
+      submitJoin,
+      start,
+      admitDirect,
+      acceptDirect,
+      directRoutes,
+    }),
+  ).pipe(Context.add(RelayHooks, hooks.service));
 });
 
-export const RelayHostLive = Layer.effect(RelayHost, make);
+/**
+ * The server's end of the relay: "Connect a device" (RelayHost) and event
+ * tasks' hooks (RelayHooks), which share its registration and control socket.
+ */
+export const RelayHostLive = Layer.effectContext(make).pipe(
+  Layer.provide(RelayHookStateRepositoryLive),
+);

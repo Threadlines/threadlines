@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ScheduledTaskId,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -339,6 +340,32 @@ describe("InboxThreadRow swipes", () => {
     element.dispatchEvent(new PointerEvent("pointerup", at(x0, y0, "touch")));
     element.dispatchEvent(new MouseEvent("click", at(x0, y0, "touch")));
     expect(handleThreadClick).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("InboxThreadRow scheduled runs", () => {
+  const runThread = (event: boolean): SidebarThreadSummary => ({
+    ...THREAD,
+    scheduledRun: {
+      taskId: ScheduledTaskId.make("task-triage"),
+      taskName: "Triage labeled issues",
+      slotUtc: "2026-09-01T09:00:00.000Z",
+      ...(event ? { event: true } : {}),
+    },
+  });
+
+  it("names an event task's run as an event", async () => {
+    renderRow(null, [], runThread(true));
+    await expect
+      .element(page.getByTestId(`thread-scheduled-run-${THREAD_ID}`))
+      .toHaveTextContent("Event · Triage labeled issues");
+  });
+
+  it("names a clock task's run as scheduled", async () => {
+    renderRow(null, [], runThread(false));
+    await expect
+      .element(page.getByTestId(`thread-scheduled-run-${THREAD_ID}`))
+      .toHaveTextContent("Scheduled · Triage labeled issues");
   });
 });
 

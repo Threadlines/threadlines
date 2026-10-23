@@ -3,22 +3,32 @@
  * computers it lists, its search params, how runs and times read, and the
  * task form's state, checks and the draft it saves.
  */
-import type {
-  EnvironmentId,
-  ExecutionEnvironmentDescriptor,
-  ModelSelection,
-  ProjectId,
-  RuntimeMode,
-  ScheduledRunStatus,
-  ScheduledRunTrigger,
-  ScheduledTask,
-  ScheduledTaskCadence,
-  ScheduledTaskCheckout,
-  ScheduledTaskClock,
-  ScheduledTaskDraft,
-  ScheduledTaskId,
-  ThreadId,
-  ThreadParticipantId,
+import {
+  type EnvironmentId,
+  type ExecutionEnvironmentDescriptor,
+  type GitHubEventPreset,
+  type GitHubEventTrigger,
+  type ModelSelection,
+  type ProjectId,
+  type RuntimeMode,
+  type ScheduledRunStatus,
+  type ScheduledRunTrigger,
+  type ScheduledTask,
+  type ScheduledTaskCadence,
+  type ScheduledTaskCheckout,
+  type ScheduledTaskClock,
+  type ScheduledTaskDraft,
+  type ScheduledTaskGitHubContext,
+  type ScheduledTaskId,
+  type ScheduledTaskWebhookCadence,
+  type ThreadId,
+  type ThreadParticipantId,
+  WEBHOOK_MAX_FILTERS,
+  type WebhookEventRecord,
+  type WebhookEventStatus,
+  type WebhookFilter,
+  type WebhookFilterOp,
+  type WebhookSignature,
 } from "@threadlines/contracts";
 import {
   cadenceSaveRefusal,
@@ -26,6 +36,12 @@ import {
   sameCadence,
   upcomingSlots,
 } from "@threadlines/shared/scheduledTasks";
+import {
+  compileGitHubTrigger,
+  describeWebhookFilter,
+  GITHUB_WEBHOOK_SIGNATURE,
+  webhookCadenceProblem,
+} from "@threadlines/shared/webhookTasks";
 import * as Result from "effect/Result";
 
 import type { SavedEnvironmentConnectionState } from "../../environments/runtime/catalog";
@@ -44,8 +60,9 @@ interface ScheduledTaskComputer {
 
 /**
  * This computer and every connected saved computer whose server reports the
- * `scheduledTasks` capability, this one first and the rest by name. An
- * absent capability (an older Threadlines) is a no.
+ * `scheduledTasks` capability, this one first and the rest by name, each
+ * saying whether it runs event tasks (`eventTasks`). An absent capability (an
+ * older Threadlines) is a no.
  */
 export function scheduledTaskEnvironmentsOf(input: {
   readonly primaryEnvironmentId: EnvironmentId | null;
@@ -61,6 +78,7 @@ export function scheduledTaskEnvironmentsOf(input: {
     environments.push({
       environmentId: primaryEnvironmentId,
       isPrimary: true,
+      eventTasks: primaryDescriptor.capabilities.eventTasks === true,
       label: resolveEnvironmentOptionLabel({
         isPrimary: true,
         environmentId: primaryEnvironmentId,
@@ -78,6 +96,7 @@ export function scheduledTaskEnvironmentsOf(input: {
     others.push({
       environmentId,
       isPrimary: false,
+      eventTasks: runtime.descriptor.capabilities.eventTasks === true,
       label: resolveEnvironmentOptionLabel({
         isPrimary: false,
         environmentId,
@@ -152,6 +171,7 @@ export const RUN_TRIGGER_LABELS: Record<ScheduledRunTrigger, string | null> = {
   schedule: null,
   catch_up: "Catch-up",
   manual: "Run now",
+  webhook: "Event",
 };
 
 export const isWorkingRunStatus = (status: ScheduledRunStatus) =>
@@ -199,7 +219,9 @@ export function describeTaskSchedule(
   viewerZone: string = viewerTimeZone(),
 ): string {
   const words = describeCadence(task.cadence, formatClock, formatCadenceDay);
-  return task.cadence.kind === "manual" || task.timeZone === viewerZone
+  return task.cadence.kind === "manual" ||
+    task.cadence.kind === "webhook" ||
+    task.timeZone === viewerZone
     ? words
     : `${words} · ${task.timeZone}`;
 }
@@ -242,16 +264,38 @@ export function formatWhen(iso: string, nowMs: number, timeZone: string = viewer
   return `${date} at ${time}`;
 }
 
-/** The line a task's row shows about when it runs next. */
+/** "Today at 9:00" after a word reads "today at 9:00"; a weekday or a date keeps its capital. */
+const whenAfterWord = (when: string) =>
+  /^(Today|Tomorrow|Yesterday) /u.test(when) ? when.charAt(0).toLowerCase() + when.slice(1) : when;
+
+/** When an event task's last event came: "Last event today at 9:00", or "No events yet". */
+export function describeLastEvent(
+  lastEventAt: string | null,
+  nowMs: number,
+  timeZone?: string,
+): string {
+  return lastEventAt === null
+    ? "No events yet"
+    : `Last event ${whenAfterWord(formatWhen(lastEventAt, nowMs, timeZone))}`;
+}
+
+/**
+ * The line a task's row shows about when it runs next; for an event task,
+ * when its last event came.
+ */
 export function describeNextRun(task: ScheduledTask, nowMs: number, timeZone?: string): string {
   if (task.status === "paused") return "Paused";
   if (task.status === "error") return "Stopped";
   if (task.status === "done") return "Done";
   if (task.cadence.kind === "manual") return "Runs when you start it";
+  if (task.cadence.kind === "webhook") {
+    const last = task.webhook?.lastEventAt ?? null;
+    return last === null
+      ? "No events yet"
+      : `Last event ${whenAfterWord(formatWhen(last, nowMs, timeZone))}`;
+  }
   if (task.nextRunAt === null) return "No next run";
-  const when = formatWhen(task.nextRunAt, nowMs, timeZone);
-  // "Today at 9:00" reads as "Next run today at 9:00"; a weekday or a date keeps its capital.
-  return `Next run ${/^(Today|Tomorrow|Yesterday) /u.test(when) ? when.charAt(0).toLowerCase() + when.slice(1) : when}`;
+  return `Next run ${whenAfterWord(formatWhen(task.nextRunAt, nowMs, timeZone))}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +457,22 @@ export const CADENCE_KIND_LABELS: Record<CadenceKind, string> = {
   weekdays: "Weekdays",
   weekly: "Weekly",
   custom: "Custom",
+  webhook: "When something happens",
 };
+
+/** The kinds the Schedule field offers, in its order; event tasks only on a computer that runs them. */
+export function cadenceKindsFor(eventTasks: boolean): readonly CadenceKind[] {
+  const clock: CadenceKind[] = [
+    "manual",
+    "once",
+    "hourly",
+    "daily",
+    "weekdays",
+    "weekly",
+    "custom",
+  ];
+  return eventTasks ? [...clock, "webhook"] : clock;
+}
 
 export const WEEKDAY_LABELS = [
   "Sunday",
@@ -425,6 +484,354 @@ export const WEEKDAY_LABELS = [
   "Saturday",
 ] as const;
 
+/** One filter row as the form edits it: the value is kept while "exists" is picked. */
+export interface WebhookFilterRow {
+  readonly path: string;
+  readonly op: WebhookFilterOp;
+  readonly value: string;
+}
+
+/**
+ * An event task's start as the form edits it (docs/design/event-tasks.md):
+ * every part is kept while another is picked, so switching GitHub to Any
+ * service and back loses nothing. `webhookCadenceOf` makes the cadence it
+ * saves. The `…Chosen` flags say the user set that part: until then the
+ * project's repository and the signed-in GitHub login fill it in.
+ */
+export interface WebhookForm {
+  readonly source: "github" | "any";
+  readonly sourceChosen: boolean;
+  /** "owner/name". */
+  readonly repository: string;
+  readonly repositoryChosen: boolean;
+  readonly when: GitHubEventPreset;
+  readonly label: string;
+  readonly phrase: string;
+  /** Custom: the GitHub events it subscribes to. */
+  readonly events: readonly string[];
+  /** "Only from": anyone, or these GitHub logins. */
+  readonly anyone: boolean;
+  readonly logins: readonly string[];
+  readonly loginsChosen: boolean;
+  readonly ignoreBots: boolean;
+  /** The same issue or pull request continues its thread (new-thread tasks only). */
+  readonly onePerSubject: boolean;
+  /** Any service: check a signature. */
+  readonly signed: boolean;
+  readonly signature: WebhookSignature;
+  readonly filters: readonly WebhookFilterRow[];
+  readonly includeEvent: boolean;
+  readonly maxLateMinutes: number;
+  readonly dailyRunLimit: number;
+}
+
+/** "GitHub style": the header, encoding and prefix GitHub signs with. */
+export const GITHUB_STYLE_SIGNATURE: WebhookSignature = {
+  header: "X-Hub-Signature-256",
+  encoding: GITHUB_WEBHOOK_SIGNATURE.encoding,
+  prefix: GITHUB_WEBHOOK_SIGNATURE.prefix,
+};
+
+/**
+ * A new event task's start: GitHub, an issue getting a label, only from the
+ * signed-in GitHub user, bots ignored, at most 20 runs a day, events up to a
+ * day late. The project's repository and the login fill in once
+ * `scheduledTasks.gitHubContext` has them (webhookFormWithContext).
+ */
+export const DEFAULT_WEBHOOK_FORM: WebhookForm = {
+  source: "github",
+  sourceChosen: false,
+  repository: "",
+  repositoryChosen: false,
+  when: "issue_labeled",
+  label: "",
+  phrase: "",
+  events: ["issues"],
+  anyone: false,
+  logins: [],
+  loginsChosen: false,
+  ignoreBots: true,
+  onePerSubject: false,
+  signed: false,
+  signature: GITHUB_STYLE_SIGNATURE,
+  filters: [],
+  includeEvent: true,
+  maxLateMinutes: 1440,
+  dailyRunLimit: 20,
+};
+
+/** The form opened on an event task's saved start: every part counts as chosen. */
+export function webhookFormOf(cadence: ScheduledTaskWebhookCadence): WebhookForm {
+  const github = cadence.github;
+  return {
+    ...DEFAULT_WEBHOOK_FORM,
+    source: cadence.source,
+    sourceChosen: true,
+    repositoryChosen: true,
+    loginsChosen: true,
+    ...(github
+      ? {
+          repository: github.repository,
+          when: github.when,
+          label: github.label ?? "",
+          phrase: github.phrase ?? "",
+          events: github.events ?? DEFAULT_WEBHOOK_FORM.events,
+          anyone: github.from.kind === "anyone",
+          logins: github.from.kind === "people" ? github.from.logins : [],
+          ignoreBots: github.ignoreBots,
+          onePerSubject: github.onePerSubject,
+        }
+      : {}),
+    signed: cadence.signature != null,
+    signature: cadence.signature ?? DEFAULT_WEBHOOK_FORM.signature,
+    filters: cadence.filters.map((filter) => ({
+      path: filter.path,
+      op: filter.op,
+      value: filter.value ?? "",
+    })),
+    includeEvent: cadence.includeEvent,
+    maxLateMinutes: cadence.maxLateMinutes,
+    dailyRunLimit: cadence.dailyRunLimit,
+  };
+}
+
+/**
+ * The parts the user hasn't set, filled from the project's GitHub context:
+ * its repository (and GitHub as the source, or Any service for a project
+ * that has none), and the signed-in login as the one sender. Null context
+ * (not known yet): as it is.
+ */
+export function webhookFormWithContext(
+  webhook: WebhookForm,
+  context: ScheduledTaskGitHubContext | null,
+): WebhookForm {
+  if (context === null) return webhook;
+  return {
+    ...webhook,
+    source: webhook.sourceChosen ? webhook.source : context.repository !== null ? "github" : "any",
+    repository: webhook.repositoryChosen ? webhook.repository : (context.repository ?? ""),
+    logins: webhook.loginsChosen ? webhook.logins : context.login !== null ? [context.login] : [],
+  };
+}
+
+const nonEmpty = (value: string) => {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+/** The GitHub trigger the form's parts make. */
+function githubTriggerOf(webhook: WebhookForm, newThread: boolean): GitHubEventTrigger {
+  const label =
+    webhook.when === "issue_labeled" || webhook.when === "pr_labeled"
+      ? nonEmpty(webhook.label)
+      : undefined;
+  const phrase = webhook.when === "comment_phrase" ? nonEmpty(webhook.phrase) : undefined;
+  return {
+    repository: webhook.repository.trim(),
+    when: webhook.when,
+    ...(webhook.when === "custom" ? { events: [...webhook.events] } : {}),
+    ...(label !== undefined ? { label } : {}),
+    ...(phrase !== undefined ? { phrase } : {}),
+    from: webhook.anyone ? { kind: "anyone" } : { kind: "people", logins: [...webhook.logins] },
+    ignoreBots: webhook.ignoreBots,
+    onePerSubject: newThread && webhook.onePerSubject,
+  };
+}
+
+/** The cadence an event task saves. `newThread`: each run starts a thread (not a continued one). */
+export function webhookCadenceOf(
+  webhook: WebhookForm,
+  newThread: boolean,
+): ScheduledTaskWebhookCadence {
+  const filters = webhook.filters.map((row): WebhookFilter =>
+    row.op === "exists"
+      ? { path: row.path.trim(), op: row.op }
+      : { path: row.path.trim(), op: row.op, value: row.value },
+  );
+  const shared = {
+    kind: "webhook" as const,
+    filters,
+    includeEvent: webhook.includeEvent,
+    maxLateMinutes: webhook.maxLateMinutes,
+    dailyRunLimit: webhook.dailyRunLimit,
+  };
+  return webhook.source === "github"
+    ? { ...shared, source: "github", github: githubTriggerOf(webhook, newThread) }
+    : {
+        ...shared,
+        source: "any",
+        signature: webhook.signed
+          ? {
+              header: webhook.signature.header.trim(),
+              encoding: webhook.signature.encoding,
+              prefix: webhook.signature.prefix,
+            }
+          : null,
+      };
+}
+
+/** The GitHub events a trigger subscribes to, as the form has it now. */
+export function webhookFormEvents(webhook: WebhookForm): readonly string[] {
+  return compileGitHubTrigger(githubTriggerOf(webhook, true)).events;
+}
+
+/** What each "When" preset reads as in the form's dropdown. */
+export const GITHUB_PRESET_LABELS: Record<GitHubEventPreset, string> = {
+  issue_opened: "Issue opened",
+  issue_labeled: "Issue gets a label…",
+  pr_opened: "Pull request opened",
+  pr_labeled: "Pull request gets a label…",
+  comment_phrase: "Comment contains…",
+  checks_failed: "Checks fail on a pull request",
+  custom: "Custom",
+};
+
+export const GITHUB_PRESETS: readonly GitHubEventPreset[] = [
+  "issue_opened",
+  "issue_labeled",
+  "pr_opened",
+  "pr_labeled",
+  "comment_phrase",
+  "checks_failed",
+  "custom",
+];
+
+/** GitHub's own names for its webhook events, as its "Let me select individual events" list shows them. */
+const GITHUB_EVENT_LABELS: Readonly<Record<string, string>> = {
+  issues: "Issues",
+  issue_comment: "Issue comments",
+  pull_request: "Pull requests",
+  pull_request_review: "Pull request reviews",
+  pull_request_review_comment: "Pull request review comments",
+  push: "Pushes",
+  check_suite: "Check suites",
+  check_run: "Check runs",
+  workflow_run: "Workflow runs",
+  release: "Releases",
+  discussion: "Discussions",
+  discussion_comment: "Discussion comments",
+};
+
+/** A GitHub event as GitHub's settings name it ("Issue comments"); its id when unknown. */
+export function githubEventLabel(event: string): string {
+  return GITHUB_EVENT_LABELS[event] ?? event;
+}
+
+/** Fields worth filtering on, per GitHub event; "Insert field" offers the chosen events' ones. */
+const GITHUB_EVENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  issues: [
+    "action",
+    "issue.title",
+    "issue.body",
+    "issue.labels[].name",
+    "issue.user.login",
+    "label.name",
+  ],
+  issue_comment: [
+    "action",
+    "comment.body",
+    "comment.user.login",
+    "issue.title",
+    "issue.labels[].name",
+    "issue.pull_request",
+  ],
+  pull_request: [
+    "action",
+    "pull_request.title",
+    "pull_request.draft",
+    "pull_request.base.ref",
+    "pull_request.head.ref",
+    "pull_request.labels[].name",
+    "pull_request.user.login",
+    "label.name",
+  ],
+  pull_request_review: [
+    "action",
+    "review.state",
+    "review.body",
+    "pull_request.title",
+    "pull_request.base.ref",
+  ],
+  pull_request_review_comment: [
+    "action",
+    "comment.body",
+    "comment.path",
+    "pull_request.title",
+    "pull_request.base.ref",
+  ],
+  push: ["ref", "pusher.name", "head_commit.message", "commits[].message"],
+  check_suite: [
+    "action",
+    "check_suite.conclusion",
+    "check_suite.head_branch",
+    "check_suite.app.slug",
+  ],
+  check_run: [
+    "action",
+    "check_run.name",
+    "check_run.conclusion",
+    "check_run.check_suite.head_branch",
+  ],
+  workflow_run: [
+    "action",
+    "workflow_run.name",
+    "workflow_run.conclusion",
+    "workflow_run.head_branch",
+  ],
+  release: ["action", "release.tag_name", "release.prerelease"],
+  discussion: ["action", "discussion.title", "discussion.category.name"],
+  discussion_comment: ["action", "comment.body", "discussion.title"],
+};
+
+/** Every event's own fields, then the ones all GitHub events carry; no repeats. */
+export function githubEventFields(events: readonly string[]): readonly string[] {
+  const fields = new Set<string>();
+  for (const event of events) {
+    for (const field of GITHUB_EVENT_FIELDS[event] ?? []) fields.add(field);
+  }
+  for (const field of ["sender.login", "sender.type", "repository.full_name"]) fields.add(field);
+  return [...fields];
+}
+
+/** What each filter test reads as in its dropdown. */
+export const WEBHOOK_FILTER_OP_LABELS: Record<WebhookFilterOp, string> = {
+  equals: "equals",
+  notEquals: "isn't",
+  in: "is one of",
+  contains: "contains",
+  startsWith: "starts with",
+  exists: "exists",
+};
+
+export const WEBHOOK_FILTER_OPS: readonly WebhookFilterOp[] = [
+  "equals",
+  "notEquals",
+  "in",
+  "contains",
+  "startsWith",
+  "exists",
+];
+
+/** The form can hold this many filter rows; past it, Add filter is off. */
+export const MAX_WEBHOOK_FILTER_ROWS = WEBHOOK_MAX_FILTERS;
+
+/** The late limits the form offers, in minutes; a saved one outside these is added. */
+const LATE_LIMIT_MINUTES = [5, 15, 60, 360, 1440] as const;
+
+/** "15 minutes", "1 hour", "6 hours", "1 day". */
+export function formatLateLimit(minutes: number): string {
+  if (minutes === 1440) return "1 day";
+  if (minutes >= 60 && minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+export function lateLimitOptions(current: number): readonly number[] {
+  return [...new Set<number>([...LATE_LIMIT_MINUTES, current])].toSorted((a, b) => a - b);
+}
+
 /** Everything the form edits; the cadence's parts are kept apart so switching kinds keeps them. */
 export interface ScheduledTaskForm {
   readonly name: string;
@@ -434,6 +841,11 @@ export interface ScheduledTaskForm {
   readonly checkout: ScheduledTaskCheckout;
   readonly modelSelection: ModelSelection | null;
   readonly runtimeMode: RuntimeMode;
+  /**
+   * The user picked the access (or the task already had one): until then a
+   * new event task asks before changes (eventTaskRuntimeMode).
+   */
+  readonly runtimeModeChosen: boolean;
   readonly cadenceKind: CadenceKind;
   /** A one-time task's day, "2026-10-22". */
   readonly date: string;
@@ -441,6 +853,8 @@ export interface ScheduledTaskForm {
   readonly minute: number;
   readonly weekday: number;
   readonly cron: string;
+  /** An event task's start (docs/design/event-tasks.md), kept while another kind is picked. */
+  readonly webhook: WebhookForm;
   readonly timeZone: string;
   /**
    * The user picked the zone (or the task already had one): until then a
@@ -452,6 +866,13 @@ export interface ScheduledTaskForm {
   /** In a room, the agent the continued thread's runs are for; kept until another thread is chosen. */
   readonly threadParticipantId: ThreadParticipantId | null;
 }
+
+/**
+ * The access a new event task starts with: "ask before changes"
+ * (approval-required). Text strangers write lands in its runs' prompts
+ * (docs/design/event-tasks.md, Safety defaults).
+ */
+export const EVENT_TASK_RUNTIME_MODE: RuntimeMode = "approval-required";
 
 /** The calendar day of `now` in `timeZone`, "2026-10-21". */
 export function todayIn(timeZone: string, now: Date = new Date()): string {
@@ -484,11 +905,13 @@ export function emptyTaskForm(input: {
     checkout: "local",
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
+    runtimeModeChosen: false,
     cadenceKind: "weekdays",
     time: { hour: 9, minute: 0 },
     minute: 0,
     weekday: 1,
     cron: "0 9 * * 1-5",
+    webhook: DEFAULT_WEBHOOK_FORM,
     timeZone: input.timeZone,
     timeZoneChosen: false,
     target: "new_thread",
@@ -512,6 +935,7 @@ export function taskForm(task: ScheduledTask, environmentId: EnvironmentId): Sch
     name: task.name,
     prompt: task.prompt,
     checkout: task.checkout,
+    runtimeModeChosen: true,
     cadenceKind: cadence.kind,
     ...(cadence.kind === "daily" ||
     cadence.kind === "weekdays" ||
@@ -523,6 +947,7 @@ export function taskForm(task: ScheduledTask, environmentId: EnvironmentId): Sch
     ...(cadence.kind === "hourly" ? { minute: cadence.minute } : {}),
     ...(cadence.kind === "weekly" ? { weekday: cadence.weekday } : {}),
     ...(cadence.kind === "custom" ? { cron: cadence.cron } : {}),
+    ...(cadence.kind === "webhook" ? { webhook: webhookFormOf(cadence) } : {}),
     timeZoneChosen: true,
     target: task.target.kind,
     threadId: task.target.kind === "thread" ? task.target.threadId : null,
@@ -546,6 +971,8 @@ export function formCadence(form: ScheduledTaskForm): ScheduledTaskCadence {
       return { kind: "weekly", weekday: form.weekday, time: form.time };
     case "custom":
       return { kind: "custom", cron: form.cron.trim() };
+    case "webhook":
+      return webhookCadenceOf(form.webhook, form.target === "new_thread");
   }
 }
 
@@ -556,11 +983,34 @@ export type FormProblems = Partial<
   >
 >;
 
+/** What keeps an event task's start from saving, in one sentence; null when nothing does. */
+function webhookFormProblem(form: ScheduledTaskForm): string | null {
+  const webhook = form.webhook;
+  if (webhook.source === "github" && !webhook.anyone && webhook.logins.length === 0) {
+    return "Add at least one GitHub username, or choose Anyone.";
+  }
+  if (webhook.source === "any" && webhook.signed && webhook.signature.header.trim().length === 0) {
+    return "Name the header the signature comes in.";
+  }
+  if (
+    !Number.isInteger(webhook.dailyRunLimit) ||
+    webhook.dailyRunLimit < 1 ||
+    webhook.dailyRunLimit > 200
+  ) {
+    return "Allow from 1 to 200 runs a day.";
+  }
+  return webhookCadenceProblem(
+    webhookCadenceOf(webhook, form.target === "new_thread"),
+    form.prompt,
+  );
+}
+
 /**
  * What keeps the form from saving, field by field. Editing `saved`, a
  * schedule left as it was isn't checked again: a one-time task that ran can
  * be renamed without a new time. `agentLeft`: the room agent the continued
- * thread's runs go to has left it.
+ * thread's runs go to has left it. An event task's settings are always
+ * checked, with its instructions (their `{{...}}` placeholders).
  */
 export function formProblems(
   form: ScheduledTaskForm,
@@ -580,6 +1030,11 @@ export function formProblems(
   if (form.target === "thread" && agentLeft) {
     problems.goesTo = "Its agent left the thread. Pick another agent.";
   }
+  if (form.cadenceKind === "webhook") {
+    const problem = webhookFormProblem(form);
+    if (problem !== null) problems.schedule = problem;
+    return problems;
+  }
   const unchanged =
     saved !== undefined &&
     saved.timeZone === form.timeZone &&
@@ -591,6 +1046,33 @@ export function formProblems(
     if (refusal !== null) problems.schedule = refusal;
   }
   return problems;
+}
+
+/**
+ * Who could start a run with full access, said before saving: an event task
+ * with full access that takes events from anyone on GitHub, or from any
+ * sender with the address (no signature). Null otherwise.
+ */
+export function eventTaskAccessWarning(form: ScheduledTaskForm): string | null {
+  if (form.cadenceKind !== "webhook" || form.runtimeMode !== "full-access") return null;
+  const webhook = form.webhook;
+  if (webhook.source === "github") {
+    return webhook.anyone ? `${anyoneOnGitHub(webhook.repository)} with full access.` : null;
+  }
+  return webhook.signed
+    ? null
+    : "Anyone who has this task's address can start a run with full access.";
+}
+
+/** "Anyone who can comment on acme/app can start a run", the start of the Anyone warning. */
+function anyoneOnGitHub(repository: string): string {
+  const named = repository.trim().length > 0 ? repository.trim() : "the repository";
+  return `Anyone who can comment on ${named} can start a run`;
+}
+
+/** The confirm "Anyone" asks for: who could start a run, and with what. */
+export function anyoneConfirmText(repository: string): string {
+  return `${anyoneOnGitHub(repository)} with this task's access.`;
 }
 
 /** The settings the form saves, once it has no problems. */
@@ -630,4 +1112,110 @@ export function formDraft(form: ScheduledTaskForm): ScheduledTaskDraft | null {
 export function previewRuns(form: ScheduledTaskForm, now: Date, count = 3): readonly Date[] {
   const slots = upcomingSlots(formCadence(form), form.timeZone, now, count);
   return Result.isSuccess(slots) ? slots.success : [];
+}
+
+// ---------------------------------------------------------------------------
+// An event task's events
+// ---------------------------------------------------------------------------
+
+const WEBHOOK_EVENT_STATUS_LABELS: Record<WebhookEventStatus, string> = {
+  received: "Received",
+  waiting: "Waiting",
+  ran: "Started a run",
+  joined: "Continued its thread",
+  skipped: "Skipped",
+  failed: "Failed",
+};
+
+/** The dot beside an event: green when it started work, red when it failed, blue while it waits. */
+export const WEBHOOK_EVENT_DOT_CLASSES: Record<WebhookEventStatus, string> = {
+  received: "bg-primary-graph",
+  waiting: "bg-primary-graph",
+  ran: "bg-success",
+  joined: "bg-success",
+  skipped: "bg-muted-foreground/40",
+  failed: "bg-destructive",
+};
+
+/** What happened to an event, in words: "Skipped. The task is paused." */
+export function describeWebhookEventOutcome(
+  event: Pick<WebhookEventRecord, "status" | "reason" | "eventName">,
+): string {
+  // GitHub's ping only checks the address works: nothing was meant to run.
+  if (event.eventName === "ping") return "GitHub checked the address. Nothing to run.";
+  const label = WEBHOOK_EVENT_STATUS_LABELS[event.status];
+  const reason = event.reason?.trim();
+  return reason ? `${label}. ${reason}` : label;
+}
+
+/** What an event was, in one line: its summary, else GitHub's event name, else "An event". */
+export function describeWebhookEvent(
+  event: Pick<WebhookEventRecord, "summary" | "eventName">,
+): string {
+  return event.summary ?? event.eventName ?? "An event";
+}
+
+/** Where an event came from, when it isn't the task's address: a test or a run again. */
+export const WEBHOOK_EVENT_SOURCE_LABELS: Record<WebhookEventRecord["source"], string | null> = {
+  relay: null,
+  local: "On this computer",
+  test: "Test",
+  replay: "Run again",
+};
+
+/** GitHub's page for adding a webhook to a repository ("owner/name"). */
+export function githubNewHookUrl(repository: string): string {
+  return `https://github.com/${repository}/settings/hooks/new`;
+}
+
+/** Whose events an event task takes, in a few words: "@badcuban, bots ignored". */
+export function describeWebhookSenders(cadence: ScheduledTaskWebhookCadence): string {
+  if (cadence.source === "any") {
+    return cadence.signature
+      ? `Senders that sign with its secret (${cadence.signature.header})`
+      : "Anyone who has its address";
+  }
+  const github = cadence.github;
+  if (!github) return "Nobody yet";
+  const who =
+    github.from.kind === "anyone"
+      ? `Anyone who can comment on ${github.repository}`
+      : github.from.logins.map((login) => `@${login}`).join(", ");
+  return github.ignoreBots ? `${who}, bots ignored` : who;
+}
+
+/** An event task's limits: "20 runs a day, events more than 1 day late skipped". */
+export function describeWebhookLimits(cadence: ScheduledTaskWebhookCadence): string {
+  return `${cadence.dailyRunLimit} run${cadence.dailyRunLimit === 1 ? "" : "s"} a day, events more than ${formatLateLimit(cadence.maxLateMinutes)} late skipped`;
+}
+
+/** The GitHub events to tick when adding an event task's webhook by hand: "Issues, Issue comments". */
+export function githubHookEventLabels(cadence: ScheduledTaskWebhookCadence): string {
+  if (cadence.source !== "github" || !cadence.github) return "";
+  return compileGitHubTrigger(cadence.github).events.map(githubEventLabel).join(", ");
+}
+
+/** An event task's cadence; null for a clock task. */
+export function webhookCadenceOfTask(
+  task: Pick<ScheduledTask, "cadence">,
+): ScheduledTaskWebhookCadence | null {
+  return task.cadence.kind === "webhook" ? task.cadence : null;
+}
+
+/** What starts an event task's runs and what limits them, as detail rows. */
+export function eventTaskDetailRows(cadence: ScheduledTaskWebhookCadence): ReadonlyArray<{
+  readonly label: string;
+  readonly value: string;
+}> {
+  return [
+    { label: "Only from", value: describeWebhookSenders(cadence) },
+    ...(cadence.filters.length > 0
+      ? [{ label: "Filters", value: cadence.filters.map(describeWebhookFilter).join("; ") }]
+      : []),
+    { label: "Limits", value: describeWebhookLimits(cadence) },
+    {
+      label: "Message",
+      value: cadence.includeEvent ? "Instructions, then the event" : "Instructions only",
+    },
+  ];
 }

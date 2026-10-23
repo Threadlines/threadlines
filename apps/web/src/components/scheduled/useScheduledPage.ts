@@ -5,15 +5,19 @@ import type {
   ProviderDriverKind,
   RuntimeMode,
   ScheduledTask,
+  ScheduledTaskGitHubContext,
   ScheduledTaskId,
   ThreadId,
   ThreadParticipantId,
 } from "@threadlines/contracts";
 import { roomAgentKey } from "@threadlines/shared/threadParticipants";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+import { useEnvironmentApiAvailable } from "../../environmentApi";
+import { readEnvironmentConnection } from "../../environments/runtime";
 import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
 import {
   type ScheduledTaskEnvironment,
@@ -213,4 +217,42 @@ export function useContinuedAgents(
         })),
     ];
   }, [environmentId, kept, providersOn, shell]);
+}
+
+/** What the event pieces of the page know about a project's GitHub repository before the computer answers. */
+const NO_GITHUB_CONTEXT: ScheduledTaskGitHubContext = {
+  repository: null,
+  login: null,
+  canConnect: false,
+};
+
+/**
+ * A project's GitHub repository and who `gh` is signed in as on its computer
+ * (scheduledTasks.gitHubContext), for an event task's form and address
+ * panel. Null until the computer answers; a computer that can't tell
+ * answers as if there were none, so the form falls back to typing them.
+ */
+export function useGitHubContext(
+  environmentId: EnvironmentId | null,
+  projectId: ProjectId | null,
+  enabled: boolean,
+): ScheduledTaskGitHubContext | null {
+  // Asked only once the computer's connection is up: asked before (right after
+  // the app loads), it would read "can't connect" and keep that answer.
+  const connected = useEnvironmentApiAvailable(environmentId);
+  const query = useQuery({
+    queryKey: ["scheduledTasks", "gitHubContext", environmentId, projectId],
+    queryFn: async () => {
+      const connection = environmentId === null ? null : readEnvironmentConnection(environmentId);
+      if (!connection || projectId === null) return NO_GITHUB_CONTEXT;
+      try {
+        return await connection.client.scheduledTasks.gitHubContext({ projectId });
+      } catch {
+        return NO_GITHUB_CONTEXT;
+      }
+    },
+    enabled: enabled && connected && environmentId !== null && projectId !== null,
+    staleTime: 60_000,
+  });
+  return query.data ?? null;
 }

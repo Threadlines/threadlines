@@ -19,6 +19,20 @@ export function joinErrorStatus(code: string): number {
   }
 }
 
+/** HTTP status for any host object error code (joins, hooks, access). */
+export function hostErrorStatus(code: string): number {
+  switch (code) {
+    case "forbidden":
+      return 403;
+    case "not-found":
+      return 404;
+    case "too-many-hooks":
+      return 409;
+    default:
+      return joinErrorStatus(code);
+  }
+}
+
 /** A base64url value of bounded length, as keys, hashes, nonces, and proofs are sent. */
 export function base64UrlField(value: unknown, max: number): string | null {
   return typeof value === "string" &&

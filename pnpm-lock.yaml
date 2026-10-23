@@ -189,6 +189,9 @@ importers:
       '@threadlines/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@threadlines/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
     devDependencies:
       typescript:
         specifier: 'catalog:'

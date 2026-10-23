@@ -70,6 +70,11 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** The server reports when it froze (`subscribeServerStalls`). */
   stallReports: Schema.optionalKey(Schema.Boolean),
   /**
+   * The server runs event tasks: scheduled tasks started by a webhook
+   * (docs/design/event-tasks.md). Without it, clients offer clock tasks only.
+   */
+  eventTasks: Schema.optionalKey(Schema.Boolean),
+  /**
    * The server keeps each thread's terminal tabs and streams their output per
    * thread (`TerminalSubscribeInput`, docs/terminal.md). Older servers omit
    * it and send every terminal event on one stream.

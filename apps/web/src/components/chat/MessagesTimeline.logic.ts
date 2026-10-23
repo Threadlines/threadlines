@@ -2384,6 +2384,24 @@ export function timelineMessageView(
   return "agent-message";
 }
 
+/**
+ * The message a scheduled task's run started its thread with: the thread's
+ * first message of the user's own (not one another agent or thread sent).
+ * Null when there is none yet.
+ */
+export function scheduledRunMessageId(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+): ChatMessage["id"] | null {
+  for (const entry of timelineEntries) {
+    if (entry.kind !== "message") continue;
+    if (entry.message.role !== "user") continue;
+    return entry.message.fromThread === undefined && entry.message.fromAgent === undefined
+      ? entry.message.id
+      : null;
+  }
+  return null;
+}
+
 /** Longest one-line message agents send each other that shows whole, not folded. */
 const AGENT_MESSAGE_UNFOLDED_MAX_LENGTH = 120;
 

@@ -43,8 +43,11 @@ import {
   useSelectedScheduledTask,
 } from "./useScheduledPage";
 
-const PAGE_DESCRIPTION =
-  "Agents start on your prompts at set times, while Threadlines is running on that computer.";
+/** The page's line: event tasks join set times on a computer that runs them. */
+const pageDescription = (eventTasks: boolean) =>
+  eventTasks
+    ? "Agents start on your prompts at set times or when something happens, while Threadlines is running on that computer."
+    : "Agents start on your prompts at set times, while Threadlines is running on that computer.";
 
 /** Pauses or resumes a task from its row; a failure says why. */
 export async function setTaskActive(
@@ -161,12 +164,14 @@ function ScheduledOverview() {
   const groups = useScheduledTaskGroups();
   const navigation = useScheduledNavigation();
   const taskCount = groups.reduce((count, group) => count + (group.tasks?.length ?? 0), 0);
+  const eventTasks = groups.some((group) => group.environment.eventTasks);
+  const description = pageDescription(eventTasks);
   const loading = groups.length > 0 && groups.every((group) => group.tasks === null);
 
   if (groups.length === 0) {
     return (
       <>
-        <SettingsPageHeader title="Scheduled" description={PAGE_DESCRIPTION} />
+        <SettingsPageHeader title="Scheduled" description={description} />
         <SettingsGroup className="mt-7 px-5 py-6 text-[12.5px] text-muted-foreground">
           None of your connected computers runs scheduled tasks. Update Threadlines on a computer to
           use them there.
@@ -178,7 +183,7 @@ function ScheduledOverview() {
   if (taskCount === 0 && !loading) {
     return (
       <>
-        <SettingsPageHeader title="Scheduled" description={PAGE_DESCRIPTION} />
+        <SettingsPageHeader title="Scheduled" description={description} />
         <Empty
           className="flex-none gap-4 px-0 py-14 md:px-0 md:py-16"
           data-testid="scheduled-empty"
@@ -190,7 +195,8 @@ function ScheduledOverview() {
             <EmptyTitle className="text-[15px] font-medium">No scheduled tasks yet</EmptyTitle>
             <EmptyDescription className="text-[12.5px] leading-[18px]">
               A morning review of yesterday&apos;s commits, a weekly dependency check: write the
-              prompt once and an agent starts on it at the times you pick.
+              prompt once and an agent starts on it at the times you pick
+              {eventTasks ? ", or when an issue on GitHub gets a label." : "."}
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
@@ -208,7 +214,7 @@ function ScheduledOverview() {
     <>
       <SettingsPageHeader
         title="Scheduled"
-        description={PAGE_DESCRIPTION}
+        description={description}
         actions={
           <Button size="sm" onClick={navigation.newTask} data-testid="scheduled-new-task">
             New task
@@ -273,7 +279,14 @@ export function ScheduledView() {
   } else if (selected !== null && search.view === "edit") {
     body = <ScheduledTaskForm key={`edit-${selected.task.id}`} editing={selected} />;
   } else if (selected !== null) {
-    body = <ScheduledTaskDetail located={selected} />;
+    // Keyed by task: what one task's detail showed (a revealed secret, a test
+    // event's result) never carries over to the next one opened.
+    body = (
+      <ScheduledTaskDetail
+        key={`${selected.environment.environmentId}:${selected.task.id}`}
+        located={selected}
+      />
+    );
   } else if (search.task !== undefined && !waitingForTask) {
     body = (
       <div className="flex flex-col items-start gap-3 px-1">

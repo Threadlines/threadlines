@@ -1550,6 +1550,59 @@ describe("find in chat with the real virtual list", () => {
     }
   });
 
+  it("folds a run's first message to its task's line, and opens it for a match inside", async () => {
+    const props = { ...buildProps(), routeThreadKey: "environment-local:thread-run" };
+    const runMessage = chatMessage(
+      "message-run",
+      "user",
+      "Event task: Triage labeled issues.\n\nRead the issue about the narwhal and propose a fix.",
+      0,
+    );
+    const screen = await renderTimeline(
+      <div style={{ height: 500, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          isWorking={false}
+          activeTurnInProgress={false}
+          scheduledRunLabel="Event · Triage labeled issues"
+          scheduledRunEvent
+          timelineEntries={messageEntries([
+            runMessage,
+            chatMessage("message-answer", "assistant", FILLER, 1),
+            chatMessage("message-later", "user", "And the otter?", 2),
+          ])}
+        />
+      </div>,
+    );
+    try {
+      // One line naming the task; the instructions wait behind it.
+      const fold = page.getByRole("button", { name: "Event · Triage labeled issues" });
+      await expect.element(fold).toHaveAttribute("aria-expanded", "false");
+      expect(document.body.textContent).not.toContain("narwhal");
+      // Only the run's own message folds; later ones show whole.
+      await expect.element(page.getByText("And the otter?")).toBeVisible();
+
+      // Opened on click, and folded again with Show less.
+      await fold.click();
+      await expect.element(page.getByText(/about the narwhal/)).toBeVisible();
+      await page.getByRole("button", { name: "Show less" }).click();
+      await expect
+        .element(page.getByRole("button", { name: "Event · Triage labeled issues" }))
+        .toBeVisible();
+      expect(document.body.textContent).not.toContain("narwhal");
+
+      // Find counts the whole message and opens it to show the match.
+      await openFind("narwhal");
+      await vi.waitFor(() => expect(findTally()).toBe("1 of 1"));
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-run-message-fold]")).toBeNull();
+        expect(currentFindHighlight()?.text).toBe("narwhal");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("counts the whole of a collapsed plan and opens it on the way to a match", async () => {
     const props = buildProps();
     const planMarkdown = [

@@ -6,12 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentId,
-  type ExecutionEnvironmentDescriptor,
   MessageId,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ScheduledTaskCreateInput,
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
@@ -19,219 +14,26 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Stream from "effect/Stream";
-import { TestClock } from "effect/testing";
 
-import { ServerConfig } from "../config.ts";
-import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
-import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import type { McpInvocationScope } from "../mcp/McpSessionRegistry.ts";
 import { roomToolsFor } from "../mcp/roomToolAccess.ts";
 import { makeScheduleToolHandlers } from "../mcp/scheduleToolHandlers.ts";
-import { OrchestrationEngineLive } from "../orchestration/Layers/OrchestrationEngine.ts";
-import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
-import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
-import { ThreadBootstrapLive } from "../orchestration/Layers/ThreadBootstrap.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import {
-  ThreadBootstrap,
-  type ThreadBootstrapShape,
-} from "../orchestration/Services/ThreadBootstrap.ts";
-import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
-import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
-import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
-import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
-import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
-import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
-import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 import { scheduledRunMessageId, scheduledRunThreadId } from "./scheduledRunIds.ts";
-import { ScheduledTaskRepository, ScheduledTaskRepositoryLive } from "./ScheduledTaskRepository.ts";
-import { ScheduledTasks, ScheduledTasksLive } from "./ScheduledTasks.ts";
+import {
+  AT,
+  CODEX,
+  draft,
+  eventually,
+  makeComputer,
+  PROJECT,
+  PROVIDER,
+  setClock,
+} from "./scheduledTestComputer.ts";
 
-const AT = "2026-10-20T10:00:00.000Z";
-const PROJECT = ProjectId.make("project-1");
-const CODEX = ProviderInstanceId.make("codex");
 /** A second agent in a room. */
 const AGENT_B = ThreadParticipantId.make("1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e");
-
-const PROVIDER = {
-  instanceId: CODEX,
-  driver: ProviderDriverKind.make("codex"),
-  enabled: true,
-  installed: true,
-  status: "ready",
-  auth: { status: "authenticated", type: "chatgpt", label: "ChatGPT Pro Subscription" },
-  models: [{ slug: "gpt-6-astra", name: "GPT-6 Astra", isCustom: false }],
-} as unknown as ServerProvider;
-
-const draft = (patch: Partial<ScheduledTaskCreateInput> = {}): ScheduledTaskCreateInput => ({
-  name: "Morning review",
-  prompt: "Review yesterday's commits and list anything risky.",
-  projectId: PROJECT,
-  checkout: "local",
-  modelSelection: { instanceId: CODEX, model: "gpt-6-astra" },
-  runtimeMode: "auto",
-  interactionMode: "default",
-  cadence: { kind: "daily", time: { hour: 9, minute: 0 } },
-  timeZone: "UTC",
-  target: { kind: "new_thread" },
-  ...patch,
-});
-
-/** Real time: launches are forked, and these suites run on the test clock. */
-const wallClockSleep = (durationMs: number) =>
-  Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, durationMs)));
-
-const eventually = <E, R>(check: Effect.Effect<boolean, E, R>, what: string) =>
-  Effect.gen(function* () {
-    for (let attempt = 0; attempt < 150; attempt += 1) {
-      if (yield* check) return;
-      yield* wallClockSleep(20);
-    }
-    return yield* Effect.die(new Error(`Timed out waiting until ${what}.`));
-  });
-
-/**
- * One computer: the real orchestration engine, projections, thread setup
- * and scheduled-task tables on one database. `boot` starts a scheduler
- * process on it; booting another later is a restart of that process.
- */
-const makeComputer = Effect.gen(function* () {
-  const scope = yield* Effect.scope;
-  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "scheduled-tasks-project-"));
-  const orchestration = OrchestrationEngineLive.pipe(
-    Layer.provide(OrchestrationProjectionPipelineLive),
-    Layer.provide(OrchestrationEventStoreLive),
-    Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-  );
-  const bootstrapLayer = ThreadBootstrapLive.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(GitWorkflowService)({}),
-        Layer.mock(VcsStatusBroadcaster)({}),
-        Layer.mock(ProjectSetupScriptRunner)({}),
-      ),
-    ),
-  );
-  const base = Layer.mergeAll(
-    bootstrapLayer,
-    ScheduledTaskRepositoryLive,
-    ProjectionTurnRepositoryLive,
-  ).pipe(
-    Layer.provideMerge(orchestration),
-    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
-    Layer.provideMerge(
-      Layer.mock(RepositoryIdentityResolver)({ resolve: () => Effect.succeed(null) }),
-    ),
-    Layer.provideMerge(SqlitePersistenceMemory),
-    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "scheduled-tasks-test-" })),
-  );
-  const context = yield* Layer.buildWithScope(base, scope);
-  const engine = Context.get(context, OrchestrationEngineService);
-  const snapshots = Context.get(context, ProjectionSnapshotQuery);
-  const repo = Context.get(context, ScheduledTaskRepository);
-  const realBootstrap = Context.get(context, ThreadBootstrap);
-
-  yield* engine.dispatch({
-    type: "project.create",
-    commandId: CommandId.make("project-create"),
-    projectId: PROJECT,
-    title: "threadlines",
-    workspaceRoot,
-    defaultModelSelection: null,
-    createdAt: AT,
-  });
-
-  const boot = (
-    patch: {
-      readonly bootstrap?: Partial<ThreadBootstrapShape>;
-      readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
-      /** The agents the server reports; Codex, signed in, otherwise. */
-      readonly providers?: ReadonlyArray<ServerProvider>;
-    } = {},
-  ) =>
-    Effect.gen(function* () {
-      const layer = ScheduledTasksLive.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.succeed(ThreadBootstrap, { ...realBootstrap, ...patch.bootstrap }),
-            Layer.mock(ProviderRegistry)({
-              getProviders: Effect.succeed(patch.providers ?? [PROVIDER]),
-            }),
-            Layer.mock(GitVcsDriver)({}),
-            Layer.mock(GitWorkflowService)({}),
-            Layer.mock(ServerEnvironment)({
-              getDescriptor: Effect.succeed({
-                label: "Test Mac",
-              } as ExecutionEnvironmentDescriptor),
-            }),
-            ServerSettingsService.layerTest(patch.settings),
-          ),
-        ),
-        Layer.provide(Layer.succeedContext(context)),
-      );
-      return Context.get(yield* Layer.buildWithScope(layer, scope), ScheduledTasks);
-    });
-
-  const thread = (threadId: ThreadId) =>
-    snapshots.getThreadDetailById(threadId).pipe(Effect.map(Option.getOrUndefined));
-  const runs = (taskId: ScheduledTaskId) =>
-    repo.listRuns({ taskId, limit: 50 }).pipe(Effect.map((rows) => rows.toReversed()));
-  const events = engine.readEvents(0).pipe(Stream.runCollect);
-
-  /** The thread's agent starts work on `turnId`: the turn binds to the pending message. */
-  const turnRuns = (threadId: ThreadId, turnId: TurnId) =>
-    engine.dispatch({
-      type: "thread.session.set",
-      commandId: CommandId.make(`session-running:${threadId}:${turnId}`),
-      threadId,
-      session: {
-        threadId,
-        status: "running",
-        providerName: "codex",
-        providerInstanceId: CODEX,
-        runtimeMode: "auto",
-        activeTurnId: turnId,
-        lastError: null,
-        updatedAt: AT,
-      },
-      createdAt: AT,
-    });
-
-  const turnCompletes = (threadId: ThreadId, turnId: TurnId) =>
-    engine.dispatch({
-      type: "thread.turn.complete",
-      commandId: CommandId.make(`turn-complete:${threadId}:${turnId}`),
-      threadId,
-      turnId,
-      state: "completed",
-      completedAt: AT,
-      createdAt: AT,
-    });
-
-  return {
-    engine,
-    repo,
-    workspaceRoot,
-    boot,
-    thread,
-    runs,
-    events,
-    turnRuns,
-    turnCompletes,
-    bootstrap: realBootstrap,
-  };
-});
-
-const setClock = (iso: string) => TestClock.setTime(Date.parse(iso));
 
 it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
   it.effect("runs a due slot once, as a new thread marked as the task's run", () =>
@@ -1666,6 +1468,146 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
           "answered",
         );
         assert.isUndefined(yield* service.getTask(ScheduledTaskId.make(asked.taskId!)));
+      }),
+  );
+
+  it.effect(
+    "agents never set up or change an event task, only pause it, whether asked first, applied, or allowed later",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        const service = yield* computer.boot();
+        const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+        const run = yield* service.runNow({ id: task.id });
+        const threadId = scheduledRunThreadId(task.id, run.slotUtc);
+        yield* eventually(
+          computer.runs(task.id).pipe(Effect.map((rows) => rows[0]?.status === "started")),
+          "the run started",
+        );
+        yield* computer.turnRuns(threadId, TurnId.make("run-turn"));
+        let mode: "ask" | "auto" = "auto";
+        const tools = makeScheduleToolHandlers({
+          scheduledTasks: service,
+          readThread: (threadId) => computer.thread(threadId).pipe(Effect.orDie),
+          threadsMode: Effect.sync(() => mode),
+          providers: Effect.succeed([PROVIDER]),
+          localTimeZone: "UTC",
+        });
+        const scope = callerScope(threadId, false);
+        const webhook = {
+          kind: "webhook",
+          source: "any",
+          signature: null,
+          filters: [],
+          includeEvent: true,
+          maxLateMinutes: 60,
+          dailyRunLimit: 20,
+        } as const;
+        const events = yield* service.create(
+          draft({ name: "Deploys", cadence: webhook, runtimeMode: "approval-required" }),
+        );
+        for (const setting of ["auto", "ask"] as const) {
+          mode = setting;
+          const created = yield* tools.schedule_create(scope, {
+            name: "Listen",
+            prompt: "Do what the event says.",
+            schedule: webhook,
+          });
+          assert.deepEqual(
+            [created.outcome, created.detail],
+            ["refused", "Only a person can set up an event task."],
+          );
+          const converted = yield* tools.schedule_update(scope, {
+            id: task.id,
+            schedule: webhook,
+          });
+          assert.deepEqual(
+            [converted.outcome, converted.detail],
+            ["refused", "Only a person can make a task start on events."],
+          );
+          const rewritten = yield* tools.schedule_update(scope, {
+            id: events.id,
+            prompt: "Delete the release branch.",
+          });
+          assert.deepEqual(
+            [rewritten.outcome, rewritten.detail],
+            ["refused", "Only a person can change an event task. Agents can pause or resume it."],
+          );
+        }
+        // Pausing is fine, and the list shows what starts it.
+        mode = "auto";
+        assert.equal(
+          (yield* tools.schedule_update(scope, { id: events.id, paused: true })).outcome,
+          "updated",
+        );
+        const listed = yield* tools.schedule_list(scope, {});
+        assert.equal(
+          listed.tasks.find((entry) => entry.id === events.id)?.schedule,
+          "When a webhook arrives",
+        );
+
+        // Asked while the task ran on a clock; it became an event task before the yes.
+        mode = "ask";
+        const asked = yield* tools.schedule_update(scope, { id: task.id, prompt: "New words." });
+        assert.equal(asked.outcome, "asked_user");
+        yield* service.update({ id: task.id, cadence: webhook });
+        const allowed = yield* service
+          .respondRequest({ requestId: asked.requestId!, allow: true })
+          .pipe(Effect.flip);
+        assert.equal(
+          allowed.detail,
+          "Only a person can change an event task. Agents can pause or resume it.",
+        );
+        assert.equal((yield* service.getTask(task.id))?.prompt, task.prompt);
+      }),
+  );
+
+  it.effect(
+    "an agent's edit is checked against the task each save attempt reads, so a person's switch to events wins",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        const service = yield* computer.boot();
+        const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+        const webhook = {
+          kind: "webhook",
+          source: "any",
+          signature: null,
+          filters: [],
+          includeEvent: true,
+          maxLateMinutes: 60,
+          dailyRunLimit: 20,
+        } as const;
+        // The person turns it into an event task right after the agent's
+        // edit was worked out, before it is saved.
+        let reads = 0;
+        const proposed = yield* service
+          .propose({
+            requestId: "agent-edit",
+            threadId: ThreadId.make("agent-thread"),
+            participantId: null,
+            mode: Effect.gen(function* () {
+              reads += 1;
+              if (reads === 1)
+                yield* service.update({ id: task.id, cadence: webhook }).pipe(Effect.orDie);
+              return "auto" as const;
+            }),
+            callerRuntimeMode: "auto",
+            change: {
+              kind: "update",
+              input: { id: task.id, prompt: "Delete the release branch." },
+            },
+          })
+          .pipe(Effect.flip);
+        assert.equal(
+          proposed.detail,
+          "Only a person can change an event task. Agents can pause or resume it.",
+        );
+        const after = yield* service.getTask(task.id);
+        assert.equal(after?.cadence.kind, "webhook");
+        assert.equal(after?.prompt, task.prompt);
       }),
   );
 

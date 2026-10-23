@@ -87,6 +87,11 @@ export const ScheduledRunLaunch = Schema.Struct({
    * Absent on a run stored before it was recorded: not checked.
    */
   projectRoot: Schema.optional(Schema.NullOr(Schema.String)),
+  /**
+   * An event task's run: the event it is for. Its `prompt` is then the whole
+   * first message, rendered from the event when the run was claimed.
+   */
+  event: Schema.optional(Schema.Struct({ eventId: TrimmedNonEmptyString, summary: Schema.String })),
 });
 export type ScheduledRunLaunch = typeof ScheduledRunLaunch.Type;
 
@@ -200,6 +205,8 @@ export const isWorkingRun = (run: Pick<ScheduledRunRow, "status">) =>
   WORKING_RUN_STATUSES.includes(run.status);
 
 export const SKIP_REASON_PREVIOUS_WORKING = "The previous run was still working.";
+/** An event task's runs that may work at once (docs/design/event-tasks.md, step 8). */
+export const EVENT_TASK_RUN_CAP = 2;
 export const SKIP_REASON_CAP = `${SCHEDULED_TASK_RUN_CAP} scheduled runs were already working.`;
 
 const working = `('launching', 'queued', 'started')`;
@@ -293,12 +300,60 @@ export interface ScheduledTaskRepositoryShape {
     readonly taskId: ScheduledTaskId;
     readonly slotUtc: string;
   }) => Effect.Effect<Option.Option<ScheduledRunRow>, ScheduledTaskRepositoryError>;
-  /** A task's runs, newest slot first. */
+  /** A task's runs, newest slot first; `withoutEvents` leaves event runs out. */
   readonly listRuns: (input: {
     readonly taskId: ScheduledTaskId;
     readonly before?: string | undefined;
     readonly limit: number;
+    readonly withoutEvents?: boolean;
   }) => Effect.Effect<ReadonlyArray<ScheduledRunRow>, ScheduledTaskRepositoryError>;
+  /** How many runs events started for the task since `since` (when they were claimed). */
+  readonly countEventRunsSince: (input: {
+    readonly taskId: ScheduledTaskId;
+    readonly since: string;
+  }) => Effect.Effect<number, ScheduledTaskRepositoryError>;
+  /**
+   * Claims a run for an event (docs/design/event-tasks.md, step 8), in one
+   * transaction: only while the task is still active at `expectedRevision`,
+   * the event still queued, and the issue's subject row as it was read
+   * (`changed` otherwise, and nothing is written). It needs fewer than 2 of
+   * the task's runs working and fewer than 3 scheduled runs working on the
+   * computer (`busy` otherwise). Claimed: the run row (its slot the event's
+   * receive time, a millisecond on for each one taken), the subject reserved
+   * for its new thread or touched for a follow-up, the duplicate key
+   * recorded, and the event `ran` (a new thread) or `joined` (a follow-up).
+   */
+  readonly claimEventRun: (input: {
+    readonly taskId: ScheduledTaskId;
+    readonly expectedRevision: number;
+    readonly eventId: string;
+    readonly receivedAt: string;
+    readonly launch: ScheduledRunLaunch;
+    readonly subject: {
+      readonly key: string;
+      readonly projectId: ProjectId;
+      /** The row as read (null: there was none). */
+      readonly expected: {
+        readonly threadId: string | null;
+        readonly reservedByRun: string | null;
+        readonly updatedAt: string;
+      } | null;
+      /** Reserve it for this run's new thread; otherwise the run follows its thread. */
+      readonly reserve: boolean;
+    } | null;
+    readonly dedupeHash: string | null;
+    readonly missingFields: ReadonlyArray<string>;
+    /** Whether its signature passed (or the task checks none). */
+    readonly verified: boolean;
+    /** Whether that pass checked a signature (false: the task checks none). */
+    readonly signatureChecked: boolean;
+    readonly now: string;
+  }) => Effect.Effect<
+    | { readonly kind: "claimed"; readonly run: ScheduledRunRow }
+    | { readonly kind: "busy"; readonly reason: "task" | "computer" }
+    | { readonly kind: "changed" },
+    ScheduledTaskRepositoryError
+  >;
   /** Each task's newest run, and how many of its runs are working. */
   readonly runSummaries: Effect.Effect<
     ReadonlyMap<
@@ -651,15 +706,141 @@ const make = Effect.gen(function* () {
   const getRun: ScheduledTaskRepositoryShape["getRun"] = (input) =>
     getRunRow(input.taskId, input.slotUtc).pipe(wrap("getRun"));
 
-  const listRuns: ScheduledTaskRepositoryShape["listRuns"] = (input) =>
-    (input.before === undefined
-      ? findRuns("WHERE task_id = ? ORDER BY slot_utc DESC LIMIT ?", [input.taskId, input.limit])
-      : findRuns("WHERE task_id = ? AND slot_utc < ? ORDER BY slot_utc DESC LIMIT ?", [
-          input.taskId,
-          input.before,
-          input.limit,
-        ])
+  const listRuns: ScheduledTaskRepositoryShape["listRuns"] = (input) => {
+    const events = input.withoutEvents === true ? " AND run_trigger != 'webhook'" : "";
+    return (
+      input.before === undefined
+        ? findRuns(`WHERE task_id = ?${events} ORDER BY slot_utc DESC LIMIT ?`, [
+            input.taskId,
+            input.limit,
+          ])
+        : findRuns(`WHERE task_id = ? AND slot_utc < ?${events} ORDER BY slot_utc DESC LIMIT ?`, [
+            input.taskId,
+            input.before,
+            input.limit,
+          ])
     ).pipe(wrap("listRuns"));
+  };
+
+  const countEventRunsSince: ScheduledTaskRepositoryShape["countEventRunsSince"] = (input) =>
+    sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS "count" FROM scheduled_runs
+      WHERE task_id = ${input.taskId} AND run_trigger = 'webhook' AND created_at >= ${input.since}
+    `.pipe(
+      Effect.map((rows) => Number(rows[0]?.count ?? 0)),
+      wrap("countEventRunsSince"),
+    );
+
+  const claimEventRun: ScheduledTaskRepositoryShape["claimEventRun"] = (input) =>
+    Effect.gen(function* () {
+      const task = yield* sql<{ readonly id: string }>`
+        SELECT task_id AS "id" FROM scheduled_tasks
+        WHERE task_id = ${input.taskId} AND revision = ${input.expectedRevision}
+          AND status = 'active'
+      `;
+      if (task.length === 0) return yield* new RolledBack({ outcome: "changed" });
+      const queued = yield* sql<{ readonly id: string }>`
+        SELECT event_id AS "id" FROM webhook_events
+        WHERE event_id = ${input.eventId} AND status IN ('received', 'waiting')
+      `;
+      if (queued.length === 0) return yield* new RolledBack({ outcome: "changed" });
+      const counts = yield* sql<{ readonly task: number | null; readonly all: number }>`
+        SELECT
+          SUM(CASE WHEN task_id = ${input.taskId} THEN 1 ELSE 0 END) AS "task",
+          COUNT(*) AS "all"
+        FROM scheduled_runs
+        WHERE status IN ('launching', 'queued', 'started')
+      `;
+      if (Number(counts[0]?.task ?? 0) >= EVENT_TASK_RUN_CAP) {
+        return { kind: "busy" as const, reason: "task" as const };
+      }
+      if (Number(counts[0]?.all ?? 0) >= SCHEDULED_TASK_RUN_CAP) {
+        return { kind: "busy" as const, reason: "computer" as const };
+      }
+      // The first free slot from the event's receive time, a millisecond on per clash.
+      let slotMillis = Date.parse(input.receivedAt);
+      for (let attempt = 0; attempt < 1000; attempt += 1) {
+        const taken = yield* sql<{ readonly id: string }>`
+          SELECT task_id AS "id" FROM scheduled_runs
+          WHERE task_id = ${input.taskId} AND slot_utc = ${new Date(slotMillis).toISOString()}
+        `;
+        if (taken.length === 0) break;
+        slotMillis += 1;
+      }
+      const slotUtc = new Date(slotMillis).toISOString();
+      if (input.subject !== null) {
+        const subject = input.subject;
+        const rows = yield* sql<{
+          readonly threadId: string | null;
+          readonly reservedByRun: string | null;
+          readonly updatedAt: string;
+        }>`
+          SELECT thread_id AS "threadId", reserved_by_run AS "reservedByRun",
+            updated_at AS "updatedAt"
+          FROM scheduled_webhook_subjects
+          WHERE task_id = ${input.taskId} AND subject = ${subject.key}
+        `;
+        const current = rows[0] ?? null;
+        const same =
+          current === null || subject.expected === null
+            ? current === subject.expected
+            : current.threadId === subject.expected.threadId &&
+              current.reservedByRun === subject.expected.reservedByRun &&
+              current.updatedAt === subject.expected.updatedAt;
+        if (!same) return yield* new RolledBack({ outcome: "changed" });
+        if (subject.reserve) {
+          yield* sql`
+            INSERT INTO scheduled_webhook_subjects (
+              task_id, subject, project_id, thread_id, reserved_by_run, updated_at
+            ) VALUES (
+              ${input.taskId}, ${subject.key}, ${subject.projectId}, NULL, ${slotUtc}, ${input.now}
+            )
+            ON CONFLICT(task_id, subject) DO UPDATE SET
+              project_id = excluded.project_id,
+              thread_id = NULL,
+              reserved_by_run = excluded.reserved_by_run,
+              updated_at = excluded.updated_at
+          `;
+        } else {
+          yield* sql`
+            UPDATE scheduled_webhook_subjects SET updated_at = ${input.now}
+            WHERE task_id = ${input.taskId} AND subject = ${subject.key}
+          `;
+        }
+      }
+      yield* sql`
+        INSERT INTO scheduled_runs (
+          task_id, slot_utc, run_trigger, status, launch_json, event_id, created_at, updated_at
+        ) VALUES (
+          ${input.taskId}, ${slotUtc}, 'webhook', 'launching', ${encodeLaunch(input.launch)},
+          ${input.eventId}, ${input.now}, ${input.now}
+        )
+      `;
+      if (input.dedupeHash !== null) {
+        yield* sql`
+          INSERT INTO webhook_seen (task_id, key_hash, seen_at)
+          VALUES (${input.taskId}, ${input.dedupeHash}, ${input.now})
+          ON CONFLICT(task_id, key_hash) DO UPDATE SET seen_at = excluded.seen_at
+        `;
+      }
+      yield* sql`
+        UPDATE webhook_events SET
+          status = ${input.launch.target.kind === "thread" ? "joined" : "ran"},
+          reason = NULL,
+          verified = ${input.verified ? 1 : 0},
+          signature_checked = ${input.signatureChecked ? 1 : 0},
+          missing_fields_json = ${JSON.stringify(input.missingFields)},
+          run_slot_utc = ${slotUtc},
+          updated_at = ${input.now}
+        WHERE event_id = ${input.eventId}
+      `;
+      const run = yield* getRunRow(input.taskId, slotUtc);
+      return { kind: "claimed" as const, run: Option.getOrThrow(run) };
+    }).pipe(
+      sql.withTransaction,
+      Effect.catchTag("RolledBack", () => Effect.succeed({ kind: "changed" as const })),
+      wrap("claimEventRun"),
+    );
 
   const runSummaries: ScheduledTaskRepositoryShape["runSummaries"] = Effect.gen(function* () {
     const latest = yield* findRuns(
@@ -818,6 +999,8 @@ const make = Effect.gen(function* () {
     setTaskSchedule,
     getRun,
     listRuns,
+    countEventRunsSince,
+    claimEventRun,
     runSummaries,
     listWorkingRuns,
     listRunsByThread,

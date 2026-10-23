@@ -1,3 +1,4 @@
+import { RELAY_HOOK_HOLD_MS, RELAY_HOOK_INLINE_SEALED_BYTES } from "@threadlines/contracts/relay";
 import { describe, expect, it } from "vite-plus/test";
 
 import { CodeShardCore } from "./codeShardCore.ts";
@@ -7,6 +8,7 @@ import {
   HostCoreError,
   type HostEffect,
   type JoinInput,
+  RETIRED_HOOK_KEEP_MS,
 } from "./hostCore.ts";
 import { LedgerCore } from "./ledgerCore.ts";
 import { makeTestSql } from "./testSql.ts";
@@ -320,6 +322,150 @@ describe("HostCore daily allowance", () => {
     // A hibernated Durable Object comes back as a new instance over the same storage.
     const woken = new HostCore(sql, DEFAULT_HOST_CORE_LIMITS, T0 + MINUTE);
     expect(woken.usage(T0 + MINUTE)).toMatchObject({ messages: 40, awakeSeconds: 30 });
+  });
+});
+
+describe("HostCore hooks", () => {
+  const KEY = "host-hook-public-key";
+  const HOUR = 60 * MINUTE;
+
+  function hostWithHook(limits = DEFAULT_HOST_CORE_LIMITS) {
+    const core = makeHost(limits);
+    core.mintHook({ hookId: "hook-1", revision: 1, publicKey: KEY, keptHeaders: [], now: T0 });
+    return core;
+  }
+
+  function deliver(core: HostCore, deliveryId: string, sealed: string, now = T0 + MINUTE) {
+    return core.storeHookDelivery({ deliveryId, hookId: "hook-1", sealed, now });
+  }
+
+  const handedOver = (effects: ReadonlyArray<HostEffect>) =>
+    effects.flatMap((effect) =>
+      effect.type === "control" && effect.event.type.startsWith("hook.") ? [effect.event.type] : [],
+    );
+
+  it("applies hook changes only in revision order", () => {
+    const core = hostWithHook();
+    const active = [{ hookId: "hook-1", keptHeaders: ["x-custom"] }];
+    expect(core.setHooks({ revision: 3, publicKey: KEY, active, now: T0 })).toEqual({
+      applied: true,
+      revision: 3,
+    });
+    // A late, older state can't retire a hook, and a late mint can't add one.
+    expect(core.setHooks({ revision: 2, publicKey: KEY, active: [], now: T0 })).toEqual({
+      applied: false,
+      revision: 3,
+    });
+    expect(
+      core.mintHook({ hookId: "hook-2", revision: 3, publicKey: KEY, keptHeaders: [], now: T0 }),
+    ).toEqual({ applied: false, revision: 3 });
+    expect(core.admitHookDelivery({ hookId: "hook-1", now: T0 })).toMatchObject({
+      ok: true,
+      keptHeaders: ["x-custom"],
+    });
+    expect(core.admitHookDelivery({ hookId: "hook-2", now: T0 })).toMatchObject({ status: 404 });
+
+    // Hooks it never minted are ignored; unnamed ones are retired at once.
+    core.setHooks({
+      revision: 4,
+      publicKey: KEY,
+      active: [{ hookId: "made-up", keptHeaders: [] }],
+      now: T0,
+    });
+    expect(core.admitHookDelivery({ hookId: "made-up", now: T0 })).toMatchObject({ status: 404 });
+    expect(core.admitHookDelivery({ hookId: "hook-1", now: T0 })).toMatchObject({ status: 404 });
+  });
+
+  it("refuses deliveries past the daily allowance or a full queue", () => {
+    const core = hostWithHook({
+      ...DEFAULT_HOST_CORE_LIMITS,
+      dailyHooks: 3,
+      maxPendingHookDeliveries: 2,
+    });
+    expect(deliver(core, "d1", "sealed-1").result.ok).toBe(true);
+    expect(deliver(core, "d2", "sealed-2").result.ok).toBe(true);
+    expect(deliver(core, "d3", "sealed-3").result).toMatchObject({
+      ok: false,
+      status: 429,
+      reason: "queue-full",
+    });
+    core.ackHookDeliveries(["d1", "d2"]);
+    expect(deliver(core, "d4", "sealed-4").result.ok).toBe(true);
+    const refused = core.admitHookDelivery({ hookId: "hook-1", now: T0 + 2 * MINUTE });
+    expect(refused).toMatchObject({ ok: false, status: 429, reason: "daily-limit" });
+    // Retry-After points at UTC midnight, when the allowance resets.
+    expect(refused.ok ? 0 : refused.retryAfterSeconds).toBe(12 * 60 * 60 - 2 * 60);
+    expect(core.usage(T0 + 2 * MINUTE)).toMatchObject({ hooks: 3, hookLimit: 3, messages: 3 });
+    expect(core.admitHookDelivery({ hookId: "hook-1", now: Date.UTC(2026, 9, 4, 0, 1) }).ok).toBe(
+      true,
+    );
+  });
+
+  it("counts deliveries against the daily message allowance too", () => {
+    const core = hostWithHook({ ...DEFAULT_HOST_CORE_LIMITS, dailyMessages: 10 });
+    core.commitUsage(T0, { messages: 9, awakeSeconds: 0 });
+    expect(deliver(core, "d1", "sealed-1").result.ok).toBe(true);
+    expect(core.admitHookDelivery({ hookId: "hook-1", now: T0 + MINUTE })).toMatchObject({
+      reason: "daily-limit",
+    });
+  });
+
+  it("hands small deliveries over whole and announces large ones", () => {
+    const core = hostWithHook();
+    const small = deliver(core, "small", "s".repeat(100));
+    expect(handedOver(small.effects)).toEqual(["hook.delivery"]);
+    const large = deliver(core, "large", "l".repeat(RELAY_HOOK_INLINE_SEALED_BYTES + 1));
+    expect(handedOver(large.effects)).toEqual(["hook.pending"]);
+    expect(large.effects).toContainEqual({
+      type: "control",
+      event: expect.objectContaining({
+        type: "hook.pending",
+        deliveryId: "large",
+        size: RELAY_HOOK_INLINE_SEALED_BYTES + 1,
+      }),
+    });
+    expect(core.hookDelivery("large")?.sealed.length).toBe(RELAY_HOOK_INLINE_SEALED_BYTES + 1);
+  });
+
+  it("replays unacknowledged deliveries oldest first, within an inline budget", () => {
+    const core = hostWithHook();
+    deliver(core, "first", "a".repeat(400), T0 + MINUTE);
+    deliver(core, "second", "b".repeat(400), T0 + 2 * MINUTE);
+    deliver(core, "third", "c".repeat(400), T0 + 3 * MINUTE);
+    core.ackHookDeliveries(["second"]);
+
+    const replay = core.hookReplay(T0 + 4 * MINUTE, 500);
+    expect(
+      replay.map((event) => [event.type, "delivery" in event ? event.delivery.deliveryId : ""]),
+    ).toEqual([
+      ["hook.delivery", "first"],
+      ["hook.pending", ""],
+    ]);
+    expect(replay[1]).toMatchObject({ deliveryId: "third", size: 400 });
+    expect(core.hookDelivery("second")).toBeNull();
+  });
+
+  it("drops deliveries after a day and retired hooks a day and an hour after retiring", () => {
+    const core = hostWithHook();
+    deliver(core, "old", "sealed", T0);
+    core.setHooks({ revision: 2, publicKey: KEY, active: [], now: T0 + HOUR });
+    core.expireDue(T0 + HOUR); // the test host's open invite
+    expect(core.nextDeadline()).toBe(T0 + RELAY_HOOK_HOLD_MS);
+
+    core.expireDue(T0 + RELAY_HOOK_HOLD_MS);
+    expect(core.hookDelivery("old")).toBeNull();
+    // The retired hook's row is kept, so it can still be named active again.
+    expect(core.nextDeadline()).toBe(T0 + HOUR + RETIRED_HOOK_KEEP_MS);
+    core.expireDue(T0 + HOUR + RETIRED_HOOK_KEEP_MS);
+    core.setHooks({
+      revision: 3,
+      publicKey: KEY,
+      active: [{ hookId: "hook-1", keptHeaders: [] }],
+      now: T0 + 2 * RELAY_HOOK_HOLD_MS,
+    });
+    expect(
+      core.admitHookDelivery({ hookId: "hook-1", now: T0 + 2 * RELAY_HOOK_HOLD_MS }),
+    ).toMatchObject({ status: 404 });
   });
 });
 

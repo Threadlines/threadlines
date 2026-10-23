@@ -33,6 +33,8 @@ export interface ScheduledTaskEnvironment {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly isPrimary: boolean;
+  /** Its server runs event tasks too (the `eventTasks` capability). */
+  readonly eventTasks: boolean;
 }
 
 /** The computers whose servers run scheduled tasks, this one first. */
@@ -187,11 +189,13 @@ export function useScheduledTaskRequestsForThread(
 
 /**
  * Active tasks that run again on their own on this computer (not manual,
- * not a one-time task that ran): what keeps it awake for them.
+ * not a one-time task that ran; an event task runs whenever an event comes):
+ * what keeps it awake for them.
  */
 export function countActiveScheduledTasks(snapshot: ScheduledTasksSnapshot | undefined): number {
   return (snapshot?.tasks ?? []).filter(
-    (task) => task.status === "active" && task.nextRunAt !== null,
+    (task) =>
+      task.status === "active" && (task.nextRunAt !== null || task.cadence.kind === "webhook"),
   ).length;
 }
 
@@ -206,16 +210,33 @@ export function countWorkingScheduledRuns(snapshot: ScheduledTasksSnapshot | und
  * computer isn't followed.
  */
 export function useScheduledRunTaskName(
-  environmentId: EnvironmentId,
+  environmentId: EnvironmentId | null | undefined,
   scheduledRun: ThreadScheduledRun | null | undefined,
 ): string | null {
   const current = useScheduledTasksStore((state) =>
-    scheduledRun == null
+    scheduledRun == null || environmentId == null
       ? undefined
       : state.byEnvironment[environmentId]?.tasks.find((task) => task.id === scheduledRun.taskId)
           ?.name,
   );
   return scheduledRun == null ? null : (current ?? scheduledRun.taskName);
+}
+
+/**
+ * The line that names a run's task, on its inbox row and over its first
+ * message: "Event · <task>" for an event task's run, else "Scheduled · <task>".
+ */
+export function scheduledRunLabel(taskName: string, event: boolean): string {
+  return `${event ? "Event" : "Scheduled"} · ${taskName}`;
+}
+
+/** scheduledRunLabel for a thread a run started, with the task's name as it is now; null otherwise. */
+export function useScheduledRunLabel(
+  environmentId: EnvironmentId | null | undefined,
+  scheduledRun: ThreadScheduledRun | null | undefined,
+): string | null {
+  const taskName = useScheduledRunTaskName(environmentId, scheduledRun);
+  return taskName === null ? null : scheduledRunLabel(taskName, scheduledRun?.event === true);
 }
 
 /** The rail's line for Scheduled: how many tasks are active, everywhere ("3 active"). */

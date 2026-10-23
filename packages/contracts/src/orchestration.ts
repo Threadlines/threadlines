@@ -618,6 +618,8 @@ export const ThreadScheduledRun = Schema.Struct({
   taskId: ScheduledTaskId,
   taskName: TrimmedNonEmptyString,
   slotUtc: IsoDateTime,
+  /** An event task's run (docs/design/event-tasks.md): "Event · <task>". */
+  event: Schema.optionalKey(Schema.Boolean),
 });
 export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
 /** Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far it got. */

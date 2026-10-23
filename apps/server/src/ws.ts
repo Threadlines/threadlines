@@ -142,7 +142,7 @@ import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
 import { RelayHost } from "./relay/RelayHost.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
-import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
+import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
 import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
@@ -2674,10 +2674,16 @@ const makeWsRpcLayer = (
           }),
         // Scheduled tasks (docs/design/fleet.md, Part 6): open to paired
         // devices, which can already start threads here.
-        [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
-          observeRpcStream(WS_METHODS.scheduledTasksSubscribe, scheduledTasks.changes, {
-            "rpc.aggregate": "scheduledTasks",
-          }),
+        // A client that can't show event tasks (no "webhook" in `supports`)
+        // never gets them.
+        [WS_METHODS.scheduledTasksSubscribe]: (input) =>
+          observeRpcStream(
+            WS_METHODS.scheduledTasksSubscribe,
+            scheduledTasks.changes.pipe(
+              Stream.map((snapshot) => snapshotForClient(snapshot, input.supports)),
+            ),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
         [WS_METHODS.scheduledTasksListRuns]: (input) =>
           observeRpcEffect(WS_METHODS.scheduledTasksListRuns, scheduledTasks.listRuns(input), {
             "rpc.aggregate": "scheduledTasks",
@@ -2722,6 +2728,80 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.scheduledTasksRespondRequest,
             scheduledTasks.respondRequest(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        // Event tasks (docs/design/event-tasks.md): the same callers as the
+        // scheduled-task calls above, paired phones included.
+        [WS_METHODS.scheduledTasksWebhookAddress]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksWebhookAddress,
+            scheduledTasks.webhookAddress(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksRotateWebhookAddress]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksRotateWebhookAddress,
+            scheduledTasks.rotateWebhookAddress(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksSetWebhookSigningSecret]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksSetWebhookSigningSecret,
+            scheduledTasks.setWebhookSigningSecret(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksRevealWebhookSigningSecret]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksRevealWebhookSigningSecret,
+            scheduledTasks.revealWebhookSigningSecret(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksGitHubContext]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksGitHubContext,
+            scheduledTasks.gitHubContext(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksConnectGitHub]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksConnectGitHub,
+            scheduledTasks.connectGitHub(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksDisconnectGitHub]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksDisconnectGitHub,
+            scheduledTasks.disconnectGitHub(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksDismissWebhookAddressChange]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksDismissWebhookAddressChange,
+            scheduledTasks.dismissWebhookAddressChange(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksListWebhookEvents]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksListWebhookEvents,
+            scheduledTasks.listWebhookEvents(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksWebhookEvent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksWebhookEvent,
+            scheduledTasks.webhookEvent(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksTestWebhook]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksTestWebhook,
+            scheduledTasks.testWebhook(input),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
+        [WS_METHODS.scheduledTasksRunWithWebhookEvent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksRunWithWebhookEvent,
+            scheduledTasks.runWithWebhookEvent(input),
             { "rpc.aggregate": "scheduledTasks" },
           ),
         // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).

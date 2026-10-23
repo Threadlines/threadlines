@@ -18,6 +18,7 @@ import {
   type ProviderSubagentTranscriptInput,
   type ProviderSubagentTranscriptResult,
   type ProviderStartReviewResult,
+  type ScheduledTaskClientSupport,
   type ServerSettingsPatch,
   WS_METHODS,
 } from "@threadlines/contracts";
@@ -49,6 +50,11 @@ interface StreamSubscriptionOptions {
 const OUTPUT_READ_TIMEOUT = Option.some("5 seconds" as const);
 /** An MCP app card's load or tool call (see loadMcpApp). */
 const MCP_APP_REQUEST_TIMEOUT = Option.some("2 minutes" as const);
+/**
+ * The scheduled-task kinds this app can show: a server leaves event tasks and
+ * their runs out for a client that doesn't name `webhook`.
+ */
+const SCHEDULED_TASK_CLIENT_SUPPORT: ScheduledTaskClientSupport = ["webhook"];
 
 type RpcUnaryMethod<TTag extends RpcTag> =
   RpcMethod<TTag> extends (input: any, options?: any) => Effect.Effect<infer TSuccess, any, any>
@@ -396,6 +402,29 @@ export interface WsRpcClient {
     readonly remove: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksDelete>;
     readonly runNow: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksRunNow>;
     readonly respondRequest: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksRespondRequest>;
+    /** Event tasks (docs/design/event-tasks.md), on servers reporting `eventTasks`. */
+    readonly webhookAddress: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksWebhookAddress>;
+    readonly rotateWebhookAddress: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksRotateWebhookAddress
+    >;
+    readonly setWebhookSigningSecret: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksSetWebhookSigningSecret
+    >;
+    readonly revealWebhookSigningSecret: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksRevealWebhookSigningSecret
+    >;
+    readonly gitHubContext: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksGitHubContext>;
+    readonly connectGitHub: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksConnectGitHub>;
+    readonly disconnectGitHub: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksDisconnectGitHub>;
+    readonly listWebhookEvents: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksListWebhookEvents>;
+    readonly webhookEvent: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksWebhookEvent>;
+    readonly testWebhook: RpcUnaryMethod<typeof WS_METHODS.scheduledTasksTestWebhook>;
+    readonly runWithWebhookEvent: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksRunWithWebhookEvent
+    >;
+    readonly dismissWebhookAddressChange: RpcUnaryMethod<
+      typeof WS_METHODS.scheduledTasksDismissWebhookAddressChange
+    >;
   };
   /**
    * Computer links (docs/design/fleet.md): owner and client sessions alike,
@@ -1105,12 +1134,19 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     },
     scheduledTasks: {
       subscribe: (listener, options) =>
-        transport.subscribe((client) => client[WS_METHODS.scheduledTasksSubscribe]({}), listener, {
-          ...options,
-          tag: WS_METHODS.scheduledTasksSubscribe,
-        }),
+        transport.subscribe(
+          (client) =>
+            client[WS_METHODS.scheduledTasksSubscribe]({ supports: SCHEDULED_TASK_CLIENT_SUPPORT }),
+          listener,
+          { ...options, tag: WS_METHODS.scheduledTasksSubscribe },
+        ),
       listRuns: (input) =>
-        transport.request((client) => client[WS_METHODS.scheduledTasksListRuns](input)),
+        transport.request((client) =>
+          client[WS_METHODS.scheduledTasksListRuns]({
+            ...input,
+            supports: SCHEDULED_TASK_CLIENT_SUPPORT,
+          }),
+        ),
       create: (input) =>
         transport.request((client) => client[WS_METHODS.scheduledTasksCreate](input)),
       update: (input) =>
@@ -1121,6 +1157,36 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.scheduledTasksRunNow](input)),
       respondRequest: (input) =>
         transport.request((client) => client[WS_METHODS.scheduledTasksRespondRequest](input)),
+      webhookAddress: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksWebhookAddress](input)),
+      rotateWebhookAddress: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksRotateWebhookAddress](input)),
+      setWebhookSigningSecret: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.scheduledTasksSetWebhookSigningSecret](input),
+        ),
+      revealWebhookSigningSecret: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.scheduledTasksRevealWebhookSigningSecret](input),
+        ),
+      gitHubContext: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksGitHubContext](input)),
+      connectGitHub: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksConnectGitHub](input)),
+      disconnectGitHub: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksDisconnectGitHub](input)),
+      listWebhookEvents: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksListWebhookEvents](input)),
+      webhookEvent: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksWebhookEvent](input)),
+      testWebhook: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksTestWebhook](input)),
+      runWithWebhookEvent: (input) =>
+        transport.request((client) => client[WS_METHODS.scheduledTasksRunWithWebhookEvent](input)),
+      dismissWebhookAddressChange: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.scheduledTasksDismissWebhookAddressChange](input),
+        ),
     },
     links: {
       subscribe: (listener, options) =>

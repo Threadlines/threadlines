@@ -35,20 +35,34 @@ import {
   type ScheduledRun,
   ScheduledTaskError,
   type ScheduledTask,
+  type ScheduledTaskClientSupport,
   type ScheduledTaskCreateInput,
   type ScheduledTaskDeleteInput,
+  type ScheduledTaskGitHubContext,
+  type ScheduledTaskGitHubContextInput,
   ScheduledTaskId,
+  type ScheduledTaskIdInput,
   type ScheduledTaskListRunsInput,
   type ScheduledTaskListRunsResult,
+  type ScheduledTaskListWebhookEventsInput,
+  type ScheduledTaskListWebhookEventsResult,
   type ScheduledTaskRequest,
   type ScheduledTaskRespondRequestInput,
   type ScheduledTaskRunNowInput,
+  type ScheduledTaskSetSigningSecretInput,
+  type ScheduledTaskSigningSecret,
   type ScheduledTaskTarget,
+  type ScheduledTaskTestWebhookInput,
+  type ScheduledTaskWebhookAddress,
+  type ScheduledTaskWebhookEventInput,
+  type ScheduledTaskWebhookState,
   type ScheduledTasksSnapshot,
   type ScheduledTaskUpdateInput,
   type ThreadId,
   type ThreadParticipantId,
   TurnId,
+  type WebhookEventDetail,
+  type WebhookEventRecord,
 } from "@threadlines/contracts";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
@@ -72,9 +86,11 @@ import {
   SCHEDULED_TASK_ON_TIME_MS,
   upcomingSlots,
 } from "@threadlines/shared/scheduledTasks";
+import { webhookCadenceProblem, webhookKeptHeaders } from "@threadlines/shared/webhookTasks";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -103,6 +119,8 @@ import { derivedUuid } from "../orchestration/childRequestIds.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { RelayHooks } from "../relay/RelayHooks.ts";
+import { EventTaskHookRefusal, makeEventTaskHooks } from "./EventTaskHooks.ts";
 import {
   isWorkingRun,
   type ScheduledRunLaunch,
@@ -114,6 +132,8 @@ import {
   type ScheduledTaskRow,
   WORKING_RUN_STATUSES,
 } from "./ScheduledTaskRepository.ts";
+import { makeWebhookEvents, type WebhookEvents } from "./WebhookEvents.ts";
+import { type TaskWebhookRow, WebhookTaskRepository } from "./WebhookTaskRepository.ts";
 import {
   scheduledRunCommandId,
   scheduledRunKey,
@@ -123,6 +143,8 @@ import {
 
 /** How often the scheduler looks for due slots and finished runs. */
 export const SCHEDULER_TICK = Duration.seconds(30);
+/** A relay connection down this long, with an event task waiting, is shown on the page. */
+const EVENTS_UNREACHABLE_AFTER_MS = 10 * 60_000;
 /** A run whose turn never started, with its thread idle this long, has failed. */
 const NEVER_STARTED_GRACE_MS = 60_000;
 const GIT_TIMEOUT_MS = 60_000;
@@ -255,7 +277,69 @@ export interface ScheduledTasksShape {
     readonly summary: string | null;
   }) => Effect.Effect<"recorded" | "not_a_run" | "not_this_turn" | "already_ended">;
   readonly onTurnEnd: ScheduledRunTurnEndsShape["onTurnEnd"];
-  /** One scheduler pass now: runs that ended, then due slots, then launches to resume. */
+  // Event tasks (docs/design/event-tasks.md) ---------------------------------
+  /** An event task's addresses: through the relay (once it gave one), and on this computer. */
+  readonly webhookAddress: (
+    input: ScheduledTaskIdInput,
+  ) => Effect.Effect<ScheduledTaskWebhookAddress, ScheduledTaskError>;
+  /** A new address; the old one stops taking events at once. */
+  readonly rotateWebhookAddress: (
+    input: ScheduledTaskIdInput,
+  ) => Effect.Effect<ScheduledTaskWebhookAddress, ScheduledTaskError>;
+  /** A new signing secret, given or generated (a generated one comes back, this once). */
+  readonly setWebhookSigningSecret: (
+    input: ScheduledTaskSetSigningSecretInput,
+  ) => Effect.Effect<ScheduledTaskSigningSecret, ScheduledTaskError>;
+  readonly revealWebhookSigningSecret: (
+    input: ScheduledTaskIdInput,
+  ) => Effect.Effect<ScheduledTaskSigningSecret, ScheduledTaskError>;
+  /** A project's GitHub repository and who `gh` is signed in as. */
+  readonly gitHubContext: (
+    input: ScheduledTaskGitHubContextInput,
+  ) => Effect.Effect<ScheduledTaskGitHubContext, ScheduledTaskError>;
+  /** "Add to GitHub": a webhook on the task's repository. */
+  readonly connectGitHub: (
+    input: ScheduledTaskIdInput,
+  ) => Effect.Effect<ScheduledTask, ScheduledTaskError>;
+  /** Removes the webhook Threadlines added on GitHub; the task keeps its address. */
+  readonly disconnectGitHub: (
+    input: ScheduledTaskIdInput,
+  ) => Effect.Effect<ScheduledTask, ScheduledTaskError>;
+  /** "Got it" on a changed address: the user has given the sender the new one. */
+  readonly dismissWebhookAddressChange: (
+    input: ScheduledTaskIdInput,
+  ) => Effect.Effect<ScheduledTask, ScheduledTaskError>;
+  readonly listWebhookEvents: (
+    input: ScheduledTaskListWebhookEventsInput,
+  ) => Effect.Effect<ScheduledTaskListWebhookEventsResult, ScheduledTaskError>;
+  readonly webhookEvent: (
+    input: ScheduledTaskWebhookEventInput,
+  ) => Effect.Effect<WebhookEventDetail, ScheduledTaskError>;
+  /** "Send a test event": a dry run unless `startRun`. */
+  readonly testWebhook: (
+    input: ScheduledTaskTestWebhookInput,
+  ) => Effect.Effect<WebhookEventDetail, ScheduledTaskError>;
+  /** "Run with this event": the event again, as a new one past the duplicate check. */
+  readonly runWithWebhookEvent: (
+    input: ScheduledTaskWebhookEventInput,
+  ) => Effect.Effect<WebhookEventRecord, ScheduledTaskError>;
+  /**
+   * An event sent to this computer's own port (`/api/hooks/{task}/{token}`):
+   * the HTTP status to answer. The body is read only once the token passed.
+   */
+  readonly receiveLocalEvent: (input: {
+    readonly taskId: string;
+    readonly token: string;
+    readonly method: string;
+    readonly query: string;
+    readonly headers: Readonly<Record<string, string | undefined>>;
+    readonly contentLength: number | null;
+    readonly readBody: Effect.Effect<Uint8Array, "too_large">;
+  }) => Effect.Effect<202 | 404 | 413 | 429 | 503>;
+  /**
+   * One scheduler pass now: runs that ended, then due slots, then launches to
+   * resume, then every event task's queue.
+   */
   readonly tick: Effect.Effect<void>;
   /** Settle what the previous process left, then tick every 30 seconds. */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
@@ -277,9 +361,70 @@ const isPauseOnly = (input: ScheduledTaskUpdateInput): boolean =>
     ([key, value]) => key === "id" || key === "status" || value === undefined,
   );
 
+/** Why an agent's change to an event task is refused (docs/design/event-tasks.md, "Safety defaults"). */
+export const AGENT_EVENT_CREATE = "Only a person can set up an event task.";
+export const AGENT_EVENT_CONVERT = "Only a person can make a task start on events.";
+export const AGENT_EVENT_CHANGE =
+  "Only a person can change an event task. Agents can pause or resume it.";
+
+/**
+ * The one check on an agent's change to the tasks, where it enters (before it
+ * is asked about or applied) and again when a person allows it: agents never
+ * set up an event task, never turn a task into one, and change one only by
+ * pausing or resuming it. `current` is the task an update changes, as it is
+ * now. Null when the change may go on.
+ */
+export const refuseAgentEventChange = (
+  current: Pick<ScheduledTaskRow, "cadence"> | null,
+  proposed: ScheduledTaskChange,
+): string | null => {
+  if (proposed.kind === "create") {
+    return proposed.draft.cadence.kind === "webhook" ? AGENT_EVENT_CREATE : null;
+  }
+  if (current?.cadence.kind === "webhook") {
+    const onlyStatus = Object.entries(proposed.input).every(
+      ([key, value]) => key === "id" || key === "status" || value === undefined,
+    );
+    return onlyStatus ? null : AGENT_EVENT_CHANGE;
+  }
+  return proposed.input.cadence?.kind === "webhook" ? AGENT_EVENT_CONVERT : null;
+};
+
+/**
+ * The snapshot as a client sees it: one that can't show event tasks (no
+ * "webhook" in `supports`, an app older than them) gets none, and no event
+ * run as a task's last run, so it never meets a cadence or trigger it can't
+ * read.
+ */
+export const snapshotForClient = (
+  snapshot: ScheduledTasksSnapshot,
+  supports: ScheduledTaskClientSupport | undefined,
+): ScheduledTasksSnapshot =>
+  supports?.includes("webhook") === true
+    ? snapshot
+    : {
+        requests: snapshot.requests,
+        timeZone: snapshot.timeZone,
+        tasks: snapshot.tasks.flatMap((task) => {
+          if (task.cadence.kind === "webhook") return [];
+          const { webhook: _webhook, ...rest } = task;
+          return [
+            rest.lastRun?.trigger === "webhook" || rest.lastRun?.event !== undefined
+              ? { ...rest, lastRun: null }
+              : rest,
+          ];
+        }),
+      };
+
+/** Headers an event task's hook may keep beyond the usual ones (RelayHookKeptHeaders). */
+const MAX_KEPT_HEADERS = 32;
+
 /** Tries at saving an edit over a task other writes keep moving. */
 const SAVE_ATTEMPTS = 3;
 const KEPT_CHANGING = "The task kept changing while it was being saved. Try again.";
+
+/** An edit's save lost to another write: its transaction rolls back. */
+class EditLost extends Data.TaggedError("EditLost")<{}> {}
 
 const toRun = (row: ScheduledRunRow): ScheduledRun => ({
   taskId: row.taskId,
@@ -289,8 +434,30 @@ const toRun = (row: ScheduledRunRow): ScheduledRun => ({
   reason: row.reason,
   threadId: row.threadId,
   summary: row.summary,
+  ...(row.launch?.event !== undefined ? { event: row.launch.event } : {}),
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
+});
+
+/** An event task's address and connection, as the snapshot shows them. */
+const webhookState = (
+  address: TaskWebhookRow | undefined,
+  signingSecretSet: boolean,
+  extra: { readonly githubProblem: string | null; readonly eventsChangedAt: string | null } = {
+    githubProblem: null,
+    eventsChangedAt: null,
+  },
+): ScheduledTaskWebhookState => ({
+  address: address?.relayUrl != null ? "ready" : "waiting_for_relay",
+  addressChanged: address?.addressChanged ?? false,
+  github: address?.githubHookId != null,
+  signingSecretSet,
+  lastEventAt: address?.lastEventAt ?? null,
+  ...(extra.githubProblem !== null ? { githubProblem: extra.githubProblem } : {}),
+  // The address row changes with every change to the address (and a few
+  // others): reason enough to read it again.
+  ...(address !== undefined ? { addressVersion: address.updatedAt } : {}),
+  ...(extra.eventsChangedAt !== null ? { eventsChangedAt: extra.eventsChangedAt } : {}),
 });
 
 const toRequest = (row: ScheduledTaskRequestRow): ScheduledTaskRequest => ({
@@ -341,6 +508,7 @@ const updateDetails = (current: ScheduledTaskRow, row: ScheduledTaskRow): Readon
 const toTask = (
   row: ScheduledTaskRow,
   summary: { readonly last: ScheduledRunRow | null; readonly working: number } | undefined,
+  webhook?: ScheduledTaskWebhookState,
 ): ScheduledTask => ({
   id: row.id,
   name: row.name,
@@ -359,6 +527,7 @@ const toTask = (
   lastRun: summary?.last ? toRun(summary.last) : null,
   workingRuns: summary?.working ?? 0,
   originThreadId: row.originThreadId,
+  ...(row.cadence.kind === "webhook" ? { webhook: webhook ?? webhookState(undefined, false) } : {}),
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
 });
@@ -376,17 +545,22 @@ const launchOf = (task: ScheduledTaskRow, projectRoot: string | null): Scheduled
   projectRoot,
 });
 
-/** The first message of a new-thread run: a short note, then the task's own words. */
+/**
+ * The first message of a new-thread run: a short note, then the task's own
+ * words. An event run's message was rendered from its event when claimed.
+ */
 export const runMessageText = (launch: ScheduledRunLaunch, withFinishTool: boolean) =>
-  [
-    `Scheduled task: ${launch.taskName}.${
-      withFinishTool
-        ? " If there is nothing to report, call scheduled_run_finish with nothing_to_report: true."
-        : ""
-    }`,
-    "",
-    launch.prompt,
-  ].join("\n");
+  launch.event !== undefined
+    ? launch.prompt
+    : [
+        `Scheduled task: ${launch.taskName}.${
+          withFinishTool
+            ? " If there is nothing to report, call scheduled_run_finish with nothing_to_report: true."
+            : ""
+        }`,
+        "",
+        launch.prompt,
+      ].join("\n");
 
 const make = Effect.gen(function* () {
   const repo = yield* ScheduledTaskRepository;
@@ -399,9 +573,15 @@ const make = Effect.gen(function* () {
   const gitWorkflow = yield* GitWorkflowService;
   const settings = yield* ServerSettingsService;
   const environment = yield* ServerEnvironment;
+  const webhooks = yield* WebhookTaskRepository;
+  const relayHooks = yield* RelayHooks;
+  /** When the relay connection went down while an event task existed; null while up. */
+  let relayDownSince: number | null = null;
+  let eventsUnreachable = false;
 
   const changed = yield* PubSub.sliding<void>(1);
   const notify = PubSub.publish(changed, undefined).pipe(Effect.asVoid);
+  const hooks = yield* makeEventTaskHooks(notify);
 
   /** Launches running in this process, so a tick never starts a second one. */
   const launching = new Set<string>();
@@ -432,18 +612,44 @@ const make = Effect.gen(function* () {
   // Reading
   // ---------------------------------------------------------------------------
 
+  /** Each event task's address and connection, by task. */
+  const webhookStates = Effect.gen(function* () {
+    const [addresses, withSecret, problems, eventsChanged] = yield* Effect.all([
+      webhooks.listTaskWebhooks,
+      webhooks.tasksWithSecret,
+      hooks.githubProblems,
+      webhooks.eventsChangedAt,
+    ]);
+    const byTask = new Map(addresses.map((address) => [address.taskId, address]));
+    return (taskId: ScheduledTaskId) =>
+      webhookState(byTask.get(taskId), withSecret.has(taskId), {
+        githubProblem: problems.get(taskId) ?? null,
+        eventsChangedAt: eventsChanged.get(taskId) ?? null,
+      });
+  });
+
   const snapshot: ScheduledTasksShape["snapshot"] = Effect.gen(function* () {
-    const [tasks, summaries, requests] = yield* Effect.all([
+    const [tasks, summaries, requests, states] = yield* Effect.all([
       repo.listTasks,
       repo.runSummaries,
       repo.listWaitingRequests,
+      webhookStates,
     ]);
     return {
-      tasks: tasks.map((task) => toTask(task, summaries.get(task.id))),
+      tasks: tasks.map((task) => toTask(task, summaries.get(task.id), states(task.id))),
       requests: requests.map(toRequest),
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ...(eventsUnreachable ? { eventsUnreachable: true } : {}),
     };
   }).pipe(Effect.mapError(storageError("read the scheduled tasks")));
+
+  /** A task as the snapshot shows it, just after a write. */
+  const savedTask = (row: ScheduledTaskRow) =>
+    Effect.gen(function* () {
+      const summaries = yield* repo.runSummaries.pipe(Effect.orElseSucceed(() => new Map()));
+      const states = yield* webhookStates.pipe(Effect.orElseSucceed(() => null));
+      return toTask(row, summaries.get(row.id), states?.(row.id));
+    });
 
   const getTask: ScheduledTasksShape["getTask"] = (id) =>
     snapshot.pipe(Effect.map((current) => current.tasks.find((task) => task.id === id)));
@@ -459,10 +665,19 @@ const make = Effect.gen(function* () {
   const listRuns: ScheduledTasksShape["listRuns"] = (input) =>
     Effect.gen(function* () {
       const limit = Math.min(input.limit ?? DEFAULT_RUN_PAGE, 200);
+      // A client that can't show event tasks gets none of their runs.
+      const withEvents = input.supports?.includes("webhook") === true;
+      if (!withEvents) {
+        const task = yield* repo.getTask(input.id);
+        if (Option.isSome(task) && task.value.cadence.kind === "webhook") {
+          return { runs: [], hasMore: false };
+        }
+      }
       const rows = yield* repo.listRuns({
         taskId: input.id,
         before: input.before,
         limit: limit + 1,
+        withoutEvents: !withEvents,
       });
       return { runs: rows.slice(0, limit).map(toRun), hasMore: rows.length > limit };
     }).pipe(Effect.mapError(storageError("read the task's runs")));
@@ -496,6 +711,16 @@ const make = Effect.gen(function* () {
   /** Refuses a task whose project, agent or thread this computer doesn't have. */
   const checkDraft = (task: ScheduledTaskRow) =>
     Effect.gen(function* () {
+      if (task.cadence.kind === "webhook") {
+        const problem = webhookCadenceProblem(task.cadence, task.prompt);
+        if (problem !== null) return yield* taskError(problem);
+        // The relay keeps at most this many extra headers per hook (RelayHookKeptHeaders).
+        if (webhookKeptHeaders(task.cadence, task.prompt).length > MAX_KEPT_HEADERS) {
+          return yield* taskError(
+            `This task reads too many different headers. Use at most ${MAX_KEPT_HEADERS}.`,
+          );
+        }
+      }
       const project = yield* readProject(task.projectId);
       if (project === undefined) {
         return yield* taskError("That project isn't on this computer.");
@@ -573,13 +798,24 @@ const make = Effect.gen(function* () {
     });
 
   /** A task as an edit leaves it, checked and scheduled; not saved. */
-  const prepareUpdate = (input: ScheduledTaskUpdateInput, now: number) =>
+  const prepareUpdate = (
+    input: ScheduledTaskUpdateInput,
+    now: number,
+    /**
+     * Refuses the edit from the very read it is worked out from (and saved
+     * over, at its revision): an agent's change to a task that is an event
+     * task in that read.
+     */
+    guard?: (current: ScheduledTaskRow) => string | null,
+  ) =>
     Effect.gen(function* () {
       const found = yield* repo
         .getTask(input.id)
         .pipe(Effect.mapError(storageError("read the task")));
       if (Option.isNone(found)) return yield* taskError("That task was deleted.");
       const current = found.value;
+      const refusal = guard?.(current) ?? null;
+      if (refusal !== null) return yield* taskError(refusal);
       const { id: _id, status, ...fields } = input;
       // A schedule sent back as it was (a form sends every field) is no change.
       const timesChanged =
@@ -610,12 +846,112 @@ const make = Effect.gen(function* () {
       return { current, row };
     });
 
+  /**
+   * What follows an event task's save: a GitHub one gets its first signing
+   * secret, the relay the whole list of hooks, and a webhook Threadlines
+   * added on GitHub the task's events, address and secret.
+   */
+  const afterEventSave = (row: ScheduledTaskRow) =>
+    Effect.gen(function* () {
+      if (row.cadence.kind === "webhook" && row.cadence.source === "github") {
+        yield* hooks.ensureSecret(row.id).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("event tasks: couldn't make a task's signing secret", {
+              taskId: row.id,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      }
+      yield* hooks.syncActive;
+      yield* hooks.syncGitHub(row.id);
+    });
+
+  /**
+   * Saves a new task. An event task gets its address in the same write: a
+   * local token, and a relay hook when the relay answers (minted later
+   * otherwise, the task "waiting for the relay").
+   */
+  const insertNew = (row: ScheduledTaskRow) =>
+    Effect.gen(function* () {
+      if (row.cadence.kind !== "webhook") {
+        return yield* repo.insertTask(row).pipe(Effect.mapError(storageError("save the task")));
+      }
+      const address = yield* hooks.newAddress({
+        id: row.id,
+        cadence: row.cadence,
+        prompt: row.prompt,
+      });
+      yield* webhooks
+        .transact(
+          Effect.gen(function* () {
+            yield* repo.insertTask(row);
+            yield* hooks.storeAddress(address);
+          }),
+        )
+        .pipe(Effect.mapError(storageError("save the task")));
+      yield* afterEventSave(row);
+    });
+
   const create: ScheduledTasksShape["create"] = (input) =>
     Effect.gen(function* () {
       const row = yield* prepareCreate(input, yield* nowMillis);
-      yield* repo.insertTask(row).pipe(Effect.mapError(storageError("save the task")));
+      yield* insertNew(row);
       yield* notify;
-      return toTask(row, undefined);
+      return yield* savedTask(row);
+    });
+
+  /**
+   * Saves an edit over `current` (only while it is still at its revision;
+   * false when another write came first). A task that becomes an event task
+   * gets its address in the same write, one that stops being one has it
+   * retired, and one that stays has its hook's kept headers brought up to
+   * date. The relay and GitHub hear about it after.
+   */
+  const saveEdit = (current: ScheduledTaskRow, row: ScheduledTaskRow) =>
+    Effect.gen(function* () {
+      const was = current.cadence.kind === "webhook";
+      const cadence = row.cadence;
+      if (!was && cadence.kind !== "webhook") {
+        return yield* repo.saveTask(row).pipe(Effect.mapError(storageError("save the task")));
+      }
+      const address =
+        !was && cadence.kind === "webhook"
+          ? yield* hooks.newAddress({ id: row.id, cadence, prompt: row.prompt })
+          : null;
+      const before = was
+        ? Option.getOrNull(
+            yield* webhooks.getTaskWebhook(row.id).pipe(Effect.orElseSucceed(() => Option.none())),
+          )
+        : null;
+      const now = new Date(yield* nowMillis).toISOString();
+      const saved = yield* webhooks
+        .transact(
+          Effect.gen(function* () {
+            if (!(yield* repo.saveTask(row))) return yield* new EditLost();
+            if (address !== null) {
+              yield* hooks.storeAddress(address);
+            } else if (cadence.kind !== "webhook") {
+              yield* webhooks.forgetTask({ taskId: row.id, everything: false, now });
+            } else {
+              yield* hooks.updateKeptHeaders(row.id, cadence, row.prompt);
+            }
+          }),
+        )
+        .pipe(
+          Effect.as(true),
+          Effect.catchTag("EditLost", () => Effect.succeed(false)),
+          Effect.mapError(storageError("save the task")),
+        );
+      if (!saved) return false;
+      if (cadence.kind === "webhook") {
+        yield* afterEventSave(row);
+      } else {
+        // No longer an event task: its hook retired, and its GitHub webhook goes.
+        yield* hooks.syncActive;
+        if (before !== null) yield* hooks.removeGitHubHook(before);
+      }
+      return true;
     });
 
   /**
@@ -626,14 +962,10 @@ const make = Effect.gen(function* () {
   const update: ScheduledTasksShape["update"] = (input) =>
     Effect.gen(function* () {
       for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt += 1) {
-        const { row } = yield* prepareUpdate(input, yield* nowMillis);
-        const saved = yield* repo
-          .saveTask(row)
-          .pipe(Effect.mapError(storageError("save the task")));
-        if (!saved) continue;
+        const { current, row } = yield* prepareUpdate(input, yield* nowMillis);
+        if (!(yield* saveEdit(current, row))) continue;
         yield* notify;
-        const summaries = yield* repo.runSummaries.pipe(Effect.orElseSucceed(() => new Map()));
-        return toTask(row, summaries.get(row.id));
+        return yield* savedTask(row);
       }
       return yield* taskError(KEPT_CHANGING);
     });
@@ -688,7 +1020,12 @@ const make = Effect.gen(function* () {
   const propose: ScheduledTasksShape["propose"] = (input) =>
     Effect.gen(function* () {
       const { change } = input;
+      // Agents never set up or change event tasks beyond pausing them,
+      // whichever way the setting would take the change. An edit is checked
+      // in each attempt below, against the read that attempt saves over.
       if (change.kind === "create") {
+        const refusal = refuseAgentEventChange(null, change);
+        if (refusal !== null) return yield* taskError(refusal);
         if (exceedsRuntimeMode(change.draft.runtimeMode, input.callerRuntimeMode)) {
           return yield* taskError(
             "A task can't run with more access than the agent setting it up.",
@@ -716,7 +1053,9 @@ const make = Effect.gen(function* () {
       // a setting turned off, is seen here, never after the save.
       for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt += 1) {
         const now = yield* nowMillis;
-        const { current, row } = yield* prepareUpdate(change.input, now);
+        const { current, row } = yield* prepareUpdate(change.input, now, (read) =>
+          refuseAgentEventChange(read, change),
+        );
         // Pausing only takes work away; anything else on a task with more
         // access than the agent asking is the user's call. So is any change
         // to a task that stopped: the user sees why it stopped, and how it
@@ -764,14 +1103,21 @@ const make = Effect.gen(function* () {
   > =>
     Effect.gen(function* () {
       const change = request.payload.change;
+      // Checked again as the task is now, in the read the approval saves
+      // over: one that became an event task since the agent asked stays the
+      // user's own.
       if (change.kind === "create") {
+        const refusal = refuseAgentEventChange(null, change);
+        if (refusal !== null) return yield* taskError(refusal);
         const row = yield* prepareCreate(change.draft, now, {
           id: requestTaskId(request.requestId),
           origin: request.threadId,
         });
         return { kind: "insert", row };
       }
-      const { row } = yield* prepareUpdate(change.input, now);
+      const { row } = yield* prepareUpdate(change.input, now, (read) =>
+        refuseAgentEventChange(read, change),
+      );
       return { kind: "save", row };
     });
 
@@ -904,12 +1250,31 @@ const make = Effect.gen(function* () {
     if (expired) yield* notify;
   });
 
+  /**
+   * Deletes a task and its history. An event task's address retires with it,
+   * its events and secrets go, and a webhook Threadlines added on GitHub for
+   * it is removed (always: the delete carries no choice about it).
+   */
   const remove: ScheduledTasksShape["remove"] = (input) =>
     Effect.gen(function* () {
-      const runs = yield* repo
-        .deleteTask(input.id)
+      const address = Option.getOrNull(
+        yield* webhooks.getTaskWebhook(input.id).pipe(Effect.orElseSucceed(() => Option.none())),
+      );
+      const now = new Date(yield* nowMillis).toISOString();
+      const [runs, secrets] = yield* webhooks
+        .transact(
+          Effect.all([
+            repo.deleteTask(input.id),
+            webhooks.forgetTask({ taskId: input.id, everything: true, now }),
+          ]),
+        )
         .pipe(Effect.mapError(storageError("delete the task")));
       yield* changedRuns;
+      if (address !== null) {
+        yield* hooks.dropSecrets(secrets);
+        yield* hooks.syncActive;
+        yield* hooks.removeGitHubHook(address);
+      }
       const threadIds = new Set<ThreadId>();
       for (const run of runs) {
         if (run.threadId === null || run.launch?.target.kind !== "new_thread") continue;
@@ -1113,9 +1478,14 @@ const make = Effect.gen(function* () {
       return { project } as const;
     });
 
-  /** Ends a run that couldn't launch, unless something ended it first. */
+  /**
+   * Ends a run that couldn't launch, unless something ended it first. An
+   * event run's event is marked failed, the issue it reserved (without a
+   * thread yet) is freed, and the events waiting for room try again.
+   */
   const failLaunch = (run: ScheduledRunRow, reason: string) =>
     Effect.gen(function* () {
+      const now = yield* nowIso;
       yield* repo
         .updateRun({
           taskId: run.taskId,
@@ -1123,11 +1493,44 @@ const make = Effect.gen(function* () {
           from: ["launching"],
           status: "failed",
           reason,
-          now: yield* nowIso,
+          now,
         })
         .pipe(Effect.ignore);
+      if (run.trigger === "webhook") {
+        yield* webhooks
+          .failRunEvent({
+            taskId: run.taskId,
+            runSlotUtc: run.slotUtc,
+            reason: `Its run couldn't start: ${reason}`,
+            now,
+          })
+          .pipe(Effect.ignore);
+        yield* webhooks
+          .releaseSubject({ taskId: run.taskId, runSlotUtc: run.slotUtc })
+          .pipe(Effect.ignore);
+      }
       yield* changedRuns;
+      yield* events.wakeWaiting;
     });
+
+  /**
+   * An event run's first message is in its new thread: an issue it reserved
+   * now runs in that thread, and the events waiting for it go. Never sooner:
+   * a follow-up into a thread whose first run hasn't sent its message (or set
+   * up its worktree) could start before it.
+   */
+  const subjectThreadStarted = (run: ScheduledRunRow, threadId: ThreadId) =>
+    run.trigger !== "webhook"
+      ? Effect.void
+      : Effect.gen(function* () {
+          const filled = yield* webhooks.fillSubjectThread({
+            taskId: run.taskId,
+            runSlotUtc: run.slotUtc,
+            threadId,
+            now: yield* nowIso,
+          });
+          if (filled) yield* events.wake(run.taskId);
+        }).pipe(Effect.ignore);
 
   /** Whether the run is still launching, recording how far it got. */
   const stillLaunching = (run: ScheduledRunRow, stage: NonNullable<ScheduledRunRow["stage"]>) =>
@@ -1195,7 +1598,13 @@ const make = Effect.gen(function* () {
         bootstrap.startChild({
           lineage: {
             kind: "scheduled",
-            scheduledRun: { taskId: row.taskId, taskName: launch.taskName, slotUtc: row.slotUtc },
+            scheduledRun: {
+              taskId: row.taskId,
+              taskName: launch.taskName,
+              slotUtc: row.slotUtc,
+              // "Event · <task>" in the inbox.
+              ...(launch.event !== undefined ? { event: true } : {}),
+            },
           },
           projectId: launch.projectId,
           requestId: scheduledRunKey(row.taskId, row.slotUtc),
@@ -1255,6 +1664,7 @@ const make = Effect.gen(function* () {
         threadId,
         now: yield* nowIso,
       });
+      yield* subjectThreadStarted(row, threadId);
       yield* changedRuns;
     });
 
@@ -1272,6 +1682,10 @@ const make = Effect.gen(function* () {
       const thread = yield* readThread(threadId);
       if (thread === undefined || thread.deletedAt !== null || thread.archivedAt !== null) {
         return yield* failLaunch(row, "The thread it continues isn't open any more.");
+      }
+      // Never into another project's thread (the task, or its issue's thread, moved).
+      if (thread.projectId !== launch.projectId) {
+        return yield* failLaunch(row, "The thread it continues is in another project.");
       }
       const messageId = scheduledRunMessageId(row.taskId, row.slotUtc);
       if (!(yield* stillLaunching(row, "submit"))) return;
@@ -1380,6 +1794,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(storageError("read the task")));
         if (Option.isNone(found)) return yield* taskError("That task was deleted.");
         const task = found.value;
+        if (task.cadence.kind === "webhook") return yield* taskError("Send a test event instead.");
         const projectRoot = (yield* readProject(task.projectId))?.workspaceRoot ?? null;
         const now = yield* nowIso;
         const claimed = yield* repo
@@ -1500,6 +1915,8 @@ const make = Effect.gen(function* () {
           );
       }
       yield* changedRuns;
+      // A place freed up: events waiting for one try again.
+      yield* events.wakeWaiting;
     });
 
   const onTurnEnd: ScheduledTasksShape["onTurnEnd"] = (input) =>
@@ -1746,6 +2163,22 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Whether events can reach this computer: with an event task, a relay
+   * connection down for EVENTS_UNREACHABLE_AFTER_MS says so on the page.
+   */
+  const checkEventsReachable = (tasks: ReadonlyArray<ScheduledTaskRow>, now: number) =>
+    Effect.gen(function* () {
+      const hasEventTask = tasks.some((task) => task.cadence.kind === "webhook");
+      const connected = hasEventTask ? yield* relayHooks.connected : true;
+      relayDownSince = connected ? null : (relayDownSince ?? now);
+      const next = relayDownSince !== null && now - relayDownSince >= EVENTS_UNREACHABLE_AFTER_MS;
+      if (next !== eventsUnreachable) {
+        eventsUnreachable = next;
+        yield* notify;
+      }
+    });
+
   const tick: ScheduledTasksShape["tick"] = Effect.gen(function* () {
     // Runs whose turns ended (one the previous process never saw end, say)
     // are settled first, so they never count against overlap or the cap of
@@ -1753,6 +2186,7 @@ const make = Effect.gen(function* () {
     yield* sweepRuns;
     const now = yield* nowMillis;
     const tasks = yield* repo.listTasks.pipe(Effect.orElseSucceed(() => []));
+    yield* checkEventsReachable(tasks, now);
     let claimedAny = false;
     for (const task of tasks) {
       const claimed = yield* claimDue(task, now).pipe(
@@ -1770,6 +2204,18 @@ const make = Effect.gen(function* () {
     if (claimedAny) yield* changedRuns;
     yield* resumeLaunches;
     yield* expireRequests;
+    // Event tasks' queues, after the runs that ended were settled: what
+    // waited for room, and what the previous process left received.
+    yield* events.drainAll;
+    yield* events.prune;
+    // GitHub updates that failed (gh signed out, say), every 5 minutes.
+    yield* hooks.retryGitHubUpdates.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("event tasks: couldn't retry GitHub updates", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
   });
 
   /** Events that can end, start or take back a run in a thread that has one. */
@@ -1795,6 +2241,9 @@ const make = Effect.gen(function* () {
   const start: ScheduledTasksShape["start"] = () =>
     Effect.gen(function* () {
       yield* Effect.logInfo("scheduled tasks: scheduler started");
+      // Event tasks: addresses that wait on the relay, and its deliveries.
+      yield* hooks.start();
+      yield* events.start();
       const domainEvents = yield* engine.subscribeDomainEvents;
       yield* refreshWorkingThreads;
       yield* Effect.forkScoped(
@@ -1824,6 +2273,148 @@ const make = Effect.gen(function* () {
       );
     });
 
+  // ---------------------------------------------------------------------------
+  // Event tasks (docs/design/event-tasks.md)
+  // ---------------------------------------------------------------------------
+
+  // Typed outright: the pipeline launches through launchRun, and launches
+  // wake the pipeline.
+  const events: WebhookEvents = yield* makeWebhookEvents({
+    hooks,
+    launchRun: (run) => launchRun(run).pipe(Effect.forkDetach, Effect.asVoid),
+    launchOf,
+    takesFinishTool: (launch) => takesFinishTool(launch).pipe(Effect.orElseSucceed(() => false)),
+    readThread,
+    projectRoot: (task) =>
+      readProject(task.projectId).pipe(Effect.map((project) => project?.workspaceRoot ?? null)),
+    changed: changedRuns,
+  });
+
+  /** An event-task call's failure in plain words: its own refusal, or what couldn't be done. */
+  const eventTaskError =
+    (what: string) =>
+    (error: { readonly _tag: string }): ScheduledTaskError =>
+      error instanceof EventTaskHookRefusal
+        ? taskError(error.detail)
+        : taskError(`Couldn't ${what}.`);
+
+  /** The event task, or a refusal for any other. */
+  const requireEventTask = (id: ScheduledTaskId) =>
+    Effect.gen(function* () {
+      const found = yield* repo.getTask(id).pipe(Effect.mapError(storageError("read the task")));
+      if (Option.isNone(found)) return yield* taskError("That task was deleted.");
+      if (found.value.cadence.kind !== "webhook") {
+        return yield* taskError("This task doesn't start on events.");
+      }
+      return found.value;
+    });
+
+  const webhookAddress: ScheduledTasksShape["webhookAddress"] = (input) =>
+    Effect.gen(function* () {
+      yield* requireEventTask(input.id);
+      // The task's detail is open: a look at its GitHub webhook, in the background.
+      yield* hooks.checkGitHubHookSoon(input.id);
+      return yield* hooks
+        .address(input.id)
+        .pipe(Effect.mapError(eventTaskError("read the address")));
+    });
+
+  const rotateWebhookAddress: ScheduledTasksShape["rotateWebhookAddress"] = (input) =>
+    Effect.gen(function* () {
+      yield* requireEventTask(input.id);
+      const address = yield* hooks
+        .rotate(input.id)
+        .pipe(Effect.mapError(eventTaskError("give the task a new address")));
+      yield* notify;
+      return address;
+    });
+
+  const setWebhookSigningSecret: ScheduledTasksShape["setWebhookSigningSecret"] = (input) =>
+    Effect.gen(function* () {
+      yield* requireEventTask(input.id);
+      const secret = yield* hooks
+        .setSecret(input.id, input.secret)
+        .pipe(Effect.mapError(eventTaskError("save the signing secret")));
+      yield* notify;
+      return secret;
+    });
+
+  const revealWebhookSigningSecret: ScheduledTasksShape["revealWebhookSigningSecret"] = (input) =>
+    Effect.gen(function* () {
+      yield* requireEventTask(input.id);
+      return yield* hooks
+        .revealSecret(input.id)
+        .pipe(Effect.mapError(eventTaskError("read the signing secret")));
+    });
+
+  const gitHubContext: ScheduledTasksShape["gitHubContext"] = (input) =>
+    hooks
+      .gitHubContext(input.projectId)
+      .pipe(Effect.mapError(eventTaskError("read the project's GitHub repository")));
+
+  /** A GitHub connection change, then the task as the snapshot shows it. */
+  const changeGitHub = (
+    id: ScheduledTaskId,
+    change: (id: ScheduledTaskId) => Effect.Effect<void, { readonly _tag: string }>,
+    what: string,
+  ) =>
+    Effect.gen(function* () {
+      yield* requireEventTask(id);
+      yield* change(id).pipe(Effect.mapError(eventTaskError(what)));
+      yield* notify;
+      return yield* savedTask(yield* requireEventTask(id));
+    });
+
+  const connectGitHub: ScheduledTasksShape["connectGitHub"] = (input) =>
+    changeGitHub(input.id, hooks.connectGitHub, "add the webhook to GitHub");
+
+  const disconnectGitHub: ScheduledTasksShape["disconnectGitHub"] = (input) =>
+    changeGitHub(input.id, hooks.disconnectGitHub, "remove the webhook from GitHub");
+
+  const dismissWebhookAddressChange: ScheduledTasksShape["dismissWebhookAddressChange"] = (input) =>
+    changeGitHub(input.id, hooks.dismissAddressChange, "save that");
+
+  const listWebhookEvents: ScheduledTasksShape["listWebhookEvents"] = (input) =>
+    events.listEvents(input).pipe(Effect.mapError(storageError("read the task's events")));
+
+  const webhookEvent: ScheduledTasksShape["webhookEvent"] = (input) =>
+    Effect.gen(function* () {
+      const detail = yield* events
+        .eventDetail(input)
+        .pipe(Effect.mapError(storageError("read the event")));
+      if (detail === null) return yield* taskError("That event is no longer in the log.");
+      return detail;
+    });
+
+  const testWebhook: ScheduledTasksShape["testWebhook"] = (input) =>
+    Effect.gen(function* () {
+      const tested = yield* events
+        .testEvent(input)
+        .pipe(Effect.mapError(eventTaskError("send a test event")));
+      if ("refusal" in tested) return yield* taskError(tested.refusal);
+      if (input.startRun) yield* notify;
+      return tested.detail;
+    });
+
+  const runWithWebhookEvent: ScheduledTasksShape["runWithWebhookEvent"] = (input) =>
+    Effect.gen(function* () {
+      const replayed = yield* events
+        .replayEvent(input)
+        .pipe(Effect.mapError(eventTaskError("run the event again")));
+      if ("refusal" in replayed) return yield* taskError(replayed.refusal);
+      yield* notify;
+      return replayed.record;
+    });
+
+  const receiveLocalEvent: ScheduledTasksShape["receiveLocalEvent"] = (input) =>
+    events.receiveLocal(input).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("event tasks: a local event couldn't be stored", {
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as(503 as const)),
+      ),
+    );
+
   return ScheduledTasks.of({
     snapshot,
     changes,
@@ -1840,6 +2431,19 @@ const make = Effect.gen(function* () {
     getTask,
     recordFinish,
     onTurnEnd,
+    webhookAddress,
+    rotateWebhookAddress,
+    setWebhookSigningSecret,
+    revealWebhookSigningSecret,
+    gitHubContext,
+    connectGitHub,
+    disconnectGitHub,
+    dismissWebhookAddressChange,
+    listWebhookEvents,
+    webhookEvent,
+    testWebhook,
+    runWithWebhookEvent,
+    receiveLocalEvent,
     tick,
     start,
   });

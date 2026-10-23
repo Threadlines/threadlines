@@ -354,6 +354,14 @@
     "./runtimeMode": {
       "types": "./src/runtimeMode.ts",
       "import": "./src/runtimeMode.ts"
+    },
+    "./webhookTasks": {
+      "types": "./src/webhookTasks.ts",
+      "import": "./src/webhookTasks.ts"
+    },
+    "./relayHookSeal": {
+      "types": "./src/relayHookSeal.ts",
+      "import": "./src/relayHookSeal.ts"
     }
   },
   "scripts": {

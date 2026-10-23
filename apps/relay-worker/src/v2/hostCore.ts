@@ -2,6 +2,10 @@ import type {
   RelayControlEvent,
   RelayDecisionResult,
   RelayDeviceId,
+  RelayHookDelivery,
+  RelayHookDeliveryId,
+  RelayHookId,
+  RelayHookStateResult,
   RelayDeviceKind,
   RelayDeviceRecord,
   RelayHostId,
@@ -16,7 +20,11 @@ import type {
   RelayUsageToday,
   RelayWatchEvent,
 } from "@threadlines/contracts/relay";
-import { RELAY_CLOSE_CODE_ACCESS_REMOVED } from "@threadlines/contracts/relay";
+import {
+  RELAY_CLOSE_CODE_ACCESS_REMOVED,
+  RELAY_HOOK_HOLD_MS,
+  RELAY_HOOK_INLINE_SEALED_BYTES,
+} from "@threadlines/contracts/relay";
 
 import { timingSafeEqualString } from "../crypto.ts";
 import { type SqlLike, sqlRows } from "./sql.ts";
@@ -37,6 +45,13 @@ export interface HostCoreLimits {
   readonly tombstoneTtlMs: number;
   readonly dailyMessages: number;
   readonly dailyAwakeSeconds: number;
+  /** Event task deliveries accepted per UTC day. */
+  readonly dailyHooks: number;
+  /** Deliveries waiting for the host, by count and by sealed size. */
+  readonly maxPendingHookDeliveries: number;
+  readonly maxPendingHookBytes: number;
+  /** Hook rows per host, retired ones still kept included. */
+  readonly maxHooks: number;
 }
 
 export const DEFAULT_HOST_CORE_LIMITS: HostCoreLimits = {
@@ -49,7 +64,16 @@ export const DEFAULT_HOST_CORE_LIMITS: HostCoreLimits = {
   // the message count is the real limit; awake time is tracked for insight
   // and can be capped per deployment.
   dailyAwakeSeconds: 24 * 60 * 60,
+  dailyHooks: 1_000,
+  maxPendingHookDeliveries: 500,
+  maxPendingHookBytes: 50 * 1024 * 1024,
+  maxHooks: 500,
 };
+
+/** A retired hook's row stays this long, so deliveries it accepted still find it. */
+export const RETIRED_HOOK_KEEP_MS = 25 * 60 * 60_000;
+/** How long a sender is told to wait when the host's queue of deliveries is full. */
+const HOOK_QUEUE_FULL_RETRY_SECONDS = 300;
 
 /** Width of one "awake window" in the daily allowance. */
 export const AWAKE_WINDOW_MS = 10_000;
@@ -73,7 +97,7 @@ export type HostEffect =
       readonly reason: string;
     };
 
-export type HostCoreErrorCode = RelayJoinErrorCode | "not-found" | "forbidden";
+export type HostCoreErrorCode = RelayJoinErrorCode | "not-found" | "forbidden" | "too-many-hooks";
 
 export class HostCoreError extends Error {
   readonly code: HostCoreErrorCode;
@@ -143,6 +167,35 @@ interface UsageRow extends Record<string, unknown> {
   readonly awake_seconds: number;
 }
 
+interface HookRow extends Record<string, unknown> {
+  readonly hook_id: string;
+  readonly kept_headers: string;
+  readonly active: number;
+  readonly created_at: number;
+  readonly retired_at: number | null;
+}
+
+interface HookDeliveryRow extends Record<string, unknown> {
+  readonly delivery_id: string;
+  readonly hook_id: string;
+  readonly received_at: number;
+  readonly size: number;
+}
+
+/** Whether a delivery may come in, and if so what the hook keeps and seals to. */
+export type HookAdmission =
+  | {
+      readonly ok: true;
+      readonly keptHeaders: ReadonlyArray<string>;
+      readonly publicKey: string;
+    }
+  | {
+      readonly ok: false;
+      readonly status: 404 | 429;
+      readonly reason: "unknown-hook" | "daily-limit" | "queue-full";
+      readonly retryAfterSeconds?: number;
+    };
+
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS host (
      id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -195,6 +248,30 @@ const SCHEMA = [
      messages INTEGER NOT NULL,
      awake_seconds INTEGER NOT NULL
    )`,
+  `CREATE TABLE IF NOT EXISTS hooks (
+     hook_id TEXT PRIMARY KEY,
+     kept_headers TEXT NOT NULL,
+     active INTEGER NOT NULL,
+     created_at INTEGER NOT NULL,
+     retired_at INTEGER
+   )`,
+  `CREATE TABLE IF NOT EXISTS hook_state (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     revision INTEGER NOT NULL,
+     public_key TEXT NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS hook_deliveries (
+     delivery_id TEXT PRIMARY KEY,
+     hook_id TEXT NOT NULL,
+     received_at INTEGER NOT NULL,
+     size INTEGER NOT NULL,
+     sealed TEXT NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS hook_deliveries_by_time ON hook_deliveries (received_at)`,
+  `CREATE TABLE IF NOT EXISTS hook_usage (
+     day TEXT PRIMARY KEY,
+     hooks INTEGER NOT NULL
+   )`,
 ] as const;
 
 /** Request outcomes kept as history for this long, then pruned. */
@@ -244,6 +321,7 @@ export class HostCore {
   private usageDay: string;
   private usageMessages = 0;
   private usageAwakeSeconds = 0;
+  private usageHooks = 0;
   private readonly sql: SqlLike;
   private readonly limits: HostCoreLimits;
 
@@ -267,6 +345,7 @@ export class HostCore {
       this.usageMessages = stored.messages;
       this.usageAwakeSeconds = stored.awake_seconds;
     }
+    this.usageHooks = this.storedHookCount(this.usageDay);
   }
 
   // ----- host -----------------------------------------------------------------
@@ -828,6 +907,7 @@ export class HostCore {
     )) {
       effects.push(...this.setRequestState(request, "expired", now));
     }
+    this.pruneHooks(now);
     return effects;
   }
 
@@ -838,7 +918,13 @@ export class HostCore {
          SELECT expires_at AS deadline FROM invites WHERE state = 'open'
          UNION ALL
          SELECT expires_at AS deadline FROM requests WHERE state = 'pending'
+         UNION ALL
+         SELECT MIN(received_at) + ? AS deadline FROM hook_deliveries
+         UNION ALL
+         SELECT MIN(retired_at) + ? AS deadline FROM hooks WHERE active = 0
        )`,
+      RELAY_HOOK_HOLD_MS,
+      RETIRED_HOOK_KEEP_MS,
     )[0];
     return row?.deadline ?? null;
   }
@@ -863,6 +949,8 @@ export class HostCore {
       awakeSecondsLimit: this.limits.dailyAwakeSeconds,
       limited: this.isLimited(now, pending),
       resetsAt: iso(nextUtcMidnight(now)),
+      hooks: this.usageHooks,
+      hookLimit: this.limits.dailyHooks,
     };
   }
 
@@ -886,6 +974,7 @@ export class HostCore {
     const day = utcDay(now);
     if (day === this.usageDay) return;
     this.sql.exec("DELETE FROM usage WHERE day < ?", day);
+    this.sql.exec("DELETE FROM hook_usage WHERE day < ?", day);
     this.usageDay = day;
     const stored = sqlRows<UsageRow>(
       this.sql,
@@ -894,6 +983,295 @@ export class HostCore {
     )[0];
     this.usageMessages = stored?.messages ?? 0;
     this.usageAwakeSeconds = stored?.awake_seconds ?? 0;
+    this.usageHooks = this.storedHookCount(day);
+  }
+
+  private storedHookCount(day: string): number {
+    return (
+      sqlRows<{ readonly hooks: number }>(
+        this.sql,
+        "SELECT hooks FROM hook_usage WHERE day = ?",
+        day,
+      )[0]?.hooks ?? 0
+    );
+  }
+
+  // ----- hooks ------------------------------------------------------------------
+  //
+  // Event tasks' addresses (docs/design/event-tasks.md). The host changes its
+  // hooks only with a revision, and a call applies only if its revision is
+  // newer than the last applied one, so a late or reordered call can't undo a
+  // newer one. Deliveries are stored sealed to the host's hook key and wait
+  // until the host acknowledges them, a day at most.
+
+  /** The last hook revision applied; 0 before any. */
+  hookRevision(): number {
+    return (
+      sqlRows<{ readonly revision: number }>(
+        this.sql,
+        "SELECT revision FROM hook_state WHERE id = 1",
+      )[0]?.revision ?? 0
+    );
+  }
+
+  private setHookRevision(revision: number, publicKey: string): void {
+    this.sql.exec(
+      `INSERT INTO hook_state (id, revision, public_key) VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET revision = excluded.revision,
+         public_key = excluded.public_key`,
+      revision,
+      publicKey,
+    );
+  }
+
+  /** Adds an active hook, unless a newer revision was already applied. */
+  mintHook(input: {
+    readonly hookId: string;
+    readonly revision: number;
+    readonly publicKey: string;
+    readonly keptHeaders: ReadonlyArray<string>;
+    readonly now: number;
+  }): RelayHookStateResult {
+    const current = this.hookRevision();
+    if (input.revision <= current) return { applied: false, revision: current };
+    const count = sqlRows<{ readonly count: number }>(
+      this.sql,
+      "SELECT COUNT(*) AS count FROM hooks",
+    )[0]!.count;
+    if (count >= this.limits.maxHooks) {
+      throw new HostCoreError(
+        "too-many-hooks",
+        "This computer has as many event addresses as the relay keeps. Remove some first.",
+      );
+    }
+    this.sql.exec(
+      `INSERT INTO hooks (hook_id, kept_headers, active, created_at, retired_at)
+       VALUES (?, ?, 1, ?, NULL)`,
+      input.hookId,
+      JSON.stringify(input.keptHeaders),
+      input.now,
+    );
+    this.setHookRevision(input.revision, input.publicKey);
+    return { applied: true, revision: input.revision };
+  }
+
+  /**
+   * The host's whole wanted state: named hooks active with these kept
+   * headers (a retired one still kept comes back), every other one retired.
+   * Hooks this host never minted here are ignored.
+   */
+  setHooks(input: {
+    readonly revision: number;
+    readonly publicKey: string;
+    readonly active: ReadonlyArray<{
+      readonly hookId: string;
+      readonly keptHeaders: ReadonlyArray<string>;
+    }>;
+    readonly now: number;
+  }): RelayHookStateResult {
+    const current = this.hookRevision();
+    if (input.revision <= current) return { applied: false, revision: current };
+    const wanted = new Map(input.active.map((hook) => [hook.hookId, hook.keptHeaders]));
+    for (const hook of sqlRows<HookRow>(this.sql, "SELECT * FROM hooks")) {
+      const keptHeaders = wanted.get(hook.hook_id);
+      if (keptHeaders !== undefined) {
+        this.sql.exec(
+          "UPDATE hooks SET active = 1, kept_headers = ?, retired_at = NULL WHERE hook_id = ?",
+          JSON.stringify(keptHeaders),
+          hook.hook_id,
+        );
+      } else if (hook.active === 1) {
+        this.sql.exec(
+          "UPDATE hooks SET active = 0, retired_at = ? WHERE hook_id = ?",
+          input.now,
+          hook.hook_id,
+        );
+      }
+    }
+    this.setHookRevision(input.revision, input.publicKey);
+    return { applied: true, revision: input.revision };
+  }
+
+  /**
+   * Whether a delivery to `hookId` may come in now: the hook is active, the
+   * host has hooks (and messages) left today, and its queue has room for
+   * `size` more sealed bytes.
+   */
+  admitHookDelivery(input: {
+    readonly hookId: string;
+    readonly now: number;
+    readonly pending?: PendingUsage;
+    readonly size?: number;
+  }): HookAdmission {
+    const hook =
+      sqlRows<HookRow>(
+        this.sql,
+        "SELECT * FROM hooks WHERE hook_id = ? AND active = 1",
+        input.hookId,
+      )[0] ?? null;
+    const publicKey =
+      sqlRows<{ readonly public_key: string }>(
+        this.sql,
+        "SELECT public_key FROM hook_state WHERE id = 1",
+      )[0]?.public_key ?? null;
+    if (!hook || !publicKey) return { ok: false, status: 404, reason: "unknown-hook" };
+
+    if (this.isLimited(input.now, input.pending) || this.usageHooks >= this.limits.dailyHooks) {
+      return {
+        ok: false,
+        status: 429,
+        reason: "daily-limit",
+        retryAfterSeconds: Math.ceil((nextUtcMidnight(input.now) - input.now) / 1000),
+      };
+    }
+
+    this.pruneHooks(input.now);
+    const queued = sqlRows<{ readonly count: number; readonly bytes: number }>(
+      this.sql,
+      "SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM hook_deliveries",
+    )[0]!;
+    if (
+      queued.count + 1 > this.limits.maxPendingHookDeliveries ||
+      queued.bytes + Math.max(input.size ?? 0, 1) > this.limits.maxPendingHookBytes
+    ) {
+      return {
+        ok: false,
+        status: 429,
+        reason: "queue-full",
+        retryAfterSeconds: HOOK_QUEUE_FULL_RETRY_SECONDS,
+      };
+    }
+    return { ok: true, keptHeaders: parseStoredHeaders(hook.kept_headers), publicKey };
+  }
+
+  /**
+   * Stores a sealed delivery, admitted again now that its size is known (the
+   * object may have taken other deliveries while this one was read and
+   * sealed). Counts it as one of today's hooks and one message, and hands it
+   * to the host: whole when it fits on the control socket, announced
+   * otherwise.
+   */
+  storeHookDelivery(input: {
+    readonly deliveryId: string;
+    readonly hookId: string;
+    readonly sealed: string;
+    readonly now: number;
+    readonly pending?: PendingUsage;
+  }): Outcome<HookAdmission> {
+    const size = input.sealed.length;
+    const admission = this.admitHookDelivery({
+      hookId: input.hookId,
+      now: input.now,
+      ...(input.pending ? { pending: input.pending } : {}),
+      size,
+    });
+    if (!admission.ok) return { result: admission, effects: [] };
+    this.sql.exec(
+      `INSERT INTO hook_deliveries (delivery_id, hook_id, received_at, size, sealed)
+       VALUES (?, ?, ?, ?, ?)`,
+      input.deliveryId,
+      input.hookId,
+      input.now,
+      size,
+      input.sealed,
+    );
+    this.commitUsage(input.now, { messages: 1, awakeSeconds: 0 });
+    this.usageHooks += 1;
+    this.sql.exec(
+      `INSERT INTO hook_usage (day, hooks) VALUES (?, ?)
+       ON CONFLICT(day) DO UPDATE SET hooks = excluded.hooks`,
+      this.usageDay,
+      this.usageHooks,
+    );
+    const row: HookDeliveryRow = {
+      delivery_id: input.deliveryId,
+      hook_id: input.hookId,
+      received_at: input.now,
+      size,
+    };
+    return {
+      result: admission,
+      effects: [
+        { type: "control", event: this.hookDeliveryEvent(row, input.sealed) },
+        { type: "control", event: { type: "usage", usage: this.usage(input.now, input.pending) } },
+      ],
+    };
+  }
+
+  /** A waiting delivery, for the host to fetch when it was too large for the socket. */
+  hookDelivery(deliveryId: string): RelayHookDelivery | null {
+    const row =
+      sqlRows<HookDeliveryRow & { readonly sealed: string }>(
+        this.sql,
+        "SELECT * FROM hook_deliveries WHERE delivery_id = ?",
+        deliveryId,
+      )[0] ?? null;
+    return row
+      ? {
+          deliveryId: row.delivery_id as RelayHookDeliveryId,
+          hookId: row.hook_id as RelayHookId,
+          receivedAt: iso(row.received_at),
+          sealed: row.sealed,
+        }
+      : null;
+  }
+
+  /** The host stored these; forget them. Unknown ids are ignored. */
+  ackHookDeliveries(deliveryIds: ReadonlyArray<string>): void {
+    for (const deliveryId of deliveryIds) {
+      this.sql.exec("DELETE FROM hook_deliveries WHERE delivery_id = ?", deliveryId);
+    }
+  }
+
+  /**
+   * Every waiting delivery, oldest first, for a host that just connected.
+   * Whole deliveries go out until `inlineBudget` sealed bytes are used; the
+   * rest are announced and fetched, so a long-asleep host isn't sent tens of
+   * megabytes on one socket at once.
+   */
+  hookReplay(now: number, inlineBudget: number): RelayControlEvent[] {
+    this.pruneHooks(now);
+    let budget = inlineBudget;
+    const events: RelayControlEvent[] = [];
+    for (const row of sqlRows<HookDeliveryRow>(
+      this.sql,
+      `SELECT delivery_id, hook_id, received_at, size FROM hook_deliveries
+       ORDER BY received_at, rowid`,
+    )) {
+      const inline = row.size <= RELAY_HOOK_INLINE_SEALED_BYTES && row.size <= budget;
+      if (!inline) {
+        events.push(this.hookDeliveryEvent(row, null));
+        continue;
+      }
+      budget -= row.size;
+      const sealed = sqlRows<{ readonly sealed: string }>(
+        this.sql,
+        "SELECT sealed FROM hook_deliveries WHERE delivery_id = ?",
+        row.delivery_id,
+      )[0]?.sealed;
+      if (sealed !== undefined) events.push(this.hookDeliveryEvent(row, sealed));
+    }
+    return events;
+  }
+
+  /** Drops deliveries held past a day and retired hooks past their keep time. */
+  private pruneHooks(now: number): void {
+    this.sql.exec("DELETE FROM hook_deliveries WHERE received_at <= ?", now - RELAY_HOOK_HOLD_MS);
+    this.sql.exec(
+      "DELETE FROM hooks WHERE active = 0 AND retired_at <= ?",
+      now - RETIRED_HOOK_KEEP_MS,
+    );
+  }
+
+  private hookDeliveryEvent(row: HookDeliveryRow, sealed: string | null): RelayControlEvent {
+    const base = {
+      deliveryId: row.delivery_id as RelayHookDeliveryId,
+      hookId: row.hook_id as RelayHookId,
+      receivedAt: iso(row.received_at),
+    };
+    return sealed !== null && row.size <= RELAY_HOOK_INLINE_SEALED_BYTES
+      ? { type: "hook.delivery", delivery: { ...base, sealed } }
+      : { type: "hook.pending", ...base, size: row.size };
   }
 
   // ----- mapping --------------------------------------------------------------
@@ -955,6 +1333,15 @@ export class HostCore {
       state: request.state,
       ...(hostNonce ? { hostNonce } : {}),
     };
+  }
+}
+
+function parseStoredHeaders(text: string): ReadonlyArray<string> {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
   }
 }
 

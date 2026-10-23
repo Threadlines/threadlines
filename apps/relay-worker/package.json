@@ -12,7 +12,8 @@
     "types": "wrangler types src/worker-configuration.d.ts"
   },
   "dependencies": {
-    "@threadlines/contracts": "workspace:*"
+    "@threadlines/contracts": "workspace:*",
+    "@threadlines/shared": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",
