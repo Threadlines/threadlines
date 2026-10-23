@@ -16,6 +16,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+import { useEnvironmentApiAvailable } from "../../environmentApi";
 import { readEnvironmentConnection } from "../../environments/runtime";
 import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
 import {
@@ -236,6 +237,9 @@ export function useGitHubContext(
   projectId: ProjectId | null,
   enabled: boolean,
 ): ScheduledTaskGitHubContext | null {
+  // Asked only once the computer's connection is up: asked before (right after
+  // the app loads), it would read "can't connect" and keep that answer.
+  const connected = useEnvironmentApiAvailable(environmentId);
   const query = useQuery({
     queryKey: ["scheduledTasks", "gitHubContext", environmentId, projectId],
     queryFn: async () => {
@@ -247,7 +251,7 @@ export function useGitHubContext(
         return NO_GITHUB_CONTEXT;
       }
     },
-    enabled: enabled && environmentId !== null && projectId !== null,
+    enabled: enabled && connected && environmentId !== null && projectId !== null,
     staleTime: 60_000,
   });
   return query.data ?? null;
