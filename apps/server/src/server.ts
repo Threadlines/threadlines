@@ -93,7 +93,6 @@ import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import * as McpPagesServer from "./mcp/McpPagesServer.ts";
 import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
 import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
-import { OutsideAgentConnectionsStandIn } from "./outsideAgents/OutsideAgentConnectionsStandIn.ts";
 import { OutsideAgentRequestsLive } from "./outsideAgents/OutsideAgentRequests.ts";
 import * as AgentPages from "./pages/AgentPages.ts";
 import * as McpApps from "./mcpApps/McpApps.ts";
@@ -515,7 +514,6 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       // Outside agents' starts and sends by request id (`/mcp/connect`);
       // building it marks the ones a restart cut off.
       OutsideAgentRequestsLive,
-      OutsideAgentConnectionsStandIn, // TEMPORARY until OutsideAgentConnectionsLive lands
     ),
   ),
   Layer.provideMerge(ProviderRuntimeLayerLive),

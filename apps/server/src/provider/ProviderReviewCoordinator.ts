@@ -15,6 +15,7 @@ import {
   sessionSlotParticipantId,
 } from "@threadlines/shared/threadParticipants";
 
+import { claimsServerLineage } from "../orchestration/childThreadDecisions.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { ProviderServiceShape } from "./Services/ProviderService.ts";
@@ -93,14 +94,19 @@ export function startProviderReviewForThread(
           message: `Cannot start a code review for thread '${input.threadId}' because the thread has not been created yet.`,
         });
       }
-      // A client never claims an outside agent's thread
-      // (docs/design/outside-agents.md); only `/mcp/connect` sets outsideOrigin.
-      const { outsideOrigin: _outsideOrigin, ...createThread } = bootstrap;
+      // The bootstrap comes from a client, which can't claim lineage only the
+      // server gives (the Normalizer refuses the same on other paths).
+      if (claimsServerLineage(bootstrap)) {
+        return yield* new ProviderStartReviewError({
+          message:
+            "A review can't start a thread another thread, computer, schedule or agent owns.",
+        });
+      }
       yield* services.orchestrationEngine.dispatch({
         type: "thread.create",
         commandId: CommandId.make(`server:provider-review:thread-create:${crypto.randomUUID()}`),
         threadId: input.threadId,
-        ...createThread,
+        ...bootstrap,
       });
       threadShell = yield* loadThreadShell();
     }

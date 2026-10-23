@@ -95,6 +95,32 @@ export function clampLaunchToCeiling<
 }
 
 /**
+ * Whether a thread.create (or a bootstrap's createThread) claims lineage only
+ * the server may give: another thread's child (an agent's thread_start), one
+ * a linked computer's agent asked for (the link handler, docs/design/fleet.md
+ * "Fence"), a scheduled task's run (the scheduler), or one an outside agent
+ * started (`/mcp/connect`, docs/design/outside-agents.md). Every path that
+ * takes a create from a client refuses these.
+ */
+export function claimsServerLineage(fields: {
+  readonly parentThreadId?: unknown;
+  readonly parentTurnId?: unknown;
+  readonly attachedToParent?: unknown;
+  readonly remoteOrigin?: unknown;
+  readonly scheduledRun?: unknown;
+  readonly outsideOrigin?: unknown;
+}): boolean {
+  return (
+    fields.parentThreadId !== undefined ||
+    fields.parentTurnId !== undefined ||
+    fields.attachedToParent !== undefined ||
+    fields.remoteOrigin !== undefined ||
+    fields.scheduledRun !== undefined ||
+    fields.outsideOrigin !== undefined
+  );
+}
+
+/**
  * Whether a child is still being set up (its start request is `starting`):
  * nothing may run in it yet, or it would run before its worktree exists.
  */

@@ -18,7 +18,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
-import { requestRemoteAddress } from "../auth/utils.ts";
 import { ServerConfig } from "../config.ts";
 import {
   AUTHORIZATION_SERVER_METADATA_PATH,
@@ -31,23 +30,11 @@ import {
 import type { OAuthFailure } from "./oauthRequests.ts";
 import {
   OUTSIDE_AGENT_SCOPES,
-  outsideAgentOrigin,
+  outsideAgentRequestOrigin,
   outsideAgentResource,
 } from "./OutsideAgentConnections.ts";
 import { OutsideAgentSignIn } from "./OutsideAgentSignIn.ts";
 import { renderSignInPage, type SignInPageState } from "./signInPage.ts";
-
-/** The origin a request reached this server under, when it came from this computer; else null. */
-export const outsideAgentRequestOrigin = (
-  request: HttpServerRequest.HttpServerRequest,
-  port: number,
-): string | null =>
-  outsideAgentOrigin({
-    host: request.headers.host,
-    port,
-    remoteAddress: requestRemoteAddress(request),
-    headers: request.headers,
-  });
 
 /** Nothing here may be cached, sniffed into another type, or leak the URL onward. */
 const PRIVATE_HEADERS = {

@@ -34,6 +34,7 @@ import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { inviteAnswerRefusal } from "./agentInvites.ts";
+import { claimsServerLineage } from "./childThreadDecisions.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
 const FORK_CONTEXT_SOURCE_EXCERPT_CHARS = 2_000;
@@ -154,31 +155,12 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
         return copiedAttachment;
       });
 
-    // Child threads: only the server starts a thread as another thread's
-    // child (an agent's thread_start), as one a linked computer's agent
-    // asked for (the link handler, docs/design/fleet.md "Fence"), as a
-    // scheduled task's run (the scheduler), or as one an outside agent
-    // started (`/mcp/connect`, docs/design/outside-agents.md); a client can't
-    // claim any of them.
-    const claimsLineage = (fields: {
-      readonly parentThreadId?: unknown;
-      readonly parentTurnId?: unknown;
-      readonly attachedToParent?: unknown;
-      readonly remoteOrigin?: unknown;
-      readonly scheduledRun?: unknown;
-      readonly outsideOrigin?: unknown;
-    }) =>
-      fields.parentThreadId !== undefined ||
-      fields.parentTurnId !== undefined ||
-      fields.attachedToParent !== undefined ||
-      fields.remoteOrigin !== undefined ||
-      fields.scheduledRun !== undefined ||
-      fields.outsideOrigin !== undefined;
+    // A client can't claim lineage only the server gives (claimsServerLineage).
     if (
-      (command.type === "thread.create" && claimsLineage(command)) ||
+      (command.type === "thread.create" && claimsServerLineage(command)) ||
       (command.type === "thread.turn.start" &&
         command.bootstrap?.createThread !== undefined &&
-        claimsLineage(command.bootstrap.createThread))
+        claimsServerLineage(command.bootstrap.createThread))
     ) {
       return yield* new OrchestrationDispatchCommandError({
         message: "Only an agent's request can start a thread as another thread's child.",

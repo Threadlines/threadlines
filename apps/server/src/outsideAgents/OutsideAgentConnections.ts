@@ -18,6 +18,9 @@ import type {
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type { HttpServerRequest } from "effect/unstable/http";
+
+import { requestRemoteAddress } from "../auth/utils.ts";
 
 export const OUTSIDE_AGENT_MCP_PATH = "/mcp/connect";
 
@@ -70,6 +73,18 @@ export function outsideAgentOrigin(input: {
   }
   return null;
 }
+
+/** outsideAgentOrigin for a request this server got on `port`. */
+export const outsideAgentRequestOrigin = (
+  request: HttpServerRequest.HttpServerRequest,
+  port: number,
+): string | null =>
+  outsideAgentOrigin({
+    host: request.headers.host,
+    port,
+    remoteAddress: requestRemoteAddress(request),
+    headers: request.headers,
+  });
 
 /** The resource (RFC 8707) an access token is bound to: `<origin>/mcp/connect`. */
 export const outsideAgentResource = (origin: string): string =>

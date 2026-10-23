@@ -32,7 +32,6 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 
-import { requestRemoteAddress } from "../auth/utils.ts";
 import {
   listOnlyGrantedTools,
   normalizeMcpHttpResponse,
@@ -58,7 +57,7 @@ import {
 import {
   OUTSIDE_AGENT_MCP_PATH,
   OutsideAgentConnections,
-  outsideAgentOrigin,
+  outsideAgentRequestOrigin,
   outsideAgentResource,
 } from "./OutsideAgentConnections.ts";
 import { OutsideAgentRequests } from "./OutsideAgentRequests.ts";
@@ -105,15 +104,7 @@ const authenticate = Effect.gen(function* () {
     >,
   ) {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const origin =
-      port === null
-        ? null
-        : outsideAgentOrigin({
-            host: request.headers.host,
-            port,
-            remoteAddress: requestRemoteAddress(request),
-            headers: request.headers,
-          });
+    const origin = port === null ? null : outsideAgentRequestOrigin(request, port);
     if (origin === null) {
       return misdirectedResponse(port);
     }
