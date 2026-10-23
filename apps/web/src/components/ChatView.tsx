@@ -140,6 +140,7 @@ import {
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
   selectThreadDetailLoaded,
+  selectThreadExistsByRef,
   selectThreadListedByRef,
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
@@ -232,7 +233,7 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import { buildDraftThreadRouteParams } from "../threadRoutes";
+import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerAttachment,
   type DraftThreadEnvMode,
@@ -5742,6 +5743,9 @@ export default function ChatView(props: ChatViewProps) {
           },
     );
     const threadRefForSend = scopeThreadRef(environmentId, threadIdForSend);
+    const draftIdForSend = draftId;
+    const threadTitleForSend =
+      isGeneralChatThread && isLocalDraftThread ? "New chat" : activeThread.title;
     const optimisticMessage: ChatMessage = {
       id: messageIdForSend,
       role: "user",
@@ -6034,12 +6038,36 @@ export default function ChatView(props: ChatViewProps) {
       setThreadError(threadIdForSend, dispatchFailureMessage);
       // The thread error banner only helps if the user is still looking at
       // this thread when the retry budget runs out (large uploads can take
-      // minutes to exhaust it); the toast makes the failure visible anywhere.
+      // minutes to exhaust it); the toast makes the failure visible anywhere,
+      // and names the thread with a way back while another one is open.
       toastManager.add(
         stackedThreadToast({
           type: "error",
           title: "Message failed to send",
           description: dispatchFailureMessage,
+          data: {
+            aboutThread: {
+              threadRef: threadRefForSend,
+              title: threadTitleForSend,
+              // Resolved on click: a draft that has since become a real
+              // thread opens as that thread.
+              open: () => {
+                const draftStillOpen =
+                  draftIdForSend !== null &&
+                  !selectThreadExistsByRef(useStore.getState(), threadRefForSend) &&
+                  useComposerDraftStore.getState().getDraftSession(draftIdForSend) !== null;
+                void (draftStillOpen
+                  ? navigate({
+                      to: "/draft/$draftId",
+                      params: buildDraftThreadRouteParams(draftIdForSend),
+                    })
+                  : navigate({
+                      to: "/$environmentId/$threadId",
+                      params: buildThreadRouteParams(threadRefForSend),
+                    }));
+              },
+            },
+          },
         }),
       );
     });

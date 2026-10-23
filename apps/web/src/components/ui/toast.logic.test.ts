@@ -1,7 +1,12 @@
 import type { ScopedThreadRef } from "@threadlines/contracts";
 import { assert, describe, it } from "vite-plus/test";
 import {
+  ATTENTION_NOTICE_VISIBLE_MS,
+  NOTICE_VISIBLE_MS,
   buildVisibleToastLayout,
+  resolveHiddenNoticeVisibleMs,
+  resolveNoticeVisibleMs,
+  selectStackNotices,
   shouldHideCollapsedToastContent,
   shouldRenderThreadScopedToast,
 } from "./toast.logic";
@@ -166,5 +171,78 @@ describe("shouldRenderThreadScopedToast", () => {
       ),
       true,
     );
+  });
+});
+
+describe("selectStackNotices", () => {
+  it("keeps an error in front of a newer confirmation", () => {
+    const newestFirst = [
+      { id: "copied", type: "success" },
+      { id: "clone-failed", type: "error" },
+      { id: "staging", type: "loading" },
+      { id: "saved", type: "success" },
+    ];
+    assert.deepStrictEqual(
+      selectStackNotices(newestFirst).map((notice) => notice.id),
+      ["clone-failed", "staging", "copied", "saved"],
+    );
+  });
+
+  it("leaves out notices waiting for a slot but keeps closing ones for their exit", () => {
+    const newestFirst = [
+      { id: "a", type: "error" },
+      { id: "b", type: "success", transitionStatus: "ending" as const },
+      { id: "c", type: "success" },
+      { id: "d", type: "success", limited: true },
+    ];
+    assert.deepStrictEqual(
+      selectStackNotices(newestFirst).map((notice) => notice.id),
+      ["a", "b", "c"],
+    );
+  });
+});
+
+describe("resolveNoticeVisibleMs", () => {
+  it("gives a short error ten seconds and a confirmation five", () => {
+    assert.equal(
+      resolveNoticeVisibleMs({ type: "error", description: "Path is empty." }, false),
+      ATTENTION_NOTICE_VISIBLE_MS,
+    );
+    assert.equal(resolveNoticeVisibleMs({ type: "success" }, false), NOTICE_VISIBLE_MS);
+  });
+
+  it("keeps an error with a long reason or a next step until it is closed", () => {
+    assert.equal(
+      resolveNoticeVisibleMs(
+        {
+          type: "error",
+          description:
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled. Check that you are signed in to GitHub.",
+        },
+        false,
+      ),
+      null,
+    );
+    assert.equal(resolveNoticeVisibleMs({ type: "warning", description: "Bad file." }, true), null);
+  });
+
+  it("lets the caller's duration and an explicit timeout of 0 win", () => {
+    assert.equal(
+      resolveNoticeVisibleMs(
+        { type: "error", timeout: 0, data: { dismissAfterVisibleMs: 8_000 } },
+        true,
+      ),
+      8_000,
+    );
+    assert.equal(resolveNoticeVisibleMs({ type: "success", timeout: 0 }, false), null);
+    assert.equal(resolveNoticeVisibleMs({ type: "loading" }, false), null);
+  });
+});
+
+describe("resolveHiddenNoticeVisibleMs", () => {
+  it("counts down a notice for another thread even when it would stay until closed", () => {
+    assert.equal(resolveHiddenNoticeVisibleMs({ type: "error" }), ATTENTION_NOTICE_VISIBLE_MS);
+    assert.equal(resolveHiddenNoticeVisibleMs({ type: "success" }), NOTICE_VISIBLE_MS);
+    assert.equal(resolveHiddenNoticeVisibleMs({ type: "loading" }), null);
   });
 });
