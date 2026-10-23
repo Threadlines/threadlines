@@ -7726,21 +7726,21 @@ export default function ChatView(props: ChatViewProps) {
   ]);
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
+      // A new worktree starts from the computer's "New worktrees from"
+      // branch, which the branch selector fills in, not from the branch of
+      // the checkout the thread was on (for a worktree, often a throwaway
+      // `threadlines/...` name). Going back to the checkout drops that base.
       if (canOverrideServerThreadEnvMode) {
         setPendingServerThreadEnvMode(mode);
+        setPendingServerThreadBranch(mode === "worktree" ? null : undefined);
         scheduleComposerFocus();
         return;
       }
       if (isLocalDraftThread) {
-        // Leaving an existing worktree for a new one also drops its branch as
-        // the base: that branch is the previous thread's work (often a
-        // throwaway `threadlines/...` name), not what "new worktree" means.
-        // The branch selector refills the base from the default branch.
         setDraftThreadContext(composerDraftTarget, {
           envMode: mode,
-          ...(mode === "worktree" && draftThread?.worktreePath
-            ? { worktreePath: null, branch: null }
-            : {}),
+          branch: null,
+          ...(mode === "worktree" ? { worktreePath: null } : {}),
         });
       }
       scheduleComposerFocus();
@@ -7748,7 +7748,6 @@ export default function ChatView(props: ChatViewProps) {
     [
       canOverrideServerThreadEnvMode,
       composerDraftTarget,
-      draftThread?.worktreePath,
       isLocalDraftThread,
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,

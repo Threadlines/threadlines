@@ -151,6 +151,50 @@ function invalidateGitBranchQueries(
 }
 
 /**
+ * One page of branches from each of several checkouts on one computer, for a
+ * picker that isn't tied to one project (Settings › Threads › New worktrees
+ * from). A search narrows each page and leads it with the branch of exactly
+ * that name. A checkout whose branches can't be read lists none.
+ */
+export function gitBranchesAcrossCheckoutsQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwds: ReadonlyArray<string>;
+  query: string;
+  enabled?: boolean;
+}) {
+  const normalizedQuery = input.query.trim();
+  return queryOptions({
+    queryKey: [
+      "git",
+      "refs-across-checkouts",
+      input.environmentId ?? null,
+      input.cwds,
+      normalizedQuery,
+    ] as const,
+    queryFn: async () => {
+      if (!input.environmentId) throw new Error("Git refs are unavailable.");
+      const api = ensureEnvironmentApi(input.environmentId);
+      const pages = await Promise.allSettled(
+        input.cwds.map((cwd) =>
+          api.vcs.listRefs({
+            cwd,
+            ...(normalizedQuery.length > 0 ? { query: normalizedQuery } : {}),
+            limit: GIT_BRANCHES_PAGE_SIZE,
+          }),
+        ),
+      );
+      return pages.map((page) =>
+        page.status === "fulfilled"
+          ? { refs: page.value.refs, hasMore: page.value.nextCursor !== null }
+          : { refs: [], hasMore: false },
+      );
+    },
+    enabled: input.environmentId !== null && input.cwds.length > 0 && (input.enabled ?? true),
+    staleTime: GIT_BRANCHES_STALE_TIME_MS,
+  });
+}
+
+/**
  * @deprecated Use a VCS-named query helper once the UI naming migration lands.
  */
 export function gitBranchSearchInfiniteQueryOptions(input: {

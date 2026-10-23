@@ -25,6 +25,7 @@ import { getSourceControlPresentation } from "../sourceControlPresentation";
 import { getVcsRefBadge } from "../worktreeCleanup";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
+import { useNewWorktreeBaseBranch } from "../hooks/useNewWorktreeBaseBranch";
 import { useThreadCheckoutSelection } from "../hooks/useThreadCheckoutSelection";
 import {
   annotateMissingCheckoutLabel,
@@ -35,7 +36,6 @@ import {
   resolveBranchSelectionTarget,
   resolveBranchToolbarValue,
   resolveCheckoutPickerRefsCwd,
-  resolveDefaultWorktreeBaseBranch,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
   shouldIncludeBranchPickerItem,
@@ -510,21 +510,33 @@ export function BranchToolbarBranchSelector({
     runSwitchRef(pending.refName, selectionTarget.checkoutCwd, selectionTarget.nextWorktreePath);
   };
 
-  useEffect(() => {
-    if (effectiveEnvMode !== "worktree" || activeWorktreePath || activeThreadBranch) {
-      return;
-    }
-    const baseBranch = resolveDefaultWorktreeBaseBranch({ refs, currentGitBranch });
-    if (!baseBranch) {
-      return;
-    }
-    setThreadBranch(baseBranch, null);
-  }, [
-    activeThreadBranch,
-    activeWorktreePath,
+  // A new worktree with no base yet starts from the computer's "New
+  // worktrees from" branch until the user picks another. A thread that
+  // already exists holds it beside its pending mode rather than recording
+  // it as the thread's branch: only a pick the user makes is recorded.
+  const needsWorktreeBase =
+    effectiveEnvMode === "worktree" && !activeWorktreePath && !activeThreadBranch;
+  const newWorktreeBaseBranch = useNewWorktreeBaseBranch({
+    environmentId,
+    cwd: refsCwd,
     currentGitBranch,
-    effectiveEnvMode,
-    refs,
+    canStartWorktree: !envLocked && !activeWorktreePath,
+    needed: needsWorktreeBase,
+  });
+  useEffect(() => {
+    if (!needsWorktreeBase || !newWorktreeBaseBranch) {
+      return;
+    }
+    if (hasServerThread && onActiveThreadBranchOverrideChange) {
+      onActiveThreadBranchOverrideChange(newWorktreeBaseBranch);
+      return;
+    }
+    setThreadBranch(newWorktreeBaseBranch, null);
+  }, [
+    hasServerThread,
+    needsWorktreeBase,
+    newWorktreeBaseBranch,
+    onActiveThreadBranchOverrideChange,
     setThreadBranch,
   ]);
 

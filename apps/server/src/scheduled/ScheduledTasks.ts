@@ -27,6 +27,7 @@ import {
   type AgentThreadsMode,
   type ChildThreadLaunch,
   type ChildThreadWorkspace,
+  DEFAULT_SERVER_SETTINGS,
   type OrchestrationEvent,
   type OrchestrationSession,
   type OrchestrationThread,
@@ -72,6 +73,7 @@ import {
   providerNotReady,
   providerNotReadySentence,
 } from "@threadlines/shared/providerAuth";
+import { resolveNewWorktreeBaseBranch } from "@threadlines/shared/git";
 import { agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
 import {
@@ -1432,9 +1434,35 @@ const make = Effect.gen(function* () {
       );
 
   /**
+   * The branch a new worktree starts from by this computer's "New worktrees
+   * from" setting, the same rule the composer follows; null when the
+   * repository names no branch to start from. Refs that can't be read fail:
+   * starting elsewhere would quietly ignore the setting.
+   */
+  const newWorktreeBaseBranch = (projectCwd: string) =>
+    Effect.gen(function* () {
+      const base = yield* settings.getSettings.pipe(
+        Effect.map((current) => current.newWorktreeBase),
+        Effect.orElseSucceed(() => DEFAULT_SERVER_SETTINGS.newWorktreeBase),
+      );
+      const listed = yield* gitWorkflow.listRefs({ cwd: projectCwd, refresh: true });
+      // Exact matches lead a search, so the named branch is on its first page.
+      const named =
+        base.from === "named" && base.branch.length > 0
+          ? (yield* gitWorkflow.listRefs({ cwd: projectCwd, query: base.branch })).refs
+          : [];
+      return resolveNewWorktreeBaseBranch({
+        base,
+        refs: [...listed.refs, ...named],
+        currentBranch: listed.refs.find((ref) => ref.current)?.name ?? null,
+      });
+    });
+
+  /**
    * Where a new-thread run works: the project folder (Local checkout, or a
-   * project without git), or a new worktree off the branch the project has
-   * checked out, at its upstream's latest when that is ahead.
+   * project without git), or a new worktree off the branch "New worktrees
+   * from" names, at its upstream's latest when that is ahead. A refusal when
+   * that branch can't be worked out.
    */
   const resolveWorkspace = (projectCwd: string, checkout: ScheduledRunLaunch["checkout"]) =>
     Effect.gen(function* () {
@@ -1442,8 +1470,14 @@ const make = Effect.gen(function* () {
       if ((yield* runGit(projectCwd, ["rev-parse", "--is-inside-work-tree"])) !== "true") {
         return { kind: "project_folder" } satisfies ChildThreadWorkspace;
       }
-      const branch = yield* runGit(projectCwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-      if (branch !== null && branch !== "HEAD") {
+      const lookup = yield* Effect.result(newWorktreeBaseBranch(projectCwd));
+      if (lookup._tag === "Failure") {
+        return {
+          refusal: `Couldn't read the project's branches to pick where its worktree starts: ${lookup.failure.detail}`,
+        } as const;
+      }
+      const branch = lookup.success;
+      if (branch !== null) {
         const fresh = yield* gitWorkflow
           .resolveFreshWorktreeBase({ cwd: projectCwd, branch })
           .pipe(Effect.orElseSucceed(() => ({ refName: branch })));
@@ -1564,6 +1598,7 @@ const make = Effect.gen(function* () {
       if (launch.workspace === null) {
         if (!(yield* stillLaunching(row, "workspace"))) return;
         const workspace = yield* resolveWorkspace(project.workspaceRoot, launch.checkout);
+        if ("refusal" in workspace) return yield* failLaunch(row, workspace.refusal);
         launch = { ...launch, workspace };
         // Saved before anything is created: a resumed launch uses this base.
         yield* repo.updateRun({
