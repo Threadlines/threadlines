@@ -125,6 +125,126 @@ export function buildLocatorQueryScript(locator: string): string {
 `;
 }
 
+/** A target that names an element rather than pointing at it or referring to a snapshot. */
+export type NamedTarget =
+  | { readonly selector: string }
+  | { readonly locator: string }
+  | { readonly text: string };
+
+/**
+ * The element a CSS selector, a Playwright locator or visible text names in
+ * one frame's document, or null when it names none there. A target that is
+ * wrong rather than absent throws: an invalid selector, or a locator that
+ * matches several elements. Run in the engine's world in each frame in turn
+ * (see PreviewAutomation `findNamed`).
+ */
+export function buildFindScript(target: NamedTarget): string {
+  if ("selector" in target) {
+    return `
+(() => {
+  try {
+    return document.querySelector(${JSON.stringify(target.selector)});
+  } catch {
+    throw new Error(
+      "no element matches selector " + ${JSON.stringify(JSON.stringify(target.selector))} +
+      "; use a valid selector or take a new snapshot",
+    );
+  }
+})();
+`;
+  }
+  if ("locator" in target) {
+    return `
+(() => {
+  const injected = globalThis.${INJECTED_HANDLE};
+  if (!injected) {
+    throw new Error("the element engine is not loaded in this frame");
+  }
+  const parsed = injected.parseSelector(${JSON.stringify(target.locator)});
+  const matches = injected.querySelectorAll(parsed, document);
+  if (matches.length > 1) {
+    throw new Error(
+      matches.length + " elements match " + ${JSON.stringify(JSON.stringify(target.locator))} +
+      "; narrow it, for example with nth= or by naming an enclosing region",
+    );
+  }
+  return matches[0] ?? null;
+})();
+`;
+  }
+  // The shortest visible element whose text is exactly what was asked for,
+  // then one that contains it; something clickable before what wraps it.
+  return `
+(() => {
+  const wanted = ${JSON.stringify(target.text)};
+  const clickableSelector = 'button, a, [role="button"], input, summary';
+  const depth = (element) => {
+    let value = 0;
+    for (let current = element; current.parentElement; current = current.parentElement) {
+      value += 1;
+    }
+    return value;
+  };
+  const visible = (element) => {
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const candidates = [...document.querySelectorAll('*')]
+    .filter(visible)
+    .map((element) => ({ element, text: (element.innerText || '').trim() }))
+    .filter((candidate) => candidate.text !== '');
+  const rank = (left, right) => {
+    const clickable =
+      Number(right.element.matches(clickableSelector)) -
+      Number(left.element.matches(clickableSelector));
+    return clickable !== 0 ? clickable : depth(left.element) - depth(right.element);
+  };
+  const exact = candidates.filter((candidate) => candidate.text === wanted).sort(rank);
+  if (exact.length > 0) {
+    return exact[0].element;
+  }
+  const containing = candidates.filter((candidate) => candidate.text.includes(wanted)).sort(rank);
+  return containing.length > 0 ? containing[0].element : null;
+})();
+`;
+}
+
+/**
+ * The frame elements in one frame's document that are on show, in document
+ * order, open shadow roots included. A frame that is hidden or fully
+ * transparent is left out: what it holds is not what an agent naming
+ * something means, and a click on it would land on whatever is underneath.
+ */
+export const VISIBLE_FRAME_OWNERS_SCRIPT = `
+(() => {
+  const owners = [];
+  const visible = (element) => {
+    if (
+      typeof element.checkVisibility === "function" &&
+      !element.checkVisibility({ opacityProperty: true, visibilityProperty: true })
+    ) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const walk = (root) => {
+    for (const element of root.querySelectorAll("*")) {
+      if ((element.localName === "iframe" || element.localName === "frame") && visible(element)) {
+        owners.push(element);
+      }
+      if (element.shadowRoot) walk(element.shadowRoot);
+    }
+  };
+  walk(document);
+  return owners;
+})();
+`;
+
 /**
  * A frame's document as an accessibility tree, with a ref on everything.
  *

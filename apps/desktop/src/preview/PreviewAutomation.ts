@@ -77,8 +77,11 @@ import {
   buildAriaSnapshotScript,
   buildInjectedRuntimeScript,
   buildLocatorQueryScript,
+  buildFindScript,
+  VISIBLE_FRAME_OWNERS_SCRIPT,
   INJECTED_WORLD_NAME,
   injectedRuntimeReadyExpression,
+  type NamedTarget,
 } from "./injectedRuntime.ts";
 import {
   type Affine,
@@ -164,6 +167,8 @@ const SNAPSHOT_FRAME_LINE = /^(\s*)(- iframe\b[^\n]*?\[ref=([^\]\s]+)\][^:\n]*)(
 const MAX_SNAPSHOT_FRAMES = 40;
 const SNAPSHOT_FRAME_TIMEOUT = "2 seconds";
 const SNAPSHOT_FRAMES_BUDGET_MS = 8_000;
+/** How long a selector, locator or text may spend looking through frames. */
+const FRAME_SEARCH_BUDGET_MS = 5_000;
 /** Elements whose content is a frame of its own. */
 const FRAME_OWNER_NODE_NAMES = new Set(["IFRAME", "FRAME", "OBJECT", "EMBED", "FENCEDFRAME"]);
 /** The world `frameViewportSize` reads in. */
@@ -251,6 +256,23 @@ interface SessionOwner {
   readonly parentSessionId: string | undefined;
   readonly ownerBackendNodeId: number;
 }
+
+/** A frame element, and the frame in it with the session that reaches that frame. */
+interface FrameOwner {
+  readonly sessionId: string | undefined;
+  readonly frameId: string;
+  readonly ownerBackendNodeId: number;
+}
+
+/** What a named target that matched nothing says, in the page or its frames. */
+const namedTargetMissing = (target: NamedTarget): string =>
+  "selector" in target
+    ? `no element matches selector ${JSON.stringify(target.selector)} in the page or its frames; take a new snapshot or use a different selector`
+    : "locator" in target
+      ? `no element matches ${JSON.stringify(target.locator)} in the page or its frames; take a new snapshot or loosen the locator`
+      : target.text.trim() === ""
+        ? "an empty text target cannot identify an element; provide visible text, a selector, or a snapshot ref"
+        : `no visible element has text ${JSON.stringify(target.text)} in the page or its frames; take a new snapshot, use a selector, or try a shorter text`;
 
 /** What one snapshot may still spend on frames: until when, and how many it has read. */
 interface SnapshotBudget {
@@ -972,6 +994,8 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       /** A frame inside the page; its top one when absent. */
       readonly frame?: InjectedFrame;
       readonly timeout?: Duration.Input;
+      /** Puts the result, and objects read from it, in a group released together. */
+      readonly objectGroup?: string;
     },
   ) {
     const sessionId = options?.frame?.sessionId;
@@ -984,6 +1008,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         contextId,
         returnByValue: options?.returnByValue ?? false,
         awaitPromise: true,
+        ...(options?.objectGroup === undefined ? {} : { objectGroup: options.objectGroup }),
       },
       { sessionId, timeout: options?.timeout },
     )) as {
@@ -1004,6 +1029,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     return result.result ?? {};
   });
 
+  /** A point (refused: it names no element) or a snapshot ref in the page's top document. */
   const resolveTarget = Effect.fn("PreviewAutomation.resolveTarget")(function* (
     contents: WebContents,
     target: PreviewAutomationTarget,
@@ -1018,31 +1044,6 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         "a point names a place, not an element; this needs a ref, locator, selector or text",
       );
     }
-    if ("locator" in target) {
-      const handle = yield* evaluateInjected(contents, buildLocatorQueryScript(target.locator));
-      const objectId = handle.objectId;
-      if (objectId === undefined) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `the locator ${JSON.stringify(target.locator)} did not resolve to an element`,
-        );
-      }
-      const described = (yield* sendCommand(contents, "DOM.describeNode", { objectId })) as {
-        node?: { backendNodeId?: number };
-      };
-      yield* sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
-      const backendNodeId = described.node?.backendNodeId;
-      if (backendNodeId === undefined) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `the element matching ${JSON.stringify(target.locator)} disappeared; take a new snapshot`,
-        );
-      }
-      return backendNodeId;
-    }
-
     if ("ref" in target) {
       // A ref is the `eN` from the aria snapshot, and Playwright's own
       // `aria-ref=` engine is what resolves it against the tree that issued it.
@@ -1075,157 +1076,30 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       return backendNodeId;
     }
 
-    if ("selector" in target) {
-      const document = (yield* sendCommand(contents, "DOM.getDocument", {})) as {
-        root?: { nodeId?: number };
-      };
-      const nodeId = document.root?.nodeId;
-      if (nodeId === undefined) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `no element matches selector ${JSON.stringify(target.selector)}; take a new snapshot or use a different selector`,
-        );
-      }
-
-      const match = (yield* sendCommand(contents, "DOM.querySelector", {
-        nodeId,
-        selector: target.selector,
-      }).pipe(
-        Effect.catch(() =>
-          failCommand(
-            contents,
-            "resolveTarget",
-            `no element matches selector ${JSON.stringify(target.selector)}; use a valid selector or take a new snapshot`,
-          ),
-        ),
-      )) as { nodeId?: number };
-      if (match.nodeId === undefined || match.nodeId === 0) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `no element matches selector ${JSON.stringify(target.selector)}; take a new snapshot or use a different selector`,
-        );
-      }
-
-      const described = (yield* sendCommand(contents, "DOM.describeNode", {
-        nodeId: match.nodeId,
-      }).pipe(
-        Effect.catch(() =>
-          failCommand(
-            contents,
-            "resolveTarget",
-            `the element matching selector ${JSON.stringify(target.selector)} disappeared; take a new snapshot and try again`,
-          ),
-        ),
-      )) as { node?: { backendNodeId?: number } };
-      const backendNodeId = described.node?.backendNodeId;
-      if (backendNodeId === undefined) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `no element matches selector ${JSON.stringify(target.selector)}; take a new snapshot or use a different selector`,
-        );
-      }
-      return backendNodeId;
-    }
-
-    if (target.text.trim() === "") {
-      return yield* failCommand(
-        contents,
-        "resolveTarget",
-        "an empty text target cannot identify an element; provide visible text, a selector, or a snapshot ref",
-      );
-    }
-
-    const evaluated = (yield* sendCommand(contents, "Runtime.evaluate", {
-      expression: `(() => {
-        const wanted = ${JSON.stringify(target.text)};
-        const clickableSelector = 'button, a, [role="button"], input, summary';
-        const depth = (element) => {
-          let value = 0;
-          for (let current = element; current.parentElement; current = current.parentElement) {
-            value += 1;
-          }
-          return value;
-        };
-        const visible = (element) => {
-          const style = getComputedStyle(element);
-          if (
-            style.display === 'none' ||
-            style.visibility === 'hidden' ||
-            Number(style.opacity) === 0
-          ) {
-            return false;
-          }
-          const rect = element.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
-        };
-        const candidates = [...document.querySelectorAll('*')]
-          .filter(visible)
-          .map((element) => ({ element, text: (element.innerText || '').trim() }))
-          .filter((candidate) => candidate.text !== '');
-        const rank = (left, right) => {
-          const clickable =
-            Number(right.element.matches(clickableSelector)) -
-            Number(left.element.matches(clickableSelector));
-          return clickable !== 0 ? clickable : depth(left.element) - depth(right.element);
-        };
-        const exact = candidates.filter((candidate) => candidate.text === wanted).sort(rank);
-        if (exact.length > 0) {
-          return exact[0].element;
-        }
-        const containing = candidates
-          .filter((candidate) => candidate.text.includes(wanted))
-          .sort(rank);
-        return containing.length > 0 ? containing[0].element : null;
-      })()`,
-    })) as {
-      result?: { objectId?: string };
-      exceptionDetails?: { text?: string; exception?: { description?: string } };
-    };
-    const objectId = evaluated.result?.objectId;
-    if (objectId === undefined) {
-      return yield* failCommand(
-        contents,
-        "resolveTarget",
-        `no visible element has text ${JSON.stringify(target.text)}; take a new snapshot, use a selector, or try a shorter text`,
-      );
-    }
-
-    const described = (yield* sendCommand(contents, "DOM.describeNode", { objectId }).pipe(
-      Effect.ensuring(
-        sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore),
-      ),
-      Effect.catch(() =>
-        failCommand(
-          contents,
-          "resolveTarget",
-          `the element with text ${JSON.stringify(target.text)} disappeared; take a new snapshot and try again`,
-        ),
-      ),
-    )) as { node?: { backendNodeId?: number } };
-    const backendNodeId = described.node?.backendNodeId;
-    if (backendNodeId === undefined) {
-      return yield* failCommand(
-        contents,
-        "resolveTarget",
-        `no visible element has text ${JSON.stringify(target.text)}; take a new snapshot or use a selector`,
-      );
-    }
-    return backendNodeId;
+    // Named targets (a selector, a locator, text) are `findNamed`'s.
+    return yield* failCommand(
+      contents,
+      "resolveTarget",
+      "this target names an element; resolveNode looks for it in the page and its frames",
+    );
   });
 
   /**
    * The element a target names, with the session its node id belongs to. A
    * snapshot ref inside a frame (`f2e7`) resolves in that frame, through the
-   * engine there that issued it; everything else resolves in the page's top
-   * document, as `resolveTarget` does.
+   * engine there that issued it; one in the page's top document, there. A
+   * selector, a locator or text is looked for in the top document and then in
+   * each frame (`findNamed`).
    */
   const resolveNode = Effect.fn("PreviewAutomation.resolveNode")(function* (
     contents: WebContents,
     target: PreviewAutomationTarget,
+    /** How long a search of the page's frames may take; see `findNamed`. */
+    frameBudgetMs = FRAME_SEARCH_BUDGET_MS,
   ) {
+    if ("selector" in target || "locator" in target || "text" in target) {
+      return yield* findNamed(contents, target, frameBudgetMs);
+    }
     const frameRef = "ref" in target ? FRAME_REF.exec(target.ref) : null;
     if (frameRef === null || !("ref" in target)) {
       const backendNodeId = yield* resolveTarget(contents, target);
@@ -1331,25 +1205,213 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     Effect.gen(function* () {
       const child = yield* frameAtRef(contents, frame, ref);
       if (child === null) return [];
-      const numbering = frameNumberingOf(contents.id);
-      const ordinal = numbering.ordinals.get(child.frameId) ?? numbering.next++;
-      const childFrame: InjectedFrame = {
-        sessionId: child.sessionId,
-        frameId: child.frameId,
-        ordinal,
-      };
-      numbering.ordinals.set(child.frameId, ordinal);
-      tab.framesByOrdinal.set(ordinal, childFrame);
-      if (child.sessionId !== undefined && child.sessionId !== frame?.sessionId) {
-        tab.sessionOwners.set(child.sessionId, {
-          frameId: child.frameId,
-          parentSessionId: frame?.sessionId,
-          ownerBackendNodeId: child.ownerBackendNodeId,
-        });
-      }
+      const childFrame = recordFrame(contents, tab, frame, child);
       const inner = yield* snapshotFrame(contents, tab, childFrame, depth + 1, budget);
       return inner.split("\n").filter((line) => line.trim() !== "");
     });
+
+  /**
+   * A frame found inside `parent` (by a snapshot or a search), numbered for
+   * its refs and recorded: its number, and for one in a process of its own,
+   * the element it sits in, which is how its points map out to the page.
+   */
+  const recordFrame = (
+    contents: WebContents,
+    tab: AttachedTab,
+    parent: InjectedFrame | undefined,
+    child: FrameOwner,
+  ): InjectedFrame => {
+    const numbering = frameNumberingOf(contents.id);
+    const ordinal = numbering.ordinals.get(child.frameId) ?? numbering.next++;
+    numbering.ordinals.set(child.frameId, ordinal);
+    const frame: InjectedFrame = { sessionId: child.sessionId, frameId: child.frameId, ordinal };
+    tab.framesByOrdinal.set(ordinal, frame);
+    if (child.sessionId !== undefined && child.sessionId !== parent?.sessionId) {
+      tab.sessionOwners.set(child.sessionId, {
+        frameId: child.frameId,
+        parentSessionId: parent?.sessionId,
+        ownerBackendNodeId: child.ownerBackendNodeId,
+      });
+    }
+    return frame;
+  };
+
+  /**
+   * The element a selector, a locator or visible text names: in the page's
+   * top document if it is there, which is what an agent naming it most likely
+   * meant, else in the first frame, in document order, that has it. A target
+   * that is wrong rather than absent (an invalid selector, a locator matching
+   * several elements) fails where it is found wrong. A frame that does not
+   * answer in time is passed over, and the frames get `frameBudgetMs` in all,
+   * so a lookup answers before the agent's call runs out.
+   */
+  const findNamed = Effect.fn("PreviewAutomation.findNamed")(function* (
+    contents: WebContents,
+    target: NamedTarget,
+    frameBudgetMs: number,
+  ) {
+    if ("text" in target && target.text.trim() === "") {
+      return yield* failCommand(contents, "resolveTarget", namedTargetMissing(target));
+    }
+    const script = buildFindScript(target);
+    const top = yield* evaluateInjected(contents, script);
+    if (top.objectId !== undefined) return yield* describeFound(contents, top.objectId, undefined);
+    const tab = attached.get(contents.id);
+    if (tab === undefined || frameBudgetMs <= 0) {
+      return yield* failCommand(contents, "resolveTarget", namedTargetMissing(target));
+    }
+    const deadline = Date.now() + frameBudgetMs;
+    const inFrames = Effect.gen(function* () {
+      const frames = yield* listFrames(contents, tab, deadline);
+      for (const frame of frames) {
+        const found = yield* evaluateInjected(contents, script, {
+          frame,
+          timeout: SNAPSHOT_FRAME_TIMEOUT,
+        }).pipe(
+          Effect.catchTag("PreviewCommandError", (error) =>
+            error.method === "injected.evaluate"
+              ? Effect.fail(error)
+              : Effect.succeed({} as { objectId?: string }),
+          ),
+        );
+        if (found.objectId !== undefined) {
+          return yield* describeFound(contents, found.objectId, frame.sessionId);
+        }
+      }
+      return null;
+    });
+    const found = yield* inFrames.pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(frameBudgetMs),
+        orElse: () => Effect.succeed("timed out" as const),
+      }),
+    );
+    if (found === "timed out") {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        `${namedTargetMissing(target)} (some of the page's frames did not answer in time)`,
+      );
+    }
+    return found ?? (yield* failCommand(contents, "resolveTarget", namedTargetMissing(target)));
+  });
+
+  /** A found element's node, in the session of the frame it was found in. */
+  const describeFound = Effect.fn("PreviewAutomation.describeFound")(function* (
+    contents: WebContents,
+    objectId: string,
+    sessionId: string | undefined,
+  ) {
+    const described = (yield* sendCommand(
+      contents,
+      "DOM.describeNode",
+      { objectId },
+      { sessionId },
+    ).pipe(Effect.ensuring(releaseInBackground(contents, objectId, sessionId)))) as {
+      node?: { backendNodeId?: number };
+    };
+    const backendNodeId = described.node?.backendNodeId;
+    if (backendNodeId === undefined) {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        "the element disappeared as it was found; take a new snapshot and try again",
+      );
+    }
+    return { backendNodeId, sessionId } satisfies NodeRef;
+  });
+
+  /**
+   * Every frame on show in the page, in document order with each frame's own
+   * frames right after it, within a snapshot's depth and count until `deadline`.
+   */
+  const listFrames = (contents: WebContents, tab: AttachedTab, deadline: number) =>
+    Effect.gen(function* () {
+      const frames: InjectedFrame[] = [];
+      const visit = (
+        frame: InjectedFrame | undefined,
+        depth: number,
+      ): Effect.Effect<void, PreviewTargetMissingError> =>
+        Effect.gen(function* () {
+          if (depth >= MAX_FRAME_DEPTH) return;
+          const owners = yield* frameOwnersIn(contents, frame).pipe(
+            Effect.catchTag("PreviewCommandError", () =>
+              Effect.succeed([] as ReadonlyArray<FrameOwner>),
+            ),
+          );
+          for (const owner of owners) {
+            if (frames.length >= MAX_SNAPSHOT_FRAMES || Date.now() > deadline) return;
+            const child = recordFrame(contents, tab, frame, owner);
+            frames.push(child);
+            yield* visit(child, depth + 1);
+          }
+        });
+      yield* visit(undefined, 0);
+      return frames;
+    });
+
+  /** The frame elements in one frame's document, in order, each with the frame it shows. */
+  const frameOwnersIn = Effect.fn("PreviewAutomation.frameOwnersIn")(function* (
+    contents: WebContents,
+    frame: InjectedFrame | undefined,
+  ) {
+    const sessionId = frame?.sessionId;
+    // Everything read here, down to the list's own prototype, is let go of
+    // together at the end.
+    const objectGroup = `threadlines-frame-owners-${++frameOwnerLookups}`;
+    return yield* Effect.gen(function* () {
+      const list = yield* evaluateInjected(contents, VISIBLE_FRAME_OWNERS_SCRIPT, {
+        ...(frame === undefined ? {} : { frame }),
+        timeout: SNAPSHOT_FRAME_TIMEOUT,
+        objectGroup,
+      });
+      if (list.objectId === undefined) return [];
+      const properties = (yield* sendCommand(
+        contents,
+        "Runtime.getProperties",
+        { objectId: list.objectId, ownProperties: true },
+        { sessionId, timeout: SNAPSHOT_FRAME_TIMEOUT },
+      )) as {
+        result?: ReadonlyArray<{ name?: string; value?: { objectId?: string } }>;
+      };
+      const elements = (properties.result ?? []).flatMap((property) =>
+        /^\d+$/.test(property.name ?? "") && property.value?.objectId !== undefined
+          ? [property.value.objectId]
+          : [],
+      );
+      const tab = attached.get(contents.id);
+      const owners: FrameOwner[] = [];
+      for (const objectId of elements) {
+        const described = (yield* sendCommand(
+          contents,
+          "DOM.describeNode",
+          { objectId },
+          { sessionId, timeout: SNAPSHOT_FRAME_TIMEOUT },
+        ).pipe(Effect.orElseSucceed(() => null))) as {
+          node?: { backendNodeId?: number; frameId?: string };
+        } | null;
+        const frameId = described?.node?.frameId;
+        const ownerBackendNodeId = described?.node?.backendNodeId;
+        // A frame element with no frame in it yet (not loaded, or emptied).
+        if (frameId === undefined || ownerBackendNodeId === undefined) continue;
+        owners.push({
+          sessionId: tab?.frameSessions.get(frameId) ?? sessionId,
+          frameId,
+          ownerBackendNodeId,
+        });
+      }
+      return owners;
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (contents.isDestroyed() || !contents.debugger.isAttached()) return;
+          contents.debugger
+            .sendCommand("Runtime.releaseObjectGroup", { objectGroup }, sessionId)
+            .catch(() => {});
+        }),
+      ),
+    );
+  });
 
   /**
    * Lets go of a page object without waiting on the page: a frame that stops
@@ -1395,7 +1457,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     // A frame in a process of its own is reached through its own session;
     // one in the same process, through the session around it.
     const frameSession = tab?.frameSessions.get(frameId) ?? sessionId;
-    return { sessionId: frameSession, frameId, ownerBackendNodeId };
+    return { sessionId: frameSession, frameId, ownerBackendNodeId } satisfies FrameOwner;
   });
 
   /**
@@ -1848,6 +1910,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * across snapshots; on a new page the numbers given so far are forgotten
    * and the count runs on.
    */
+  /** Names each frame-owner lookup's object group apart. */
+  let frameOwnerLookups = 0;
+
   const frameNumbering = new Map<
     number,
     { readonly ordinals: Map<string, number>; next: number }
@@ -2804,7 +2869,12 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         unmet = [];
 
         if (input.target !== undefined) {
-          const found = yield* resolveNode(contents, input.target).pipe(
+          const left = timeoutMs - (Date.now() - startedAt);
+          const found = yield* resolveNode(
+            contents,
+            input.target,
+            Math.min(FRAME_SEARCH_BUDGET_MS, left),
+          ).pipe(
             Effect.as(true),
             Effect.orElseSucceed(() => false),
           );
