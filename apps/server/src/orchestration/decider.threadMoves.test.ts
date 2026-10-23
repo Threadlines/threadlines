@@ -247,6 +247,24 @@ describe("moving a thread to a linked computer", () => {
     expect(child.refusal).toContain("moving to Mac mini");
   });
 
+  it("refuses to move a thread while a switch on any of its pull requests is on", async () => {
+    // The server that watches it stays behind, so the switch would do nothing.
+    const fixing = (autoFix: boolean): OrchestrationCommand => ({
+      type: "thread.pull-request-automation.set",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      pullRequestNumber: 294,
+      pullRequestUrl: "https://github.com/acme/widgets/pull/294",
+      autoFix,
+    });
+    let { model } = await apply(await seeded(), fixing(true));
+    expect((await apply(model, startMove())).refusal).toContain(
+      "Turn off pull request auto-fix and auto-merge",
+    );
+    ({ model } = await apply(model, fixing(false)));
+    expect((await apply(model, startMove())).refusal).toBeNull();
+  });
+
   it("imports a moved thread with its history once, owing its agent the conversation", async () => {
     const model = await seeded();
     const ARRIVED = ThreadId.make("thread-arrived");

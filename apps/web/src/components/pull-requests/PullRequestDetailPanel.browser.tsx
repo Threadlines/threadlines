@@ -298,25 +298,25 @@ describe("Composer pull request merge controls", () => {
     }
   });
 
-  it("gives a linked pull request its own merge switch but no auto-fix", async () => {
-    // The thread's checkout is on its own branch, so it cannot push fixes to this one.
+  it("points a failed check's wait at the fixing switch under it", async () => {
+    // GitHub could not hold the merge, and a check failed: the merge waits
+    // only for a fix, and the switch that asks for one is right below.
+    const onFixChange = vi.fn();
     const rendered = await renderComposerPullRequest(
       {
         mergeGate: "clear",
-        checks: [{ name: "build", status: "success", description: "Passed in 2m", url: null }],
-        checksState: "success",
+        checks: [{ name: "build", status: "failure", description: "Failed in 2m", url: null }],
+        checksState: "failure",
       },
       undefined,
-      { autoFix: null },
+      { autoFix: { checked: false, onChange: onFixChange } },
     );
     try {
-      await page.getByRole("checkbox", { name: "Merge when checks pass" }).click();
-      expect(rendered.onAutoMergeChange).toHaveBeenCalledWith("squash");
       await expect
-        .element(page.getByRole("checkbox", { name: "Fix failing checks and review comments" }), {
-          timeout: 5_000,
-        })
-        .not.toBeInTheDocument();
+        .element(page.getByText("A check failed. Turn on fixing below to wait for a fix."))
+        .toBeVisible();
+      await page.getByRole("checkbox", { name: "Fix failing checks and review comments" }).click();
+      expect(onFixChange).toHaveBeenCalledWith(true);
     } finally {
       await rendered.cleanup();
     }
@@ -417,7 +417,7 @@ describe("Composer pull request merge controls", () => {
             projectTitle: DETAIL.projectTitle,
             onOpen: vi.fn(),
             onDismiss: vi.fn(),
-            autoFix: null,
+            autoFix: { checked: false, onChange: vi.fn() },
             autoMerge: null,
             onAutoMergeChange: vi.fn(),
             agentWorking: false,

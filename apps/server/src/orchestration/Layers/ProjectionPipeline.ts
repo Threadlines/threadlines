@@ -1,4 +1,8 @@
 import { replaceAgentCheckBacks } from "@threadlines/shared/checkBacks";
+import {
+  applyLinkedPullRequestSwitches,
+  applyPullRequestLinked,
+} from "@threadlines/shared/linkedPullRequests";
 import { applyPullRequestDismissed } from "@threadlines/shared/pullRequestDismissals";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
@@ -721,16 +725,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
-          const { autoMerge, pullRequestNumber } = event.payload;
-          // A numbered change is the switch of one linked pull request.
+          const { autoFix, autoMerge, pullRequestNumber } = event.payload;
+          // A numbered change is the switches of one pull request held by number.
           if (pullRequestNumber !== undefined) {
-            if (autoMerge === undefined) {
-              return;
-            }
             yield* projectionThreadRepository.upsert({
               ...existingRow.value,
-              linkedPullRequests: (existingRow.value.linkedPullRequests ?? []).map((linked) =>
-                linked.number === pullRequestNumber ? { ...linked, autoMerge } : linked,
+              linkedPullRequests: applyLinkedPullRequestSwitches(
+                existingRow.value.linkedPullRequests,
+                { pullRequestNumber, autoFix, autoMerge },
               ),
               updatedAt: event.payload.updatedAt,
             });
@@ -738,9 +740,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            ...(event.payload.autoFix === undefined
-              ? {}
-              : { pullRequestAutoFix: event.payload.autoFix ? 1 : 0 }),
+            ...(autoFix === undefined ? {} : { pullRequestAutoFix: autoFix ? 1 : 0 }),
             ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
             updatedAt: event.payload.updatedAt,
           });
@@ -1009,7 +1009,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         // Found in the conversation rather than done to the thread, so it
-        // leaves `updatedAt` where the agent's message put it.
+        // leaves `updatedAt` where the agent's message put it. One taken on
+        // with a switch comes with the switch's own event, which stamps it.
         case "thread.pull-request-linked": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -1017,17 +1018,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
-          const linkedPullRequests = existingRow.value.linkedPullRequests ?? [];
-          if (linkedPullRequests.some((linked) => linked.number === event.payload.number)) {
+          const linkedPullRequests = applyPullRequestLinked(
+            existingRow.value.linkedPullRequests,
+            event.payload,
+          );
+          if (linkedPullRequests === null) {
             return;
           }
-          yield* projectionThreadRepository.upsert({
-            ...existingRow.value,
-            linkedPullRequests: [
-              ...linkedPullRequests,
-              { number: event.payload.number, url: event.payload.url, autoMerge: null },
-            ],
-          });
+          yield* projectionThreadRepository.upsert({ ...existingRow.value, linkedPullRequests });
           return;
         }
 

@@ -16,8 +16,14 @@ import {
   type VcsStatusRemoteResult,
 } from "@threadlines/contracts";
 import {
+  linkedPullRequestArmed,
+  threadPullRequestAutomationArmed,
+} from "@threadlines/shared/linkedPullRequests";
+import { areFilesystemPathsEqual, isFilesystemPathWithin } from "@threadlines/shared/path";
+import {
   buildPullRequestAutoFixPrompt,
   type PullRequestAutoFixCheck,
+  type PullRequestAutoFixCheckout,
   type PullRequestAutoFixComment,
 } from "@threadlines/shared/pullRequestAutoFix";
 import {
@@ -50,8 +56,10 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 
-import { GitManager } from "../../git/GitManager.ts";
+import { forkPullRequestBranchPrefix, GitManager } from "../../git/GitManager.ts";
+import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
+import type { GitWorktreeEntry } from "../../vcs/GitVcsDriver.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -225,14 +233,99 @@ function isSamePullRequest(left: string, right: string): boolean {
 
 /**
  * Whether the watcher has anything to do for a thread's pull requests: fixing
- * its own, or merging its own or a linked one. An archived thread has nothing.
+ * or merging its own or one it holds by number. An archived thread has nothing.
  */
 function isWatched(thread: OrchestrationThreadShell): boolean {
-  const armed =
-    thread.pullRequestAutoFix ||
-    thread.pullRequestAutoMerge !== null ||
-    thread.linkedPullRequests.some((linked) => linked.autoMerge !== null);
-  return armed && thread.archivedAt === null;
+  return threadPullRequestAutomationArmed(thread) && thread.archivedAt === null;
+}
+
+/**
+ * Which of a thread's switches watch one pull request in a look: the ones it
+ * holds for it by number (`linkedPullRequests`), and its own while that pull
+ * request is the one on its checkout's branch. Both can apply to one.
+ */
+interface SwitchHolders {
+  readonly linked: boolean;
+  readonly own: boolean;
+}
+
+function linkedPullRequestOf(
+  thread: Pick<OrchestrationThreadShell, "linkedPullRequests">,
+  number: number,
+) {
+  return thread.linkedPullRequests.find((linked) => linked.number === number);
+}
+
+/** Whether fixing is on for one pull request, by any switch that watches it. */
+function fixSwitchOn(
+  thread: Pick<OrchestrationThreadShell, "pullRequestAutoFix" | "linkedPullRequests">,
+  number: number,
+  holders: SwitchHolders,
+): boolean {
+  return (
+    (holders.own && thread.pullRequestAutoFix) ||
+    (holders.linked && linkedPullRequestOf(thread, number)?.autoFix === true)
+  );
+}
+
+/** How one pull request is to be merged, by any switch that watches it; the thread's own first. */
+function mergeSwitchOf(
+  thread: Pick<OrchestrationThreadShell, "pullRequestAutoMerge" | "linkedPullRequests">,
+  number: number,
+  holders: SwitchHolders,
+): PullRequestMergeMethod | null {
+  return (
+    (holders.own ? thread.pullRequestAutoMerge : null) ??
+    (holders.linked ? (linkedPullRequestOf(thread, number)?.autoMerge ?? null) : null)
+  );
+}
+
+/**
+ * The key a fixing switch coming on is remembered by until its pull request's
+ * next look: the thread's own, or one held by number.
+ */
+function fixSwitchKey(threadId: ThreadId, pullRequestNumber: number | null): string {
+  return pullRequestNumber === null ? threadId : pairKey(threadId, pullRequestNumber);
+}
+
+/**
+ * Where a pull request's branch is checked out, as one look found it: the
+ * thread's own checkout or another folder of the repository, whose own read
+ * names the pull request, or none it can vouch for. A checkout's status is
+ * what a merge waits on (commits not pushed yet, a push the host has yet to
+ * show); one on a branch of that name that does not name the pull request is
+ * still waited on, but never named to the agent.
+ */
+type BranchCheckout =
+  | { readonly kind: "thread"; readonly status: VcsStatusRemoteResult }
+  | { readonly kind: "folder"; readonly path: string; readonly status: VcsStatusRemoteResult }
+  | { readonly kind: "unknown"; readonly status: VcsStatusRemoteResult | null };
+
+/** What one pull request's switches ask of a look, and what the watcher holds for it. */
+interface PullRequestWatch {
+  readonly key: string;
+  readonly holders: SwitchHolders;
+  readonly turnCount: number;
+  /** Fixing is on, and the pull request has turns left. */
+  readonly autoFix: boolean;
+  readonly autoMerge: PullRequestMergeMethod | null;
+  readonly pendingRequeue: PendingRequeue | undefined;
+}
+
+/** Reads one look shares between the pull requests it watches, each made at most once. */
+interface LookReads {
+  /** The status of the checkout at `cwd`; null where it could not be read. */
+  readonly statusAt: (cwd: string) => Effect.Effect<VcsStatusRemoteResult | null>;
+  /** The repository's checkouts; null where they could not be listed. */
+  readonly worktrees: Effect.Effect<ReadonlyArray<GitWorktreeEntry> | null>;
+}
+
+/** The busier of two looks' findings: a turn started, then something left to watch. */
+function combineOutcomes(left: LookOutcome, right: LookOutcome): LookOutcome {
+  if (left === "started" || right === "started") {
+    return "started";
+  }
+  return left === "watching" || right === "watching" ? "watching" : "nothing";
 }
 
 /** A thread the watcher has something to do for, and where its pull requests live. */
@@ -261,20 +354,6 @@ function threadWorkingCwd({ thread, project }: SweepCandidate): string {
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
   });
-}
-
-/**
- * The merge switch one watch acts on: the thread's own, for the pull request
- * on its branch, or a linked pull request's, by number.
- */
-function autoMergeSwitchOf(
-  thread: Pick<OrchestrationThreadShell, "pullRequestAutoMerge" | "linkedPullRequests">,
-  pullRequestNumber: number | null,
-): PullRequestMergeMethod | null {
-  return pullRequestNumber === null
-    ? thread.pullRequestAutoMerge
-    : (thread.linkedPullRequests.find((linked) => linked.number === pullRequestNumber)?.autoMerge ??
-        null);
 }
 
 /**
@@ -312,6 +391,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
     const gitManager = yield* GitManager;
+    const gitWorkflow = yield* GitWorkflowService;
     const pullRequestService = yield* PullRequestService;
 
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
@@ -324,10 +404,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     // memory only, so a restart re-observes instead of acting on what was
     // already there.
     const baselinesRef = yield* Ref.make(new Map<string, AutoFixBaseline>());
-    // Threads whose fixing switch came on while this server was running. Their
-    // next look counts the checks already failing as news: ticking the box on a
-    // red pull request is asking for them to be fixed. A restart carries no
-    // such word, so it only records what it finds.
+    // Fixing switches that came on while this server was running, by
+    // `fixSwitchKey`. Their pull request's next look counts the checks
+    // already failing as news: ticking the box on a red pull request is
+    // asking for them to be fixed. A restart carries no such word, so it only
+    // records what it finds.
     const freshlyArmedRef = yield* Ref.make(new Set<string>());
     // Waiting for the agent's turn to end before the host is asked to queue
     // the pull request again. In memory like the baselines: after a restart
@@ -502,27 +583,78 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       });
 
     /**
-     * Turns "Merge when checks pass" off, the same way the composer's switch
-     * does: the thread's own (`pullRequestNumber` null) or a linked pull request's.
+     * Turns switches off, the same way the composer's do: the thread's own
+     * (`pullRequestNumber` null) or those of a pull request it holds by number.
      */
-    const disarmAutoMerge = (threadId: ThreadId, pullRequestNumber: number | null) =>
+    const turnOffSwitches = (
+      threadId: ThreadId,
+      pullRequestNumber: number | null,
+      switches: { readonly autoFix?: false; readonly autoMerge?: null },
+    ) =>
       orchestrationEngine
         .dispatch({
           type: "thread.pull-request-automation.set",
-          commandId: CommandId.make(`pull-request-auto-merge:${threadId}:${randomUUID()}`),
+          commandId: CommandId.make(`pull-request-automation:${threadId}:${randomUUID()}`),
           threadId,
           ...(pullRequestNumber === null ? {} : { pullRequestNumber }),
-          autoMerge: null,
+          ...switches,
         })
         .pipe(
           Effect.asVoid,
           Effect.catchCause((cause) =>
-            Effect.logWarning("pull-request.auto-merge.disarm-failed", {
+            Effect.logWarning("pull-request.automation.disarm-failed", {
               threadId,
               cause: Cause.pretty(cause),
             }),
           ),
         );
+
+    /** Turns "Merge when checks pass" off: the thread's own, or one held by number. */
+    const disarmAutoMerge = (threadId: ThreadId, pullRequestNumber: number | null) =>
+      turnOffSwitches(threadId, pullRequestNumber, { autoMerge: null });
+
+    /**
+     * Turns off what was watching a pull request that has merged or closed:
+     * every switch held for it by number, since there is nothing left for them
+     * to do and a settled row offers none to turn off by hand, and the
+     * thread's own merge switch. The thread's own fixing switch stays, for
+     * whatever pull request its branch has next.
+     */
+    const disarmSettled = (
+      thread: OrchestrationThreadShell,
+      number: number,
+      holders: SwitchHolders,
+    ) =>
+      Effect.gen(function* () {
+        if (holders.own && thread.pullRequestAutoMerge !== null) {
+          yield* disarmAutoMerge(thread.id, null);
+        }
+        const linked = holders.linked ? linkedPullRequestOf(thread, number) : undefined;
+        if (linked !== undefined && (linked.autoFix || linked.autoMerge !== null)) {
+          yield* turnOffSwitches(thread.id, number, {
+            ...(linked.autoFix ? { autoFix: false } : {}),
+            ...(linked.autoMerge === null ? {} : { autoMerge: null }),
+          });
+        }
+      });
+
+    /**
+     * Turns "Merge when checks pass" off for one pull request: each of the
+     * thread's switches that was asking for it.
+     */
+    const disarmMergeSwitches = (
+      thread: OrchestrationThreadShell,
+      number: number,
+      holders: SwitchHolders,
+    ) =>
+      Effect.gen(function* () {
+        if (holders.own && thread.pullRequestAutoMerge !== null) {
+          yield* disarmAutoMerge(thread.id, null);
+        }
+        if (holders.linked && (linkedPullRequestOf(thread, number)?.autoMerge ?? null) !== null) {
+          yield* disarmAutoMerge(thread.id, number);
+        }
+      });
 
     /**
      * A line in the thread's timeline, so a merge nobody watched still has a
@@ -582,8 +714,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         readonly pushedHead: string | null;
         /** The auto-fix watch is on and still has turns left to fix a failure. */
         readonly autoFix: boolean;
-        /** Whose switch this is: null for the thread's own branch, else a linked pull request's. */
-        readonly pullRequestNumber: number | null;
+        /** Whose switches ask for the merge. */
+        readonly holders: SwitchHolders;
       }) {
         const { thread, detail } = input;
         const number = input.reference.number;
@@ -599,7 +731,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           return false;
         }
         if (step.kind === "stop") {
-          yield* disarmAutoMerge(thread.id, input.pullRequestNumber);
+          yield* disarmMergeSwitches(thread, number, input.holders);
           // A pull request merged or closed by someone else is not news.
           if (detail.state === "open") {
             yield* appendAutoMergeActivity({
@@ -626,7 +758,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         if (
           latest === null ||
           Option.isNone(latest) ||
-          autoMergeSwitchOf(latest.value, input.pullRequestNumber) === null ||
+          mergeSwitchOf(latest.value, number, input.holders) === null ||
           hasWorkInProgress(latest.value)
         ) {
           return false;
@@ -656,7 +788,10 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
                   pullRequestService.detail({ ...input.reference, force: true }),
                 ),
               );
-        yield* disarmAutoMerge(thread.id, input.pullRequestNumber);
+        // A merge settles the pull request, so its fixing switch goes too.
+        yield* landing === "merged"
+          ? disarmSettled(thread, number, input.holders)
+          : disarmMergeSwitches(thread, number, input.holders);
         if (landing === "merged") {
           yield* Effect.logInfo("pull-request.auto-merge.merged", { threadId: thread.id, number });
           yield* appendAutoMergeActivity({
@@ -718,6 +853,8 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         readonly detail: PullRequestDetail;
         readonly unpushedCommits: number;
         readonly pending: PendingRequeue;
+        /** Whose fixing switches sent the agent after the removal. */
+        readonly holders: SwitchHolders;
       }) {
         const { detail, pending } = input;
         const number = input.reference.number;
@@ -765,7 +902,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           turn !== null &&
           turn.state === "completed" &&
           Date.parse(turn.requestedAt) >= Date.parse(pending.requestedAt);
-        if (!thread.pullRequestAutoFix || hasWorkInProgress(thread) || !lookedSince) {
+        if (
+          !fixSwitchOn(thread, number, input.holders) ||
+          hasWorkInProgress(thread) ||
+          !lookedSince
+        ) {
           return;
         }
 
@@ -813,84 +954,110 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     );
 
     /**
-     * The pull request on the thread's own branch. Answers what it found, and
-     * leaves the baseline holding what the pull request looks like now.
+     * What one pull request's switches ask of this look, or null where they
+     * ask nothing. A fixing switch over its turn cap asks nothing, though a
+     * hand-off to the merge queue already made is still seen through.
      */
-    const sweepOwnPullRequest = Effect.fn("PullRequestAutomationWatcher.sweepOwnPullRequest")(
-      function* (input: SweepCandidate): Effect.fn.Return<LookOutcome> {
-        const { thread, project, repository } = input;
-        const cwd = threadWorkingCwd(input);
-
-        const remote = yield* attempt("status-read", thread.id, gitManager.remoteStatus({ cwd }));
-        // No pull request is not known to be none: a lookup the host did not
-        // answer reads the same, so the thread keeps the usual pace.
-        if (remote === null || remote.pr === null) {
-          return "watching";
-        }
-        const pullRequest = remote.pr;
-        const autoMerge = thread.pullRequestAutoMerge;
-        const reference = {
-          projectId: project.id,
-          repository,
-          number: pullRequest.number,
-          force: true,
-        } as const;
-        if (pullRequest.state !== "open") {
-          // Merged or closed some other way: the instruction has nothing left
-          // to act on, and must not carry over to the next pull request. That
-          // holds for the project's own pull request, so before the switch
-          // goes off the host is asked whether this is it. It is asked about
-          // a closed one either way: unlike a merged one it can be reopened,
-          // and the status read falls back on what it last saw when its own
-          // lookup fails.
-          if (autoMerge !== null || pullRequest.state === "closed") {
-            const settled = yield* readDetail(thread.id, reference, pullRequest.url);
-            if (settled === "unread") {
-              return "watching";
-            }
-            if (settled !== "elsewhere") {
-              if (pullRequest.state === "closed" && settled.state === "open") {
-                return "watching";
-              }
-              if (autoMerge !== null) {
-                yield* disarmAutoMerge(thread.id, null);
-              }
-            }
-          }
-          return "nothing";
-        }
-
-        const key = pairKey(thread.id, pullRequest.number);
-        const turnCount = yield* Ref.get(turnCountsRef).pipe(
-          Effect.map((counts) => counts.get(key) ?? 0),
-        );
-        const autoFixCapped =
-          thread.pullRequestAutoFix && turnCount >= MAX_AUTO_TURNS_PER_PULL_REQUEST;
-        if (autoFixCapped) {
-          const alreadyLogged = yield* Ref.modify(cappedLoggedRef, (logged) => {
-            const seen = logged.has(key);
-            logged.add(key);
-            return [seen, logged];
+    const watchOf = Effect.fn("PullRequestAutomationWatcher.watchOf")(function* (
+      thread: OrchestrationThreadShell,
+      number: number,
+      holders: SwitchHolders,
+    ) {
+      const key = pairKey(thread.id, number);
+      const turnCount = (yield* Ref.get(turnCountsRef)).get(key) ?? 0;
+      const fixOn = fixSwitchOn(thread, number, holders);
+      const autoFixCapped = fixOn && turnCount >= MAX_AUTO_TURNS_PER_PULL_REQUEST;
+      if (autoFixCapped) {
+        const alreadyLogged = yield* Ref.modify(cappedLoggedRef, (logged) => {
+          const seen = logged.has(key);
+          logged.add(key);
+          return [seen, logged];
+        });
+        if (!alreadyLogged) {
+          yield* Effect.logWarning("pull-request.auto-fix.cap-reached", {
+            threadId: thread.id,
+            number,
+            cap: MAX_AUTO_TURNS_PER_PULL_REQUEST,
           });
-          if (!alreadyLogged) {
-            yield* Effect.logWarning("pull-request.auto-fix.cap-reached", {
-              threadId: thread.id,
-              number: pullRequest.number,
-              cap: MAX_AUTO_TURNS_PER_PULL_REQUEST,
-            });
-          }
         }
-        const autoFixActive = thread.pullRequestAutoFix && !autoFixCapped;
-        // A hand-off already made is seen through, even once the cap is reached.
-        const pendingRequeue = yield* Ref.get(requeuesRef).pipe(Effect.map((map) => map.get(key)));
-        if (!autoFixActive && autoMerge === null && pendingRequeue === undefined) {
-          return "nothing";
-        }
+      }
+      const autoFix = fixOn && !autoFixCapped;
+      const autoMerge = mergeSwitchOf(thread, number, holders);
+      const pendingRequeue = (yield* Ref.get(requeuesRef)).get(key);
+      if (!autoFix && autoMerge === null && pendingRequeue === undefined) {
+        return null;
+      }
+      return {
+        key,
+        holders,
+        turnCount,
+        autoFix,
+        autoMerge,
+        pendingRequeue,
+      } satisfies PullRequestWatch;
+    });
 
-        const detail = yield* readDetail(thread.id, reference, pullRequest.url);
-        if (detail === "unread" || detail === "elsewhere") {
-          return detail === "unread" ? "watching" : "nothing";
+    /**
+     * Whether another thread is at work in the checkout at `path`, from its
+     * own folder or the one it moved to, anywhere inside: an agent sent there
+     * now would edit under it. An unreadable read model counts as busy, so the
+     * fix waits rather than guesses.
+     */
+    const folderBusyElsewhere = (threadId: ThreadId, path: string) =>
+      Effect.gen(function* () {
+        const snapshot = yield* attempt(
+          "snapshot-read",
+          threadId,
+          projectionSnapshotQuery.getShellSnapshot(),
+        );
+        if (snapshot === null) {
+          return true;
         }
+        const projectRoots = new Map(
+          snapshot.projects.map((project) => [project.id, project.workspaceRoot]),
+        );
+        return snapshot.threads.some((other) => {
+          const projectCwd = projectRoots.get(other.projectId);
+          return (
+            other.id !== threadId &&
+            other.archivedAt === null &&
+            projectCwd !== undefined &&
+            isFilesystemPathWithin(
+              resolveThreadWorkingCwd({
+                projectCwd,
+                worktreePath: other.worktreePath,
+                effectiveCwd: other.effectiveCwd,
+              }),
+              path,
+            ) &&
+            hasWorkInProgress(other)
+          );
+        });
+      });
+
+    /**
+     * Everything the watcher does for one open pull request it has just read:
+     * merge it once its switch says so, put it back in the merge queue after a
+     * fix, and send the agent what is new while fixing is on, naming the
+     * folder to work in when it is not the thread's own. Answers what it
+     * found, and leaves the baseline holding what the pull request looks like
+     * now.
+     */
+    const actOnPullRequest = Effect.fn("PullRequestAutomationWatcher.actOnPullRequest")(
+      function* (input: {
+        readonly candidate: SweepCandidate;
+        readonly reference: PullRequestRef;
+        readonly detail: PullRequestDetail;
+        readonly watch: PullRequestWatch;
+        readonly checkout: BranchCheckout;
+      }): Effect.fn.Return<LookOutcome> {
+        const { reference, detail, watch, checkout } = input;
+        const { thread, repository } = input.candidate;
+        const number = reference.number;
+        const { key } = watch;
+        const { status } = checkout;
+        const unpushedCommits = status?.aheadCount ?? 0;
+
         // A look can come seconds after the agent pushed, when its turn ends.
         // A read that still names the commit before says nothing about the
         // push: its checks are that commit's, so they are neither sent to the
@@ -899,7 +1066,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         const pushedHead = yield* pushedHeadToAwait(
           key,
           detail,
-          remote.upstreamHeadSha ?? null,
+          status?.upstreamHeadSha ?? null,
           now,
         );
         const awaitingPush = pullRequestChecksWait(detail, pushedHead, now) === "push";
@@ -907,16 +1074,16 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           yield* keepInMotion(thread.id, now);
         }
 
-        if (autoMerge !== null) {
+        if (watch.autoMerge !== null) {
           const merged = yield* sweepAutoMerge({
             thread,
             reference,
             detail,
-            mergeMethod: autoMerge,
-            unpushedCommits: remote.aheadCount,
+            mergeMethod: watch.autoMerge,
+            unpushedCommits,
             pushedHead,
-            autoFix: autoFixActive,
-            pullRequestNumber: null,
+            autoFix: watch.autoFix,
+            holders: watch.holders,
           });
           if (merged) {
             return "nothing";
@@ -924,17 +1091,18 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         }
         // Arming the host's merge on the commit before the fix would queue it
         // without the fix, so this waits for the push like everything else.
-        if (pendingRequeue !== undefined && !awaitingPush) {
+        if (watch.pendingRequeue !== undefined && !awaitingPush) {
           yield* requeueAfterFix({
             threadId: thread.id,
             key,
             reference,
             detail,
-            unpushedCommits: remote.aheadCount,
-            pending: pendingRequeue,
+            unpushedCommits,
+            pending: watch.pendingRequeue,
+            holders: watch.holders,
           });
         }
-        if (!autoFixActive) {
+        if (!watch.autoFix) {
           return "watching";
         }
 
@@ -955,10 +1123,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // removal from the merge queue, whatever it saw before. Remarks already
         // made are still not news: they may well have been answered, and
         // nothing here can tell.
-        const freshlyArmed = yield* Ref.modify(freshlyArmedRef, (armed) => [
-          armed.delete(thread.id),
-          armed,
-        ]);
+        const freshlyArmed = yield* Ref.modify(freshlyArmedRef, (armed) => {
+          const own = watch.holders.own && armed.delete(fixSwitchKey(thread.id, null));
+          const linked = watch.holders.linked && armed.delete(fixSwitchKey(thread.id, number));
+          return [own || linked, armed];
+        });
         const baseline = freshlyArmed
           ? { failingCheckNames: new Set<string>(), commentIds, queueRemovalId: null }
           : (yield* Ref.get(baselinesRef)).get(key);
@@ -1000,8 +1169,14 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // so that one is not news again once the host answers.
         const queueRemovalId = queueRemoval?.id ?? baseline.queueRemovalId;
 
+        const promptCheckout: PullRequestAutoFixCheckout | null =
+          checkout.kind === "folder"
+            ? { kind: "folder", branch: detail.headBranch, path: checkout.path }
+            : checkout.kind === "unknown"
+              ? { kind: "unknown", branch: detail.headBranch }
+              : null;
         const text = buildPullRequestAutoFixPrompt({
-          number: pullRequest.number,
+          number,
           repository,
           failingChecks: newlyFailing,
           comments: newComments,
@@ -1015,6 +1190,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
                     url: check.url,
                   })),
                 },
+          checkout: promptCheckout,
         });
         if (text === null) {
           // Nothing new. Keep the checks that are still failing, and remember
@@ -1028,9 +1204,10 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // The reads above take seconds, and in that time the user may have sent
         // a message of their own or turned the switch off. Either one means
         // "not now", so the thread is read again just before a turn is started
-        // for it. What would have been said stays news: the baseline goes back
-        // to the one this look started from, and the first look after that
-        // turn says it if it still needs saying.
+        // for it. So does another thread at work in the folder the agent would
+        // be sent to. What would have been said stays news: the baseline goes
+        // back to the one this look started from, and the first look after
+        // that says it if it still needs saying.
         const latest = yield* attempt(
           "thread-read",
           thread.id,
@@ -1039,8 +1216,9 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         if (
           latest === null ||
           Option.isNone(latest) ||
-          !latest.value.pullRequestAutoFix ||
-          hasWorkInProgress(latest.value)
+          !fixSwitchOn(latest.value, number, watch.holders) ||
+          hasWorkInProgress(latest.value) ||
+          (checkout.kind === "folder" && (yield* folderBusyElsewhere(thread.id, checkout.path)))
         ) {
           yield* Ref.update(baselinesRef, (map) => map.set(key, baseline));
           return "watching";
@@ -1048,7 +1226,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
 
         const requestedAt = yield* startTurn({
           thread: latest.value,
-          number: pullRequest.number,
+          number,
           text,
           trigger: [
             newQueueRemoval === null ? null : "merge-queue",
@@ -1070,7 +1248,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         if (requestedAt === null) {
           return "watching";
         }
-        yield* Ref.update(turnCountsRef, (counts) => counts.set(key, turnCount + 1));
+        yield* Ref.update(turnCountsRef, (counts) => counts.set(key, watch.turnCount + 1));
         // The queue gets it back once the agent has had its turn at the failure.
         if (newQueueRemoval !== null) {
           yield* Ref.update(requeuesRef, (map) =>
@@ -1082,22 +1260,166 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     );
 
     /**
-     * "Merge when checks pass" for the pull requests the agent opened on other
-     * branches. The thread's checkout is not on those branches, so there are no
-     * unpushed commits to count and no auto-fix to run; otherwise it is the
-     * same rule as for the thread's own pull request. Answers whether any of
-     * them is still open and waiting, or could not be read.
+     * The thread's own switches, for the pull request on the branch its
+     * checkout is on (`remote`, that checkout's status), where the thread does
+     * not hold that pull request by number; one it does is watched with the
+     * rest in `sweepLinkedPullRequests`. Clients set switches by number now,
+     * and this keeps the ones a thread set before that working.
+     */
+    const sweepOwnPullRequest = Effect.fn("PullRequestAutomationWatcher.sweepOwnPullRequest")(
+      function* (
+        input: SweepCandidate,
+        remote: VcsStatusRemoteResult | null,
+      ): Effect.fn.Return<LookOutcome> {
+        const { thread, project, repository } = input;
+        // No pull request is not known to be none: a lookup the host did not
+        // answer reads the same, so the thread keeps the usual pace.
+        if (remote === null || remote.pr === null) {
+          return "watching";
+        }
+        const pullRequest = remote.pr;
+        const reference = {
+          projectId: project.id,
+          repository,
+          number: pullRequest.number,
+          force: true,
+        } as const;
+        if (pullRequest.state !== "open") {
+          // Merged or closed some other way: the instruction has nothing left
+          // to act on, and must not carry over to the next pull request. That
+          // holds for the project's own pull request, so before the switch
+          // goes off the host is asked whether this is it. It is asked about
+          // a closed one either way: unlike a merged one it can be reopened,
+          // and the status read falls back on what it last saw when its own
+          // lookup fails.
+          const autoMerge = thread.pullRequestAutoMerge;
+          if (autoMerge !== null || pullRequest.state === "closed") {
+            const settled = yield* readDetail(thread.id, reference, pullRequest.url);
+            if (settled === "unread") {
+              return "watching";
+            }
+            if (settled !== "elsewhere") {
+              if (pullRequest.state === "closed" && settled.state === "open") {
+                return "watching";
+              }
+              if (autoMerge !== null) {
+                yield* disarmAutoMerge(thread.id, null);
+              }
+            }
+          }
+          return "nothing";
+        }
+
+        const watch = yield* watchOf(thread, pullRequest.number, { linked: false, own: true });
+        if (watch === null) {
+          return "nothing";
+        }
+        const detail = yield* readDetail(thread.id, reference, pullRequest.url);
+        if (detail === "unread" || detail === "elsewhere") {
+          return detail === "unread" ? "watching" : "nothing";
+        }
+        return yield* actOnPullRequest({
+          candidate: input,
+          reference,
+          detail,
+          watch,
+          checkout: { kind: "thread", status: remote },
+        });
+      },
+    );
+
+    /**
+     * Where a pull request's branch is checked out, for one look. A checkout
+     * is the pull request's only when its own read names it: a branch name
+     * alone can be the thread's stale record of where it was, or a branch on
+     * a fork that shares a name with one here. Null where that cannot be told
+     * (a checkout on the branch, or the list of checkouts, could not be read),
+     * which is no answer: a merge waits on what it would have said.
+     */
+    const locateCheckout = (
+      candidate: SweepCandidate,
+      reads: LookReads,
+      detail: PullRequestDetail,
+    ) =>
+      Effect.gen(function* (): Effect.fn.Return<BranchCheckout | null> {
+        const threadCwd = threadWorkingCwd(candidate);
+        const threadStatus = yield* reads.statusAt(threadCwd);
+        if (threadStatus?.pr != null && isSamePullRequest(threadStatus.pr.url, detail.url)) {
+          return { kind: "thread", status: threadStatus };
+        }
+        const worktrees = yield* reads.worktrees;
+        // A repository always lists its main checkout, so an empty list is a
+        // read that failed.
+        if (worktrees === null || worktrees.length === 0) {
+          return null;
+        }
+        // The checkout the thread works in is the innermost one around its
+        // folder: the main checkout can hold the others.
+        const threadCheckout = worktrees
+          .filter((entry) => isFilesystemPathWithin(threadCwd, entry.path))
+          .reduce<GitWorktreeEntry | null>(
+            (innermost, entry) =>
+              innermost === null || entry.path.length > innermost.path.length ? entry : innermost,
+            null,
+          );
+        // Its own branch name, or the name a pull request from a fork is
+        // checked out under here.
+        const forkPrefix = forkPullRequestBranchPrefix(detail.number);
+        const onBranch = worktrees.filter(
+          (entry) =>
+            entry.branch !== null &&
+            (entry.branch === detail.headBranch || entry.branch.startsWith(forkPrefix)),
+        );
+        let fallback: BranchCheckout = { kind: "unknown", status: null };
+        for (const entry of onBranch) {
+          const isThreadCheckout =
+            threadCheckout !== null && areFilesystemPathsEqual(threadCheckout.path, entry.path);
+          const status = isThreadCheckout ? threadStatus : yield* reads.statusAt(entry.path);
+          if (status === null) {
+            return null;
+          }
+          if (
+            !isThreadCheckout &&
+            status.pr !== null &&
+            isSamePullRequest(status.pr.url, detail.url)
+          ) {
+            return { kind: "folder", path: entry.path, status };
+          }
+          if (fallback.status === null) {
+            fallback = { kind: "unknown", status };
+          }
+        }
+        return fallback;
+      });
+
+    /**
+     * The pull requests the thread holds by number, each by its own switches,
+     * and the one on its checkout's branch (at `ownUrl`, where the thread's own
+     * switches are on) by those too. Each is merged and fixed where its branch
+     * is checked out. A look stops at the first turn it starts: the agent is
+     * busy from then, and the rest wait for the turn to end.
      */
     const sweepLinkedPullRequests = Effect.fn(
       "PullRequestAutomationWatcher.sweepLinkedPullRequests",
-    )(function* (candidate: SweepCandidate) {
+    )(function* (
+      candidate: SweepCandidate,
+      reads: LookReads,
+      ownUrl: string | null,
+    ): Effect.fn.Return<LookOutcome> {
       const { thread, project, repository } = candidate;
-      let watching = false;
-      // Where the thread's checkout stands: read once, and only for a linked
-      // pull request that is armed and open.
-      let checkout: VcsStatusRemoteResult | null | undefined;
+      let outcome: LookOutcome = "nothing";
       for (const linked of thread.linkedPullRequests) {
-        if (linked.autoMerge === null) {
+        const holders = {
+          linked: true,
+          own: ownUrl !== null && isSamePullRequest(ownUrl, linked.url),
+        };
+        // A switch over its turn cap asks nothing of an open pull request, but
+        // still has to notice it settle, which is what turns it off.
+        const watch = yield* watchOf(thread, linked.number, holders);
+        const armed =
+          linkedPullRequestArmed(linked) ||
+          (holders.own && (thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null));
+        if (watch === null && !armed) {
           continue;
         }
         const reference = {
@@ -1119,50 +1441,31 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             parsePullRequestUrl(linked.url)?.repository.toLowerCase() === repository.toLowerCase(),
         );
         if (detail === "unread" || detail === "elsewhere") {
-          watching ||= detail === "unread";
+          outcome = combineOutcomes(outcome, detail === "unread" ? "watching" : "nothing");
           continue;
         }
         if (detail.state !== "open") {
           // Merged or closed some other way: nothing is left to act on.
-          yield* disarmAutoMerge(thread.id, linked.number);
+          yield* disarmSettled(thread, linked.number, holders);
           continue;
         }
-        watching = true;
-        // One linked from another branch becomes the thread's own when the
-        // thread moves onto that branch. Its checkout can then hold commits for
-        // it that are not pushed yet, or be a push ahead of this read. The
-        // checkout is on it when its own pull request is this one, or, where
-        // the checkout cannot be read, when the thread's branch is this one's.
-        // A checkout on it that cannot be read is no answer, so the merge waits.
-        checkout ??= yield* attempt(
-          "status-read",
-          thread.id,
-          gitManager.remoteStatus({ cwd: threadWorkingCwd(candidate) }),
+        if (watch === null) {
+          continue;
+        }
+        const checkout = yield* locateCheckout(candidate, reads, detail);
+        if (checkout === null) {
+          outcome = combineOutcomes(outcome, "watching");
+          continue;
+        }
+        outcome = combineOutcomes(
+          outcome,
+          yield* actOnPullRequest({ candidate, reference, detail, watch, checkout }),
         );
-        const onItsBranch = thread.branch !== null && detail.headBranch === thread.branch;
-        const onIt =
-          onItsBranch || (checkout?.pr != null && isSamePullRequest(checkout.pr.url, detail.url));
-        if (onIt && checkout === null) {
-          continue;
+        if (outcome === "started") {
+          break;
         }
-        const standing = onIt ? checkout : null;
-        yield* sweepAutoMerge({
-          thread,
-          reference,
-          detail,
-          mergeMethod: linked.autoMerge,
-          unpushedCommits: standing?.aheadCount ?? 0,
-          pushedHead: yield* pushedHeadToAwait(
-            pairKey(thread.id, linked.number),
-            detail,
-            standing?.upstreamHeadSha ?? null,
-            yield* Clock.currentTimeMillis,
-          ),
-          autoFix: false,
-          pullRequestNumber: linked.number,
-        });
       }
-      return watching;
+      return outcome;
     });
 
     /**
@@ -1172,7 +1475,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     const sweepThread = Effect.fn("PullRequestAutomationWatcher.sweepThread")(function* (
       candidate: SweepCandidate,
     ): Effect.fn.Return<LookOutcome> {
-      const { thread } = candidate;
+      const { thread, project } = candidate;
       // This look decides the pace again: checks it finds in motion put the
       // thread back on the quicker one, in the stretch it was already in.
       const inMotionSince = yield* Ref.modify(inMotionRef, (threads) => {
@@ -1180,13 +1483,40 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         threads.delete(thread.id);
         return [since, threads];
       });
-      // The thread's own pull request is the one on its branch, so a thread
-      // with no branch has only linked ones.
-      const ownArmed = thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null;
+      const statuses = new Map<string, VcsStatusRemoteResult | null>();
+      const reads: LookReads = {
+        statusAt: (cwd) =>
+          Effect.suspend(() =>
+            statuses.has(cwd)
+              ? Effect.succeed(statuses.get(cwd) ?? null)
+              : attempt("status-read", thread.id, gitManager.remoteStatus({ cwd })).pipe(
+                  Effect.tap((status) => Effect.sync(() => statuses.set(cwd, status))),
+                ),
+          ),
+        worktrees: yield* Effect.cached(
+          attempt(
+            "worktree-list",
+            thread.id,
+            gitWorkflow.listWorktrees({ cwd: project.workspaceRoot }),
+          ),
+        ),
+      };
+      // The thread's own switches are for the pull request on its checkout's
+      // branch, so a thread with no branch has only ones held by number.
+      const ownArmed =
+        thread.branch !== null &&
+        (thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null);
+      const ownStatus = ownArmed ? yield* reads.statusAt(threadWorkingCwd(candidate)) : null;
+      const ownUrl = ownStatus?.pr?.url ?? null;
+      const ownHeld =
+        ownUrl !== null &&
+        thread.linkedPullRequests.some((linked) => isSamePullRequest(linked.url, ownUrl));
       const own =
-        thread.branch !== null && ownArmed ? yield* sweepOwnPullRequest(candidate) : "nothing";
-      const linkedWatching = yield* sweepLinkedPullRequests(candidate);
-      const outcome = own === "nothing" && linkedWatching ? "watching" : own;
+        ownArmed && !ownHeld ? yield* sweepOwnPullRequest(candidate, ownStatus) : "nothing";
+      const outcome =
+        own === "started"
+          ? own
+          : combineOutcomes(own, yield* sweepLinkedPullRequests(candidate, reads, ownUrl));
       if (inMotionSince !== undefined) {
         yield* Ref.update(inMotionRef, (threads) =>
           threads.has(thread.id) ? threads.set(thread.id, inMotionSince) : threads,
@@ -1276,21 +1606,26 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       }
 
       const projectsById = new Map(snapshot.projects.map((project) => [project.id, project]));
-      // A thread that is no longer armed forgets its baseline, that it was just
-      // armed, and any pull request it was to put back in the merge queue.
-      // Being armed is the only test: a thread that is merely busy this sweep
-      // must keep its baseline, or the failure it should act on would be
-      // re-observed as the state it started from once the turn ends.
-      const armedThreadIds = new Set<string>(
-        snapshot.threads
-          .filter((thread) => thread.pullRequestAutoFix)
-          .map((thread) => thread.id as string),
+      // A fixing switch that is no longer on forgets its pull request's
+      // baseline, that it was just turned on, and any pull request it was to
+      // put back in the merge queue. Being on is the only test: a thread that
+      // is merely busy this sweep must keep its baseline, or the failure it
+      // should act on would be re-observed as the state it started from once
+      // the turn ends. A thread's own switch covers whichever pull request
+      // its checkout is on, so it keeps every one of the thread's.
+      const armedFixSwitches = new Set<string>(
+        snapshot.threads.flatMap((thread) => [
+          ...(thread.pullRequestAutoFix ? [fixSwitchKey(thread.id, null)] : []),
+          ...thread.linkedPullRequests
+            .filter((linked) => linked.autoFix)
+            .map((linked) => fixSwitchKey(thread.id, linked.number)),
+        ]),
       );
       // Deleting through a collection's own iterator is defined behaviour, so
       // nothing needs copying first.
       const forgetDisarmedPairs = <A>(map: Map<string, A>) => {
         for (const key of map.keys()) {
-          if (!armedThreadIds.has(threadIdFromPairKey(key))) {
+          if (!armedFixSwitches.has(key) && !armedFixSwitches.has(threadIdFromPairKey(key))) {
             map.delete(key);
           }
         }
@@ -1299,9 +1634,9 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       yield* Ref.update(baselinesRef, forgetDisarmedPairs);
       yield* Ref.update(requeuesRef, forgetDisarmedPairs);
       yield* Ref.update(freshlyArmedRef, (armed) => {
-        for (const threadId of armed) {
-          if (!armedThreadIds.has(threadId)) {
-            armed.delete(threadId);
+        for (const key of armed) {
+          if (!armedFixSwitches.has(key)) {
+            armed.delete(key);
           }
         }
         return armed;
@@ -1409,18 +1744,19 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
      * A look asked for by something that just happened to one thread, a switch
      * coming on or a turn ending: at that thread alone, and ahead of whatever a
      * sweep in flight has yet to reach, so the answer takes as long as reading
-     * one pull request however many threads are armed. `justArmed` marks the
-     * thread's fixing switch as just turned on first, under the same permit as
-     * the look, so no listing can clear the mark on the strength of a read
-     * taken before the switch came on. Answers as `lookAt` does.
+     * one pull request however many threads are armed. `justArmed` marks a
+     * fixing switch (by `fixSwitchKey`) as just turned on first, under the
+     * same permit as the look, so no listing can clear the mark on the
+     * strength of a read taken before the switch came on. Answers as `lookAt`
+     * does.
      */
-    const lookNow = (threadId: ThreadId, justArmed: boolean) =>
+    const lookNow = (threadId: ThreadId, justArmed: string | null) =>
       noLookAskedFor.close.pipe(
         Effect.andThen(
           lookSemaphore.withPermits(1)(
             Effect.gen(function* () {
-              if (justArmed) {
-                yield* Ref.update(freshlyArmedRef, (armed) => armed.add(threadId));
+              if (justArmed !== null) {
+                yield* Ref.update(freshlyArmedRef, (armed) => armed.add(justArmed));
               }
               return yield* lookAt(threadId);
             }),
@@ -1451,7 +1787,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         const awaitingTurnEnd = new Set<string>();
 
         /** A look asked for; a thread found busy gets another as its turn ends. */
-        const lookNowOrAfterTurn = (threadId: ThreadId, justArmed: boolean) =>
+        const lookNowOrAfterTurn = (threadId: ThreadId, justArmed: string | null) =>
           lookNow(threadId, justArmed).pipe(
             Effect.map((outcome) => {
               if (outcome === "busy") {
@@ -1484,7 +1820,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             }
             awaitingTurnEnd.delete(threadId);
             if (watched !== null) {
-              yield* lookNowOrAfterTurn(threadId, false);
+              yield* lookNowOrAfterTurn(threadId, null);
             }
           });
 
@@ -1497,9 +1833,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
           Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
             switch (event.type) {
               case "thread.pull-request-automation-changed": {
-                const autoFix = event.payload.autoFix === true;
-                return autoFix || event.payload.autoMerge != null
-                  ? lookNowOrAfterTurn(event.payload.threadId, autoFix)
+                const { threadId, pullRequestNumber, autoFix, autoMerge } = event.payload;
+                const justArmed =
+                  autoFix === true ? fixSwitchKey(threadId, pullRequestNumber ?? null) : null;
+                return justArmed !== null || autoMerge != null
+                  ? lookNowOrAfterTurn(threadId, justArmed)
                   : Effect.void;
               }
               case "thread.turn-start-requested":

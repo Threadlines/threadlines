@@ -29,6 +29,8 @@ import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { GitManager, type GitManagerShape } from "../../git/GitManager.ts";
+import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import type { GitWorktreeEntry } from "../../vcs/GitVcsDriver.ts";
 import {
   PullRequestService,
   type PullRequestServiceShape,
@@ -237,7 +239,15 @@ function reviewerComment(id: string, body: string): PullRequestActivity["comment
 
 /** Every read the watcher makes, scripted per sweep so a test can change one. */
 interface HostScript {
+  /** The status of the thread's checkout, and of any other not in `remoteAt`. */
   readonly remote: VcsStatusRemoteResult | null;
+  /** The status of other checkouts, by folder. */
+  readonly remoteAt?: Readonly<Record<string, VcsStatusRemoteResult | null>>;
+  /**
+   * The repository's checkouts, as `git worktree list` gives them; by default
+   * the main one, on the thread's branch. Null where the list fails.
+   */
+  readonly worktrees?: ReadonlyArray<GitWorktreeEntry> | null;
   readonly detail: PullRequestDetail;
   readonly activity: PullRequestActivity;
   /** What a merge, or arming one, does; an action the test did not expect fails it. */
@@ -250,7 +260,9 @@ interface HostScript {
 
 /** The engine's word that one of the thread's pull request switches came on. */
 function switchedOn(
-  change: { readonly autoFix: true } | { readonly autoMerge: PullRequestMergeMethod },
+  change: ({ readonly autoFix: true } | { readonly autoMerge: PullRequestMergeMethod }) & {
+    readonly pullRequestNumber?: number;
+  },
   threadId = THREAD_ID,
 ): OrchestrationEvent {
   return {
@@ -469,7 +481,13 @@ describe("PullRequestAutomationWatcher", () => {
           statusReads.push(cwd);
           const held = input.holdStatusRead?.(cwd);
           return held === undefined ? Effect.void : Effect.promise(() => held);
-        }).pipe(Effect.map(() => script.remote)),
+        }).pipe(
+          Effect.map(() =>
+            script.remoteAt !== undefined && cwd in script.remoteAt
+              ? (script.remoteAt[cwd] ?? null)
+              : script.remote,
+          ),
+        ),
       invalidateLocalStatus: () => Effect.void,
       invalidateRemoteStatus: () => Effect.void,
       invalidateStatus: () => Effect.void,
@@ -540,6 +558,16 @@ describe("PullRequestAutomationWatcher", () => {
       ),
       Layer.provideMerge(Layer.succeed(OrchestrationEngineService, orchestrationEngine)),
       Layer.provideMerge(Layer.succeed(GitManager, gitManager)),
+      Layer.provideMerge(
+        Layer.mock(GitWorkflowService)({
+          listWorktrees: () =>
+            script.worktrees === null
+              ? Effect.die(new Error("git worktree list failed"))
+              : Effect.sync(
+                  () => script.worktrees ?? [{ path: "/repos/widgets", branch: "fix-the-widget" }],
+                ),
+        }),
+      ),
       Layer.provideMerge(Layer.succeed(PullRequestService, pullRequestService)),
     );
     runtime = ManagedRuntime.make(layer);
@@ -1179,6 +1207,279 @@ describe("PullRequestAutomationWatcher", () => {
     expect(dispatched).toHaveLength(3);
   });
 
+  describe("pull requests held by number", () => {
+    const LINT_FOLDER = worktree("lint");
+    const LINKED_URL = `https://github.com/${REPOSITORY}/pull/294`;
+
+    /** The thread, holding pull request #294 by number with the switches given. */
+    const holding = (
+      switches: { readonly autoFix?: boolean; readonly autoMerge?: PullRequestMergeMethod } = {},
+    ) =>
+      thread({
+        pullRequestAutoFix: false,
+        linkedPullRequests: [
+          {
+            number: 294,
+            url: LINKED_URL,
+            autoFix: switches.autoFix ?? true,
+            autoMerge: switches.autoMerge ?? null,
+          },
+        ],
+      });
+
+    /**
+     * The host and the checkouts: the thread's own on its branch, and #294's
+     * branch in a folder of its own whose read names `checkoutPr` (#294 itself
+     * unless given).
+     */
+    const elsewhere = (input: {
+      readonly checks: readonly PullRequestCheck[];
+      readonly aheadCount?: number;
+      readonly checkoutPr?: { readonly number: number; readonly url: string };
+      /** The local branch #294 is checked out on, `fix-lint` by default. */
+      readonly localBranch?: string;
+      /** The list of checkouts could not be read, which git answers with none. */
+      readonly listFailed?: true;
+    }): HostScript => ({
+      remote: OPEN_PULL_REQUEST,
+      remoteAt: {
+        [LINT_FOLDER]: {
+          ...OPEN_PULL_REQUEST,
+          aheadCount: input.aheadCount ?? 0,
+          pr: {
+            ...OPEN_PULL_REQUEST.pr!,
+            number: input.checkoutPr?.number ?? 294,
+            url: input.checkoutPr?.url ?? LINKED_URL,
+            headRef: "fix-lint",
+          },
+        },
+      },
+      worktrees: input.listFailed
+        ? []
+        : [
+            { path: "/repos/widgets", branch: "fix-the-widget" },
+            { path: LINT_FOLDER, branch: input.localBranch ?? "fix-lint" },
+          ],
+      detail: { ...mergeable(input.checks), headBranch: "fix-lint" },
+      activity: activity(),
+      merge: () => Effect.succeed({ state: "merged" }),
+    });
+
+    it("fixes one in the folder its branch is checked out in, as soon as its switch comes on", async () => {
+      const { dispatched, emit, setThreads, snapshotReads, start } = await createHarness({
+        threads: [holding({ autoFix: false })],
+        script: elsewhere({ checks: [FAILING_CHECK] }),
+      });
+      const stop = await start();
+      try {
+        await vi.waitFor(() => expect(snapshotReads()).toBe(1));
+        setThreads([holding()]);
+        emit(switchedOn({ autoFix: true, pullRequestNumber: 294 }));
+        await vi.waitFor(() => expect(dispatched).toHaveLength(1));
+        const text = dispatched[0]?.message.text;
+        expect(text).toContain("Pull request #294 on acme/widgets needs attention.");
+        expect(text).toContain("These checks failed:\n- typecheck");
+        expect(text).toContain(
+          `Its branch, \`fix-lint\`, is checked out at \`${LINT_FOLDER}\`, not in this thread's folder.`,
+        );
+      } finally {
+        await stop();
+      }
+    });
+
+    it("names no folder whose own read is another pull request on a branch of the same name", async () => {
+      // A branch on a fork can share its name with one checked out here.
+      const { dispatched, setScript, sweep } = await createHarness({
+        threads: [holding()],
+        script: elsewhere({
+          checks: [PASSING_CHECK],
+          checkoutPr: { number: 77, url: `https://github.com/${REPOSITORY}/pull/77` },
+        }),
+      });
+      await sweep();
+      setScript(
+        elsewhere({
+          checks: [FAILING_CHECK],
+          checkoutPr: { number: 77, url: `https://github.com/${REPOSITORY}/pull/77` },
+        }),
+      );
+      expect(await sweep()).toBe(1);
+      expect(dispatched[0]?.message.text).not.toContain(LINT_FOLDER);
+      expect(dispatched[0]?.message.text).toContain(
+        "Its branch is `fix-lint`. Work in the folder it is checked out in",
+      );
+    });
+
+    it("goes by what the thread's checkout reads, not the branch the thread last recorded", async () => {
+      // The thread was on #294's branch once; its checkout is on #42's now.
+      const { dispatched, setScript, sweep } = await createHarness({
+        threads: [{ ...holding(), branch: "fix-lint" }],
+        script: elsewhere({ checks: [PASSING_CHECK] }),
+      });
+      await sweep();
+      setScript(elsewhere({ checks: [FAILING_CHECK] }));
+      expect(await sweep()).toBe(1);
+      expect(dispatched[0]?.message.text).toContain(`is checked out at \`${LINT_FOLDER}\``);
+    });
+
+    it("finds one from a fork under the name it is checked out on here", async () => {
+      const { dispatched, setScript, sweep } = await createHarness({
+        threads: [holding()],
+        script: elsewhere({ checks: [PASSING_CHECK], localBranch: "threadlines/pr-294/fix-lint" }),
+      });
+      await sweep();
+      setScript(elsewhere({ checks: [FAILING_CHECK], localBranch: "threadlines/pr-294/fix-lint" }));
+      expect(await sweep()).toBe(1);
+      expect(dispatched[0]?.message.text).toContain(`is checked out at \`${LINT_FOLDER}\``);
+    });
+
+    it("turns off a fixing switch that has run out of turns once its pull request merges", async () => {
+      const remarks = (count: number) =>
+        activity(
+          Array.from({ length: count }, (_unused, index) =>
+            reviewerComment(`c${index + 1}`, `Remark ${index + 1}`),
+          ),
+        );
+      const { commands, dispatched, setScript, setThreads, sweep } = await createHarness({
+        threads: [holding()],
+        script: elsewhere({ checks: [PASSING_CHECK] }),
+      });
+      await sweep();
+      for (let count = 1; count <= 4; count += 1) {
+        setScript({ ...elsewhere({ checks: [PASSING_CHECK] }), activity: remarks(count) });
+        await sweep();
+      }
+      expect(dispatched).toHaveLength(3);
+      expect(commands).toEqual([]);
+
+      // Out of turns it rests like a thread with nothing to do; it is touched
+      // here so the next sweep is the look after that rest.
+      setThreads([{ ...holding(), updatedAt: "2026-05-04T11:00:00.000Z" }]);
+      setScript({
+        ...elsewhere({ checks: [PASSING_CHECK] }),
+        detail: { ...mergeable([PASSING_CHECK]), state: "merged" },
+      });
+      await sweep();
+      expect(commands).toEqual([
+        expect.objectContaining({ pullRequestNumber: 294, autoFix: false }),
+      ]);
+    });
+
+    it("turns off every switch held for one once it merges some other way", async () => {
+      const merged = { ...mergeable([PASSING_CHECK]), state: "merged" as const };
+      const { commands, sweep } = await createHarness({
+        threads: [holding({ autoMerge: "squash" })],
+        script: { ...elsewhere({ checks: [PASSING_CHECK] }), detail: merged },
+      });
+
+      await sweep();
+      expect(commands).toEqual([
+        expect.objectContaining({
+          type: "thread.pull-request-automation.set",
+          pullRequestNumber: 294,
+          autoFix: false,
+          autoMerge: null,
+        }),
+      ]);
+    });
+
+    it("waits for the commits its folder has not pushed before merging it", async () => {
+      const { actions, setScript, sweep } = await createHarness({
+        threads: [holding({ autoFix: false, autoMerge: "squash" })],
+        script: elsewhere({ checks: [PASSING_CHECK], aheadCount: 1 }),
+      });
+
+      await sweep();
+      expect(actions).toEqual([]);
+
+      // Nor while the folders cannot be listed: the commits may still be there.
+      setScript(elsewhere({ checks: [PASSING_CHECK], listFailed: true }));
+      await sweep();
+      expect(actions).toEqual([]);
+
+      setScript(elsewhere({ checks: [PASSING_CHECK] }));
+      await sweep();
+      expect(actions).toEqual([
+        {
+          projectId: PROJECT_ID,
+          repository: REPOSITORY,
+          number: 294,
+          action: "merge",
+          mergeMethod: "squash",
+        },
+      ]);
+    });
+
+    it("does not send the agent into a folder another thread is working in until it is done", async () => {
+      // Its agent has moved into a folder inside that checkout.
+      const busy = threadIn("other", {
+        pullRequestAutoFix: false,
+        latestTurn: RUNNING_TURN,
+        effectiveCwd: `${LINT_FOLDER}/src`,
+      });
+      const { dispatched, setScript, setThreads, sweep } = await createHarness({
+        threads: [holding(), busy],
+        script: elsewhere({ checks: [PASSING_CHECK] }),
+      });
+      await sweep();
+      setScript(elsewhere({ checks: [FAILING_CHECK] }));
+      expect(await sweep()).toBe(0);
+
+      setThreads([
+        holding(),
+        { ...busy, latestTurn: { ...RUNNING_TURN, state: "completed", completedAt: NOW_ISO } },
+      ]);
+      expect(await sweep()).toBe(1);
+      expect(dispatched[0]?.message.text).toContain(LINT_FOLDER);
+    });
+
+    it("takes both switches together for the one on the checkout's branch, and looks at it once", async () => {
+      // The thread's own switch asks for the merge, and the one it holds the
+      // pull request by is fixing it, so a failing check is one to wait out.
+      const { actions, commands, setScript, statusReads, sweep } = await createHarness({
+        threads: [
+          thread({
+            pullRequestAutoFix: false,
+            pullRequestAutoMerge: "squash",
+            linkedPullRequests: [
+              {
+                number: PR_NUMBER,
+                url: OPEN_PULL_REQUEST.pr!.url,
+                autoFix: true,
+                autoMerge: null,
+              },
+            ],
+          }),
+        ],
+        script: {
+          remote: OPEN_PULL_REQUEST,
+          detail: mergeable([FAILING_CHECK]),
+          activity: activity(),
+        },
+      });
+
+      await sweep();
+      expect(actions).toEqual([]);
+      expect(commands).toEqual([]);
+      expect(statusReads).toEqual(["/repos/widgets"]);
+
+      // Fixed: the thread's own switch merges it, and goes off.
+      setScript({
+        remote: OPEN_PULL_REQUEST,
+        detail: mergeable([PASSING_CHECK]),
+        activity: activity(),
+        merge: () => Effect.succeed({ state: "merged" }),
+      });
+      await sweep();
+      expect(actions).toMatchObject([{ number: PR_NUMBER, action: "merge" }]);
+      expect(commands[0]).toMatchObject({
+        type: "thread.pull-request-automation.set",
+        autoMerge: null,
+      });
+      expect(commands[0]).not.toHaveProperty("pullRequestNumber");
+    });
+  });
+
   describe("merge when checks pass", () => {
     const armed = thread({ pullRequestAutoFix: false, pullRequestAutoMerge: "rebase" });
 
@@ -1379,6 +1680,15 @@ describe("PullRequestAutomationWatcher", () => {
     });
 
     it("merges a linked pull request by its own switch, and turns only that one off", async () => {
+      // A checkout on #294's branch reads #294.
+      const onLinkedBranch: VcsStatusRemoteResult = {
+        ...OPEN_PULL_REQUEST,
+        pr: {
+          ...OPEN_PULL_REQUEST.pr!,
+          number: 294,
+          url: `https://github.com/${REPOSITORY}/pull/294`,
+        },
+      };
       const { actions, commands, setScript, sweep } = await createHarness({
         // Nothing armed for the thread's own branch; one linked pull request is.
         threads: [
@@ -1388,6 +1698,7 @@ describe("PullRequestAutomationWatcher", () => {
               {
                 number: 294,
                 url: `https://github.com/${REPOSITORY}/pull/294`,
+                autoFix: false,
                 autoMerge: "squash",
               },
             ],
@@ -1397,7 +1708,7 @@ describe("PullRequestAutomationWatcher", () => {
         // The thread has since moved onto the linked pull request's branch,
         // and its checkout holds a commit the host has not seen.
         script: {
-          remote: { ...OPEN_PULL_REQUEST, aheadCount: 1 },
+          remote: { ...onLinkedBranch, aheadCount: 1 },
           detail: mergeable([PASSING_CHECK]),
           activity: activity(),
         },
@@ -1407,7 +1718,7 @@ describe("PullRequestAutomationWatcher", () => {
       expect(actions).toEqual([]);
 
       setScript({
-        remote: OPEN_PULL_REQUEST,
+        remote: onLinkedBranch,
         detail: mergeable([PASSING_CHECK]),
         activity: activity(),
         merge: () => Effect.succeed({ state: "merged" }),
@@ -1447,6 +1758,7 @@ describe("PullRequestAutomationWatcher", () => {
               {
                 number: 294,
                 url: `https://github.com/${REPOSITORY}/pull/294`,
+                autoFix: false,
                 autoMerge: "squash",
               },
             ],
@@ -1488,6 +1800,7 @@ describe("PullRequestAutomationWatcher", () => {
               {
                 number: PR_NUMBER,
                 url: `https://github.com/${REPOSITORY}/pull/${PR_NUMBER}`,
+                autoFix: false,
                 autoMerge: "squash",
               },
             ],

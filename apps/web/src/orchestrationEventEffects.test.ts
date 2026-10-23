@@ -192,14 +192,14 @@ describe("serverMergeSwitchTurnedOff", () => {
     ).toBe(true);
     expect(
       serverMergeSwitchTurnedOff(
-        { linkedPullRequests: [{ number: 294, url, autoMerge: "squash" }] },
-        { linkedPullRequests: [{ number: 294, url, autoMerge: null }] },
+        { linkedPullRequests: [{ number: 294, url, autoFix: false, autoMerge: "squash" }] },
+        { linkedPullRequests: [{ number: 294, url, autoFix: false, autoMerge: null }] },
       ),
     ).toBe(true);
     expect(
       serverMergeSwitchTurnedOff(
-        { linkedPullRequests: [{ number: 294, url, autoMerge: null }] },
-        { linkedPullRequests: [{ number: 294, url, autoMerge: "squash" }] },
+        { linkedPullRequests: [{ number: 294, url, autoFix: false, autoMerge: null }] },
+        { linkedPullRequests: [{ number: 294, url, autoFix: false, autoMerge: "squash" }] },
       ),
     ).toBe(false);
     // A thread the client is seeing for the first time has nothing to compare.

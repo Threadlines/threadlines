@@ -142,6 +142,15 @@ function withEventBase(
 type PlannedOrchestrationEvent = Omit<OrchestrationEvent, "sequence">;
 
 /**
+ * The number a pull request address ends in (`…/pull/42`), on any host that
+ * spells it the GitHub way, Enterprise included; null for any other address.
+ */
+function pullRequestUrlNumber(url: string): number | null {
+  const digits = /\/pull\/(\d+)\/?(?:[?#].*)?$/u.exec(url.trim())?.[1];
+  return digits === undefined ? null : Number(digits);
+}
+
+/**
  * A side answer's output is only taken while that answer is open. Once it
  * settles it is final: a late flush or step from its runtime is refused, never
  * written over the answer.
@@ -1166,25 +1175,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // A linked pull request holds only a merge switch: the auto-fix watch
-      // needs a checkout on that branch, and the thread has one only for its own.
+      // A numbered switch belongs to a pull request the thread holds by
+      // number. One it does not hold yet (its own branch's, usually) is taken
+      // on here, so the switch stays with that pull request when the checkout
+      // moves to another branch.
       const pullRequestNumber = command.pullRequestNumber;
-      if (pullRequestNumber !== undefined) {
-        if (command.autoFix !== undefined) {
+      let takenOn: { readonly number: number; readonly url: string } | null = null;
+      if (
+        pullRequestNumber !== undefined &&
+        !thread.linkedPullRequests.some((linked) => linked.number === pullRequestNumber)
+      ) {
+        const url = command.pullRequestUrl;
+        if (url === undefined || pullRequestUrlNumber(url) !== pullRequestNumber) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail: "A linked pull request has no auto-fix switch.",
+            detail:
+              url === undefined
+                ? `Pull request #${pullRequestNumber} is not linked to thread '${command.threadId}'.`
+                : `'${url}' is not pull request #${pullRequestNumber}.`,
           });
         }
-        if (!thread.linkedPullRequests.some((linked) => linked.number === pullRequestNumber)) {
-          return yield* new OrchestrationCommandInvariantError({
-            commandType: command.type,
-            detail: `Pull request #${pullRequestNumber} is not linked to thread '${command.threadId}'.`,
-          });
-        }
+        takenOn = { number: pullRequestNumber, url };
       }
       const occurredAt = yield* nowIso;
-      return {
+      const changed: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1200,6 +1214,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: occurredAt,
         },
       };
+      if (takenOn === null) {
+        return changed;
+      }
+      return [
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.pull-request-linked",
+          payload: {
+            threadId: command.threadId,
+            number: takenOn.number,
+            url: takenOn.url,
+            linkedAt: occurredAt,
+          },
+        },
+        changed,
+      ];
     }
 
     case "thread.pull-request.link": {
