@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { findableMarkdownBlocks, findableUserMessageBlocks } from "./chatFindText";
+import {
+  findableMarkdownBlocks,
+  findableUserMessageBlocks,
+  markdownFirstLine,
+} from "./chatFindText";
 
 const markdown = (
   text: string,
@@ -73,6 +77,32 @@ describe("findableMarkdownBlocks", () => {
     // definition sits in another block stays literal on screen, and the
     // definition itself draws nothing.
     expect(markdown("See [docs][1]\n\n[1]: https://example.com")).toEqual(["See [docs][1]"]);
+  });
+});
+
+describe("markdownFirstLine", () => {
+  it("reads the first line shown as words, chips spaced from their neighbours", () => {
+    const firstLine = (text: string) => markdownFirstLine({ text, cwd: "/repo", skills: [] });
+    expect(
+      firstLine(
+        "The **fix** is in, see [the pull request](https://github.com/o/r/pull/1).\n\nMore below.",
+      ),
+    ).toBe("The fix is in, see #1 the pull request.");
+    expect(firstLine("See [the pull\nrequest](https://github.com/o/r/pull/1) today.")).toBe(
+      "See #1 the pull request today.",
+    );
+    expect(firstLine("Changed [ChatView.tsx](/repo/src/ChatView.tsx): the\nheader")).toBe(
+      "Changed ChatView.tsx: the header",
+    );
+    // Only up to where the block draws a new line: a line break, a line of code.
+    expect(firstLine("First line  \nsecond line")).toBe("First line");
+    expect(firstLine("```sh\n\ngit log --oneline -3\ngit status\n```")).toBe(
+      "git log --oneline -3",
+    );
+    // A block with nothing to read (a remote picture, a diagram) gives way to the next.
+    expect(firstLine("![chart](https://example.com/c.png)\n\n## Summary\n\n- one")).toBe("Summary");
+    expect(firstLine("```mermaid\ngraph TD\n  A --> B\n```")).toBe("");
+    expect(firstLine("   ")).toBe("");
   });
 });
 

@@ -912,8 +912,13 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         reportOf("The changelog is written")?.querySelector("[data-thread-message-author]")
           ?.textContent,
       ).toBe("Write the changelog");
-      // An agent wrote it: it reads as markdown, a code block and no fences.
+      // An agent wrote it: it shows folded to its first line, and opens to
+      // markdown, a code block and no fences.
       const report = reportOf("The changelog is written")!;
+      const fold = report.querySelector<HTMLButtonElement>("[data-agent-message-fold]");
+      expect(fold?.textContent).toBe("The changelog is written:");
+      expect(report.querySelector(".chat-markdown pre")).toBeNull();
+      fold?.click();
       await vi.waitFor(() =>
         expect(report.querySelector(".chat-markdown pre")?.textContent).toContain(
           "0.7.1: replies read as markdown",

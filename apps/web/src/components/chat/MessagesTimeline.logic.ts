@@ -2376,6 +2376,18 @@ export function timelineMessageView(
   return "agent-message";
 }
 
+/** Longest one-line message agents send each other that shows whole, not folded. */
+const AGENT_MESSAGE_UNFOLDED_MAX_LENGTH = 120;
+
+/**
+ * A message agents send each other shows folded to its first line, unless
+ * that line is all of it (agentMessageFolds.ts).
+ */
+export function foldsAgentMessage(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.includes("\n") || trimmed.length > AGENT_MESSAGE_UNFOLDED_MAX_LENGTH;
+}
+
 /** A long message of yours shows folded, behind a fade and a way to open it. */
 export function shouldCollapseUserMessage(text: string): boolean {
   if (text.trim().length === 0) {
@@ -2446,9 +2458,10 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
         row.message.role === "user" &&
         (row.message.fromAgent !== undefined || row.message.fromThread !== undefined)
       ) {
-        // An agent's message to another: a meta line over its text, no bubble.
-        return shouldCollapseUserMessage(row.message.text)
-          ? 234
+        // An agent's message to another: a meta line over its text, no bubble,
+        // or over its first line while it shows folded.
+        return foldsAgentMessage(row.message.text)
+          ? 28 + TEXT_LINE_PX
           : 28 + estimateTextLines(row.message.text, column - 24) * TEXT_LINE_PX;
       }
       if (row.message.role === "user") {

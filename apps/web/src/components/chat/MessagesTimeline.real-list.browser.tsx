@@ -1,9 +1,11 @@
 import "../../index.css";
 
 import {
+  type ChildRequestId,
   EnvironmentId,
   type OrchestrationThreadActivity,
   SideTurnId,
+  type ThreadId,
   ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
@@ -1329,6 +1331,59 @@ describe("find in chat with the real virtual list", () => {
       await vi.waitFor(() => {
         expect(body()?.dataset.userMessageCollapsed).toBe("false");
         expect(currentFindHighlight()?.text).toBe("walrus");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens a report folded to its first line on the way to a match further down", async () => {
+    const props = buildProps();
+    const report: ChatMessage = {
+      ...chatMessage(
+        "message-report",
+        "user",
+        "The release is ready.\n\n- The **installer** builds\n- The otter test passes",
+        0,
+      ),
+      fromThread: {
+        threadId: "thread-child" as ThreadId,
+        requestId: "request-child" as ChildRequestId,
+        kind: "report",
+      },
+    };
+    const screen = await renderTimeline(
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          isWorking={false}
+          activeTurnInProgress={false}
+          timelineEntries={messageEntries([
+            report,
+            chatMessage("message-after", "assistant", FILLER, 1),
+          ])}
+        />
+      </div>,
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-agent-message-fold]")?.textContent).toBe(
+          "The release is ready.",
+        );
+      });
+      await openFind("otter");
+      await vi.waitFor(() => expect(findTally()).toBe("1 of 1"));
+      // Opened, with the match painted in the list item it is in.
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-agent-message-fold]")).toBeNull();
+        const current = currentFindHighlight();
+        expect(current?.text).toBe("otter");
+        const item = [
+          ...document.querySelectorAll<HTMLElement>('[data-message-id="message-report"] li'),
+        ].find((li) => li.textContent?.includes("otter"))!;
+        const itemRect = item.getBoundingClientRect();
+        expect(current!.rect.top).toBeGreaterThanOrEqual(itemRect.top - 1);
+        expect(current!.rect.bottom).toBeLessThanOrEqual(itemRect.bottom + 1);
       });
     } finally {
       await screen.unmount();

@@ -24,6 +24,7 @@ import {
   use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -86,6 +87,11 @@ import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import { isProviderAuthErrorChatMessage } from "../../lib/providerAuthMessages";
 import { useWsConnectionStatus } from "../../rpc/wsConnectionState";
 import ChatMarkdown from "../ChatMarkdown";
+import {
+  agentMessagePreview,
+  setAgentMessageOpened,
+  useAgentMessageOpened,
+} from "./agentMessageFolds";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -154,6 +160,7 @@ import {
   deriveRememberedMessagesTimelineRows,
   estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
+  foldsAgentMessage,
   shouldCollapseUserMessage,
   stretchDurationMs,
   timelineMessageView,
@@ -1049,9 +1056,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // even after the reader folded it again.
   const [findOpenRequests, setFindOpenRequests] =
     useState<ReadonlyMap<string, number>>(NO_FIND_OPEN_REQUESTS);
-  const onFindOpenRow = useCallback((rowId: string) => {
-    setFindOpenRequests((current) => new Map(current).set(rowId, (current.get(rowId) ?? 0) + 1));
-  }, []);
+  const onFindOpenRow = useCallback(
+    (rowId: string) => {
+      setFindOpenRequests((current) => new Map(current).set(rowId, (current.get(rowId) ?? 0) + 1));
+      // A message agents sent each other keeps its fold outside the row.
+      setAgentMessageOpened(routeThreadKey, rowId, true);
+    },
+    [routeThreadKey],
+  );
   const onFindOpenSideExchange = useCallback((sideTurnId: SideTurnId) => {
     setExpandedSideTurnIds((current) =>
       current.has(sideTurnId) ? current : new Set([...current, sideTurnId]),
@@ -1235,6 +1247,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     searchTargetRowIndex,
     setAutoStickToBottomState,
   ]);
+
+  // A jump from search opens a folded message agents sent each other, before
+  // the list draws it, so its match is there to find.
+  const searchTargetRowId = rows[searchTargetRowIndex]?.id ?? null;
+  useLayoutEffect(() => {
+    if (searchTarget && searchTargetRowId !== null) {
+      setAgentMessageOpened(routeThreadKey, searchTargetRowId, true);
+    }
+  }, [routeThreadKey, searchTarget, searchTargetRowId]);
 
   // A command-palette jump takes the reader somewhere else: an open find bar
   // would describe matches they are no longer looking at.
@@ -2489,11 +2510,121 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
   );
 }
 
-const NO_TERMINAL_CONTEXTS: ParsedTerminalContextEntry[] = [];
-const NO_TRANSCRIPT_HIGHLIGHTS: ParsedTranscriptHighlightContextEntry[] = [];
-const NO_PICKED_ELEMENTS: SentPickedElementEntry[] = [];
-const NO_DRAWINGS: Array<{ id: string; entry: ParsedDrawingContextEntry }> = [];
-const OTHER_CHECKOUT_MARKDOWN = { cwd: undefined };
+interface AgentMessageFold {
+  /** Shows folded until the reader opens it; false for one that shows whole. */
+  readonly foldable: boolean;
+  readonly folded: boolean;
+  /** Its first line of text, or null when it has none to show. */
+  readonly preview: string | null;
+  readonly setOpened: (opened: boolean) => void;
+}
+
+/**
+ * How a message agents sent each other draws: folded to its first line until
+ * the reader opens it, and kept as they left it (agentMessageFolds.ts). One
+ * whose first line is all of it shows whole; one with no line of text to show
+ * (only a picture or a diagram) folds under the words that open it. `cwd`
+ * reads its file links.
+ */
+function useAgentMessageFold(
+  row: Extract<TimelineRow, { kind: "message" }>,
+  cwd: string | undefined,
+): AgentMessageFold {
+  const ctx = use(TimelineRowCtx);
+  const threadKey = ctx.routeThreadKey;
+  const rowId = row.id;
+  const opened = useAgentMessageOpened(threadKey, rowId);
+  const foldable = foldsAgentMessage(row.message.text);
+  const preview = foldable ? agentMessagePreview(row.message, cwd, ctx.skills) || null : null;
+  const setOpened = useCallback(
+    (next: boolean) => setAgentMessageOpened(threadKey, rowId, next),
+    [rowId, threadKey],
+  );
+  return { foldable, folded: foldable && !opened, preview, setOpened };
+}
+
+/**
+ * The text of a message agents sent each other, drawn as markdown like any
+ * answer. Folded, its first line opens it; open, "Show less" folds it again.
+ * The control pressed goes away either way, so focus moves to what replaced
+ * it: the message's start, or the line that opens it again.
+ */
+function AgentMessageBody(props: {
+  text: string;
+  fold: AgentMessageFold;
+  cwd: string | undefined;
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  /** The text's color. */
+  className: string;
+  searchHighlightQuery: string | undefined;
+}) {
+  const { fold } = props;
+  const focusAfterToggleRef = useRef<"message" | "fold" | null>(null);
+  const foldRef = useRef<HTMLButtonElement>(null);
+  const messageRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const target = focusAfterToggleRef.current;
+    focusAfterToggleRef.current = null;
+    const element =
+      target === "message" ? messageRef.current : target === "fold" ? foldRef.current : null;
+    element?.focus({ preventScroll: true });
+  }, [fold.folded]);
+  if (props.text.trim().length === 0) {
+    return null;
+  }
+  if (fold.folded) {
+    return (
+      <button
+        ref={foldRef}
+        type="button"
+        aria-expanded={false}
+        data-scroll-anchor-ignore
+        data-agent-message-fold=""
+        className="flex w-full min-w-0 cursor-pointer items-center gap-1 text-left text-sm leading-relaxed text-muted-foreground transition-colors hover:text-foreground"
+        onClick={() => {
+          focusAfterToggleRef.current = "message";
+          fold.setOpened(true);
+        }}
+      >
+        <ChevronRightIcon aria-hidden className="size-3.5 shrink-0" />
+        {fold.preview === null ? (
+          <span className="min-w-0 truncate" data-chat-find-ignore="">
+            Show full message
+          </span>
+        ) : (
+          // All of the text is counted (chatFindRows): a match past this line opens it.
+          <span className="min-w-0 truncate" data-chat-find-body="" data-chat-find-folded="">
+            {fold.preview}
+          </span>
+        )}
+      </button>
+    );
+  }
+  return (
+    <div>
+      <div ref={messageRef} tabIndex={-1} className="outline-none" data-chat-find-body="">
+        <ChatMarkdown
+          text={props.text}
+          cwd={props.cwd}
+          skills={props.skills}
+          searchHighlightQuery={props.searchHighlightQuery}
+          className={props.className}
+        />
+      </div>
+      {fold.foldable ? (
+        <div className="mt-1.5 flex items-center" data-user-message-footer="true">
+          <MessageFoldButton
+            expanded
+            onToggle={() => {
+              focusAfterToggleRef.current = "fold";
+              fold.setOpened(false);
+            }}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * A message one room agent wrote to another through a room tool: a question,
@@ -2504,7 +2635,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
   const ctx = use(TimelineRowCtx);
   const { message } = row;
   // Written in this thread's own checkout.
-  const markdown = useMemo(() => ({ cwd: ctx.markdownCwd }), [ctx.markdownCwd]);
+  const fold = useAgentMessageFold(row, ctx.markdownCwd);
   const description = describeRoomAgentMessage({
     message,
     labels: messageAgentLabels(ctx.roomAgents, message, ctx.agentModelLabeler),
@@ -2543,21 +2674,14 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
     );
   }
   const body = (
-    <CollapsibleUserMessageBody
+    <AgentMessageBody
       text={message.text}
-      terminalContexts={NO_TERMINAL_CONTEXTS}
-      transcriptHighlights={NO_TRANSCRIPT_HIGHLIGHTS}
-      pickedElements={NO_PICKED_ELEMENTS}
-      drawings={NO_DRAWINGS}
+      fold={fold}
+      cwd={ctx.markdownCwd}
       skills={ctx.skills}
       // Spoken to another agent, a hand-off reads close to an answer; a
       // question asked on the side reads like the asker's notes.
-      bodyClassName={
-        agentLine?.placement === "single" ? "text-foreground/80" : "text-muted-foreground"
-      }
-      markdown={markdown}
-      forceExpanded={ctx.searchTargetMessageId === message.id}
-      findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
+      className={agentLine?.placement === "single" ? "text-foreground/80" : "text-muted-foreground"}
       searchHighlightQuery={
         ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
       }
@@ -2615,7 +2739,7 @@ function AgentMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "m
             <RoomReviewTag request={message} timestampFormat={ctx.timestampFormat} />
           </>
         ) : null}
-        {message.text.length > 0 ? (
+        {message.text.length > 0 && !fold.folded ? (
           <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
             <MessageCopyButton
               text={message.text}
@@ -2649,6 +2773,8 @@ function ThreadMessageTimelineRow({
 }) {
   const ctx = use(TimelineRowCtx);
   const { message } = row;
+  // Written in another thread's checkout: its paths aren't this one's.
+  const fold = useAgentMessageFold(row, undefined);
   const source = useThreadMessageSource(ctx.activeThreadEnvironmentId, ctx.activeThreadId, origin);
   const computerLabel = useComputerLabel();
   const isReport = origin.kind === "report";
@@ -2690,7 +2816,7 @@ function ThreadMessageTimelineRow({
         <span className="min-w-0 truncate" data-thread-message-kind>
           {computer.length > 0 ? `${kindWord} from ${computer}` : kindWord}
         </span>
-        {message.text.length > 0 ? (
+        {message.text.length > 0 && !fold.folded ? (
           <div className="ml-auto opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
             <MessageCopyButton
               text={message.text}
@@ -2703,18 +2829,12 @@ function ThreadMessageTimelineRow({
         ) : null}
       </div>
       <div className="border-l border-border pl-3">
-        <CollapsibleUserMessageBody
+        <AgentMessageBody
           text={message.text}
-          terminalContexts={NO_TERMINAL_CONTEXTS}
-          transcriptHighlights={NO_TRANSCRIPT_HIGHLIGHTS}
-          pickedElements={NO_PICKED_ELEMENTS}
-          drawings={NO_DRAWINGS}
+          fold={fold}
+          cwd={undefined}
           skills={ctx.skills}
-          bodyClassName="text-foreground/80"
-          // Written in another thread's checkout: its paths aren't this one's.
-          markdown={OTHER_CHECKOUT_MARKDOWN}
-          forceExpanded={ctx.searchTargetMessageId === message.id}
-          findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
+          className="text-foreground/80"
           searchHighlightQuery={
             ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
           }
@@ -4986,14 +5106,6 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   findOpenRequest?: number | undefined;
   searchHighlightQuery?: string | undefined;
   footer?: ReactNode;
-  /** Overrides the text's classes (its color, for an agent's quieter message). */
-  bodyClassName?: string | undefined;
-  /**
-   * Text an agent wrote (another room agent, another thread): drawn as
-   * markdown like any answer, its file links read against `cwd`. Absent, the
-   * text shows as typed.
-   */
-  markdown?: { readonly cwd: string | undefined } | undefined;
 }) {
   const findOpenRequest = props.findOpenRequest ?? 0;
   const [expanded, setExpanded] = useState(findOpenRequest > 0);
@@ -5026,24 +5138,13 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           data-chat-find-folded={isCollapsed ? "" : undefined}
           style={isCollapsed ? COLLAPSED_MESSAGE_FADE_STYLE : undefined}
         >
-          {props.markdown ? (
-            <ChatMarkdown
-              text={props.text}
-              cwd={props.markdown.cwd}
-              skills={props.skills}
-              searchHighlightQuery={props.searchHighlightQuery}
-              className={props.bodyClassName}
-            />
-          ) : (
-            <UserMessageBody
-              text={props.text}
-              terminalContexts={props.terminalContexts}
-              transcriptHighlights={props.transcriptHighlights}
-              skills={props.skills}
-              searchHighlightQuery={props.searchHighlightQuery}
-              className={props.bodyClassName}
-            />
-          )}
+          <UserMessageBody
+            text={props.text}
+            terminalContexts={props.terminalContexts}
+            transcriptHighlights={props.transcriptHighlights}
+            skills={props.skills}
+            searchHighlightQuery={props.searchHighlightQuery}
+          />
         </div>
       ) : null}
       {hasAttachedContextChips ? (
@@ -5086,17 +5187,10 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           data-user-message-footer="true"
         >
           {canCollapse ? (
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              aria-expanded={expanded}
-              data-scroll-anchor-ignore
-              onClick={() => setExpanded((value) => !value)}
-              className="-ml-1 h-6 rounded-md px-1.5 text-xs text-muted-foreground/72 hover:bg-muted/55 hover:text-foreground/85"
-            >
-              {expanded ? "Show less" : "Show full message"}
-            </Button>
+            <MessageFoldButton
+              expanded={expanded}
+              onToggle={() => setExpanded((value) => !value)}
+            />
           ) : null}
           {props.footer ? (
             <div className="ml-auto flex items-center gap-2">{props.footer}</div>
@@ -5107,18 +5201,32 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   );
 });
 
+/** Opens a folded message or folds it again, under its text. */
+function MessageFoldButton(props: { expanded: boolean; onToggle: () => void }) {
+  return (
+    <Button
+      type="button"
+      size="xs"
+      variant="ghost"
+      aria-expanded={props.expanded}
+      data-scroll-anchor-ignore
+      onClick={props.onToggle}
+      className="-ml-1 h-6 rounded-md px-1.5 text-xs text-muted-foreground/72 hover:bg-muted/55 hover:text-foreground/85"
+    >
+      {props.expanded ? "Show less" : "Show full message"}
+    </Button>
+  );
+}
+
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
   transcriptHighlights: ParsedTranscriptHighlightContextEntry[];
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   searchHighlightQuery?: string | undefined;
-  className?: string | undefined;
 }) {
-  const textClassName = cn(
-    "whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground",
-    props.className,
-  );
+  const textClassName =
+    "whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground";
   // Quoted context the message carries, not the message's own words: find in
   // chat reads past it.
   const transcriptHighlightNodes =
