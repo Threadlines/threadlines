@@ -2100,20 +2100,21 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
               ...initialProvider.models,
             ]);
+            // The registry writes a snapshot to disk before it publishes it, so
+            // once the refresh is published its file is written. Waiting for
+            // that beats polling a real file write on the test clock, which a
+            // busy runner outlasted. The waiter subscribes before it returns.
+            const refreshPublished = yield* registry.streamChanges.pipe(
+              Stream.filter((providers) =>
+                providers.some((provider) => provider.checkedAt === refreshedProvider.checkedAt),
+              ),
+              Stream.runHead,
+              Effect.forkChild({ startImmediately: true }),
+            );
             yield* Deferred.succeed(releaseLiveUpdate, undefined);
+            yield* Fiber.join(refreshPublished);
 
-            let cachedProvider = yield* readProviderStatusCache(filePath);
-            for (
-              let attempt = 0;
-              attempt < 500 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
-              attempt += 1
-            ) {
-              yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
-              cachedProvider = yield* readProviderStatusCache(filePath);
-            }
-
-            assert.deepStrictEqual(cachedProvider, {
+            assert.deepStrictEqual(yield* readProviderStatusCache(filePath), {
               ...refreshedProvider,
               models: [...initialProvider.models],
             });
