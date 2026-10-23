@@ -31,6 +31,7 @@ import {
   createSnapshotForTargetUser,
   addThreadToSnapshot,
   setSidebarThreadWork,
+  waitForThreadDetailLoaded,
   injectRemoteEnvironmentThreads,
   FLEET_REMOTE_ENVIRONMENT_ID,
   FLEET_OFFLINE_ENVIRONMENT_ID,
@@ -105,6 +106,7 @@ describe("ChatView (full app): Fleet and computer links", () => {
 
     try {
       await waitForServerConfigToApply();
+      await waitForThreadDetailLoaded(workingThreadId);
       setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingThreadId, "working", {
         title: "Double charges at checkout",
       });
@@ -165,6 +167,7 @@ describe("ChatView (full app): Fleet and computer links", () => {
         { id: remoteThreadId, title: "Sign the installer" },
       ]);
       setSidebarThreadWork(FLEET_REMOTE_ENVIRONMENT_ID, remoteThreadId, "needs-you");
+      await waitForThreadDetailLoaded(workingThreadId);
       setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingThreadId, "working", {
         title: "Double charges at checkout",
       });
@@ -281,6 +284,7 @@ describe("ChatView (full app): Fleet and computer links", () => {
         { id: remoteThreadId, title: "Lookalike at work" },
       ]);
       setSidebarThreadWork(FLEET_REMOTE_ENVIRONMENT_ID, remoteThreadId, "working");
+      await waitForThreadDetailLoaded(THREAD_ID);
       setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, THREAD_ID, "working");
 
       const drawsCommunityIcon = (element: Element) =>
@@ -675,6 +679,7 @@ describe("ChatView (full app): Fleet and computer links", () => {
         },
       ]);
       // A thread Mac mini's agent started here is still at work.
+      await waitForThreadDetailLoaded(THREAD_ID);
       setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, THREAD_ID, "working", {
         remoteOrigin: {
           linkDeviceId: `device-${FLEET_OFFLINE_ENVIRONMENT_ID}`,
