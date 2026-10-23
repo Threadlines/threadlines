@@ -17,6 +17,7 @@ import {
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
 import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logic";
+import { startOfLocalDayMs } from "../timestampFormat";
 import { nextCheckBack } from "./chat/checkBacks";
 import { isHandedBackCompletion } from "@threadlines/shared/childThreads";
 
@@ -1501,14 +1502,141 @@ export function inboxLiveRowHoldsOpenChild(
 }
 
 /**
- * The Wrapped rows shown at rest: the first `limit`, plus any wrapped family
- * past them that holds the thread open in the chat. Order never changes.
+ * Whether a live row is a thread, or holds it in its family: the thread open
+ * in the chat, or the one being renamed. False for a null key.
+ */
+export function inboxLiveRowHolds(
+  row: InboxLiveRow<InboxFamilyEntry>,
+  threadKey: string | null,
+): boolean {
+  return (
+    threadKey !== null &&
+    (row.entry.threadKey === threadKey || inboxLiveRowHoldsOpenChild(row, threadKey))
+  );
+}
+
+/**
+ * The Wrapped rows shown at rest: the first `limit`, plus any past them that
+ * is the thread open in the chat or holds it. Order never changes.
  */
 export function windowInboxDoneRows<E extends InboxFamilyEntry>(
   rows: readonly InboxDoneRow<E>[],
   limit: number,
+  activeThreadKey: string | null,
 ): InboxDoneRow<E>[] {
-  return rows.filter((row, index) => index < limit || row.openChild !== null);
+  return rows.filter(
+    (row, index) =>
+      index < limit || row.openChild !== null || row.entry.threadKey === activeThreadKey,
+  );
+}
+
+/** One live row as the fold's room budget sees it. */
+export interface InboxFoldRowCost {
+  /** Pinned: always drawn, and takes no seat. */
+  readonly pinned: boolean;
+  /** Drawn past the fold anyway (a status, the thread open in the chat), though it takes a seat. */
+  readonly alwaysShown: boolean;
+  /** Its own row's height as drawn; 0 when a folded group hides it. */
+  readonly costPx: number;
+  /** Its shown children's height; 0 when it has none or a folded group hides it. */
+  readonly childrenPx: number;
+  /** Its group while the list is grouped, else null. A group's header is drawn with its first shown row. */
+  readonly groupKey: string | null;
+}
+
+/**
+ * How many quiet live rows rest unfolded: as many as fit the column, and
+ * never fewer than `minimum`. Walks the rows in list order the way the fold
+ * does (`windowInboxThreads`): rows always drawn are charged first, then
+ * each quiet row in turn, with its group's header when it is the group's
+ * first shown row, until the next one would overflow `roomPx`. A row that
+ * fits brings its shown children even past the room: opening a family must
+ * never fold the family away. `roomPx` is
+ * the column's height for live rows with the Wrapped shelf closed;
+ * `reservedPx` is what else will stand in it (the wrapped rows a closed shelf
+ * keeps). Costs must not depend on how many rows the fold shows, or the fold
+ * would chase its own result.
+ */
+export function resolveInboxLiveFoldLimit(input: {
+  readonly rows: readonly InboxFoldRowCost[];
+  readonly roomPx: number | null;
+  readonly groupHeaderPx: number;
+  readonly reservedPx: number;
+  readonly minimum: number;
+}): number {
+  if (input.roomPx === null) return input.minimum;
+  let usedPx = input.reservedPx;
+  const shownGroups = new Set<string>();
+  const show = (row: InboxFoldRowCost) => {
+    usedPx += row.costPx;
+    if (row.groupKey !== null && !shownGroups.has(row.groupKey)) {
+      shownGroups.add(row.groupKey);
+      usedPx += input.groupHeaderPx;
+    }
+  };
+  for (const row of input.rows) {
+    if (row.pinned || row.alwaysShown) {
+      show(row);
+      usedPx += row.childrenPx;
+    }
+  }
+  let limit = 0;
+  for (const row of input.rows) {
+    if (row.pinned) continue;
+    if (!row.alwaysShown) {
+      show(row);
+      if (usedPx > input.roomPx) break;
+      usedPx += row.childrenPx;
+    }
+    limit += 1;
+  }
+  return Math.max(input.minimum, limit);
+}
+
+/** The day groups the open Wrapped shelf sorts its rows under, newest first. */
+export type WrappedDayGroup = "today" | "yesterday" | "week" | "month" | "older";
+
+export const WRAPPED_DAY_GROUP_LABELS: Readonly<Record<WrappedDayGroup, string>> = {
+  today: "Today",
+  yesterday: "Yesterday",
+  week: "Last 7 days",
+  month: "Last 30 days",
+  older: "Older",
+};
+
+/**
+ * Which day group a wrap-up time falls in, by the viewer's calendar. "Last 7
+ * days" and "Last 30 days" count today, so they hold the five and the 23 days
+ * before yesterday. A missing or unreadable time is Older.
+ */
+export function wrappedDayGroupOf(doneAt: string | null, todayStartMs: number): WrappedDayGroup {
+  const doneMs = doneAt === null ? Number.NaN : Date.parse(doneAt);
+  if (Number.isNaN(doneMs)) return "older";
+  if (doneMs >= todayStartMs) return "today";
+  if (doneMs >= startOfLocalDayMs(todayStartMs, 1)) return "yesterday";
+  if (doneMs >= startOfLocalDayMs(todayStartMs, 6)) return "week";
+  if (doneMs >= startOfLocalDayMs(todayStartMs, 29)) return "month";
+  return "older";
+}
+
+/**
+ * The open shelf's day labels, one slot per row: the group on the first row
+ * of each run, null on the rest. Rows come newest first; a row in a different
+ * group from the row above starts a run, so a row out of order repeats a
+ * label rather than hiding one.
+ */
+export function labelWrappedRowsByDay<R>(
+  rows: readonly R[],
+  doneAtOf: (row: R) => string | null,
+  todayStartMs: number,
+): (WrappedDayGroup | null)[] {
+  let previous: WrappedDayGroup | null = null;
+  return rows.map((row) => {
+    const group = wrappedDayGroupOf(doneAtOf(row), todayStartMs);
+    if (group === previous) return null;
+    previous = group;
+    return group;
+  });
 }
 
 /** The thread keys of the rows a live row draws, in order: it, then its shown children. */
