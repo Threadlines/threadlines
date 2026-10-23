@@ -23,11 +23,28 @@ export type RelayV2Env = Env & {
   readonly THREADLINES_RELAY_DAILY_MESSAGE_BUDGET?: string;
   readonly THREADLINES_RELAY_REGISTRATIONS_PER_IP_PER_DAY?: string;
   readonly THREADLINES_RELAY_HOST_DAILY_HOOKS?: string;
+  /**
+   * Secret (`wrangler secret put PUSH_VAPID_KEYS`): the VAPID keys phones
+   * subscribe with, a JSON object of P-256 private JWKs by hosted channel
+   * (`stable`, `nightly`) plus `retired: [...]` still accepted for sending.
+   * Unset: the relay sends no alerts.
+   */
+  readonly PUSH_VAPID_KEYS?: string;
+  /** `false`/`0`/`off` stops all push alerts (a kill switch); anything else leaves them on. */
+  readonly THREADLINES_RELAY_PUSH_ENABLED?: string;
+  readonly THREADLINES_RELAY_DAILY_ALERT_BUDGET?: string;
+  readonly THREADLINES_RELAY_HOST_DAILY_ALERTS?: string;
 };
 
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+/** Whether the relay sends push alerts at all (the kill switch); keys are checked separately. */
+export function isPushEnabled(env: RelayV2Env): boolean {
+  const configured = env.THREADLINES_RELAY_PUSH_ENABLED?.trim().toLowerCase();
+  return configured !== "false" && configured !== "0" && configured !== "off";
 }
 
 export function isRelayV2Enabled(env: RelayV2Env): boolean {
@@ -50,6 +67,10 @@ export function hostLimitsFromEnv(env: RelayV2Env): HostCoreLimits {
       env.THREADLINES_RELAY_HOST_DAILY_HOOKS,
       DEFAULT_HOST_CORE_LIMITS.dailyHooks,
     ),
+    dailyAlerts: positiveInt(
+      env.THREADLINES_RELAY_HOST_DAILY_ALERTS,
+      DEFAULT_HOST_CORE_LIMITS.dailyAlerts,
+    ),
   };
 }
 
@@ -57,6 +78,7 @@ export function ledgerLimitsFromEnv(env: RelayV2Env): LedgerLimits {
   return {
     dailyMessageBudget: positiveInt(env.THREADLINES_RELAY_DAILY_MESSAGE_BUDGET, 1_200_000),
     registrationsPerIpPerDay: positiveInt(env.THREADLINES_RELAY_REGISTRATIONS_PER_IP_PER_DAY, 20),
+    dailyAlertBudget: positiveInt(env.THREADLINES_RELAY_DAILY_ALERT_BUDGET, 50_000),
   };
 }
 

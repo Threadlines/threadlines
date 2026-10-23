@@ -42,6 +42,14 @@ export function timingSafeEqualString(left: string, right: string): boolean {
   return diff === 0;
 }
 
+/** Throws on text that isn't base64url. */
+export function base64UrlDecode(text: string): Uint8Array<ArrayBuffer> {
+  if (!/^[A-Za-z0-9_-]*$/.test(text)) throw new Error("Not base64url.");
+  const padded = text.replaceAll("-", "+").replaceAll("_", "/");
+  const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
 export function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) {

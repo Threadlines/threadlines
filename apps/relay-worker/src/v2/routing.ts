@@ -2,10 +2,11 @@
 import { generateToken, sha256Base64Url } from "../crypto.ts";
 import { createJsonResponse } from "../protocol.ts";
 import { codeShardName } from "./codeShardCore.ts";
-import { isRelayV2Enabled, type RelayV2Env } from "./env.ts";
+import { isPushEnabled, isRelayV2Enabled, type RelayV2Env } from "./env.ts";
 import { routeHook } from "./hookRoute.ts";
 import { joinErrorStatus, parseJoinBody } from "./http.ts";
 import { RELAY_LEDGER_NAME } from "./RelayLedger.ts";
+import { loadVapidKeyring, PUSH_KEY_CHANNELS } from "./webPush.ts";
 
 const HOST_ROUTE = /^\/v2\/hosts\/([0-9a-f-]{36})(?:\/|$)/u;
 /**
@@ -67,6 +68,10 @@ export async function routeV2(
     return withCors(origin, await joinWithCode(request, env));
   }
 
+  if (request.method === "GET" && url.pathname === "/v2/push/key") {
+    return withCors(origin, await pushKey(url, env));
+  }
+
   const hostMatch = HOST_ROUTE.exec(url.pathname);
   if (hostMatch) {
     if (request.method === "POST" && isJoinLimitedPath(url.pathname)) {
@@ -110,6 +115,21 @@ async function registerHost(request: Request, env: RelayV2Env): Promise<Response
     environmentId,
   });
   return json({ hostId, hostSecret }, 201);
+}
+
+/**
+ * `GET /v2/push/key?channel=<stable|nightly>`: the public key phones of that
+ * hosted channel subscribe with (RelayPushKeyResult). Public: it is the
+ * `applicationServerKey` every subscription carries anyway.
+ */
+async function pushKey(url: URL, env: RelayV2Env): Promise<Response> {
+  const channel = url.searchParams.get("channel");
+  const known = PUSH_KEY_CHANNELS.find((candidate) => candidate === channel);
+  if (!known) return json({ error: "Unknown channel." }, 400);
+  const keyring = isPushEnabled(env) ? await loadVapidKeyring(env.PUSH_VAPID_KEYS) : null;
+  const key = keyring?.byChannel.get(known);
+  if (!key) return json({ error: "This relay doesn't send alerts." }, 503);
+  return json({ keyId: key.keyId, publicKey: key.publicKey });
 }
 
 /** Code joins and QR claims share one per-IP budget. Returns the refusal, if any. */
@@ -164,7 +184,7 @@ function corsHeaders(origin: string | null): Headers {
     headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Vary", "Origin");
   }
-  headers.set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Authorization,Content-Type");
   return headers;
 }

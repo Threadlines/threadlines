@@ -21,6 +21,10 @@ export class RelayLedger extends DurableObject<RelayV2Env> {
     return this.core.isBusy(Date.now());
   }
 
+  async chargeAlert(): Promise<boolean> {
+    return this.core.chargeAlert(Date.now());
+  }
+
   async allowRegistration(ipHash: string): Promise<boolean> {
     return this.core.allowRegistration(ipHash, Date.now());
   }

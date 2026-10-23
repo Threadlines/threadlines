@@ -276,6 +276,111 @@ export const RelayHookDelivery = Schema.Struct({
 });
 export type RelayHookDelivery = typeof RelayHookDelivery.Type;
 
+// ----- Push alerts ------------------------------------------------------------
+//
+// A phone's alerts (docs/design/push-alerts.md). The phone registers its push
+// subscription's endpoint with each computer's relay host itself (device
+// secret), so a computer never learns it; the computer gets only the keys it
+// seals alerts with, over the end-to-end channel, and asks the relay to send.
+
+/** The alerts a phone can switch on or off. */
+export const PushAlertKind = Schema.Literals(["needs_you", "finished", "failed"]);
+export type PushAlertKind = typeof PushAlertKind.Type;
+
+/** Which alerts a phone wants. Each computer's relay host keeps them and enforces them. */
+export const PushAlertKinds = Schema.Struct({
+  needs_you: Schema.Boolean,
+  finished: Schema.Boolean,
+  failed: Schema.Boolean,
+});
+export type PushAlertKinds = typeof PushAlertKinds.Type;
+
+const Base64UrlText = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]+$/));
+
+/**
+ * Names one push subscription: a hash of its endpoint, its keys and the VAPID
+ * key it was made with. Registering the same subscription again keeps it;
+ * a new subscription is a new generation. Every alert names the generation it
+ * was sealed for, so one sealed for a replaced subscription is refused.
+ */
+export const PushRegistrationId = Base64UrlText.check(
+  Schema.isMinLength(8),
+  Schema.isMaxLength(64),
+);
+export type PushRegistrationId = typeof PushRegistrationId.Type;
+
+/** Names one of the relay's VAPID keys. */
+export const PushVapidKeyId = Base64UrlText.check(Schema.isMaxLength(32));
+export type PushVapidKeyId = typeof PushVapidKeyId.Type;
+
+/** `GET /v2/push/key?channel=<stable|nightly>`: the key a phone subscribes with. */
+export const RelayPushKeyResult = Schema.Struct({
+  keyId: PushVapidKeyId,
+  /** Uncompressed P-256 point, base64url (the `applicationServerKey`). */
+  publicKey: Base64UrlText.check(Schema.isMaxLength(100)),
+});
+export type RelayPushKeyResult = typeof RelayPushKeyResult.Type;
+
+/** `PUT /v2/hosts/{h}/devices/{d}/push`, with the device's secret. */
+export const RelayDevicePushInput = Schema.Struct({
+  registrationId: PushRegistrationId,
+  endpoint: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+  keyId: PushVapidKeyId,
+  kinds: PushAlertKinds,
+});
+export type RelayDevicePushInput = typeof RelayDevicePushInput.Type;
+
+/** What a send may be: one of the three alerts, or the test alert from Settings. */
+export const RelayAlertKind = Schema.Literals(["needs_you", "finished", "failed", "test"]);
+export type RelayAlertKind = typeof RelayAlertKind.Type;
+
+/** Most bytes a push service takes in one message (RFC 8030); base64url makes it 5462 characters. */
+export const RELAY_PUSH_MAX_PAYLOAD_BYTES = 4096;
+/** Alerts are worth little late: an hour at most. */
+export const RELAY_PUSH_MAX_TTL_SECONDS = 60 * 60;
+
+/** `POST /v2/hosts/{h}/devices/{d}/alert`, with the host's secret. */
+export const RelayDeviceAlertInput = Schema.Struct({
+  registrationId: PushRegistrationId,
+  kind: RelayAlertKind,
+  /** The RFC 8291 aes128gcm body, sealed for the phone, base64url. */
+  payload: Base64UrlText.check(Schema.isMaxLength(5462)),
+  ttlSeconds: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: RELAY_PUSH_MAX_TTL_SECONDS }),
+  ),
+  urgency: Schema.Literals(["very-low", "low", "normal", "high"]),
+  /** Replaces an undelivered alert with the same topic (RFC 8030 §5.4). */
+  topic: Schema.optional(Base64UrlText.check(Schema.isMaxLength(32))),
+});
+export type RelayDeviceAlertInput = typeof RelayDeviceAlertInput.Type;
+
+/**
+ * What became of one alert. `sent`: the push service took it (not proof the
+ * phone showed it). `muted`: the phone switched that alert off. `stale`: the
+ * phone has a newer subscription than the one this was sealed for. `gone`:
+ * the subscription ended (the relay forgot it). `limited`: an allowance is
+ * spent. `retry`: try again later. `rejected`: the push service refused this
+ * message; resending it won't help. `unavailable`: no subscription, or the
+ * relay doesn't send alerts.
+ */
+export const RelayDeviceAlertOutcome = Schema.Literals([
+  "sent",
+  "muted",
+  "stale",
+  "gone",
+  "limited",
+  "retry",
+  "rejected",
+  "unavailable",
+]);
+export type RelayDeviceAlertOutcome = typeof RelayDeviceAlertOutcome.Type;
+
+export const RelayDeviceAlertResult = Schema.Struct({
+  outcome: RelayDeviceAlertOutcome,
+  retryAfterSeconds: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+export type RelayDeviceAlertResult = typeof RelayDeviceAlertResult.Type;
+
 /** Closes a device's sockets after the host removed its access. */
 export const RELAY_CLOSE_CODE_ACCESS_REMOVED = 4003;
 /** Closes a host's data sockets once its daily relay allowance is used up. */

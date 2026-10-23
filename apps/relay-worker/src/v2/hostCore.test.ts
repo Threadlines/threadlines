@@ -497,7 +497,7 @@ describe("CodeShardCore", () => {
 describe("LedgerCore", () => {
   it("turns busy at the daily budget and caps registrations per IP", () => {
     const sql = makeTestSql();
-    const limits = { dailyMessageBudget: 100, registrationsPerIpPerDay: 2 };
+    const limits = { dailyMessageBudget: 100, registrationsPerIpPerDay: 2, dailyAlertBudget: 2 };
     const ledger = new LedgerCore(sql, limits, T0);
     expect(ledger.report(60, T0).busy).toBe(false);
     // An idle ledger can be evicted between reports; nothing reported is lost.
@@ -508,5 +508,115 @@ describe("LedgerCore", () => {
     expect(woken.allowRegistration("ip", T0)).toBe(true);
     expect(woken.allowRegistration("ip", T0)).toBe(false);
     expect(woken.allowRegistration("ip", Date.UTC(2026, 9, 4, 1))).toBe(true);
+  });
+
+  it("caps push alerts relay-wide per day, across evictions", () => {
+    const sql = makeTestSql();
+    const limits = { dailyMessageBudget: 100, registrationsPerIpPerDay: 2, dailyAlertBudget: 2 };
+    expect(new LedgerCore(sql, limits, T0).chargeAlert(T0)).toBe(true);
+    const woken = new LedgerCore(sql, limits, T0 + MINUTE);
+    expect(woken.chargeAlert(T0 + MINUTE)).toBe(true);
+    expect(woken.chargeAlert(T0 + 2 * MINUTE)).toBe(false);
+    expect(woken.chargeAlert(Date.UTC(2026, 9, 4, 1))).toBe(true);
+  });
+});
+
+describe("push alerts", () => {
+  const DAY = 24 * 60 * MINUTE;
+  const kinds = { needs_you: true, finished: false, failed: true };
+
+  function phoneWithPush(limits = DEFAULT_HOST_CORE_LIMITS) {
+    const core = makeHost(limits);
+    const input = joinInput();
+    const joined = core.join(input);
+    core.decide({ requestId: joined.result.requestId, decision: "approve", now: T0 + 2 * MINUTE });
+    const deviceId = input.fresh.deviceId;
+    core.setDevicePush({
+      deviceId,
+      registrationId: "registration-1",
+      endpoint: "https://web.push.apple.com/QGuQyavXutnMsuIk8Z0f",
+      keyId: "key-nightly",
+      kinds,
+      now: T0 + 3 * MINUTE,
+    });
+    return { core, deviceId };
+  }
+
+  it("sends only the alerts the phone wants, to the subscription it registered last", () => {
+    const { core, deviceId } = phoneWithPush();
+    const admit = (kind: "needs_you" | "finished" | "failed" | "test", registrationId: string) =>
+      core.admitAlert({ deviceId, registrationId, kind, now: T0 + 4 * MINUTE });
+
+    expect(admit("needs_you", "registration-1")).toEqual({
+      decision: "send",
+      endpoint: "https://web.push.apple.com/QGuQyavXutnMsuIk8Z0f",
+      keyId: "key-nightly",
+    });
+    expect(admit("finished", "registration-1")).toEqual({ decision: "muted" });
+    // The test alert from Settings goes out whatever the switches say.
+    expect(admit("test", "registration-1").decision).toBe("send");
+
+    core.setDevicePush({
+      deviceId,
+      registrationId: "registration-2",
+      endpoint: "https://web.push.apple.com/a-new-subscription",
+      keyId: "key-nightly",
+      kinds: { ...kinds, finished: true },
+      now: T0 + 5 * MINUTE,
+    });
+    // An alert sealed for the old subscription can't reach the new one.
+    expect(admit("failed", "registration-1")).toEqual({ decision: "stale" });
+    expect(admit("finished", "registration-2").decision).toBe("send");
+  });
+
+  it("stops a removed phone's alerts and won't take its subscription again", () => {
+    const { core, deviceId } = phoneWithPush();
+    core.revokeDevice(deviceId, T0 + 10 * MINUTE);
+
+    expect(
+      core.admitAlert({
+        deviceId,
+        registrationId: "registration-1",
+        kind: "needs_you",
+        now: T0 + 11 * MINUTE,
+      }),
+    ).toEqual({ decision: "unavailable" });
+    expectCoreError(
+      () =>
+        core.setDevicePush({
+          deviceId,
+          registrationId: "registration-1",
+          endpoint: "https://web.push.apple.com/QGuQyavXutnMsuIk8Z0f",
+          keyId: "key-nightly",
+          kinds,
+          now: T0 + 12 * MINUTE,
+        }),
+      "forbidden",
+    );
+  });
+
+  it("forgets a dropped subscription only while it is still the current one", () => {
+    const { core, deviceId } = phoneWithPush();
+    const admit = (registrationId: string) =>
+      core.admitAlert({ deviceId, registrationId, kind: "needs_you", now: T0 + 6 * MINUTE });
+
+    core.forgetDevicePush(deviceId, "registration-0");
+    expect(admit("registration-1").decision).toBe("send");
+    core.forgetDevicePush(deviceId, "registration-1");
+    expect(admit("registration-1")).toEqual({ decision: "unavailable" });
+  });
+
+  it("charges each alert before it goes out, and starts a fresh allowance each day", () => {
+    const { core, deviceId } = phoneWithPush({
+      ...DEFAULT_HOST_CORE_LIMITS,
+      dailyAlertsPerDevice: 2,
+    });
+    const admit = (now: number) =>
+      core.admitAlert({ deviceId, registrationId: "registration-1", kind: "failed", now }).decision;
+
+    expect(admit(T0 + 4 * MINUTE)).toBe("send");
+    expect(admit(T0 + 5 * MINUTE)).toBe("send");
+    expect(admit(T0 + 6 * MINUTE)).toBe("limited");
+    expect(admit(T0 + DAY)).toBe("send");
   });
 });
