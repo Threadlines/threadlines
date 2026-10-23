@@ -140,7 +140,7 @@ const ThreadIdParameter = Schema.String.annotate({
   description: "The thread's id, from thread_start or thread_list.",
 });
 
-const AgentParameter = Schema.Struct({
+export const AgentParameter = Schema.Struct({
   instanceId: Schema.String.annotate({ description: "From thread_agents." }),
   model: Schema.String.annotate({ description: "From thread_agents." }),
   options: Schema.optional(
@@ -153,13 +153,13 @@ const AgentParameter = Schema.Struct({
   ),
 });
 
-const readsThreads = <T extends Tool.Any>(tool: T): T =>
+export const readsThreads = <T extends Tool.Any>(tool: T): T =>
   tool
     .annotate(Tool.Readonly, true)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.OpenWorld, false) as T;
 
-const drivesThreads = <T extends Tool.Any>(tool: T): T =>
+export const drivesThreads = <T extends Tool.Any>(tool: T): T =>
   tool
     .annotate(Tool.Readonly, false)
     .annotate(Tool.Destructive, false)

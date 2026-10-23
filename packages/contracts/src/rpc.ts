@@ -5,6 +5,15 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import { AuthAccessStreamEvent } from "./auth.ts";
 import {
+  OutsideAgentApproveInput,
+  OutsideAgentConnection,
+  OutsideAgentConnectionInput,
+  OutsideAgentError,
+  OutsideAgentRequestInput,
+  OutsideAgentsSnapshot,
+  OutsideAgentUpdateInput,
+} from "./outsideAgents.ts";
+import {
   ComputerLinkError,
   ComputerLinkInvite,
   ComputerLinksSnapshot,
@@ -664,6 +673,15 @@ export const WS_METHODS = {
   projectSetupsCancel: "projectSetups.cancel",
   projectSetupsDismiss: "projectSetups.dismiss",
   projectSetupsSubscribe: "projectSetups.subscribe",
+
+  // Agents outside Threadlines (docs/design/outside-agents.md); owner only.
+  outsideAgentsSubscribe: "outsideAgents.subscribe",
+  outsideAgentsApprove: "outsideAgents.approve",
+  outsideAgentsDeny: "outsideAgents.deny",
+  outsideAgentsDenyAll: "outsideAgents.denyAll",
+  outsideAgentsResumeRequests: "outsideAgents.resumeRequests",
+  outsideAgentsUpdate: "outsideAgents.update",
+  outsideAgentsRemove: "outsideAgents.remove",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -2100,6 +2118,55 @@ export const WsProjectSetupsSubscribeRpc = Rpc.make(WS_METHODS.projectSetupsSubs
   stream: true,
 });
 
+/** Settings' Agents group: this computer's agent address, connections and waiting sign-ins. */
+export const WsOutsideAgentsSubscribeRpc = Rpc.make(WS_METHODS.outsideAgentsSubscribe, {
+  payload: Schema.Struct({}),
+  success: OutsideAgentsSnapshot,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+  stream: true,
+});
+
+/** Allows a waiting sign-in with what the user picked; the agent's browser page then finishes it. */
+export const WsOutsideAgentsApproveRpc = Rpc.make(WS_METHODS.outsideAgentsApprove, {
+  payload: OutsideAgentApproveInput,
+  success: OutsideAgentConnection,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+export const WsOutsideAgentsDenyRpc = Rpc.make(WS_METHODS.outsideAgentsDeny, {
+  payload: OutsideAgentRequestInput,
+  success: Schema.Void,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+/** Denies every waiting sign-in and turns new ones away for a while (`quietUntil`). */
+export const WsOutsideAgentsDenyAllRpc = Rpc.make(WS_METHODS.outsideAgentsDenyAll, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+/** Ends Deny all's quiet period early. */
+export const WsOutsideAgentsResumeRequestsRpc = Rpc.make(WS_METHODS.outsideAgentsResumeRequests, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+/** Changes a connection's grant; its next call is checked against it. */
+export const WsOutsideAgentsUpdateRpc = Rpc.make(WS_METHODS.outsideAgentsUpdate, {
+  payload: OutsideAgentUpdateInput,
+  success: OutsideAgentConnection,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
+/** Removes a connection: its next call is refused, and it has to sign in again. */
+export const WsOutsideAgentsRemoveRpc = Rpc.make(WS_METHODS.outsideAgentsRemove, {
+  payload: OutsideAgentConnectionInput,
+  success: Schema.Void,
+  error: Schema.Union([WsOwnerRequiredError, OutsideAgentError]),
+});
+
 /** Empty for anyone but a "Connect a device" device. */
 export const WsRelayDirectRoutesRpc = Rpc.make(WS_METHODS.relayDirectRoutes, {
   payload: Schema.Struct({}),
@@ -2306,6 +2373,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectSetupsCancelRpc,
   WsProjectSetupsDismissRpc,
   WsProjectSetupsSubscribeRpc,
+  WsOutsideAgentsSubscribeRpc,
+  WsOutsideAgentsApproveRpc,
+  WsOutsideAgentsDenyRpc,
+  WsOutsideAgentsDenyAllRpc,
+  WsOutsideAgentsResumeRequestsRpc,
+  WsOutsideAgentsUpdateRpc,
+  WsOutsideAgentsRemoveRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationWarmUpTurnRpc,
   WsOrchestrationGetTurnDiffRpc,

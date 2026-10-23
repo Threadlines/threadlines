@@ -82,6 +82,12 @@ export type ScheduledTaskId = typeof ScheduledTaskId.Type;
 /** One project setup on a computer (docs/design/fleet.md, Part 8); made by the app that starts it. */
 export const ProjectSetupId = makeEntityId("ProjectSetupId");
 export type ProjectSetupId = typeof ProjectSetupId.Type;
+/** An outside agent's connection to this computer (docs/design/outside-agents.md). */
+export const OutsideAgentConnectionId = makeEntityId("OutsideAgentConnectionId");
+export type OutsideAgentConnectionId = typeof OutsideAgentConnectionId.Type;
+/** An outside agent's sign-in waiting for the user's approval. */
+export const OutsideAgentRequestId = makeEntityId("OutsideAgentRequestId");
+export type OutsideAgentRequestId = typeof OutsideAgentRequestId.Type;
 
 export const ProviderItemId = makeEntityId("ProviderItemId");
 export type ProviderItemId = typeof ProviderItemId.Type;

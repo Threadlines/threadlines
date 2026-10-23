@@ -23,6 +23,7 @@ import {
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  OutsideAgentError,
   type OrchestrationShellStreamEvent,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetRevertPlanError,
@@ -187,6 +188,7 @@ const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchComma
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+const outsideAgentsNotReady = "Agents outside Threadlines are not ready on this computer yet.";
 
 export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
@@ -2852,6 +2854,22 @@ const makeWsRpcLayer = (
           observeRpcStream(WS_METHODS.projectSetupsSubscribe, projectSetups.changes, {
             "rpc.aggregate": "projectSetups",
           }),
+        // Outside agents (docs/design/outside-agents.md): placeholders until
+        // the sign-in side lands; every one refuses.
+        [WS_METHODS.outsideAgentsSubscribe]: (_input) =>
+          Stream.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+        [WS_METHODS.outsideAgentsApprove]: (_input) =>
+          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+        [WS_METHODS.outsideAgentsDeny]: (_input) =>
+          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+        [WS_METHODS.outsideAgentsDenyAll]: (_input) =>
+          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+        [WS_METHODS.outsideAgentsResumeRequests]: (_input) =>
+          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+        [WS_METHODS.outsideAgentsUpdate]: (_input) =>
+          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
+        [WS_METHODS.outsideAgentsRemove]: (_input) =>
+          Effect.fail(new OutsideAgentError({ detail: outsideAgentsNotReady })),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,

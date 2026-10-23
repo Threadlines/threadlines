@@ -86,6 +86,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * Older servers omit it and would type the address into the command.
    */
   signInAddressReplay: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Agents outside Threadlines can sign in to this server's `/mcp/connect`
+   * (`outsideAgents.*`, docs/design/outside-agents.md). Older servers omit
+   * it; clients then hide Settings' Agents group for them.
+   */
+  outsideAgents: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

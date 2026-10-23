@@ -22,6 +22,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  OutsideAgentConnectionId,
   PositiveInt,
   ProjectId,
   ProviderItemId,
@@ -622,6 +623,31 @@ export const ThreadScheduledRun = Schema.Struct({
   event: Schema.optionalKey(Schema.Boolean),
 });
 export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
+
+/**
+ * An outside agent (docs/design/outside-agents.md): a coding agent running
+ * outside Threadlines that signed in to this computer's `/mcp/connect`. On a
+ * thread it started (`outsideOrigin`, set once at creation) and on each
+ * message it wrote (`fromOutside`); only the `/mcp/connect` handler sets
+ * either. `name` is the one the agent gave when it signed in: shown as given,
+ * never as verified. Such a thread gets no Threadlines agent tools.
+ */
+export const OutsideAgentRef = Schema.Struct({
+  connectionId: OutsideAgentConnectionId,
+  name: TrimmedNonEmptyString,
+});
+export type OutsideAgentRef = typeof OutsideAgentRef.Type;
+
+/**
+ * A turn an outside agent started: who, and the highest access the thread
+ * may have for the turn to run (its connection's ceiling when it asked). The
+ * decider refuses the turn when the thread's access is above it.
+ */
+export const OutsideTurnOrigin = Schema.Struct({
+  ...OutsideAgentRef.fields,
+  maxRuntimeMode: RuntimeMode,
+});
+export type OutsideTurnOrigin = typeof OutsideTurnOrigin.Type;
 /** Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far it got. */
 export const ThreadMovePhase = Schema.Literals([
   "exporting",
@@ -725,6 +751,8 @@ export const OrchestrationMessage = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** Child threads: a message another thread's agent wrote. See ThreadMessageOrigin. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** A user-role message an outside agent wrote. See OutsideAgentRef. */
+  fromOutside: Schema.optional(OutsideAgentRef),
   /** See MessageComposer. Absent on every message an agent or automation wrote. */
   composer: Schema.optional(MessageComposer),
   /**
@@ -2026,6 +2054,8 @@ export const OrchestrationThread = Schema.Struct({
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
   /** See OrchestrationThreadShell.scheduledRun. */
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
+  /** See OrchestrationThreadShell.outsideOrigin. */
+  outsideOrigin: Schema.optional(Schema.NullOr(OutsideAgentRef)),
   /** See OrchestrationThreadShell.move. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
   /** See OrchestrationThreadShell.movedFrom. */
@@ -2245,6 +2275,11 @@ export const OrchestrationThreadShell = Schema.Struct({
    */
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /**
+   * Started by an outside agent (OutsideAgentRef): labelled with its name.
+   * Absent or null: started in Threadlines.
+   */
+  outsideOrigin: Schema.optional(Schema.NullOr(OutsideAgentRef)),
+  /**
    * On a parent: its children on linked computers with their last known
    * status (OrchestrationChildRequestState.remoteChildren), so its family
    * shows them even where the app can't reach that computer. Absent: none.
@@ -2440,6 +2475,8 @@ const ThreadCreateLineageFields = {
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
   /** Started by a scheduled run: see ThreadScheduledRun. Only the scheduler sets it. */
   scheduledRun: Schema.optional(ThreadScheduledRun),
+  /** Started by an outside agent: see OutsideAgentRef. Only `/mcp/connect` sets it. */
+  outsideOrigin: Schema.optional(OutsideAgentRef),
 };
 // The normalizer refuses these on commands that arrive from a client.
 
@@ -2768,6 +2805,11 @@ export const ThreadTurnStartCommand = Schema.Struct({
    * client turn-start schema has no such field). See ThreadMessageOrigin.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /**
+   * An outside agent's turn (server only, set by `/mcp/connect`). The decider
+   * refuses it when the thread's access is above `maxRuntimeMode`.
+   */
+  fromOutside: Schema.optional(OutsideTurnOrigin),
   /** See MessageComposer (server only: set from the client route). */
   composer: Schema.optional(MessageComposer),
   createdAt: IsoDateTime,
@@ -4086,6 +4128,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
   /** See OrchestrationThreadShell.scheduledRun. */
   scheduledRun: Schema.optional(ThreadScheduledRun),
+  /** See OrchestrationThreadShell.outsideOrigin. */
+  outsideOrigin: Schema.optional(OutsideAgentRef),
   /** Imported by a move: see ThreadMovedFrom and OrchestrationThread.historySeedOwed. */
   movedFrom: Schema.optional(ThreadMovedFrom),
   historySeedOwed: Schema.optional(Schema.Boolean),
@@ -4449,6 +4493,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** See OrchestrationMessage.fromThread. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See OrchestrationMessage.fromOutside. */
+  fromOutside: Schema.optional(OutsideAgentRef),
   /** See OrchestrationMessage.composer. */
   composer: Schema.optional(MessageComposer),
   /** See OrchestrationMessage.agentModels. Only the write that creates the message counts. */
@@ -4498,6 +4544,11 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    * not sent.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /**
+   * An outside agent's turn: who, and its ceiling. The provider starts at the
+   * mode this event carries, which the decider checked against the ceiling.
+   */
+  fromOutside: Schema.optional(OutsideTurnOrigin),
   createdAt: IsoDateTime,
 });
 
