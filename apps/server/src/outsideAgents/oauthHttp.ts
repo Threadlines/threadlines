@@ -14,8 +14,12 @@
  * and refuses what a browser says another site sent (Fetch Metadata). None
  * of them logs a token, code, poll secret or client id.
  */
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { ServerConfig } from "../config.ts";
@@ -122,6 +126,49 @@ const refusedFromWebPage = () =>
     403,
   );
 
+/** Registration bodies carry a name and at most 5 callbacks. */
+const MAX_REGISTRATION_BODY_BYTES = 32 * 1024;
+/** Token bodies carry a code, a verifier, a callback and the client id. */
+const MAX_TOKEN_BODY_BYTES = 16 * 1024;
+
+class BodyTooLarge extends Data.TaggedError("BodyTooLarge")<{}> {}
+
+const bodyTooLarge = () =>
+  oauthError({ error: "invalid_request", description: "The request body is too large." }, 413);
+
+/**
+ * A request body as text, read no further than `maxBytes`. Anyone on this
+ * computer can call these routes before signing in, so nothing they send is
+ * buffered whole: one declared longer isn't read at all (413), and a longer
+ * one without a declared length stops being read at the limit, which drops
+ * its connection. An unreadable body reads as empty.
+ */
+const boundedBody = (
+  request: HttpServerRequest.HttpServerRequest,
+  maxBytes: number,
+): Effect.Effect<string, BodyTooLarge> =>
+  Effect.suspend(() => {
+    const declared = Number(request.headers["content-length"]);
+    if (Number.isFinite(declared) && declared > maxBytes) return Effect.fail(new BodyTooLarge());
+    let bytes = 0;
+    const chunks: Array<Uint8Array> = [];
+    return request.stream.pipe(
+      Stream.takeWhile((chunk) => {
+        bytes += chunk.byteLength;
+        if (bytes <= maxBytes) chunks.push(chunk);
+        return bytes <= maxBytes;
+      }),
+      Stream.runDrain,
+      Effect.map(() => (bytes > maxBytes ? null : Buffer.concat(chunks).toString("utf8"))),
+      Effect.orElseSucceed(() => ""),
+      Effect.flatMap((text) =>
+        text === null ? Effect.fail(new BodyTooLarge()) : Effect.succeed(text),
+      ),
+    );
+  });
+
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
 const queryOf = (request: HttpServerRequest.HttpServerRequest, origin: string) =>
   new URL(request.url, origin).searchParams;
 
@@ -167,9 +214,17 @@ const registerRoute = HttpRouter.add(
   fromThisComputer(API_SITES, refusedFromWebPage, ({ request }) =>
     Effect.gen(function* () {
       const signIn = yield* OutsideAgentSignIn;
-      const body = yield* request.json.pipe(Effect.orElseSucceed(() => null));
-      const result = yield* signIn.register(body);
+      // The rate limit is taken before the body is read.
+      const result = yield* signIn
+        .register(
+          boundedBody(request, MAX_REGISTRATION_BODY_BYTES).pipe(
+            Effect.map((text) => Option.getOrNull(decodeJson(text))),
+          ),
+        )
+        .pipe(Effect.catchTag("BodyTooLarge", () => Effect.succeed({ kind: "tooLarge" } as const)));
       switch (result.kind) {
+        case "tooLarge":
+          return bodyTooLarge();
         case "refused":
           return oauthError(result.failure, 400);
         case "limited":
@@ -269,8 +324,9 @@ const tokenRoute = HttpRouter.add(
   fromThisComputer(API_SITES, refusedFromWebPage, ({ request }) =>
     Effect.gen(function* () {
       const signIn = yield* OutsideAgentSignIn;
-      const body = yield* request.text.pipe(Effect.orElseSucceed(() => ""));
-      const result = yield* signIn.exchangeCode(new URLSearchParams(body));
+      const body = yield* boundedBody(request, MAX_TOKEN_BODY_BYTES).pipe(Effect.option);
+      if (Option.isNone(body)) return bodyTooLarge();
+      const result = yield* signIn.exchangeCode(new URLSearchParams(body.value));
       if (result.kind === "refused") {
         const status =
           result.failure.error === "server_error"

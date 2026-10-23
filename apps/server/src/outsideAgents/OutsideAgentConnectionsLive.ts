@@ -30,6 +30,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import {
@@ -99,6 +100,8 @@ type PendingOutcome =
       readonly kind: "approved";
       readonly grant: OutsideAgentGrant;
       readonly connectionId: OutsideAgentConnectionId;
+      /** Its number among the user's decisions about this registration (see `latestDecision`). */
+      readonly decision: number;
       /** Minted when the page first asks, so its 60 seconds start then. */
       code: string | null;
     }
@@ -121,6 +124,7 @@ interface AuthorizationCode {
   readonly request: AuthorizeRequest;
   readonly grant: OutsideAgentGrant;
   readonly connectionId: OutsideAgentConnectionId;
+  readonly decision: number;
   readonly expiresAt: number;
 }
 
@@ -191,12 +195,39 @@ const makeOutsideAgents = Effect.gen(function* () {
   const registrations: Array<number> = [];
   const authorizations: Array<number> = [];
 
-  /** A waiting sign-in past its 5 minutes is expired, whether or not its timer ran yet. */
-  const settleExpired = (entry: PendingSignIn, now: number): boolean => {
-    if (entry.outcome.kind !== "waiting" || entry.expiresAt > now) return false;
-    entry.outcome = { kind: "expired" };
-    return true;
+  /**
+   * The user's newest decision about each registration (by client id hash):
+   * every approval, and every Change or Remove of its connection, takes the
+   * next number. Only the approval holding its registration's newest number
+   * can be exchanged, so an older approval never comes back after a newer
+   * one, or after the user changed or removed the connection.
+   */
+  const latestDecision = new Map<string, number>();
+  let decisions = 0;
+  const decide = (hash: string): number => {
+    decisions += 1;
+    latestDecision.set(hash, decisions);
+    return decisions;
   };
+  // Serializes the newest-decision check and the connection writes that go
+  // with it: an exchange's check and save, a Change, a Remove.
+  const decisionLock = yield* Semaphore.make(1);
+
+  /** Whether a sign-in still waits for the user: past its 5 minutes it doesn't, whether or not its timer ran yet. */
+  const isWaiting = (entry: PendingSignIn, now: number): boolean =>
+    entry.outcome.kind === "waiting" && entry.expiresAt > now;
+
+  /**
+   * The one way a sign-in becomes expired, always announced. Everything else
+   * only asks `isWaiting`, so no read can expire a sign-in silently and leave
+   * an open approval dialog behind.
+   */
+  const expireIfDue = (entry: PendingSignIn, now: number) =>
+    Effect.suspend(() => {
+      if (entry.outcome.kind !== "waiting" || entry.expiresAt > now) return Effect.void;
+      entry.outcome = { kind: "expired" };
+      return notify;
+    });
 
   const storeError =
     (operation: string) =>
@@ -220,8 +251,7 @@ const makeOutsideAgents = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const waiting: Array<OutsideAgentPendingRequest> = [];
       for (const entry of pending.values()) {
-        settleExpired(entry, now);
-        if (entry.outcome.kind !== "waiting") continue;
+        if (!isWaiting(entry, now)) continue;
         const hash = clientIdHash(entry.request.clientId);
         const earlier = rows.find((row) => row.clientIdHash === hash);
         waiting.push({
@@ -261,7 +291,7 @@ const makeOutsideAgents = Effect.gen(function* () {
   const scheduleExpiry = (entry: PendingSignIn) =>
     Effect.gen(function* () {
       yield* Effect.sleep(WAIT_FOR_USER);
-      if (settleExpired(entry, yield* Clock.currentTimeMillis)) yield* notify;
+      yield* expireIfDue(entry, yield* Clock.currentTimeMillis);
       yield* Effect.sleep(KEEP_SETTLED);
       if (pending.get(entry.requestId) === entry) pending.delete(entry.requestId);
     }).pipe(Effect.forkIn(scope), Effect.asVoid);
@@ -279,8 +309,7 @@ const makeOutsideAgents = Effect.gen(function* () {
 
   const waitingEntry = (requestId: OutsideAgentRequestId, now: number) => {
     const entry = pending.get(requestId);
-    if (entry !== undefined) settleExpired(entry, now);
-    return entry?.outcome.kind === "waiting" ? entry : undefined;
+    return entry !== undefined && isWaiting(entry, now) ? entry : undefined;
   };
 
   /** Why a grant the user picked can't be given: more than the sign-in asked for, or no projects. */
@@ -313,7 +342,8 @@ const makeOutsideAgents = Effect.gen(function* () {
       if (refusal !== null) return yield* new OutsideAgentError({ detail: refusal });
       const grant = normalizedGrant(input);
       const connectionId = OutsideAgentConnectionId.make(randomUUID());
-      entry.outcome = { kind: "approved", grant, connectionId, code: null };
+      const decision = decide(clientIdHash(entry.request.clientId));
+      entry.outcome = { kind: "approved", grant, connectionId, decision, code: null };
       yield* notify;
       return {
         connectionId,
@@ -335,8 +365,7 @@ const makeOutsideAgents = Effect.gen(function* () {
   const denyAll: OutsideAgentSignInShape["denyAll"] = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     for (const entry of pending.values()) {
-      settleExpired(entry, now);
-      if (entry.outcome.kind === "waiting") entry.outcome = { kind: "denied" };
+      if (isWaiting(entry, now)) entry.outcome = { kind: "denied" };
     }
     quietUntil = now + Duration.toMillis(QUIET_PERIOD);
     yield* scheduleQuietEnd;
@@ -355,7 +384,16 @@ const makeOutsideAgents = Effect.gen(function* () {
       if (refusal !== null) return yield* new OutsideAgentError({ detail: refusal });
       const row = yield* repository
         .setGrant({ connectionId: input.connectionId, grant: normalizedGrant(input) })
-        .pipe(storeError("change a connection"));
+        .pipe(
+          // The change outranks any approval of the same agent still waiting for its exchange.
+          Effect.tap((changed) =>
+            Option.isSome(changed)
+              ? Effect.sync(() => decide(changed.value.clientIdHash))
+              : Effect.void,
+          ),
+          decisionLock.withPermits(1),
+          storeError("change a connection"),
+        );
       if (Option.isNone(row)) {
         return yield* new OutsideAgentError({ detail: "That connection was removed." });
       }
@@ -365,13 +403,16 @@ const makeOutsideAgents = Effect.gen(function* () {
 
   const remove: OutsideAgentSignInShape["remove"] = (input) =>
     Effect.gen(function* () {
-      const removed = yield* repository
-        .markRemoved({
+      const removed = yield* Effect.gen(function* () {
+        const row = yield* repository.get(input.connectionId);
+        // The removal outranks any approval of the same agent still waiting for its exchange.
+        if (Option.isSome(row)) decide(row.value.clientIdHash);
+        return yield* repository.markRemoved({
           connectionId: input.connectionId,
           reason: "removed",
           now: isoAt(yield* Clock.currentTimeMillis),
-        })
-        .pipe(storeError("remove a connection"));
+        });
+      }).pipe(decisionLock.withPermits(1), storeError("remove a connection"));
       if (removed) yield* notify;
     });
 
@@ -384,7 +425,7 @@ const makeOutsideAgents = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const retryAfterSeconds = takeSlot(registrations, REGISTRATIONS_PER_MINUTE, now);
       if (retryAfterSeconds !== null) return { kind: "limited", retryAfterSeconds } as const;
-      const registration = readRegistration(body);
+      const registration = readRegistration(yield* body);
       if (isOAuthFailure(registration)) return { kind: "refused", failure: registration } as const;
       const clientId = signer.signClientId({ ...registration, registrationId: randomSecret() });
       return {
@@ -442,8 +483,7 @@ const makeOutsideAgents = Effect.gen(function* () {
       }
       let waiting = 0;
       for (const entry of pending.values()) {
-        settleExpired(entry, now);
-        if (entry.outcome.kind !== "waiting") continue;
+        if (!isWaiting(entry, now)) continue;
         // The same agent signing in again from the same callback: the new flow wins.
         if (entry.request.flowKey === request.flowKey) entry.outcome = { kind: "replaced" };
         else waiting += 1;
@@ -484,7 +524,7 @@ const makeOutsideAgents = Effect.gen(function* () {
         return { state: input.bootId === bootId ? "gone" : "restarted" } satisfies SignInStatus;
       }
       const now = yield* Clock.currentTimeMillis;
-      if (settleExpired(entry, now)) yield* notify;
+      yield* expireIfDue(entry, now);
       const { request, origin } = entry;
       const refusal = (description: string) =>
         callbackWith(request.redirectUri, {
@@ -516,6 +556,7 @@ const makeOutsideAgents = Effect.gen(function* () {
               request,
               grant: outcome.grant,
               connectionId: outcome.connectionId,
+              decision: outcome.decision,
               expiresAt: now + Duration.toMillis(CODE_LIFETIME),
             });
           }
@@ -559,31 +600,45 @@ const makeOutsideAgents = Effect.gen(function* () {
       if (tokenRequest.resource !== null && tokenRequest.resource !== request.resource) {
         return refuse("invalid_target", `The resource must be ${request.resource}.`);
       }
-      const saved = yield* repository
-        .insertReplacing({
-          connectionId,
-          clientIdHash: clientIdHash(request.clientId),
-          clientName: request.client.name,
-          softwareId: request.client.softwareId,
-          redirectUri: request.redirectUri,
-          resource: request.resource,
-          ...grant,
-          tokenGeneration: 1,
-          createdAt: isoAt(now),
-          lastUsedAt: null,
-          removedAt: null,
-          removedReason: null,
-        })
-        .pipe(
-          Effect.as(true),
-          Effect.catch((cause) =>
-            Effect.logWarning("outside agents: couldn't save a connection").pipe(
-              Effect.annotateLogs({ cause }),
-              Effect.as(false),
+      const hash = clientIdHash(request.clientId);
+      // Checked and saved together, under the lock a Change or Remove takes:
+      // only the newest decision about this agent becomes its connection.
+      const saved = yield* Effect.gen(function* () {
+        if (latestDecision.get(hash) !== issued.decision) return "superseded" as const;
+        return yield* repository
+          .insertReplacing({
+            connectionId,
+            clientIdHash: hash,
+            clientName: request.client.name,
+            softwareId: request.client.softwareId,
+            redirectUri: request.redirectUri,
+            resource: request.resource,
+            ...grant,
+            tokenGeneration: 1,
+            createdAt: isoAt(now),
+            lastUsedAt: null,
+            removedAt: null,
+            removedReason: null,
+          })
+          .pipe(
+            Effect.as("saved" as const),
+            Effect.catch((cause) =>
+              Effect.logWarning("outside agents: couldn't save a connection").pipe(
+                Effect.annotateLogs({ cause }),
+                Effect.as("failed" as const),
+              ),
             ),
-          ),
+          );
+      }).pipe(decisionLock.withPermits(1));
+      if (saved === "superseded") {
+        return refuse(
+          "invalid_grant",
+          "A newer decision about this agent in Threadlines replaced this approval. Sign in again.",
         );
-      if (!saved) return refuse("server_error", "Threadlines couldn't save the connection.");
+      }
+      if (saved === "failed") {
+        return refuse("server_error", "Threadlines couldn't save the connection.");
+      }
       yield* notify;
       yield* analytics.record("outside_agent.connected", {
         clientName: clientFamily(request.client.name, request.client.softwareId),

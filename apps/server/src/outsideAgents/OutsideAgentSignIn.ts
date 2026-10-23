@@ -98,8 +98,11 @@ export type TokenResult =
   | { readonly kind: "refused"; readonly failure: OAuthFailure };
 
 export interface OutsideAgentSignInShape {
-  /** Stateless DCR (RFC 7591), 20 a minute: the client id is the signed registration. */
-  readonly register: (body: unknown) => Effect.Effect<RegisterResult>;
+  /**
+   * Stateless DCR (RFC 7591), 20 a minute: the client id is the signed
+   * registration. Takes a slot in the rate limit before it reads `body`.
+   */
+  readonly register: <E>(body: Effect.Effect<unknown, E>) => Effect.Effect<RegisterResult, E>;
   /**
    * Checks an authorization request that arrived at `origin` (already known
    * to be this computer), and when it passes, puts it in front of the user.

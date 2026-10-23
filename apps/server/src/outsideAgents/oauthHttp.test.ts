@@ -119,6 +119,15 @@ const registerClient = (server: SignInServer, name = "Claude Code", redirect = C
     Effect.map(({ body }) => String(body.client_id)),
   );
 
+const BASE64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/**
+ * The same mac spelled differently: a 32-byte mac's last character has two
+ * spare bits that decoding ignores.
+ */
+const respelledMac = (value: string) =>
+  `${value.slice(0, -1)}${BASE64URL[BASE64URL.indexOf(value.slice(-1)) ^ 1]}`;
+
 const pkce = () => {
   const verifier = Crypto.randomBytes(32).toString("base64url");
   return {
@@ -527,10 +536,94 @@ describe("outside agents' OAuth", () => {
           }),
         );
         assert.equal((yield* pollStatus(first.status)).state, "replaced");
+
+        // One registration has one spelling: a padded or respelled mac would
+        // make it a second agent, with its own wait and its own connection.
+        for (const alias of [`${clientId}=`, respelledMac(clientId)]) {
+          const aliased = yield* call(
+            authorizeUrl(server, { clientId: alias, challenge: pkce().challenge }),
+          );
+          assert.equal(aliased.status, 400);
+        }
         const pending = (yield* latestSnapshot(server)).pending;
         assert.deepStrictEqual(
           pending.map((request) => [request.requestId, request.callbackPort]),
           [[second.requestId, 5999]],
+        );
+      }),
+    ),
+  );
+
+  it.effect("registers Cursor's desktop callback and leaves out its web one", () =>
+    withServer((server) =>
+      Effect.gen(function* () {
+        const cursor = yield* register(server, {
+          client_name: "Cursor",
+          redirect_uris: [
+            "https://www.cursor.com/agents/mcp/oauth/callback",
+            "http://localhost:8787/callback",
+          ],
+        });
+        assert.equal(cursor.status, 201);
+        assert.deepStrictEqual(cursor.body.redirect_uris, ["http://localhost:8787/callback"]);
+        const clientId = String(cursor.body.client_id);
+        const web = yield* call(
+          authorizeUrl(server, {
+            clientId,
+            challenge: pkce().challenge,
+            redirect: "https://www.cursor.com/agents/mcp/oauth/callback",
+          }),
+        );
+        assert.equal(web.status, 400);
+        yield* signInAgent(server, { clientId, redirect: "http://localhost:8787/callback" });
+      }),
+    ),
+  );
+
+  it.effect("reads no more of a body than a sign-in needs, and counts before reading", () =>
+    withServer((server) =>
+      Effect.gen(function* () {
+        const huge = JSON.stringify({
+          client_name: "x".repeat(64 * 1024),
+          redirect_uris: [CALLBACK],
+        });
+        for (let attempt = 0; attempt < 20; attempt++) {
+          assert.equal((yield* register(server, JSON.parse(huge))).status, 413);
+        }
+        // Those 20 took this minute's registrations, though none was read.
+        assert.equal(
+          (yield* register(server, { client_name: "Codex", redirect_uris: [CALLBACK] })).status,
+          429,
+        );
+        const token = yield* exchange(server, {
+          grant_type: "authorization_code",
+          code: "x".repeat(32 * 1024),
+        });
+        assert.equal(token.status, 413);
+        // A body with no declared length: reading stops at the limit and the
+        // connection is dropped; the server goes on answering.
+        const undeclared = yield* Effect.promise(() =>
+          fetch(`${server.origin}/oauth/token`, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: new ReadableStream({
+              start(controller) {
+                for (let index = 0; index < 64; index++) {
+                  controller.enqueue(new TextEncoder().encode("x".repeat(1024)));
+                }
+                controller.close();
+              },
+            }),
+            duplex: "half",
+          } as RequestInit).then(
+            (response) => response.status,
+            () => "dropped" as const,
+          ),
+        );
+        assert.equal(undeclared, "dropped");
+        assert.equal(
+          (yield* call(`${server.origin}/.well-known/oauth-authorization-server`)).status,
+          200,
         );
       }),
     ),
@@ -665,6 +758,112 @@ describe("outside agents' connections", () => {
   );
 });
 
+describe("outside agents' approvals", () => {
+  it.effect("let only the newest decision about an agent become its connection", () =>
+    withServer((server) =>
+      Effect.gen(function* () {
+        const clientId = yield* registerClient(server);
+        const approved = (access: OutsideAgentAccess) =>
+          Effect.gen(function* () {
+            const { verifier, challenge } = pkce();
+            const waiting = yield* openSignIn(
+              server,
+              authorizeUrl(server, { clientId, challenge }),
+            );
+            yield* server.signIn.approve({
+              requestId: waiting.requestId,
+              access,
+              maxRuntimeMode: "approval-required",
+              projectIds: null,
+            });
+            const status = yield* pollStatus(waiting.status);
+            return {
+              grant_type: "authorization_code",
+              code: new URL(String(status.redirect)).searchParams.get("code") ?? "",
+              client_id: clientId,
+              redirect_uri: CALLBACK,
+              code_verifier: verifier,
+            };
+          });
+
+        // Allowed with Start, then again with See: exchanging the older
+        // approval last can't bring Start back.
+        const broader = yield* approved("start");
+        const narrower = yield* approved("see");
+        assert.equal((yield* exchange(server, narrower)).body.scope, "threads:read");
+        assert.equal((yield* exchange(server, broader)).body.error, "invalid_grant");
+        const [connection] = (yield* latestSnapshot(server)).connections;
+        assert.equal(connection?.access, "see");
+
+        // An approval not yet exchanged loses to a later Change or Remove.
+        const beforeChange = yield* approved("start");
+        yield* server.signIn.update({
+          connectionId: connection!.connectionId,
+          access: "see",
+          maxRuntimeMode: "approval-required",
+          projectIds: null,
+        });
+        assert.equal((yield* exchange(server, beforeChange)).body.error, "invalid_grant");
+        const beforeRemove = yield* approved("start");
+        yield* server.signIn.remove({ connectionId: connection!.connectionId });
+        assert.equal((yield* exchange(server, beforeRemove)).body.error, "invalid_grant");
+        assert.lengthOf((yield* latestSnapshot(server)).connections, 0);
+      }),
+    ),
+  );
+
+  it.effect("tell an open Agents group when a sign-in expires, whatever looked at it first", () =>
+    withServer((server) =>
+      Effect.gen(function* () {
+        // An Allow clicked at the very moment the sign-in expires, just
+        // before its own timer runs (it went to sleep first).
+        let requestId: OutsideAgentRequestId | undefined;
+        const lateAllow = yield* Effect.sleep("5 minutes").pipe(
+          Effect.andThen(
+            Effect.suspend(() =>
+              server.signIn.approve({
+                requestId: requestId!,
+                access: "see",
+                maxRuntimeMode: "approval-required",
+                projectIds: null,
+              }),
+            ),
+          ),
+          Effect.exit,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+
+        const subscribed = yield* Deferred.make<void>();
+        let sawWaiting = false;
+        const groupHearsExpiry = yield* server.signIn.changes.pipe(
+          Stream.tap(() => Deferred.succeed(subscribed, undefined)),
+          Stream.takeUntil((snapshot) => {
+            if (snapshot.pending.length > 0) sawWaiting = true;
+            return sawWaiting && snapshot.pending.length === 0;
+          }),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+        yield* Deferred.await(subscribed);
+        const clientId = yield* registerClient(server);
+        requestId = (yield* openSignIn(
+          server,
+          authorizeUrl(server, { clientId, challenge: pkce().challenge }),
+        )).requestId;
+
+        yield* TestClock.adjust("5 minutes");
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(lateAllow)));
+        const heard = yield* Effect.raceFirst(
+          Fiber.join(groupHearsExpiry).pipe(Effect.as(true)),
+          TestClock.withLive(Effect.sleep("2 seconds")).pipe(Effect.as(false)),
+        );
+        assert.isTrue(heard);
+      }),
+    ),
+  );
+});
+
 describe("outside agents' access tokens", () => {
   it.effect("work only for the resource they were issued for", () =>
     withServer((server) =>
@@ -682,6 +881,12 @@ describe("outside agents' access tokens", () => {
         assert.isNull(
           yield* server.connections.authenticate({
             token: `${token.slice(0, -2)}AA`,
+            resource: server.resource,
+          }),
+        );
+        assert.isNull(
+          yield* server.connections.authenticate({
+            token: respelledMac(token),
             resource: server.resource,
           }),
         );
