@@ -1312,6 +1312,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listArchivedSideTurnRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      threadId: ThreadId,
+      sideTurn: Schema.fromJsonString(OrchestrationSideTurn),
+    }),
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          side_turn AS "sideTurn"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND archived_at IS NOT NULL
+          AND side_turn IS NOT NULL
+      `,
+  });
+
   const listCheckpointRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionCheckpointDbRowSchema,
@@ -1834,6 +1852,44 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       ),
     );
+
+  const listArchivedThreadsLiveState: ProjectionSnapshotQueryShape["listArchivedThreadsLiveState"] =
+    () =>
+      sql
+        .withTransaction(
+          Effect.all([
+            listArchivedThreadSessionRows(undefined),
+            listArchivedSideTurnRows(undefined),
+          ]),
+        )
+        .pipe(
+          Effect.map(([sessionRows, sideTurnRows]) => {
+            const byThread = new Map<
+              ThreadId,
+              {
+                readonly threadId: ThreadId;
+                session: OrchestrationSession | null;
+                sideTurn: OrchestrationSideTurn | null;
+              }
+            >();
+            const entryFor = (threadId: ThreadId) => {
+              const existing = byThread.get(threadId);
+              if (existing !== undefined) return existing;
+              const created = { threadId, session: null, sideTurn: null };
+              byThread.set(threadId, created);
+              return created;
+            };
+            for (const row of sessionRows) entryFor(row.threadId).session = mapSessionRow(row);
+            for (const row of sideTurnRows) entryFor(row.threadId).sideTurn = row.sideTurn;
+            return [...byThread.values()];
+          }),
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.listArchivedThreadsLiveState:query",
+              "ProjectionSnapshotQuery.listArchivedThreadsLiveState:decodeRows",
+            ),
+          ),
+        );
 
   const listThreadPageRows = SqlSchema.findAll({
     Request: Schema.Void,
@@ -3772,6 +3828,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getSnapshot,
     getShellSnapshot,
     listRunningWorkflowRuns,
+    listArchivedThreadsLiveState,
     getArchivedShellSnapshot,
     getSnapshotSequence,
     getCounts,

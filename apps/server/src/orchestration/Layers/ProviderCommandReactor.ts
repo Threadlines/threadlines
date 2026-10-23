@@ -5382,7 +5382,22 @@ const make = Effect.gen(function* () {
   const settleSessionsFromPreviousProcess = Effect.fn("settleSessionsFromPreviousProcess")(
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
-      for (const thread of snapshot.threads) {
+      // Archived threads too: archiving doesn't stop an agent, and one left
+      // running or starting would say so forever once it is restored.
+      const archived = yield* projectionSnapshotQuery.listArchivedThreadsLiveState();
+      const threads = [
+        ...snapshot.threads.map((thread) => ({
+          id: thread.id,
+          session: thread.session,
+          sideTurn: thread.sideTurn ?? null,
+        })),
+        ...archived.map((entry) => ({
+          id: entry.threadId,
+          session: entry.session,
+          sideTurn: entry.sideTurn,
+        })),
+      ];
+      for (const thread of threads) {
         // Side runtimes lived in the previous process too. One answering an
         // agent's request fails it with the reason, like other requests the
         // restart cut off; the user's own side answer just stopped.

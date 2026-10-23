@@ -201,6 +201,7 @@ describe("OrchestrationEngine", () => {
               return projectionSnapshot;
             }),
           listRunningWorkflowRuns: () => Effect.succeed([]),
+          listArchivedThreadsLiveState: () => Effect.succeed([]),
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: projectionSnapshot.snapshotSequence,

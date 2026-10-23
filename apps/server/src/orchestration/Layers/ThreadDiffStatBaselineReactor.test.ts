@@ -69,6 +69,7 @@ function makeSnapshotQuery(
     getCommandReadModel: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
     listRunningWorkflowRuns: () => Effect.succeed([]),
+    listArchivedThreadsLiveState: () => Effect.succeed([]),
     getShellSnapshot: () => Effect.die("unused"),
     getArchivedShellSnapshot: () => Effect.die("unused"),
     getSnapshotSequence: () => Effect.die("unused"),

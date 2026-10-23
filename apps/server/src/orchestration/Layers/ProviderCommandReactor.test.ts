@@ -3852,6 +3852,7 @@ describe("ProviderCommandReactor", () => {
     const staleThreadId = ThreadId.make("thread-stale-restart");
     const staleTurnId = asTurnId("turn-stale-restart");
     const waitingThreadId = ThreadId.make("thread-waiting-restart");
+    const archivedThreadId = ThreadId.make("thread-archived-restart");
     const harness = await createHarness({
       beforeStart: (engine) =>
         Effect.gen(function* () {
@@ -3930,6 +3931,43 @@ describe("ProviderCommandReactor", () => {
             },
             createdAt: now,
           });
+          // A thread archived while its agent was still starting: archiving
+          // doesn't stop the agent.
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("cmd-thread-create-archived"),
+            threadId: archivedThreadId,
+            projectId: asProjectId("project-stale"),
+            title: "Archived Thread",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("cmd-session-set-archived"),
+            threadId: archivedThreadId,
+            session: {
+              threadId: archivedThreadId,
+              status: "starting",
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              startup: { phase: "launching", providerInstanceId: ProviderInstanceId.make("codex") },
+              lastError: null,
+              updatedAt: now,
+            },
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make("cmd-thread-archive"),
+            threadId: archivedThreadId,
+          });
         }),
     });
 
@@ -3965,6 +4003,21 @@ describe("ProviderCommandReactor", () => {
     // Launches the old process never finished say nothing now.
     expect(thread?.session?.startup ?? null).toBeNull();
     expect(waiting?.session?.startup ?? null).toBeNull();
+    // The archived thread is settled the same way, ready for when it is restored.
+    await waitFor(async () => {
+      const archived = (await harness.readModel()).threads.find(
+        (entry) => entry.id === archivedThreadId,
+      );
+      return archived?.session?.status === "interrupted";
+    });
+    const archived = (await harness.readModel()).threads.find(
+      (entry) => entry.id === archivedThreadId,
+    );
+    expect(archived?.archivedAt).not.toBeNull();
+    expect(archived?.session?.startup ?? null).toBeNull();
+    expect(
+      archived?.activities.some((entry) => entry.kind === "provider.session.restart-interrupted"),
+    ).toBe(true);
     expect(
       thread?.activities.find((entry) => entry.kind === "provider.session.restart-interrupted"),
     ).toMatchObject({ turnId: staleTurnId });
