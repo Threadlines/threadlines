@@ -75,6 +75,7 @@ import {
 } from "../Services/ProviderSessionDirectory.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
+import { withDeviceNoteInFront } from "../deviceNote.ts";
 import { makeTurnLatencyTracker, type TurnLatencySample } from "../turnLatency.ts";
 import { type EarlySessionEndReason, makeEarlySessionLedger } from "../earlySessions.ts";
 
@@ -1490,15 +1491,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         latencySendId = sendId;
         yield* Effect.annotateCurrentSpan({ "provider.turn.handoff_ms": handoffMs });
       }
-      const turn = yield* routed.adapter.sendTurn(input).pipe(
-        Effect.onError(() =>
-          Effect.sync(() => {
-            if (latencySendId !== undefined) {
-              turnLatency.notSent(input.threadId, latencySendId);
-            }
-          }),
-        ),
-      );
+      const turn = yield* routed.adapter
+        .sendTurn(routed.adapter.sendsDeviceNote === true ? input : withDeviceNoteInFront(input))
+        .pipe(
+          Effect.onError(() =>
+            Effect.sync(() => {
+              if (latencySendId !== undefined) {
+                turnLatency.notSent(input.threadId, latencySendId);
+              }
+            }),
+          ),
+        );
       if (latencySendId !== undefined) {
         yield* recordTurnLatency(turnLatency.sent(input.threadId, latencySendId, turn.turnId));
       }
@@ -1619,7 +1622,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
       }
 
-      const turn = yield* routed.adapter.steerTurn(input);
+      const turn = yield* routed.adapter.steerTurn(
+        routed.adapter.sendsDeviceNote === true ? input : withDeviceNoteInFront(input),
+      );
       yield* directory.upsert({
         threadId: input.threadId,
         provider: routed.adapter.provider,

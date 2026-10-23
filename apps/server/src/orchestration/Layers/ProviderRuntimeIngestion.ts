@@ -70,6 +70,7 @@ import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { childDeliveryForTurnEnd } from "../childThreadDelivery.ts";
 import { RemoteRequestTurnEnds } from "../Services/RemoteRequestTurnEnds.ts";
 import { ScheduledRunTurnEnds } from "../Services/ScheduledRunTurnEnds.ts";
+import { RealtimeVoiceDevices } from "../Services/RealtimeVoiceDevices.ts";
 import {
   carriedBackgroundTasks,
   NO_BACKGROUND_TASKS,
@@ -1253,6 +1254,7 @@ const make = Effect.gen(function* () {
   const remoteRequestTurnEnds = yield* Effect.serviceOption(RemoteRequestTurnEnds);
   // Scheduled tasks, when this server has them: see ScheduledRunTurnEnds.
   const scheduledRunTurnEnds = yield* Effect.serviceOption(ScheduledRunTurnEnds);
+  const realtimeVoiceDevices = yield* Effect.serviceOption(RealtimeVoiceDevices);
   const serverSettingsService = yield* ServerSettingsService;
   const agentPages = yield* AgentPages;
   const mcpApps = yield* McpApps;
@@ -3910,13 +3912,18 @@ const make = Effect.gen(function* () {
         event.payload.text.trim().length > 0
       ) {
         // Spoken user input never goes through `thread.turn.start`, so record
-        // it explicitly or voice conversations project with no user side.
+        // it explicitly or voice conversations project with no user side,
+        // with the device that spoke it.
+        const sentFrom = Option.isSome(realtimeVoiceDevices)
+          ? yield* realtimeVoiceDevices.value.takeSpeaker(thread.id)
+          : undefined;
         yield* orchestrationEngine.dispatch({
           type: "thread.message.user.record",
           commandId: providerCommandId(event, "realtime-user-transcript"),
           threadId: thread.id,
           messageId: MessageId.make(`user:realtime:${thread.id}:${event.eventId}`),
           text: event.payload.text,
+          ...(sentFrom !== undefined ? { sentFrom } : {}),
           createdAt: now,
         });
       }

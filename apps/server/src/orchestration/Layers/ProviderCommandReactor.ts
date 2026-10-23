@@ -35,7 +35,7 @@ import {
   type ThreadCheckoutSwitchDeferredPayload,
   ThreadForkContextPayload,
   ThreadForkSeedOutcomeActivityKind,
-  type ThreadForkSeedOutcomePayload,
+  ThreadForkSeedOutcomePayload,
   type TurnId,
 } from "@threadlines/contracts";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
@@ -88,6 +88,7 @@ import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { makeSessionLaunchGenerations, withoutLaunchMark } from "../sessionLaunches.ts";
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
+import { messageSentFromNote, previousMessageSentFrom } from "../messageSentFrom.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
 
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
@@ -136,6 +137,7 @@ const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationErro
 const isCheckoutMissingError = Schema.is(CheckoutMissingError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isThreadForkContextPayload = Schema.is(ThreadForkContextPayload);
+const isThreadForkSeedOutcomePayload = Schema.is(ThreadForkSeedOutcomePayload);
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -2048,6 +2050,40 @@ const make = Effect.gen(function* () {
     // did since its last turn without waking it (notes are its alone).
     const childContext = yield* childThreadContext(thread, input.participantId, input.fromThread);
     const scheduleContext = yield* scheduledTaskContext(thread, input.participantId);
+    const sentMessage = thread.messages.find((message) => message.id === input.messageId);
+    // Which device the user sent it from, when that matters (see
+    // messageSentFromNote). A native fork carries on the source thread's
+    // conversation up to its fork point (the answer forked from, or just
+    // before the prompt it replaces), so its first message looks back there,
+    // also when it is sent again on the session an earlier try forked (its
+    // seed outcome says so). Room threads never fork natively.
+    const carriesSourceConversation =
+      nativeForkApplied ||
+      thread.activities.some(
+        (activity) =>
+          activity.kind === ThreadForkSeedOutcomeActivityKind &&
+          isThreadForkSeedOutcomePayload(activity.payload) &&
+          activity.payload.seedMode === "provider-native",
+      );
+    const forkedFromMessageId =
+      carriesSourceConversation && forkContext !== undefined && sourceThread !== undefined
+        ? forkContext.sourceMessageRole === "user"
+          ? forkContext.sourceMessageId
+          : (sourceThread.messages[
+              sourceThread.messages.findIndex(
+                (message) => message.id === forkContext.sourceMessageId,
+              ) + 1
+            ]?.id ?? null)
+        : undefined;
+    const deviceNote = messageSentFromNote({
+      sentFrom: sentMessage?.sentFrom,
+      previous:
+        previousMessageSentFrom(thread.messages, input.messageId, input.participantId) ??
+        (forkedFromMessageId !== undefined && sourceThread !== undefined
+          ? previousMessageSentFrom(sourceThread.messages, forkedFromMessageId, null)
+          : undefined),
+      text: input.messageText,
+    });
     const providerContext = [
       resumeContextText,
       forkContextText,
@@ -2067,9 +2103,7 @@ const make = Effect.gen(function* () {
     // message the user wrote in their composer and did not send as plain
     // text; never for an agent's, another thread's or automation's.
     const typedText =
-      thread.messages.find((message) => message.id === input.messageId)?.composer === "typed"
-        ? toNonEmptyProviderInput(input.messageText)
-        : undefined;
+      sentMessage?.composer === "typed" ? toNonEmptyProviderInput(input.messageText) : undefined;
     const normalizedAttachments = [
       ...(nativeForkApplied ? [] : (input.providerAttachments ?? [])),
       ...(input.attachments ?? []),
@@ -2155,6 +2189,7 @@ const make = Effect.gen(function* () {
               },
             }
           : {}),
+        ...(deviceNote !== undefined ? { deviceNote } : {}),
         ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(telemetryContext !== undefined ? { telemetryContext } : {}),
@@ -2876,6 +2911,7 @@ const make = Effect.gen(function* () {
         participantId: event.payload.participantId ?? null,
         // Still the words the user wrote: the next turn sends them as typed.
         ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
+        ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
         createdAt: event.payload.createdAt,
       })
       .pipe(Effect.asVoid);
@@ -2988,6 +3024,17 @@ const make = Effect.gen(function* () {
     // The agent that was working when the follow-up was submitted.
     const steeredAgentId = event.payload.participantId ?? null;
     const steerSessionKey = participantSessionKey(event.payload.threadId, steeredAgentId);
+    // A steer from another kind of device than the running turn's says so
+    // (see messageSentFromNote); a driver that can't keep it apart from words
+    // the user typed leaves it out (Claude).
+    const deviceNote = messageSentFromNote({
+      sentFrom: event.payload.sentFrom,
+      previous: previousMessageSentFrom(thread.messages, null, steeredAgentId, {
+        answered: false,
+      }),
+      text: event.payload.text,
+      steer: true,
+    });
     const delivered = yield* providerService
       .steerTurn({
         threadId: steerSessionKey,
@@ -3000,6 +3047,7 @@ const make = Effect.gen(function* () {
         ...(event.payload.composer === "typed" && normalizedInput
           ? { typed: { text: normalizedInput } }
           : {}),
+        ...(deviceNote !== undefined ? { deviceNote } : {}),
       })
       .pipe(
         Effect.as(true),
@@ -3035,6 +3083,7 @@ const make = Effect.gen(function* () {
         ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
       },
       ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
+      ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
       createdAt: event.payload.createdAt,
     });
   });
@@ -3522,12 +3571,21 @@ const make = Effect.gen(function* () {
             let steered = false;
             const answeringAgentId = sessionSlotParticipantId(thread.session);
             if (thread.session?.status === "running" && activeTurnId) {
+              const deviceNote = messageSentFromNote({
+                sentFrom: event.payload.sentFrom,
+                previous: previousMessageSentFrom(thread.messages, null, answeringAgentId, {
+                  answered: false,
+                }),
+                text: input,
+                steer: true,
+              });
               steered = yield* providerService
                 .steerTurn({
                   threadId: participantSessionKey(thread.id, answeringAgentId),
                   expectedTurnId: activeTurnId,
                   messageId,
                   input,
+                  ...(deviceNote !== undefined ? { deviceNote } : {}),
                 })
                 .pipe(
                   Effect.as(true),
@@ -3545,6 +3603,9 @@ const make = Effect.gen(function* () {
                   turnId: activeTurnId,
                   participantId: answeringAgentId,
                   message: { messageId, role: "user", text: input, attachments: [] },
+                  ...(event.payload.sentFrom !== undefined
+                    ? { sentFrom: event.payload.sentFrom }
+                    : {}),
                   createdAt: event.payload.createdAt,
                 });
               } else {
@@ -3585,6 +3646,9 @@ const make = Effect.gen(function* () {
                 message: { messageId, role: "user", text: input, attachments: [] },
                 runtimeMode: thread.runtimeMode,
                 interactionMode: thread.interactionMode,
+                ...(event.payload.sentFrom !== undefined
+                  ? { sentFrom: event.payload.sentFrom }
+                  : {}),
                 createdAt: event.payload.createdAt,
               });
             }
@@ -4845,6 +4909,15 @@ const make = Effect.gen(function* () {
     const note = [catchUp?.note, changes]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");
+    // Its runtime may carry on the agent's conversation (a fork): the main
+    // lane is what it last heard from.
+    const deviceNote = isReview
+      ? undefined
+      : messageSentFromNote({
+          sentFrom: question.sentFrom,
+          previous: previousMessageSentFrom(thread.messages, question.id, sideTurn.participantId),
+          text: question.text,
+        });
 
     // Stopped while it was starting: the question is never sent.
     const latest = yield* resolveThread(threadId);
@@ -4868,6 +4941,7 @@ const make = Effect.gen(function* () {
       threadId: key,
       messageId: sideTurn.messageId,
       ...(providerInput !== undefined ? { input: providerInput } : {}),
+      ...(deviceNote !== undefined ? { deviceNote } : {}),
       modelSelection,
       interactionMode: "default",
     });

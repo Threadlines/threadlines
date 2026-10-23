@@ -1255,6 +1255,7 @@ export function projectEvent(
             ...(payload.imported === true ? { imported: true } : {}),
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
+            ...(payload.sentFrom !== undefined ? { sentFrom: payload.sentFrom } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -1286,6 +1287,9 @@ export function projectEvent(
                     // Who wrote it is settled by the write that names it first.
                     ...(entry.composer === undefined && message.composer !== undefined
                       ? { composer: message.composer }
+                      : {}),
+                    ...(entry.sentFrom === undefined && message.sentFrom !== undefined
+                      ? { sentFrom: message.sentFrom }
                       : {}),
                   }
                 : entry,
@@ -1344,6 +1348,7 @@ export function projectEvent(
               : {}),
             ...(payload.agentModels !== undefined ? { agentModels: payload.agentModels } : {}),
             ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
+            ...(payload.sentFrom !== undefined ? { sentFrom: payload.sentFrom } : {}),
             turnId: payload.turnId,
             streaming: false,
             createdAt: payload.createdAt,
@@ -1361,6 +1366,8 @@ export function projectEvent(
                     ...message,
                     eventSequence: entry.eventSequence,
                     ...keptAgentModels(entry, message),
+                    // Where it was sent from is settled by the write that names it first.
+                    ...(entry.sentFrom !== undefined ? { sentFrom: entry.sentFrom } : {}),
                   }
                 : entry,
             )
