@@ -659,7 +659,7 @@ The two test servers:
 - **Lineage keys are environment-scoped.** A parent and its child may live on different computers. `attachedParentKeyOf` (Sidebar.tsx:255-262) assumes the parent shares the child's environment, so it takes the parent's environment from `remoteOrigin` / `remote`.
 - **Families stay with their parent.** A child on another computer is nested under its parent with a small computer glyph.
 - **Machine filter.** When it hides the parent's computer but shows the child's, the child appears as its own row with "from <parent> on <computer>". Group counts include nested children.
-- **Group by.** A client setting `sidebarGrouping: none | project | computer`, default `none`, picked in the scope menu (ProjectScopeMenu) under a "Group" section.
+- **Group by.** A client setting `sidebarGrouping: none | project | computer`, default `none`, picked behind the View button beside the project picker (InboxViewMenu), alongside the Computer and Show filters. The project picker itself holds projects only.
   - Families are grouped by their parent's project or computer, after families are built (Sidebar.tsx:1011-1051).
   - Groups get header rows (project favicon or computer glyph, name, live counts), collapsible and remembered in `uiStateStore`.
   - Pins sort first inside their group, and Wrapped stays one flat section.
