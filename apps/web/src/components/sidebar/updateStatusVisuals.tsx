@@ -1,13 +1,11 @@
-import type { ReactNode } from "react";
-
 import { cn } from "~/lib/utils";
 
 /**
- * Shared visual language for the sidebar updater surfaces (app update chip,
- * provider update card, arm64 build warning). Every updater maps its
- * domain-specific state onto one of these tones so the footer reads as a
- * single system: progress = primary, success = ready/done, warning = needs
- * attention, error = failed, neutral = queued/idle accents.
+ * Shared visual language for the app's updater surfaces (version tag, rail
+ * update button, arm64 build warning). Every updater maps its domain-specific
+ * state onto one of these tones so they read as a single system: progress =
+ * primary, success = ready/done, warning = needs attention, error = failed,
+ * neutral = idle accents.
  */
 export type UpdateStatusTone = "neutral" | "progress" | "success" | "warning" | "error";
 
@@ -43,14 +41,6 @@ export const UPDATE_STATUS_DOT_STYLES: Record<UpdateStatusTone, string> = {
   error: "bg-destructive",
 };
 
-const UPDATE_STATUS_BADGE_STYLES: Record<UpdateStatusTone, string> = {
-  neutral: "border-muted-foreground/20 bg-muted-foreground/8 text-muted-foreground",
-  progress: "border-brand-navy/18 bg-brand-navy/8 text-primary-readable",
-  success: "border-success/20 bg-success/8 text-success",
-  warning: "border-warning/24 bg-warning/8 text-warning",
-  error: "border-destructive/24 bg-destructive/8 text-destructive",
-};
-
 export const UPDATE_STATUS_RAIL_FILL_STYLES: Record<UpdateStatusTone, string> = {
   neutral: "bg-muted-foreground/45",
   progress: "bg-primary-readable",
@@ -58,67 +48,6 @@ export const UPDATE_STATUS_RAIL_FILL_STYLES: Record<UpdateStatusTone, string> = 
   warning: "bg-warning",
   error: "bg-destructive",
 };
-
-/** Bordered mini status badge ("42%", "Updating", "Failed", …). */
-export function UpdateStatusBadge({
-  tone,
-  className,
-  children,
-}: {
-  tone: UpdateStatusTone;
-  className?: string;
-  children: ReactNode;
-}) {
-  return (
-    <span
-      className={cn(
-        "shrink-0 rounded-sm border px-1.5 py-px text-[9.5px] leading-3 font-medium",
-        UPDATE_STATUS_BADGE_STYLES[tone],
-        className,
-      )}
-    >
-      {children}
-    </span>
-  );
-}
-
-/**
- * Segmented status rail: one segment per tracked item, colored by that
- * item's tone. Running segments shimmer, queued (neutral) segments stay an
- * empty track, terminal segments fill solid — the rail itself is the
- * aggregate progress story, so no percent math is needed.
- */
-export function UpdateSegmentedRail({
-  segments,
-  className,
-}: {
-  segments: ReadonlyArray<{ readonly key: string; readonly tone: UpdateStatusTone }>;
-  className?: string;
-}) {
-  return (
-    <span aria-hidden="true" className={cn("flex h-0.5 w-full gap-0.5", className)}>
-      {segments.map(({ key, tone }) => (
-        <span
-          className="relative min-w-0 flex-1 overflow-hidden rounded-full bg-foreground/8"
-          key={key}
-        >
-          {tone === "progress" ? (
-            <span
-              className={cn(
-                "update-indeterminate-rail absolute inset-y-0 left-0 w-[45%] rounded-full",
-                UPDATE_STATUS_RAIL_FILL_STYLES.progress,
-              )}
-            />
-          ) : tone === "neutral" ? null : (
-            <span
-              className={cn("absolute inset-0 rounded-full", UPDATE_STATUS_RAIL_FILL_STYLES[tone])}
-            />
-          )}
-        </span>
-      ))}
-    </span>
-  );
-}
 
 /**
  * Determinate progress rail with an indeterminate shimmer over the remainder

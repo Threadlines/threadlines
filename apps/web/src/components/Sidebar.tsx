@@ -149,7 +149,6 @@ import {
 } from "../environments/runtime";
 import type { SidebarThreadSummary } from "../types";
 
-import { SidebarProviderUpdatePill } from "./sidebar/SidebarProviderUpdatePill";
 import { CommandDialogTrigger } from "./ui/command";
 
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
@@ -477,16 +476,15 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader() {
 });
 
 /**
- * The list's footer: agent-update progress and the Intel-build warning, each
- * only while it has something to say, so the footer is usually gone. The
- * app's own version and updates live in the rail's update button; where the
- * rail is hidden (a phone, a narrow window) the version tag stays here.
+ * The list's footer: the Intel-build warning, only while it has something to
+ * say, so the footer is usually gone. The app's own version and updates live
+ * in the rail's update button; where the rail is hidden (a phone, a narrow
+ * window) the version tag stays here. Agent updates report in a notice.
  */
 const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const isMobile = useIsMobile();
   return (
     <SidebarFooter className="p-2 empty:hidden">
-      <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       {isMobile ? (
         <div className="flex min-h-6 items-center justify-end px-1">

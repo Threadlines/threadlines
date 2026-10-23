@@ -1,45 +1,26 @@
 import { useNavigate } from "@tanstack/react-router";
 import { DownloadIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
-import {
-  ACP_REGISTRY_DRIVER_KIND,
-  type ProviderDriverKind,
-  type ProviderInstanceId,
-} from "@threadlines/contracts";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { ACP_REGISTRY_DRIVER_KIND, type ProviderDriverKind } from "@threadlines/contracts";
 
 import { ensureLocalApi } from "../localApi";
 import { useDismissedProviderUpdateNotificationKeys } from "../providerUpdateDismissal";
+import { trackProviderUpdates, useProviderUpdateRunStore } from "../providerUpdateRunStore";
 import { useServerProviders } from "../rpc/serverState";
 import { PROVIDER_ICON_BY_PROVIDER } from "./chat/providerIconUtils";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
-  collectUpdatedProviderSnapshots,
-  firstRejectedProviderUpdateMessage,
-  getProviderUpdateInitialToastView,
-  getProviderUpdateProgressToastView,
-  getProviderUpdateRejectedToastView,
-  getProviderUpdateRunningToastView,
+  getProviderUpdatePromptView,
+  providerUpdateGroupKey,
   providerUpdateNotificationKey,
   shouldOpenProviderUpdatePrompt,
-  type ProviderUpdateToastView,
 } from "./ProviderUpdateLaunchNotification.logic";
 import { useHoldLaunchPromptsForSetup } from "./setup/firstRunGateState";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
 const seenProviderUpdateNotificationKeys = new Set<string>();
 type ProviderUpdateToastId = ReturnType<typeof toastManager.add>;
-
-type ActiveProviderUpdateToast =
-  | { readonly kind: "prompt"; readonly key: string; readonly toastId: ProviderUpdateToastId }
-  | {
-      readonly kind: "update";
-      readonly key: string;
-      readonly toastId: ProviderUpdateToastId;
-      readonly providerInstanceIds: ReadonlySet<ProviderInstanceId>;
-      readonly providerDrivers: readonly ProviderDriverKind[];
-      readonly providerCount: number;
-    };
 
 type ProviderUpdateToastIconProvider = { readonly driver: ProviderDriverKind };
 
@@ -111,66 +92,25 @@ function ProviderUpdateToastIconStack({
   );
 }
 
-function providerUpdateToastIconForDrivers(drivers: readonly ProviderDriverKind[]): ReactNode {
-  return <ProviderUpdateToastIconStack providers={drivers.map((driver) => ({ driver }))} />;
-}
-
-function updateProviderUpdateToast(input: {
-  readonly toastId: ProviderUpdateToastId;
-  readonly view: ProviderUpdateToastView;
-  readonly openSettings: () => void;
-  readonly leadingIcon?: ReactNode;
-}) {
-  if (input.view.type === "loading" || input.view.type === "success") {
-    toastManager.update(input.toastId, {
-      type: input.view.type,
-      title: input.view.title,
-      description: input.view.description,
-      timeout: 0,
-      actionProps: undefined,
-      data: {
-        hideCopyButton: true,
-        ...(input.leadingIcon !== undefined ? { leadingIcon: input.leadingIcon } : {}),
-        ...(input.view.dismissAfterVisibleMs !== undefined
-          ? { dismissAfterVisibleMs: input.view.dismissAfterVisibleMs }
-          : {}),
-      },
-    });
-    return;
-  }
-
-  toastManager.update(
-    input.toastId,
-    stackedThreadToast({
-      type: input.view.type,
-      title: input.view.title,
-      description: input.view.description,
-      timeout: 0,
-      actionProps: {
-        children: "Settings",
-        onClick: input.openSettings,
-      },
-      actionVariant: "outline",
-      data: {
-        hideCopyButton: true,
-        ...(input.leadingIcon !== undefined ? { leadingIcon: input.leadingIcon } : {}),
-      },
-    }),
-  );
-}
-
-function isTerminalProviderUpdateToastView(view: ProviderUpdateToastView) {
-  return view.phase === "failed" || view.phase === "unchanged" || view.phase === "succeeded";
-}
-
+/**
+ * The launch prompt: "Updates available" with one-click Update for agents
+ * Threadlines can update itself. Clicking Update hands this notice to
+ * `ProviderUpdateProgress`, which shows the run there until it finishes.
+ */
 export function ProviderUpdateLaunchNotification() {
   const navigate = useNavigate();
   const providers = useServerProviders();
-  const activeToastRef = useRef<ActiveProviderUpdateToast | null>(null);
+  const activePromptRef = useRef<{
+    readonly key: string;
+    readonly toastId: ProviderUpdateToastId;
+  } | null>(null);
   const { dismissedNotificationKeys, dismissNotificationKey } =
     useDismissedProviderUpdateNotificationKeys();
-  // Setup owns the screen while it is pending or open; this prompt waits.
+  // Setup owns the screen while it is pending or open, and an update already
+  // running (started anywhere) has its own notice: this prompt waits for both.
   const heldForSetup = useHoldLaunchPromptsForSetup();
+  const updateRunning = useProviderUpdateRunStore((state) => state.run !== null);
+  const held = heldForSetup || updateRunning;
 
   // Community agents are left out of this prompt: a version Threadlines
   // hasn't reviewed is offered on the agent's own row, where that is said.
@@ -192,15 +132,10 @@ export function ProviderUpdateLaunchNotification() {
   );
 
   const openProviderSettings = useCallback(
-    (toastId?: ProviderUpdateToastId) => {
-      const activeToast = activeToastRef.current;
-      if (toastId !== undefined) {
-        toastManager.close(toastId);
-      } else if (activeToast) {
-        toastManager.close(activeToast.toastId);
-      }
-      if (activeToast && (toastId === undefined || activeToast.toastId === toastId)) {
-        activeToastRef.current = null;
+    (toastId: ProviderUpdateToastId) => {
+      toastManager.close(toastId);
+      if (activePromptRef.current?.toastId === toastId) {
+        activePromptRef.current = null;
       }
       void navigate({ to: "/settings/providers" });
     },
@@ -208,41 +143,13 @@ export function ProviderUpdateLaunchNotification() {
   );
 
   useEffect(() => {
-    const activeToast = activeToastRef.current;
-    if (activeToast?.kind !== "update") {
-      return;
-    }
-
-    const activeProviders = providers.filter((provider) =>
-      activeToast.providerInstanceIds.has(provider.instanceId),
-    );
-    const view = getProviderUpdateProgressToastView({
-      providers: activeProviders,
-      providerCount: activeToast.providerCount,
-    });
-    updateProviderUpdateToast({
-      toastId: activeToast.toastId,
-      view,
-      openSettings: () => openProviderSettings(activeToast.toastId),
-      leadingIcon: providerUpdateToastIconForDrivers(activeToast.providerDrivers),
-    });
-
-    if (isTerminalProviderUpdateToastView(view)) {
-      activeToastRef.current = null;
-    }
-  }, [providers, openProviderSettings]);
-
-  useEffect(() => {
-    const activeToast = activeToastRef.current;
-    if (activeToast?.kind === "prompt" && activeToast.key !== notificationKey) {
-      toastManager.close(activeToast.toastId);
-      activeToastRef.current = null;
-    } else if (activeToast?.kind === "prompt" && heldForSetup) {
-      // Setup opened over a prompt already on screen: put it away without
-      // dismissing it, and let it come back once setup is out of the way.
-      toastManager.close(activeToast.toastId);
-      activeToastRef.current = null;
-      seenProviderUpdateNotificationKeys.delete(activeToast.key);
+    const activePrompt = activePromptRef.current;
+    if (activePrompt && (activePrompt.key !== notificationKey || held)) {
+      toastManager.close(activePrompt.toastId);
+      activePromptRef.current = null;
+      // Put away without dismissing it: it comes back once setup or the
+      // update is out of the way, if there is still something to offer.
+      if (held) seenProviderUpdateNotificationKeys.delete(activePrompt.key);
     }
 
     if (notificationKey === null) {
@@ -253,8 +160,8 @@ export function ProviderUpdateLaunchNotification() {
         notificationKey,
         isDismissed: dismissedNotificationKeys.has(notificationKey),
         isAlreadySeen: seenProviderUpdateNotificationKeys.has(notificationKey),
-        hasActiveToast: activeToastRef.current !== null,
-        isHeldForSetup: heldForSetup,
+        hasActiveToast: activePromptRef.current !== null,
+        isHeldForSetup: held,
       })
     ) {
       return;
@@ -262,7 +169,7 @@ export function ProviderUpdateLaunchNotification() {
 
     seenProviderUpdateNotificationKeys.add(notificationKey);
 
-    const initialView = getProviderUpdateInitialToastView({ updateProviders, oneClickProviders });
+    const view = getProviderUpdatePromptView({ updateProviders, oneClickProviders });
 
     let toastId!: ProviderUpdateToastId;
     let updateStarted = false;
@@ -276,77 +183,25 @@ export function ProviderUpdateLaunchNotification() {
         return;
       }
       updateStarted = true;
-
-      const providerCount = oneClickProviders.length;
-      const providerInstanceIds = new Set(oneClickProviders.map((provider) => provider.instanceId));
-      const providerDrivers = oneClickProviders.map((provider) => provider.driver);
-      activeToastRef.current = {
-        kind: "update",
-        key: notificationKey,
-        toastId,
-        providerInstanceIds,
-        providerDrivers,
-        providerCount,
-      };
-
-      updateProviderUpdateToast({
-        toastId,
-        view: getProviderUpdateRunningToastView(providerCount),
-        openSettings,
-        leadingIcon: providerUpdateToastIconForDrivers(providerDrivers),
+      // From here the notice belongs to the run, not to this prompt.
+      activePromptRef.current = null;
+      const tracking = trackProviderUpdates(oneClickProviders.map(providerUpdateGroupKey), {
+        noticeId: toastId,
       });
-
-      void Promise.allSettled(
-        oneClickProviders.map(async (provider) =>
-          ensureLocalApi().server.updateProvider({
-            provider: provider.driver,
-            instanceId: provider.instanceId,
-          }),
-        ),
-      ).then((results) => {
-        const activeUpdateToast = activeToastRef.current;
-        if (activeUpdateToast?.kind !== "update" || activeUpdateToast.toastId !== toastId) {
-          return;
-        }
-
-        const rejectedMessage = firstRejectedProviderUpdateMessage(results);
-        if (rejectedMessage) {
-          updateProviderUpdateToast({
-            toastId,
-            view: getProviderUpdateRejectedToastView(providerCount, rejectedMessage),
-            openSettings,
-            leadingIcon: providerUpdateToastIconForDrivers(activeUpdateToast.providerDrivers),
+      for (const provider of oneClickProviders) {
+        ensureLocalApi()
+          .server.updateProvider({ provider: provider.driver, instanceId: provider.instanceId })
+          .catch((error: unknown) => {
+            tracking.reportStartFailure(providerUpdateGroupKey(provider), error);
           });
-          activeToastRef.current = null;
-          return;
-        }
-
-        const updatedProviderSnapshots = collectUpdatedProviderSnapshots({
-          results,
-          providerInstanceIds,
-        });
-        const view = getProviderUpdateProgressToastView({
-          providers: updatedProviderSnapshots,
-          providerCount,
-        });
-        updateProviderUpdateToast({
-          toastId,
-          view,
-          openSettings,
-          leadingIcon: providerUpdateToastIconForDrivers(activeUpdateToast.providerDrivers),
-        });
-
-        if (isTerminalProviderUpdateToastView(view)) {
-          activeToastRef.current = null;
-        }
-      });
+      }
     };
 
     toastId = toastManager.add(
       stackedThreadToast({
-        type: initialView.type,
-        title: initialView.title,
-        description: initialView.description,
+        type: "warning",
+        title: view.title,
+        description: view.description,
         timeout: 0,
         actionProps:
           oneClickProviders.length > 0
@@ -378,11 +233,11 @@ export function ProviderUpdateLaunchNotification() {
         },
       }),
     );
-    activeToastRef.current = { kind: "prompt", key: notificationKey, toastId };
+    activePromptRef.current = { key: notificationKey, toastId };
   }, [
     dismissNotificationKey,
     dismissedNotificationKeys,
-    heldForSetup,
+    held,
     notificationKey,
     oneClickProviders,
     openProviderSettings,

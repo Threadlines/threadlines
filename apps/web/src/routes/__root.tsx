@@ -45,6 +45,7 @@ import {
   ProviderSignInDialogHost,
 } from "../components/chat/ProviderSignInDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
+import { ProviderUpdateProgress } from "../components/ProviderUpdateProgress";
 import { SourceControlToolUpdateLaunchNotification } from "../components/SourceControlToolUpdateLaunchNotification";
 import { SavedEnvironmentConnectionOverlay } from "../components/SavedEnvironmentConnectionOverlay";
 import {
@@ -242,6 +243,7 @@ function RootRouteView() {
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+        <ProviderUpdateProgress />
         {primaryEnvironmentAuthenticated ? <SourceControlToolUpdateLaunchNotification /> : null}
         {primaryEnvironmentAuthenticated ? <WebSocketConnectionCoordinator /> : null}
         <ComputerStallNotices />
