@@ -107,6 +107,12 @@ export interface ProviderInstanceAuthFlows {
   /** What the panel calls the flow, e.g. "Sign in with Google". */
   readonly describe: (flow: ProviderAuthFlow) => string;
   /**
+   * The agent also opens the sign-in page `run` reports, in a browser on this
+   * computer, and nothing turns that off (Grok). A client on this computer
+   * then leaves it at that; one elsewhere still opens the page.
+   */
+  readonly opensPageItself?: boolean;
+  /**
    * Runs one flow to its end. `report` streams lines to the panel; a line
    * holding the sign-in URL lets the client open it. Interrupting cancels.
    */
@@ -180,6 +186,8 @@ export interface ProviderAuthTerminalCommand {
   readonly env: NodeJS.ProcessEnv;
   /** Shown under the panel's "copy command" disclosure. */
   readonly display: string;
+  /** Whether the command opens its sign-in page itself; unset when unknown. */
+  readonly opensPageItself?: boolean;
   readonly finished: (exitCode: number | null) => Effect.Effect<void>;
 }
 

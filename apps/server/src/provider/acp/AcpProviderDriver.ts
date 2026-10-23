@@ -18,6 +18,7 @@ import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
+import { appendUsageLedgerEntry, type UsageLedgerEntry } from "../../usage/usageLedger.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -40,6 +41,7 @@ import {
   buildInitialAcpProviderSnapshot,
   checkAcpProviderStatus,
   enrichAcpSnapshot,
+  makeAcpCatalogCache,
 } from "./AcpProvider.ts";
 import type { AcpProviderDescriptor, AcpProviderSettings } from "./AcpProviderDescriptor.ts";
 import { makeAcpTextGeneration } from "./AcpTextGeneration.ts";
@@ -186,10 +188,27 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
           : Effect.void;
         yield* refreshMaintenance;
 
+        const serverConfig = yield* ServerConfig;
+        const usageLedger = descriptor.usageLedger;
+        const recordTurnUsage = usageLedger
+          ? (entry: UsageLedgerEntry) =>
+              appendUsageLedgerEntry({
+                stateDir: serverConfig.stateDir,
+                provider: usageLedger.provider,
+                entry,
+              }).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                // A lost usage line must never fail the turn it describes.
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Could not record a turn's usage", { instanceId, cause }),
+                ),
+              )
+          : undefined;
         const adapter = yield* makeAcpAdapter(descriptor, effectiveConfig, {
           environment: processEnv,
           ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
           instanceId,
+          ...(recordTurnUsage ? { recordTurnUsage } : {}),
         });
         const textGeneration = yield* makeAcpTextGeneration(
           descriptor,
@@ -197,13 +216,21 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
           processEnv,
         );
 
-        const checkProvider = checkAcpProviderStatus(descriptor, effectiveConfig, processEnv).pipe(
-          Effect.map(stampIdentity),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(HttpClient.HttpClient, httpClient),
-          Effect.provideService(Path.Path, path),
-        );
+        // Reading the catalog opens a session, which some agents keep on
+        // disk: the scheduled check reuses the last one while it is fresh.
+        const catalog = makeAcpCatalogCache();
+        const check = (reuseCatalog: boolean) =>
+          checkAcpProviderStatus(descriptor, effectiveConfig, processEnv, process.platform, {
+            cache: catalog,
+            reuse: reuseCatalog,
+          }).pipe(
+            Effect.map(stampIdentity),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+            Effect.provideService(Path.Path, path),
+          );
+        const checkProvider = check(false);
 
         const snapshot = yield* makeManagedServerProvider<Settings>({
           get maintenanceCapabilities() {
@@ -217,6 +244,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
               Effect.map(stampIdentity),
             ),
           checkProvider,
+          scheduledCheckProvider: check(true),
           enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
             enrichAcpSnapshot({
               descriptor,
@@ -227,6 +255,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
               publishSnapshot,
               stampIdentity,
               httpClient,
+              catalog,
             }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
           refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
         }).pipe(

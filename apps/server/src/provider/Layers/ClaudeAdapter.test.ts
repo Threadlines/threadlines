@@ -1728,7 +1728,12 @@ describe("ClaudeAdapterLive", () => {
             durable: false,
           },
         } as unknown as SDKMessage);
-        yield* Fiber.join(created);
+        const createdItem = yield* Fiber.join(created);
+        // Scheduling a check-back is a tool call, not a file change.
+        assert.equal(
+          createdItem?.type === "item.completed" ? createdItem.payload.itemType : null,
+          "dynamic_tool_call",
+        );
         const turnDone = yield* nextEvent("turn.completed");
         harness.query.emit({
           type: "result",

@@ -75,7 +75,7 @@ patchedDependencies:
     hash: 2b43ffccdaec7a8bb1d4c733c83f2399f2428a9391c1162403df1052efe6c63d
     path: patches/@effect__platform-node-shared@4.0.0-beta.107.patch
   '@legendapp/list@3.3.9':
-    hash: 2b4df92b9e7ed1714e40c36b8b2f1cf0fce5d506ed65b6d6789be30ab5380877
+    hash: 08e2454944f8d09cf395aa3e0b6316aeb4cea05a2276451fef220b70d9f72679
     path: patches/@legendapp__list@3.3.9.patch
   brace-expansion@5.0.12:
     hash: 0e03496f6903d2d5279ca778c42ee3a5195a2d1f8f522bb39e87db16857f3674
@@ -319,7 +319,7 @@ importers:
         version: 5.3.0
       '@legendapp/list':
         specifier: 3.3.9
-        version: 3.3.9(patch_hash=2b4df92b9e7ed1714e40c36b8b2f1cf0fce5d506ed65b6d6789be30ab5380877)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 3.3.9(patch_hash=08e2454944f8d09cf395aa3e0b6316aeb4cea05a2276451fef220b70d9f72679)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@lexical/react':
         specifier: ^0.49.0
         version: 0.49.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2)(yjs@13.6.31)
@@ -347,6 +347,9 @@ importers:
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
+      '@xterm/addon-search':
+        specifier: ^0.16.0
+        version: 0.16.0
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
@@ -3566,6 +3569,9 @@ packages:
 
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
+
+  '@xterm/addon-search@0.16.0':
+    resolution: {integrity: sha512-9OeuBFu0/uZJPu+9AHKY6g/w0Czyb/Ut0A5t79I4ULoU4IfU5BEpPFVGQxP4zTTMdfZEYkVIRYbHBX1xWwjeSA==}
 
   '@xterm/headless@6.0.0':
     resolution: {integrity: sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw==}
@@ -8081,7 +8087,7 @@ snapshots:
   '@koromix/koffi-win32-x64@3.2.1':
     optional: true
 
-  '@legendapp/list@3.3.9(patch_hash=2b4df92b9e7ed1714e40c36b8b2f1cf0fce5d506ed65b6d6789be30ab5380877)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@legendapp/list@3.3.9(patch_hash=08e2454944f8d09cf395aa3e0b6316aeb4cea05a2276451fef220b70d9f72679)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       react: 19.3.1
       use-sync-external-store: 1.6.0(react@19.3.1)
@@ -9500,6 +9506,8 @@ snapshots:
   '@xmldom/xmldom@0.8.15': {}
 
   '@xterm/addon-fit@0.11.0': {}
+
+  '@xterm/addon-search@0.16.0': {}
 
   '@xterm/headless@6.0.0': {}
 

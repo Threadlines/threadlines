@@ -96,6 +96,9 @@ html.electron.mac:not([data-marketing-capture]) {
   --color-provider-codex: var(--provider-codex);
   --color-provider-grok: var(--provider-grok);
   --color-provider-pi: var(--provider-pi);
+  --color-provider-muse: var(--provider-muse);
+  --color-provider-opencode: var(--provider-opencode);
+  --color-provider-fx: var(--provider-fx);
   --color-context-system-prompt: var(--context-system-prompt);
   --color-context-system-tools: var(--context-system-tools);
   --color-context-mcp-tools: var(--context-mcp-tools);
@@ -278,15 +281,21 @@ html.electron.mac:not([data-marketing-capture]) {
      its own mark is drawn. Grok takes a deep blue and Pi the blue of its own
      mark: beside the terracotta, blues are the hues that stay apart under
      red-green color blindness (greens, yellows and pinks fold into it), and the
-     two blues sit far enough apart in lightness to tell from each other. Any
-     two providers can end up side by side in a stacked chart, so every pair
-     passes the color-blind and normal-vision separation checks in both modes.
-     Darkened on light, lifted on dark, so a 1.5px chart stroke stays legible
-     against either canvas. */
+     two blues sit far enough apart in lightness to tell from each other. Muse
+     leans Meta's blue toward its purple (true Meta blue sits on Pi's), OpenCode
+     darkens its peach to a bronze (the peach sits on the terracotta), and fx,
+     black and white like Codex, takes a berry. Any two providers can end up
+     side by side in a stacked chart, so every pair passes the color-blind
+     (8+) and normal-vision (15+) separation checks in both modes. Darkened on
+     light, lifted on dark, so a 1.5px chart stroke stays legible against
+     either canvas. */
   --provider-claude: #c96442;
   --provider-codex: oklch(0.32 0 0);
   --provider-grok: #1c5cab;
   --provider-pi: #6198bb;
+  --provider-muse: #8169ec;
+  --provider-opencode: #7b4c00;
+  --provider-fx: #9a0a70;
   /* Per-model series on the usage page, in stacking order. Adjacent pairs pass
      a color-vision-deficiency separation check in both modes, so the order is
      load-bearing: slot 1 is the terracotta family, reserved for the leading
@@ -408,6 +417,9 @@ html.electron.mac:not([data-marketing-capture]) {
     --provider-codex: oklch(0.9 0 0);
     --provider-grok: #256abf;
     --provider-pi: #72a9cf;
+    --provider-muse: #9079fe;
+    --provider-opencode: #9a6a14;
+    --provider-fx: #c93a82;
     --usage-model-1: #d95926;
     --usage-model-2: #3987e5;
     --usage-model-3: #d55181;

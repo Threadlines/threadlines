@@ -2,8 +2,8 @@
  * The newest line a command printed, for the rows that show one:
  *
  * - a background run's row in the run list, while the list is open. A
- *   terminal's output already streams to the client, so its line is read
- *   from the terminal store's recent events; a command Claude sent to the
+ *   terminal's line is read from its thread's output stream, held while the
+ *   row shows (terminalStreams.ts); a command Claude sent to the
  *   background writes to a file the server can read, so the row polls the
  *   end of that file. Runs whose output never reaches Threadlines (a process
  *   found by its port, a provider task without a file) have no line.
@@ -17,10 +17,11 @@ import { useEffect, useEffectEvent, useState } from "react";
 import { readEnvironmentApi } from "../../environmentApi";
 import { lastPrintedLine } from "../../lib/terminalText";
 import {
-  selectTerminalEventEntries,
-  useTerminalStateStore,
+  acquireTerminalThreadStream,
+  readTerminalBuffer,
+  subscribeTerminalBuffer,
   type TerminalEventEntry,
-} from "../../terminalStateStore";
+} from "../../terminalStreams";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
 
 /** How often a row on screen re-reads a command's output. */
@@ -48,13 +49,35 @@ function useTerminalOutputLine(
   threadRef: ScopedThreadRef | null,
   terminalId: string | null,
 ): string | null {
-  return useTerminalStateStore((state) =>
-    threadRef && terminalId
-      ? lastTerminalOutputLine(
-          selectTerminalEventEntries(state.terminalEventEntriesByKey, threadRef, terminalId),
-        )
-      : null,
-  );
+  const environmentId = threadRef?.environmentId ?? null;
+  const threadId = threadRef?.threadId ?? null;
+  const sourceKey =
+    environmentId !== null && threadId !== null && terminalId !== null
+      ? `${environmentId}:${threadId}:${terminalId}`
+      : null;
+  const [state, setState] = useState<{ key: string; line: string | null } | null>(null);
+
+  useEffect(() => {
+    if (environmentId === null || threadId === null || terminalId === null) return;
+    const key = `${environmentId}:${threadId}:${terminalId}`;
+    const release = acquireTerminalThreadStream(environmentId, threadId);
+    const read = () => {
+      const line = lastTerminalOutputLine(
+        readTerminalBuffer(environmentId, threadId, terminalId).entries,
+      );
+      setState((previous) =>
+        previous?.key === key && previous.line === line ? previous : { key, line },
+      );
+    };
+    read();
+    const unsubscribe = subscribeTerminalBuffer(environmentId, threadId, terminalId, read);
+    return () => {
+      unsubscribe();
+      release();
+    };
+  }, [environmentId, terminalId, threadId]);
+
+  return state !== null && state.key === sourceKey ? state.line : null;
 }
 
 /** One read of a command's output: its text (null when there was none to

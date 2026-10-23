@@ -274,6 +274,34 @@ describe("makeManagedServerProvider", () => {
     ),
   );
 
+  it.effect("runs the lighter scheduled check on the interval and the full one when asked", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+        const record = (kind: string) =>
+          Ref.update(calls, (current) => [...current, kind]).pipe(Effect.as(refreshedSnapshot));
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: record("full"),
+          scheduledCheckProvider: record("scheduled"),
+          refreshInterval: "5 minutes",
+        });
+        yield* Effect.yieldNow;
+
+        yield* TestClock.adjust("5 minutes");
+        yield* Effect.yieldNow;
+        yield* provider.refresh;
+
+        // Startup and a refresh someone asked for are full; the interval is not.
+        assert.deepStrictEqual(yield* Ref.get(calls), ["full", "scheduled", "full"]);
+      }),
+    ),
+  );
+
   it.effect("streams supplemental snapshot updates after the base provider check completes", () =>
     Effect.scoped(
       Effect.gen(function* () {

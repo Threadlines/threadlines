@@ -160,6 +160,16 @@ function trunkColor(providerLabel: string | null | undefined): string {
   if (provider === "pi") {
     return "var(--provider-pi)";
   }
+  if (provider?.includes("muse")) {
+    return "var(--provider-muse)";
+  }
+  if (provider?.includes("opencode")) {
+    return "var(--provider-opencode)";
+  }
+  // A word of its own, so a name like "Firefox" stays out.
+  if (provider !== undefined && /(^|\W)fx(\W|$)/u.test(provider)) {
+    return "var(--provider-fx)";
+  }
   return "var(--border)";
 }
 

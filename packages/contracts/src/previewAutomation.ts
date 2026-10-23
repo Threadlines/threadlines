@@ -78,12 +78,13 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
 /**
  * How the agent names a thing on the page.
  *
- * `ref` is what a snapshot handed it -- the `eN` beside each node, resolved
- * against the tree it came from. `locator` is a Playwright locator, which
- * is the only one of these that can say "the delete button in the third row" --
- * a thing that is ordinary to want and impossible to express as a role and a
- * name. `selector` is plain CSS, and `text` is for when the agent knows what
- * the button says and nothing else.
+ * `ref` is what a snapshot handed it -- the `eN` beside each node (`f2e7`
+ * for one inside a frame), resolved against the tree it came from. `locator`
+ * is a Playwright locator, which is the only one of these that can say "the
+ * delete button in the third row" -- a thing that is ordinary to want and
+ * impossible to express as a role and a name. `selector` is plain CSS, and
+ * `text` is for when the agent knows what the button says and nothing else.
+ * Those three look in the page first and then in the frames inside it.
  *
  * `point` is none of those: it is a place rather than a thing. A mouse works in
  * coordinates, and an element-only vocabulary quietly rules out everything that

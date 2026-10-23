@@ -15,6 +15,7 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import {
   confirmQuitWithRunningAgentSessions,
+  describeRunningWorkForNativeQuit,
   DESKTOP_SHUTDOWN_FAILSAFE_DURATION,
   DesktopLifecycle,
   DesktopShutdown,
@@ -84,6 +85,7 @@ const runConfirmHarness = (input: {
   readonly runningThreadCount: number;
   readonly activeScheduledTaskCount?: number;
   readonly runInBackground?: boolean;
+  readonly busyTerminalCount?: number;
   readonly quitting?: boolean;
   readonly styledResponse?: boolean;
   readonly styledFailure?: { readonly windowOpen: boolean };
@@ -101,6 +103,7 @@ const runConfirmHarness = (input: {
     yield* Ref.set(state.localRunningThreadCount, input.runningThreadCount);
     yield* Ref.set(state.activeScheduledTaskCount, input.activeScheduledTaskCount ?? 0);
     yield* Ref.set(state.runInBackground, input.runInBackground ?? false);
+    yield* Ref.set(state.localBusyTerminalCount, input.busyTerminalCount ?? 0);
     yield* Ref.set(state.quitting, input.quitting ?? false);
     const shouldQuit = yield* confirmQuitWithRunningAgentSessions();
     yield* input.body(shouldQuit, styledCalls, dialogCalls);
@@ -119,9 +122,9 @@ const runConfirmHarness = (input: {
           handleBackendReady: Effect.void,
           allowMainWindowOpen: Effect.void,
           allowMainWindowClose: Effect.void,
-          requestQuitConfirmation: (runningThreadCount) =>
+          requestQuitConfirmation: (work) =>
             Effect.sync(() => {
-              styledCalls.push(runningThreadCount);
+              styledCalls.push(work.runningThreadCount);
             }).pipe(
               Effect.andThen(
                 input.styledFailure
@@ -275,6 +278,25 @@ describe("confirmQuitWithRunningAgentSessions", () => {
           assert.equal(dialogCalls[0]?.type, "warning");
           assert.equal(dialogCalls[0]?.message, "An agent session is still running.");
           assert.deepEqual(dialogCalls[0]?.buttons, ["Keep Running", "Quit Anyway"]);
+        }),
+    }),
+  );
+
+  it.effect("asks when only a terminal is running something, naming both kinds of work", () =>
+    runConfirmHarness({
+      runningThreadCount: 0,
+      busyTerminalCount: 1,
+      styledFailure: { windowOpen: true },
+      nativeResponse: 0,
+      body: (shouldQuit, styledCalls, dialogCalls) =>
+        Effect.sync(() => {
+          assert.equal(shouldQuit, false);
+          assert.deepEqual(styledCalls, [0]);
+          assert.equal(dialogCalls[0]?.message, "A terminal command is still running.");
+          assert.equal(
+            describeRunningWorkForNativeQuit({ threadCount: 1, terminalCount: 2 }, true),
+            "An agent session and 2 terminal commands are still running.",
+          );
         }),
     }),
   );

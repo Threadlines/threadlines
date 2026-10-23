@@ -18,6 +18,9 @@ import * as GitHubPullRequests from "./gitHubPullRequests.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+const GITHUB_PULL_REQUEST_NOT_FOUND_DETAIL =
+  "Pull request not found. Check the PR number or URL and try again.";
+
 export class GitHubCliError extends Schema.TaggedError<GitHubCliError>()("GitHubCliError", {
   operation: Schema.String,
   detail: Schema.String,
@@ -117,6 +120,11 @@ export interface GitHubCliShape {
   }) => Effect.Effect<void, GitHubCliError>;
 }
 
+/** GitHub answered that a pull request it was asked about by number does not exist. */
+export function isGitHubPullRequestNotFound(error: GitHubCliError): boolean {
+  return error.detail === GITHUB_PULL_REQUEST_NOT_FOUND_DETAIL;
+}
+
 export class GitHubCli extends Context.Service<GitHubCli, GitHubCliShape>()(
   "threadlines/source-control/GitHubCli",
 ) {}
@@ -168,7 +176,7 @@ function normalizeGitHubCliError(
   ) {
     return new GitHubCliError({
       operation,
-      detail: "Pull request not found. Check the PR number or URL and try again.",
+      detail: GITHUB_PULL_REQUEST_NOT_FOUND_DETAIL,
       cause: error,
     });
   }

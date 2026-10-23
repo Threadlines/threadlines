@@ -44,6 +44,7 @@ import {
   PULL_REQUEST_SETTLED_REFETCH_INTERVAL_MS,
   usePullRequestLists,
 } from "../lib/pullRequestsReactQuery";
+import { usePullRequestLookups } from "../lib/pullRequestLookups";
 import { LazyPullRequestDetailPanel } from "../components/pull-requests/LazyPullRequestDetailPanel";
 import { PullRequestHoverCardProvider } from "../components/pull-requests/PullRequestHoverCard";
 import {
@@ -59,6 +60,7 @@ import {
   leadThreadPullRequest,
   resolveLinkedThreadPullRequests,
   resolveThreadPullRequest,
+  threadPullRequestLookupRequests,
   threadViewBranch,
   withListedLanding,
   type ThreadPullRequest,
@@ -366,39 +368,67 @@ function ChatThreadRouteView() {
     () => (activeProject ? [activeProject] : []),
     [activeProject],
   );
+  // The branch this view means, and the thread as the pull request reads see it.
+  const pullRequestThread = useMemo(
+    () =>
+      serverThread
+        ? { ...serverThread, branch: threadViewBranch(serverThread, pullRequestGitStatus.data) }
+        : null,
+    [pullRequestGitStatus.data, serverThread],
+  );
+  // What the open listing does not carry, read on its own: the settled
+  // listings keep only the newest few, and a pull request that fell off them
+  // would read as open forever. The same queries the sidebar keeps.
+  const pullRequestLookups = usePullRequestLookups(
+    useMemo(
+      () =>
+        pullRequestTabAvailable && pullRequestThread
+          ? threadPullRequestLookupRequests({
+              threads: [pullRequestThread],
+              projects: pullRequestProjects,
+              openEntries: openPullRequests.entries,
+            })
+          : [],
+      [openPullRequests.entries, pullRequestProjects, pullRequestTabAvailable, pullRequestThread],
+    ),
+  );
   const threadPullRequest = useMemo(() => {
-    if (!serverThread) {
+    if (!pullRequestThread) {
       return null;
     }
-    const thread = {
-      ...serverThread,
-      branch: threadViewBranch(serverThread, pullRequestGitStatus.data),
-    };
+    // The checkout's status first, then the open listing, then the lookup,
+    // which still knows a merge after the worktree is gone and the listings
+    // have moved on. Not the settled listings, which match by branch name
+    // alone: on a default branch that is history, which the status and the
+    // lookup both leave out.
     const resolved = resolveThreadPullRequest({
-      thread,
+      thread: pullRequestThread,
       gitStatus: pullRequestGitStatus.data,
       openEntries: openPullRequests.entries,
+      lookups: pullRequestLookups,
       projects: pullRequestProjects,
     });
-    // Dated from the settled listings, which are only read beside linked pull
-    // requests: that is when the lead is ranked by landing, so when it matters.
+    // Dated from the settled listings and lookups, which also say when a
+    // status still calling it open is older than its merge.
     return resolved === null
       ? null
       : withListedLanding(
           resolved,
           resolveThreadPullRequest({
-            thread,
+            thread: pullRequestThread,
             gitStatus: null,
             openEntries: [],
             settledEntries: settledPullRequestEntries,
+            lookups: pullRequestLookups,
             projects: pullRequestProjects,
           }),
         );
   }, [
     openPullRequests.entries,
     pullRequestGitStatus.data,
+    pullRequestLookups,
     pullRequestProjects,
-    serverThread,
+    pullRequestThread,
     settledPullRequestEntries,
   ]);
   // The panel addresses one pull request by project and repository, so a
@@ -437,6 +467,7 @@ function ChatThreadRouteView() {
       projects: pullRequestProjects,
       openEntries: openPullRequests.entries,
       settledEntries: settledPullRequestEntries,
+      lookups: pullRequestLookups,
     }).flatMap((pullRequest): ThreadPullRequestTarget[] =>
       // The panel addresses a pull request by repository, so one on a
       // project with no remote it can read has nothing to open.
@@ -457,6 +488,7 @@ function ChatThreadRouteView() {
     return [...own, ...linked];
   }, [
     openPullRequests.entries,
+    pullRequestLookups,
     pullRequestProjects,
     settledPullRequestEntries,
     threadEnvironmentId,
@@ -465,6 +497,11 @@ function ChatThreadRouteView() {
     threadPullRequest,
     threadPullRequestReference,
   ]);
+  // What transcript chips and their cards read, beside the listings.
+  const hoverCardPullRequests = useMemo(
+    () => threadPullRequests.map((target) => target.pullRequest),
+    [threadPullRequests],
+  );
   // The one the sidebar's tag names, so the tag, the launcher and the tab
   // (until another is chosen) all start on the same pull request.
   const leadPullRequestTarget = useMemo(() => {
@@ -961,7 +998,7 @@ function ChatThreadRouteView() {
       <>
         <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
           <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
-            <PullRequestHoverCardProvider threadPullRequest={threadPullRequest}>
+            <PullRequestHoverCardProvider threadPullRequests={hoverCardPullRequests}>
               <ChatView
                 environmentId={threadRef.environmentId}
                 threadId={threadRef.threadId}
@@ -989,7 +1026,7 @@ function ChatThreadRouteView() {
     <>
       <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
         <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
-          <PullRequestHoverCardProvider threadPullRequest={threadPullRequest}>
+          <PullRequestHoverCardProvider threadPullRequests={hoverCardPullRequests}>
             <ChatView
               environmentId={threadRef.environmentId}
               threadId={threadRef.threadId}

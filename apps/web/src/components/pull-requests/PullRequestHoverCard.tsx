@@ -140,6 +140,8 @@ export function PullRequestHoverCard({
   );
 }
 
+const NO_THREAD_PULL_REQUESTS: readonly ThreadPullRequest[] = [];
+
 /**
  * A surface's card and the two lookups its chips read: which state a pull
  * request is in, and which checkout could read it. Both are computed once here
@@ -147,14 +149,15 @@ export function PullRequestHoverCard({
  * subscription.
  */
 export function PullRequestHoverCardProvider({
-  threadPullRequest = null,
+  threadPullRequests = NO_THREAD_PULL_REQUESTS,
   children,
 }: {
   /**
-   * The thread's own pull request, whose state the listings may not carry: a
-   * checkout reports a merge long before the merged listing is re-read.
+   * The thread's pull requests, its own and the ones its agent opened, whose
+   * state the listings may not carry: a checkout reports a merge long before
+   * the merged listing is re-read, and a lookup still knows one that fell off.
    */
-  readonly threadPullRequest?: ThreadPullRequest | null;
+  readonly threadPullRequests?: readonly ThreadPullRequest[];
   readonly children: ReactNode;
 }) {
   const [handle] = useState(() => createPreviewCardHandle<PullRequestHoverCardPayload>());
@@ -170,17 +173,20 @@ export function PullRequestHoverCardProvider({
         autoMergeEnabled: entry.autoMergeEnabled === true,
       });
     }
-    // The thread's own resolution wins: it is the one read that can see a
-    // branch land without waiting for the settled listing to come round again.
-    if (threadPullRequest?.repository) {
-      byKey.set(chipKey(threadPullRequest.repository, threadPullRequest.number), {
-        state: threadPullRequest.state,
-        isDraft: threadPullRequest.isDraft,
-        autoMergeEnabled: threadPullRequest.autoMergeEnabled,
-      });
+    // The thread's own resolution wins: it is the read that can see a branch
+    // land without waiting for the settled listing to come round again, and
+    // the one that still knows a pull request the listings no longer carry.
+    for (const pullRequest of threadPullRequests) {
+      if (pullRequest.repository) {
+        byKey.set(chipKey(pullRequest.repository, pullRequest.number), {
+          state: pullRequest.state,
+          isDraft: pullRequest.isDraft,
+          autoMergeEnabled: pullRequest.autoMergeEnabled,
+        });
+      }
     }
     return byKey;
-  }, [entries, threadPullRequest]);
+  }, [entries, threadPullRequests]);
 
   const scopeByRepository = useMemo(() => {
     const byRepository = new Map<string, PullRequestRepositoryScope>();

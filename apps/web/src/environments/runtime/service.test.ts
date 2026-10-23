@@ -16,6 +16,16 @@ describe("shouldApplyTerminalEvent", () => {
     ).toBe(true);
   });
 
+  it("applies terminal events before the environment's threads have loaded", () => {
+    expect(
+      shouldApplyTerminalEvent({
+        serverThreadArchivedAt: undefined,
+        hasDraftThread: false,
+        threadsLoaded: false,
+      }),
+    ).toBe(true);
+  });
+
   it("drops terminal events for unknown threads", () => {
     expect(
       shouldApplyTerminalEvent({

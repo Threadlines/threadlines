@@ -4,6 +4,7 @@ import type {
   PullRequestAction,
   PullRequestCommentUpdateKind,
   PullRequestListState,
+  PullRequestLookupItem,
   PullRequestMergeMethod,
   PullRequestReactionContent,
   PullRequestRef,
@@ -77,6 +78,22 @@ export const pullRequestQueryKeys = {
   all: ["pull-requests"] as const,
   list: (environmentId: EnvironmentId, state: PullRequestListState) =>
     ["pull-requests", "list", environmentId, state] as const,
+  lookup: (
+    environmentId: EnvironmentId,
+    projectId: ProjectId,
+    repository: string,
+    item: PullRequestLookupItem,
+  ) =>
+    [
+      "pull-requests",
+      "lookup",
+      environmentId,
+      projectId,
+      repository,
+      ...("number" in item
+        ? (["number", item.number] as const)
+        : (["branch", item.branch] as const)),
+    ] as const,
   detail: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>
     ["pull-requests", "detail", environmentId, projectId, number] as const,
   activity: (environmentId: EnvironmentId, projectId: ProjectId, number: number) =>

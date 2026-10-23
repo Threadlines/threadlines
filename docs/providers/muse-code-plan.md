@@ -343,5 +343,5 @@ lockdown probe passes); child transcripts for inline subagents (Muse 1.4.x answe
   session id (or the end).
 
 Follow-ups, not built: `turn/foregroundCompleted` holds the turn open (Muse's reminder checks, up
-to ~40 s) while the chat says "working"; Muse sessions are not read into the Usage page's token
-breakdown; the shared "tests passed" wording reads a `cmd; echo` exit code of 0 as a pass.
+to ~40 s) while the chat says "working"; the shared "tests passed" wording reads a `cmd; echo` exit
+code of 0 as a pass. (Muse's tokens joined the Usage page later, read from its session logs.)

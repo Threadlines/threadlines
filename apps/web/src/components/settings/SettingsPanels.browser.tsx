@@ -26,7 +26,9 @@ import {
   type ServerProviderCommunity,
   type SourceControlDiscoveryResult,
   type SourceControlSetupState,
+  ThreadId,
 } from "@threadlines/contracts";
+import { scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -42,7 +44,12 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 
+import {
+  resetPrimaryEnvironmentDescriptorForTests,
+  writePrimaryEnvironmentDescriptor,
+} from "../../environments/primary";
 import { __resetLocalApiForTests } from "../../localApi";
+import { useTerminalStateStore } from "../../terminalStateStore";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
 import { useUiStateStore } from "../../uiStateStore";
@@ -243,7 +250,9 @@ const providerAuthHarness = vi.hoisted(() => {
         readonly flow: string;
         readonly command: string;
         readonly flowId?: string;
+        readonly requestId?: string;
         readonly surface?: "terminal" | "browser";
+        readonly opensPageItself?: boolean;
       }
     | { readonly type: "output"; readonly data: string }
     | {
@@ -289,6 +298,8 @@ const providerAuthHarness = vi.hoisted(() => {
   const startCalls: Array<{ instanceId: string; flow: string }> = [];
   /** Whether each start said its client answers questions. */
   const startQuestions: Array<boolean | undefined> = [];
+  /** Each start's `requestId`: a command event echoing it is that client's own run. */
+  const startRequestIds: Array<string | undefined> = [];
   const respondCalls: Array<{
     instanceId: string;
     flowId: string;
@@ -300,11 +311,13 @@ const providerAuthHarness = vi.hoisted(() => {
   return {
     startCalls,
     startQuestions,
+    startRequestIds,
     respondCalls,
     reset() {
       listeners.clear();
       startCalls.length = 0;
       startQuestions.length = 0;
+      startRequestIds.length = 0;
       respondCalls.length = 0;
     },
     emit(event: AuthEvent) {
@@ -315,9 +328,15 @@ const providerAuthHarness = vi.hoisted(() => {
       }
     },
     client: {
-      start: (input: { instanceId: string; flow: string; questions?: boolean }) => {
+      start: (input: {
+        instanceId: string;
+        flow: string;
+        questions?: boolean;
+        requestId?: string;
+      }) => {
         startCalls.push({ instanceId: input.instanceId, flow: input.flow });
         startQuestions.push(input.questions);
+        startRequestIds.push(input.requestId);
         return Promise.resolve();
       },
       write: () => Promise.resolve(),
@@ -1837,6 +1856,66 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("http://192.168.1.44:3773")).toBeInTheDocument();
   });
 
+  it("says what a network change's restart would stop on this computer", async () => {
+    const thisComputer = EnvironmentId.make("env-this-computer");
+    writePrimaryEnvironmentDescriptor({
+      environmentId: thisComputer,
+      label: "This Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.1.0",
+      capabilities: { repositoryIdentity: false },
+    });
+    const threadKey = scopedThreadKey(scopeThreadRef(thisComputer, ThreadId.make("thread-1")));
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: {
+        [threadKey]: {
+          terminalOpen: false,
+          terminalHeight: 280,
+          terminalIds: ["default"],
+          runningTerminalIds: ["default"],
+          activeTerminalId: "default",
+          terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
+          activeTerminalGroupId: "group-default",
+        },
+      },
+      terminalActivityCommandByKey: { [`${threadKey}\u0000default`]: "npm run dev" },
+    });
+    const desktopBridge = createDesktopBridgeStub();
+    window.desktopBridge = desktopBridge;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    try {
+      mounted = await renderWithTestRouter(
+        <TestAppProviders>
+          <ConnectionsSettings />
+        </TestAppProviders>,
+      );
+      await page.getByRole("button", { name: "Show", exact: true }).click();
+      const networkAccessToggle = page.getByRole("switch", { name: "Same network" });
+      await expect.element(networkAccessToggle).not.toBeDisabled();
+      await networkAccessToggle.click();
+      await expect
+        .element(page.getByText("Let devices on this network connect?"))
+        .toBeInTheDocument();
+      await expect
+        .element(
+          page.getByText(
+            "npm run dev is still running in a terminal. Restarting now will stop it.",
+            {
+              exact: false,
+            },
+          ),
+        )
+        .toBeInTheDocument();
+    } finally {
+      useTerminalStateStore.setState({
+        terminalStateByThreadKey: {},
+        terminalActivityCommandByKey: {},
+      });
+      resetPrimaryEnvironmentDescriptorForTests();
+    }
+  });
+
   it("adds desktop ssh environments from the connect-to-a-computer dialog", async () => {
     const discoverSshHosts = vi.fn().mockResolvedValue([
       {
@@ -2454,6 +2533,15 @@ describe("GeneralSettingsPanel observability", () => {
   });
 
   it("signs a provider in without leaving settings", async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      shell: { openExternal },
+      server: {},
+    } as unknown as LocalApi;
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
       providers: [
@@ -2481,12 +2569,19 @@ describe("GeneralSettingsPanel observability", () => {
       ]);
     });
 
+    // This panel's own run, of a command that opens its page itself.
     providerAuthHarness.emit({
       instanceId: "claudeAgent",
       createdAt: "2026-08-03T00:00:00.000Z",
       type: "command",
       flow: "login",
       command: "claude auth login",
+      flowId: "flow-1",
+      ...(providerAuthHarness.startRequestIds[0]
+        ? { requestId: providerAuthHarness.startRequestIds[0] }
+        : {}),
+      surface: "terminal",
+      opensPageItself: true,
     });
     providerAuthHarness.emit({
       instanceId: "claudeAgent",
@@ -2507,6 +2602,19 @@ describe("GeneralSettingsPanel observability", () => {
       .element(page.getByText("Finish sign-in in your browser, then come back to this page."))
       .toBeVisible();
     await expect.element(page.getByText("Opening browser to complete sign-in")).toBeVisible();
+
+    // Claude opened the page itself: the address it prints is a link, not a second tab.
+    const fallbackUrl = "https://claude.com/cai/oauth/authorize?code=true&state=abc";
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:01.500Z",
+      type: "output",
+      data: `If the browser didn't open, visit: ${fallbackUrl}\r\n`,
+    });
+    const openPage = page.getByRole("button", { name: "Open sign-in page" });
+    await openPage.click();
+    // Opened once, by the click.
+    expect(openExternal.mock.calls).toEqual([[fallbackUrl]]);
 
     providerAuthHarness.emit({
       instanceId: "claudeAgent",
@@ -2690,6 +2798,15 @@ describe("GeneralSettingsPanel observability", () => {
   });
 
   it("signs a signed-out provider in from its row without opening the card first", async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      shell: { openExternal },
+      server: {},
+    } as unknown as LocalApi;
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
       providers: [
@@ -2717,6 +2834,85 @@ describe("GeneralSettingsPanel observability", () => {
     await expect
       .element(page.getByRole("button", { name: "Sign in", exact: true }), { timeout: 5_000 })
       .toBeVisible();
+
+    // A command that leaves its page to Threadlines (fx in WSL prints a device
+    // page and waits): the row that started the run opens it, once, though
+    // the card shows the same run.
+    const devicePage = "https://vercel.com/oauth/device?user_code=ROWS-1234";
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:00.000Z",
+      type: "command",
+      flow: "login",
+      command: "fx login",
+      flowId: "flow-row",
+      ...(providerAuthHarness.startRequestIds[0]
+        ? { requestId: providerAuthHarness.startRequestIds[0] }
+        : {}),
+      surface: "terminal",
+      opensPageItself: false,
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:00.000Z",
+      type: "status",
+      status: "running",
+      exitCode: null,
+      detail: null,
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:01.000Z",
+      type: "output",
+      data: `Open ${devicePage}\r\nCode: ROWS-1234\r\n`,
+    });
+    await vi.waitFor(() => {
+      expect(openExternal.mock.calls).toEqual([[devicePage]]);
+    });
+
+    // The next run prints the same page (a fixed device page): it opens again.
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:02.000Z",
+      type: "status",
+      status: "failed",
+      exitCode: 1,
+      detail: null,
+    });
+    await page.getByRole("button", { name: "Sign in to Claude" }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startRequestIds).toHaveLength(2);
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:03.000Z",
+      type: "command",
+      flow: "login",
+      command: "fx login",
+      flowId: "flow-row-2",
+      ...(providerAuthHarness.startRequestIds[1]
+        ? { requestId: providerAuthHarness.startRequestIds[1] }
+        : {}),
+      surface: "terminal",
+      opensPageItself: false,
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:03.000Z",
+      type: "status",
+      status: "running",
+      exitCode: null,
+      detail: null,
+    });
+    providerAuthHarness.emit({
+      instanceId: "claudeAgent",
+      createdAt: "2026-08-03T00:00:04.000Z",
+      type: "output",
+      data: `Open ${devicePage}\r\nCode: ROWS-1234\r\n`,
+    });
+    await vi.waitFor(() => {
+      expect(openExternal.mock.calls).toEqual([[devicePage], [devicePage]]);
+    });
   });
 
   it("switches Antigravity to a Gemini API key in one save, then checks the key", async () => {
@@ -2837,6 +3033,101 @@ describe("GeneralSettingsPanel observability", () => {
     expect(saved?.environment).toEqual([
       { name: "XAI_API_KEY", value: "xai-test-key-0007", sensitive: true },
     ]);
+  });
+
+  it("opens Grok's sign-in page only on a device Grok didn't already open it on", async () => {
+    // The desktop app, whose own server runs Grok on this computer.
+    window.desktopBridge = createDesktopBridgeStub();
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      shell: { openExternal },
+      server: {},
+    } as unknown as LocalApi;
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...createClaudeProvider(),
+          instanceId: ProviderInstanceId.make("grok"),
+          driver: ProviderDriverKind.make("grok"),
+          displayName: "Grok",
+          version: "1.0.52",
+          auth: { status: "authenticated", type: "subscription", label: "Grok subscription" },
+        },
+      ],
+    });
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+    await openProviderDetails("Grok");
+
+    // Grok's own run of its sign-in, which opens the page on Grok's computer.
+    const runGrokSignIn = (run: number, page: string) => {
+      providerAuthHarness.emit({
+        instanceId: "grok",
+        createdAt: "2026-08-03T00:00:00.000Z",
+        type: "command",
+        flow: "login",
+        command: "Sign in with Grok",
+        flowId: `grok-${run}`,
+        ...(providerAuthHarness.startRequestIds[run]
+          ? { requestId: providerAuthHarness.startRequestIds[run] }
+          : {}),
+        surface: "browser",
+        opensPageItself: true,
+      });
+      providerAuthHarness.emit({
+        instanceId: "grok",
+        createdAt: "2026-08-03T00:00:00.000Z",
+        type: "status",
+        status: "running",
+        exitCode: null,
+        detail: null,
+      });
+      providerAuthHarness.emit({
+        instanceId: "grok",
+        createdAt: "2026-08-03T00:00:01.000Z",
+        type: "output",
+        data: `${page}\r\nApprove the sign-in on that page. The code is already filled in.\r\n`,
+      });
+    };
+
+    // On Grok's computer: Grok opened it, so Threadlines only offers the link.
+    await page.getByRole("button", { name: "Sign in again" }).click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startRequestIds).toHaveLength(1);
+    });
+    runGrokSignIn(0, "https://accounts.x.ai/device?user_code=HERE-0001");
+    await expect.element(page.getByRole("button", { name: "Open sign-in page" })).toBeVisible();
+
+    // From another device: Threadlines opens it here.
+    providerAuthHarness.emit({
+      instanceId: "grok",
+      createdAt: "2026-08-03T00:00:02.000Z",
+      type: "status",
+      status: "failed",
+      exitCode: null,
+      detail: "Sign-in timed out after 10 minutes. Try again.",
+    });
+    // The Grok card's; the community agents list below has its own Try again.
+    await page.getByRole("button", { name: "Try again" }).first().click();
+    await vi.waitFor(() => {
+      expect(providerAuthHarness.startRequestIds).toHaveLength(2);
+    });
+    // Now a browser, which can't know where the server runs. Switched only
+    // now: the first run's effects ran before this click.
+    Reflect.deleteProperty(window, "desktopBridge");
+    const remotePage = "https://accounts.x.ai/device?user_code=AWAY-0002";
+    runGrokSignIn(1, remotePage);
+    await vi.waitFor(() => {
+      expect(openExternal.mock.calls).toEqual([[remotePage]]);
+    });
   });
 
   it("opens the shared reset-credit picker from provider settings", async () => {

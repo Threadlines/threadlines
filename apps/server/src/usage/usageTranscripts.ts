@@ -83,6 +83,15 @@ export function mightCarryUsage(line: string, provider: UsageProviderKind): bool
       return line.includes('"turn_completed"');
     case "pi":
       return line.includes('"usage"');
+    case "muse":
+      // Model calls, plus the status lines that name an approval check's model.
+      return line.includes('"model_completed"') || line.includes('"kind":"status"');
+    case "opencode":
+      // A database, read by `usageOpenCode`, never a transcript.
+      return false;
+    case "fx":
+      // Threadlines' own ledger: every line is a turn.
+      return true;
   }
 }
 
@@ -566,4 +575,124 @@ export function piSessionIdFromFileName(fileName: string): string {
   const base = fileName.endsWith(".jsonl") ? fileName.slice(0, -".jsonl".length) : fileName;
   const separator = base.indexOf("_");
   return separator >= 0 ? base.slice(separator + 1) : base;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Muse Code                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Muse's approval-review runs record on a fixed replay clock, so their
+ * `recorded_at` says nothing about when the review ran.
+ */
+const MUSE_REPLAY_CLOCK_STREAM = "approval.review.runtime";
+
+export interface MuseScanState {
+  /** The model the last `status` producer facet named, for records that name none. */
+  model: string;
+}
+
+export const initialMuseScanState = (): MuseScanState => ({ model: "" });
+
+/** The model a `status` event's producer facet names, if it names one. */
+function museStatusModel(event: Record<string, unknown>): string | null {
+  const details = event["details"];
+  if (typeof details !== "object" || details === null) return null;
+  const facets = (details as Record<string, unknown>)["facets"];
+  if (!Array.isArray(facets)) return null;
+  for (const facet of facets) {
+    if (typeof facet !== "object" || facet === null) continue;
+    const detail = (facet as Record<string, unknown>)["detail"];
+    if (typeof detail !== "object" || detail === null) continue;
+    const model = (detail as Record<string, unknown>)["model"];
+    if (typeof model === "string" && model.length > 0) return model;
+  }
+  return null;
+}
+
+/**
+ * Feeds one line of a Muse Code session log into `state`, returning a record
+ * when the line is a finished model call.
+ *
+ * Muse keeps one log per session at
+ * `muse/sessions/YYYY/MM/DD/<session>/session.jsonl`, with its subagents under
+ * `subagent/<id>/session.jsonl` and its automatic approval checks under
+ * `approval-review/<id>.jsonl`; each log records only its own model calls.
+ * Every call lands as a `model_completed` event. `input_tokens` includes the
+ * cached part, as OpenAI and Codex report it, and Muse reports no cost.
+ *
+ * `fileMtimeMs` stands in for the time of an approval-review call, whose
+ * records carry a replay clock instead of the real one.
+ */
+export function parseMuseLine(
+  line: string,
+  state: MuseScanState,
+  fileMtimeMs: number,
+): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const record = parsed as Record<string, unknown>;
+  if (record["payload_type"] !== "runtime.session") return null;
+  const payload = record["payload"];
+  if (typeof payload !== "object" || payload === null) return null;
+  const event = (payload as Record<string, unknown>)["event"];
+  if (typeof event !== "object" || event === null) return null;
+  const eventRecord = event as Record<string, unknown>;
+
+  if (eventRecord["kind"] === "status") {
+    const model = museStatusModel(eventRecord);
+    if (model !== null) state.model = model;
+    return null;
+  }
+  if (eventRecord["kind"] !== "model_completed") return null;
+  const usage = eventRecord["usage"];
+  if (typeof usage !== "object" || usage === null) return null;
+  const usageRecord = usage as Record<string, unknown>;
+
+  const stream = record["stream"];
+  const streamRecord =
+    typeof stream === "object" && stream !== null ? (stream as Record<string, unknown>) : {};
+  const recordedAt = record["recorded_at"];
+  const timestampMs =
+    streamRecord["kind"] === MUSE_REPLAY_CLOCK_STREAM
+      ? fileMtimeMs
+      : typeof recordedAt === "number" && Number.isFinite(recordedAt) && recordedAt > 0
+        ? Math.trunc(recordedAt / 1000)
+        : null;
+  if (timestampMs === null) return null;
+
+  const named = eventRecord["model"];
+  const model = typeof named === "string" && named.length > 0 ? named : state.model || "muse";
+
+  const inputTokens = int(usageRecord["input_tokens"]);
+  // `cached_tokens` is the older name for the same count.
+  const cachedInputTokens = int(usageRecord["cache_read_tokens"] ?? usageRecord["cached_tokens"]);
+  const cacheCreationTokens = int(usageRecord["cache_write_tokens"]);
+  const outputTokens = int(usageRecord["output_tokens"]);
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheCreationTokens),
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    reasoningTokens: Math.min(outputTokens, int(usageRecord["reasoning_tokens"])),
+  };
+  if (totalTokens(totals) === 0) return null;
+
+  const id = typeof record["id"] === "string" ? record["id"] : null;
+  return {
+    provider: "muse",
+    timestampMs,
+    model,
+    sessionId: typeof streamRecord["id"] === "string" ? streamRecord["id"] : "",
+    totals,
+    cacheCreation1hTokens: 0,
+    reportedCostUsd: null,
+    // A rewound or forked session may copy records with their ids.
+    dedupeKey: id,
+  };
 }

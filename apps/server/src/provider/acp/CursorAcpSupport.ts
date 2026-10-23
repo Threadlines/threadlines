@@ -29,7 +29,9 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import type * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
+import { SessionConfigOption } from "effect-acp/schema";
 
 import { planCliSpawn } from "../../cliSpawn.ts";
 import { makeProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
@@ -43,6 +45,7 @@ import {
 import type {
   AcpConfigUpdate,
   AcpModelOptionMapping,
+  AcpModelOptions,
   AcpProviderDescriptor,
   AcpProviderProbeOutcome,
 } from "./AcpProviderDescriptor.ts";
@@ -52,7 +55,7 @@ import {
   type AcpSelectChoice,
 } from "./AcpProviderModels.ts";
 import { createModelCapabilities } from "@threadlines/shared/model";
-import type { AcpSpawnInput } from "./AcpSessionRuntime.ts";
+import type { AcpSessionRuntimeShape, AcpSpawnInput } from "./AcpSessionRuntime.ts";
 import {
   CursorAskQuestionRequest,
   CursorCreatePlanRequest,
@@ -395,6 +398,44 @@ export function resolveCursorAcpConfigUpdates(
   }
 
   return updates;
+}
+
+const CursorAvailableModels = Schema.Struct({
+  models: Schema.Array(
+    Schema.Struct({
+      value: Schema.String,
+      configOptions: Schema.optional(Schema.Array(Schema.Unknown)),
+    }),
+  ),
+});
+const decodeCursorAvailableModels = Schema.decodeUnknownOption(CursorAvailableModels);
+const decodeSessionConfigOption = Schema.decodeUnknownOption(SessionConfigOption);
+
+/**
+ * Cursor's whole catalog with each model's options, from its
+ * `cursor/list_available_models` extension. Cursor's ACP mode keeps one model
+ * per process and saves every switch as the user's CLI default model
+ * (`~/.cursor/cli-config.json`), so reading options by switching models
+ * would rewrite the user's default. An option this doesn't know is left out
+ * rather than losing the model.
+ */
+export function listCursorModelOptions(
+  acp: AcpSessionRuntimeShape,
+): Effect.Effect<ReadonlyArray<AcpModelOptions> | undefined, EffectAcpErrors.AcpError> {
+  return acp.request("cursor/list_available_models", {}).pipe(
+    Effect.map((response) =>
+      Option.match(decodeCursorAvailableModels(response), {
+        onNone: () => undefined,
+        onSome: ({ models }) =>
+          models.map((model) => ({
+            slug: model.value,
+            configOptions: (model.configOptions ?? []).flatMap((option) =>
+              Option.toArray(decodeSessionConfigOption(option)),
+            ),
+          })),
+      }),
+    ),
+  );
 }
 
 export const CURSOR_MODEL_OPTION_MAPPING: AcpModelOptionMapping = {
@@ -778,6 +819,7 @@ export const CURSOR_ACP_DESCRIPTOR: AcpProviderDescriptor<CursorSettings> = {
   probe: probeCursor,
   modelOptions: CURSOR_MODEL_OPTION_MAPPING,
   modelCapabilitiesVaryByModel: true,
+  listModelOptions: listCursorModelOptions,
   resolveModelId: resolveCursorAcpBaseModelId,
   extensions: {
     source: "acp.cursor.extension",

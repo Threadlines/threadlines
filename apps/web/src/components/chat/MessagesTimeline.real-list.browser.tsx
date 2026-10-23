@@ -386,6 +386,117 @@ describe("MessagesTimeline with the real virtual list", () => {
     }
   });
 
+  // A selection dragged just past the list's top scrolls it a few pixels at a
+  // time, a scroll none of the list's own listeners hear. A mouse button holds
+  // the list as a finger does: new lines must not pull it back down, letting
+  // go where the drag left it stays there, and a press that never moved
+  // follows again once the button comes up.
+  it("lets a selection drag scroll up while the response streams", async () => {
+    const props = buildProps();
+    const sentence =
+      "This is a plain streamed sentence with enough words to wrap onto another line. ";
+    const message: ChatMessage = {
+      id: "streaming-response" as ChatMessage["id"],
+      role: "assistant",
+      turnId: ACTIVE_TURN_ID,
+      text: sentence.repeat(20),
+      streaming: true,
+      createdAt: props.activeTurnStartedAt,
+    };
+    const renderList = (text: string) => (
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            {
+              id: message.id,
+              kind: "message",
+              createdAt: message.createdAt,
+              message: { ...message, text },
+            },
+          ]}
+        />
+      </div>
+    );
+    let text = message.text;
+    const screen = await renderTimeline(renderList(text));
+    const streamChunk = async () => {
+      text += sentence;
+      await screen.rerender(renderList(text));
+      await nextFrame();
+      await nextFrame();
+    };
+    const pointer = (type: "pointerdown" | "pointerup", target: EventTarget) =>
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          button: 0,
+          pointerId: 1,
+          pointerType: "mouse",
+          clientX: 100,
+          clientY: 200,
+        }),
+      );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
+      const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      const distanceFromEnd = () => list.scrollHeight - list.clientHeight - list.scrollTop;
+      await streamChunk();
+      expect(distanceFromEnd()).toBeLessThanOrEqual(1);
+
+      pointer("pointerdown", body);
+      const restingTop = body.getBoundingClientRect().top;
+      await streamChunk();
+      await streamChunk();
+      expect(Math.abs(body.getBoundingClientRect().top - restingTop)).toBeLessThanOrEqual(1);
+      pointer("pointerup", window);
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeLessThanOrEqual(1), {
+        timeout: 1_500,
+      });
+
+      // The press takes focus from the composer, as a real one does.
+      const composer = document.createElement("textarea");
+      document.body.append(composer);
+      composer.focus();
+      pointer("pointerdown", body);
+      composer.blur();
+      const pressedTop = list.scrollTop;
+      for (let step = 0; step < 12; step++) {
+        list.scrollTop -= 3;
+        await streamChunk();
+      }
+      expect(list.scrollTop).toBeLessThanOrEqual(pressedTop - 30);
+      pointer("pointerup", document.body);
+      const releasedTop = list.scrollTop;
+      await streamChunk();
+      await streamChunk();
+      expect(Math.abs(list.scrollTop - releasedTop)).toBeLessThanOrEqual(1);
+
+      // Back at the bottom once the scroll lock has run out, it follows again.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      list.scrollTop = list.scrollHeight;
+      await nextFrame();
+      await nextFrame();
+      await streamChunk();
+      expect(distanceFromEnd()).toBeLessThanOrEqual(1);
+
+      // A quick drag can leave the bottom in one scroll and let go before the
+      // list hears another. It stays where it was let go.
+      pointer("pointerdown", body);
+      list.scrollTop -= 60;
+      await nextFrame();
+      await nextFrame();
+      pointer("pointerup", window);
+      const quickTop = list.scrollTop;
+      await streamChunk();
+      await streamChunk();
+      expect(Math.abs(list.scrollTop - quickTop)).toBeLessThanOrEqual(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   // A row that just landed first takes the list's guess of its height, then
   // the list shrinks to the height the row really draws. Desktop browsers
   // settle that before painting, but a phone's scroll can be caught past the
@@ -1200,6 +1311,55 @@ describe("find in chat with the real virtual list", () => {
       });
       expect(CSS.highlights.has(CHAT_FIND_CURRENT_HIGHLIGHT)).toBe(false);
       expect(CSS.highlights.has(CHAT_FIND_MATCH_HIGHLIGHT)).toBe(false);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  // A find jump to the last row holds the list there instead of following new
+  // output. Pressing the mouse on the text holds the list too, but letting go
+  // of a click must not hand the list back to following.
+  it("keeps a match at the tail in place after a click on the text", async () => {
+    const props = buildProps();
+    const sentence =
+      "This is a plain streamed sentence with enough words to wrap onto another line. ";
+    const history = Array.from({ length: 10 }, (_, index) =>
+      chatMessage(`message-${index}`, index % 2 === 0 ? "user" : "assistant", FILLER, index),
+    );
+    const renderList = (text: string) => (
+      <div style={{ height: 400, width: 600 }}>
+        <MessagesTimeline
+          {...props}
+          timelineEntries={messageEntries([
+            ...history,
+            { ...chatMessage("message-streaming", "assistant", text, 10), streaming: true },
+          ])}
+        />
+      </div>
+    );
+    let text = `${sentence.repeat(6)}\n\nThe pelican is at the tail.`;
+    const screen = await renderTimeline(renderList(text));
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await openFind("pelican");
+      await vi.waitFor(() => expect(currentFindHighlight()?.text).toBe("pelican"));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const matchTop = currentFindHighlight()!.rect.top;
+
+      const body = document.querySelector<HTMLElement>('[data-message-id="message-9"]')!;
+      for (const type of ["pointerdown", "pointerup"] as const) {
+        body.dispatchEvent(
+          new PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, pointerType: "mouse" }),
+        );
+      }
+      for (let chunk = 0; chunk < 4; chunk++) {
+        text += `\n\n${sentence}`;
+        await screen.rerender(renderList(text));
+        await nextFrame();
+        await nextFrame();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(Math.abs(currentFindHighlight()!.rect.top - matchTop)).toBeLessThanOrEqual(1);
     } finally {
       await screen.unmount();
     }

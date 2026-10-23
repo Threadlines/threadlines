@@ -94,4 +94,32 @@ describe("makeKeyedCoalescingWorker", () => {
       }),
     ),
   );
+  it.live("lets a waiting key go before a key that keeps getting new work", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const processed: string[] = [];
+        const quietDone = yield* Deferred.make<void>();
+        let enqueueMore: (key: string, value: number) => Effect.Effect<void> = () => Effect.void;
+
+        const worker = yield* makeKeyedCoalescingWorker<string, number, never, never>({
+          merge: (_current, next) => next,
+          process: (key, value) =>
+            Effect.gen(function* () {
+              processed.push(`${key}:${value}`);
+              if (key === "busy" && value < 5) yield* enqueueMore("busy", value + 1);
+              if (key === "quiet") yield* Deferred.succeed(quietDone, undefined).pipe(Effect.orDie);
+            }),
+        });
+        enqueueMore = worker.enqueue;
+
+        yield* worker.enqueue("busy", 1);
+        yield* worker.enqueue("quiet", 1);
+        yield* Deferred.await(quietDone);
+        yield* worker.drainKey("busy");
+
+        expect(processed.slice(0, 2)).toEqual(["busy:1", "quiet:1"]);
+        expect(processed.at(-1)).toBe("busy:5");
+      }),
+    ),
+  );
 });

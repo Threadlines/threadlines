@@ -32,6 +32,7 @@ import { ProjectSetupDialogHost } from "../components/ProjectSetupDialog";
 import { ThreadMoveDialogHost } from "../components/ThreadMoveDialog";
 import { ThreadRenameDialogHost } from "../components/ThreadRenameDialog";
 import { ConnectComputerDialogHost } from "../components/settings/connections/JoinComputerDialog";
+import { ExpandedImageViewerHost } from "../components/chat/ExpandedImageDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { SourceControlToolUpdateLaunchNotification } from "../components/SourceControlToolUpdateLaunchNotification";
 import { SavedEnvironmentConnectionOverlay } from "../components/SavedEnvironmentConnectionOverlay";
@@ -88,6 +89,7 @@ import {
   selectRunningSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../store";
+import { selectBusyTerminals, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import {
@@ -224,6 +226,7 @@ function RootRouteView() {
         <ProjectSetupDialogHost />
         <ThreadRenameDialogHost />
         <ConnectComputerDialogHost />
+        <ExpandedImageViewerHost />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
@@ -339,7 +342,12 @@ function DesktopTaskbarStatusSync() {
       ? 0
       : countWorkingScheduledRuns(state.byEnvironment[primaryEnvironmentId]),
   );
+  // Quitting stops this computer's terminals too: a busy one makes it ask.
+  const localBusyTerminalCount = useTerminalStateStore(
+    (state) => selectBusyTerminals(state, primaryEnvironmentId).length,
+  );
   const hadRunningThreadRef = useRef(false);
+  const lastStatusInputRef = useRef<DesktopTaskbarStatusInput | null>(null);
   const completionSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStatusKeyRef = useRef<string | null>(null);
 
@@ -360,7 +368,8 @@ function DesktopTaskbarStatusSync() {
           `${taskbarThreadKey(thread)}:${thread.state}:${thread.waitingOn ?? ""}:${thread.title}`,
       )
       .join("|");
-    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.localRunningThreadCount ?? ""}:${input.completedThreadCount ?? ""}:${input.activeScheduledTaskCount ?? ""}:${input.workingScheduledRunCount ?? ""}:${threadsKey}`;
+    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.localRunningThreadCount ?? ""}:${input.localBusyTerminalCount ?? ""}:${input.completedThreadCount ?? ""}:${input.activeScheduledTaskCount ?? ""}:${input.workingScheduledRunCount ?? ""}:${threadsKey}`;
+    lastStatusInputRef.current = input;
     if (lastStatusKeyRef.current === statusKey) {
       return;
     }
@@ -387,6 +396,7 @@ function DesktopTaskbarStatusSync() {
         localRunningThreadCount: runningThreads.filter((thread) =>
           isThreadOnPrimaryEnvironment(thread, primaryEnvironmentId),
         ).length,
+        localBusyTerminalCount,
         completedThreadCount: unread.length,
         description: describeWorking(runningThreads.length),
         threads: [...unread, ...runningThreads].slice(0, TASKBAR_MENU_THREAD_LIMIT),
@@ -403,15 +413,32 @@ function DesktopTaskbarStatusSync() {
           settleTaskbarStatus();
         }, TASKBAR_COMPLETION_SETTLE_MS);
       }
+      // The status waits out the settle, but what quitting would stop and
+      // what keeps the computer awake can't.
+      const last = lastStatusInputRef.current;
+      if (
+        last !== null &&
+        (last.localBusyTerminalCount !== localBusyTerminalCount ||
+          last.activeScheduledTaskCount !== activeScheduledTaskCount ||
+          last.workingScheduledRunCount !== workingScheduledRunCount)
+      ) {
+        setTaskbarStatus({ ...last, localBusyTerminalCount });
+      }
       return;
     }
 
     if (unread.length === 0) {
-      setTaskbarStatus({ status: "idle", description: "No threads are working", threads: [] });
+      setTaskbarStatus({
+        status: "idle",
+        description: "No threads are working",
+        localBusyTerminalCount,
+        threads: [],
+      });
       return;
     }
     setTaskbarStatus({
       status: "completed",
+      localBusyTerminalCount,
       completedThreadCount: unread.length,
       description: describeCompleted(unread.length),
       threads: unread.slice(0, TASKBAR_MENU_THREAD_LIMIT),
@@ -430,6 +457,7 @@ function DesktopTaskbarStatusSync() {
     syncTaskbarStatus();
   }, [
     activeScheduledTaskCount,
+    localBusyTerminalCount,
     primaryEnvironmentId,
     runningThreadsSignature,
     unreadThreadsSignature,

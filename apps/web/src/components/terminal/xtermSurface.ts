@@ -117,6 +117,9 @@ export function createXtermSurface(input: {
   readonly fontSize?: number;
   readonly scrollback?: number;
   readonly cursorBlink?: boolean;
+  readonly screenReaderMode?: boolean;
+  /** Needed by the search addon's match highlights (decorations). */
+  readonly allowProposedApi?: boolean;
 }): XtermSurface {
   const fitAddon = new FitAddon();
   const terminal = new Terminal({
@@ -126,6 +129,8 @@ export function createXtermSurface(input: {
     scrollback: input.scrollback ?? 5_000,
     fontFamily: TERMINAL_FONT_FAMILY,
     theme: terminalThemeFromApp(input.themeSource ?? input.mount),
+    screenReaderMode: input.screenReaderMode ?? false,
+    allowProposedApi: input.allowProposedApi ?? false,
   });
   terminal.loadAddon(fitAddon);
   terminal.open(input.mount);

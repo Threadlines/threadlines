@@ -175,6 +175,8 @@ import {
   PullRequestDiffResult,
   PullRequestListInput,
   PullRequestListResult,
+  PullRequestLookupInput,
+  PullRequestLookupResult,
   PullRequestReactionInput,
   PullRequestRef,
   PullRequestReviewerCandidateList,
@@ -331,12 +333,14 @@ import {
 import {
   TerminalClearInput,
   TerminalCloseInput,
+  TerminalResolveInterruptedInput,
   TerminalError,
-  TerminalEvent,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
   TerminalSessionSnapshot,
+  TerminalStreamEvent,
+  TerminalSubscribeInput,
   TerminalWriteInput,
 } from "./terminal.ts";
 import {
@@ -464,6 +468,7 @@ export const WS_METHODS = {
 
   // Pull request methods
   pullRequestsList: "pullRequests.list",
+  pullRequestsLookup: "pullRequests.lookup",
   pullRequestsDetail: "pullRequests.detail",
   pullRequestsActivity: "pullRequests.activity",
   pullRequestsDiff: "pullRequests.diff",
@@ -485,6 +490,7 @@ export const WS_METHODS = {
   terminalClear: "terminal.clear",
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
+  terminalResolveInterrupted: "terminal.resolveInterrupted",
 
   // Provider sign-in methods (settings-owned, ephemeral PTY)
   providerAuthStart: "providerAuth.start",
@@ -1350,6 +1356,12 @@ export const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
   error: PullRequestServiceError,
 });
 
+export const WsPullRequestsLookupRpc = Rpc.make(WS_METHODS.pullRequestsLookup, {
+  payload: PullRequestLookupInput,
+  success: PullRequestLookupResult,
+  error: PullRequestServiceError,
+});
+
 export const WsPullRequestsDetailRpc = Rpc.make(WS_METHODS.pullRequestsDetail, {
   payload: PullRequestDetailInput,
   success: PullRequestDetail,
@@ -1562,6 +1574,11 @@ export const WsTerminalCloseRpc = Rpc.make(WS_METHODS.terminalClose, {
   error: TerminalError,
 });
 
+export const WsTerminalResolveInterruptedRpc = Rpc.make(WS_METHODS.terminalResolveInterrupted, {
+  payload: TerminalResolveInterruptedInput,
+  error: TerminalError,
+});
+
 export const WsOrchestrationDispatchCommandRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.dispatchCommand,
   {
@@ -1645,8 +1662,9 @@ export const WsOrchestrationSubscribeThreadRpc = Rpc.make(
 );
 
 export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTerminalEvents, {
-  payload: Schema.Struct({}),
-  success: TerminalEvent,
+  // Old servers take `{}` and ignore the mode: they send every event.
+  payload: TerminalSubscribeInput,
+  success: TerminalStreamEvent,
   stream: true,
 });
 
@@ -2060,6 +2078,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitAuthRemediationPlanRpc,
   WsGitApplyAuthRemediationRpc,
   WsPullRequestsListRpc,
+  WsPullRequestsLookupRpc,
   WsPullRequestsDetailRpc,
   WsPullRequestsActivityRpc,
   WsPullRequestsDiffRpc,
@@ -2095,6 +2114,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsTerminalClearRpc,
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
+  WsTerminalResolveInterruptedRpc,
   WsSubscribeTerminalEventsRpc,
   WsProviderAuthStartRpc,
   WsProviderAuthWriteRpc,

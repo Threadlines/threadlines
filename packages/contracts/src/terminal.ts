@@ -64,6 +64,14 @@ export const TerminalOpenInput = Schema.Struct({
    * it returns is held for that script (a write with `origin: "script"`).
    */
   reuseTerminalIds: Schema.optional(TerminalReuseIds),
+  /**
+   * Show a tab that already exists instead of making one: fails with
+   * `TerminalSessionLookupError` when the thread has no such tab, returns an
+   * exited shell as it is (the user restarts it), and starts the shell of a
+   * listed tab that has none (after the server restarted). Old servers ignore
+   * it and open as before.
+   */
+  attach: Schema.optional(Schema.Boolean),
 });
 export type TerminalOpenInput = Schema.Codec.Encoded<typeof TerminalOpenInput>;
 
@@ -82,11 +90,31 @@ export const TerminalResizeInput = Schema.Struct({
   ...TerminalSessionInput.fields,
   cols: TerminalColsSchema,
   rows: TerminalRowsSchema,
+  /**
+   * The person is using the tab on this device (they focused it or typed in
+   * it): its size wins, and only this device answers the terminal's queries
+   * until another device claims the tab. Unclaimed resizes from other devices
+   * are ignored while one holds it.
+   */
+  claim: Schema.optional(Schema.Boolean),
 });
 export type TerminalResizeInput = Schema.Codec.Encoded<typeof TerminalResizeInput>;
 
 export const TerminalClearInput = TerminalSessionInput;
 export type TerminalClearInput = Schema.Codec.Encoded<typeof TerminalClearInput>;
+
+/**
+ * Settle the command a restart stopped in a tab (`TerminalTab.interruptedCommand`):
+ * run it again in the tab's shell, or forget it. Running it fails with
+ * `TerminalLineBusyError` while something is typed or running there.
+ */
+export const TerminalResolveInterruptedInput = Schema.Struct({
+  ...TerminalSessionInput.fields,
+  run: Schema.Boolean,
+});
+export type TerminalResolveInterruptedInput = Schema.Codec.Encoded<
+  typeof TerminalResolveInterruptedInput
+>;
 
 export const TerminalRestartInput = Schema.Struct({
   ...TerminalSessionInput.fields,
@@ -171,6 +199,11 @@ const TerminalActivityEvent = Schema.Struct({
   command: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   /** When the running subprocess was first seen; absent from older servers. */
   startedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  /**
+   * A command was entered at the prompt and the server hasn't yet seen it
+   * start or finish: treat the tab as busy before stopping it.
+   */
+  commandPending: Schema.optional(Schema.Boolean),
 });
 
 export const TerminalEvent = Schema.Union([
@@ -183,6 +216,107 @@ export const TerminalEvent = Schema.Union([
   TerminalActivityEvent,
 ]);
 export type TerminalEvent = typeof TerminalEvent.Type;
+
+/** Whether a tab's shell runs; `stopped` is a listed tab with none (the server restarted). */
+export const TerminalTabStatus = Schema.Literals([
+  "starting",
+  "running",
+  "exited",
+  "error",
+  "stopped",
+]);
+export type TerminalTabStatus = typeof TerminalTabStatus.Type;
+
+/**
+ * A terminal tab of a thread as the server keeps it, the same for every
+ * device. `number` names it ("Terminal 2") and never changes while it exists.
+ */
+export const TerminalTab = Schema.Struct({
+  terminalId: Schema.String.check(Schema.isNonEmpty()),
+  number: Schema.Int.check(Schema.isGreaterThan(0)),
+  /** The folder its shell started in. */
+  cwd: Schema.NullOr(Schema.String),
+  status: TerminalTabStatus,
+  exitCode: Schema.NullOr(Schema.Int),
+  exitSignal: Schema.NullOr(Schema.Int),
+  createdAt: Schema.String,
+  /**
+   * The command line typed at the prompt that was still running when the
+   * server last stopped (an update, a crash, a quit), so it can be run again.
+   * Kept until a line is entered in the tab or it is dismissed. Absent from
+   * older servers.
+   */
+  interruptedCommand: Schema.optional(Schema.NullOr(Schema.String)),
+});
+export type TerminalTab = typeof TerminalTab.Type;
+
+export const TerminalThreadTabs = Schema.Struct({
+  threadId: Schema.String.check(Schema.isNonEmpty()),
+  tabs: Schema.Array(TerminalTab),
+});
+export type TerminalThreadTabs = typeof TerminalThreadTabs.Type;
+
+/**
+ * What a subscription gets. Without a mode it is the legacy stream: every
+ * event of every terminal (old clients). `metadata` leaves out output and
+ * the history in snapshots, and starts with the tab list of every thread.
+ * `thread` is everything for one thread, starting with `subscribed`.
+ */
+export const TerminalSubscribeInput = Schema.Struct({
+  mode: Schema.optional(Schema.Literals(["metadata", "thread"])),
+  threadId: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type TerminalSubscribeInput = typeof TerminalSubscribeInput.Type;
+
+/** First on a `metadata` stream: every thread's tabs. */
+const TerminalCatalogEvent = Schema.Struct({
+  type: Schema.Literal("catalog"),
+  createdAt: Schema.String,
+  threads: Schema.Array(TerminalThreadTabs),
+});
+
+/** A thread's tabs changed (opened, closed, started, exited). */
+const TerminalTabsEvent = Schema.Struct({
+  type: Schema.Literal("tabs"),
+  threadId: Schema.String.check(Schema.isNonEmpty()),
+  createdAt: Schema.String,
+  tabs: Schema.Array(TerminalTab),
+});
+
+/**
+ * First on a `thread` stream, once nothing the thread's terminals print can
+ * be missed: open tabs after it, and again after every new one (a reconnect).
+ */
+const TerminalSubscribedEvent = Schema.Struct({
+  type: Schema.Literal("subscribed"),
+  threadId: Schema.String.check(Schema.isNonEmpty()),
+  createdAt: Schema.String,
+});
+
+/**
+ * A `thread` stream fell behind and dropped output: open its tabs again to
+ * draw them from the server's copy.
+ */
+const TerminalResyncEvent = Schema.Struct({
+  type: Schema.Literal("resync"),
+  threadId: Schema.String.check(Schema.isNonEmpty()),
+  createdAt: Schema.String,
+});
+
+export const TerminalStreamEvent = Schema.Union([
+  TerminalStartedEvent,
+  TerminalOutputEvent,
+  TerminalExitedEvent,
+  TerminalErrorEvent,
+  TerminalClearedEvent,
+  TerminalRestartedEvent,
+  TerminalActivityEvent,
+  TerminalCatalogEvent,
+  TerminalTabsEvent,
+  TerminalSubscribedEvent,
+  TerminalResyncEvent,
+]);
+export type TerminalStreamEvent = typeof TerminalStreamEvent.Type;
 
 export class TerminalCwdError extends Schema.TaggedError<TerminalCwdError>()("TerminalCwdError", {
   cwd: Schema.String,
@@ -247,10 +381,27 @@ export class TerminalNotRunningError extends Schema.TaggedError<TerminalNotRunni
   }
 }
 
+/** The tab's shell is busy with something typed or running, so nothing is typed into it. */
+export class TerminalLineBusyError extends Schema.TaggedError<TerminalLineBusyError>()(
+  "TerminalLineBusyError",
+  {
+    threadId: Schema.String,
+    terminalId: Schema.String,
+    reason: Schema.Literals(["typing", "running"]),
+  },
+) {
+  override get message() {
+    return this.reason === "typing"
+      ? "Clear what's typed in the terminal first."
+      : "Something is still running in the terminal.";
+  }
+}
+
 export const TerminalError = Schema.Union([
   TerminalCwdError,
   TerminalHistoryError,
   TerminalSessionLookupError,
   TerminalNotRunningError,
+  TerminalLineBusyError,
 ]);
 export type TerminalError = typeof TerminalError.Type;

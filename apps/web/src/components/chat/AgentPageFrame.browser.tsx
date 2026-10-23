@@ -1,11 +1,12 @@
 import "../../index.css";
 
 import { AgentPageId, AgentPageVersionId, EnvironmentId, ThreadId } from "@threadlines/contracts";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { AgentPageFrame } from "./AgentPageFrame";
+import { ExpandedImageViewerHost } from "./ExpandedImageDialog";
 
 // Stored pages by version id: what `pages.read` would return.
 const storedPages = vi.hoisted(() => new Map<string, string>());
@@ -53,6 +54,10 @@ function watchFrameLoads() {
   return { windows, stop: () => document.removeEventListener("load", onLoad, true) };
 }
 
+/** An inline picture of the given size and color. */
+const picture = (color: string) =>
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="${color}"/></svg>`)}`;
+
 /** The frame decides what a load means as it happens; this is time for the answer to show. */
 const settled = () => new Promise((resolve) => setTimeout(resolve, 150));
 
@@ -87,6 +92,34 @@ describe("AgentPageFrame", () => {
     await settled();
     expect(page.getByText(/was stopped/).elements()).toHaveLength(0);
     expect(document.querySelector("iframe")).toBe(frame);
+  });
+
+  it("opens the page's pictures in the image viewer at the one the reader clicked", async () => {
+    const version = versionOf(
+      "pictures",
+      `<img src="${picture("red")}" alt="Before"><img src="${picture("green")}" alt="After">` +
+        `<a href="https://example.com"><img src="${picture("blue")}" alt="A link"></a>` +
+        `<img src="${picture("gray")}" alt="Handled">` +
+        // A page handling its pictures' clicks itself, from the document.
+        `<script>document.addEventListener("click", function (event) { if (event.target.alt === "Handled") event.preventDefault(); });</script>`,
+    );
+    await render(
+      <div style={{ height: 160 }}>
+        <AgentPageFrame version={version} title="Screens" className="size-full" />
+        <ExpandedImageViewerHost />
+      </div>,
+    );
+    const frame = page.frameLocator(page.getByTitle("Screens"));
+    const viewer = page.getByRole("dialog", { name: "Expanded image preview" });
+    await frame.getByAltText("Handled").click();
+    await settled();
+    expect(viewer.elements()).toHaveLength(0);
+
+    await frame.getByAltText("After").click();
+    // Three pictures: the one inside a link stays the link's.
+    await expect.element(viewer.getByText("After (2/3)")).toBeVisible();
+    expect(viewer.getByRole("img").element().getAttribute("src")).toBe(picture("green"));
+    await userEvent.keyboard("{Escape}");
   });
 
   it("stops a page that leaves after it loaded, though it hides that it is leaving", async () => {

@@ -69,6 +69,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectSetup: Schema.optionalKey(Schema.Boolean),
   /** The server reports when it froze (`subscribeServerStalls`). */
   stallReports: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server keeps each thread's terminal tabs and streams their output per
+   * thread (`TerminalSubscribeInput`, docs/terminal.md). Older servers omit
+   * it and send every terminal event on one stream.
+   */
+  terminalTabLists: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

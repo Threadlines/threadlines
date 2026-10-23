@@ -1,12 +1,23 @@
 /**
- * Single Zustand store for terminal UI state keyed by scoped thread identity.
+ * Single Zustand store for terminal UI state keyed by scoped thread identity:
+ * which tabs a thread's drawer shows and how (docs/terminal.md), and what
+ * their shells are doing. The tab list follows the server's when it keeps
+ * one; how the drawer is laid out (splits, the active tab, open, height)
+ * stays per device. Output never comes through here (terminalStreams.ts).
  *
  * Terminal transition helpers are intentionally private to keep the public
  * API constrained to store actions/selectors.
  */
 
 import { parseScopedThreadKey, scopedThreadKey } from "@threadlines/client-runtime";
-import { type ScopedThreadRef, type TerminalEvent } from "@threadlines/contracts";
+import {
+  type EnvironmentId,
+  type ScopedThreadRef,
+  type TerminalEvent,
+  type TerminalTab,
+  type TerminalThreadTabs,
+  ThreadId,
+} from "@threadlines/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { resolveStorage, withLegacyFallbackStorage } from "./lib/storage";
@@ -29,20 +40,14 @@ interface ThreadTerminalState {
   activeTerminalGroupId: string;
 }
 
-export interface ThreadTerminalLaunchContext {
-  cwd: string;
-  worktreePath: string | null;
-}
-
-export interface TerminalEventEntry {
-  id: number;
-  event: TerminalEvent;
-}
-
 const TERMINAL_STATE_STORAGE_KEY = "threadlines:terminal-state:v1";
 const LEGACY_TERMINAL_STATE_STORAGE_KEYS = ["t3code:terminal-state:v1"] as const;
-const EMPTY_TERMINAL_EVENT_ENTRIES: ReadonlyArray<TerminalEventEntry> = [];
-const MAX_TERMINAL_EVENT_BUFFER = 200;
+/**
+ * A tab this device opened stays in its list this long while the server's
+ * list doesn't have it yet (its shell is still starting).
+ */
+const PENDING_TERMINAL_TTL_MS = 60_000;
+const EMPTY_TERMINAL_TABS: ReadonlyArray<TerminalTab> = [];
 
 interface PersistedTerminalStateStoreState {
   terminalStateByThreadKey?: Record<string, ThreadTerminalState>;
@@ -271,44 +276,9 @@ function terminalThreadKey(threadRef: ScopedThreadRef): string {
   return scopedThreadKey(threadRef);
 }
 
-function terminalEventBufferKey(threadRef: ScopedThreadRef, terminalId: string): string {
+/** One tab of one thread, as a record key. */
+export function terminalKey(threadRef: ScopedThreadRef, terminalId: string): string {
   return `${terminalThreadKey(threadRef)}\u0000${terminalId}`;
-}
-
-function removeTerminalKeyedEntriesForThread<T>(
-  entries: Record<string, T>,
-  threadKey: string,
-): { entries: Record<string, T>; removed: boolean } {
-  const prefix = `${threadKey}\u0000`;
-  let nextEntries = entries;
-  let removed = false;
-  for (const key of Object.keys(entries)) {
-    if (!key.startsWith(prefix)) continue;
-    if (!removed) {
-      nextEntries = { ...entries };
-      removed = true;
-    }
-    delete nextEntries[key];
-  }
-  return { entries: nextEntries, removed };
-}
-
-function removeOrphanedTerminalKeyedEntries<T>(
-  entries: Record<string, T>,
-  activeThreadKeys: Set<string>,
-): { entries: Record<string, T>; removed: boolean } {
-  let nextEntries = entries;
-  let removed = false;
-  for (const key of Object.keys(entries)) {
-    const [threadKey] = key.split("\u0000");
-    if (!threadKey || activeThreadKeys.has(threadKey)) continue;
-    if (!removed) {
-      nextEntries = { ...entries };
-      removed = true;
-    }
-    delete nextEntries[key];
-  }
-  return { entries: nextEntries, removed };
 }
 
 function copyTerminalGroups(groups: ThreadTerminalGroup[]): ThreadTerminalGroup[] {
@@ -316,41 +286,6 @@ function copyTerminalGroups(groups: ThreadTerminalGroup[]): ThreadTerminalGroup[
     id: group.id,
     terminalIds: [...group.terminalIds],
   }));
-}
-
-function appendTerminalEventEntry(
-  terminalEventEntriesByKey: Record<string, ReadonlyArray<TerminalEventEntry>>,
-  nextTerminalEventId: number,
-  threadRef: ScopedThreadRef,
-  event: TerminalEvent,
-) {
-  const key = terminalEventBufferKey(threadRef, event.terminalId);
-  const currentEntries = terminalEventEntriesByKey[key] ?? EMPTY_TERMINAL_EVENT_ENTRIES;
-  const nextEntry: TerminalEventEntry = {
-    id: nextTerminalEventId,
-    event,
-  };
-  const nextEntries =
-    currentEntries.length >= MAX_TERMINAL_EVENT_BUFFER
-      ? [...currentEntries.slice(1), nextEntry]
-      : [...currentEntries, nextEntry];
-
-  return {
-    terminalEventEntriesByKey: {
-      ...terminalEventEntriesByKey,
-      [key]: nextEntries,
-    },
-    nextTerminalEventId: nextTerminalEventId + 1,
-  };
-}
-
-function launchContextFromStartEvent(
-  event: Extract<TerminalEvent, { type: "started" | "restarted" }>,
-): ThreadTerminalLaunchContext {
-  return {
-    cwd: event.snapshot.cwd,
-    worktreePath: event.snapshot.worktreePath,
-  };
 }
 
 function upsertTerminalIntoGroups(
@@ -591,31 +526,6 @@ function updateTerminalStateByThreadKey(
   };
 }
 
-export function selectTerminalEventEntries(
-  terminalEventEntriesByKey: Record<string, ReadonlyArray<TerminalEventEntry>>,
-  threadRef: ScopedThreadRef | null | undefined,
-  terminalId: string,
-): ReadonlyArray<TerminalEventEntry> {
-  if (!threadRef || threadRef.threadId.length === 0 || terminalId.trim().length === 0) {
-    return EMPTY_TERMINAL_EVENT_ENTRIES;
-  }
-  return (
-    terminalEventEntriesByKey[terminalEventBufferKey(threadRef, terminalId)] ??
-    EMPTY_TERMINAL_EVENT_ENTRIES
-  );
-}
-
-export function selectTerminalSubmittedCommand(
-  terminalSubmittedCommandByKey: Record<string, string>,
-  threadRef: ScopedThreadRef | null | undefined,
-  terminalId: string,
-): string | null {
-  if (!threadRef || threadRef.threadId.length === 0 || terminalId.trim().length === 0) {
-    return null;
-  }
-  return terminalSubmittedCommandByKey[terminalEventBufferKey(threadRef, terminalId)] ?? null;
-}
-
 export function selectTerminalActivityStartedAt(
   terminalActivityStartedAtByKey: Record<string, string>,
   threadRef: ScopedThreadRef | null | undefined,
@@ -624,7 +534,7 @@ export function selectTerminalActivityStartedAt(
   if (!threadRef || threadRef.threadId.length === 0 || terminalId.trim().length === 0) {
     return null;
   }
-  return terminalActivityStartedAtByKey[terminalEventBufferKey(threadRef, terminalId)] ?? null;
+  return terminalActivityStartedAtByKey[terminalKey(threadRef, terminalId)] ?? null;
 }
 
 export function selectTerminalActivityCommand(
@@ -635,19 +545,142 @@ export function selectTerminalActivityCommand(
   if (!threadRef || threadRef.threadId.length === 0 || terminalId.trim().length === 0) {
     return null;
   }
-  return terminalActivityCommandByKey[terminalEventBufferKey(threadRef, terminalId)] ?? null;
+  return terminalActivityCommandByKey[terminalKey(threadRef, terminalId)] ?? null;
+}
+
+/**
+ * A thread's tab list after the server said which tabs it has: those, in its
+ * order, plus tabs this device just opened that the server doesn't list yet.
+ * Splits, the active tab, open and height stay as they were where they can.
+ */
+function reconcileThreadTerminalIds(
+  state: ThreadTerminalState,
+  serverTerminalIds: ReadonlyArray<string>,
+  pendingSince: Readonly<Record<string, number>>,
+  nowMs: number,
+  server: {
+    /** Listed tabs whose shell runs nothing (ended, or not started since a restart). */
+    readonly idleIds: ReadonlySet<string>;
+    /** The server listed tabs for the thread before this. */
+    readonly hadTabs: boolean;
+  },
+): ThreadTerminalState {
+  const normalized = normalizeThreadTerminalState(state);
+  const listed = new Set(serverTerminalIds);
+  const kept = normalized.terminalIds.filter((terminalId) => {
+    if (listed.has(terminalId)) return false;
+    const since = pendingSince[terminalId];
+    return since !== undefined && nowMs - since < PENDING_TERMINAL_TTL_MS;
+  });
+  const terminalIds = [...serverTerminalIds, ...kept];
+  if (terminalIds.length === 0) {
+    // Nothing listed: the first tab's placeholder. When the last tabs were
+    // just closed (on another device), the drawer closes too; left open, it
+    // would start a shell in the placeholder and undo that.
+    return normalizeThreadTerminalState({
+      ...createDefaultThreadTerminalState(),
+      terminalOpen: server.hadTabs ? false : normalized.terminalOpen,
+      terminalHeight: normalized.terminalHeight,
+    });
+  }
+  const previousIndex = normalized.terminalIds.indexOf(normalized.activeTerminalId);
+  const activeTerminalId = terminalIds.includes(normalized.activeTerminalId)
+    ? normalized.activeTerminalId
+    : (terminalIds[Math.min(Math.max(previousIndex, 0), terminalIds.length - 1)] ??
+      terminalIds[0] ??
+      DEFAULT_THREAD_TERMINAL_ID);
+  const next = normalizeThreadTerminalState({
+    ...normalized,
+    terminalIds,
+    activeTerminalId,
+    runningTerminalIds: normalized.runningTerminalIds.filter(
+      (id) => terminalIds.includes(id) && !server.idleIds.has(id),
+    ),
+    terminalGroups: normalized.terminalGroups,
+  });
+  return threadTerminalStateEqual(next, normalized) ? normalized : next;
+}
+
+/**
+ * What each tab is called ("Terminal 2"): the number the server gave it,
+ * or for a tab it doesn't list yet, the lowest one free.
+ */
+export function terminalTabNumbers(
+  terminalIds: ReadonlyArray<string>,
+  tabs: ReadonlyArray<TerminalTab>,
+): Map<string, number> {
+  const numbers = new Map<string, number>();
+  for (const tab of tabs) numbers.set(tab.terminalId, tab.number);
+  const taken = new Set(numbers.values());
+  let next = 1;
+  for (const terminalId of terminalIds) {
+    if (numbers.has(terminalId)) continue;
+    while (taken.has(next)) next += 1;
+    numbers.set(terminalId, next);
+    taken.add(next);
+  }
+  return numbers;
+}
+
+export interface BusyTerminal {
+  readonly threadKey: string;
+  readonly terminalId: string;
+  /** What it runs, when known (the line typed, or the process's name). */
+  readonly command: string | null;
+}
+
+/**
+ * Terminals on one server that run something, or just had a command entered:
+ * the work stopping that server stops. In thread order, then tab order.
+ */
+export function selectBusyTerminals(
+  state: Pick<
+    TerminalStateStoreState,
+    "terminalStateByThreadKey" | "terminalActivityCommandByKey" | "terminalCommandPendingByKey"
+  >,
+  environmentId: EnvironmentId | null,
+): BusyTerminal[] {
+  if (environmentId === null) return [];
+  const busy: BusyTerminal[] = [];
+  for (const [threadKey, thread] of Object.entries(state.terminalStateByThreadKey)) {
+    if (parseScopedThreadKey(threadKey)?.environmentId !== environmentId) continue;
+    for (const terminalId of thread.terminalIds) {
+      const key = `${threadKey}\u0000${terminalId}`;
+      if (
+        !thread.runningTerminalIds.includes(terminalId) &&
+        state.terminalCommandPendingByKey[key] !== true
+      ) {
+        continue;
+      }
+      busy.push({
+        threadKey,
+        terminalId,
+        command: state.terminalActivityCommandByKey[key] ?? null,
+      });
+    }
+  }
+  return busy;
+}
+
+export function selectTerminalTabs(
+  terminalTabsByThreadKey: Record<string, ReadonlyArray<TerminalTab>>,
+  threadRef: ScopedThreadRef | null | undefined,
+): ReadonlyArray<TerminalTab> {
+  if (!threadRef || threadRef.threadId.length === 0) return EMPTY_TERMINAL_TABS;
+  return terminalTabsByThreadKey[terminalThreadKey(threadRef)] ?? EMPTY_TERMINAL_TABS;
 }
 
 interface TerminalStateStoreState {
   terminalStateByThreadKey: Record<string, ThreadTerminalState>;
-  terminalLaunchContextByThreadKey: Record<string, ThreadTerminalLaunchContext>;
-  terminalEventEntriesByKey: Record<string, ReadonlyArray<TerminalEventEntry>>;
-  terminalSubmittedCommandByKey: Record<string, string>;
+  /** The server's tab list of each thread, when it keeps one. */
+  terminalTabsByThreadKey: Record<string, ReadonlyArray<TerminalTab>>;
+  /** Tabs this device opened that the server may not list yet, with when. */
+  pendingTerminalIdsByThreadKey: Record<string, Record<string, number>>;
   terminalActivityCommandByKey: Record<string, string>;
   /** When each terminal's running subprocess started, as the server saw it. */
   terminalActivityStartedAtByKey: Record<string, string>;
-  terminalCommandHistoryByKey: Record<string, true>;
-  nextTerminalEventId: number;
+  /** Tabs where a command was entered and not yet seen running or done. */
+  terminalCommandPendingByKey: Record<string, true>;
   setTerminalOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
   setTerminalHeight: (threadRef: ScopedThreadRef, height: number) => void;
   splitTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
@@ -659,27 +692,127 @@ interface TerminalStateStoreState {
   ) => void;
   setActiveTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
   closeTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
-  setTerminalLaunchContext: (
-    threadRef: ScopedThreadRef,
-    context: ThreadTerminalLaunchContext,
-  ) => void;
-  clearTerminalLaunchContext: (threadRef: ScopedThreadRef) => void;
   setTerminalActivity: (
     threadRef: ScopedThreadRef,
     terminalId: string,
     hasRunningSubprocess: boolean,
   ) => void;
-  setTerminalSubmittedCommand: (
-    threadRef: ScopedThreadRef,
-    terminalId: string,
-    command: string,
-  ) => void;
-  clearTerminalSubmittedCommand: (threadRef: ScopedThreadRef, terminalId: string) => void;
-  recordTerminalEvent: (threadRef: ScopedThreadRef, event: TerminalEvent) => void;
   applyTerminalEvent: (threadRef: ScopedThreadRef, event: TerminalEvent) => void;
+  /** Every thread's tabs on one server (the start of its stream). */
+  applyTerminalCatalog: (
+    environmentId: EnvironmentId,
+    threads: ReadonlyArray<TerminalThreadTabs>,
+  ) => void;
+  /** One thread's tabs changed on the server. */
+  applyTerminalTabs: (threadRef: ScopedThreadRef, tabs: ReadonlyArray<TerminalTab>) => void;
   clearTerminalState: (threadRef: ScopedThreadRef) => void;
   removeTerminalState: (threadRef: ScopedThreadRef) => void;
   removeOrphanedTerminalStates: (activeThreadKeys: Set<string>) => void;
+}
+
+type TerminalKeyedRecords = Pick<
+  TerminalStateStoreState,
+  "terminalActivityCommandByKey" | "terminalActivityStartedAtByKey" | "terminalCommandPendingByKey"
+>;
+
+const TERMINAL_KEYED_RECORD_NAMES = [
+  "terminalActivityCommandByKey",
+  "terminalActivityStartedAtByKey",
+  "terminalCommandPendingByKey",
+] as const satisfies ReadonlyArray<keyof TerminalKeyedRecords>;
+
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (record[key] === undefined) return record;
+  const { [key]: _removed, ...rest } = record;
+  return rest;
+}
+
+/** The per-tab records without one tab, or every tab of some threads. */
+function pruneKeyedRecords(
+  state: TerminalKeyedRecords,
+  drop: (key: string) => boolean,
+): Partial<TerminalKeyedRecords> {
+  const next: Partial<TerminalKeyedRecords> = {};
+  for (const name of TERMINAL_KEYED_RECORD_NAMES) {
+    const { entries, removed } = removeKeyedEntries<string | true>(state[name], drop);
+    if (removed) Object.assign(next, { [name]: entries });
+  }
+  return next;
+}
+
+function removeKeyedEntries<T>(
+  entries: Record<string, T>,
+  drop: (key: string) => boolean,
+): { entries: Record<string, T>; removed: boolean } {
+  let nextEntries = entries;
+  let removed = false;
+  for (const key of Object.keys(entries)) {
+    if (!drop(key)) continue;
+    if (!removed) {
+      nextEntries = { ...entries };
+      removed = true;
+    }
+    delete nextEntries[key];
+  }
+  return { entries: nextEntries, removed };
+}
+
+function withPendingTerminal(
+  pending: Record<string, Record<string, number>>,
+  threadRef: ScopedThreadRef,
+  terminalId: string,
+): Record<string, Record<string, number>> {
+  const threadKey = terminalThreadKey(threadRef);
+  return {
+    ...pending,
+    [threadKey]: { ...pending[threadKey], [terminalId]: Date.now() },
+  };
+}
+
+/** Tabs the server made for this device (a script, a suggested command) not listed yet. */
+const madeOnServerKeys = new Set<string>();
+
+/** The server made this tab (it picked it for a run): it is shown, never made again. */
+export function noteTerminalMadeOnServer(threadRef: ScopedThreadRef, terminalId: string): void {
+  madeOnServerKeys.add(terminalKey(threadRef, terminalId));
+}
+
+/**
+ * Whether this device asked for the tab and the server doesn't list it yet:
+ * the only tab a viewer makes on the server. Any other is shown as the server
+ * has it, or found gone (closed on another device).
+ */
+export function shouldMakeTerminal(threadRef: ScopedThreadRef, terminalId: string): boolean {
+  const pending =
+    useTerminalStateStore.getState().pendingTerminalIdsByThreadKey[terminalThreadKey(threadRef)];
+  return (
+    pending?.[terminalId] !== undefined && !madeOnServerKeys.has(terminalKey(threadRef, terminalId))
+  );
+}
+
+/**
+ * Lines entered on this device that the server hasn't answered yet. Until it
+ * says the tab has a command pending or running (or its shell ended),
+ * stopping the tab asks first, even when that word is slow to arrive. Word
+ * that the tab is idle may be about an earlier line, so it doesn't count.
+ */
+const LINE_ENTERED_TTL_MS = 10_000;
+const lineEnteredAtByKey = new Map<string, number>();
+
+export function noteTerminalLineEntered(threadRef: ScopedThreadRef, terminalId: string): void {
+  lineEnteredAtByKey.set(terminalKey(threadRef, terminalId), Date.now());
+}
+
+export function terminalLineRecentlyEntered(
+  threadRef: ScopedThreadRef,
+  terminalId: string,
+): boolean {
+  const key = terminalKey(threadRef, terminalId);
+  const enteredAt = lineEnteredAtByKey.get(key);
+  if (enteredAt === undefined) return false;
+  if (Date.now() - enteredAt < LINE_ENTERED_TTL_MS) return true;
+  lineEnteredAtByKey.delete(key);
+  return false;
 }
 
 export const useTerminalStateStore = create<TerminalStateStoreState>()(
@@ -704,264 +837,228 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
         });
       };
 
+      /** Takes in one thread's server list. */
+      const reconcileThread = (
+        state: TerminalStateStoreState,
+        threadKey: string,
+        tabs: ReadonlyArray<TerminalTab>,
+        nowMs: number,
+      ): Partial<TerminalStateStoreState> => {
+        const threadRef = parseScopedThreadKey(threadKey);
+        if (!threadRef) return {};
+        const serverIds = tabs.map((tab) => tab.terminalId);
+        const listed = new Set(serverIds);
+        for (const terminalId of serverIds)
+          madeOnServerKeys.delete(`${threadKey}\u0000${terminalId}`);
+        const idleIds = new Set(
+          tabs.filter((tab) => tab.status !== "running").map((tab) => tab.terminalId),
+        );
+        const hadTabs = (state.terminalTabsByThreadKey[threadKey]?.length ?? 0) > 0;
+        const pending = state.pendingTerminalIdsByThreadKey[threadKey] ?? {};
+        const stillPending = Object.fromEntries(
+          Object.entries(pending).filter(
+            ([terminalId, since]) =>
+              !listed.has(terminalId) && nowMs - since < PENDING_TERMINAL_TTL_MS,
+          ),
+        );
+        const nextTerminalStateByThreadKey = updateTerminalStateByThreadKey(
+          state.terminalStateByThreadKey,
+          threadRef,
+          (current) =>
+            reconcileThreadTerminalIds(current, serverIds, stillPending, nowMs, {
+              idleIds,
+              hadTabs,
+            }),
+        );
+        const visible = new Set(
+          selectThreadTerminalState(nextTerminalStateByThreadKey, threadRef).terminalIds,
+        );
+        const prefix = `${threadKey}\u0000`;
+        return {
+          terminalStateByThreadKey: nextTerminalStateByThreadKey,
+          terminalTabsByThreadKey: { ...state.terminalTabsByThreadKey, [threadKey]: tabs },
+          pendingTerminalIdsByThreadKey: {
+            ...state.pendingTerminalIdsByThreadKey,
+            [threadKey]: stillPending,
+          },
+          // What a tab was running is gone with its shell (after a server
+          // restart, its tabs come back with nothing running).
+          ...pruneKeyedRecords(state, (key) => {
+            if (!key.startsWith(prefix)) return false;
+            const terminalId = key.slice(prefix.length);
+            return !visible.has(terminalId) || idleIds.has(terminalId);
+          }),
+        };
+      };
+
       return {
         terminalStateByThreadKey: {},
-        terminalLaunchContextByThreadKey: {},
-        terminalEventEntriesByKey: {},
-        terminalSubmittedCommandByKey: {},
+        terminalTabsByThreadKey: {},
+        pendingTerminalIdsByThreadKey: {},
         terminalActivityCommandByKey: {},
         terminalActivityStartedAtByKey: {},
-        terminalCommandHistoryByKey: {},
-        nextTerminalEventId: 1,
+        terminalCommandPendingByKey: {},
         setTerminalOpen: (threadRef, open) =>
-          updateTerminal(threadRef, (state) => setThreadTerminalOpen(state, open)),
+          set((state) => {
+            const terminalStateByThreadKey = updateTerminalStateByThreadKey(
+              state.terminalStateByThreadKey,
+              threadRef,
+              (current) => setThreadTerminalOpen(current, open),
+            );
+            if (terminalStateByThreadKey === state.terminalStateByThreadKey) return state;
+            if (!open) return { terminalStateByThreadKey };
+            // Opening a drawer that shows none of the server's tabs asks for a
+            // shell: its first tab is made, not looked for.
+            const thread = selectThreadTerminalState(terminalStateByThreadKey, threadRef);
+            const listed = selectTerminalTabs(state.terminalTabsByThreadKey, threadRef);
+            if (listed.some((tab) => thread.terminalIds.includes(tab.terminalId))) {
+              return { terminalStateByThreadKey };
+            }
+            return {
+              terminalStateByThreadKey,
+              pendingTerminalIdsByThreadKey: withPendingTerminal(
+                state.pendingTerminalIdsByThreadKey,
+                threadRef,
+                thread.activeTerminalId,
+              ),
+            };
+          }),
         setTerminalHeight: (threadRef, height) =>
           updateTerminal(threadRef, (state) => setThreadTerminalHeight(state, height)),
         splitTerminal: (threadRef, terminalId) =>
-          updateTerminal(threadRef, (state) => splitThreadTerminal(state, terminalId)),
+          set((state) => ({
+            pendingTerminalIdsByThreadKey: withPendingTerminal(
+              state.pendingTerminalIdsByThreadKey,
+              threadRef,
+              terminalId,
+            ),
+            terminalStateByThreadKey: updateTerminalStateByThreadKey(
+              state.terminalStateByThreadKey,
+              threadRef,
+              (current) => splitThreadTerminal(current, terminalId),
+            ),
+          })),
         newTerminal: (threadRef, terminalId) =>
-          updateTerminal(threadRef, (state) => newThreadTerminal(state, terminalId)),
+          set((state) => ({
+            pendingTerminalIdsByThreadKey: withPendingTerminal(
+              state.pendingTerminalIdsByThreadKey,
+              threadRef,
+              terminalId,
+            ),
+            terminalStateByThreadKey: updateTerminalStateByThreadKey(
+              state.terminalStateByThreadKey,
+              threadRef,
+              (current) => newThreadTerminal(current, terminalId),
+            ),
+          })),
         ensureTerminal: (threadRef, terminalId, options) =>
-          updateTerminal(threadRef, (state) => {
-            let nextState = state;
-            if (!state.terminalIds.includes(terminalId)) {
-              nextState = newThreadTerminal(nextState, terminalId);
-            }
-            if (options?.active === false) {
-              nextState = {
-                ...nextState,
-                activeTerminalId: state.activeTerminalId,
-                activeTerminalGroupId: state.activeTerminalGroupId,
-              };
-            }
-            if (options?.active ?? true) {
-              nextState = setThreadActiveTerminal(nextState, terminalId);
-            }
-            if (options?.open) {
-              nextState = setThreadTerminalOpen(nextState, true);
-            }
-            return normalizeThreadTerminalState(nextState);
+          set((state) => {
+            const listed = selectTerminalTabs(state.terminalTabsByThreadKey, threadRef).some(
+              (tab) => tab.terminalId === terminalId,
+            );
+            return {
+              ...(listed
+                ? {}
+                : {
+                    pendingTerminalIdsByThreadKey: withPendingTerminal(
+                      state.pendingTerminalIdsByThreadKey,
+                      threadRef,
+                      terminalId,
+                    ),
+                  }),
+              terminalStateByThreadKey: updateTerminalStateByThreadKey(
+                state.terminalStateByThreadKey,
+                threadRef,
+                (current) => {
+                  let nextState = current;
+                  if (!current.terminalIds.includes(terminalId)) {
+                    nextState = newThreadTerminal(nextState, terminalId);
+                  }
+                  if (options?.active === false) {
+                    nextState = {
+                      ...nextState,
+                      activeTerminalId: current.activeTerminalId,
+                      activeTerminalGroupId: current.activeTerminalGroupId,
+                    };
+                  }
+                  if (options?.active ?? true) {
+                    nextState = setThreadActiveTerminal(nextState, terminalId);
+                  }
+                  if (options?.open) {
+                    nextState = setThreadTerminalOpen(nextState, true);
+                  }
+                  return normalizeThreadTerminalState(nextState);
+                },
+              ),
+            };
           }),
         setActiveTerminal: (threadRef, terminalId) =>
           updateTerminal(threadRef, (state) => setThreadActiveTerminal(state, terminalId)),
         closeTerminal: (threadRef, terminalId) =>
           set((state) => {
-            const nextTerminalStateByThreadKey = updateTerminalStateByThreadKey(
-              state.terminalStateByThreadKey,
-              threadRef,
-              (current) => closeThreadTerminal(current, terminalId),
-            );
-            const key = terminalEventBufferKey(threadRef, terminalId);
-            const hadSubmittedCommand = state.terminalSubmittedCommandByKey[key] !== undefined;
-            const hadActivityCommand = state.terminalActivityCommandByKey[key] !== undefined;
-            const hadActivityStartedAt = state.terminalActivityStartedAtByKey[key] !== undefined;
-            const hadCommandHistory = state.terminalCommandHistoryByKey[key] !== undefined;
-            if (
-              nextTerminalStateByThreadKey === state.terminalStateByThreadKey &&
-              !hadSubmittedCommand &&
-              !hadActivityCommand &&
-              !hadActivityStartedAt &&
-              !hadCommandHistory
-            ) {
-              return state;
-            }
-            const { [key]: _removed, ...nextTerminalSubmittedCommandByKey } =
-              state.terminalSubmittedCommandByKey;
-            const { [key]: _removedActivity, ...nextTerminalActivityCommandByKey } =
-              state.terminalActivityCommandByKey;
-            const { [key]: _removedStartedAt, ...nextTerminalActivityStartedAtByKey } =
-              state.terminalActivityStartedAtByKey;
-            const { [key]: _removedHistory, ...nextTerminalCommandHistoryByKey } =
-              state.terminalCommandHistoryByKey;
-            return {
-              terminalStateByThreadKey: nextTerminalStateByThreadKey,
-              terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
-              terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
-              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
-              terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
-            };
-          }),
-        setTerminalLaunchContext: (threadRef, context) =>
-          set((state) => ({
-            terminalLaunchContextByThreadKey: {
-              ...state.terminalLaunchContextByThreadKey,
-              [terminalThreadKey(threadRef)]: context,
-            },
-          })),
-        clearTerminalLaunchContext: (threadRef) =>
-          set((state) => {
+            const key = terminalKey(threadRef, terminalId);
             const threadKey = terminalThreadKey(threadRef);
-            if (!state.terminalLaunchContextByThreadKey[threadKey]) {
-              return state;
-            }
-            const { [threadKey]: _removed, ...rest } = state.terminalLaunchContextByThreadKey;
-            return { terminalLaunchContextByThreadKey: rest };
+            const pending = state.pendingTerminalIdsByThreadKey[threadKey];
+            return {
+              terminalStateByThreadKey: updateTerminalStateByThreadKey(
+                state.terminalStateByThreadKey,
+                threadRef,
+                (current) => closeThreadTerminal(current, terminalId),
+              ),
+              ...(pending?.[terminalId] !== undefined
+                ? {
+                    pendingTerminalIdsByThreadKey: {
+                      ...state.pendingTerminalIdsByThreadKey,
+                      [threadKey]: withoutKey(pending, terminalId),
+                    },
+                  }
+                : {}),
+              ...pruneKeyedRecords(state, (candidate) => candidate === key),
+            };
           }),
         setTerminalActivity: (threadRef, terminalId, hasRunningSubprocess) =>
           updateTerminal(threadRef, (state) =>
             setThreadTerminalActivity(state, terminalId, hasRunningSubprocess),
           ),
-        setTerminalSubmittedCommand: (threadRef, terminalId, command) =>
-          set((state) => {
-            const normalizedCommand = normalizeSubmittedTerminalCommand(command);
-            if (normalizedCommand === null) {
-              return state;
-            }
-            const key = terminalEventBufferKey(threadRef, terminalId);
-            const hasCommandHistory = state.terminalCommandHistoryByKey[key] === true;
-            if (
-              state.terminalSubmittedCommandByKey[key] === normalizedCommand &&
-              hasCommandHistory
-            ) {
-              return state;
-            }
-            return {
-              terminalSubmittedCommandByKey: {
-                ...state.terminalSubmittedCommandByKey,
-                [key]: normalizedCommand,
-              },
-              terminalCommandHistoryByKey: hasCommandHistory
-                ? state.terminalCommandHistoryByKey
-                : {
-                    ...state.terminalCommandHistoryByKey,
-                    [key]: true,
-                  },
-            };
-          }),
-        clearTerminalSubmittedCommand: (threadRef, terminalId) =>
-          set((state) => {
-            const key = terminalEventBufferKey(threadRef, terminalId);
-            if (state.terminalSubmittedCommandByKey[key] === undefined) {
-              return state;
-            }
-            const { [key]: _removed, ...rest } = state.terminalSubmittedCommandByKey;
-            return { terminalSubmittedCommandByKey: rest };
-          }),
-        recordTerminalEvent: (threadRef, event) =>
-          set((state) =>
-            appendTerminalEventEntry(
-              state.terminalEventEntriesByKey,
-              state.nextTerminalEventId,
-              threadRef,
-              event,
-            ),
-          ),
         applyTerminalEvent: (threadRef, event) =>
           set((state) => {
-            const threadKey = terminalThreadKey(threadRef);
-            let nextTerminalStateByThreadKey = state.terminalStateByThreadKey;
-            let nextTerminalLaunchContextByThreadKey = state.terminalLaunchContextByThreadKey;
-            let nextTerminalSubmittedCommandByKey = state.terminalSubmittedCommandByKey;
-            let nextTerminalActivityCommandByKey = state.terminalActivityCommandByKey;
-            let nextTerminalActivityStartedAtByKey = state.terminalActivityStartedAtByKey;
-            let nextTerminalCommandHistoryByKey = state.terminalCommandHistoryByKey;
-
-            const clearSubmittedCommand = () => {
-              const key = terminalEventBufferKey(threadRef, event.terminalId);
-              if (nextTerminalSubmittedCommandByKey[key] === undefined) {
-                return;
-              }
-              const { [key]: _removed, ...rest } = nextTerminalSubmittedCommandByKey;
-              nextTerminalSubmittedCommandByKey = rest;
-            };
-
-            const clearActivityCommand = () => {
-              const key = terminalEventBufferKey(threadRef, event.terminalId);
-              if (nextTerminalActivityStartedAtByKey[key] !== undefined) {
-                const { [key]: _removedStartedAt, ...restStartedAt } =
-                  nextTerminalActivityStartedAtByKey;
-                nextTerminalActivityStartedAtByKey = restStartedAt;
-              }
-              if (nextTerminalActivityCommandByKey[key] === undefined) {
-                return;
-              }
-              const { [key]: _removed, ...rest } = nextTerminalActivityCommandByKey;
-              nextTerminalActivityCommandByKey = rest;
-            };
-
-            const setActivityStartedAt = (startedAt: string | null | undefined) => {
-              const key = terminalEventBufferKey(threadRef, event.terminalId);
-              if (!startedAt || nextTerminalActivityStartedAtByKey[key] === startedAt) {
-                return;
-              }
-              nextTerminalActivityStartedAtByKey = {
-                ...nextTerminalActivityStartedAtByKey,
-                [key]: startedAt,
-              };
-            };
-
-            const clearCommandHistory = () => {
-              const key = terminalEventBufferKey(threadRef, event.terminalId);
-              if (nextTerminalCommandHistoryByKey[key] === undefined) {
-                return;
-              }
-              const { [key]: _removed, ...rest } = nextTerminalCommandHistoryByKey;
-              nextTerminalCommandHistoryByKey = rest;
-            };
-
-            const markCommandHistory = () => {
-              const key = terminalEventBufferKey(threadRef, event.terminalId);
-              if (nextTerminalCommandHistoryByKey[key] === true) {
-                return;
-              }
-              nextTerminalCommandHistoryByKey = {
-                ...nextTerminalCommandHistoryByKey,
-                [key]: true,
-              };
-            };
-
-            const setActivityCommand = (command: string | null | undefined) => {
-              const normalizedCommand = command ? normalizeSubmittedTerminalCommand(command) : null;
-              if (normalizedCommand === null) {
-                clearActivityCommand();
-                return;
-              }
-              markCommandHistory();
-              const key = terminalEventBufferKey(threadRef, event.terminalId);
-              if (nextTerminalActivityCommandByKey[key] === normalizedCommand) {
-                return;
-              }
-              nextTerminalActivityCommandByKey = {
-                ...nextTerminalActivityCommandByKey,
-                [key]: normalizedCommand,
-              };
-            };
-
-            if (event.type === "started" || event.type === "restarted") {
-              clearSubmittedCommand();
-              clearActivityCommand();
-              if (event.type === "restarted") {
-                clearCommandHistory();
-              }
-              nextTerminalStateByThreadKey = updateTerminalStateByThreadKey(
-                nextTerminalStateByThreadKey,
-                threadRef,
-                (current) => {
-                  let nextState = current;
-                  if (!current.terminalIds.includes(event.terminalId)) {
-                    nextState = newThreadTerminal(nextState, event.terminalId);
-                  }
-                  nextState = setThreadActiveTerminal(nextState, event.terminalId);
-                  nextState = setThreadTerminalOpen(nextState, true);
-                  return normalizeThreadTerminalState(nextState);
-                },
-              );
-              nextTerminalLaunchContextByThreadKey = {
-                ...nextTerminalLaunchContextByThreadKey,
-                [threadKey]: launchContextFromStartEvent(event),
-              };
+            const key = terminalKey(threadRef, event.terminalId);
+            if (
+              event.type === "activity"
+                ? event.hasRunningSubprocess || event.commandPending === true
+                : event.type !== "output" && event.type !== "cleared"
+            ) {
+              lineEnteredAtByKey.delete(key);
             }
+            let nextTerminalStateByThreadKey = state.terminalStateByThreadKey;
+            let nextActivityCommandByKey = state.terminalActivityCommandByKey;
+            let nextActivityStartedAtByKey = state.terminalActivityStartedAtByKey;
+            let nextCommandPendingByKey = state.terminalCommandPendingByKey;
 
             const hasRunningSubprocess = terminalRunningSubprocessFromEvent(event);
             if (hasRunningSubprocess !== null) {
-              if (!hasRunningSubprocess) {
-                clearSubmittedCommand();
-                clearActivityCommand();
-              } else if (event.type === "activity") {
-                markCommandHistory();
-                setActivityCommand(event.command);
-                setActivityStartedAt(event.startedAt);
+              if (hasRunningSubprocess && event.type === "activity") {
+                const command = event.command
+                  ? normalizeSubmittedTerminalCommand(event.command)
+                  : null;
+                nextActivityCommandByKey =
+                  command === null
+                    ? withoutKey(nextActivityCommandByKey, key)
+                    : nextActivityCommandByKey[key] === command
+                      ? nextActivityCommandByKey
+                      : { ...nextActivityCommandByKey, [key]: command };
+                if (event.startedAt && nextActivityStartedAtByKey[key] !== event.startedAt) {
+                  nextActivityStartedAtByKey = {
+                    ...nextActivityStartedAtByKey,
+                    [key]: event.startedAt,
+                  };
+                }
+              } else {
+                nextActivityCommandByKey = withoutKey(nextActivityCommandByKey, key);
+                nextActivityStartedAtByKey = withoutKey(nextActivityStartedAtByKey, key);
               }
+              // Activity is only news for tabs the drawer lists: a tab of
+              // another device's (on a server without tab lists) isn't added.
               nextTerminalStateByThreadKey = updateTerminalStateByThreadKey(
                 nextTerminalStateByThreadKey,
                 threadRef,
@@ -970,191 +1067,121 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
               );
             }
 
+            const pending =
+              event.type === "activity" &&
+              !event.hasRunningSubprocess &&
+              event.commandPending === true;
+            nextCommandPendingByKey = pending
+              ? nextCommandPendingByKey[key]
+                ? nextCommandPendingByKey
+                : { ...nextCommandPendingByKey, [key]: true }
+              : event.type === "output" || event.type === "cleared"
+                ? nextCommandPendingByKey
+                : withoutKey(nextCommandPendingByKey, key);
+
             if (event.type === "exited" || event.type === "error") {
-              clearSubmittedCommand();
-              clearActivityCommand();
+              nextActivityCommandByKey = withoutKey(nextActivityCommandByKey, key);
+              nextActivityStartedAtByKey = withoutKey(nextActivityStartedAtByKey, key);
             }
 
-            if (event.type === "cleared") {
-              clearCommandHistory();
-            }
-
-            const nextEventState = appendTerminalEventEntry(
-              state.terminalEventEntriesByKey,
-              state.nextTerminalEventId,
-              threadRef,
-              event,
-            );
-
-            return {
-              terminalStateByThreadKey: nextTerminalStateByThreadKey,
-              terminalLaunchContextByThreadKey: nextTerminalLaunchContextByThreadKey,
-              terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
-              terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
-              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
-              terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
-              ...nextEventState,
-            };
-          }),
-        clearTerminalState: (threadRef) =>
-          set((state) => {
-            const threadKey = terminalThreadKey(threadRef);
-            const nextTerminalStateByThreadKey = updateTerminalStateByThreadKey(
-              state.terminalStateByThreadKey,
-              threadRef,
-              () => createDefaultThreadTerminalState(),
-            );
-            const hadLaunchContext =
-              state.terminalLaunchContextByThreadKey[threadKey] !== undefined;
-            const { [threadKey]: _removed, ...remainingLaunchContexts } =
-              state.terminalLaunchContextByThreadKey;
-            const { entries: nextTerminalEventEntriesByKey, removed: removedEventEntries } =
-              removeTerminalKeyedEntriesForThread(state.terminalEventEntriesByKey, threadKey);
-            const {
-              entries: nextTerminalSubmittedCommandByKey,
-              removed: removedSubmittedCommands,
-            } = removeTerminalKeyedEntriesForThread(state.terminalSubmittedCommandByKey, threadKey);
-            const { entries: nextTerminalActivityCommandByKey, removed: removedActivityCommands } =
-              removeTerminalKeyedEntriesForThread(state.terminalActivityCommandByKey, threadKey);
-            const {
-              entries: nextTerminalActivityStartedAtByKey,
-              removed: removedActivityStartedAts,
-            } = removeTerminalKeyedEntriesForThread(
-              state.terminalActivityStartedAtByKey,
-              threadKey,
-            );
-            const { entries: nextTerminalCommandHistoryByKey, removed: removedCommandHistory } =
-              removeTerminalKeyedEntriesForThread(state.terminalCommandHistoryByKey, threadKey);
             if (
               nextTerminalStateByThreadKey === state.terminalStateByThreadKey &&
-              !hadLaunchContext &&
-              !removedEventEntries &&
-              !removedSubmittedCommands &&
-              !removedActivityCommands &&
-              !removedActivityStartedAts &&
-              !removedCommandHistory
+              nextActivityCommandByKey === state.terminalActivityCommandByKey &&
+              nextActivityStartedAtByKey === state.terminalActivityStartedAtByKey &&
+              nextCommandPendingByKey === state.terminalCommandPendingByKey
             ) {
               return state;
             }
             return {
               terminalStateByThreadKey: nextTerminalStateByThreadKey,
-              terminalLaunchContextByThreadKey: remainingLaunchContexts,
-              terminalEventEntriesByKey: nextTerminalEventEntriesByKey,
-              terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
-              terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
-              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
-              terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
+              terminalActivityCommandByKey: nextActivityCommandByKey,
+              terminalActivityStartedAtByKey: nextActivityStartedAtByKey,
+              terminalCommandPendingByKey: nextCommandPendingByKey,
             };
+          }),
+        applyTerminalCatalog: (environmentId, threads) =>
+          set((state) => {
+            const nowMs = Date.now();
+            const tabsByThreadKey = new Map<string, ReadonlyArray<TerminalTab>>();
+            for (const thread of threads) {
+              tabsByThreadKey.set(
+                terminalThreadKey({ environmentId, threadId: ThreadId.make(thread.threadId) }),
+                thread.tabs,
+              );
+            }
+            // Threads the server lists nothing for have no tabs there now.
+            for (const threadKey of Object.keys(state.terminalStateByThreadKey)) {
+              const threadRef = parseScopedThreadKey(threadKey);
+              if (threadRef?.environmentId === environmentId && !tabsByThreadKey.has(threadKey)) {
+                tabsByThreadKey.set(threadKey, EMPTY_TERMINAL_TABS);
+              }
+            }
+            const next: TerminalStateStoreState = { ...state };
+            for (const [threadKey, tabs] of tabsByThreadKey) {
+              Object.assign(next, reconcileThread(next, threadKey, tabs, nowMs));
+            }
+            return next;
+          }),
+        applyTerminalTabs: (threadRef, tabs) =>
+          set((state) => reconcileThread(state, terminalThreadKey(threadRef), tabs, Date.now())),
+        clearTerminalState: (threadRef) =>
+          set((state) => {
+            const threadKey = terminalThreadKey(threadRef);
+            const prefix = `${threadKey}\u0000`;
+            const next = {
+              terminalStateByThreadKey: updateTerminalStateByThreadKey(
+                state.terminalStateByThreadKey,
+                threadRef,
+                () => createDefaultThreadTerminalState(),
+              ),
+              terminalTabsByThreadKey: withoutKey(state.terminalTabsByThreadKey, threadKey),
+              pendingTerminalIdsByThreadKey: withoutKey(
+                state.pendingTerminalIdsByThreadKey,
+                threadKey,
+              ),
+              ...pruneKeyedRecords(state, (key) => key.startsWith(prefix)),
+            };
+            const unchanged =
+              next.terminalStateByThreadKey === state.terminalStateByThreadKey &&
+              next.terminalTabsByThreadKey === state.terminalTabsByThreadKey &&
+              next.pendingTerminalIdsByThreadKey === state.pendingTerminalIdsByThreadKey &&
+              Object.keys(next).length === 3;
+            return unchanged ? state : next;
           }),
         removeTerminalState: (threadRef) =>
           set((state) => {
             const threadKey = terminalThreadKey(threadRef);
-            const hadTerminalState = state.terminalStateByThreadKey[threadKey] !== undefined;
-            const hadLaunchContext =
-              state.terminalLaunchContextByThreadKey[threadKey] !== undefined;
-            const { entries: nextTerminalEventEntriesByKey, removed: removedEventEntries } =
-              removeTerminalKeyedEntriesForThread(state.terminalEventEntriesByKey, threadKey);
-            const {
-              entries: nextTerminalSubmittedCommandByKey,
-              removed: removedSubmittedCommands,
-            } = removeTerminalKeyedEntriesForThread(state.terminalSubmittedCommandByKey, threadKey);
-            const { entries: nextTerminalActivityCommandByKey, removed: removedActivityCommands } =
-              removeTerminalKeyedEntriesForThread(state.terminalActivityCommandByKey, threadKey);
-            const {
-              entries: nextTerminalActivityStartedAtByKey,
-              removed: removedActivityStartedAts,
-            } = removeTerminalKeyedEntriesForThread(
-              state.terminalActivityStartedAtByKey,
-              threadKey,
-            );
-            const { entries: nextTerminalCommandHistoryByKey, removed: removedCommandHistory } =
-              removeTerminalKeyedEntriesForThread(state.terminalCommandHistoryByKey, threadKey);
-            if (
-              !hadTerminalState &&
-              !hadLaunchContext &&
-              !removedEventEntries &&
-              !removedSubmittedCommands &&
-              !removedActivityCommands &&
-              !removedActivityStartedAts &&
-              !removedCommandHistory
-            ) {
-              return state;
-            }
-            const nextTerminalStateByThreadKey = { ...state.terminalStateByThreadKey };
-            delete nextTerminalStateByThreadKey[threadKey];
-            const nextLaunchContexts = { ...state.terminalLaunchContextByThreadKey };
-            delete nextLaunchContexts[threadKey];
+            const prefix = `${threadKey}\u0000`;
             return {
-              terminalStateByThreadKey: nextTerminalStateByThreadKey,
-              terminalLaunchContextByThreadKey: nextLaunchContexts,
-              terminalEventEntriesByKey: nextTerminalEventEntriesByKey,
-              terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
-              terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
-              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
-              terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
+              terminalStateByThreadKey: withoutKey(state.terminalStateByThreadKey, threadKey),
+              terminalTabsByThreadKey: withoutKey(state.terminalTabsByThreadKey, threadKey),
+              pendingTerminalIdsByThreadKey: withoutKey(
+                state.pendingTerminalIdsByThreadKey,
+                threadKey,
+              ),
+              ...pruneKeyedRecords(state, (key) => key.startsWith(prefix)),
             };
           }),
         removeOrphanedTerminalStates: (activeThreadKeys) =>
           set((state) => {
-            const orphanedIds = Object.keys(state.terminalStateByThreadKey).filter(
-              (key) => !activeThreadKeys.has(key),
+            const orphaned = (threadKey: string) => !activeThreadKeys.has(threadKey);
+            const { entries: terminalStateByThreadKey, removed: removedStates } =
+              removeKeyedEntries(state.terminalStateByThreadKey, orphaned);
+            const { entries: terminalTabsByThreadKey, removed: removedTabs } = removeKeyedEntries(
+              state.terminalTabsByThreadKey,
+              orphaned,
             );
-            const orphanedLaunchContextIds = Object.keys(
-              state.terminalLaunchContextByThreadKey,
-            ).filter((key) => !activeThreadKeys.has(key));
-            const { entries: nextTerminalEventEntriesByKey, removed: removedEventEntries } =
-              removeOrphanedTerminalKeyedEntries(state.terminalEventEntriesByKey, activeThreadKeys);
-            const {
-              entries: nextTerminalSubmittedCommandByKey,
-              removed: removedSubmittedCommands,
-            } = removeOrphanedTerminalKeyedEntries(
-              state.terminalSubmittedCommandByKey,
-              activeThreadKeys,
-            );
-            const { entries: nextTerminalActivityCommandByKey, removed: removedActivityCommands } =
-              removeOrphanedTerminalKeyedEntries(
-                state.terminalActivityCommandByKey,
-                activeThreadKeys,
-              );
-            const {
-              entries: nextTerminalActivityStartedAtByKey,
-              removed: removedActivityStartedAts,
-            } = removeOrphanedTerminalKeyedEntries(
-              state.terminalActivityStartedAtByKey,
-              activeThreadKeys,
-            );
-            const { entries: nextTerminalCommandHistoryByKey, removed: removedCommandHistory } =
-              removeOrphanedTerminalKeyedEntries(
-                state.terminalCommandHistoryByKey,
-                activeThreadKeys,
-              );
-            if (
-              orphanedIds.length === 0 &&
-              orphanedLaunchContextIds.length === 0 &&
-              !removedEventEntries &&
-              !removedSubmittedCommands &&
-              !removedActivityCommands &&
-              !removedActivityStartedAts &&
-              !removedCommandHistory
-            ) {
+            const keyed = pruneKeyedRecords(state, (key) => {
+              const [threadKey] = key.split("\u0000");
+              return threadKey !== undefined && orphaned(threadKey);
+            });
+            if (!removedStates && !removedTabs && Object.keys(keyed).length === 0) {
               return state;
             }
-            const next = { ...state.terminalStateByThreadKey };
-            for (const id of orphanedIds) {
-              delete next[id];
-            }
-            const nextLaunchContexts = { ...state.terminalLaunchContextByThreadKey };
-            for (const id of orphanedLaunchContextIds) {
-              delete nextLaunchContexts[id];
-            }
             return {
-              terminalStateByThreadKey: next,
-              terminalLaunchContextByThreadKey: nextLaunchContexts,
-              terminalEventEntriesByKey: nextTerminalEventEntriesByKey,
-              terminalSubmittedCommandByKey: nextTerminalSubmittedCommandByKey,
-              terminalActivityCommandByKey: nextTerminalActivityCommandByKey,
-              terminalActivityStartedAtByKey: nextTerminalActivityStartedAtByKey,
-              terminalCommandHistoryByKey: nextTerminalCommandHistoryByKey,
+              terminalStateByThreadKey,
+              terminalTabsByThreadKey,
+              ...keyed,
             };
           }),
       };

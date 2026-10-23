@@ -84,9 +84,11 @@ or Auto runs as Supervised.
   (docs/agent-pages.md). Pages need an agent that can reach Threadlines'
   tools; it learns the folder for a page's images from the error when it uses
   one elsewhere, since Threadlines cannot give it instructions.
-- Not available: usage meters, importing the agent's own past sessions,
-  extra accounts, and writing thread titles or commit messages (a tested
-  agent does those).
+- Not available: usage meters and the Usage page (ACP doesn't say whether an
+  agent's turn token counts are that turn's or a running total, and agents
+  differ, so Threadlines can't add them up honestly), importing the agent's
+  own past sessions, extra accounts, and writing thread titles or commit
+  messages (a tested agent does those).
 
 ## Where files live
 

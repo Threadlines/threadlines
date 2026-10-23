@@ -79,6 +79,13 @@ function normalizeLocalRunningThreadCount(input: DesktopTaskbarStatusInput): num
   return Math.floor(count);
 }
 
+/** Busy terminals on this computer, whatever the threads are doing. */
+function normalizeLocalBusyTerminalCount(input: DesktopTaskbarStatusInput): number {
+  const count = input.localBusyTerminalCount;
+  if (count === undefined || !Number.isFinite(count) || count <= 0) return 0;
+  return Math.floor(count);
+}
+
 /** Finished threads the user has not opened yet, whatever else is running. */
 function normalizeUnreadThreadCount(input: DesktopTaskbarStatusInput): number {
   const count = input.completedThreadCount;
@@ -667,6 +674,7 @@ const make = Effect.gen(function* () {
       const workJustFinished = currentStatus.status === "working" && input.status === "completed";
       currentStatus = input;
       yield* Ref.set(state.localRunningThreadCount, normalizeLocalRunningThreadCount(input));
+      yield* Ref.set(state.localBusyTerminalCount, normalizeLocalBusyTerminalCount(input));
       yield* applyWindowsStatus(input, workJustFinished);
       yield* applyMacStatus(input, workJustFinished);
       yield* updateTray();

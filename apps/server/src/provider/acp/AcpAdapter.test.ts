@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { createModelSelection } from "@threadlines/shared/model";
@@ -27,6 +28,7 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import type { UsageLedgerEntry } from "../../usage/usageLedger.ts";
 import { type AcpAdapterShape, acpDiffFileChanges, makeAcpAdapter } from "./AcpAdapter.ts";
 import { discoverAcpModels } from "./AcpProvider.ts";
 import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
@@ -162,13 +164,19 @@ const makeResolveCursorSettings = Effect.gen(function* () {
   );
 });
 
+/** What the adapter wrote down for the usage ledger, by thread. */
+const recordedTurnUsage: Array<UsageLedgerEntry> = [];
+
 const cursorAdapterTestLayer = it.layer(
   Layer.effect(
     CursorAdapter,
     Effect.gen(function* () {
       const cursorConfig = decodeCursorSettings({});
       const resolveSettings = yield* makeResolveCursorSettings;
-      return yield* makeAcpAdapter(CURSOR_ACP_DESCRIPTOR, cursorConfig, { resolveSettings });
+      return yield* makeAcpAdapter(CURSOR_ACP_DESCRIPTOR, cursorConfig, {
+        resolveSettings,
+        recordTurnUsage: (entry) => Effect.sync(() => void recordedTurnUsage.push(entry)),
+      });
     }),
   ).pipe(
     Layer.provideMerge(ServerSettingsService.layerTest()),
@@ -1264,6 +1272,61 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         usage?.type === "thread.token-usage.updated" ? usage.payload.usage : undefined,
         { usedTokens: 11_767, maxTokens: 256_000 },
       );
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("records each turn's reported tokens and its share of the running cost", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("acp-turn-usage");
+      const turnsCompleted = yield* Queue.unbounded<void>();
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_THOUGHTS: "1", T3_ACP_REPORT_USAGE: "1" }),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        String(event.threadId) === String(threadId) && event.type === "turn.completed"
+          ? Queue.offer(turnsCompleted, undefined)
+          : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      for (const input of ["first", "second"]) {
+        yield* adapter.sendTurn({ threadId, input, attachments: [] });
+        yield* Queue.take(turnsCompleted);
+      }
+      yield* Fiber.interrupt(runtimeEventsFiber);
+
+      const turns = recordedTurnUsage.filter((entry) => entry.sessionId === "mock-session-1");
+      // A session opened here starts at no cost, so each turn's share is exact.
+      assert.deepEqual(
+        turns.map((entry) => ({
+          model: entry.model,
+          totals: entry.totals,
+          costUsd: Number(entry.costUsd?.toFixed(6)),
+        })),
+        [0.01, 0.015].map((costUsd) => ({
+          model: "default",
+          totals: {
+            uncachedInputTokens: 1_111,
+            cachedInputTokens: 4_000,
+            cacheCreationTokens: 0,
+            outputTokens: 53,
+            reasoningTokens: 5,
+          },
+          costUsd,
+        })),
+      );
+      assert.notEqual(turns[0]?.turnId, turns[1]?.turnId);
 
       yield* adapter.stopSession(threadId);
     }),

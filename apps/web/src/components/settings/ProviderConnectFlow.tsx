@@ -415,36 +415,16 @@ export function ProviderConnectFlow({
     }
   }, [autoShowTerminal, isBrowserFlow, needsTerminal, state.status, terminalFallbackRun]);
 
-  // Open the printed sign-in page once per run. Most CLIs open the browser
-  // themselves; the ones that cannot (fx inside WSL) print a device-code URL
-  // and wait, which would otherwise time out silently. A browser sign-in's
-  // page is opened by the flow hook, for whichever surface started it.
-  const openedSignInUrlRef = useRef<string | null>(null);
+  // The flow hook opens the run's page by itself when it should; this is the
+  // way back to it.
   const openSignInUrl = (url: string) => {
-    openedSignInUrlRef.current = url;
     void ensureLocalApi()
       .shell.openExternal(url)
-      .catch(() => {
-        // The link button below stays available as the manual path.
-      });
+      .catch(() => {});
   };
-  useEffect(() => {
-    const url = state.signInUrl;
-    if (
-      isBrowserFlow ||
-      isCommunityAgent ||
-      !url ||
-      !isProviderConnectFlowActive(state.status) ||
-      openedSignInUrlRef.current === url
-    ) {
-      return;
-    }
-    openSignInUrl(url);
-  }, [isBrowserFlow, isCommunityAgent, state.signInUrl, state.status]);
 
   const startFlow = (options?: { readonly terminal?: boolean }) => {
     setShowTerminal(false);
-    openedSignInUrlRef.current = null;
     start(options);
   };
 

@@ -126,11 +126,7 @@ import { useGeneralChats } from "./chats/useGeneralChats";
 import { AttentionCounts } from "./sidebar/AttentionCounts";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { isRoom } from "../rooms";
-
-import {
-  resolveLinkedThreadPullRequests,
-  type ThreadPullRequest,
-} from "./pull-requests/pullRequests.logic";
+import { type ThreadPullRequest } from "./pull-requests/pullRequests.logic";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
 import { readEnvironmentApi } from "../environmentApi";
@@ -441,10 +437,9 @@ export default function Sidebar() {
     sidebarProjectByKey,
     resolveProjectKeyForRef,
     generalChatProjectKeys,
-    inboxThreads,
     openPullRequests,
-    settledPullRequestEntries,
     pullRequestByThreadKey,
+    linkedPullRequestsByThreadKey,
     entries,
   } = useInboxThreads();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -532,35 +527,6 @@ export default function Sidebar() {
   // not "nothing here" — a paired phone would otherwise be told it has no
   // projects for the second before its projects appear.
   const bootstrapComplete = useStore(selectBootstrapCompleteForActiveEnvironment);
-
-  // The pull requests each thread's agent opened on other branches, from the
-  // same listings. A row's tag shows one pull request and counts the rest.
-  const linkedPullRequestsByThreadKey = useMemo(() => {
-    const byThreadKey = new Map<string, readonly ThreadPullRequest[]>();
-    for (const thread of inboxThreads) {
-      if ((thread.linkedPullRequests?.length ?? 0) === 0) {
-        continue;
-      }
-      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      const linked = resolveLinkedThreadPullRequests({
-        thread,
-        ownNumber: pullRequestByThreadKey.get(threadKey)?.number ?? null,
-        projects,
-        openEntries: openPullRequests.entries,
-        settledEntries: settledPullRequestEntries,
-      });
-      if (linked.length > 0) {
-        byThreadKey.set(threadKey, linked);
-      }
-    }
-    return byThreadKey;
-  }, [
-    inboxThreads,
-    openPullRequests.entries,
-    projects,
-    pullRequestByThreadKey,
-    settledPullRequestEntries,
-  ]);
 
   // Every machine the inbox knows about: this device, plus whatever has been
   // added under Settings › Connections. Ordered with this device first, the rest by

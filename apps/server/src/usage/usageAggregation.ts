@@ -51,18 +51,29 @@ export function makeDayFormatter(timeZone: string): (timestampMs: number) => str
 
 const HOUR_MS = 60 * 60 * 1000;
 
+/** The furthest instant a `Date` can hold. */
+const MAX_DATE_MS = 8.64e15;
+
 /** Start of the hour holding `timestampMs`, in absolute time. */
 export function hourStartOf(timestampMs: number): number {
   return Math.floor(timestampMs / HOUR_MS) * HOUR_MS;
 }
 
 interface MutableHourBucket {
+  readonly hourStartMs: number;
+  readonly provider: UsageHourBucket["provider"];
+  readonly model: string;
+  readonly source: number | undefined;
   totals: UsageTokenTotals;
   costUsd: number;
   records: number;
 }
 
 interface MutableBucket {
+  readonly day: string;
+  readonly provider: UsageBucket["provider"];
+  readonly model: string;
+  readonly source: number | undefined;
   totals: UsageTokenTotals;
   costUsd: number;
   cacheSavingsUsd: number;
@@ -118,8 +129,11 @@ export class UsageAggregator {
    * Folds one record in. Returns whether it actually contributed, so callers
    * can derive per-window facts (distinct sessions, for one) from the records
    * that landed rather than everything the mtime prefilter happened to admit.
+   *
+   * `source` is the index of the summary source the record was read from; it
+   * keeps one source's records in buckets of their own.
    */
-  add(record: UsageRecord): boolean {
+  add(record: UsageRecord, source?: number): boolean {
     if (record.dedupeKey !== null) {
       if (this.#seen.has(record.dedupeKey)) {
         this.#duplicatesDropped += 1;
@@ -128,16 +142,26 @@ export class UsageAggregator {
       this.#seen.add(record.dedupeKey);
     }
 
+    // A damaged record's time can be past what a Date holds, and formatting
+    // it would throw and fail the whole summary.
+    if (!Number.isFinite(record.timestampMs) || Math.abs(record.timestampMs) > MAX_DATE_MS) {
+      this.#outOfWindow += 1;
+      return false;
+    }
     const day = this.#toDay(record.timestampMs);
     if (day < this.#options.sinceDay || day > this.#options.untilDay) {
       this.#outOfWindow += 1;
       return false;
     }
 
-    const key = `${day} ${record.provider} ${record.model}`;
+    const key = `${day}\u0000${record.provider}\u0000${record.model}\u0000${source ?? ""}`;
     let bucket = this.#buckets.get(key);
     if (bucket === undefined) {
       bucket = {
+        day,
+        provider: record.provider,
+        model: record.model,
+        source,
         totals: EMPTY_TOTALS,
         costUsd: 0,
         cacheSavingsUsd: 0,
@@ -161,10 +185,19 @@ export class UsageAggregator {
 
     const hourlySinceMs = this.#options.hourlySinceMs;
     if (hourlySinceMs !== undefined && record.timestampMs >= hourlySinceMs) {
-      const hourKey = `${hourStartOf(record.timestampMs)} ${record.provider} ${record.model}`;
+      const hourStartMs = hourStartOf(record.timestampMs);
+      const hourKey = `${hourStartMs}\u0000${record.provider}\u0000${record.model}\u0000${source ?? ""}`;
       let hour = this.#hourlyBuckets.get(hourKey);
       if (hour === undefined) {
-        hour = { totals: EMPTY_TOTALS, costUsd: 0, records: 0 };
+        hour = {
+          hourStartMs,
+          provider: record.provider,
+          model: record.model,
+          source,
+          totals: EMPTY_TOTALS,
+          costUsd: 0,
+          records: 0,
+        };
         this.#hourlyBuckets.set(hourKey, hour);
       }
       hour.totals = addTotals(hour.totals, record.totals);
@@ -176,12 +209,11 @@ export class UsageAggregator {
 
   finish(): AggregateResult {
     const buckets: UsageBucket[] = [];
-    for (const [key, bucket] of this.#buckets) {
-      const [day = "", provider = "", model = ""] = key.split(" ");
+    for (const bucket of this.#buckets.values()) {
       buckets.push({
-        day: day as UsageDay,
-        provider: provider as UsageBucket["provider"],
-        model,
+        day: bucket.day as UsageDay,
+        provider: bucket.provider,
+        model: bucket.model,
         totals: bucket.totals,
         costUsd: bucket.costUsd,
         cacheSavingsUsd: bucket.cacheSavingsUsd,
@@ -189,6 +221,7 @@ export class UsageAggregator {
         records: bucket.records,
         unpricedRecords: bucket.unpricedRecords,
         sessions: bucket.sessions.size,
+        ...(bucket.source === undefined ? {} : { source: bucket.source }),
       });
     }
     // Stable ordering keeps payloads diffable and snapshot tests meaningful.
@@ -196,26 +229,28 @@ export class UsageAggregator {
       (a, b) =>
         a.day.localeCompare(b.day) ||
         a.provider.localeCompare(b.provider) ||
-        a.model.localeCompare(b.model),
+        a.model.localeCompare(b.model) ||
+        (a.source ?? -1) - (b.source ?? -1),
     );
 
     const hourlyBuckets: UsageHourBucket[] = [];
-    for (const [key, hour] of this.#hourlyBuckets) {
-      const [hourStartMs = "0", provider = "", model = ""] = key.split(" ");
+    for (const hour of this.#hourlyBuckets.values()) {
       hourlyBuckets.push({
-        hourStartMs: Number(hourStartMs),
-        provider: provider as UsageHourBucket["provider"],
-        model,
+        hourStartMs: hour.hourStartMs,
+        provider: hour.provider,
+        model: hour.model,
         totals: hour.totals,
         costUsd: hour.costUsd,
         records: hour.records,
+        ...(hour.source === undefined ? {} : { source: hour.source }),
       });
     }
     hourlyBuckets.sort(
       (a, b) =>
         a.hourStartMs - b.hourStartMs ||
         a.provider.localeCompare(b.provider) ||
-        a.model.localeCompare(b.model),
+        a.model.localeCompare(b.model) ||
+        (a.source ?? -1) - (b.source ?? -1),
     );
 
     return {

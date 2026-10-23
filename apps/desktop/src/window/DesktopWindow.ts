@@ -157,6 +157,14 @@ export type DesktopWindowError =
   | DesktopWindowQuitConfirmationError
   | ElectronWindow.ElectronWindowCreateError;
 
+/** This computer's work quitting would stop, as the page last reported it. */
+export interface DesktopQuitConfirmationWork {
+  readonly runningThreadCount: number;
+  readonly busyTerminalCount: number;
+  /** Active scheduled tasks, which don't run while the app is closed. */
+  readonly activeScheduledTaskCount: number;
+}
+
 export interface DesktopWindowShape {
   readonly createMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
   readonly ensureMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
@@ -177,9 +185,7 @@ export interface DesktopWindowShape {
    * within {@link QUIT_CONFIRMATION_SHOWN_TIMEOUT}.
    */
   readonly requestQuitConfirmation: (
-    runningThreadCount: number,
-    /** This computer's active scheduled tasks, which stop while the app is closed. */
-    activeScheduledTaskCount?: number,
+    work: DesktopQuitConfirmationWork,
   ) => Effect.Effect<boolean, DesktopWindowQuitConfirmationError>;
   /** The page has the question it was sent. */
   readonly quitConfirmationShown: (requestId: string) => Effect.Effect<void>;
@@ -1292,8 +1298,7 @@ const make = Effect.gen(function* () {
   // in, and a question sent before it listens is lost. With no window the
   // caller asks natively.
   const requestQuitConfirmation = Effect.fn("desktop.window.requestQuitConfirmation")(function* (
-    runningThreadCount: number,
-    activeScheduledTaskCount = 0,
+    work: DesktopQuitConfirmationWork,
   ) {
     const existingWindow = yield* electronWindow.currentMainOrFirst;
     if (Option.isNone(existingWindow) || existingWindow.value.isDestroyed()) {
@@ -1344,8 +1349,11 @@ const make = Effect.gen(function* () {
         try: () => {
           window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, {
             requestId: delivery.requestId,
-            runningThreadCount,
-            ...(activeScheduledTaskCount > 0 ? { activeScheduledTaskCount } : {}),
+            runningThreadCount: work.runningThreadCount,
+            busyTerminalCount: work.busyTerminalCount,
+            ...(work.activeScheduledTaskCount > 0
+              ? { activeScheduledTaskCount: work.activeScheduledTaskCount }
+              : {}),
           });
         },
         catch: (cause) => new DesktopWindowQuitConfirmationError({ cause, windowOpen: true }),

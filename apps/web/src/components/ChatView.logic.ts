@@ -344,15 +344,20 @@ export function reconcileMountedTerminalThreadIds(input: {
   return nextThreadIds;
 }
 
+/**
+ * Whether stopping a tab's shell asks first: something runs in it, or a
+ * command was just entered and the server hasn't yet seen it start or end.
+ */
 export function shouldConfirmTerminalKill(input: {
   runningTerminalIds: ReadonlyArray<string>;
   terminalId: string;
+  commandPending?: boolean;
   sessionExited: boolean;
 }): boolean {
   if (input.sessionExited) {
     return false;
   }
-  return input.runningTerminalIds.includes(input.terminalId);
+  return input.commandPending === true || input.runningTerminalIds.includes(input.terminalId);
 }
 
 export interface ProviderBackgroundRunState {

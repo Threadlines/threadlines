@@ -6,6 +6,8 @@ import {
   ThreadId,
   type TerminalEvent,
   type TerminalSessionSnapshot,
+  type TerminalStreamEvent,
+  type TerminalSubscribeInput,
 } from "@threadlines/contracts";
 import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -228,7 +230,12 @@ vi.mock("../env", () => ({ isElectron: true }));
 
 import { TerminalViewport } from "./ThreadTerminalDrawer";
 import { updateSettings } from "../hooks/useSettings";
-import { selectTerminalSubmittedCommand, useTerminalStateStore } from "../terminalStateStore";
+import { useTerminalStateStore } from "../terminalStateStore";
+import {
+  connectTerminalStreams,
+  resetTerminalStreamsForTests,
+  useTerminalThreadStream,
+} from "../terminalStreams";
 import {
   selectActiveTab,
   selectThreadBrowserState,
@@ -295,7 +302,42 @@ function createEnvironmentApi(snapshot?: Partial<TerminalSessionSnapshot>) {
       })),
       write: vi.fn(async () => undefined),
       resize: vi.fn(async () => undefined),
+      resolveInterrupted: vi.fn(async () => undefined),
     },
+  };
+}
+
+/**
+ * A stand-in server behind the real stream module: it answers each
+ * subscription the way a server with tab lists does, and lets a test push
+ * events down a thread's stream.
+ */
+function connectFakeTerminalServer(environmentId: string) {
+  const listeners = new Map<string, (event: TerminalStreamEvent) => void>();
+  const client = {
+    terminal: {
+      onEvent: (input: TerminalSubscribeInput, listener: (event: TerminalStreamEvent) => void) => {
+        const key = input.mode === "thread" ? `thread:${input.threadId}` : "metadata";
+        listeners.set(key, listener);
+        return () => {
+          listeners.delete(key);
+        };
+      },
+    },
+  };
+  const disconnect = connectTerminalStreams(environmentId as never, client, () => undefined);
+  listeners.get("metadata")?.({
+    type: "catalog",
+    createdAt: "2026-04-07T00:00:00.000Z",
+    threads: [],
+  });
+  const emit = (event: TerminalStreamEvent) => listeners.get(`thread:${THREAD_ID}`)?.(event);
+  return {
+    emit,
+    /** The thread's stream (re)subscribed: open tabs are drawn from the server again. */
+    subscribed: (createdAt = "2026-04-07T00:00:00.000Z") =>
+      emit({ type: "subscribed", threadId: THREAD_ID, createdAt }),
+    disconnect,
   };
 }
 
@@ -309,12 +351,65 @@ function terminalOutputEvent(data: string, createdAt: string): TerminalEvent {
   };
 }
 
-async function mountTerminalViewport(props: {
-  threadRef: ReturnType<typeof scopeThreadRef>;
-  drawerBackgroundColor?: string;
-  drawerTextColor?: string;
-  onAddTerminalContext?: Parameters<typeof TerminalViewport>[0]["onAddTerminalContext"];
-}) {
+type ViewportOverrides = Partial<
+  Pick<
+    Parameters<typeof TerminalViewport>[0],
+    | "cwd"
+    | "launchCwd"
+    | "interruptedCommand"
+    | "onRestart"
+    | "onClose"
+    | "onGone"
+    | "onSessionExited"
+  >
+> & {
+  /** This device just opened the tab (the server doesn't list it yet). */
+  pending?: boolean;
+};
+
+/** The viewport as the drawer mounts it: holding its thread's stream. */
+function ViewportUnderTest(
+  props: { threadRef: ReturnType<typeof scopeThreadRef> } & ViewportOverrides & {
+      onAddTerminalContext: Parameters<typeof TerminalViewport>[0]["onAddTerminalContext"];
+    },
+) {
+  const stream = useTerminalThreadStream(props.threadRef.environmentId, THREAD_ID);
+  return (
+    <TerminalViewport
+      threadRef={props.threadRef}
+      threadId={THREAD_ID}
+      terminalId="default"
+      terminalLabel="Terminal"
+      cwd={props.cwd ?? "/repo/project"}
+      launchCwd={props.launchCwd ?? null}
+      interruptedCommand={props.interruptedCommand ?? null}
+      stream={stream}
+      onSessionExited={props.onSessionExited ?? (() => undefined)}
+      onGone={props.onGone ?? (() => undefined)}
+      onRestart={props.onRestart ?? (() => undefined)}
+      onClose={props.onClose ?? (() => undefined)}
+      onAddTerminalContext={props.onAddTerminalContext}
+      focusRequestId={0}
+      autoFocus={false}
+      findOpen={false}
+      onFindOpen={() => undefined}
+      onFindClose={() => undefined}
+      showKeyRow={false}
+      fontSize={12}
+      screenReaderMode={false}
+      keybindings={[]}
+    />
+  );
+}
+
+async function mountTerminalViewport(
+  props: {
+    threadRef: ReturnType<typeof scopeThreadRef>;
+    drawerBackgroundColor?: string;
+    drawerTextColor?: string;
+    onAddTerminalContext?: Parameters<typeof TerminalViewport>[0]["onAddTerminalContext"];
+  } & ViewportOverrides,
+) {
   const drawer = document.createElement("div");
   drawer.className = "thread-terminal-drawer";
   if (props.drawerBackgroundColor) {
@@ -330,45 +425,38 @@ async function mountTerminalViewport(props: {
   drawer.append(host);
   document.body.append(drawer);
 
+  const server = connectFakeTerminalServer(props.threadRef.environmentId);
+  if (props.pending) useTerminalStateStore.getState().newTerminal(props.threadRef, "default");
+  const {
+    drawerBackgroundColor: _bg,
+    drawerTextColor: _fg,
+    pending: _pending,
+    ...viewportProps
+  } = props;
+  const onAddTerminalContext = props.onAddTerminalContext ?? (() => undefined);
   const screen = await render(
-    <TerminalViewport
-      threadRef={props.threadRef}
-      threadId={THREAD_ID}
-      terminalId="default"
-      terminalLabel="Terminal"
-      cwd="/repo/project"
-      onSessionExited={() => undefined}
-      onAddTerminalContext={props.onAddTerminalContext ?? (() => undefined)}
-      focusRequestId={0}
-      autoFocus={false}
-      resizeEpoch={0}
-      drawerHeight={320}
-      keybindings={[]}
-    />,
+    <ViewportUnderTest {...viewportProps} onAddTerminalContext={onAddTerminalContext} />,
     { container: host },
   );
+  server.subscribed();
 
   return {
-    rerender: async (nextProps: { threadRef: ReturnType<typeof scopeThreadRef> }) => {
+    server,
+    host,
+    rerender: async (
+      nextProps: { threadRef: ReturnType<typeof scopeThreadRef> } & ViewportOverrides,
+    ) => {
       await screen.rerender(
-        <TerminalViewport
-          threadRef={nextProps.threadRef}
-          threadId={THREAD_ID}
-          terminalId="default"
-          terminalLabel="Terminal"
-          cwd="/repo/project"
-          onSessionExited={() => undefined}
-          onAddTerminalContext={props.onAddTerminalContext ?? (() => undefined)}
-          focusRequestId={0}
-          autoFocus={false}
-          resizeEpoch={0}
-          drawerHeight={320}
-          keybindings={[]}
+        <ViewportUnderTest
+          {...viewportProps}
+          {...nextProps}
+          onAddTerminalContext={onAddTerminalContext}
         />,
       );
     },
     cleanup: async () => {
       await screen.unmount();
+      server.disconnect();
       drawer.remove();
     },
   };
@@ -404,12 +492,13 @@ describe("TerminalViewport", () => {
     });
     useTerminalStateStore.setState({
       terminalStateByThreadKey: {},
-      terminalLaunchContextByThreadKey: {},
-      terminalEventEntriesByKey: {},
-      terminalSubmittedCommandByKey: {},
+      terminalTabsByThreadKey: {},
+      pendingTerminalIdsByThreadKey: {},
       terminalActivityCommandByKey: {},
-      nextTerminalEventId: 1,
+      terminalActivityStartedAtByKey: {},
+      terminalCommandPendingByKey: {},
     });
+    resetTerminalStreamsForTests();
   });
 
   it("does not create a terminal when APIs are unavailable", async () => {
@@ -444,13 +533,16 @@ describe("TerminalViewport", () => {
         expect(environmentA.terminal.open).toHaveBeenCalledTimes(1);
       });
 
+      const serverB = connectFakeTerminalServer("environment-b");
       await mounted.rerender({
         threadRef: scopeThreadRef("environment-b" as never, THREAD_ID),
       });
+      serverB.subscribed();
 
       await vi.waitFor(() => {
         expect(environmentB.terminal.open).toHaveBeenCalledTimes(1);
       });
+      serverB.disconnect();
       expect(terminalDisposeSpy).toHaveBeenCalledTimes(1);
     } finally {
       await mounted.cleanup();
@@ -511,7 +603,7 @@ describe("TerminalViewport", () => {
     }
   });
 
-  it("records submitted commands from terminal input", async () => {
+  it("sends what is typed to the server", async () => {
     const environment = createEnvironmentApi();
     const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
     environmentApiById.set("environment-a", environment);
@@ -533,13 +625,6 @@ describe("TerminalViewport", () => {
           data: "vp run dev:desktop\r",
         });
       });
-      expect(
-        selectTerminalSubmittedCommand(
-          useTerminalStateStore.getState().terminalSubmittedCommandByKey,
-          threadRef,
-          "default",
-        ),
-      ).toBe("vp run dev:desktop");
     } finally {
       await mounted.cleanup();
     }
@@ -587,8 +672,8 @@ describe("TerminalViewport", () => {
         expect(onAddTerminalContext).toHaveBeenCalledWith({
           terminalId: "default",
           terminalLabel: "Terminal",
-          lineStart: 7,
-          lineEnd: 8,
+          lineStart: 1,
+          lineEnd: 2,
           text: "vp lint\nFound 0 warnings",
         });
       });
@@ -812,22 +897,31 @@ describe("TerminalViewport", () => {
     });
     const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
     environmentApiById.set("environment-a", environment);
-    useTerminalStateStore
-      .getState()
-      .recordTerminalEvent(threadRef, terminalOutputEvent("first", "2026-04-07T00:00:01.000Z"));
+    // Output that comes while `open` is on its way is drawn after the snapshot.
+    let release: () => void = () => undefined;
+    const opened = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const respond = environment.terminal.open.getMockImplementation();
+    environment.terminal.open.mockImplementation(async () => {
+      await opened;
+      return respond!();
+    });
 
     let injectedDuringReplay = false;
+    let server: ReturnType<typeof connectFakeTerminalServer> | null = null;
     onTerminalWriteRef.current = (data) => {
       if (data !== "first" || injectedDuringReplay) return;
       injectedDuringReplay = true;
-      useTerminalStateStore
-        .getState()
-        .recordTerminalEvent(threadRef, terminalOutputEvent("second", "2026-04-07T00:00:02.000Z"));
+      server?.emit(terminalOutputEvent("second", "2026-04-07T00:00:02.000Z"));
     };
 
     const mounted = await mountTerminalViewport({
       threadRef,
     });
+    server = mounted.server;
+    mounted.server.emit(terminalOutputEvent("first", "2026-04-07T00:00:01.000Z"));
+    release();
 
     try {
       await vi.waitFor(() => {
@@ -851,15 +945,13 @@ describe("TerminalViewport", () => {
 
     try {
       await vi.waitFor(() => {
-        expect(terminalWriteSpy).toHaveBeenCalledWith("On branch master\r\n");
+        expect(terminalWriteSpy).toHaveBeenCalledWith("\u001bcOn branch master\r\n");
       });
       terminalWriteSpy.mockClear();
-      const store = useTerminalStateStore.getState();
-      store.recordTerminalEvent(
-        threadRef,
+      mounted.server.emit(
         terminalOutputEvent("On branch master\r\n\u001b[6n", "2026-04-07T00:00:01.000Z"),
       );
-      store.recordTerminalEvent(threadRef, terminalOutputEvent("% ", "2026-04-07T00:00:01.001Z"));
+      mounted.server.emit(terminalOutputEvent("% ", "2026-04-07T00:00:01.001Z"));
 
       await vi.waitFor(() => {
         expect(terminalWriteSpy).toHaveBeenCalledWith("% ");
@@ -888,12 +980,7 @@ describe("TerminalViewport", () => {
       });
 
       terminalScrollToBottomSpy.mockClear();
-      useTerminalStateStore
-        .getState()
-        .recordTerminalEvent(
-          threadRef,
-          terminalOutputEvent("late output", "2026-04-07T00:00:01.000Z"),
-        );
+      mounted.server.emit(terminalOutputEvent("late output", "2026-04-07T00:00:01.000Z"));
 
       await vi.waitFor(() => {
         expect(terminalWriteSpy).toHaveBeenCalledWith("late output");
@@ -911,6 +998,212 @@ describe("TerminalViewport", () => {
       if (!cleanedUp) {
         await mounted.cleanup();
       }
+    }
+  });
+  it("draws a tab again from the server when its thread's stream subscribes again", async () => {
+    const environment = createEnvironmentApi({ history: "before\r\n" });
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const mounted = await mountTerminalViewport({ threadRef });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+      });
+      // A reconnect, or a server that restarted: what was printed meanwhile
+      // comes back with the snapshot.
+      environment.terminal.open.mockImplementation(async () => ({
+        threadId: THREAD_ID,
+        terminalId: "default",
+        cwd: "/repo/project",
+        worktreePath: null,
+        status: "running" as const,
+        pid: 124,
+        history: "before\r\nwhile away\r\n",
+        exitCode: null,
+        exitSignal: null,
+        updatedAt: "2026-04-07T00:00:05.000Z",
+      }));
+      mounted.server.subscribed("2026-04-07T00:00:05.000Z");
+
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(2);
+        expect(terminalWriteSpy).toHaveBeenCalledWith("\u001bcbefore\r\nwhile away\r\n");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows a tab as the server has it, and forgets it once the server no longer has it", async () => {
+    const environment = createEnvironmentApi();
+    environment.terminal.open.mockImplementation(async () => {
+      throw Object.assign(new Error("Unknown terminal"), { _tag: "TerminalSessionLookupError" });
+    });
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const onGone = vi.fn();
+    const mounted = await mountTerminalViewport({ threadRef, onGone });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledWith(
+          expect.objectContaining({ attach: true }),
+        );
+        expect(onGone).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("makes a tab on the server only when this device asked for it", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const mounted = await mountTerminalViewport({ threadRef, pending: true });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+      });
+      expect(environment.terminal.open).not.toHaveBeenCalledWith(
+        expect.objectContaining({ attach: true }),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a tab whose shell failed and says how it ended", async () => {
+    const environment = createEnvironmentApi({
+      status: "exited",
+      exitCode: 2,
+      history: "make: *** [build] Error 2\r\n",
+    });
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const onRestart = vi.fn();
+    const mounted = await mountTerminalViewport({ threadRef, onRestart });
+
+    try {
+      await expect.element(page.getByText("The shell exited with code 2.")).toBeInTheDocument();
+      await page.getByRole("button", { name: "Restart", exact: true }).click();
+      expect(onRestart).toHaveBeenCalledTimes(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers to restart a tab in the thread's folder when its shell started elsewhere", async () => {
+    const environment = createEnvironmentApi({ cwd: "/repo/project" });
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const onRestart = vi.fn();
+    const mounted = await mountTerminalViewport({
+      threadRef,
+      cwd: "/repo/worktrees/feature",
+      onRestart,
+    });
+
+    try {
+      await expect
+        .element(page.getByText("Started in project. The thread is now in feature."))
+        .toBeInTheDocument();
+      await page.getByRole("button", { name: "Restart here" }).click();
+      expect(onRestart).toHaveBeenCalledTimes(1);
+      // Opening it never asked the server to move it.
+      expect(environment.terminal.open).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: "/repo/worktrees/feature" }),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers to run again what a restart stopped, or to forget it", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const mounted = await mountTerminalViewport({
+      threadRef,
+      interruptedCommand: "npm run dev",
+    });
+
+    try {
+      await expect
+        .element(page.getByText("stopped when Threadlines restarted.", { exact: false }))
+        .toBeInTheDocument();
+      await page.getByRole("button", { name: "Dismiss" }).click();
+      expect(environment.terminal.resolveInterrupted).toHaveBeenCalledWith({
+        threadId: THREAD_ID,
+        terminalId: "default",
+        run: false,
+      });
+      await expect.element(page.getByRole("button", { name: "Run again" })).not.toBeInTheDocument();
+
+      // Another restart stopped something else.
+      await mounted.rerender({ threadRef, interruptedCommand: "pnpm test --watch" });
+      await page.getByRole("button", { name: "Run again" }).click();
+      expect(environment.terminal.resolveInterrupted).toHaveBeenLastCalledWith({
+        threadId: THREAD_ID,
+        terminalId: "default",
+        run: true,
+      });
+      await expect.element(page.getByRole("button", { name: "Run again" })).not.toBeInTheDocument();
+
+      // The server forgot it; a later restart cutting the same command off
+      // again is offered again.
+      await mounted.rerender({ threadRef, interruptedCommand: null });
+      await mounted.rerender({ threadRef, interruptedCommand: "pnpm test --watch" });
+      await expect.element(page.getByRole("button", { name: "Run again" })).toBeInTheDocument();
+
+      // Refused (something typed in the terminal): the offer comes back.
+      environment.terminal.resolveInterrupted.mockImplementationOnce(async () => {
+        throw new Error("Clear what's typed in the terminal first.");
+      });
+      await page.getByRole("button", { name: "Run again" }).click();
+      await expect.element(page.getByRole("button", { name: "Run again" })).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the add-to-chat actions up while output keeps coming", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const mounted = await mountTerminalViewport({ threadRef });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+      });
+      terminalSelectionStateRef.current = {
+        text: "Error: port 3000 in use",
+        position: { start: { y: 2 } },
+      };
+      document
+        .querySelector<HTMLElement>("[data-terminal-viewport-mount='true']")
+        ?.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true }));
+      window.dispatchEvent(
+        new MouseEvent("mouseup", {
+          button: 0,
+          bubbles: true,
+          clientX: 200,
+          clientY: 120,
+          detail: 1,
+        }),
+      );
+      await expect.element(page.getByRole("button", { name: "Add to chat" })).toBeInTheDocument();
+
+      mounted.server.emit(terminalOutputEvent("GET / 200\r\n", "2026-04-07T00:00:03.000Z"));
+      await vi.waitFor(() => {
+        expect(terminalWriteSpy).toHaveBeenCalledWith("GET / 200\r\n");
+      });
+      await expect.element(page.getByRole("button", { name: "Add to chat" })).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
     }
   });
 });

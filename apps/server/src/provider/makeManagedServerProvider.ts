@@ -35,6 +35,12 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   readonly initialSnapshot: (settings: Settings) => Effect.Effect<ServerProvider>;
   readonly checkProvider: Effect.Effect<ServerProvider, ServerSettingsError>;
   /**
+   * The check the refresh interval runs, when it can be lighter than one
+   * that is asked for (an agent's catalog reused rather than read again).
+   * Startup, settings changes, retries and `refresh` run `checkProvider`.
+   */
+  readonly scheduledCheckProvider?: Effect.Effect<ServerProvider, ServerSettingsError>;
+  /**
    * Folds what the previous snapshot knew into a freshly checked one. Runs
    * inside the same atomic update that publishes the check, so a patch that
    * landed while the check ran is seen rather than lost.
@@ -147,7 +153,11 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   const applySnapshotBase = Effect.fn("applySnapshot")(function* (
     nextSettings: Settings,
-    options?: { readonly forceRefresh?: boolean; readonly scheduleRetry?: boolean },
+    options?: {
+      readonly forceRefresh?: boolean;
+      readonly scheduleRetry?: boolean;
+      readonly scheduled?: boolean;
+    },
   ) {
     const forceRefresh = options?.forceRefresh === true;
     const previousSettings = yield* Ref.get(settingsRef);
@@ -156,7 +166,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       return yield* Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
     }
 
-    const checkedSnapshot = yield* input.checkProvider;
+    const checkedSnapshot = yield* options?.scheduled === true && input.scheduledCheckProvider
+      ? input.scheduledCheckProvider
+      : input.checkProvider;
     const [nextSnapshot, nextGeneration] = yield* publishLock.withPermits(1)(
       Effect.gen(function* () {
         const changed = yield* Ref.modify(snapshotStateRef, (state) => {
@@ -184,7 +196,11 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   });
   const applySnapshot = (
     nextSettings: Settings,
-    options?: { readonly forceRefresh?: boolean; readonly scheduleRetry?: boolean },
+    options?: {
+      readonly forceRefresh?: boolean;
+      readonly scheduleRetry?: boolean;
+      readonly scheduled?: boolean;
+    },
   ) => {
     const applied = refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));
     if (!input.shouldRetrySnapshot || options?.scheduleRetry === false) {
@@ -220,9 +236,14 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     });
   }
 
-  const refreshSnapshot = Effect.fn("refreshSnapshot")(function* () {
+  const refreshSnapshot = Effect.fn("refreshSnapshot")(function* (options?: {
+    readonly scheduled?: boolean;
+  }) {
     const nextSettings = yield* input.getSettings;
-    return yield* applySnapshot(nextSettings, { forceRefresh: true });
+    return yield* applySnapshot(nextSettings, {
+      forceRefresh: true,
+      scheduled: options?.scheduled === true,
+    });
   });
 
   // Out-of-band snapshot patch (no probe, no enrichment restart). Keeps the
@@ -264,7 +285,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   yield* Effect.forever(
     Effect.sleep(input.refreshInterval ?? "60 seconds").pipe(
-      Effect.flatMap(() => refreshSnapshot()),
+      Effect.flatMap(() => refreshSnapshot({ scheduled: true })),
       Effect.ignoreCause({ log: true }),
     ),
   ).pipe(Effect.forkScoped);

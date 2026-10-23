@@ -18,7 +18,8 @@ There are two ways a command reaches you:
   block is left for you to copy.
 - **A command card**: the agent calls `ask_user_to_run` with the command and a
   one-sentence reason. The card offers Run, Put in terminal and Skip. Skip
-  folds it to one line you can undo.
+  folds it to one line you can undo. Like a page, the card is part of the
+  answer: when the turn ends it sits right above the reply, after the steps.
 
 Nothing runs until you click.
 

@@ -21,6 +21,8 @@ import {
   FileTextIcon,
   LinkIcon,
   Maximize2Icon,
+  ZoomInIcon,
+  ZoomOutIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -228,6 +230,19 @@ function InlinePage(props: {
   );
 }
 
+// The full-size view's zoom levels, a browser's.
+const PAGE_ZOOM_LEVELS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3] as const;
+
+const nextPageZoom = (zoom: number, direction: -1 | 1) =>
+  (direction === 1
+    ? PAGE_ZOOM_LEVELS.find((level) => level > zoom)
+    : PAGE_ZOOM_LEVELS.findLast((level) => level < zoom)) ?? zoom;
+
+/**
+ * A page opened full size, with its source and a way to save it. It can be
+ * zoomed: a page laid out for the chat's column (a fixed-width collage, a
+ * chart) does not grow on its own in a wider frame.
+ */
 function FullSizePage(props: {
   readonly version: Parameters<typeof AgentPageFrame>[0]["version"];
   readonly page: OrchestrationAgentPage;
@@ -238,6 +253,8 @@ function FullSizePage(props: {
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   const [loaded, setLoaded] = useState<AgentPageReadResult | null>(null);
   const [showSource, setShowSource] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const canZoom = loaded !== null && !showSource;
   const onLoaded = useCallback((page: AgentPageReadResult) => setLoaded(page), []);
   const save = () => {
     if (loaded === null) return;
@@ -273,6 +290,57 @@ function FullSizePage(props: {
               </Button>
             </>
           ) : null}
+          <div className="flex items-center" role="group" aria-label="Page zoom">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label="Zoom out"
+                    disabled={!canZoom || nextPageZoom(zoom, -1) === zoom}
+                    onClick={() => setZoom((current) => nextPageZoom(current, -1))}
+                  />
+                }
+              >
+                <ZoomOutIcon aria-hidden />
+              </TooltipTrigger>
+              <TooltipPopup side="bottom">Zoom out</TooltipPopup>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-label={`Zoom ${Math.round(zoom * 100)}%, reset`}
+                    className="min-w-11 justify-center font-mono tabular-nums"
+                    disabled={!canZoom || zoom === 1}
+                    onClick={() => setZoom(1)}
+                  />
+                }
+              >
+                {Math.round(zoom * 100)}%
+              </TooltipTrigger>
+              <TooltipPopup side="bottom">Reset zoom</TooltipPopup>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label="Zoom in"
+                    disabled={!canZoom || nextPageZoom(zoom, 1) === zoom}
+                    onClick={() => setZoom((current) => nextPageZoom(current, 1))}
+                  />
+                }
+              >
+                <ZoomInIcon aria-hidden />
+              </TooltipTrigger>
+              <TooltipPopup side="bottom">Zoom in</TooltipPopup>
+            </Tooltip>
+          </div>
           <Button
             size="xs"
             variant="ghost"
@@ -301,6 +369,7 @@ function FullSizePage(props: {
             title={props.page.title}
             className="min-h-0 flex-1 surface-group-solid px-4 pt-3 pb-4"
             onLoaded={onLoaded}
+            zoom={zoom}
           />
         )}
       </DialogPopup>

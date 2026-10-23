@@ -53,10 +53,12 @@ import {
   resolveLinkedThreadPullRequests,
   resolveThreadPullRequest,
   resolveThreadPullRequestsSettledAt,
+  threadPullRequestLookupRequests,
   threadViewBranch,
   withListedLanding,
   type PullRequestDiffFile,
   type PullRequestEntry,
+  type PullRequestLookupAnswers,
   type ThreadPullRequest,
   type PullRequestFilters,
   type PullRequestSort,
@@ -599,6 +601,65 @@ describe("resolveThreadPullRequest", () => {
     expect(resolved).toMatchObject({ number: 412, state: "merged" });
   });
 
+  it("reads a branch that fell off the listings from its lookup", () => {
+    const subject = thread();
+    const [request] = threadPullRequestLookupRequests({
+      threads: [subject],
+      projects: PROJECTS,
+      openEntries: [],
+    });
+    const answer = (pullRequest: ThreadPullRequest | null, answeredAt: string) =>
+      new Map([
+        [
+          request!.key,
+          {
+            pullRequest,
+            updatedAt: pullRequest === null ? null : Date.parse("2026-10-01T10:00:00.000Z"),
+            answeredAt: Date.parse(answeredAt),
+          },
+        ],
+      ]);
+    const merged: ThreadPullRequest = {
+      number: 412,
+      state: "merged",
+      isDraft: false,
+      title: "Add the pull requests page",
+      url: "https://github.com/threadlines/threadlines/pull/412",
+      repository: "threadlines/threadlines",
+      settledAt: "2026-10-01T10:00:00.000Z",
+      autoMergeEnabled: false,
+      headBranch: "feature/pull-requests",
+      diffStat: { additions: 10, deletions: 2 },
+    };
+    const resolve = (lookups: PullRequestLookupAnswers, settled = entry({ number: 9 })) =>
+      resolveThreadPullRequest({
+        thread: subject,
+        gitStatus: null,
+        openEntries: [],
+        settledEntries: [settled],
+        lookups,
+        projects: PROJECTS,
+      });
+    // A row opened long ago on a branch of the same name: an earlier use of
+    // the branch, or a fork's. A comment on it yesterday does not make it the
+    // branch's pull request.
+    const oldRow = entry({ number: 9, state: "merged", updatedAt: "2026-10-21T09:00:00.000Z" });
+
+    expect(resolve(answer(merged, "2026-10-22T09:00:00.000Z"), oldRow)).toMatchObject({
+      number: 412,
+      state: "merged",
+    });
+    // The host saying there is none outranks it the same way.
+    expect(resolve(answer(null, "2026-10-22T09:00:00.000Z"), oldRow)).toBeNull();
+    // One opened since the lookup answered is news the lookup has not seen.
+    expect(
+      resolve(
+        answer(null, "2026-10-22T09:00:00.000Z"),
+        entry({ number: 413, state: "merged", createdAt: "2026-10-22T09:05:00.000Z" }),
+      ),
+    ).toMatchObject({ number: 413 });
+  });
+
   it("never reads an authored row as a thread's own work", () => {
     expect(
       resolveThreadPullRequest({
@@ -682,6 +743,74 @@ describe("resolveLinkedThreadPullRequests", () => {
       { number: 295, state: "merged", settledAt: "2026-09-24T10:30:00.000Z" },
     ]);
   });
+
+  it("looks up what the open listing does not carry, and believes whichever read is newer", () => {
+    const subject = thread({
+      linkedPullRequests: linked.map((pr) => ({ ...pr, autoMerge: null })),
+    });
+    const openEntries = [
+      entry({ number: 294, headBranch: "docs/lighter-pr-rules", url: linked[1]!.url }),
+    ];
+    const requests = threadPullRequestLookupRequests({
+      threads: [subject],
+      projects: PROJECTS,
+      openEntries,
+    });
+    // The thread's own branch and the two linked ones the open listing lacks.
+    expect(requests.map((request) => request.item)).toEqual([
+      { branch: "feature/pull-requests" },
+      { number: 7 },
+      { number: 295 },
+    ]);
+    const lookup295 = requests.find(
+      (request) => "number" in request.item && request.item.number === 295,
+    )!;
+    const mergedAt = "2026-10-21T16:46:35.000Z";
+    const lookups: PullRequestLookupAnswers = new Map([
+      [
+        lookup295.key,
+        {
+          pullRequest: {
+            number: 295,
+            state: "merged",
+            isDraft: false,
+            title: "Fell off the merged listing",
+            url: linked[2]!.url,
+            repository: "threadlines/threadlines",
+            settledAt: mergedAt,
+            autoMergeEnabled: false,
+            headBranch: "fix/elsewhere",
+            diffStat: { additions: 3, deletions: 1 },
+          },
+          updatedAt: Date.parse(mergedAt),
+          answeredAt: Date.parse("2026-10-22T08:00:00.000Z"),
+        },
+      ],
+    ]);
+    const resolve = (settledEntries: readonly PullRequestEntry[]) =>
+      resolveLinkedThreadPullRequests({
+        thread: subject,
+        ownNumber: 7,
+        projects: PROJECTS,
+        openEntries,
+        settledEntries,
+        lookups,
+      }).find((pullRequest) => pullRequest.number === 295);
+
+    // No listing carries it any more: the lookup's merge, not "open".
+    expect(resolve([])).toMatchObject({ state: "merged", settledAt: mergedAt });
+    // A settled row read after the lookup answered outranks it.
+    expect(
+      resolve([
+        entry({
+          number: 295,
+          state: "closed",
+          updatedAt: "2026-10-22T09:00:00.000Z",
+          settledAt: "2026-10-22T09:00:00.000Z",
+        }),
+      ]),
+    ).toMatchObject({ state: "closed" });
+  });
 });
 
 describe("leadThreadPullRequest", () => {
@@ -737,8 +866,21 @@ describe("withListedLanding", () => {
     ).toBe(294);
     // Another pull request's row, or one the status still reads as open, dates nothing.
     expect(withListedLanding(fromStatus, { ...listed, number: 8 }).settledAt).toBeNull();
-    expect(withListedLanding({ ...fromStatus, state: "open" }, listed).settledAt).toBeNull();
+    expect(
+      withListedLanding({ ...fromStatus, state: "open" }, { ...listed, state: "closed" }).settledAt,
+    ).toBeNull();
     expect(withListedLanding(fromStatus, null)).toBe(fromStatus);
+  });
+
+  it("takes the listing's merge over a status still calling it open", () => {
+    const staleOpen = { ...fromStatus, state: "open" as const };
+    expect(withListedLanding(staleOpen, { ...listed, state: "merged" })).toMatchObject({
+      number: 7,
+      state: "merged",
+      settledAt: "2026-09-17T09:00:00.000Z",
+    });
+    // A close can be undone, so only a merge outranks the status.
+    expect(withListedLanding(staleOpen, { ...listed, state: "closed" }).state).toBe("open");
   });
 });
 
@@ -764,12 +906,18 @@ describe("resolveThreadPullRequestsSettledAt", () => {
   const settledAt = (input: {
     readonly own?: ThreadPullRequest;
     readonly settledEntries?: readonly PullRequestEntry[];
+    readonly lookups?: PullRequestLookupAnswers;
   }) =>
     resolveThreadPullRequestsSettledAt({
-      thread: linkedThread,
       own: input.own,
-      projects: PROJECTS,
-      settledEntries: input.settledEntries ?? [],
+      linked: resolveLinkedThreadPullRequests({
+        thread: linkedThread,
+        ownNumber: input.own?.number ?? null,
+        projects: PROJECTS,
+        openEntries: [],
+        settledEntries: input.settledEntries ?? [],
+        ...(input.lookups ? { lookups: input.lookups } : {}),
+      }),
       now,
     });
 
@@ -795,6 +943,31 @@ describe("resolveThreadPullRequestsSettledAt", () => {
     ).toBe("2026-09-24T10:30:00.000Z");
     // Nothing settled yet is nothing to wrap up.
     expect(settledAt({ own: { ...own, state: "open", settledAt: null } })).toBeNull();
+  });
+
+  it("stays wrapped up once the linked one falls off the settled listings", () => {
+    // The listings keep only the newest few; a lookup still knows it landed.
+    const request = threadPullRequestLookupRequests({
+      threads: [linkedThread],
+      projects: PROJECTS,
+      openEntries: [],
+    }).find((candidate) => "number" in candidate.item);
+    const lookups: PullRequestLookupAnswers = new Map([
+      [
+        request!.key,
+        {
+          pullRequest: {
+            ...own,
+            number: 294,
+            url: "https://github.com/threadlines/threadlines/pull/294",
+            settledAt: "2026-09-24T10:30:00.000Z",
+          },
+          updatedAt: Date.parse("2026-09-24T10:30:00.000Z"),
+          answeredAt: Date.parse("2026-09-24T11:00:00.000Z"),
+        },
+      ],
+    ]);
+    expect(settledAt({ own, lookups })).toBe("2026-09-24T10:30:00.000Z");
   });
 });
 

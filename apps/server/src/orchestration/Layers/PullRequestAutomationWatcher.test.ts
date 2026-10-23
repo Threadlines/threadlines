@@ -480,6 +480,7 @@ describe("PullRequestAutomationWatcher", () => {
 
     const pullRequestService: PullRequestServiceShape = {
       list: () => Effect.die("unused"),
+      lookup: () => Effect.die("unused"),
       // The host answers for the pull request that was asked for, as the
       // script says one looks.
       detail: ({ repository, number }) =>

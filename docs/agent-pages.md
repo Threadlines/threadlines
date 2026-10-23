@@ -20,7 +20,12 @@ never folds away with the steps around it.
 ## What you can do with a page
 
 - Click its title to fold it to one line, and again to open it.
-- Open it full size, view its source, or save it as a file.
+- Open it full size, view its source, or save it as a file. Full size has zoom
+  buttons, for pages laid out at the chat's width that don't grow on their own.
+- Click a picture in a page to see it bigger, with arrows through the page's
+  other pictures. Click it again to see it at its own pixels, pinch or
+  Ctrl/⌘-scroll to zoom, and drag to move around. A picture the page made
+  clickable itself, such as one inside a link, keeps doing what the page says.
 - Links you click in a page open in your browser.
 
 A page an agent updates in the same turn changes where it stands, like a live
@@ -89,7 +94,10 @@ A page runs in a sealed frame, apart from Threadlines and your session:
 
 Known gaps: in a web browser the first request of a page that navigates away
 cannot be refused, and a page that navigates away before it has finished
-loading is not stopped at all (the desktop app refuses both). A determined
+loading is not stopped at all (the desktop app refuses both). A page that holds
+focus can open a link or show its pictures by itself in the few seconds after
+you click or type anywhere in the app: Threadlines cannot see clicks inside a
+page, only that the app was just used. A determined
 page can still make a request through browser features no content policy
 covers, such as a DNS prefetch.
 

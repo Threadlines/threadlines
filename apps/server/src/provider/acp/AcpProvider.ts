@@ -12,10 +12,12 @@
 import type {
   ModelCapabilities,
   ServerProvider,
+  ServerProviderAuth,
   ServerProviderDetection,
   ServerProviderModel,
 } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -56,6 +58,85 @@ import type { AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 const ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 const ACP_MODEL_CAPABILITY_TIMEOUT = "4 seconds";
 const ACP_MODEL_CAPABILITY_PROBE_SESSIONS = 4;
+/** How long a scheduled check reuses an agent's catalog before reading it again. */
+const ACP_CATALOG_REUSE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The model catalog a status check last read for one agent. Reading it
+ * opens a session, and agents that save every session (fx, Cursor) keep an
+ * empty one on disk each time, so a scheduled check reuses the catalog while
+ * it is fresh and the agent's version and sign-in are the ones it was read
+ * with. Kept as read (metadata like fx's Gateway prices is folded on at
+ * every check), plus the per-model options probed for it, once per read.
+ */
+export interface AcpCatalogCache {
+  /** The catalog read for `identity`, while it is fresh. */
+  readonly reusable: (
+    identity: string,
+    nowMs: number,
+  ) => ReadonlyArray<ServerProviderModel> | undefined;
+  readonly remember: (
+    identity: string,
+    models: ReadonlyArray<ServerProviderModel>,
+    nowMs: number,
+  ) => void;
+  /**
+   * Claims the option probe for the current read of `identity`: the read's
+   * id, `"claimed"` when a probe already ran or is running for it (one cut
+   * short by a newer check is not run again), or `"none"` with no read.
+   */
+  readonly claimProbe: (identity: string) => number | "claimed" | "none";
+  /** Folds probed options into the read they were probed for, unless a newer read replaced it. */
+  readonly rememberCapabilities: (
+    readId: number,
+    capabilitiesBySlug: ReadonlyMap<string, ServerProviderModel["capabilities"]>,
+  ) => void;
+}
+
+export function makeAcpCatalogCache(): AcpCatalogCache {
+  let reads = 0;
+  let entry:
+    | {
+        readonly id: number;
+        readonly identity: string;
+        readonly readAtMs: number;
+        models: ReadonlyArray<ServerProviderModel>;
+        probeClaimed: boolean;
+      }
+    | undefined;
+  return {
+    reusable: (identity, nowMs) =>
+      entry?.identity === identity && nowMs - entry.readAtMs < ACP_CATALOG_REUSE_MS
+        ? entry.models
+        : undefined,
+    remember: (identity, models, nowMs) => {
+      reads += 1;
+      entry = { id: reads, identity, readAtMs: nowMs, models, probeClaimed: false };
+    },
+    claimProbe: (identity) => {
+      if (entry?.identity !== identity) return "none";
+      if (entry.probeClaimed) return "claimed";
+      entry.probeClaimed = true;
+      return entry.id;
+    },
+    rememberCapabilities: (readId, capabilitiesBySlug) => {
+      if (entry?.id !== readId) return;
+      entry.models = entry.models.map((model) => {
+        const capabilities = capabilitiesBySlug.get(model.slug);
+        return capabilities ? { ...model, capabilities } : model;
+      });
+    },
+  };
+}
+
+/** What a catalog was read under: the agent's version and who it is signed in as. */
+export function acpCatalogIdentity(input: {
+  readonly version: string | null | undefined;
+  readonly auth: ServerProviderAuth;
+}): string {
+  const { auth } = input;
+  return [input.version ?? "", auth.status, auth.type ?? "", auth.email ?? ""].join("\u0000");
+}
 
 type ProbeEnv =
   | ChildProcessSpawner.ChildProcessSpawner
@@ -296,6 +377,31 @@ export const discoverAcpModelCapabilities = <Settings extends AcpProviderSetting
               capabilities: capabilitiesBySlug.get(choice.value) ?? EMPTY_ACP_MODEL_CAPABILITIES,
             })),
           );
+        // An agent that lists every model's options is read, never switched
+        // through: a switch can outlive the probe (Cursor saves it as the
+        // user's default model). If the list fails, the current model's
+        // options are all there is.
+        if (descriptor.listModelOptions) {
+          const listed = yield* descriptor.listModelOptions(acp).pipe(
+            // A catalog read, as slow as discovery, not one model switch.
+            Effect.timeout(descriptor.modelDiscoveryTimeoutMs ?? ACP_MODEL_DISCOVERY_TIMEOUT_MS),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("ACP model option listing failed", {
+                provider: descriptor.driverKind,
+                cause: Cause.pretty(cause),
+              }).pipe(Effect.as(undefined)),
+            ),
+          );
+          for (const entry of listed ?? []) {
+            if (entry.configOptions.length === 0) continue;
+            capabilitiesBySlug.set(
+              entry.slug,
+              mapping.capabilitiesFromConfigOptions(entry.configOptions),
+            );
+          }
+          return assemble();
+        }
+
         if (targetModelSlugs.size === 0) {
           return assemble();
         }
@@ -414,6 +520,8 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
   settings: Settings,
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  /** Where the catalog is kept between checks, and whether this check may reuse it. */
+  catalog?: { readonly cache: AcpCatalogCache; readonly reuse: boolean },
 ): Effect.Effect<ServerProviderDraft, never, ProbeEnv> =>
   Effect.gen(function* () {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -436,12 +544,17 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
     // spares a cold start of the agent on every check.
     let discoveredModels: ReadonlyArray<ServerProviderModel> = probe.models ?? [];
     let discoveryWarning: string | undefined;
-    if (
+    const identity = acpCatalogIdentity(probe);
+    const nowMs = yield* Clock.currentTimeMillis;
+    const reusable = catalog?.reuse ? catalog.cache.reusable(identity, nowMs) : undefined;
+    const readsCatalog =
       probe.models === undefined &&
       probe.installed &&
       probe.auth.status !== "unauthenticated" &&
-      !probe.skipModelDiscovery
-    ) {
+      !probe.skipModelDiscovery;
+    if (readsCatalog && reusable !== undefined) {
+      discoveredModels = reusable;
+    } else if (readsCatalog) {
       const discoveryExit = yield* Effect.exit(
         discoverAcpModels(descriptor, settings, environment).pipe(
           Effect.timeoutOption(discoveryTimeoutMs),
@@ -460,9 +573,12 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
       } else {
         discoveredModels = discoveryExit.value.value;
       }
-      if (discoveredModels.length > 0 && descriptor.enrichDiscoveredModels) {
-        discoveredModels = yield* descriptor.enrichDiscoveredModels(discoveredModels, environment);
-      }
+      if (discoveredModels.length > 0) catalog?.cache.remember(identity, discoveredModels, nowMs);
+    }
+    // Every check, reused catalog or not: it is network metadata, not a
+    // session, and has its own freshness (fx's Gateway prices).
+    if (readsCatalog && discoveredModels.length > 0 && descriptor.enrichDiscoveredModels) {
+      discoveredModels = yield* descriptor.enrichDiscoveredModels(discoveredModels, environment);
     }
 
     return buildAcpProviderSnapshot({
@@ -493,6 +609,8 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
   readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
   readonly stampIdentity: (snapshot: ServerProvider) => ServerProvider;
   readonly httpClient: HttpClient.HttpClient;
+  /** The status checks' catalog: its options are probed once per read. */
+  readonly catalog?: AcpCatalogCache;
 }): Effect.Effect<void, never, ChildProcessSpawner.ChildProcessSpawner> => {
   const { descriptor, settings, snapshot, publishSnapshot, stampIdentity } = input;
   const displayName = descriptor.presentation.displayName;
@@ -522,6 +640,13 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
       ) {
         return Effect.void;
       }
+      // Probed once per catalog read, claimed before it starts: a model
+      // without options, a probe that failed, or one a newer check cut short
+      // would otherwise open a session on every check.
+      const claim = input.catalog?.claimProbe(acpCatalogIdentity(baseSnapshot)) ?? "none";
+      if (claim === "claimed") {
+        return Effect.void;
+      }
       return discoverAcpModelCapabilities(
         descriptor,
         settings,
@@ -540,6 +665,7 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
           if (capabilitiesBySlug.size === 0) {
             return Effect.void;
           }
+          if (claim !== "none") input.catalog?.rememberCapabilities(claim, capabilitiesBySlug);
           return publishSnapshot(
             stampIdentity({
               ...baseSnapshot,

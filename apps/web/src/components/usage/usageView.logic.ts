@@ -43,6 +43,9 @@ export const USAGE_PROVIDER_LABELS: Record<UsageProviderKind, string> = {
   codex: "Codex",
   grok: "Grok",
   pi: "Pi",
+  muse: "Muse Code",
+  opencode: "OpenCode",
+  fx: "fx",
 };
 
 /** For the narrow columns where the product name would not fit. */
@@ -51,12 +54,15 @@ export const USAGE_PROVIDER_SHORT_LABELS: Record<UsageProviderKind, string> = {
   codex: "Codex",
   grok: "Grok",
   pi: "Pi",
+  muse: "Muse",
+  opencode: "OpenCode",
+  fx: "fx",
 };
 
 /**
- * The brand hues, defined in `index.css` for both themes. xAI's mark is
- * black and white like OpenAI's, so Grok takes a neutral of its own, apart
- * from Codex's near-black (near-white in dark) and the "Other models" grey.
+ * The brand hues, defined in `index.css` for both themes, where the reasons
+ * for each are. Every provider has one: a new provider needs its hue checked
+ * against all of these before it joins.
  *
  * Held as CSS variables rather than utility classes because the page paints
  * them into inline styles for bars and meters.
@@ -66,6 +72,9 @@ export const USAGE_PROVIDER_COLORS: Record<UsageProviderKind, string> = {
   codex: "var(--provider-codex)",
   grok: "var(--provider-grok)",
   pi: "var(--provider-pi)",
+  muse: "var(--provider-muse)",
+  opencode: "var(--provider-opencode)",
+  fx: "var(--provider-fx)",
 };
 
 /** Reading order for legends and rows: the same order every time. */
@@ -74,6 +83,9 @@ export const USAGE_PROVIDER_READING_ORDER: readonly UsageProviderKind[] = [
   "codex",
   "grok",
   "pi",
+  "muse",
+  "opencode",
+  "fx",
 ];
 
 /**
@@ -992,6 +1004,9 @@ const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKin
   [ProviderDriverKind.make("codex"), "codex"],
   [ProviderDriverKind.make("grok"), "grok"],
   [ProviderDriverKind.make("pi"), "pi"],
+  [ProviderDriverKind.make("muse"), "muse"],
+  [ProviderDriverKind.make("opencode"), "opencode"],
+  [ProviderDriverKind.make("fx"), "fx"],
 ]);
 
 /**

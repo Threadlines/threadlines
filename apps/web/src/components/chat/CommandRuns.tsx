@@ -388,6 +388,13 @@ export const CodeBlockRunNotes = memo(function CodeBlockRunNotes(props: {
   );
 });
 
+/** From a command card's top to the middle of its title line, or of its one
+ *  line once skipped: where an agent's line bends into a card that opens an
+ *  answer (MessagesTimeline agentLineOffsets). */
+export const commandRequestTitleMiddlePx = (
+  request: Pick<OrchestrationCommandRequest, "dismissedAt">,
+): number => (request.dismissedAt === null ? 22 : 10);
+
 /** The card an agent shows with `ask_user_to_run`. */
 export const CommandRequestRow = memo(function CommandRequestRow(props: {
   readonly request: OrchestrationCommandRequest;
@@ -416,7 +423,7 @@ export const CommandRequestRow = memo(function CommandRequestRow(props: {
   if (request.dismissedAt !== null) {
     return (
       <div
-        className="flex min-w-0 items-center gap-2 px-1 text-[12.5px] text-muted-foreground"
+        className="flex min-h-5 min-w-0 items-center gap-2 px-1 text-[12.5px] leading-5 text-muted-foreground"
         data-command-request-id={request.requestId}
         data-command-request-state="skipped"
       >
@@ -444,7 +451,7 @@ export const CommandRequestRow = memo(function CommandRequestRow(props: {
       className="surface-group flex flex-col gap-2 px-3.5 py-3"
       data-command-request-id={request.requestId}
     >
-      <div className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium text-foreground">
+      <div className="flex min-w-0 items-center gap-2 text-[13.5px] leading-5 font-medium text-foreground">
         <TerminalIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0">{agent} needs you to run a command</span>
       </div>

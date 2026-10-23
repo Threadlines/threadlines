@@ -143,6 +143,20 @@ function resolveDesktopPrimaryTarget(): PrimaryEnvironmentTarget | null {
   };
 }
 
+/**
+ * Whether the primary environment's server certainly runs on this computer:
+ * the desktop app's own server. A browser can't tell, and the server's
+ * address proves nothing either way: `localhost` may be an SSH tunnel to
+ * another computer, and a network name may be this one.
+ */
+export function isPrimaryEnvironmentOnThisComputer(): boolean {
+  try {
+    return readPrimaryEnvironmentTarget()?.source === "desktop-managed";
+  } catch {
+    return false;
+  }
+}
+
 export function resolvePrimaryEnvironmentHttpUrl(
   pathname: string,
   searchParams?: Record<string, string>,

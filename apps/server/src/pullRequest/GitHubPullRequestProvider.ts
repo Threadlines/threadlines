@@ -48,6 +48,7 @@ import {
   decodeGitHubImmediatelyMergeableJson,
   decodeGitHubMergeQueueStandingJson,
   decodeGitHubPullRequestConversationJson,
+  decodeGitHubPullRequestLookupJson,
   decodeGitHubPullRequestNodeIdJson,
   decodeGitHubReviewerCandidatesJson,
   decodeGitHubSubjectScopeJson,
@@ -55,6 +56,7 @@ import {
   DETAIL_BASE_STATE_GRAPHQL_QUERY,
   encodeGraphQlRequestJson,
   gitHubAuthoredSearchQuery,
+  gitHubPullRequestLookupRequest,
   gitHubReactionContent,
   type GitHubDetailBaseState,
   type GitHubGraphQlVariable,
@@ -79,6 +81,7 @@ import { capPullRequestDiff, PULL_REQUEST_DIFF_MAX_BYTES } from "./pullRequestDi
 import {
   PullRequestProviderError,
   type PullRequestProviderApi,
+  type ProviderChangeRequestLookup,
   type ProviderRepositoryRef,
 } from "./PullRequestProvider.ts";
 
@@ -409,6 +412,75 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
       ),
     );
 
+  /**
+   * Every number and branch in one GraphQL request. GitHub fails the whole
+   * request over one number that names no pull request, so a failure of that
+   * kind is split until the number behind it stands alone, which is then
+   * answered as none; the branches never cause it and go on their own.
+   */
+  const lookupChangeRequests = (
+    input: ProviderRepositoryRef & {
+      readonly numbers: ReadonlyArray<number>;
+      readonly branches: ReadonlyArray<string>;
+    },
+  ): Effect.Effect<ProviderChangeRequestLookup, PullRequestProviderError> => {
+    if (input.numbers.length === 0 && input.branches.length === 0) {
+      return Effect.succeed({ numbers: new Map(), branches: new Map() });
+    }
+    const { owner, name } = repositoryParts(input.repository);
+    const request = gitHubPullRequestLookupRequest({
+      owner,
+      name,
+      numbers: input.numbers,
+      branches: input.branches,
+    });
+    const split = (): Effect.Effect<ProviderChangeRequestLookup, PullRequestProviderError> => {
+      const [first] = input.numbers;
+      if (input.numbers.length === 1 && input.branches.length === 0 && first !== undefined) {
+        return Effect.succeed({ numbers: new Map([[first, null]]), branches: new Map() });
+      }
+      const middle = Math.ceil(input.numbers.length / 2);
+      const halves =
+        input.branches.length > 0
+          ? [
+              { numbers: input.numbers, branches: [] },
+              { numbers: [], branches: input.branches },
+            ]
+          : [
+              { numbers: input.numbers.slice(0, middle), branches: [] },
+              { numbers: input.numbers.slice(middle), branches: [] },
+            ];
+      return Effect.forEach(halves, (half) => lookupChangeRequests({ ...input, ...half })).pipe(
+        Effect.map((reads) => ({
+          numbers: new Map(reads.flatMap((read) => [...read.numbers])),
+          branches: new Map(reads.flatMap((read) => [...read.branches])),
+        })),
+      );
+    };
+    return github
+      .execute({
+        cwd: input.cwd,
+        args: ["api", "graphql", "--input", "-"],
+        stdin: encodeGraphQlRequestJson(request),
+      })
+      .pipe(
+        Effect.catch((error) =>
+          GitHubCli.isGitHubPullRequestNotFound(error) && input.numbers.length > 0
+            ? Effect.succeed(null)
+            : Effect.fail(toProviderError("lookup", error)),
+        ),
+        Effect.flatMap((output) => {
+          if (output === null) {
+            return split();
+          }
+          const decoded = decodeGitHubPullRequestLookupJson(output.stdout.trim(), input);
+          return Result.isSuccess(decoded)
+            ? Effect.succeed<ProviderChangeRequestLookup>(decoded.success)
+            : Effect.fail(decodeError("lookup", "GraphQL", decoded.failure));
+        }),
+      );
+  };
+
   const graphQlVariables = (input: ProviderRepositoryRef & { readonly number: number }) => {
     const { owner, name } = repositoryParts(input.repository);
     return { owner, name, number: input.number };
@@ -526,6 +598,8 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
         Effect.flatMap((rows) => withGitHubMergeQueue(github.execute, input.cwd, rows)),
         Effect.flatMap((rows) => withAuthorAvatars({ operation: "list", cwd: input.cwd, rows })),
       ),
+
+    lookupChangeRequests: (input) => lookupChangeRequests(input),
 
     listAuthoredChangeRequests: (input) =>
       graphqlRead({

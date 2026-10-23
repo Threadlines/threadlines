@@ -1,9 +1,14 @@
 import * as Cache from "effect/Cache";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 
 import {
   ProjectId,
@@ -28,6 +33,11 @@ import {
   type PullRequestListProjectError,
   type PullRequestListResult,
   type PullRequestListState,
+  type PullRequestLookupAnswer,
+  type PullRequestLookupEntry,
+  type PullRequestLookupInput,
+  type PullRequestLookupItem,
+  type PullRequestLookupResult,
   type PullRequestMergeMethod,
   type PullRequestReactionInput,
   type PullRequestRef,
@@ -52,6 +62,8 @@ import {
   type ProviderAuthoredChangeRequest,
   type ProviderChangeRequest,
   type ProviderChangeRequestDetail,
+  type ProviderChangeRequestLookup,
+  type ProviderChangeRequestSummary,
   type ProviderRepositoryAccess,
   type PullRequestProviderApi,
   type PullRequestProviderError,
@@ -75,6 +87,13 @@ const PULL_REQUEST_CACHE_CAPACITY = 32;
 const REPOSITORY_CACHE_TTL = Duration.minutes(10);
 const REPOSITORY_CACHE_CAPACITY = 16;
 /**
+ * How long a lookup answer serves every surface that asks at once. A merged
+ * pull request never changes again and is kept until room runs out; anything
+ * else is the caller's to re-read on its own schedule.
+ */
+const LOOKUP_SHARED_TTL = Duration.seconds(30);
+const LOOKUP_CACHE_CAPACITY = 2_000;
+/**
  * The hosts whose list rows say whether the viewer may push. Every host can be
  * asked, but only GitHub's answer is one the page has been built against, and a
  * row from a host we do not ask says nothing rather than guessing.
@@ -88,6 +107,13 @@ export interface PullRequestServiceShape {
   readonly list: (
     input: PullRequestListInput,
   ) => Effect.Effect<PullRequestListResult, PullRequestServiceError>;
+  /**
+   * Particular pull requests, however long ago they moved, for the threads
+   * that point at them. The listings are capped by count; this is not.
+   */
+  readonly lookup: (
+    input: PullRequestLookupInput,
+  ) => Effect.Effect<PullRequestLookupResult, PullRequestServiceError>;
   readonly detail: (
     input: PullRequestDetailInput,
   ) => Effect.Effect<PullRequestDetail, PullRequestServiceError>;
@@ -495,6 +521,115 @@ function toDetail(input: {
     isStacked: defaultBranch !== null && row.baseBranch !== defaultBranch,
     defaultBranch,
   };
+}
+
+/** One lookup answer as the service keeps it, and the moment it stops serving. */
+interface LookupCacheEntry {
+  readonly pullRequest: PullRequestLookupEntry | null;
+  /** When the host gave it, so a caller served from here knows how old it is. */
+  readonly answeredAtMs: number;
+  /** Infinite for a merged number, which no later read can change. */
+  readonly expiresAtMs: number;
+}
+
+/** Every lookup answer the service holds, and the items a host read is out for. */
+interface LookupState {
+  readonly answers: ReadonlyMap<string, LookupCacheEntry>;
+  readonly inFlight: ReadonlyMap<string, Deferred.Deferred<LookupCacheEntry | undefined>>;
+}
+
+/**
+ * What one lookup took on: the items already known, the ones another caller is
+ * reading, and its own, with the in-flight map its own were registered in.
+ */
+interface LookupClaim {
+  readonly known: ReadonlyMap<string, LookupCacheEntry>;
+  readonly awaiting: ReadonlyMap<string, Deferred.Deferred<LookupCacheEntry | undefined>>;
+  readonly mine: ReadonlyMap<string, PullRequestLookupItem>;
+  readonly inFlight: ReadonlyMap<string, Deferred.Deferred<LookupCacheEntry | undefined>>;
+}
+
+/** Lookups are kept per project and repository, the way every other per-pull-request read is. */
+const lookupRepositoryKey = (projectId: ProjectId, repository: string) =>
+  `${projectId}\u0000${repository}`;
+
+/** A NUL cannot appear in a branch name, so no branch can spell another item's key. */
+const lookupItemKey = (repositoryKey: string, item: PullRequestLookupItem) =>
+  "number" in item
+    ? `${repositoryKey}\u0000n\u0000${item.number}`
+    : `${repositoryKey}\u0000b\u0000${item.branch}`;
+
+function toLookupEntry(row: ProviderChangeRequestSummary): PullRequestLookupEntry {
+  return {
+    number: row.number,
+    title: row.title,
+    url: row.url,
+    headBranch: row.headBranch,
+    state: row.state,
+    isDraft: row.isDraft,
+    additions: row.additions,
+    deletions: row.deletions,
+    updatedAt: row.updatedAt,
+    ...(row.settledAt == null ? {} : { settledAt: row.settledAt }),
+    autoMergeEnabled: row.autoMergeEnabled === true,
+  };
+}
+
+/**
+ * A merged number stays merged, so that answer is kept. A branch can take a new
+ * pull request at any moment, and an open or closed one can still move, so
+ * those only serve the callers asking at about the same time.
+ */
+function lookupExpiresAtMs(
+  item: PullRequestLookupItem,
+  pullRequest: PullRequestLookupEntry | null,
+  nowMs: number,
+): number {
+  return "number" in item && pullRequest?.state === "merged"
+    ? Number.POSITIVE_INFINITY
+    : nowMs + Duration.toMillis(LOOKUP_SHARED_TTL);
+}
+
+/** The host's answer for one item, or undefined where it gave none. */
+function lookupAnswerFor(
+  read: ProviderChangeRequestLookup,
+  item: PullRequestLookupItem,
+): ProviderChangeRequestSummary | null | undefined {
+  return "number" in item ? read.numbers.get(item.number) : read.branches.get(item.branch);
+}
+
+/** New answers go to the back, and the oldest go once the cache is full. */
+function storeLookupAnswers(
+  current: ReadonlyMap<string, LookupCacheEntry>,
+  answered: ReadonlyMap<string, LookupCacheEntry>,
+): Map<string, LookupCacheEntry> {
+  const next = new Map(current);
+  for (const [key, entry] of answered) {
+    next.delete(key);
+    next.set(key, entry);
+  }
+  for (const key of next.keys()) {
+    if (next.size <= LOOKUP_CACHE_CAPACITY) break;
+    next.delete(key);
+  }
+  return next;
+}
+
+/** Drops what lookups said about one number: its own answer and any branch that named it. */
+function dropLookupAnswersFor(
+  current: ReadonlyMap<string, LookupCacheEntry>,
+  repositoryKey: string,
+  number: number,
+): Map<string, LookupCacheEntry> {
+  const numberKey = lookupItemKey(repositoryKey, { number });
+  const branchPrefix = `${repositoryKey}\u0000b\u0000`;
+  return new Map(
+    [...current].filter(
+      ([key, entry]) =>
+        key !== numberKey &&
+        !(key.startsWith(branchPrefix) && entry.pullRequest?.number === number),
+    ),
+  );
 }
 
 export const make = Effect.fn("makePullRequestService")(function* () {
@@ -921,6 +1056,164 @@ export const make = Effect.fn("makePullRequestService")(function* () {
       }),
     );
 
+  /**
+   * What lookups have answered, by project, repository and item, and the items
+   * a host read is out for. Every surface that tracks threads asks on its own
+   * schedule; an item another caller is already reading is waited for rather
+   * than read twice, and items nobody is reading go to the host at once, so
+   * separate batches never queue behind each other.
+   */
+  const lookupStateRef = yield* Ref.make<LookupState>({
+    answers: new Map(),
+    inFlight: new Map(),
+  });
+
+  const lookup = Effect.fn("PullRequestService.lookup")(function* (input: PullRequestLookupInput) {
+    const target = yield* requireTarget("lookup", input.projectId, input.repository);
+    const host = target.provider.lookupChangeRequests;
+    if (host === undefined) {
+      return { supported: false, answers: [] } satisfies PullRequestLookupResult;
+    }
+    const repositoryKey = lookupRepositoryKey(target.project.projectId, target.repository);
+    const items = [
+      ...new Map(input.items.map((item) => [lookupItemKey(repositoryKey, item), item])).values(),
+    ];
+    const nowMs = yield* Clock.currentTimeMillis;
+    // One atomic look at the answers and at what is in flight: each item is
+    // known already, being read by someone else, or this caller's to read.
+    const claim = Ref.modify(lookupStateRef, (state): [LookupClaim, LookupState] => {
+      const known = new Map<string, LookupCacheEntry>();
+      const awaiting = new Map<string, Deferred.Deferred<LookupCacheEntry | undefined>>();
+      const mine = new Map<string, PullRequestLookupItem>();
+      const inFlight = new Map(state.inFlight);
+      for (const item of items) {
+        const key = lookupItemKey(repositoryKey, item);
+        const entry = state.answers.get(key);
+        const pending = inFlight.get(key);
+        if (entry !== undefined && entry.expiresAtMs > nowMs) {
+          known.set(key, entry);
+        } else if (pending !== undefined) {
+          awaiting.set(key, pending);
+        } else {
+          mine.set(key, item);
+          inFlight.set(key, Deferred.makeUnsafe<LookupCacheEntry | undefined>());
+        }
+      }
+      return [
+        { known, awaiting, mine, inFlight },
+        mine.size === 0 ? state : { ...state, inFlight },
+      ];
+    });
+
+    // A host that fails answers nothing this time; what is already known
+    // still goes back, and the caller asks again later.
+    const readClaimed = (claimed: LookupClaim) =>
+      Effect.gen(function* () {
+        const answered = new Map<string, LookupCacheEntry>();
+        if (claimed.mine.size === 0) {
+          return answered;
+        }
+        const mine = [...claimed.mine.values()];
+        const read = yield* host({
+          ...repositoryRef(target),
+          numbers: mine.flatMap((item) => ("number" in item ? [item.number] : [])),
+          branches: mine.flatMap((item) => ("branch" in item ? [item.branch] : [])),
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Pull request lookup failed", {
+              provider: error.provider,
+              detail: error.detail,
+            }).pipe(Effect.as(null)),
+          ),
+        );
+        const answeredAtMs = yield* Clock.currentTimeMillis;
+        for (const [key, item] of read === null ? [] : claimed.mine) {
+          const row = read === null ? undefined : lookupAnswerFor(read, item);
+          if (row === undefined) {
+            continue;
+          }
+          const pullRequest = row === null ? null : toLookupEntry(row);
+          answered.set(key, {
+            pullRequest,
+            answeredAtMs,
+            expiresAtMs: lookupExpiresAtMs(item, pullRequest, answeredAtMs),
+          });
+        }
+        return answered;
+      });
+
+    // Whatever happens to the read, the items this caller took are released
+    // and their waiters answered, so nobody waits on them for good.
+    const release = (claimed: LookupClaim, answered: ReadonlyMap<string, LookupCacheEntry>) =>
+      Effect.gen(function* () {
+        const released = yield* Ref.modify(
+          lookupStateRef,
+          (
+            state,
+          ): [
+            Array<readonly [string, Deferred.Deferred<LookupCacheEntry | undefined>]>,
+            LookupState,
+          ] => {
+            const inFlight = new Map(state.inFlight);
+            const deferreds = [...claimed.mine.keys()].flatMap((key) => {
+              const deferred = claimed.inFlight.get(key);
+              if (deferred !== undefined && inFlight.get(key) === deferred) {
+                inFlight.delete(key);
+              }
+              return deferred === undefined ? [] : [[key, deferred] as const];
+            });
+            return [
+              deferreds,
+              {
+                answers:
+                  answered.size === 0 ? state.answers : storeLookupAnswers(state.answers, answered),
+                inFlight,
+              },
+            ];
+          },
+        );
+        for (const [key, deferred] of released) {
+          yield* Deferred.succeed(deferred, answered.get(key));
+        }
+      });
+
+    // Taking the items and arming their release happen with no interruption in
+    // between; only the host read itself can be cut short.
+    const { claimed, answered } = yield* Effect.uninterruptibleMask((restore) =>
+      claim.pipe(
+        Effect.flatMap((claimed) =>
+          restore(readClaimed(claimed)).pipe(
+            Effect.onExit((exit) =>
+              release(claimed, Exit.isSuccess(exit) ? exit.value : new Map()),
+            ),
+            Effect.map((answered) => ({ claimed, answered })),
+          ),
+        ),
+      ),
+    );
+    const waitedFor = new Map<string, LookupCacheEntry>();
+    for (const [key, deferred] of claimed.awaiting) {
+      const entry = yield* Deferred.await(deferred);
+      if (entry !== undefined) {
+        waitedFor.set(key, entry);
+      }
+    }
+    const answers = items.flatMap((item): PullRequestLookupAnswer[] => {
+      const key = lookupItemKey(repositoryKey, item);
+      const entry = answered.get(key) ?? waitedFor.get(key) ?? claimed.known.get(key);
+      return entry === undefined
+        ? []
+        : [
+            {
+              item,
+              pullRequest: entry.pullRequest,
+              answeredAt: DateTime.formatIso(DateTime.makeUnsafe(entry.answeredAtMs)),
+            },
+          ];
+    });
+    return { supported: true, answers } satisfies PullRequestLookupResult;
+  });
+
   /** Everything cached about one pull request's own reads. */
   const invalidatePullRequest = (target: PullRequestTarget, number: number) =>
     Effect.gen(function* () {
@@ -931,6 +1224,14 @@ export const make = Effect.fn("makePullRequestService")(function* () {
       });
       yield* Cache.invalidate(detailCache, key);
       yield* Cache.invalidate(activityCache, key);
+      yield* Ref.update(lookupStateRef, (state) => ({
+        ...state,
+        answers: dropLookupAnswersFor(
+          state.answers,
+          lookupRepositoryKey(target.project.projectId, target.repository),
+          number,
+        ),
+      }));
     });
 
   /**
@@ -1013,6 +1314,7 @@ export const make = Effect.fn("makePullRequestService")(function* () {
           Effect.andThen(Cache.get(listCache, key)),
         );
       }),
+    lookup,
     detail: readDetail,
     activity: (input) =>
       cachedRead({

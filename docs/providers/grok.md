@@ -38,10 +38,10 @@ chat uses. The setup screen's `Other ways` link opens the method choice in Setti
 
 ### Grok Subscription
 
-`Sign in with Grok` runs Grok's own sign-in, with no terminal. Threadlines opens xAI's sign-in page
-with the code already filled in; approve it there. The page works from any device, so you can sign
-in from a phone or another computer. Grok also opens the page on the computer that runs
-Threadlines, so you may see it twice.
+`Sign in with Grok` runs Grok's own sign-in, with no terminal. xAI's sign-in page opens with the
+code already filled in; approve it there. On the computer that runs Threadlines, Grok opens the page
+itself. The page works from any device, so when you sign in from a phone or another computer,
+Threadlines opens it there.
 
 Now and then xAI sends the sign-in through a page that ends on an address only the Threadlines
 computer can reach (`http://127.0.0.1:…`). If you signed in on another device, copy that address
