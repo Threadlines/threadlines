@@ -140,6 +140,8 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   private ledgerRefreshing = false;
   /** Alerts this object is sending right now; more than a few waits for the next try. */
   private alertsInFlight = 0;
+  /** `deviceId alertKey` of each alert being sent now: a second copy waits for the first. */
+  private readonly alertKeysInFlight = new Set<string>();
   private readonly authorizeVapid = makeVapidAuthorizer();
 
   constructor(ctx: DurableObjectState, env: RelayV2Env) {
@@ -663,23 +665,40 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       : null;
     if (!keyring) return alertResult("unavailable");
     if (this.alertsInFlight >= MAX_ALERTS_IN_FLIGHT) return alertResult("retry", 5);
-    const admitted = this.core.admitAlert({
-      deviceId,
-      registrationId: body.registrationId,
-      kind: body.kind,
-      now: Date.now(),
-    });
-    if (admitted.decision !== "send") return alertResult(admitted.decision);
-    const key = keyring.byKeyId.get(admitted.keyId);
-    const endpoint = checkPushEndpoint(admitted.endpoint);
-    if (!key || !endpoint) return alertResult("unavailable");
-    if (!(await this.env.RELAY_LEDGER.getByName(RELAY_LEDGER_NAME).chargeAlert())) {
-      return alertResult("limited");
+    const keyInFlight = body.alertKey ? `${deviceId} ${body.alertKey}` : null;
+    if (keyInFlight !== null && this.alertKeysInFlight.has(keyInFlight)) {
+      return alertResult("retry", 5);
     }
+    // Taken before any wait, so requests arriving together can't all pass the checks.
     this.alertsInFlight += 1;
+    if (keyInFlight !== null) this.alertKeysInFlight.add(keyInFlight);
     try {
+      const check = { deviceId, registrationId: body.registrationId, kind: body.kind };
+      const admitted = this.core.admitAlert({
+        ...check,
+        alertKey: body.alertKey,
+        now: Date.now(),
+      });
+      // Sent before, its answer lost on the way back: say so again, don't send it twice.
+      if (admitted.decision === "duplicate") return alertResult("sent");
+      if (admitted.decision !== "send") return alertResult(admitted.decision);
+      const key = keyring.byKeyId.get(admitted.keyId);
+      const endpoint = checkPushEndpoint(admitted.endpoint);
+      if (!key || !endpoint) return alertResult("unavailable");
+      if (!(await this.env.RELAY_LEDGER.getByName(RELAY_LEDGER_NAME).chargeAlert())) {
+        return alertResult("limited");
+      }
+      const authorization = await this.authorizeVapid(key, endpoint, Date.now());
+      // Checked again after those waits, with none left before the send: a
+      // removal, a new subscription or a switch turned off meanwhile wins,
+      // since nothing has gone out yet.
+      const recheck = this.core.checkAlert(check);
+      if (recheck.decision !== "ok") return alertResult(recheck.decision);
+      // A send whose answer never comes (a timeout, a dropped connection)
+      // is retried, so the phone may show it twice. That beats losing it:
+      // most such failures never reached the push service at all.
       const response = await fetch(endpoint, {
-        ...pushRequestInit(body.message, await this.authorizeVapid(key, endpoint, Date.now())),
+        ...pushRequestInit(body.message, authorization),
         // A push service answers; it never redirects. Following one would send
         // the alert, and its signed token, to an address nobody checked.
         redirect: "manual",
@@ -687,6 +706,9 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       });
       await response.body?.cancel();
       const outcome = classifyPushResponse(response.status);
+      if (outcome === "sent" && body.alertKey) {
+        this.core.recordAlertSent(deviceId, body.alertKey, Date.now());
+      }
       if (outcome === "gone") this.core.forgetDevicePush(deviceId, body.registrationId);
       if (outcome !== "sent") {
         log("info", "push alert not delivered", { status: response.status, outcome });
@@ -702,6 +724,7 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       return alertResult("retry");
     } finally {
       this.alertsInFlight -= 1;
+      if (keyInFlight !== null) this.alertKeysInFlight.delete(keyInFlight);
     }
   }
 

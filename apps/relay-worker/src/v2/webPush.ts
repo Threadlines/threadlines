@@ -257,6 +257,8 @@ export interface DeviceAlertBody {
   readonly registrationId: string;
   readonly kind: "needs_you" | "finished" | "failed" | "test";
   readonly message: PushMessage;
+  /** Names the alert, so a retry of one already sent isn't sent again. */
+  readonly alertKey?: string | undefined;
 }
 
 const ALERT_KINDS = new Set(["needs_you", "finished", "failed", "test"]);
@@ -270,6 +272,7 @@ export function parseDeviceAlertBody(body: unknown): DeviceAlertBody | null {
   const encoded = textField(fields.payload, 1, Math.ceil((MAX_PUSH_PAYLOAD_BYTES * 4) / 3));
   const ttl = fields.ttlSeconds;
   const topic = fields.topic === undefined ? undefined : textField(fields.topic, 1, 32);
+  const alertKey = fields.alertKey === undefined ? undefined : textField(fields.alertKey, 1, 43);
   if (
     !registrationId ||
     !encoded ||
@@ -281,7 +284,8 @@ export function parseDeviceAlertBody(body: unknown): DeviceAlertBody | null {
     !Number.isInteger(ttl) ||
     ttl < 0 ||
     ttl > MAX_PUSH_TTL_SECONDS ||
-    topic === null
+    topic === null ||
+    alertKey === null
   ) {
     return null;
   }
@@ -296,6 +300,7 @@ export function parseDeviceAlertBody(body: unknown): DeviceAlertBody | null {
     registrationId,
     kind: fields.kind as DeviceAlertBody["kind"],
     message: { payload, ttlSeconds: ttl, urgency: fields.urgency as PushUrgency, topic },
+    alertKey,
   };
 }
 

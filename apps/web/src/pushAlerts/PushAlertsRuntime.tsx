@@ -14,8 +14,10 @@ import {
   readEnvironmentConnection,
   readEnvironmentDescriptor,
   subscribeEnvironmentConnections,
+  useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import { isPageAttended, onPageAttentionChange } from "../lib/pageAttention";
+import { useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { startPushAlerts } from "./pushAlerts";
 
@@ -32,11 +34,25 @@ function usePresenceReporting() {
   });
   const environmentId = threadRef?.environmentId ?? null;
   const threadId = threadRef?.threadId ?? null;
+  // Null while the thread's computer is unreachable, and a new value on each
+  // reconnect: a new connection knows nothing of what this window shows yet.
+  const savedConnectionState = useSavedEnvironmentRuntimeStore((state) =>
+    environmentId === null ? null : (state.byId[environmentId]?.connectionState ?? null),
+  );
+  const primaryConnectedAt = useWsConnectionStatus().connectedAt;
+  const connectedSince =
+    savedConnectionState === null
+      ? primaryConnectedAt
+      : savedConnectionState === "connected"
+        ? "connected"
+        : null;
   const [attended, setAttended] = useState(isPageAttended);
   useEffect(() => onPageAttentionChange(() => setAttended(isPageAttended())), []);
 
   useEffect(() => {
-    if (environmentId === null || threadId === null || !attended) return;
+    if (environmentId === null || threadId === null || !attended || connectedSince === null) {
+      return;
+    }
     const report = (viewing: ThreadId | null) => {
       if (readEnvironmentDescriptor(environmentId)?.capabilities.pushAlerts !== true) return;
       void readEnvironmentConnection(environmentId)
@@ -45,14 +61,15 @@ function usePresenceReporting() {
     };
     report(threadId);
     const renew = setInterval(() => report(threadId), PRESENCE_RENEW_MS);
-    // A reconnect starts a new connection, which the computer knows nothing about yet.
+    // A saved computer's connection is registered a moment after it says it's
+    // connected: report again once it is.
     const stopWatching = subscribeEnvironmentConnections(() => report(threadId));
     return () => {
       clearInterval(renew);
       stopWatching();
       report(null);
     };
-  }, [environmentId, threadId, attended]);
+  }, [environmentId, threadId, attended, connectedSince]);
 }
 
 export function PushAlertsRuntime() {

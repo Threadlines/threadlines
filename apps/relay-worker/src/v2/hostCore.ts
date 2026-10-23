@@ -3,7 +3,6 @@ import type {
   RelayAlertKind,
   RelayControlEvent,
   RelayDecisionResult,
-  RelayDeviceAlertOutcome,
   RelayDeviceId,
   RelayHookDelivery,
   RelayHookDeliveryId,
@@ -77,6 +76,9 @@ export const DEFAULT_HOST_CORE_LIMITS: HostCoreLimits = {
   dailyAlerts: 2_000,
   dailyAlertsPerDevice: 300,
 };
+
+/** A sent alert's key is kept this long: longer than any alert lives (an hour). */
+const ALERT_KEY_KEEP_MS = 2 * 60 * 60_000;
 
 /** A retired hook's row stays this long, so deliveries it accepted still find it. */
 export const RETIRED_HOOK_KEEP_MS = 25 * 60 * 60_000;
@@ -312,6 +314,13 @@ const SCHEMA = [
      key_id TEXT NOT NULL,
      kinds TEXT NOT NULL,
      updated_at INTEGER NOT NULL
+   )`,
+  // Alerts the push service took, by their key, so a retry isn't sent twice.
+  `CREATE TABLE IF NOT EXISTS push_sent (
+     device_id TEXT NOT NULL,
+     alert_key TEXT NOT NULL,
+     sent_at INTEGER NOT NULL,
+     PRIMARY KEY (device_id, alert_key)
    )`,
   // Alerts sent per UTC day: per device, and the host's total under device ''.
   `CREATE TABLE IF NOT EXISTS push_usage (
@@ -904,6 +913,7 @@ export class HostCore {
     }
     // A removed phone gets no more alerts from this host.
     this.sql.exec("DELETE FROM device_push WHERE device_id = ?", deviceId);
+    this.sql.exec("DELETE FROM push_sent WHERE device_id = ?", deviceId);
     return {
       result: { revoked: true },
       effects: [
@@ -1089,23 +1099,17 @@ export class HostCore {
   }
 
   /**
-   * Whether an alert the host sealed for `registrationId` may go out now, and
-   * where. A `send` answer has already been charged to today's allowances.
+   * Whether `registrationId` is still the phone's subscription and it still
+   * wants `kind`, read now and charging nothing. Checked again after any wait,
+   * so a removal, a new subscription or a switch turned off meanwhile wins.
    */
-  admitAlert(input: {
+  checkAlert(input: {
     readonly deviceId: string;
     readonly registrationId: string;
     readonly kind: RelayAlertKind;
-    readonly now: number;
   }):
-    | {
-        readonly decision: "send";
-        readonly endpoint: string;
-        readonly keyId: string;
-      }
-    | {
-        readonly decision: Exclude<RelayDeviceAlertOutcome, "sent" | "retry" | "rejected" | "gone">;
-      } {
+    | { readonly decision: "ok"; readonly endpoint: string; readonly keyId: string }
+    | { readonly decision: "unavailable" | "stale" | "muted" } {
     if (this.device(input.deviceId)?.state !== "active") return { decision: "unavailable" };
     const push = sqlRows<DevicePushRow>(
       this.sql,
@@ -1116,6 +1120,40 @@ export class HostCore {
     if (push.registration_id !== input.registrationId) return { decision: "stale" };
     if (input.kind !== "test" && !parseKinds(push.kinds)[input.kind]) {
       return { decision: "muted" };
+    }
+    return { decision: "ok", endpoint: push.endpoint, keyId: push.key_id };
+  }
+
+  /**
+   * Whether an alert the host sealed for `registrationId` may go out now, and
+   * where. A `send` answer has already been charged to today's allowances; an
+   * alert already sent under the same `alertKey` is `duplicate` (not charged).
+   */
+  admitAlert(input: {
+    readonly deviceId: string;
+    readonly registrationId: string;
+    readonly kind: RelayAlertKind;
+    readonly alertKey?: string | undefined;
+    readonly now: number;
+  }):
+    | {
+        readonly decision: "send";
+        readonly endpoint: string;
+        readonly keyId: string;
+      }
+    | { readonly decision: "duplicate" | "unavailable" | "stale" | "muted" | "limited" } {
+    const checked = this.checkAlert(input);
+    if (checked.decision !== "ok") return checked;
+    if (
+      input.alertKey !== undefined &&
+      sqlRows(
+        this.sql,
+        "SELECT 1 FROM push_sent WHERE device_id = ? AND alert_key = ?",
+        input.deviceId,
+        input.alertKey,
+      ).length > 0
+    ) {
+      return { decision: "duplicate" };
     }
     this.rollUsageDay(input.now);
     const hostAlerts = this.storedAlertCount("");
@@ -1135,7 +1173,19 @@ export class HostCore {
         alerts,
       );
     }
-    return { decision: "send", endpoint: push.endpoint, keyId: push.key_id };
+    return { decision: "send", endpoint: checked.endpoint, keyId: checked.keyId };
+  }
+
+  /** The push service took the alert: a retry under the same key is answered without sending. */
+  recordAlertSent(deviceId: string, alertKey: string, now: number): void {
+    this.sql.exec("DELETE FROM push_sent WHERE sent_at < ?", now - ALERT_KEY_KEEP_MS);
+    this.sql.exec(
+      `INSERT INTO push_sent (device_id, alert_key, sent_at) VALUES (?, ?, ?)
+       ON CONFLICT(device_id, alert_key) DO NOTHING`,
+      deviceId,
+      alertKey,
+      now,
+    );
   }
 
   /**

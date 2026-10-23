@@ -46,6 +46,7 @@ import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts"
 import { childHasLiveWork } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { LinkRequestRepository } from "../links/LinkRequestRepository.ts";
 import { RelayHost } from "../relay/RelayHost.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
 import {
@@ -97,6 +98,12 @@ const EVENT_BATCH = 500;
 const ALERT_BATCH = 20;
 /** A finished turn whose thread still has work going is looked at again after this. */
 const LIVE_WORK_RECHECK_MS = 10_000;
+/** A thread read that failed, or a schedule alert before the first snapshot, is tried again after this. */
+const READ_RETRY_MS = 5_000;
+/** How far a report's settling may come before the outcome it answers (they are written apart). */
+const LINK_REPORT_SLACK_MS = 60_000;
+/** How long a child's alert waits for its report to reach the asking computer. */
+const LINK_DELIVERY_WAIT_MS = 60_000;
 /** Attempts per phone before an alert gives up on it. */
 const MAX_DELIVERY_ATTEMPTS = 6;
 /** Finished alerts are forgotten after this. */
@@ -106,6 +113,10 @@ const IDLE_WAKE_MS = 30_000;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const fromBase64Url = (text: string) => Buffer.from(text, "base64url");
+
+/** Names an alert to the relay without saying what it is about, so a retry is never sent twice. */
+const alertKey = (alertId: string) =>
+  createHash("sha256").update(alertId).digest("base64url").slice(0, 32);
 
 /** Alerts for one thread replace each other while undelivered (RFC 8030 Topic). */
 const alertTopic = (threadId: string) =>
@@ -161,11 +172,14 @@ const make = Effect.gen(function* () {
   const projections = yield* ProjectionSnapshotQuery;
   const environment = yield* ServerEnvironment;
   const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
+  const linkRequests = yield* Effect.serviceOption(LinkRequestRepository);
   const presence = makePushPresence();
   const senderBell = yield* Queue.sliding<void>(1);
   const discoveryBell = yield* Queue.sliding<void>(1);
   /** Agents' scheduled-task changes waiting for the user, from the latest snapshot. */
   let waitingScheduleRequests = new Set<string>();
+  /** Until the scheduler's first snapshot, a schedule alert can't be judged: it waits. */
+  let scheduleSnapshotSeen = false;
 
   const failWith = (code: PushAlertsError["code"], detail: string) =>
     Effect.fail(new PushAlertsError({ code, detail }));
@@ -241,6 +255,7 @@ const make = Effect.gen(function* () {
       readonly ttlSeconds: number;
       readonly urgency: "normal" | "high";
       readonly topic?: string;
+      readonly alertKey?: string;
     },
   ) =>
     Effect.gen(function* () {
@@ -255,6 +270,7 @@ const make = Effect.gen(function* () {
         ttlSeconds: message.ttlSeconds,
         urgency: message.urgency,
         ...(message.topic !== undefined ? { topic: message.topic } : {}),
+        ...(message.alertKey !== undefined ? { alertKey: message.alertKey } : {}),
       });
       if (result.outcome === "gone" || result.outcome === "stale") {
         yield* repo
@@ -342,6 +358,7 @@ const make = Effect.gen(function* () {
             subjectId: request.requestId,
             detail: null,
             holdMs: 0,
+            occurredAt: request.createdAt,
           },
         });
       }
@@ -350,24 +367,68 @@ const make = Effect.gen(function* () {
           actions.push({ type: "cancel", alertId: scheduleRequestAlertId(requestId) });
         }
       }
+      // Remembered only once saved: a failed save is tried again with the next snapshot.
+      if (actions.length > 0) yield* repo.applyActions({ actions, now });
       waitingScheduleRequests = current;
-      if (actions.length === 0) return;
-      yield* repo.applyActions({ actions, now });
-      yield* Queue.offer(senderBell, undefined);
+      scheduleSnapshotSeen = true;
+      if (actions.length > 0) yield* Queue.offer(senderBell, undefined);
     });
 
   // ----- sending them ----------------------------------------------------------
+
+  /**
+   * A thread an agent on a linked computer started answers that agent: once
+   * its result reached that computer, the asking thread's own alert is the one
+   * that counts. "waiting" while the report is on its way; a computer that
+   * doesn't take it for a while is likely offline, so this alert goes out.
+   */
+  const answeredOverLink = (thread: OrchestrationThread, alert: PushAlertRow, now: number) =>
+    Effect.gen(function* () {
+      if (!thread.remoteOrigin || Option.isNone(linkRequests)) return "no" as const;
+      const rows = yield* linkRequests.value.listByThread(thread.id);
+      const occurredAt = Date.parse(alert.occurredAt);
+      const reports = rows.filter(
+        (row) =>
+          row.reportId !== null &&
+          (row.reportTurnId === alert.subjectId ||
+            row.turnId === alert.subjectId ||
+            // Cut off before its turn had an id (a start that failed, a
+            // restart in the turn): settled by this outcome, not before it.
+            (row.turnId === null &&
+              row.reportTurnId === null &&
+              row.settledAt !== null &&
+              Date.parse(row.settledAt) >= occurredAt - LINK_REPORT_SLACK_MS)),
+      );
+      if (reports.some((row) => row.deliveredAt !== null)) return "answered" as const;
+      return reports.some(
+        (row) => row.settledAt !== null && now - Date.parse(row.settledAt) < LINK_DELIVERY_WAIT_MS,
+      )
+        ? ("waiting" as const)
+        : ("no" as const);
+    });
 
   /** Whether the alert still holds, as the thread is now. */
   const evaluate = (alert: PushAlertRow, now: number) =>
     Effect.gen(function* () {
       if (presence.isViewed(alert.threadId, now)) return DROP;
-      const found = yield* projections
-        .getThreadDetailById(alert.threadId)
-        .pipe(Effect.orElseSucceed(() => Option.none()));
+      const read = yield* projections.getThreadDetailById(alert.threadId).pipe(
+        Effect.map((found) => ({ ok: true as const, found })),
+        Effect.orElseSucceed(() => ({ ok: false as const })),
+      );
+      // A read that failed says nothing about the thread: look again soon.
+      if (!read.ok) return { type: "defer", untilMs: now + READ_RETRY_MS } satisfies Verdict;
       // Archived or deleted: nothing to say.
-      if (Option.isNone(found)) return DROP;
-      const thread = found.value;
+      if (Option.isNone(read.found)) return DROP;
+      const thread = read.found.value;
+      if (alert.kind !== "needs_you") {
+        const answered = yield* answeredOverLink(thread, alert, now).pipe(
+          Effect.orElseSucceed(() => "unread" as const),
+        );
+        if (answered === "answered") return DROP;
+        if (answered !== "no") {
+          return { type: "defer", untilMs: now + READ_RETRY_MS } satisfies Verdict;
+        }
+      }
       const send = (kind: PushAlertKind, reason: PushAlertReason): Verdict => ({
         type: "send",
         kind,
@@ -381,8 +442,18 @@ const make = Effect.gen(function* () {
             ? send("needs_you", alert.reason)
             : DROP;
         case "schedule":
+          if (Option.isNone(scheduledTasks)) return DROP;
+          if (!scheduleSnapshotSeen) {
+            return { type: "defer", untilMs: now + READ_RETRY_MS } satisfies Verdict;
+          }
           return waitingScheduleRequests.has(alert.subjectId)
             ? send("needs_you", "schedule")
+            : DROP;
+        case "plan":
+          // A plan alert that waits for a retry still needs its plan open, on the latest turn.
+          return thread.latestTurn?.turnId === alert.subjectId &&
+            hasActionablePlan(thread, alert.subjectId)
+            ? send("needs_you", "plan")
             : DROP;
         case "finished": {
           if (alert.alertId.startsWith("turn:")) {
@@ -410,6 +481,8 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       if (registrations.length === 0) return yield* repo.finishAlert(alert.alertId, "dropped");
+      // Read in a batch: the alert may have been cancelled since (an answer, a visit).
+      if (!(yield* repo.isPending(alert.alertId))) return;
       const verdict = yield* evaluate(alert, now);
       if (verdict.type === "drop") return yield* repo.finishAlert(alert.alertId, "dropped");
       if (verdict.type === "defer")
@@ -445,7 +518,8 @@ const make = Effect.gen(function* () {
           yield* settle("dropped", delivery.attempts);
           continue;
         }
-        // Checked again right before each send: someone may have opened it meanwhile.
+        // Checked again right before each send: cancelled, or opened, meanwhile.
+        if (!(yield* repo.isPending(alert.alertId))) return;
         if (presence.isViewed(alert.threadId, now)) {
           return yield* repo.finishAlert(alert.alertId, "dropped");
         }
@@ -461,6 +535,7 @@ const make = Effect.gen(function* () {
           ttlSeconds: Math.max(0, Math.min(3600, Math.floor((expiresAt - now) / 1000))),
           urgency: verdict.kind === "needs_you" ? "high" : "normal",
           topic: alertTopic(alert.threadId),
+          alertKey: alertKey(alert.alertId),
         }).pipe(Effect.orElseSucceed(() => ({ outcome: "retry" as const })));
         if (outcome.outcome === "retry") {
           const attempts = delivery.attempts + 1;

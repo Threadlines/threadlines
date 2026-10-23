@@ -22,6 +22,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
+import { LinkRequestRepository, type LinkRequestRow } from "../links/LinkRequestRepository.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
@@ -96,7 +97,12 @@ const makeHarness = Effect.gen(function* () {
   const events: OrchestrationEvent[] = [];
   const published = yield* PubSub.unbounded<OrchestrationEvent>();
   const sent: RelayDeviceAlertInput[] = [];
-  const state = { thread: makeThread(), phoneActive: true };
+  const state = {
+    thread: makeThread(),
+    phoneActive: true,
+    failReads: 0,
+    linkRows: [] as Array<Partial<LinkRequestRow>>,
+  };
   const receiver = createECDH("prime256v1");
   receiver.generateKeys();
   const auth = Buffer.alloc(16, 9);
@@ -109,7 +115,13 @@ const makeHarness = Effect.gen(function* () {
           streamDomainEvents: Stream.fromPubSub(published),
         }),
         Layer.mock(ProjectionSnapshotQuery)({
-          getThreadDetailById: () => Effect.succeed(Option.some(state.thread)),
+          getThreadDetailById: () =>
+            state.failReads > 0
+              ? Effect.suspend(() => {
+                  state.failReads -= 1;
+                  return Effect.fail(new Error("database is locked") as never);
+                })
+              : Effect.succeed(Option.some(state.thread)),
         }),
         Layer.mock(RelayHost)({
           admitDirect: () => null,
@@ -121,6 +133,9 @@ const makeHarness = Effect.gen(function* () {
               sent.push(input);
               return { outcome: "sent" as const };
             }),
+        }),
+        Layer.mock(LinkRequestRepository)({
+          listByThread: () => Effect.sync(() => state.linkRows as never),
         }),
         Layer.mock(ServerEnvironment)({
           getEnvironmentId: Effect.succeed(EnvironmentId.make("env-mac")),
@@ -269,6 +284,38 @@ it.layer(NodeServices.layer)("PushAlerts", (it) => {
     ),
   );
 
+  it.effect("tries again when the thread can't be read, instead of losing the alert", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        const pushAlerts = yield* PushAlerts.pipe(Effect.provide(harness.context));
+        yield* TestClock.adjust("1 hour");
+        yield* pushAlerts.start();
+        yield* settle();
+        yield* pushAlerts.register(PHONE_SESSION, {
+          registrationId: "registration-1",
+          p256dh: harness.receiver.getPublicKey().toString("base64url"),
+          auth: harness.auth.toString("base64url"),
+          keyId: "key-nightly",
+          appOrigin: "https://nightly.app.threadlines.dev",
+        });
+
+        harness.state.failReads = 1;
+        yield* appended(harness, "thread.turn-completed", {
+          threadId: THREAD,
+          turnId: "turn-1",
+          state: "error",
+          completedAt: "2026-10-23T12:00:00.000Z",
+        });
+        yield* settle(4_000);
+        assert.strictEqual(harness.sent.length, 0);
+        yield* settle(6_000);
+        assert.strictEqual(harness.sent.length, 1);
+        assert.strictEqual(harness.sent[0]!.kind, "failed");
+      }),
+    ),
+  );
+
   it.effect("stays quiet for a thread someone is looking at, and for a removed phone", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -305,6 +352,80 @@ it.layer(NodeServices.layer)("PushAlerts", (it) => {
         // The removed phone's keys are gone, so registering is refused too.
         const refused = yield* pushAlerts.sendTest(PHONE_SESSION).pipe(Effect.flip);
         assert.strictEqual(refused.code, "not-a-paired-phone");
+      }),
+    ),
+  );
+  it.effect("leaves a child's alert to the computer that asked, once it has the result", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        const pushAlerts = yield* PushAlerts.pipe(Effect.provide(harness.context));
+        yield* TestClock.adjust("1 hour");
+        yield* pushAlerts.start();
+        yield* settle();
+        yield* pushAlerts.register(PHONE_SESSION, {
+          registrationId: "registration-1",
+          p256dh: harness.receiver.getPublicKey().toString("base64url"),
+          auth: harness.auth.toString("base64url"),
+          keyId: "key-nightly",
+          appOrigin: "https://nightly.app.threadlines.dev",
+        });
+        harness.state.thread = makeThread({
+          remoteOrigin: { linkDeviceId: "device-asker" } as never,
+        });
+        const nowIso = () =>
+          Clock.currentTimeMillis.pipe(Effect.map((ms) => new Date(ms).toISOString()));
+        const activity = (id: string, kind: string, turnId: string | null) =>
+          appended(harness, "thread.activity-appended", {
+            threadId: THREAD,
+            activity: { id, tone: "error", kind, summary: "It stopped", payload: {}, turnId },
+          });
+
+        // A restart cut the child's first turn off before it had an id; the
+        // report stays unclaimed until the asking computer takes it.
+        const report = {
+          reportId: "report-1",
+          turnId: null,
+          reportTurnId: null,
+          settledAt: yield* nowIso(),
+          deliveredAt: null as string | null,
+        };
+        harness.state.linkRows = [report];
+        yield* activity("activity-restart", "provider.session.restart-interrupted", "turn-1");
+        yield* settle(6_000);
+        assert.strictEqual(harness.sent.length, 0);
+        report.deliveredAt = yield* nowIso();
+        yield* settle(70_000);
+        assert.strictEqual(harness.sent.length, 0);
+
+        // That old report says nothing about a later start that failed.
+        yield* TestClock.adjust("5 minutes");
+        yield* activity("activity-start", "provider.turn.start.failed", null);
+        yield* settle(5_000);
+        assert.strictEqual(harness.sent.length, 1);
+        assert.strictEqual(harness.sent[0]!.kind, "failed");
+
+        // A report the asking computer never takes (it's offline): the alert goes out.
+        harness.state.linkRows = [
+          report,
+          {
+            reportId: "report-3",
+            turnId: "turn-3" as never,
+            reportTurnId: "turn-3",
+            settledAt: yield* nowIso(),
+            deliveredAt: null,
+          },
+        ];
+        yield* appended(harness, "thread.turn-completed", {
+          threadId: THREAD,
+          turnId: "turn-3",
+          state: "error",
+          completedAt: "2026-10-23T12:00:00.000Z",
+        });
+        yield* settle(30_000);
+        assert.strictEqual(harness.sent.length, 1);
+        yield* settle(40_000);
+        assert.strictEqual(harness.sent.length, 2);
       }),
     ),
   );

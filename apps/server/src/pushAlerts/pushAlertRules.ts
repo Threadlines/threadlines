@@ -37,6 +37,8 @@ export interface PushAlertIntent {
   readonly detail: string | null;
   /** Wait this long first: more work may follow a finished turn, or a parent may take the result. */
   readonly holdMs: number;
+  /** When the thing it is about happened. */
+  readonly occurredAt: string;
 }
 
 export type PushAlertAction =
@@ -96,6 +98,7 @@ export function pushAlertActionsForEvent(
             activity.kind === APPROVAL_ACTIVITY_KINDS.requested ? "approval" : "question";
           return [
             add({
+              occurredAt: event.occurredAt,
               alertId: `${reason}:${requestId}`,
               threadId,
               kind: "needs_you",
@@ -125,6 +128,7 @@ export function pushAlertActionsForEvent(
         case "provider.session.restart-interrupted":
           return [
             add({
+              occurredAt: event.occurredAt,
               alertId:
                 activity.turnId !== null ? turnAlertId(activity.turnId) : `restart:${activity.id}`,
               threadId,
@@ -138,6 +142,7 @@ export function pushAlertActionsForEvent(
         case "provider.turn.start.failed":
           return [
             add({
+              occurredAt: event.occurredAt,
               alertId: `start:${activity.id}`,
               threadId,
               kind: "failed",
@@ -163,6 +168,7 @@ export function pushAlertActionsForEvent(
       if (state === "interrupted") return [];
       return [
         add({
+          occurredAt: event.occurredAt,
           alertId: turnAlertId(turnId),
           threadId,
           kind: state === "completed" ? "finished" : "failed",
@@ -178,6 +184,7 @@ export function pushAlertActionsForEvent(
       if (outcome === "interrupted") return [];
       return [
         add({
+          occurredAt: event.occurredAt,
           alertId: sideTurnAlertId(sideTurnId),
           threadId,
           kind: outcome === "completed" ? "finished" : "failed",

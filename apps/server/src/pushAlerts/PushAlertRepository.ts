@@ -38,6 +38,8 @@ export const PushAlertRow = Schema.Struct({
   reason: Schema.String,
   subjectId: Schema.String,
   detail: Schema.NullOr(Schema.String),
+  /** When the thing it is about happened. */
+  occurredAt: Schema.String,
   dueAt: Schema.String,
   expiresAt: Schema.String,
 });
@@ -88,6 +90,8 @@ export interface PushAlertRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<PushAlertRow>, PushAlertRepositoryError>;
   /** The soonest pending alert's due time (a delivery waiting to retry defers its alert to then). */
   readonly nextWakeAt: Effect.Effect<Option.Option<string>, PushAlertRepositoryError>;
+  /** Whether the alert still waits to go out (not sent, cancelled or expired). */
+  readonly isPending: (alertId: string) => Effect.Effect<boolean, PushAlertRepositoryError>;
   readonly finishAlert: (
     alertId: string,
     state: "delivered" | "dropped",
@@ -201,11 +205,11 @@ const make = Effect.gen(function* () {
         const { intent } = action;
         return sql`
           INSERT INTO push_alerts (
-            alert_id, thread_id, kind, reason, subject_id, detail, state, created_at, due_at,
+            alert_id, thread_id, kind, reason, subject_id, detail, state, occurred_at, due_at,
             expires_at
           ) VALUES (
             ${intent.alertId}, ${intent.threadId}, ${intent.kind}, ${intent.reason},
-            ${intent.subjectId}, ${intent.detail}, 'pending', ${iso(now)},
+            ${intent.subjectId}, ${intent.detail}, 'pending', ${intent.occurredAt},
             ${iso(now + intent.holdMs)}, ${iso(now + ALERT_LIFETIME_MS[intent.kind])}
           )
           ON CONFLICT(alert_id) DO NOTHING
@@ -226,7 +230,7 @@ const make = Effect.gen(function* () {
         // A dropped row stands in for the alert, so a later "add" for it does nothing.
         return sql`
           INSERT INTO push_alerts (
-            alert_id, thread_id, kind, reason, subject_id, detail, state, created_at, due_at,
+            alert_id, thread_id, kind, reason, subject_id, detail, state, occurred_at, due_at,
             expires_at
           ) VALUES (
             ${action.alertId}, ${action.threadId}, 'failed', 'error', ${action.alertId}, NULL,
@@ -254,7 +258,7 @@ const make = Effect.gen(function* () {
 
   const alertColumns = sql`
     alert_id AS "alertId", thread_id AS "threadId", kind, reason, subject_id AS "subjectId",
-    detail, due_at AS "dueAt", expires_at AS "expiresAt"
+    detail, occurred_at AS "occurredAt", due_at AS "dueAt", expires_at AS "expiresAt"
   `;
 
   const dueAlerts: PushAlertRepositoryShape["dueAlerts"] = (now, limit) =>
@@ -281,6 +285,14 @@ const make = Effect.gen(function* () {
     Effect.map((rows) => Option.fromNullishOr(rows[0]?.at)),
     wrap("nextWakeAt"),
   );
+
+  const isPending: PushAlertRepositoryShape["isPending"] = (alertId) =>
+    sql<{ readonly state: string }>`
+      SELECT state FROM push_alerts WHERE alert_id = ${alertId}
+    `.pipe(
+      Effect.map((rows) => rows[0]?.state === "pending"),
+      wrap("isPending"),
+    );
 
   const finishAlert: PushAlertRepositoryShape["finishAlert"] = (alertId, state) =>
     sql`
@@ -333,7 +345,7 @@ const make = Effect.gen(function* () {
   const prune: PushAlertRepositoryShape["prune"] = (before) =>
     Effect.gen(function* () {
       yield* sql`
-        DELETE FROM push_alerts WHERE state != 'pending' AND created_at < ${before}
+        DELETE FROM push_alerts WHERE state != 'pending' AND occurred_at < ${before}
       `;
       yield* sql`
         DELETE FROM push_alert_deliveries
@@ -351,6 +363,7 @@ const make = Effect.gen(function* () {
     applyActions,
     dueAlerts,
     nextWakeAt,
+    isPending,
     finishAlert,
     deferAlert,
     retypeAlert,

@@ -606,6 +606,37 @@ describe("push alerts", () => {
     expect(admit("registration-1")).toEqual({ decision: "unavailable" });
   });
 
+  it("never sends one alert twice: a retry after a lost answer is a duplicate, not charged", () => {
+    const { core, deviceId } = phoneWithPush({
+      ...DEFAULT_HOST_CORE_LIMITS,
+      dailyAlertsPerDevice: 2,
+    });
+    const admit = (alertKey: string, now: number) =>
+      core.admitAlert({ deviceId, registrationId: "registration-1", kind: "failed", alertKey, now })
+        .decision;
+
+    expect(admit("alert-a", T0 + 4 * MINUTE)).toBe("send");
+    core.recordAlertSent(deviceId, "alert-a", T0 + 4 * MINUTE);
+    expect(admit("alert-a", T0 + 5 * MINUTE)).toBe("duplicate");
+    // The duplicate cost nothing: one more alert still fits today's two.
+    expect(admit("alert-b", T0 + 6 * MINUTE)).toBe("send");
+  });
+
+  it("lets a switch turned off before the send win over an earlier check", () => {
+    const { core, deviceId } = phoneWithPush();
+    const check = { deviceId, registrationId: "registration-1", kind: "needs_you" as const };
+    expect(core.admitAlert({ ...check, now: T0 + 4 * MINUTE }).decision).toBe("send");
+    core.setDevicePush({
+      deviceId,
+      registrationId: "registration-1",
+      endpoint: "https://web.push.apple.com/QGuQyavXutnMsuIk8Z0f",
+      keyId: "key-nightly",
+      kinds: { needs_you: false, finished: false, failed: true },
+      now: T0 + 4 * MINUTE,
+    });
+    expect(core.checkAlert(check)).toEqual({ decision: "muted" });
+  });
+
   it("charges each alert before it goes out, and starts a fresh allowance each day", () => {
     const { core, deviceId } = phoneWithPush({
       ...DEFAULT_HOST_CORE_LIMITS,

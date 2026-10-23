@@ -56,6 +56,7 @@ describe("pushAlertActionsForEvent", () => {
           subjectId: "r1",
           detail: null,
           holdMs: 0,
+          occurredAt: "2026-10-23T12:00:00.000Z",
         },
       },
     ]);

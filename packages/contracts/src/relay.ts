@@ -351,6 +351,12 @@ export const RelayDeviceAlertInput = Schema.Struct({
   urgency: Schema.Literals(["very-low", "low", "normal", "high"]),
   /** Replaces an undelivered alert with the same topic (RFC 8030 §5.4). */
   topic: Schema.optional(Base64UrlText.check(Schema.isMaxLength(32))),
+  /**
+   * Names the alert (an opaque hash), so a retry of one the relay already
+   * sent (its answer lost on the way back) is answered `sent` and not sent
+   * again. The test alert has none.
+   */
+  alertKey: Schema.optional(Base64UrlText.check(Schema.isMaxLength(43))),
 });
 export type RelayDeviceAlertInput = typeof RelayDeviceAlertInput.Type;
 

@@ -41,7 +41,7 @@ export default Effect.gen(function* () {
       subject_id TEXT NOT NULL,
       detail TEXT,
       state TEXT NOT NULL,
-      created_at TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
       due_at TEXT NOT NULL,
       expires_at TEXT NOT NULL
     )

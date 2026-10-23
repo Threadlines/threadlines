@@ -18,6 +18,7 @@ import {
   readEnvironmentConnection,
   readEnvironmentDescriptor,
   subscribeEnvironmentConnections,
+  useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 // From its own module: the settings browser test replaces the runtime index.
 import { readRelayDeviceCredentials } from "../environments/runtime/relayCredentials";
@@ -57,12 +58,14 @@ interface PushAlertsState {
   readonly error: string | null;
 }
 
-function readStored(): Pick<PushAlertsState, "enabled" | "kinds"> {
+/** The saved switches; null when nothing is saved or storage can't be read. */
+function readStoredIfAny(): Pick<PushAlertsState, "enabled" | "kinds"> | null {
   try {
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as {
       enabled?: unknown;
       kinds?: Partial<Record<keyof PushAlertKinds, unknown>>;
     } | null;
+    if (parsed === null) return null;
     return {
       enabled: parsed?.enabled === true,
       kinds: {
@@ -72,8 +75,12 @@ function readStored(): Pick<PushAlertsState, "enabled" | "kinds"> {
       },
     };
   } catch {
-    return { enabled: false, kinds: DEFAULT_ALERT_KINDS };
+    return null;
   }
+}
+
+function readStored(): Pick<PushAlertsState, "enabled" | "kinds"> {
+  return readStoredIfAny() ?? { enabled: false, kinds: DEFAULT_ALERT_KINDS };
 }
 
 function writeStored(enabled: boolean, kinds: PushAlertKinds) {
@@ -124,16 +131,19 @@ const fromBase64Url = (text: string) => {
 
 const relayKeys = new Map<string, Promise<RelayPushKeyResult>>();
 
+/** Every relay request gives up after this, so turning alerts off never waits forever. */
+const RELAY_REQUEST_TIMEOUT_MS = 10_000;
+
 /** The public key phones of this channel subscribe with, from `relayOrigin`. */
 function relayPushKey(relayOrigin: string): Promise<RelayPushKeyResult> {
   let key = relayKeys.get(relayOrigin);
   if (!key) {
-    key = fetch(new URL(`/v2/push/key?channel=${keyChannel}`, relayOrigin)).then(
-      async (response) => {
-        if (!response.ok) throw new Error("This relay doesn't send alerts.");
-        return (await response.json()) as RelayPushKeyResult;
-      },
-    );
+    key = fetch(new URL(`/v2/push/key?channel=${keyChannel}`, relayOrigin), {
+      signal: AbortSignal.timeout(RELAY_REQUEST_TIMEOUT_MS),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error("This relay doesn't send alerts.");
+      return (await response.json()) as RelayPushKeyResult;
+    });
     key.catch(() => relayKeys.delete(relayOrigin));
     relayKeys.set(relayOrigin, key);
   }
@@ -198,7 +208,7 @@ async function currentSubscription(subscribe: boolean): Promise<PhoneSubscriptio
     subscription = null;
   }
   if (!subscription) {
-    if (!subscribe) return null;
+    if (!subscribe || !stillEnabled()) return null;
     subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: fromBase64Url(key.publicKey),
@@ -236,6 +246,7 @@ async function relayDeviceRequest(
         ...(body ? { "content-type": "application/json" } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(RELAY_REQUEST_TIMEOUT_MS),
     },
   );
   if (!response.ok) {
@@ -246,38 +257,105 @@ async function relayDeviceRequest(
   }
 }
 
-/** Registers this phone with one computer: its relay host first, then the computer. */
+/**
+ * Takes the switches another window of this app saved since: they share one
+ * browser subscription, so one window turning alerts off turns them off here.
+ */
+function syncFromStorage() {
+  const stored = readStoredIfAny();
+  if (!stored) return;
+  const { enabled, kinds } = usePushAlertsStore.getState();
+  if (
+    stored.enabled !== enabled ||
+    (Object.keys(kinds) as Array<keyof PushAlertKinds>).some(
+      (kind) => stored.kinds[kind] !== kinds[kind],
+    )
+  ) {
+    usePushAlertsStore.setState(stored);
+  }
+}
+
+const stillEnabled = () => {
+  syncFromStorage();
+  return usePushAlertsStore.getState().enabled;
+};
+
+/** A computer that never answers can't hold up the others, or the next pass. */
+const REGISTER_TIMEOUT_MS = 15_000;
+
+const withTimeout = <A>(promise: Promise<A>, ms: number, message: string): Promise<A> =>
+  new Promise<A>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+
+/**
+ * Puts this phone's endpoint and current switches on one computer's relay
+ * host. False when that relay signs with another key than this phone's.
+ */
+async function putRelayRow(
+  environmentId: EnvironmentId,
+  relayOrigin: string,
+  phone: PhoneSubscription,
+): Promise<boolean> {
+  const relayKey = await relayPushKey(relayOrigin);
+  if (relayKey.keyId !== phone.keyId) return false;
+  // Turned off meanwhile: put nothing back.
+  if (!stillEnabled()) return true;
+  await relayDeviceRequest(environmentId, "PUT", {
+    registrationId: phone.registrationId,
+    endpoint: phone.endpoint,
+    keyId: phone.keyId,
+    kinds: usePushAlertsStore.getState().kinds,
+  });
+  return true;
+}
+
+/** The subscription the last pass registered, for switch changes that can't wait for the next. */
+let lastPhone: PhoneSubscription | null = null;
+
+/**
+ * Registers this phone with one computer: its relay host first, which takes
+ * the endpoint and the switches even while the computer is offline (so a
+ * switch turned off holds there at once), then the computer itself.
+ */
 async function registerWith(environmentId: EnvironmentId, phone: PhoneSubscription) {
   const relay = relayLinkOf(getSavedEnvironmentRecord(environmentId));
   if (!relay) return setStatus(environmentId, { state: "not-paired" });
-  const connection = readEnvironmentConnection(environmentId);
-  if (!connection) return setStatus(environmentId, { state: "connecting" });
-  const descriptor = readEnvironmentDescriptor(environmentId);
-  if (!descriptor) return setStatus(environmentId, { state: "connecting" });
-  if (descriptor.capabilities.pushAlerts !== true) {
-    return setStatus(environmentId, { state: "older" });
-  }
   try {
-    const relayKey = await relayPushKey(relay.relayOrigin);
-    if (relayKey.keyId !== phone.keyId) {
+    if (!(await putRelayRow(environmentId, relay.relayOrigin, phone))) {
       return setStatus(environmentId, {
         state: "failed",
         detail: "It uses a different relay than this phone's other computers.",
       });
     }
-    await relayDeviceRequest(environmentId, "PUT", {
-      registrationId: phone.registrationId,
-      endpoint: phone.endpoint,
-      keyId: phone.keyId,
-      kinds: usePushAlertsStore.getState().kinds,
-    });
-    await connection.client.push.register({
-      registrationId: phone.registrationId,
-      p256dh: phone.p256dh,
-      auth: phone.auth,
-      keyId: phone.keyId,
-      appOrigin: window.location.origin,
-    });
+    const connection = readEnvironmentConnection(environmentId);
+    const descriptor = readEnvironmentDescriptor(environmentId);
+    if (!connection || !descriptor) return setStatus(environmentId, { state: "connecting" });
+    if (descriptor.capabilities.pushAlerts !== true) {
+      return setStatus(environmentId, { state: "older" });
+    }
+    if (!stillEnabled()) return;
+    await withTimeout(
+      connection.client.push.register({
+        registrationId: phone.registrationId,
+        p256dh: phone.p256dh,
+        auth: phone.auth,
+        keyId: phone.keyId,
+        appOrigin: window.location.origin,
+      }),
+      REGISTER_TIMEOUT_MS,
+      "That computer didn't answer.",
+    );
     setStatus(environmentId, { state: "on" });
   } catch (error) {
     setStatus(environmentId, {
@@ -307,7 +385,8 @@ export function reconcilePushAlerts(): Promise<void> {
         usePushAlertsStore.setState({ error: errorText(error, "Couldn't set up alerts.") });
         return null;
       });
-      if (!phone) return;
+      if (!phone || !stillEnabled()) return;
+      lastPhone = phone;
       await Promise.all(
         pairedComputers().map(({ record }) => registerWith(record.environmentId, phone)),
       );
@@ -345,6 +424,16 @@ export async function disablePushAlerts(): Promise<void> {
   writeStored(false, kinds);
   usePushAlertsStore.setState({ enabled: false, busy: true, error: null });
   try {
+    // A registration still in flight sees "off" at its next step and stops;
+    // wait for it, so no relay change it makes lands after the removal below.
+    // Its relay steps time out, so this only stops waiting early on a stuck
+    // computer, whose late answer can't reach the phone without the relay.
+    if (reconciling) {
+      await Promise.race([
+        reconciling.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 3 * RELAY_REQUEST_TIMEOUT_MS)),
+      ]);
+    }
     await Promise.all(
       pairedComputers().map(async ({ record }) => {
         await relayDeviceRequest(record.environmentId, "DELETE").catch(() => undefined);
@@ -353,6 +442,7 @@ export async function disablePushAlerts(): Promise<void> {
           .catch(() => undefined);
       }),
     );
+    lastPhone = null;
     const registration = await navigator.serviceWorker.getRegistration(WORKER_URL);
     await (await registration?.pushManager.getSubscription())?.unsubscribe();
     usePushAlertsStore.setState({ statusByEnvironmentId: {} });
@@ -366,7 +456,17 @@ export async function setPushAlertKind(kind: keyof PushAlertKinds, on: boolean):
   const kinds = { ...usePushAlertsStore.getState().kinds, [kind]: on };
   writeStored(usePushAlertsStore.getState().enabled, kinds);
   usePushAlertsStore.setState({ kinds });
-  await reconcilePushAlerts();
+  // Straight to every relay host, even while a pass is still waiting on a
+  // computer: the relay is what holds a switch that's off.
+  const phone = lastPhone;
+  if (phone && stillEnabled()) {
+    await Promise.all(
+      pairedComputers().map(({ record, relay }) =>
+        putRelayRow(record.environmentId, relay.relayOrigin, phone).catch(() => undefined),
+      ),
+    );
+  }
+  void reconcilePushAlerts();
 }
 
 /** Asks one computer to send this phone a test alert. */
@@ -404,10 +504,28 @@ export function startPushAlerts(): () => void {
     timer = setTimeout(() => void reconcilePushAlerts(), 1_000);
   };
   schedule();
-  const stop = subscribeEnvironmentConnections(schedule);
+  const stopConnections = subscribeEnvironmentConnections(schedule);
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== STORAGE_KEY) return;
+    syncFromStorage();
+    schedule();
+  };
+  window.addEventListener("storage", onStorage);
+  // A socket that reconnects keeps its connection object: watch its state too.
+  const stopRuntime = useSavedEnvironmentRuntimeStore.subscribe((state, previous) => {
+    for (const [environmentId, runtime] of Object.entries(state.byId)) {
+      const before = previous.byId[environmentId as EnvironmentId];
+      if (runtime?.connectionState === "connected" && before?.connectionState !== "connected") {
+        schedule();
+        return;
+      }
+    }
+  });
   return () => {
     started = false;
     if (timer) clearTimeout(timer);
-    stop();
+    stopConnections();
+    stopRuntime();
+    window.removeEventListener("storage", onStorage);
   };
 }
