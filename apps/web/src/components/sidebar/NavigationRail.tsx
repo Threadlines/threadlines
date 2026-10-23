@@ -19,7 +19,7 @@ import {
   SquarePenIcon,
   WaypointsIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
@@ -58,6 +58,7 @@ import {
   type ThreadAttentionCounts,
 } from "../Sidebar.logic";
 import { ChromeIconButton, ChromeTooltip } from "./ChromeIconButton";
+import { destinationHasList } from "./destinationLists";
 import { usePendingLinkRequests } from "./linkedComputers";
 import { useListNewThreadStore } from "./listNewThreadStore";
 import { RailUpdateButton } from "./RailUpdateButton";
@@ -96,6 +97,11 @@ export interface NavigationDestination {
   readonly shortLabel: string;
   readonly icon: LucideIcon;
   readonly selected: boolean;
+  /**
+   * The selected destination's list beside the rail, which its button shows
+   * and hides: whether it is showing. Undefined for the others, and on a phone.
+   */
+  readonly listOpen: boolean | undefined;
   /** Threads waiting on the user: an amber count on the icon. */
   readonly needsYou: number;
   /**
@@ -294,10 +300,14 @@ function joinDetails(...parts: Array<string | null>): string | null {
  * does. `listOpen` is whether the thread list beside the rail is showing: the
  * Threads icon carries the working count only while the list is hidden, since
  * the list says it otherwise.
+ *
+ * `select` takes the click's place in a run of quick clicks (its `detail`: 1
+ * for a single click, 2 for a double-click's second, 0 from a key). Choosing
+ * the destination already on screen shows or hides its list beside the rail.
  */
 export function useNavigationDestinations(options: { readonly listOpen: boolean }): {
   readonly destinations: readonly NavigationDestination[];
-  readonly select: (id: NavigationDestinationId) => void;
+  readonly select: (id: NavigationDestinationId, clickCount?: number) => void;
 } {
   const navigate = useNavigate();
   const router = useRouter();
@@ -320,6 +330,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     describeActiveScheduledTasks(state.byEnvironment),
   );
   const shortcutContext = useRouteShortcutContext();
+  const { isMobile, toggleSidebar } = useSidebar();
 
   const destinations = useMemo(() => {
     const platform = typeof navigator === "undefined" ? "" : navigator.platform;
@@ -339,6 +350,8 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           shortLabel: NAVIGATION_DESTINATION_SHORT_LABELS[id],
           icon: DESTINATION_ICONS[id],
           selected: selected === id,
+          listOpen:
+            selected === id && !isMobile && destinationHasList(id) ? options.listOpen : undefined,
           needsYou: id === "pull-requests" ? pullRequestsNeedingYou : (counts?.needsYou ?? 0),
           unread: id === "chats" && attention.chatsUnread,
           working: counts?.working ?? 0,
@@ -375,6 +388,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     attention,
     hasPullRequests,
     hasScheduledTasks,
+    isMobile,
     keybindings,
     options.listOpen,
     pullRequestsNeedingYou,
@@ -384,16 +398,23 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     usageTokens,
   ]);
 
-  const { open, setOpen, isMobile } = useSidebar();
+  // Whether a click in the current run of quick clicks went somewhere.
+  const runNavigatedRef = useRef(false);
   const select = useCallback(
-    (id: NavigationDestinationId) => {
+    (id: NavigationDestinationId, clickCount = 1) => {
+      if (clickCount <= 1) runNavigatedRef.current = false;
+      if (id === selected && !isMobile && destinationHasList(id)) {
+        // Already there: the button shows or hides the list, as the title
+        // row's toggle does. A double-click that came here is one choice, so
+        // its second click leaves the list as the first left it.
+        if (!runNavigatedRef.current) toggleSidebar();
+        return;
+      }
+      // On a phone the threads are the sheet itself, which choosing closed.
+      if (id === "threads" && selected === "threads") return;
+      runNavigatedRef.current = true;
       switch (id) {
         case "threads": {
-          if (selected === "threads") {
-            // Already there: the button's job is to show the list.
-            if (!isMobile && !open) setOpen(true);
-            return;
-          }
           if (lastThreadsViewHref !== null) {
             void router.navigate({ href: lastThreadsViewHref });
             return;
@@ -421,7 +442,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           return;
       }
     },
-    [isMobile, navigate, open, router, selected, setOpen],
+    [isMobile, navigate, router, selected, toggleSidebar],
   );
 
   return { destinations, select };
@@ -502,7 +523,8 @@ function DestinationButton({
   readonly glide?: boolean;
   /** On a phone: its short name under the icon, since a finger can't hover for the tooltip. */
   readonly named?: boolean;
-  readonly onSelect: (id: NavigationDestinationId) => void;
+  /** With the click's place in a run of quick clicks, as `select` takes it. */
+  readonly onSelect: (id: NavigationDestinationId, clickCount: number) => void;
 }) {
   const Icon = destination.icon;
   const working = destination.showWorking ? destination.working : 0;
@@ -521,10 +543,11 @@ function DestinationButton({
         label={label}
         tooltip={<DestinationTooltip destination={destination} />}
         selected={destination.selected}
+        expanded={destination.listOpen}
         glide={glide}
         side={side}
         testId={`rail-${destination.id}`}
-        onClick={() => onSelect(destination.id)}
+        onClick={(event) => onSelect(destination.id, event.detail)}
       >
         <Icon aria-hidden="true" />
         <CornerMarks needsYou={destination.needsYou} unread={destination.unread} />
