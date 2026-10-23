@@ -74,6 +74,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * (docs/design/event-tasks.md). Without it, clients offer clock tasks only.
    */
   eventTasks: Schema.optionalKey(Schema.Boolean),
+  /** Takes phone alert registrations (`push.register`, `presence.setViewing`). */
+  pushAlerts: Schema.optionalKey(Schema.Boolean),
   /**
    * The server keeps each thread's terminal tabs and streams their output per
    * thread (`TerminalSubscribeInput`, docs/terminal.md). Older servers omit

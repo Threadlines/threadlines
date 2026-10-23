@@ -6,13 +6,17 @@ export interface LedgerLimits {
   readonly dailyMessageBudget: number;
   /** Host registrations per client IP per UTC day. */
   readonly registrationsPerIpPerDay: number;
+  /** Push alerts sent relay-wide per UTC day, every host together. */
+  readonly dailyAlertBudget: number;
 }
 
 /**
  * Relay-wide daily accounting, kept by one singleton Durable Object. Host
  * objects report forwarded-message deltas (each host at most once a minute);
  * the ledger answers whether the relay is "busy" (near the shared free-plan
- * pool) and caps how many hosts one IP can register per day. Every report is
+ * pool), caps how many hosts one IP can register per day, and how many push
+ * alerts the relay sends in a day (anyone can register a host, so a per-host
+ * allowance alone bounds nothing relay-wide). Every report is
  * written straight away: an idle ledger can be evicted within seconds, so a
  * total held only in memory would be lost.
  */
@@ -29,6 +33,12 @@ export class LedgerCore {
       `CREATE TABLE IF NOT EXISTS totals (
          day TEXT PRIMARY KEY,
          messages INTEGER NOT NULL
+       )`,
+    );
+    this.sql.exec(
+      `CREATE TABLE IF NOT EXISTS alert_totals (
+         day TEXT PRIMARY KEY,
+         alerts INTEGER NOT NULL
        )`,
     );
     this.sql.exec(
@@ -88,11 +98,30 @@ export class LedgerCore {
     return true;
   }
 
+  /** Charges one push alert to today's relay-wide budget; false once it is spent. */
+  chargeAlert(now: number): boolean {
+    this.roll(now);
+    const alerts =
+      sqlRows<{ readonly alerts: number }>(
+        this.sql,
+        "SELECT alerts FROM alert_totals WHERE day = ?",
+        this.day,
+      )[0]?.alerts ?? 0;
+    if (alerts >= this.limits.dailyAlertBudget) return false;
+    this.sql.exec(
+      `INSERT INTO alert_totals (day, alerts) VALUES (?, 1)
+       ON CONFLICT(day) DO UPDATE SET alerts = alerts + 1`,
+      this.day,
+    );
+    return true;
+  }
+
   private roll(now: number): void {
     const day = utcDay(now);
     if (day === this.day) return;
     this.sql.exec("DELETE FROM totals WHERE day < ?", day);
     this.sql.exec("DELETE FROM registrations WHERE day < ?", day);
+    this.sql.exec("DELETE FROM alert_totals WHERE day < ?", day);
     this.day = day;
     this.messages = 0;
   }

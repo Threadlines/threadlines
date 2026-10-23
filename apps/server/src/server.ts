@@ -145,6 +145,7 @@ import {
   authWebSocketTokenRouteLayer,
 } from "./auth/http.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
+import { PushAlertsLive } from "./pushAlerts/PushAlerts.ts";
 import { RelayHost, RelayHostLive } from "./relay/RelayHost.ts";
 import { RelayDeviceRepositoryLive } from "./relay/RelayDeviceRepository.ts";
 import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
@@ -319,6 +320,10 @@ const ProjectSetupsLayerLive = Layer.mergeAll(ProjectSetupsLive, ProjectSetupSou
 );
 
 const ReactorLayerLive = Layer.empty.pipe(
+  // Phone alerts (docs/design/push-alerts.md) read the event log, threads and
+  // the scheduler's waiting changes from the layers below, and send through
+  // the relay; started with the other reactors.
+  Layer.provideMerge(PushAlertsLive),
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),

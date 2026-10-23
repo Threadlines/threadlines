@@ -394,6 +394,16 @@ export interface WsRpcClient {
     readonly submitJoin: RpcUnaryMethod<typeof WS_METHODS.relaySubmitJoin>;
     readonly directRoutes: RpcUnaryNoArgMethod<typeof WS_METHODS.relayDirectRoutes>;
   };
+  /** Phone alerts (docs/design/push-alerts.md): this phone's registration with the computer. */
+  readonly push: {
+    readonly register: RpcUnaryMethod<typeof WS_METHODS.pushRegister>;
+    readonly unregister: RpcUnaryNoArgMethod<typeof WS_METHODS.pushUnregister>;
+    readonly sendTest: RpcUnaryNoArgMethod<typeof WS_METHODS.pushSendTest>;
+  };
+  /** The thread this connection shows, so the computer keeps it quiet. */
+  readonly presence: {
+    readonly setViewing: RpcUnaryMethod<typeof WS_METHODS.presenceSetViewing>;
+  };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.scheduledTasksSubscribe>;
@@ -1134,6 +1144,15 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       submitJoin: (input) =>
         transport.request((client) => client[WS_METHODS.relaySubmitJoin](input)),
       directRoutes: () => transport.request((client) => client[WS_METHODS.relayDirectRoutes]({})),
+    },
+    push: {
+      register: (input) => transport.request((client) => client[WS_METHODS.pushRegister](input)),
+      unregister: () => transport.request((client) => client[WS_METHODS.pushUnregister]({})),
+      sendTest: () => transport.request((client) => client[WS_METHODS.pushSendTest]({})),
+    },
+    presence: {
+      setViewing: (input) =>
+        transport.request((client) => client[WS_METHODS.presenceSetViewing](input)),
     },
     scheduledTasks: {
       subscribe: (listener, options) =>

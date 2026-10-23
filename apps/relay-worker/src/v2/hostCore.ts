@@ -1,4 +1,6 @@
 import type {
+  PushAlertKinds,
+  RelayAlertKind,
   RelayControlEvent,
   RelayDecisionResult,
   RelayDeviceId,
@@ -52,6 +54,9 @@ export interface HostCoreLimits {
   readonly maxPendingHookBytes: number;
   /** Hook rows per host, retired ones still kept included. */
   readonly maxHooks: number;
+  /** Push alerts sent per UTC day: to all of the host's phones, and to any one of them. */
+  readonly dailyAlerts: number;
+  readonly dailyAlertsPerDevice: number;
 }
 
 export const DEFAULT_HOST_CORE_LIMITS: HostCoreLimits = {
@@ -68,7 +73,12 @@ export const DEFAULT_HOST_CORE_LIMITS: HostCoreLimits = {
   maxPendingHookDeliveries: 500,
   maxPendingHookBytes: 50 * 1024 * 1024,
   maxHooks: 500,
+  dailyAlerts: 2_000,
+  dailyAlertsPerDevice: 300,
 };
+
+/** A sent alert's key is kept this long: longer than any alert lives (an hour). */
+const ALERT_KEY_KEEP_MS = 2 * 60 * 60_000;
 
 /** A retired hook's row stays this long, so deliveries it accepted still find it. */
 export const RETIRED_HOOK_KEEP_MS = 25 * 60 * 60_000;
@@ -150,6 +160,29 @@ interface RequestRow extends Record<string, unknown> {
   readonly state: RelayRequestState;
   readonly created_at: number;
   readonly expires_at: number;
+}
+
+interface DevicePushRow extends Record<string, unknown> {
+  readonly device_id: string;
+  readonly registration_id: string;
+  readonly endpoint: string;
+  readonly key_id: string;
+  readonly kinds: string;
+  readonly updated_at: number;
+}
+
+/** Stored kinds; anything unreadable counts as off. */
+function parseKinds(text: string): PushAlertKinds {
+  try {
+    const value = JSON.parse(text) as Partial<Record<keyof PushAlertKinds, unknown>>;
+    return {
+      needs_you: value.needs_you === true,
+      finished: value.finished === true,
+      failed: value.failed === true,
+    };
+  } catch {
+    return { needs_you: false, finished: false, failed: false };
+  }
 }
 
 interface DeviceRow extends Record<string, unknown> {
@@ -271,6 +304,36 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS hook_usage (
      day TEXT PRIMARY KEY,
      hooks INTEGER NOT NULL
+   )`,
+  // A phone's push subscription, as the phone itself registered it, and the
+  // alerts it wants. The host never sees the endpoint.
+  `CREATE TABLE IF NOT EXISTS device_push (
+     device_id TEXT PRIMARY KEY,
+     registration_id TEXT NOT NULL,
+     endpoint TEXT NOT NULL,
+     key_id TEXT NOT NULL,
+     kinds TEXT NOT NULL,
+     updated_at INTEGER NOT NULL
+   )`,
+  // The newest change each phone made to its push row (a PUT or a DELETE),
+  // kept past a DELETE so an older PUT arriving late can't bring it back.
+  `CREATE TABLE IF NOT EXISTS push_revision (
+     device_id TEXT PRIMARY KEY,
+     revision INTEGER NOT NULL
+   )`,
+  // Alerts the push service took, by their key, so a retry isn't sent twice.
+  `CREATE TABLE IF NOT EXISTS push_sent (
+     device_id TEXT NOT NULL,
+     alert_key TEXT NOT NULL,
+     sent_at INTEGER NOT NULL,
+     PRIMARY KEY (device_id, alert_key)
+   )`,
+  // Alerts sent per UTC day: per device, and the host's total under device ''.
+  `CREATE TABLE IF NOT EXISTS push_usage (
+     day TEXT NOT NULL,
+     device_id TEXT NOT NULL,
+     alerts INTEGER NOT NULL,
+     PRIMARY KEY (day, device_id)
    )`,
 ] as const;
 
@@ -854,6 +917,10 @@ export class HostCore {
         deviceId,
       );
     }
+    // A removed phone gets no more alerts from this host.
+    this.sql.exec("DELETE FROM device_push WHERE device_id = ?", deviceId);
+    this.sql.exec("DELETE FROM push_revision WHERE device_id = ?", deviceId);
+    this.sql.exec("DELETE FROM push_sent WHERE device_id = ?", deviceId);
     return {
       result: { revoked: true },
       effects: [
@@ -975,6 +1042,7 @@ export class HostCore {
     if (day === this.usageDay) return;
     this.sql.exec("DELETE FROM usage WHERE day < ?", day);
     this.sql.exec("DELETE FROM hook_usage WHERE day < ?", day);
+    this.sql.exec("DELETE FROM push_usage WHERE day < ?", day);
     this.usageDay = day;
     const stored = sqlRows<UsageRow>(
       this.sql,
@@ -993,6 +1061,185 @@ export class HostCore {
         "SELECT hooks FROM hook_usage WHERE day = ?",
         day,
       )[0]?.hooks ?? 0
+    );
+  }
+
+  // ----- push alerts ------------------------------------------------------------
+  //
+  // A phone registers its push subscription here itself (device secret), so
+  // the host never learns the endpoint. The host asks to send an alert it
+  // sealed for one registration; the relay sends it only while the phone is
+  // active, the registration is still that one, the phone wants that kind of
+  // alert, and today's allowances hold. Allowances are charged before the
+  // send, so a failed send still counts.
+
+  /** Records the phone's subscription and the alerts it wants (replacing any earlier one). */
+  setDevicePush(input: {
+    readonly deviceId: string;
+    readonly registrationId: string;
+    readonly endpoint: string;
+    readonly keyId: string;
+    readonly kinds: PushAlertKinds;
+    readonly revision: number;
+    readonly now: number;
+  }): boolean {
+    if (this.device(input.deviceId)?.state !== "active") {
+      throw new HostCoreError("forbidden", "This device no longer has access.");
+    }
+    if (!this.takeRevision(input.deviceId, input.revision)) return false;
+    this.sql.exec(
+      `INSERT INTO device_push (device_id, registration_id, endpoint, key_id, kinds, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(device_id) DO UPDATE SET registration_id = excluded.registration_id,
+         endpoint = excluded.endpoint, key_id = excluded.key_id, kinds = excluded.kinds,
+         updated_at = excluded.updated_at`,
+      input.deviceId,
+      input.registrationId,
+      input.endpoint,
+      input.keyId,
+      JSON.stringify(input.kinds),
+      input.now,
+    );
+    return true;
+  }
+
+  /**
+   * The phone turned alerts off: forget its subscription. With a revision,
+   * only if no newer change came first (alerts turned back on meanwhile).
+   */
+  removeDevicePush(deviceId: string, revision: number | null): boolean {
+    if (revision !== null && !this.takeRevision(deviceId, revision)) return false;
+    this.sql.exec("DELETE FROM device_push WHERE device_id = ?", deviceId);
+    return true;
+  }
+
+  /** Records `revision` as the phone's newest change; false when a newer (or the same) one came first. */
+  private takeRevision(deviceId: string, revision: number): boolean {
+    const [current] = sqlRows<{ revision: number }>(
+      this.sql,
+      "SELECT revision FROM push_revision WHERE device_id = ?",
+      deviceId,
+    );
+    if (current !== undefined && current.revision >= revision) return false;
+    this.sql.exec(
+      `INSERT INTO push_revision (device_id, revision) VALUES (?, ?)
+       ON CONFLICT(device_id) DO UPDATE SET revision = excluded.revision`,
+      deviceId,
+      revision,
+    );
+    return true;
+  }
+
+  /**
+   * Whether `registrationId` is still the phone's subscription and it still
+   * wants `kind`, read now and charging nothing. Checked again after any wait,
+   * so a removal, a new subscription or a switch turned off meanwhile wins.
+   */
+  checkAlert(input: {
+    readonly deviceId: string;
+    readonly registrationId: string;
+    readonly kind: RelayAlertKind;
+  }):
+    | { readonly decision: "ok"; readonly endpoint: string; readonly keyId: string }
+    | { readonly decision: "unavailable" | "stale" | "muted" } {
+    if (this.device(input.deviceId)?.state !== "active") return { decision: "unavailable" };
+    const push = sqlRows<DevicePushRow>(
+      this.sql,
+      "SELECT * FROM device_push WHERE device_id = ?",
+      input.deviceId,
+    )[0];
+    if (!push) return { decision: "unavailable" };
+    if (push.registration_id !== input.registrationId) return { decision: "stale" };
+    if (input.kind !== "test" && !parseKinds(push.kinds)[input.kind]) {
+      return { decision: "muted" };
+    }
+    return { decision: "ok", endpoint: push.endpoint, keyId: push.key_id };
+  }
+
+  /**
+   * Whether an alert the host sealed for `registrationId` may go out now, and
+   * where. A `send` answer has already been charged to today's allowances; an
+   * alert already sent under the same `alertKey` is `duplicate` (not charged).
+   */
+  admitAlert(input: {
+    readonly deviceId: string;
+    readonly registrationId: string;
+    readonly kind: RelayAlertKind;
+    readonly alertKey?: string | undefined;
+    readonly now: number;
+  }):
+    | {
+        readonly decision: "send";
+        readonly endpoint: string;
+        readonly keyId: string;
+      }
+    | { readonly decision: "duplicate" | "unavailable" | "stale" | "muted" | "limited" } {
+    const checked = this.checkAlert(input);
+    if (checked.decision !== "ok") return checked;
+    if (
+      input.alertKey !== undefined &&
+      sqlRows(
+        this.sql,
+        "SELECT 1 FROM push_sent WHERE device_id = ? AND alert_key = ?",
+        input.deviceId,
+        input.alertKey,
+      ).length > 0
+    ) {
+      return { decision: "duplicate" };
+    }
+    this.rollUsageDay(input.now);
+    const hostAlerts = this.storedAlertCount("");
+    const deviceAlerts = this.storedAlertCount(input.deviceId);
+    if (hostAlerts >= this.limits.dailyAlerts || deviceAlerts >= this.limits.dailyAlertsPerDevice) {
+      return { decision: "limited" };
+    }
+    for (const [deviceId, alerts] of [
+      ["", hostAlerts + 1],
+      [input.deviceId, deviceAlerts + 1],
+    ] as const) {
+      this.sql.exec(
+        `INSERT INTO push_usage (day, device_id, alerts) VALUES (?, ?, ?)
+         ON CONFLICT(day, device_id) DO UPDATE SET alerts = excluded.alerts`,
+        this.usageDay,
+        deviceId,
+        alerts,
+      );
+    }
+    return { decision: "send", endpoint: checked.endpoint, keyId: checked.keyId };
+  }
+
+  /** The push service took the alert: a retry under the same key is answered without sending. */
+  recordAlertSent(deviceId: string, alertKey: string, now: number): void {
+    this.sql.exec("DELETE FROM push_sent WHERE sent_at < ?", now - ALERT_KEY_KEEP_MS);
+    this.sql.exec(
+      `INSERT INTO push_sent (device_id, alert_key, sent_at) VALUES (?, ?, ?)
+       ON CONFLICT(device_id, alert_key) DO NOTHING`,
+      deviceId,
+      alertKey,
+      now,
+    );
+  }
+
+  /**
+   * The push service said the subscription ended. Forgets it only if it is
+   * still the one the alert was sent to: the phone may have re-subscribed.
+   */
+  forgetDevicePush(deviceId: string, registrationId: string): void {
+    this.sql.exec(
+      "DELETE FROM device_push WHERE device_id = ? AND registration_id = ?",
+      deviceId,
+      registrationId,
+    );
+  }
+
+  private storedAlertCount(deviceId: string): number {
+    return (
+      sqlRows<{ readonly alerts: number }>(
+        this.sql,
+        "SELECT alerts FROM push_usage WHERE day = ? AND device_id = ?",
+        this.usageDay,
+        deviceId,
+      )[0]?.alerts ?? 0
     );
   }
 

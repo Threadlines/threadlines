@@ -40,6 +40,7 @@ import {
 import { isElectron } from "../../env";
 import { useDesktopUpdateAction } from "../../hooks/useDesktopUpdateAction";
 import { useTheme } from "../../hooks/useTheme";
+import { PushAlertsSettingsSection } from "../../pushAlerts/PushAlertsSettings";
 import { updateSettingsAndPersist, useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { readEnvironmentApi } from "../../environmentApi";
@@ -940,6 +941,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
   return (
     <SettingsPageContainer>
       <SettingsPageHeader section="/settings/general" />
+      <PushAlertsSettingsSection />
       <SettingsSection title="Appearance">
         <SettingsRow
           title="Theme"

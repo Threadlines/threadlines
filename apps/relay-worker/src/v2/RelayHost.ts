@@ -2,6 +2,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type {
   RelayControlEvent,
+  RelayDeviceAlertOutcome,
   RelayDeviceStatusResult,
   RelayHookMintResult,
   RelayHookStatusResult,
@@ -33,7 +34,7 @@ import { log, loggedPath } from "../log.ts";
 import { createJsonResponse, parseBearerToken, parseRelayTokenProtocol } from "../protocol.ts";
 import { RELAY_WEBSOCKET_PROTOCOL } from "../protocol.ts";
 import { codeShardName } from "./codeShardCore.ts";
-import { hostLimitsFromEnv, publicRelayOrigin, type RelayV2Env } from "./env.ts";
+import { hostLimitsFromEnv, isPushEnabled, publicRelayOrigin, type RelayV2Env } from "./env.ts";
 import {
   type HookDeliveryInput,
   type HookDeliveryOutcome,
@@ -56,6 +57,18 @@ import {
 } from "./hostCore.ts";
 import { RELAY_LEDGER_NAME } from "./RelayLedger.ts";
 import { base64UrlField, hostErrorStatus, joinErrorStatus, parseJoinBody } from "./http.ts";
+import {
+  checkPushEndpoint,
+  classifyPushResponse,
+  loadVapidKeyring,
+  makeVapidAuthorizer,
+  MAX_PUSH_REQUEST_BYTES,
+  parseDeviceAlertBody,
+  parseDevicePushBody,
+  parseDevicePushRemoveBody,
+  pushRequestInit,
+  readCappedJson,
+} from "./webPush.ts";
 
 /** A host that has not sent a lease frame for this long counts as offline (it leases every 60 s). */
 const HOST_LEASE_MS = 150_000;
@@ -126,6 +139,11 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   private ledgerBusy = false;
   private ledgerCheckedAt = 0;
   private ledgerRefreshing = false;
+  /** Alerts this object is sending right now; more than a few waits for the next try. */
+  private alertsInFlight = 0;
+  /** `deviceId alertKey` of each alert being sent now: a second copy waits for the first. */
+  private readonly alertKeysInFlight = new Set<string>();
+  private readonly authorizeVapid = makeVapidAuthorizer();
 
   constructor(ctx: DurableObjectState, env: RelayV2Env) {
     super(ctx, env);
@@ -230,6 +248,10 @@ export class RelayHost extends DurableObject<RelayV2Env> {
         if (action === "status" && method === "GET")
           return await this.handleDeviceStatus(request, id);
         if (action === "revoke" && method === "POST") return await this.handleRevoke(request, id);
+        if (action === "push" && (method === "PUT" || method === "DELETE")) {
+          return await this.handleDevicePush(request, id);
+        }
+        if (action === "alert" && method === "POST") return await this.handleAlert(request, id);
       }
       if (section === "pipes" && id && rest.length === 2) {
         return await this.handlePipe(request, id);
@@ -594,6 +616,122 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     const outcome = this.core.revokeDevice(deviceId, Date.now());
     await this.applyEffects(outcome.effects);
     return json(outcome.result);
+  }
+
+  /**
+   * `PUT|DELETE /v2/hosts/{h}/devices/{d}/push`, with the device's own secret:
+   * the phone's push subscription and the alerts it wants. The host never
+   * sees this endpoint, so it can't move it anywhere else.
+   */
+  private async handleDevicePush(request: Request, deviceId: string): Promise<Response> {
+    const state = await this.deviceState(request, deviceId, false);
+    if (state === null) return json({ error: "Unknown device." }, 401);
+    if (request.method === "DELETE") {
+      const revision = parseDevicePushRemoveBody(
+        await readCappedJson(request, MAX_PUSH_REQUEST_BYTES).catch(() => null),
+      );
+      return json({ removed: this.core.removeDevicePush(deviceId, revision) });
+    }
+    if (state !== "active") return json({ error: "This device no longer has access." }, 403);
+    const keyring = isPushEnabled(this.env)
+      ? await loadVapidKeyring(this.env.PUSH_VAPID_KEYS)
+      : null;
+    if (!keyring) return json({ error: "This relay doesn't send alerts." }, 503);
+    const body = parseDevicePushBody(await readCappedJson(request, MAX_PUSH_REQUEST_BYTES));
+    if (!body) return json({ error: "Missing or invalid push fields." }, 400);
+    if (!keyring.byKeyId.has(body.keyId)) {
+      return json({ error: "That isn't a key this relay signs alerts with." }, 400);
+    }
+    this.core.setDevicePush({
+      deviceId,
+      registrationId: body.registrationId,
+      endpoint: body.endpoint.href,
+      keyId: body.keyId,
+      kinds: body.kinds,
+      revision: body.revision,
+      now: Date.now(),
+    });
+    // An older change than one already taken is ignored, not an error.
+    return json({ registered: true });
+  }
+
+  /**
+   * `POST /v2/hosts/{h}/devices/{d}/alert`, with the host's secret: one alert
+   * the host sealed for the phone. Sent only if the phone still wants it
+   * (see HostCore.admitAlert) and the relay-wide budget holds; both are
+   * charged before the send.
+   */
+  private async handleAlert(request: Request, deviceId: string): Promise<Response> {
+    if (!(await this.requireHostSecret(request))) return badHostSecret();
+    const body = parseDeviceAlertBody(await readCappedJson(request, MAX_PUSH_REQUEST_BYTES));
+    if (!body) return json({ error: "Missing or invalid alert fields." }, 400);
+    const keyring = isPushEnabled(this.env)
+      ? await loadVapidKeyring(this.env.PUSH_VAPID_KEYS)
+      : null;
+    if (!keyring) return alertResult("unavailable");
+    if (this.alertsInFlight >= MAX_ALERTS_IN_FLIGHT) return alertResult("retry", 5);
+    const keyInFlight = body.alertKey ? `${deviceId} ${body.alertKey}` : null;
+    if (keyInFlight !== null && this.alertKeysInFlight.has(keyInFlight)) {
+      return alertResult("retry", 5);
+    }
+    // Taken before any wait, so requests arriving together can't all pass the checks.
+    this.alertsInFlight += 1;
+    if (keyInFlight !== null) this.alertKeysInFlight.add(keyInFlight);
+    try {
+      const check = { deviceId, registrationId: body.registrationId, kind: body.kind };
+      const admitted = this.core.admitAlert({
+        ...check,
+        alertKey: body.alertKey,
+        now: Date.now(),
+      });
+      // Sent before, its answer lost on the way back: say so again, don't send it twice.
+      if (admitted.decision === "duplicate") return alertResult("sent");
+      if (admitted.decision !== "send") return alertResult(admitted.decision);
+      const key = keyring.byKeyId.get(admitted.keyId);
+      const endpoint = checkPushEndpoint(admitted.endpoint);
+      if (!key || !endpoint) return alertResult("unavailable");
+      if (!(await this.env.RELAY_LEDGER.getByName(RELAY_LEDGER_NAME).chargeAlert())) {
+        return alertResult("limited");
+      }
+      const authorization = await this.authorizeVapid(key, endpoint, Date.now());
+      // Checked again after those waits, with none left before the send: a
+      // removal, a new subscription or a switch turned off meanwhile wins,
+      // since nothing has gone out yet.
+      const recheck = this.core.checkAlert(check);
+      if (recheck.decision !== "ok") return alertResult(recheck.decision);
+      // A send whose answer never comes (a timeout, a dropped connection)
+      // is retried, so the phone may show it twice. That beats losing it:
+      // most such failures never reached the push service at all.
+      const response = await fetch(endpoint, {
+        ...pushRequestInit(body.message, authorization),
+        // A push service answers; it never redirects. Following one would send
+        // the alert, and its signed token, to an address nobody checked.
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      });
+      const outcome = classifyPushResponse(response.status);
+      // Recorded first: the push service took it, whatever the clean-up does.
+      if (outcome === "sent" && body.alertKey) {
+        this.core.recordAlertSent(deviceId, body.alertKey, Date.now());
+      }
+      await response.body?.cancel().catch(() => undefined);
+      if (outcome === "gone") this.core.forgetDevicePush(deviceId, body.registrationId);
+      if (outcome !== "sent") {
+        log("info", "push alert not delivered", { status: response.status, outcome });
+      }
+      return alertResult(
+        outcome,
+        outcome === "retry" ? retryAfterSeconds(response.headers.get("Retry-After")) : undefined,
+      );
+    } catch (error) {
+      log("warn", "push alert send failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return alertResult("retry");
+    } finally {
+      this.alertsInFlight -= 1;
+      if (keyInFlight !== null) this.alertKeysInFlight.delete(keyInFlight);
+    }
   }
 
   private async deviceState(
@@ -1257,6 +1395,18 @@ function upgradeResponse(client: WebSocket, request: Request): Response {
 
 function json(body: unknown, status = 200): Response {
   return createJsonResponse(body, { status });
+}
+
+const MAX_ALERTS_IN_FLIGHT = 4;
+
+function alertResult(outcome: RelayDeviceAlertOutcome, retryAfter?: number): Response {
+  return json(retryAfter === undefined ? { outcome } : { outcome, retryAfterSeconds: retryAfter });
+}
+
+/** A push service's `Retry-After` in seconds (delta form only), capped at an hour. */
+function retryAfterSeconds(header: string | null): number | undefined {
+  const seconds = header === null ? Number.NaN : Number(header.trim());
+  return Number.isInteger(seconds) && seconds >= 0 ? Math.min(seconds, 60 * 60) : undefined;
 }
 
 async function readJson(request: Request): Promise<unknown> {

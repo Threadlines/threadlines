@@ -30,6 +30,7 @@ import { OrchestrationEngineService } from "./orchestration/Services/Orchestrati
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
 import { ComputerLinkReactors } from "./links/ComputerLinkReactors.ts";
+import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
 import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
 import { PullRequestAutomationWatcher } from "./orchestration/Services/PullRequestAutomationWatcher.ts";
@@ -337,6 +338,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const computerLinkReactors = yield* Effect.serviceOption(ComputerLinkReactors);
   // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
   const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
+  const pushAlerts = yield* Effect.serviceOption(PushAlerts);
   const providerSessionReaper = yield* ProviderSessionReaper;
   const threadAutoArchiveSweeper = yield* ThreadAutoArchiveSweeper;
   const pullRequestAutomationWatcher = yield* PullRequestAutomationWatcher;
@@ -405,6 +407,10 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         // process left, so a run whose turn a restart cut off reads as such.
         if (Option.isSome(scheduledTasks)) {
           yield* scheduledTasks.value.start().pipe(Scope.provide(reactorScope));
+        }
+        // After the scheduler, whose waiting changes it watches.
+        if (Option.isSome(pushAlerts)) {
+          yield* pushAlerts.value.start().pipe(Scope.provide(reactorScope));
         }
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
         yield* threadAutoArchiveSweeper.start().pipe(Scope.provide(reactorScope));
