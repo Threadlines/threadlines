@@ -61,6 +61,7 @@ import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import {
   DEFAULT_RELAY_URL,
+  isTransientRelayError,
   RelayApiError,
   relayApi,
   relayOriginFrom,
@@ -75,8 +76,8 @@ import {
   type RelayPairingRow,
 } from "./RelayDeviceRepository.ts";
 import { computeDirectOrigins, computeDirectRoutes } from "./directRoutes.ts";
-import { RelayHooks, RelayHooksError } from "./RelayHooks.ts";
-import { makeRelayHooks, type RelayHooksClient } from "./RelayHooksLive.ts";
+import { RelayHooks } from "./RelayHooks.ts";
+import { makeRelayHooks, RelayHookRegisterError, type RelayHooksClient } from "./RelayHooksLive.ts";
 import { RelayHookStateRepositoryLive } from "./RelayHookStateRepository.ts";
 import { openLoopbackSocket, openRelayPipeSocket } from "./relayPipe.ts";
 import { openSecurePipe, type SecureDuplex, type SecurePipeHandle } from "./securePipe.ts";
@@ -402,8 +403,9 @@ const make = Effect.gen(function* () {
     register: Effect.suspend(() => ensureRegistered).pipe(
       Effect.mapError(
         (error) =>
-          new RelayHooksError({
+          new RelayHookRegisterError({
             detail: toAccessError(error, "Couldn't register this computer with the relay.").detail,
+            transient: error instanceof RelayApiError && isTransientRelayError(error),
           }),
       ),
     ),

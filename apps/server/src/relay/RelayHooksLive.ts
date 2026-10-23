@@ -13,19 +13,27 @@
  *   `syncedRevision === revision`. Otherwise the state is sent again after
  *   every change and on every reconnect, and the control socket stays open
  *   until it is applied.
+ * - A revision is sent only once the state carrying it is stored, and is
+ *   recorded as synced only in a stored state. A state that couldn't be
+ *   stored stays dirty in memory and its save is retried before anything
+ *   else is sent.
  * - When the relay answers that it no longer knows this computer, the stored
  *   credentials are dropped, the computer registers again, and `host-changed`
  *   tells the pipeline to mint every hook again.
+ * - A mint that failed for a passing reason keeps the relay link trying to
+ *   connect; `reachable` then tells the pipeline to try again.
  */
 import {
   RELAY_ERROR_HOOKS_OFF,
   RELAY_ERROR_STALE_REVISION,
+  RELAY_HOOK_HOLD_MS,
   type RelayControlMessage,
   type RelayHookDelivery,
   type RelayHookDeliveryId,
 } from "@threadlines/contracts";
 import { hookDeliveryAad, openHookDelivery } from "@threadlines/shared/relayHookSeal";
 import type { StoredKeyPair } from "@threadlines/shared/relaySecure";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
@@ -36,7 +44,12 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
-import { isRelayHostGone, type RelayApiError, relayApi } from "./relayApi.ts";
+import {
+  isRelayHostGone,
+  isTransientRelayError,
+  type RelayApiError,
+  relayApi,
+} from "./relayApi.ts";
 import {
   type RelayHookOpened,
   RelayHooks,
@@ -62,6 +75,8 @@ const RECOVERY_INTERVAL_MS = 10 * 60_000;
 const SYNC_RETRY_MS = 60_000;
 /** A call that lost to a newer revision is retried this many times with a fresh one. */
 const STALE_RETRIES = 2;
+/** A large delivery whose fetch failed is fetched again after these waits, the last repeating. */
+const FETCH_RETRY_DELAYS_MS = [2_000, 10_000, 60_000, 5 * 60_000] as const;
 
 export interface RelayHookCredentials {
   readonly hostId: string;
@@ -79,6 +94,12 @@ export type RelayHookFrame =
       readonly size: number;
     };
 
+/** Registering failed; `transient` when trying again later may work (network, relay busy or down). */
+export class RelayHookRegisterError extends Data.TaggedError("RelayHookRegisterError")<{
+  readonly detail: string;
+  readonly transient: boolean;
+}> {}
+
 /** What the hook client needs from RelayHost. */
 export interface RelayHookLink {
   /** The relay's origin; null when the configured relay address isn't valid. */
@@ -86,7 +107,7 @@ export interface RelayHookLink {
   /** This computer's stored relay credentials, or null while it isn't registered. */
   readonly credentials: Effect.Effect<RelayHookCredentials | null>;
   /** Registers this computer if it isn't yet (one registration at a time). */
-  readonly register: Effect.Effect<RelayHookCredentials, RelayHooksError>;
+  readonly register: Effect.Effect<RelayHookCredentials, RelayHookRegisterError>;
   /** Drops the stored credentials, if they are still `hostId`'s. */
   readonly forgetHost: (hostId: string) => Effect.Effect<void>;
   /** Sends a control frame now; false when the control socket isn't open. */
@@ -152,9 +173,19 @@ export const makeRelayHooks = (
     );
     let hookKeyCache: StoredKeyPair | null = null;
     let lastRecoveryAt = 0;
+    /** `state` differs from what storage holds: its last save failed. */
+    let unsaved = false;
+    /** A mint failed for a passing reason; the link keeps trying until it connects. */
+    let mintWanted = false;
 
     const changes = yield* PubSub.unbounded<RelayHooksChange>({ replay: 1 });
-    const inbound = yield* Queue.unbounded<RelayHookFrame>();
+    const inbound = yield* Queue.unbounded<{
+      readonly frame: RelayHookFrame;
+      /** How many times this delivery's fetch already failed. */
+      readonly attempt: number;
+    }>();
+    /** Large deliveries waiting to be fetched again, by delivery id. */
+    const fetchRetries = new Map<string, ReturnType<typeof setTimeout>>();
     const opened = yield* Queue.unbounded<RelayHookOpened>();
     /** Deliveries in `opened` not yet taken by the consumer; a replay of one is skipped. */
     const queued = new Set<string>();
@@ -165,13 +196,22 @@ export const makeRelayHooks = (
 
     const nowIso = () => DateTime.formatIso(DateTime.nowUnsafe());
 
-    /** Stores the state; a storage failure is logged and the state kept in memory. */
+    /**
+     * Stores the state; true once it is stored. A failed save still takes the
+     * state in memory but leaves it unsaved, which counts as dirty: it is
+     * saved again on the sync timer before anything is sent.
+     */
     const save = (next: RelayHookState) =>
       repo.save(next, nowIso()).pipe(
-        Effect.catchCause((cause) => Effect.logWarning("relay.hooks.state-save-failed", { cause })),
-        Effect.andThen(
+        Effect.as(true),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("relay.hooks.state-save-failed", { cause }).pipe(Effect.as(false)),
+        ),
+        Effect.tap((saved) =>
           Effect.sync(() => {
             state = next;
+            unsaved = !saved;
+            if (!saved) scheduleSyncRetry(true);
           }),
         ),
       );
@@ -198,7 +238,8 @@ export const makeRelayHooks = (
       );
 
     const wantsRelay = Effect.sync(
-      () => state.active.length > 0 || state.syncedRevision < state.revision,
+      () =>
+        state.active.length > 0 || state.syncedRevision < state.revision || unsaved || mintWanted,
     );
 
     // ----- relay identity ---------------------------------------------------------
@@ -231,7 +272,9 @@ export const makeRelayHooks = (
         lastRecoveryAt = Date.now();
         yield* Effect.logWarning("relay.hooks.host-gone", { hostId: gone.hostId });
         yield* link.forgetHost(gone.hostId);
-        const fresh = yield* link.register;
+        const fresh = yield* link.register.pipe(
+          Effect.mapError((error) => new RelayHooksError({ detail: error.detail })),
+        );
         yield* resetForHostLocked(fresh.hostId);
         link.wake();
         return fresh;
@@ -241,6 +284,7 @@ export const makeRelayHooks = (
 
     /** Sends the wanted state if the relay may not hold it. Lock held. */
     const syncLocked = Effect.gen(function* () {
+      if (unsaved && !(yield* save(state))) return;
       const origin = link.relayOrigin;
       const creds = yield* link.credentials;
       if (!origin || !creds) return;
@@ -250,7 +294,8 @@ export const makeRelayHooks = (
       if (state.syncedRevision >= state.revision && !keyChanged) return;
       for (let attempt = 0; attempt <= STALE_RETRIES; attempt += 1) {
         const revision = state.revision + 1;
-        yield* save({ ...state, revision });
+        // Never send a revision this computer might not remember.
+        if (!(yield* save({ ...state, revision }))) return;
         const sent = yield* relayApi
           .setHooks(origin, creds.hostId, creds.hostSecret, {
             revision,
@@ -270,9 +315,7 @@ export const makeRelayHooks = (
             return;
           }
           yield* Effect.logInfo("relay.hooks.sync-failed", { detail: error.detail });
-          if (error.status === null || error.status === 429 || error.status >= 500) {
-            scheduleSyncRetry();
-          }
+          if (isTransientRelayError(error)) scheduleSyncRetry();
           return;
         }
         if (sent.success.applied) {
@@ -287,9 +330,23 @@ export const makeRelayHooks = (
 
     const sync = lock.withPermits(1)(syncLocked);
 
-    /** Reconnects send the state again anyway; this covers a call that failed while connected. */
-    function scheduleSyncRetry(): void {
-      if (syncRetryTimer || !link.isConnected()) return;
+    /**
+     * A mint failed for a passing reason: keep the link trying (`reachable`
+     * follows once it connects), and if it is up, send the state again soon
+     * so a mint that went through unanswered is retired.
+     */
+    function wantMint(): void {
+      mintWanted = true;
+      link.wake();
+      scheduleSyncRetry();
+    }
+
+    /**
+     * Reconnects send the state again anyway; this covers a call that failed
+     * while connected, and (`always`) a state that couldn't be stored.
+     */
+    function scheduleSyncRetry(always = false): void {
+      if (syncRetryTimer || (!always && !link.isConnected())) return;
       syncRetryTimer = setTimeout(() => {
         syncRetryTimer = null;
         runFork(sync);
@@ -303,14 +360,23 @@ export const makeRelayHooks = (
           if (!origin) {
             return yield* new RelayHooksError({ detail: "The relay address isn't valid." });
           }
-          let creds = yield* link.register;
+          let creds = yield* link.register.pipe(
+            Effect.catch((error) => {
+              if (error.transient) wantMint();
+              return Effect.fail(new RelayHooksError({ detail: error.detail }));
+            }),
+          );
           yield* noticeHostLocked(creds);
           const key = yield* hookKey;
           const keptHeaders = [...input.keptHeaders];
           for (let attempt = 0; attempt <= STALE_RETRIES; attempt += 1) {
             const wasSynced = state.syncedRevision === state.revision;
             const revision = state.revision + 1;
-            yield* save({ ...state, revision });
+            if (!(yield* save({ ...state, revision }))) {
+              return yield* new RelayHooksError({
+                detail: "This computer couldn't store its event addresses.",
+              });
+            }
             const minted = yield* relayApi
               .mintHook(origin, creds.hostId, creds.hostSecret, {
                 revision,
@@ -341,10 +407,21 @@ export const makeRelayHooks = (
             if (error.code === RELAY_ERROR_STALE_REVISION) {
               const status = yield* relayApi
                 .hookStatus(origin, creds.hostId, creds.hostSecret)
-                .pipe(Effect.mapError(hooksErrorFrom));
+                .pipe(
+                  Effect.tapError((statusError) =>
+                    Effect.sync(() => {
+                      if (isTransientRelayError(statusError)) wantMint();
+                    }),
+                  ),
+                  Effect.mapError(hooksErrorFrom),
+                );
               yield* save({ ...state, revision: Math.max(state.revision, status.revision) });
               continue;
             }
+            // A passing failure (and a mint whose answer was lost, which
+            // left an unsynced revision whose PUT retires any orphan) keeps
+            // the link trying; `reachable` follows once it connects.
+            if (isTransientRelayError(error)) wantMint();
             return yield* hooksErrorFrom(error);
           }
           return yield* new RelayHooksError({ detail: "The relay kept refusing the new address." });
@@ -404,27 +481,64 @@ export const makeRelayHooks = (
         scheduleAckFlush(lastAckAt + ACK_INTERVAL_MS - Date.now());
       });
 
+    function clearFetchRetry(deliveryId: string): void {
+      const timer = fetchRetries.get(deliveryId);
+      if (timer) clearTimeout(timer);
+      fetchRetries.delete(deliveryId);
+    }
+
+    /**
+     * Fetches the announced delivery again after a wait (2 s, 10 s, a minute,
+     * then every 5 minutes) until it comes, is gone, or its day at the relay
+     * is over. A reconnect's replay announces it again and takes over.
+     */
+    function scheduleFetchRetry(
+      frame: Extract<RelayHookFrame, { type: "hook.pending" }>,
+      attempt: number,
+    ): boolean {
+      if (Date.parse(frame.receivedAt) + RELAY_HOOK_HOLD_MS <= Date.now()) return false;
+      clearFetchRetry(frame.deliveryId);
+      const delay = FETCH_RETRY_DELAYS_MS[Math.min(attempt, FETCH_RETRY_DELAYS_MS.length - 1)]!;
+      fetchRetries.set(
+        frame.deliveryId,
+        setTimeout(() => {
+          fetchRetries.delete(frame.deliveryId);
+          Queue.offerUnsafe(inbound, { frame, attempt: attempt + 1 });
+        }, delay),
+      );
+      return true;
+    }
+
     /** Fetches a delivery announced as too large for the socket; null when it can't be had now. */
     const fetchPending = (
       frame: Extract<RelayHookFrame, { type: "hook.pending" }>,
+      attempt: number,
       origin: string,
       creds: RelayHookCredentials,
     ) =>
       relayApi.hookDelivery(origin, creds.hostId, creds.hostSecret, frame.deliveryId).pipe(
-        Effect.catch((error) =>
-          // Gone (acked or expired) needs nothing; anything else comes again on reconnect.
-          (error.status === 404 && !isRelayHostGone(error)
-            ? Effect.void
-            : Effect.logInfo("relay.hooks.fetch-failed", {
-                deliveryId: frame.deliveryId,
-                detail: error.detail,
-              })
-          ).pipe(Effect.as(null)),
-        ),
+        Effect.tap(() => Effect.sync(() => clearFetchRetry(frame.deliveryId))),
+        Effect.catch((error) => {
+          // Gone (acked or expired) needs nothing, and a forgotten host took
+          // its deliveries with it; anything else is fetched again.
+          if (error.status === 404 || isRelayHostGone(error)) return Effect.succeed(null);
+          const retrying = scheduleFetchRetry(frame, attempt);
+          return Effect.logInfo("relay.hooks.fetch-failed", {
+            deliveryId: frame.deliveryId,
+            detail: error.detail,
+            retrying,
+          }).pipe(Effect.as(null));
+        }),
       );
 
     /** Opens one frame's delivery and queues it for the pipeline; one that can't be opened is acked. */
-    const handleFrame = (frame: RelayHookFrame) =>
+    const handleFrame = ({
+      frame,
+      attempt,
+    }: {
+      readonly frame: RelayHookFrame;
+      readonly attempt: number;
+    }) =>
       Effect.gen(function* () {
         const origin = link.relayOrigin;
         const creds = yield* link.credentials;
@@ -435,7 +549,7 @@ export const makeRelayHooks = (
         const delivery =
           frame.type === "hook.delivery"
             ? frame.delivery
-            : yield* fetchPending(frame, origin, creds);
+            : yield* fetchPending(frame, attempt, origin, creds);
         if (!delivery) return;
         const key = yield* hookKey;
         const payload =
@@ -474,6 +588,8 @@ export const makeRelayHooks = (
       Effect.sync(() => {
         if (ackTimer) clearTimeout(ackTimer);
         if (syncRetryTimer) clearTimeout(syncRetryTimer);
+        for (const timer of fetchRetries.values()) clearTimeout(timer);
+        fetchRetries.clear();
         ackTimer = null;
         syncRetryTimer = null;
       }),
@@ -509,6 +625,7 @@ export const makeRelayHooks = (
         // Acks held while disconnected go out now (still at most one a second).
         if (ackTimer) clearTimeout(ackTimer);
         flushAcks();
+        mintWanted = false;
         yield* PubSub.publish(changes, { kind: "reachable" });
       }),
       refused: (creds) =>
@@ -531,7 +648,9 @@ export const makeRelayHooks = (
           ),
         ),
       receive: (frame) => {
-        Queue.offerUnsafe(inbound, frame);
+        // A replayed announcement takes over from a pending fetch retry.
+        if (frame.type === "hook.pending") clearFetchRetry(frame.deliveryId);
+        Queue.offerUnsafe(inbound, { frame, attempt: 0 });
       },
     } satisfies RelayHooksClient;
   });

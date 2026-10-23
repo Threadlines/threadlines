@@ -36,14 +36,16 @@ export async function routeHook(request: Request, env: RelayV2Env): Promise<Resp
   }
 
   const ip = request.headers.get("CF-Connecting-IP")?.trim() || "unknown";
-  if (!(await allow(env.HOOK_IP_RATE_LIMITER, `ip:${ip}`))) return tooMany(60);
+  const byIp = await limit(env.HOOK_IP_RATE_LIMITER, `ip:${ip}`);
+  if (byIp !== "allowed") return byIp;
 
   const url = new URL(request.url);
   const path = parseHookPath(url.pathname);
   const key = env.HOOK_PATH_KEY?.trim();
   if (!path || !key || !(await verifyHookMac(key, path))) return hookNotFound();
 
-  if (!(await allow(env.HOOK_RATE_LIMITER, `${path.hostId}|${path.hookId}`))) return tooMany(60);
+  const byHook = await limit(env.HOOK_RATE_LIMITER, `${path.hostId}|${path.hookId}`);
+  if (byHook !== "allowed") return byHook;
 
   const length = request.headers.get("Content-Length")?.trim() ?? "";
   if (!/^\d{1,10}$/u.test(length)) {
@@ -91,12 +93,19 @@ function hookDeliveryResponse(outcome: HookDeliveryOutcome): Response {
   }
 }
 
-/** A limiter that fails lets the request through: its outage shouldn't drop events. */
-async function allow(limiter: RateLimit, key: string): Promise<boolean> {
+/**
+ * "allowed", or the refusal to send. A limiter that fails refuses too: this
+ * route is open to anyone with one address, and without its limits they
+ * could spend the shared daily allowance on Durable Object calls.
+ */
+async function limit(limiter: RateLimit, key: string): Promise<"allowed" | Response> {
   try {
-    return (await limiter.limit({ key })).success;
+    return (await limiter.limit({ key })).success ? "allowed" : tooMany(60);
   } catch {
-    return true;
+    return createJsonResponse(
+      { error: "The relay can't take events right now." },
+      { status: 503, headers: { "Retry-After": "60" } },
+    );
   }
 }
 

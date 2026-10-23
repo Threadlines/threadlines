@@ -69,6 +69,10 @@ function makeFakeRelay(knownHosts: ReadonlyArray<string>) {
     /** Every hook call's revision, in arrival order, failed ones included. */
     revisions: [] as number[],
     failPuts: false,
+    /** Registrations answer 503 while set. */
+    failRegister: false,
+    /** This many delivery fetches answer 503 before they work. */
+    failFetches: 0,
     fetchable: new Map<string, unknown>(),
     acked: [] as string[],
     write: null as
@@ -101,6 +105,9 @@ function makeFakeRelay(knownHosts: ReadonlyArray<string>) {
         "POST",
         "/v2/hosts",
         Effect.sync(() => {
+          if (state.failRegister) {
+            return HttpServerResponse.jsonUnsafe({ error: "Down." }, { status: 503 });
+          }
           const hostId = crypto.randomUUID();
           state.hosts.set(hostId, { revision: 0, publicKey: null, hooks: new Map() });
           state.registered.push(hostId);
@@ -206,6 +213,10 @@ function makeFakeRelay(knownHosts: ReadonlyArray<string>) {
         "/v2/hosts/:hostId/hooks/deliveries/:deliveryId",
         Effect.gen(function* () {
           const params = yield* HttpRouter.params;
+          if (state.failFetches > 0) {
+            state.failFetches -= 1;
+            return HttpServerResponse.jsonUnsafe({ error: "Down." }, { status: 503 });
+          }
           const delivery = state.fetchable.get(params.deliveryId!);
           return delivery
             ? HttpServerResponse.jsonUnsafe(delivery)
@@ -244,7 +255,7 @@ const waitFor = (label: string, check: () => boolean) =>
  * A relay host over in-memory storage, pointed at a fake relay. `prepare`
  * runs against the storage first (a previous process's leftovers).
  */
-const startHost = <E>(
+const startHost = <E = never>(
   knownHosts: ReadonlyArray<string>,
   prepare: (stored: Context.Context<never>, relayOrigin: string) => Effect.Effect<void, E> = () =>
     Effect.void,
@@ -453,6 +464,73 @@ it.layer(NodeServices.layer)("RelayHost", (it) => {
       yield* hooks.ack(received.map((opened) => opened.deliveryId));
       yield* waitFor("the acks", () => fake.acked.length === 3);
       assert.deepEqual([...fake.acked].sort(), ["broken", "large", "small"]);
+    }),
+  );
+
+  it.effect("fetches a large delivery again after a failed fetch, without a reconnect", () =>
+    Effect.gen(function* () {
+      const { fake, relayHost, hooks } = yield* startHost([HOST_ID], registeredAs(HOST_ID));
+      yield* relayHost.start("http://127.0.0.1:1");
+      const minted = yield* hooks.mint({ keptHeaders: [] });
+      yield* waitFor("the control socket", () => fake.write !== null);
+      const envelope = yield* Effect.promise(() =>
+        sealHookDelivery({
+          publicKey: fake.hosts.get(HOST_ID)!.publicKey!,
+          aad: hookDeliveryAad(HOST_ID, minted.hookId, "large"),
+          payload: { method: "POST", query: "", headers: {}, body: utf8("late"), receivedAt: AT },
+        }),
+      );
+      fake.fetchable.set("large", {
+        deliveryId: "large",
+        hookId: minted.hookId,
+        receivedAt: AT,
+        sealed: envelope,
+      });
+      fake.failFetches = 1;
+      const announcedAt = new Date().toISOString();
+      yield* fake.write!(
+        JSON.stringify({
+          type: "hook.pending",
+          deliveryId: "large",
+          hookId: minted.hookId,
+          receivedAt: announcedAt,
+          size: envelope.length,
+        }),
+      );
+
+      const received = yield* hooks.deliveries.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        withinWallClock(6_000),
+      );
+      assert.equal(fromUtf8(received[0]!.payload.body), "late");
+      assert.equal(fake.failFetches, 0);
+      assert.equal(fake.controls.length, 1);
+    }),
+  );
+
+  it.effect("keeps trying after a mint the relay couldn't take, and says when it can", () =>
+    Effect.gen(function* () {
+      const { fake, relayHost, hooks } = yield* startHost([]);
+      yield* relayHost.start("http://127.0.0.1:1");
+      fake.failRegister = true;
+      const failed = yield* hooks.mint({ keptHeaders: [] }).pipe(Effect.flip);
+      assert.equal(failed._tag, "RelayHooksError");
+      assert.deepEqual(fake.controls, []);
+
+      // The first hook has no other reason to connect; the failed mint keeps
+      // the link trying, and `reachable` tells the pipeline to mint again.
+      fake.failRegister = false;
+      const change = yield* hooks.changes.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        withinWallClock(8_000),
+      );
+      assert.deepEqual(change, [{ kind: "reachable" }]);
+      assert.equal(fake.registered.length, 1);
+      assert.deepEqual(fake.controls, fake.registered);
+      const minted = yield* hooks.mint({ keptHeaders: [] });
+      assert.equal(minted.hostId, fake.registered[0]);
     }),
   );
 

@@ -24,13 +24,20 @@ const HOOK_ID = "AAAAAAAAAAAAAAAAAAAAAA";
 const PATH_KEY = "test-hook-path-key";
 
 /** The worker's env with every limiter allowing, and a host namespace that records each delivery. */
-function edgeEnv(options: { readonly ipAllowed?: boolean } = {}) {
+type LimiterAnswer = "allow" | "refuse" | "fail";
+
+function edgeEnv(options: { readonly byIp?: LimiterAnswer; readonly byHook?: LimiterAnswer } = {}) {
   const reached: HookDeliveryInput[] = [];
-  const allow = (success: boolean) => ({ limit: async () => ({ success }) });
+  const limiter = (answer: LimiterAnswer = "allow") => ({
+    limit: async () => {
+      if (answer === "fail") throw new Error("Rate limiter unavailable.");
+      return { success: answer === "allow" };
+    },
+  });
   const env = {
     HOOK_PATH_KEY: PATH_KEY,
-    HOOK_IP_RATE_LIMITER: allow(options.ipAllowed ?? true),
-    HOOK_RATE_LIMITER: allow(true),
+    HOOK_IP_RATE_LIMITER: limiter(options.byIp),
+    HOOK_RATE_LIMITER: limiter(options.byHook),
     RELAY_HOST: {
       getByName: () => ({
         deliverHook: async (input: HookDeliveryInput) => {
@@ -74,7 +81,7 @@ describe("hook addresses at the edge", () => {
   });
 
   it("limits by IP before checking the mac, and needs a bounded Content-Length", async () => {
-    const limited = edgeEnv({ ipAllowed: false });
+    const limited = edgeEnv({ byIp: "refuse" });
     expect((await routeHook(await hookRequest(), limited.env)).status).toBe(429);
 
     const { env, reached } = edgeEnv();
@@ -90,6 +97,16 @@ describe("hook addresses at the edge", () => {
     expect(fromUtf8(reached[0]!.body)).toBe("{}");
     // Headers the relay never keeps don't even reach the host's object.
     expect(reached[0]!.headers.map(([name]) => name)).not.toContain("cookie");
+  });
+
+  it("refuses events while a limiter can't answer", async () => {
+    for (const env of [edgeEnv({ byIp: "fail" }), edgeEnv({ byHook: "fail" })]) {
+      const response = await routeHook(await hookRequest(), env.env);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBe("60");
+      expect(await response.json()).toEqual({ error: "The relay can't take events right now." });
+      expect(env.reached).toEqual([]);
+    }
   });
 
   it("keeps hook addresses out of logged paths", () => {

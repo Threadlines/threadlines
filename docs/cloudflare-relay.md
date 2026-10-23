@@ -128,7 +128,8 @@ wrong one gets the same `404` as any unknown path), a per-hook limit
 (`HOOK_RATE_LIMITER`, 60 a minute), a `Content-Length` of at most 1 MiB
 (`411`/`413`), and the body itself, read by the worker within 10 seconds and
 the same cap (`408`/`413`). Nothing touches a Durable Object before all of
-these pass, so a slow sender never holds one. The host's object then checks
+these pass, so a slow sender never holds one. A limiter that can't answer
+refuses too (`503`, `Retry-After: 60`). The host's object then checks
 the hook is still active (`404`) and today's allowance and its queue (`429`
 with `Retry-After`), and the answer is `202 {"accepted":true}`.
 

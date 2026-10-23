@@ -46,6 +46,11 @@ const decodeRelayHookStateResult = Schema.decodeUnknownEffect(RelayHookStateResu
 const decodeRelayHookStatusResult = Schema.decodeUnknownEffect(RelayHookStatusResult);
 const decodeRelayHookDelivery = Schema.decodeUnknownEffect(RelayHookDelivery);
 
+/** A failure that may pass by itself: the relay couldn't be reached, was busy, or failed. */
+export function isTransientRelayError(error: RelayApiError): boolean {
+  return error.status === null || error.status === 429 || error.status >= 500;
+}
+
 /**
  * The relay answered that it no longer knows this computer (its host is gone
  * or the secret doesn't match): not a network error, so registering again is
