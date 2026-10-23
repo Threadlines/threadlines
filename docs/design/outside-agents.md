@@ -1,6 +1,6 @@
 # Outside agents: agents running outside Threadlines use it
 
-Rev 4, Oct 23 2026. Status: building on `feat/outside-agents` (off main after
+Rev 5, Oct 23 2026. Status: built on `feat/outside-agents` (off main after
 Fleet #594). Follows event-tasks.md and closes the last T3 Code gap from the
 Oct 19 review (their outside-agent sign-in, #16336).
 
@@ -625,9 +625,25 @@ Build step 1 moves the work into `apps/server/src/threads/threadOperations.ts`:
 - **The address carries the port.** Desktop keeps 3773 unless something else
   holds it. Then Settings shows the new address, and the user adds it again.
 - **Check-backs** are outside the running cap.
-- **A restart during a start** leaves a thread without its first turn (see
-  Starting). Making `runTurnStart` resumable would fix it for the app's own
-  first send too. It's a follow-up, not in this build.
+- **The setup window of a first send.** `runTurnStart` publishes the thread
+  before it cuts the worktree and starts the first turn. Two things follow,
+  for the app's own first send as much as for an outside agent's:
+  - A restart in that window leaves a thread without its first turn (see
+    Starting).
+  - A message sent to the thread from the app in that window (seconds) is
+    accepted and can start the agent in the project folder before the
+    worktree exists (Sol, final review).
+
+  The fix for both is one follow-up: a durable "setting up" state on the
+  shared first-send path, which the decider enforces, the app shows, and a
+  restart resumes. It's not in this build.
+
+- **MCP sessions live until the server restarts.** Effect's HTTP transport
+  keeps every session it opened and can't drop one. The `threadlines` command
+  keeps and reuses one session, so polling with it doesn't grow memory, but
+  an agent that opens a new session per call still adds one each time. The
+  follow-up is idle expiry in the transport (a patch in `patches/`), which
+  would cover Threadlines' own MCP endpoints too.
 - **Phones** can't see, approve or remove connections.
 - **One long-lived token per connection** (see Spec status).
 
@@ -880,6 +896,42 @@ through the desktop bridge:
 - **A third access level**, "work with all threads", under the live ceiling.
 - **Queued sends**, if agents ask for them. Each queued message would carry
   its ceiling, and be re-checked and counted when it drains.
+
+## Rev 5: the builds, their reviews, and the final review
+
+What was built differs from rev 4 in these places, each from a review:
+
+- **Request ids.** Fresh ids are stored per request row (not derived from the
+  request id), so a request id reused after its row is pruned can't overwrite
+  an old message.
+- **Stop.** It carries the outside agent's authority and is refused above the
+  ceiling, in the decider too.
+- **The ceiling check.** It compares against the live agent session, not only
+  the thread's setting. A session above the ceiling is restarted at the
+  thread's access, or the turn fails visibly.
+- **Narrow queries.** Light calls read only what they need
+  (`getProjectCatalog`, `listThreadShells`), not the whole shell snapshot.
+- **Running threads.** The running count includes archived threads, and a
+  limit answer names only threads in projects the grant still covers.
+- **Dismissed plans** stop counting as waiting on the user, in the shared rule
+  (this also fixes the sidebar's "plan ready" after a dismissal).
+- **Sign-in.**
+  - The latest decision per registration wins.
+  - Cursor-style registrations keep only their loopback callbacks.
+  - Request bodies are bounded.
+  - Sign-in paths stay out of logs and traces.
+  - Client ids compare exactly as written.
+- **Tool inputs.** Tools without inputs leave `parameters` out:
+  `Schema.Struct({})` became "object or array", which Claude Code refused.
+- **The command.**
+  - It reuses its MCP session and puts a time limit on every call.
+  - It forgets only the token that got the 401.
+  - It reads SSE replies as they come.
+  - The desktop install builds the file root-side on macOS, is Unicode-safe
+    on Windows, and handles AppImage.
+
+Live tests passed with real Claude Code, real Codex (See threads) and the
+command, including Remove and the ceiling after the user raised a thread.
 
 ## Rev 4: Sol's review of the shared pieces, and what changed
 
