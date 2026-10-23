@@ -9,13 +9,18 @@ import {
   RIGHT_PANEL_SHEET_CLASS_NAME,
   RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME,
 } from "../rightPanelLayout";
-import { Sheet, SheetPopup } from "./ui/sheet";
+import { Drawer, DrawerPopup } from "./ui/drawer";
 
 const SHEET_CLASS_NAME_BY_SIZE = {
   default: RIGHT_PANEL_SHEET_CLASS_NAME,
   rail: RIGHT_PANEL_RAIL_SHEET_CLASS_NAME,
 } as const;
 
+/**
+ * The right panel when the window is too narrow to hold it beside the chat:
+ * it slides over the conversation from the right, and a finger can push it
+ * back out to close it, the way the phone's sidebar closes to the left.
+ */
 export function RightPanelSheet(props: {
   children: ReactNode;
   open: boolean;
@@ -25,8 +30,9 @@ export function RightPanelSheet(props: {
   const size = props.size ?? "default";
 
   return (
-    <Sheet
+    <Drawer
       open={props.open}
+      swipeDirection="right"
       // Both sizes start below the chat header so its toggles keep working
       // while a panel is open (source control list and diff drill-in alike).
       // That needs a non-modal dialog (the header must stay interactive) with
@@ -41,9 +47,8 @@ export function RightPanelSheet(props: {
         }
       }}
     >
-      <SheetPopup
+      <DrawerPopup
         side="right"
-        showCloseButton={false}
         keepMounted
         viewportClassName={RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME}
         backdropProps={{
@@ -57,7 +62,7 @@ export function RightPanelSheet(props: {
         style={{ "--right-panel-rail-width": `${RIGHT_PANEL_RAIL_WIDTH}px` } as CSSProperties}
       >
         {props.children}
-      </SheetPopup>
-    </Sheet>
+      </DrawerPopup>
+    </Drawer>
   );
 }

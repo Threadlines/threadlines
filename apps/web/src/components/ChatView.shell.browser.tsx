@@ -31,6 +31,7 @@ import {
   WIDE_FOOTER_VIEWPORT,
   COMPACT_FOOTER_VIEWPORT,
   PHONE_VIEWPORT,
+  touchSwipe,
   createUserMessage,
   createAssistantMessage,
   createSnapshotForTargetUser,
@@ -1051,12 +1052,7 @@ describe("ChatView (full app): app shell", () => {
         targetText: "phone swipes",
       }),
     });
-    /**
-     * A pointer drawn `dx` across an element in ten steps, then lifted. The
-     * drawer follows a real finger through touch events, which these can't
-     * fake, so the panel swipe below drags with a mouse; the drawer closes
-     * the same way.
-     */
+    /** A pointer drawn `dx` across an element in ten steps, then lifted. */
     const swipe = (element: Element, dx: number, pointerType = "touch") => {
       const rect = element.getBoundingClientRect();
       const x0 = rect.left + rect.width * 0.75;
@@ -1111,8 +1107,14 @@ describe("ChatView (full app): app shell", () => {
         { timeout: 4_000, interval: 16 },
       );
 
-      // Anywhere else on the sheet, the same swipe pushes it closed.
-      swipe(page.getByTestId("sidebar-destination-row").element(), -220, "mouse");
+      // A mouse never drags the panel (a narrow desktop window shows the same
+      // drawer, and a drag there selects text)...
+      const destinations = page.getByTestId("sidebar-destination-row").element();
+      swipe(destinations, -220, "mouse");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(sheet()).not.toBeNull();
+      // ...but a finger anywhere else on the sheet pushes it closed.
+      touchSwipe(destinations, -220);
       await vi.waitFor(() => expect(sheet()).toBeNull(), { timeout: 4_000, interval: 16 });
     } finally {
       await mounted.cleanup();

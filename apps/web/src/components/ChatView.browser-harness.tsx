@@ -247,6 +247,33 @@ export const COMPACT_FOOTER_VIEWPORT: ViewportSpec = {
   textTolerancePx: 56,
   attachmentTolerancePx: 56,
 };
+/**
+ * A finger drawn `dx` across an element in ten steps, then lifted, as real
+ * touch events: a drawer follows a finger through those, not through
+ * pointer events.
+ */
+export function touchSwipe(element: Element, dx: number): void {
+  const rect = element.getBoundingClientRect();
+  const x0 = rect.left + rect.width * 0.75;
+  const y = rect.top + rect.height / 2;
+  const fire = (type: "touchstart" | "touchmove" | "touchend", x: number) => {
+    const touch = new Touch({ identifier: 21, target: element, clientX: x, clientY: y });
+    const active = type === "touchend" ? [] : [touch];
+    element.dispatchEvent(
+      new TouchEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        touches: active,
+        targetTouches: active,
+        changedTouches: [touch],
+      }),
+    );
+  };
+  fire("touchstart", x0);
+  for (let step = 1; step <= 10; step += 1) fire("touchmove", x0 + (dx * step) / 10);
+  fire("touchend", x0 + dx);
+}
+
 export const PHONE_VIEWPORT: ViewportSpec = {
   name: "phone",
   width: 390,

@@ -168,7 +168,7 @@ describe("McpAppCard", () => {
     const frame = document.querySelector<HTMLIFrameElement>('iframe[title="Show counter"]');
     const view = frame?.contentWindow;
     await page.getByRole("button", { name: "Open Show counter beside the chat" }).click();
-    await vi.waitFor(() => expect(frame?.closest('[data-slot="sheet-popup"]')).not.toBeNull());
+    await vi.waitFor(() => expect(frame?.closest('[data-slot="drawer-popup"]')).not.toBeNull());
     await rendered.rerender(screen(false));
     expect(frame?.isConnected).toBe(true);
     expect(frame?.contentWindow).toBe(view);

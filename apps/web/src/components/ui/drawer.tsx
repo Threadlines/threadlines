@@ -10,6 +10,9 @@ import { cn } from "~/lib/utils";
  * the halfway mark or on a quick flick, and a short drag springs back. Tapping outside, Escape and
  * the close controls close it as a sheet would.
  *
+ * Only a finger drags it. A mouse or pen press inside the panel selects text
+ * and works its controls as usual (the content sits in `Drawer.Content`), so
+ * a narrow desktop window showing the same drawer behaves like a sheet.
  * Swipes that start on an element marked `data-base-ui-swipe-ignore` stay with
  * that element, so something inside the panel can own its own sideways swipe.
  */
@@ -28,18 +31,33 @@ function DrawerPopup({
   className,
   children,
   side = "left",
+  keepMounted = false,
+  backdropProps,
+  viewportClassName,
   ...props
 }: DrawerPrimitive.Popup.Props & {
   side?: "left" | "right";
+  /** Keeps the panel in the page while closed, so what it holds keeps its state. */
+  keepMounted?: boolean;
+  backdropProps?: DrawerPrimitive.Backdrop.Props | undefined;
+  viewportClassName?: string | undefined;
 }) {
   return (
-    <DrawerPrimitive.Portal>
+    <DrawerPrimitive.Portal keepMounted={keepMounted}>
       <DrawerPrimitive.Backdrop
-        className="fixed inset-0 z-50 bg-black/32 opacity-[calc(1-var(--drawer-swipe-progress))] backdrop-blur-sm transition-opacity duration-200 data-ending-style:opacity-0 data-starting-style:opacity-0 data-swiping:transition-none"
+        {...backdropProps}
+        className={cn(
+          "fixed inset-0 z-50 bg-black/32 opacity-[calc(1-var(--drawer-swipe-progress))] backdrop-blur-sm transition-opacity duration-200 data-ending-style:opacity-0 data-starting-style:opacity-0 data-swiping:transition-none",
+          typeof backdropProps?.className === "string" ? backdropProps.className : undefined,
+        )}
         data-slot="drawer-backdrop"
       />
       <DrawerPrimitive.Viewport
-        className={cn("fixed inset-0 z-50 flex", side === "left" ? "justify-start" : "justify-end")}
+        className={cn(
+          "fixed inset-0 z-50 flex",
+          side === "left" ? "justify-start" : "justify-end",
+          viewportClassName,
+        )}
         data-slot="drawer-viewport"
       >
         <DrawerPrimitive.Popup
@@ -53,7 +71,9 @@ function DrawerPopup({
           data-slot="drawer-popup"
           {...props}
         >
-          {children}
+          <DrawerPrimitive.Content className="flex min-h-0 flex-1 flex-col">
+            {children}
+          </DrawerPrimitive.Content>
         </DrawerPrimitive.Popup>
       </DrawerPrimitive.Viewport>
     </DrawerPrimitive.Portal>

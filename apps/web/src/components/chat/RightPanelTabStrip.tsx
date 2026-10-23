@@ -512,6 +512,9 @@ function TabStripItem({
               ? {
                   onPointerDown: reorder.onPointerDown,
                   onClickCapture: reorder.onClickCapture,
+                  // In the narrow-window overlay a finger pushes the panel
+                  // closed; a drag that starts on a tab reorders the tab.
+                  "data-base-ui-swipe-ignore": "",
                 }
               : {}),
             // A tab with no ✕ on show still closes the way browser tabs always
