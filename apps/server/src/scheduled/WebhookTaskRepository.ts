@@ -53,6 +53,59 @@ export interface TaskWebhookRow {
   readonly updatedAt: string;
 }
 
+/** The columns of a task's address that change after it is made. */
+export type TaskWebhookUpdate = Partial<
+  Pick<
+    TaskWebhookRow,
+    | "hookId"
+    | "relayUrl"
+    | "mintedHostId"
+    | "localToken"
+    | "keptHeaders"
+    | "githubHookId"
+    | "githubRepository"
+    | "githubHookUrl"
+    | "githubEvents"
+    | "githubSecretGeneration"
+    | "addressChanged"
+  >
+>;
+
+const TASK_WEBHOOK_COLUMNS: { readonly [Key in keyof Required<TaskWebhookUpdate>]: string } = {
+  hookId: "hook_id",
+  relayUrl: "relay_url",
+  mintedHostId: "minted_host_id",
+  localToken: "local_token",
+  keptHeaders: "kept_headers_json",
+  githubHookId: "github_hook_id",
+  githubRepository: "github_repository",
+  githubHookUrl: "github_hook_url",
+  githubEvents: "github_events_json",
+  githubSecretGeneration: "github_secret_generation",
+  addressChanged: "address_changed",
+};
+
+/** The GitHub connection's columns, all cleared: the task has no webhook on GitHub now. */
+export const NO_GITHUB_CONNECTION: TaskWebhookUpdate = {
+  githubHookId: null,
+  githubRepository: null,
+  githubHookUrl: null,
+  githubEvents: null,
+  githubSecretGeneration: null,
+};
+
+/** A webhook on GitHub that Threadlines has to remove and couldn't yet. */
+export interface GitHubRemovalRow {
+  readonly repository: string;
+  readonly hookId: string;
+  /** The task it was for (it may be deleted since). */
+  readonly taskId: ScheduledTaskId;
+  /** Why the last try failed, in one plain sentence. */
+  readonly reason: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 export interface WebhookSecretRow {
   readonly taskId: ScheduledTaskId;
   readonly generation: number;
@@ -79,6 +132,8 @@ export interface WebhookEventRow {
   readonly reason: string | null;
   /** Its signature passed (or the task checks none); null until checked. */
   readonly verified: boolean | null;
+  /** Its last pass checked a signature (true) or the task checked none (false); null until checked. */
+  readonly signatureChecked: boolean | null;
   readonly eventName: string | null;
   readonly subject: string | null;
   readonly sender: string | null;
@@ -163,6 +218,7 @@ interface WebhookEventDbRow {
   readonly status: WebhookEventStatus;
   readonly reason: string | null;
   readonly verified: number | null;
+  readonly signatureChecked: number | null;
   readonly eventName: string | null;
   readonly subject: string | null;
   readonly sender: string | null;
@@ -241,6 +297,7 @@ const toEvent = (row: WebhookEventDbRow): WebhookEventRow => ({
   status: row.status,
   reason: row.reason,
   verified: row.verified === null ? null : Number(row.verified) !== 0,
+  signatureChecked: row.signatureChecked === null ? null : Number(row.signatureChecked) !== 0,
   eventName: row.eventName,
   subject: row.subject,
   sender: row.sender,
@@ -267,8 +324,22 @@ export interface WebhookTaskRepositoryShape {
   readonly getTaskWebhook: (
     taskId: ScheduledTaskId,
   ) => Effect.Effect<Option.Option<TaskWebhookRow>, WebhookTaskRepositoryError>;
-  /** Writes the task's address whole (a new event task, or a re-minted hook). */
-  readonly putTaskWebhook: (row: TaskWebhookRow) => Effect.Effect<void, WebhookTaskRepositoryError>;
+  /** Writes a new event task's address whole; inside the task's own save. */
+  readonly insertTaskWebhook: (
+    row: TaskWebhookRow,
+  ) => Effect.Effect<void, WebhookTaskRepositoryError>;
+  /**
+   * Writes only the given columns of a task's address, so a write never
+   * puts back what another one changed since it read; with `where`, only
+   * while those columns are still as it read them. True when it wrote.
+   */
+  readonly updateTaskWebhook: (input: {
+    readonly taskId: ScheduledTaskId;
+    readonly set: TaskWebhookUpdate;
+    /** Only while these columns still hold these values. */
+    readonly where?: Partial<Pick<TaskWebhookRow, "hookId" | "relayUrl" | "githubHookId">>;
+    readonly now: string;
+  }) => Effect.Effect<boolean, WebhookTaskRepositoryError>;
   /**
    * Forgets a task's address when it stops being an event task (or is
    * deleted): its hooks retire (their rows stay 25 hours) and its secret
@@ -280,6 +351,24 @@ export interface WebhookTaskRepositoryShape {
     readonly everything: boolean;
     readonly now: string;
   }) => Effect.Effect<ReadonlyArray<WebhookSecretRow>, WebhookTaskRepositoryError>;
+
+  // GitHub webhooks to remove ------------------------------------------------
+  readonly listGitHubRemovals: Effect.Effect<
+    ReadonlyArray<GitHubRemovalRow>,
+    WebhookTaskRepositoryError
+  >;
+  /** Records (or updates the reason of) a webhook still to remove. */
+  readonly putGitHubRemoval: (input: {
+    readonly repository: string;
+    readonly hookId: string;
+    readonly taskId: ScheduledTaskId;
+    readonly reason: string;
+    readonly now: string;
+  }) => Effect.Effect<void, WebhookTaskRepositoryError>;
+  readonly deleteGitHubRemoval: (input: {
+    readonly repository: string;
+    readonly hookId: string;
+  }) => Effect.Effect<void, WebhookTaskRepositoryError>;
 
   // Hooks -------------------------------------------------------------------
   readonly insertHook: (input: {
@@ -344,6 +433,7 @@ export interface WebhookTaskRepositoryShape {
     readonly status: WebhookEventStatus;
     readonly reason: string | null;
     readonly verified?: boolean;
+    readonly signatureChecked?: boolean;
     readonly missingFields?: ReadonlyArray<string>;
     readonly now: string;
   }) => Effect.Effect<boolean, WebhookTaskRepositoryError>;
@@ -466,7 +556,48 @@ const make = Effect.gen(function* () {
       wrap("getTaskWebhook"),
     );
 
-  const putTaskWebhook: WebhookTaskRepositoryShape["putTaskWebhook"] = (row) =>
+  const updateTaskWebhook: WebhookTaskRepositoryShape["updateTaskWebhook"] = (input) =>
+    Effect.gen(function* () {
+      const sets: Array<string> = ["updated_at = ?"];
+      const values: Array<string | number | null> = [input.now];
+      for (const key of Object.keys(TASK_WEBHOOK_COLUMNS) as Array<keyof TaskWebhookUpdate>) {
+        const value = input.set[key];
+        if (value === undefined) continue;
+        sets.push(`${TASK_WEBHOOK_COLUMNS[key]} = ?`);
+        values.push(
+          value === null
+            ? null
+            : typeof value === "boolean"
+              ? value
+                ? 1
+                : 0
+              : typeof value === "string" || typeof value === "number"
+                ? value
+                : JSON.stringify(value),
+        );
+      }
+      const guards: Array<string> = [];
+      const guardValues: Array<string> = [];
+      for (const key of ["hookId", "relayUrl", "githubHookId"] as const) {
+        const expected = input.where?.[key];
+        if (expected === undefined) continue;
+        if (expected === null) {
+          guards.push(` AND ${TASK_WEBHOOK_COLUMNS[key]} IS NULL`);
+        } else {
+          guards.push(` AND ${TASK_WEBHOOK_COLUMNS[key]} = ?`);
+          guardValues.push(expected);
+        }
+      }
+      const rows = yield* sql.unsafe<{ readonly taskId: string }>(
+        `UPDATE scheduled_task_webhooks SET ${sets.join(", ")}
+         WHERE task_id = ?${guards.join("")}
+         RETURNING task_id AS "taskId"`,
+        [...values, input.taskId, ...guardValues],
+      );
+      return rows.length > 0;
+    }).pipe(wrap("updateTaskWebhook"));
+
+  const insertTaskWebhook: WebhookTaskRepositoryShape["insertTaskWebhook"] = (row) =>
     sql`
       INSERT INTO scheduled_task_webhooks (
         task_id, hook_id, relay_url, minted_host_id, local_token, kept_headers_json,
@@ -494,7 +625,7 @@ const make = Effect.gen(function* () {
         address_changed = excluded.address_changed,
         last_event_at = excluded.last_event_at,
         updated_at = excluded.updated_at
-    `.pipe(Effect.asVoid, wrap("putTaskWebhook"));
+    `.pipe(Effect.asVoid, wrap("insertTaskWebhook"));
 
   const selectSecrets = (where: string, params: ReadonlyArray<string>) =>
     sql
@@ -541,6 +672,44 @@ const make = Effect.gen(function* () {
       }
       return secrets;
     }).pipe(sql.withTransaction, wrap("forgetTask"));
+
+  const listGitHubRemovals: WebhookTaskRepositoryShape["listGitHubRemovals"] = sql<{
+    readonly repository: string;
+    readonly hookId: string;
+    readonly taskId: string;
+    readonly reason: string;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+  }>`
+    SELECT repository AS "repository", hook_id AS "hookId", task_id AS "taskId",
+      reason AS "reason", created_at AS "createdAt", updated_at AS "updatedAt"
+    FROM webhook_github_removals
+    ORDER BY created_at, repository, hook_id
+  `.pipe(
+    Effect.map((rows) =>
+      rows.map((row): GitHubRemovalRow => ({ ...row, taskId: ScheduledTaskId.make(row.taskId) })),
+    ),
+    wrap("listGitHubRemovals"),
+  );
+
+  const putGitHubRemoval: WebhookTaskRepositoryShape["putGitHubRemoval"] = (input) =>
+    sql`
+      INSERT INTO webhook_github_removals (
+        repository, hook_id, task_id, reason, created_at, updated_at
+      ) VALUES (
+        ${input.repository}, ${input.hookId}, ${input.taskId}, ${input.reason}, ${input.now},
+        ${input.now}
+      )
+      ON CONFLICT(repository, hook_id) DO UPDATE SET
+        reason = excluded.reason,
+        updated_at = excluded.updated_at
+    `.pipe(Effect.asVoid, wrap("putGitHubRemoval"));
+
+  const deleteGitHubRemoval: WebhookTaskRepositoryShape["deleteGitHubRemoval"] = (input) =>
+    sql`
+      DELETE FROM webhook_github_removals
+      WHERE repository = ${input.repository} AND hook_id = ${input.hookId}
+    `.pipe(Effect.asVoid, wrap("deleteGitHubRemoval"));
 
   const insertHook: WebhookTaskRepositoryShape["insertHook"] = (input) =>
     sql`
@@ -620,6 +789,7 @@ const make = Effect.gen(function* () {
       e.status AS "status",
       e.reason AS "reason",
       e.verified AS "verified",
+      e.signature_checked AS "signatureChecked",
       e.event_name AS "eventName",
       e.subject AS "subject",
       e.sender AS "sender",
@@ -643,13 +813,14 @@ const make = Effect.gen(function* () {
     sql<{ readonly eventId: string }>`
       INSERT INTO webhook_events (
         event_id, task_id, received_at, source, replay_of, method, query, headers_json, body,
-        status, verified, event_name, subject, sender, summary, dedupe_hash, created_at,
-        updated_at
+        status, verified, signature_checked, event_name, subject, sender, summary, dedupe_hash,
+        created_at, updated_at
       ) VALUES (
         ${event.eventId}, ${event.taskId}, ${event.receivedAt}, ${event.source},
         ${event.replayOf}, ${event.method}, ${event.query}, ${JSON.stringify(event.headers)},
         ${event.body}, 'received',
         ${event.verified === null ? null : event.verified ? 1 : 0},
+        ${event.signatureChecked === null ? null : event.signatureChecked ? 1 : 0},
         ${event.eventName}, ${event.subject}, ${event.sender}, ${event.summary},
         ${event.dedupeHash}, ${event.now}, ${event.now}
       )
@@ -705,6 +876,10 @@ const make = Effect.gen(function* () {
       if (input.verified !== undefined) {
         sets.push("verified = ?");
         values.push(input.verified ? 1 : 0);
+      }
+      if (input.signatureChecked !== undefined) {
+        sets.push("signature_checked = ?");
+        values.push(input.signatureChecked ? 1 : 0);
       }
       if (input.missingFields !== undefined) {
         sets.push("missing_fields_json = ?");
@@ -868,7 +1043,11 @@ const make = Effect.gen(function* () {
     transact,
     listTaskWebhooks,
     getTaskWebhook,
-    putTaskWebhook,
+    insertTaskWebhook,
+    updateTaskWebhook,
+    listGitHubRemovals,
+    putGitHubRemoval,
+    deleteGitHubRemoval,
     forgetTask,
     insertHook,
     retireHooks,

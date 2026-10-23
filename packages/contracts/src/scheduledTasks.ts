@@ -278,6 +278,12 @@ export const ScheduledTaskWebhookState = Schema.Struct({
   github: Schema.Boolean,
   signingSecretSet: Schema.Boolean,
   lastEventAt: Schema.NullOr(IsoDateTime),
+  /**
+   * A webhook Threadlines added on GitHub and has to remove (the task moved
+   * to another repository or stopped being a GitHub task) but couldn't yet,
+   * in plain words. It keeps trying; absent once it's gone.
+   */
+  githubProblem: Schema.optionalKey(Schema.String),
 });
 export type ScheduledTaskWebhookState = typeof ScheduledTaskWebhookState.Type;
 

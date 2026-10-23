@@ -345,6 +345,8 @@ export interface ScheduledTaskRepositoryShape {
     readonly missingFields: ReadonlyArray<string>;
     /** Whether its signature passed (or the task checks none). */
     readonly verified: boolean;
+    /** Whether that pass checked a signature (false: the task checks none). */
+    readonly signatureChecked: boolean;
     readonly now: string;
   }) => Effect.Effect<
     | { readonly kind: "claimed"; readonly run: ScheduledRunRow }
@@ -826,6 +828,7 @@ const make = Effect.gen(function* () {
           status = ${input.launch.target.kind === "thread" ? "joined" : "ran"},
           reason = NULL,
           verified = ${input.verified ? 1 : 0},
+          signature_checked = ${input.signatureChecked ? 1 : 0},
           missing_fields_json = ${JSON.stringify(input.missingFields)},
           run_slot_utc = ${slotUtc},
           updated_at = ${input.now}

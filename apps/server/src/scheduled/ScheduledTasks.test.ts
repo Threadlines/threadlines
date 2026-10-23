@@ -1563,6 +1563,54 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
       }),
   );
 
+  it.effect(
+    "an agent's edit is checked against the task each save attempt reads, so a person's switch to events wins",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        const service = yield* computer.boot();
+        const task = yield* service.create(draft({ cadence: { kind: "manual" } }));
+        const webhook = {
+          kind: "webhook",
+          source: "any",
+          signature: null,
+          filters: [],
+          includeEvent: true,
+          maxLateMinutes: 60,
+          dailyRunLimit: 20,
+        } as const;
+        // The person turns it into an event task right after the agent's
+        // edit was worked out, before it is saved.
+        let reads = 0;
+        const proposed = yield* service
+          .propose({
+            requestId: "agent-edit",
+            threadId: ThreadId.make("agent-thread"),
+            participantId: null,
+            mode: Effect.gen(function* () {
+              reads += 1;
+              if (reads === 1)
+                yield* service.update({ id: task.id, cadence: webhook }).pipe(Effect.orDie);
+              return "auto" as const;
+            }),
+            callerRuntimeMode: "auto",
+            change: {
+              kind: "update",
+              input: { id: task.id, prompt: "Delete the release branch." },
+            },
+          })
+          .pipe(Effect.flip);
+        assert.equal(
+          proposed.detail,
+          "Only a person can change an event task. Agents can pause or resume it.",
+        );
+        const after = yield* service.getTask(task.id);
+        assert.equal(after?.cadence.kind, "webhook");
+        assert.equal(after?.prompt, task.prompt);
+      }),
+  );
+
   it.effect("a thread a linked computer's agent started never gets them", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;

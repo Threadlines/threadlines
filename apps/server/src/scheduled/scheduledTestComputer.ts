@@ -165,6 +165,8 @@ const makeFakeRelay = Effect.gen(function* () {
 const makeFakeGitHub = () => {
   const calls: Array<{ readonly args: ReadonlyArray<string>; readonly stdin?: string }> = [];
   const state = {
+    /** Runs before each call is answered: a test holds one here. */
+    before: (_args: ReadonlyArray<string>): Effect.Effect<void> => Effect.void,
     respond: (
       args: ReadonlyArray<string>,
     ): { readonly stdout: string } | { readonly fail: string } => {
@@ -190,16 +192,20 @@ const makeFakeGitHub = () => {
           args: input.args,
           ...(input.stdin !== undefined ? { stdin: input.stdin } : {}),
         });
-        const answer = state.respond(input.args);
-        return "fail" in answer
-          ? Effect.fail(new GitHubCliError({ operation: "execute", detail: answer.fail }))
-          : Effect.succeed({
-              exitCode: 0 as never,
-              stdout: answer.stdout,
-              stderr: "",
-              stdoutTruncated: false,
-              stderrTruncated: false,
-            });
+        return state.before(input.args).pipe(
+          Effect.flatMap(() => {
+            const answer = state.respond(input.args);
+            return "fail" in answer
+              ? Effect.fail(new GitHubCliError({ operation: "execute", detail: answer.fail }))
+              : Effect.succeed({
+                  exitCode: 0 as never,
+                  stdout: answer.stdout,
+                  stderr: "",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                });
+          }),
+        );
       }),
   });
   return { layer, calls, state };

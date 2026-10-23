@@ -18,7 +18,9 @@ import { assert, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import { scheduledRunMessageId, scheduledRunThreadId } from "./scheduledRunIds.ts";
@@ -57,7 +59,12 @@ const githubCadence = (
 /** An issue labeled on acme/app, as GitHub sends it. */
 const issueLabeled = (
   number: number,
-  patch: { readonly login?: string; readonly label?: string; readonly title?: string } = {},
+  patch: {
+    readonly login?: string;
+    readonly label?: string;
+    readonly title?: string;
+    readonly repository?: string;
+  } = {},
 ) =>
   JSON.stringify({
     action: "labeled",
@@ -69,7 +76,7 @@ const issueLabeled = (
       html_url: `https://github.com/acme/app/issues/${number}`,
       labels: [{ name: patch.label ?? "agent" }],
     },
-    repository: { full_name: "acme/app" },
+    repository: { full_name: patch.repository ?? "acme/app" },
     sender: {
       login: patch.login ?? "badcuban",
       type: patch.login?.endsWith("[bot]") ? "Bot" : "User",
@@ -278,6 +285,12 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         "Started by a bot (@dependabot[bot]); this task ignores bots.",
         true,
       ]);
+      // A webhook left on another repository (or a sender naming one) never starts a run.
+      assert.deepEqual(yield* send("issues", issueLabeled(3, { repository: "acme/other" })), [
+        "skipped",
+        "It came from acme/other, not acme/app.",
+        true,
+      ]);
       const opened = JSON.stringify({ ...JSON.parse(issueLabeled(4)), action: "opened" });
       assert.deepEqual(yield* send("issues", opened), [
         "skipped",
@@ -289,11 +302,12 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         "Filter 1 (issue.title contains fix) didn't match.",
         true,
       ]);
-      assert.deepEqual(yield* send("issues", issueLabeled(6), { delivery: "g-first" }), [
-        "ran",
-        null,
-        true,
-      ]);
+      assert.deepEqual(
+        yield* send("issues", issueLabeled(6, { repository: "Acme/App" }), {
+          delivery: "g-first",
+        }),
+        ["ran", null, true],
+      );
       assert.deepEqual(yield* send("issues", issueLabeled(6), { delivery: "g-first" }), [
         "skipped",
         "GitHub sent this event again.",
@@ -623,6 +637,7 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         headers: { "content-type": "application/json" },
         body: new TextEncoder().encode('{"build": 99}'),
         verified: null,
+        signatureChecked: null,
         eventName: null,
         subject: null,
         sender: null,
@@ -1052,6 +1067,7 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
               headers: {},
               body: new TextEncoder().encode(body),
               verified: true,
+              signatureChecked: false,
               eventName: null,
               subject: null,
               sender: null,
@@ -1119,6 +1135,242 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
       computer.relay.state.reachable = true;
       yield* service.tick;
       assert.isUndefined((yield* service.snapshot).eventsUnreachable);
+    }),
+  );
+
+  it.effect("a GitHub update that finishes after a rotation never puts the old address back", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft({ name: "Triage", cadence: githubCadence() }));
+      yield* service.connectGitHub({ id: task.id });
+      // GitHub is slow to take the next update.
+      const held = yield* Deferred.make<void>();
+      computer.github.state.before = (args) =>
+        args.includes("PATCH") ? Deferred.await(held) : Effect.void;
+      const updating = yield* service
+        .setWebhookSigningSecret({ id: task.id, secret: "generate" })
+        .pipe(Effect.forkChild);
+      yield* eventually(
+        Effect.sync(() => computer.github.calls.some((call) => call.args.includes("PATCH"))),
+        "GitHub was sent the new secret",
+      );
+      // Meanwhile the address is rotated.
+      const before = Option.getOrThrow(yield* computer.webhooks.getTaskWebhook(task.id));
+      const rotating = yield* service.rotateWebhookAddress({ id: task.id }).pipe(Effect.forkChild);
+      yield* eventually(
+        computer.webhooks
+          .getTaskWebhook(task.id)
+          .pipe(
+            Effect.map((row) => Option.isSome(row) && row.value.localToken !== before.localToken),
+          ),
+        "the rotation was saved",
+      );
+      const rotated = Option.getOrThrow(yield* computer.webhooks.getTaskWebhook(task.id));
+      computer.github.state.before = () => Effect.void;
+      yield* Deferred.succeed(held, undefined);
+      yield* Fiber.join(updating);
+      const address = yield* Fiber.join(rotating);
+      const after = Option.getOrThrow(yield* computer.webhooks.getTaskWebhook(task.id));
+      assert.equal(after.localToken, rotated.localToken);
+      assert.equal(after.hookId, rotated.hookId);
+      assert.equal(after.relayUrl, rotated.relayUrl);
+      assert.equal(address.relayUrl, rotated.relayUrl);
+      // And GitHub ends up with the rotated address.
+      assert.equal(after.githubHookUrl, rotated.relayUrl);
+      const patched = computer.github.calls.findLast((call) => call.args.includes("PATCH"));
+      assert.equal(JSON.parse(patched?.stdin ?? "{}").config.url, rotated.relayUrl);
+    }),
+  );
+
+  it.effect(
+    "an issue's next event joins its thread only once the first run's message is there",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        // The first run's thread exists, but it stops before its worktree and message.
+        const held = yield* Deferred.make<void>();
+        const service = yield* computer.boot({
+          bootstrap: {
+            startChild: (input) =>
+              computer.bootstrap.startChild({
+                ...input,
+                checkpoint: (stage) =>
+                  (input.checkpoint?.(stage) ?? Effect.succeed(true)).pipe(
+                    Effect.tap(() => (stage === "worktree" ? Deferred.await(held) : Effect.void)),
+                  ),
+              }),
+          },
+        });
+        const task = yield* service.create(
+          draft({ name: "Triage", cadence: githubCadence({ onePerSubject: true }) }),
+        );
+        const secret = yield* secretOf(service, task.id);
+        const send = (delivery: string) =>
+          Effect.gen(function* () {
+            const body = issueLabeled(7);
+            yield* sendLocal(service, task.id, {
+              headers: githubHeaders({ event: "issues", delivery, body, secret }),
+              body,
+            });
+            yield* service.tick;
+          });
+        yield* send("g-1");
+        const [first] = yield* computer.runs(task.id);
+        const issueThread = scheduledRunThreadId(task.id, first!.slotUtc);
+        yield* eventually(
+          computer.thread(issueThread).pipe(Effect.map((thread) => thread !== undefined)),
+          "the first run's thread exists",
+        );
+        yield* send("g-2");
+        const [, second] = yield* eventsOf(computer, task.id);
+        assert.equal(second?.status, "waiting");
+        assert.equal(second?.reason, "Waiting for this issue's first run to start its thread.");
+        assert.equal((yield* computer.runs(task.id)).length, 1);
+
+        yield* Deferred.succeed(held, undefined);
+        yield* eventually(
+          eventsOf(computer, task.id).pipe(Effect.map((events) => events[1]?.status === "joined")),
+          "the second event joined the thread",
+        );
+        const runs = yield* computer.runs(task.id);
+        yield* eventually(
+          computer
+            .thread(issueThread)
+            .pipe(
+              Effect.map(
+                (thread) =>
+                  thread !== undefined &&
+                  thread.messages[0]?.id === runs[0]?.messageId &&
+                  ((thread.queuedFollowUps ?? []).some(
+                    (queued) => queued.messageId === runs[1]?.messageId,
+                  ) ||
+                    thread.messages.some((message) => message.id === runs[1]?.messageId)),
+              ),
+            ),
+          "the follow-up came after the first message",
+        );
+      }),
+  );
+
+  it.effect(
+    "a waiting event is checked again: a signature turned on meanwhile stops an unsigned one",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        const service = yield* computer.boot();
+        const task = yield* service.create(draft({ name: "Builds", cadence: anyCadence() }));
+        const sent = yield* sendPlain(computer, service, task.id, 3);
+        assert.equal(sent[2]?.status, "waiting");
+        assert.isTrue(sent[2]?.verified);
+        // The task starts checking a signature while it waits.
+        yield* service.update({
+          id: task.id,
+          cadence: anyCadence({
+            signature: { header: "X-Signature", encoding: "hex", prefix: "sha256=" },
+          }),
+        });
+        yield* service.setWebhookSigningSecret({ id: task.id, secret: "secret-a" });
+        const runs = yield* computer.runs(task.id);
+        yield* finishRunTurn(computer, task.id, runs[0]!.slotUtc);
+        yield* service.tick;
+        const [ran, , waited] = yield* eventsOf(computer, task.id);
+        assert.equal(waited?.status, "skipped");
+        assert.equal(
+          waited?.reason,
+          "The signature didn't match. Check the secret in the service that sent it.",
+        );
+        assert.isFalse(waited?.verified);
+        assert.equal((yield* computer.runs(task.id)).length, 2);
+        // An event that ran unsigned isn't run again now that a signature is needed.
+        const refused = yield* service
+          .runWithWebhookEvent({ id: task.id, eventId: ran!.eventId })
+          .pipe(Effect.flip);
+        assert.equal(
+          refused.detail,
+          "This task checks a signature now, and this event wasn't signed.",
+        );
+      }),
+  );
+
+  it.effect(
+    "a GitHub webhook that can't be removed is kept, shown on the task, and removed later",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        const service = yield* computer.boot();
+        const task = yield* service.create(draft({ name: "Triage", cadence: githubCadence() }));
+        yield* service.connectGitHub({ id: task.id });
+        // gh is signed out when the task moves to another repository.
+        const respond = computer.github.state.respond;
+        computer.github.state.respond = (args) =>
+          args.includes("DELETE")
+            ? { fail: "GitHub CLI is not authenticated. Run `gh auth login` and retry." }
+            : respond(args);
+        const moved = yield* service.update({
+          id: task.id,
+          cadence: githubCadence({ repository: "acme/other" }),
+        });
+        assert.isFalse(moved.webhook?.github);
+        assert.equal(
+          moved.webhook?.githubProblem,
+          "Threadlines couldn't remove its old webhook from acme/app. GitHub CLI isn't signed in on this computer.",
+        );
+        // Signed in again: the next GitHub action removes it first.
+        computer.github.state.respond = respond;
+        const connected = yield* service.connectGitHub({ id: task.id });
+        assert.isUndefined(connected.webhook?.githubProblem);
+        assert.isTrue(connected.webhook?.github);
+        const deletes = computer.github.calls.filter((call) => call.args.includes("DELETE"));
+        assert.deepEqual(deletes.at(-1)?.args, ["api", "-X", "DELETE", "repos/acme/app/hooks/42"]);
+        const post = computer.github.calls.findLast((call) => call.args.includes("POST"));
+        assert.deepEqual(post?.args, [
+          "api",
+          "-X",
+          "POST",
+          "repos/acme/other/hooks",
+          "--input",
+          "-",
+        ]);
+      }),
+  );
+
+  it.effect("clients hear when an address changes in the background", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      computer.relay.state.reachable = false;
+      const service = yield* computer.boot();
+      yield* service.start();
+      const task = yield* service.create(draft({ name: "Deploys", cadence: anyCadence() }));
+      const seen: Array<string | undefined> = [];
+      yield* Stream.runForEach(service.changes, (snapshot) =>
+        Effect.sync(() => {
+          seen.push(snapshot.tasks.find((entry) => entry.id === task.id)?.webhook?.address);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 second");
+      yield* eventually(
+        Effect.sync(() => seen.at(-1) === "waiting_for_relay"),
+        "the first snapshot came",
+      );
+      computer.relay.state.reachable = true;
+      yield* computer.relay.change({ kind: "reachable" });
+      yield* eventually(
+        computer.webhooks
+          .getTaskWebhook(task.id)
+          .pipe(Effect.map((row) => Option.isSome(row) && row.value.hookId !== null)),
+        "the task got its address",
+      );
+      yield* TestClock.adjust("1 second");
+      yield* eventually(
+        Effect.sync(() => seen.at(-1) === "ready"),
+        "clients heard of it",
+      );
     }),
   );
 

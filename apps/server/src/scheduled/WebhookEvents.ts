@@ -99,6 +99,29 @@ export const REASON_NOT_EVENT_TASK = "This task doesn't start on events any more
 export const REASON_GITHUB_CONNECTED = "GitHub connected";
 export const REASON_TOO_MANY_WAITING = "Too many events were waiting.";
 export const REASON_DRY_RUN = "Test only: nothing was started.";
+export const REASON_REPLAY_UNSIGNED =
+  "This task checks a signature now, and this event wasn't signed.";
+
+/**
+ * Whether a run's first message went out in its thread: it started (or
+ * ended after starting). A run still launching, or one that failed before
+ * its turn, never sent it.
+ */
+const messageDelivered = (run: ScheduledRunRow) =>
+  run.threadId !== null &&
+  run.status !== "launching" &&
+  run.status !== "skipped" &&
+  !(run.status === "failed" && run.turnId === null);
+
+/** The repository a GitHub event names (`repository.full_name`), if it names one. */
+const eventRepository = (body: unknown): string | null => {
+  if (typeof body !== "object" || body === null || !("repository" in body)) return null;
+  const repository = body.repository;
+  if (typeof repository !== "object" || repository === null || !("full_name" in repository)) {
+    return null;
+  }
+  return typeof repository.full_name === "string" ? repository.full_name : null;
+};
 
 /** Why a task's runs can't start now, while the event waits. */
 const BUSY_REASON = {
@@ -215,33 +238,40 @@ export interface WebhookPipelineDeps {
   readonly changed: Effect.Effect<void>;
 }
 
+/**
+ * How an event's signature check went in this pass: `verified` when it
+ * passed (or the task checks none), `signatureChecked` when a signature was
+ * what passed.
+ */
+interface SignatureCheck {
+  readonly verified: boolean;
+  readonly signatureChecked: boolean;
+}
+
 /** Where one check left an event. */
 type Verdict =
-  | {
+  | ({
       readonly kind: "skip";
       readonly reason: string;
-      readonly verified?: boolean;
-    }
-  | {
+    } & Partial<SignatureCheck>)
+  | ({
       readonly kind: "wait";
       readonly reason: string;
-      readonly verified: boolean;
       readonly message: string;
       readonly missingFields: ReadonlyArray<string>;
-    }
-  | {
+    } & SignatureCheck)
+  | ({
       readonly kind: "go";
-      readonly verified: boolean;
       readonly launch: ScheduledRunLaunch;
       readonly subject: Parameters<ScheduledTaskRepositoryShape["claimEventRun"]>[0]["subject"];
       readonly dedupeHash: string | null;
       readonly missingFields: ReadonlyArray<string>;
-    };
+    } & SignatureCheck);
 
 type GoVerdict = Extract<Verdict, { readonly kind: "go" }>;
 
-const skip = (reason: string, verified?: boolean): Verdict =>
-  verified === undefined ? { kind: "skip", reason } : { kind: "skip", reason, verified };
+const skip = (reason: string, checked?: SignatureCheck): Verdict =>
+  checked === undefined ? { kind: "skip", reason } : { kind: "skip", reason, ...checked };
 const go = (verdict: Omit<GoVerdict, "kind">): Verdict => ({ kind: "go", ...verdict });
 const waitFor = (verdict: Omit<Extract<Verdict, { readonly kind: "wait" }>, "kind">): Verdict => ({
   kind: "wait",
@@ -273,6 +303,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
       readonly body: Uint8Array;
       readonly receivedAt: string;
       readonly verified: boolean | null;
+      readonly signatureChecked: boolean | null;
     }) =>
       Effect.gen(function* () {
         const described = describeEvent(input);
@@ -310,42 +341,61 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           return skip(task.error !== null ? `The task stopped: ${task.error}` : REASON_PAUSED);
         }
         const github = cadence.source === "github";
-        // 2. The signature, over the exact bytes received.
-        let verified = event.verified === true;
-        if (!verified) {
-          const signature = signatureOf(cadence);
-          if (signature === null) {
-            verified = true;
-          } else {
-            const secrets = yield* hooks.secretsFor(task.id, event.receivedAt);
-            if (secrets.length === 0) {
-              return skip(
-                "This task has no signing secret yet, so the signature can't be checked.",
-                false,
-              );
-            }
-            const headerValue = event.headers[signature.header.toLowerCase()];
-            for (const secret of secrets) {
-              const ok = yield* Effect.promise(() =>
-                verifyWebhookSignature({ body: event.body, headerValue, secret, signature }),
-              );
-              if (ok) {
-                verified = true;
-                break;
-              }
-            }
-            if (!verified) {
-              return skip(
-                github
-                  ? "The signature didn't match. Check the secret in GitHub."
-                  : "The signature didn't match. Check the secret in the service that sent it.",
-                false,
-              );
-            }
+        const signature = signatureOf(cadence);
+        // 2. The signature, over the exact bytes received, against the task's
+        // settings and secrets as they are now: on every pass, so an event
+        // that waited is checked again if the task started checking one.
+        let checked: SignatureCheck;
+        if (event.source === "replay") {
+          // A replay re-checks nothing (its original passed under the
+          // settings of its time), but never runs unsigned where a signature
+          // is needed now.
+          if (signature !== null && event.signatureChecked !== true) {
+            return skip(REASON_REPLAY_UNSIGNED, { verified: false, signatureChecked: false });
+          }
+          checked = { verified: true, signatureChecked: event.signatureChecked === true };
+        } else if (signature === null) {
+          checked = { verified: true, signatureChecked: false };
+        } else {
+          const secrets = yield* hooks.secretsFor(task.id, event.receivedAt);
+          if (secrets.length === 0) {
+            return skip("This task has no signing secret yet, so the signature can't be checked.", {
+              verified: false,
+              signatureChecked: false,
+            });
+          }
+          const headerValue = event.headers[signature.header.toLowerCase()];
+          let passed = false;
+          for (const secret of secrets) {
+            passed = yield* Effect.promise(() =>
+              verifyWebhookSignature({ body: event.body, headerValue, secret, signature }),
+            );
+            if (passed) break;
+          }
+          if (!passed) {
+            return skip(
+              github
+                ? "The signature didn't match. Check the secret in GitHub."
+                : "The signature didn't match. Check the secret in the service that sent it.",
+              { verified: false, signatureChecked: false },
+            );
+          }
+          checked = { verified: true, signatureChecked: true };
+        }
+        const input = eventInput(event);
+        // The repository a GitHub task is for: a webhook left on another one
+        // (or a sender naming another) never starts its runs.
+        if (github && cadence.github) {
+          const from = eventRepository(input.body);
+          if (from === null) {
+            return skip("It doesn't say which repository it came from.", checked);
+          }
+          if (from.toLowerCase() !== cadence.github.repository.toLowerCase()) {
+            return skip(`It came from ${from}, not ${cadence.github.repository}.`, checked);
           }
         }
         if (event.headers["x-github-event"] === "ping") {
-          return skip(REASON_GITHUB_CONNECTED, verified);
+          return skip(REASON_GITHUB_CONNECTED, checked);
         }
         // 3. Age.
         const limitMs = Math.max(cadence.maxLateMinutes, 1) * 60_000;
@@ -355,14 +405,13 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
             event.status === "waiting"
               ? `Waited ${formatSpan(lateMs)}, past this task's ${formatSpan(limitMs)} limit.`
               : `Arrived ${formatSpan(lateMs)} late, past this task's ${formatSpan(limitMs)} limit.`,
-            verified,
+            checked,
           );
         }
-        const input = eventInput(event);
         // 4. Who started it.
         if (github && cadence.github) {
           const verdict = githubSenderVerdict(cadence.github, input.body);
-          if (!verdict.ok) return skip(verdict.reason, verified);
+          if (!verdict.ok) return skip(verdict.reason, checked);
         }
         // 5. Filters: the trigger's, then the task's own.
         const filters = webhookTaskFilters(cadence);
@@ -374,7 +423,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
             failing < presetCount
               ? `Not an event this task waits for (${described} didn't match).`
               : `Filter ${failing - presetCount + 1} (${described}) didn't match.`,
-            verified,
+            checked,
           );
         }
         // 6. Duplicates.
@@ -388,7 +437,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           if (duplicate) {
             return skip(
               github ? "GitHub sent this event again." : "This event was sent again.",
-              verified,
+              checked,
             );
           }
         }
@@ -398,7 +447,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           since: new Date(startOfDay(now, task.timeZone)).toISOString(),
         });
         if (today >= cadence.dailyRunLimit) {
-          return skip(`This task already ran ${today} times today, its daily limit.`, verified);
+          return skip(`This task already ran ${today} times today, its daily limit.`, checked);
         }
         // The run's message, from the event.
         const base = deps.launchOf(task, yield* deps.projectRoot(task));
@@ -413,7 +462,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           withFinishTool: yield* deps.takesFinishTool(base),
           tag: newEventDataTag(),
         });
-        if (!rendered.ok) return skip(rendered.reason, verified);
+        if (!rendered.ok) return skip(rendered.reason, checked);
         const message = rendered.message.trim();
         const eventSummary = {
           eventId: event.eventId,
@@ -426,7 +475,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
             : null;
         if (subjectKey === null) {
           return go({
-            verified,
+            ...checked,
             launch: { ...base, prompt: message, event: eventSummary },
             subject: null,
             dedupeHash: event.dedupeHash,
@@ -444,7 +493,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
                 updatedAt: row.updatedAt,
               };
         const fresh = go({
-          verified,
+          ...checked,
           launch: { ...base, prompt: message, event: eventSummary },
           subject: { key: subjectKey, projectId: task.projectId, expected, reserve: true },
           dedupeHash: event.dedupeHash,
@@ -454,19 +503,22 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
         let threadId = row.threadId;
         if (threadId === null) {
           // Its first run is still starting the thread: this one waits for it,
-          // unless that run ended without one. A thread the run made that the
-          // subject never heard of (a restart in between) is the thread.
-          const reserving =
+          // unless that run ended without sending its message there. A thread
+          // whose first message went out, but the subject never heard of (a
+          // restart in between), is the thread.
+          const reserving = Option.getOrNull(
             row.reservedByRun === null
               ? Option.none()
-              : yield* repo.getRun({ taskId: task.id, slotUtc: row.reservedByRun });
-          const made = Option.isSome(reserving) ? reserving.value.threadId : null;
+              : yield* repo.getRun({ taskId: task.id, slotUtc: row.reservedByRun }),
+          );
+          const made =
+            reserving !== null && messageDelivered(reserving) ? reserving.threadId : null;
           if (made === null) {
-            if (Option.isNone(reserving) || !isWorkingRun(reserving.value)) return fresh;
+            if (reserving === null || !isWorkingRun(reserving)) return fresh;
             const pull = githubSubject(event.eventName, input.body)?.pullRequest === true;
             return waitFor({
               reason: `Waiting for this ${pull ? "pull request" : "issue"}'s first run to start its thread.`,
-              verified,
+              ...checked,
               message,
               missingFields: rendered.missingFields,
             });
@@ -483,7 +535,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           return fresh;
         }
         return go({
-          verified,
+          ...checked,
           launch: {
             ...base,
             prompt: message,
@@ -504,7 +556,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
       event: WebhookEventRow,
       status: WebhookEventStatus,
       reason: string | null,
-      extra: { readonly verified?: boolean; readonly missingFields?: ReadonlyArray<string> } = {},
+      extra: Partial<SignatureCheck> & { readonly missingFields?: ReadonlyArray<string> } = {},
     ) =>
       Effect.gen(function* () {
         yield* webhooks.updateEvent({
@@ -512,6 +564,9 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           status,
           reason,
           ...(extra.verified !== undefined ? { verified: extra.verified } : {}),
+          ...(extra.signatureChecked !== undefined
+            ? { signatureChecked: extra.signatureChecked }
+            : {}),
           ...(extra.missingFields !== undefined ? { missingFields: extra.missingFields } : {}),
           now: yield* nowIso,
         });
@@ -521,7 +576,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
     const wait = (
       event: WebhookEventRow,
       reason: string,
-      verified: boolean,
+      checked: SignatureCheck,
       missingFields: ReadonlyArray<string>,
     ) =>
       Effect.gen(function* () {
@@ -530,9 +585,9 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           except: event.eventId,
         });
         if (event.status !== "waiting" && waiting >= WEBHOOK_MAX_WAITING) {
-          return yield* finish(event, "skipped", REASON_TOO_MANY_WAITING, { verified });
+          return yield* finish(event, "skipped", REASON_TOO_MANY_WAITING, checked);
         }
-        yield* finish(event, "waiting", reason, { verified, missingFields });
+        yield* finish(event, "waiting", reason, { ...checked, missingFields });
       });
 
     /**
@@ -567,20 +622,16 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
             yield* webhooks.touchLastEvent({ taskId: task.id, at: event.receivedAt });
           }
           if (verdict.kind === "skip") {
-            yield* finish(
-              event,
-              "skipped",
-              verdict.reason,
-              verdict.verified !== undefined ? { verified: verdict.verified } : {},
-            );
+            const { kind: _kind, reason, ...checked } = verdict;
+            yield* finish(event, "skipped", reason, checked);
             return null;
           }
           if (verdict.kind === "wait") {
-            yield* wait(event, verdict.reason, verdict.verified, verdict.missingFields);
+            yield* wait(event, verdict.reason, verdict, verdict.missingFields);
             return null;
           }
           if (roomBlocked !== null) {
-            yield* wait(event, roomBlocked, verdict.verified, verdict.missingFields);
+            yield* wait(event, roomBlocked, verdict, verdict.missingFields);
             return roomBlocked;
           }
           const claimed = yield* repo.claimEventRun({
@@ -593,12 +644,13 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
             dedupeHash: verdict.dedupeHash,
             missingFields: verdict.missingFields,
             verified: verdict.verified,
+            signatureChecked: verdict.signatureChecked,
             now: new Date(now).toISOString(),
           });
           if (claimed.kind === "changed") continue;
           if (claimed.kind === "busy") {
             const reason = BUSY_REASON[claimed.reason];
-            yield* wait(event, reason, verdict.verified, verdict.missingFields);
+            yield* wait(event, reason, verdict, verdict.missingFields);
             return reason;
           }
           yield* deps.launchRun(claimed.run);
@@ -753,6 +805,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           body: opened.payload.body,
           receivedAt: opened.payload.receivedAt,
           verified: null,
+          signatureChecked: null,
         });
         yield* wake(taskId.value);
         return true;
@@ -815,6 +868,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           body: body.success,
           receivedAt: new Date(now).toISOString(),
           verified: null,
+          signatureChecked: null,
         });
         yield* wake(address.taskId);
         return 202 as const;
@@ -964,6 +1018,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
             body: sample.body,
             receivedAt,
             verified: null,
+            signatureChecked: null,
           });
           yield* drainTask(task.id);
           const stored = yield* webhooks.getEvent(eventId);
@@ -986,6 +1041,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           status: "received",
           reason: null,
           verified: null,
+          signatureChecked: null,
           ...describeEvent({ headers: sample.headers, query: "", body: sample.body }),
           dedupeHash: null,
           missingFields: [],
@@ -1032,7 +1088,8 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
               ...event,
               status,
               reason,
-              verified: verdict.kind === "skip" ? (verdict.verified ?? null) : verdict.verified,
+              verified: verdict.verified ?? null,
+              signatureChecked: verdict.signatureChecked ?? null,
               missingFields,
             },
             message,
@@ -1059,6 +1116,11 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
                 : "That event can't be run again any more.",
           } as const;
         }
+        // Passed under the settings of its time: never run unsigned where a
+        // signature is needed now.
+        if (signatureOf(found.cadence) !== null && original.value.signatureChecked !== true) {
+          return { refusal: REASON_REPLAY_UNSIGNED } as const;
+        }
         const eventId = crypto.randomUUID();
         yield* storeEvent({
           eventId,
@@ -1071,6 +1133,7 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
           body: original.value.body,
           receivedAt: new Date(now).toISOString(),
           verified: true,
+          signatureChecked: original.value.signatureChecked === true,
         });
         yield* drainTask(input.id);
         const stored = yield* webhooks.getEvent(eventId);
