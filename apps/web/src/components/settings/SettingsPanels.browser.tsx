@@ -26,7 +26,9 @@ import {
   type ServerProviderCommunity,
   type SourceControlDiscoveryResult,
   type SourceControlSetupState,
+  ThreadId,
 } from "@threadlines/contracts";
+import { scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -42,7 +44,12 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 
+import {
+  resetPrimaryEnvironmentDescriptorForTests,
+  writePrimaryEnvironmentDescriptor,
+} from "../../environments/primary";
 import { __resetLocalApiForTests } from "../../localApi";
+import { useTerminalStateStore } from "../../terminalStateStore";
 import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
 import { useUiStateStore } from "../../uiStateStore";
@@ -1822,6 +1829,66 @@ describe("GeneralSettingsPanel observability", () => {
       expect(desktopBridge.setServerExposureMode).toHaveBeenCalledWith("network-accessible");
     });
     await expect.element(page.getByText("http://192.168.1.44:3773")).toBeInTheDocument();
+  });
+
+  it("says what a network change's restart would stop on this computer", async () => {
+    const thisComputer = EnvironmentId.make("env-this-computer");
+    writePrimaryEnvironmentDescriptor({
+      environmentId: thisComputer,
+      label: "This Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.1.0",
+      capabilities: { repositoryIdentity: false },
+    });
+    const threadKey = scopedThreadKey(scopeThreadRef(thisComputer, ThreadId.make("thread-1")));
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: {
+        [threadKey]: {
+          terminalOpen: false,
+          terminalHeight: 280,
+          terminalIds: ["default"],
+          runningTerminalIds: ["default"],
+          activeTerminalId: "default",
+          terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
+          activeTerminalGroupId: "group-default",
+        },
+      },
+      terminalActivityCommandByKey: { [`${threadKey}\u0000default`]: "npm run dev" },
+    });
+    const desktopBridge = createDesktopBridgeStub();
+    window.desktopBridge = desktopBridge;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    try {
+      mounted = await renderWithTestRouter(
+        <TestAppProviders>
+          <ConnectionsSettings />
+        </TestAppProviders>,
+      );
+      await page.getByRole("button", { name: "Show", exact: true }).click();
+      const networkAccessToggle = page.getByRole("switch", { name: "Same network" });
+      await expect.element(networkAccessToggle).not.toBeDisabled();
+      await networkAccessToggle.click();
+      await expect
+        .element(page.getByText("Let devices on this network connect?"))
+        .toBeInTheDocument();
+      await expect
+        .element(
+          page.getByText(
+            "npm run dev is still running in a terminal. Restarting now will stop it.",
+            {
+              exact: false,
+            },
+          ),
+        )
+        .toBeInTheDocument();
+    } finally {
+      useTerminalStateStore.setState({
+        terminalStateByThreadKey: {},
+        terminalActivityCommandByKey: {},
+      });
+      resetPrimaryEnvironmentDescriptorForTests();
+    }
   });
 
   it("adds desktop ssh environments from the connect-to-a-computer dialog", async () => {
