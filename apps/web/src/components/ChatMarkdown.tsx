@@ -25,8 +25,7 @@ import React, {
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
-import { MessageCopyButton } from "./chat/MessageCopyButton";
-import { CodeBlockRunButton, CodeBlockRunNotes } from "./chat/CommandRuns";
+import { MarkdownCodeBlock } from "./chat/MarkdownCodeBlock";
 import {
   type InlineMarkdownContext,
   renderSkillInlineMarkdownChildren,
@@ -90,6 +89,10 @@ import {
   splitMarkdownBlocks,
   repairStreamingMarkdownTail,
 } from "../lib/chatMarkdownDocument";
+import { normalizeChatMath } from "../lib/chatMarkdownMath";
+import { fencedBlockIsClosed } from "../lib/markdownFences";
+import { DisplayMath, InlineMath } from "./chat/MarkdownMath";
+import { MarkdownDiagram } from "./chat/MarkdownDiagram";
 import { CodexInlineVisualization } from "./chat/CodexInlineVisualization";
 
 class CodeHighlightErrorBoundary extends React.Component<
@@ -134,6 +137,8 @@ interface ChatMarkdownProps {
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
+/** remark-math's inline formulas (`language-math`; GitHub's sanitizer drops `math-inline`). */
+const MATH_CODE_CLASS_REGEX = /(?:^|\s)language-math(?:\s|$)/;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
 const highlightedCodeCache = new LRUCache<string>(
@@ -191,39 +196,6 @@ function estimateHighlightedSize(html: string, code: string): number {
   return Math.max(html.length * 2, code.length * 3);
 }
 
-/**
- * A fenced code block: copy button, and in a settled agent reply a shell
- * command also gets a Run (or Put in terminal) button and, under it, how its
- * latest run went (CommandRuns.tsx). The buttons sit on the code's first line.
- */
-function MarkdownCodeBlock({
-  code,
-  language,
-  children,
-}: {
-  code: string;
-  language: string | undefined;
-  children: ReactNode;
-}) {
-  return (
-    <div className="chat-markdown-codeblock-group">
-      <div className="chat-markdown-codeblock leading-snug">
-        <div className="chat-markdown-codeblock-actions" data-chat-find-ignore="">
-          <CodeBlockRunButton code={code} language={language} />
-          <MessageCopyButton
-            text={code}
-            ariaLabel="Copy code block"
-            size="icon-xs"
-            className="chat-markdown-copy-button"
-          />
-        </div>
-        {children}
-      </div>
-      <CodeBlockRunNotes code={code} language={language} />
-    </div>
-  );
-}
-
 /** Everything a markdown renderer needs from the document around it. */
 interface MarkdownDocumentContextValue {
   readonly cwd: string | undefined;
@@ -234,6 +206,12 @@ interface MarkdownDocumentContextValue {
   readonly themeName: DiffThemeName;
   /** Whether this document is a still-growing streaming tail. */
   readonly isStreaming: boolean;
+  /**
+   * While this document is a streaming tail, its text. A fenced block that
+   * reaches its end without a closing marker is still being written, so a
+   * diagram or formula there isn't drawn yet.
+   */
+  readonly streamingText: string | null;
   readonly searchHighlightQuery: string | undefined;
   readonly inlineContext: InlineMarkdownContext;
   readonly markdownFileLinkMetaByHref: ReadonlyMap<string, MarkdownFileLinkMeta>;
@@ -258,6 +236,7 @@ const MarkdownDocumentContext = createContext<MarkdownDocumentContextValue>({
   resolvedTheme: "dark",
   themeName: resolveDiffThemeName("dark"),
   isStreaming: false,
+  streamingText: null,
   searchHighlightQuery: undefined,
   inlineContext: { skills: EMPTY_MARKDOWN_SKILLS, threadRef: null },
   markdownFileLinkMetaByHref: new Map(),
@@ -754,6 +733,10 @@ function MarkdownCode({
   const documentContext = useContext(MarkdownDocumentContext);
   const { threadRef, searchHighlightQuery, inlineCodeFileLinkMetaBySpan } = documentContext;
   const text = typeof children === "string" ? children : null;
+  // Inline math (remark-math). Display math is a `pre`, which MarkdownPre draws.
+  if (text !== null && className && MATH_CODE_CLASS_REGEX.test(className)) {
+    return <InlineMath tex={text} />;
+  }
   const renderedChildren = text ? (
     <SearchHighlightedInlineText text={text} query={searchHighlightQuery} />
   ) : (
@@ -840,24 +823,50 @@ function MarkdownCode({
 }
 
 /**
+ * Whether a fenced block in a streaming tail is still being written: a fence
+ * the reply hasn't closed runs to the end of the text and has no closing
+ * marker. Unknown positions count as unfinished.
+ */
+function isUnfinishedFence(node: unknown, streamingText: string): boolean {
+  const position = (
+    node as { position?: { start?: { offset?: number }; end?: { offset?: number } } } | undefined
+  )?.position;
+  const start = position?.start?.offset;
+  const end = position?.end?.offset;
+  if (start === undefined || end === undefined) return true;
+  if (end < streamingText.trimEnd().length) return false;
+  return !fencedBlockIsClosed(streamingText.slice(start, end));
+}
+
+/**
  * The `pre` renderer react-markdown gets. Module level on purpose: the renderer
  * map is rebuilt on every delta, so a `pre` defined inside it would be a new
  * component type each flush and every code block would remount mid-stream.
  */
-function MarkdownPre({ node: _node, children, ...props }: MarkdownRendererProps<"pre">) {
+function MarkdownPre({ node, children, ...props }: MarkdownRendererProps<"pre">) {
+  const { streamingText } = useContext(MarkdownDocumentContext);
+  const pending = streamingText !== null && isUnfinishedFence(node, streamingText);
   const codeBlock = extractCodeBlock(children);
   const plainBlock = <pre {...props}>{children}</pre>;
   if (!codeBlock) {
     return plainBlock;
   }
+  const language = CODE_FENCE_LANGUAGE_REGEX.exec(codeBlock.className ?? "")?.[1];
+  // Display math (`$$` blocks and ```math fences, as on GitHub).
+  if (language === "math") {
+    return <DisplayMath tex={codeBlock.code.replace(/\n$/, "")} pending={pending} />;
+  }
+  const highlighted = (
+    <CodeHighlightErrorBoundary fallback={plainBlock}>
+      <ChatCodeBlock className={codeBlock.className} code={codeBlock.code} plain={plainBlock} />
+    </CodeHighlightErrorBoundary>
+  );
+  if (language === "mermaid") {
+    return <MarkdownDiagram code={codeBlock.code} pending={pending} codeView={highlighted} />;
+  }
   return (
-    <MarkdownCodeBlock
-      code={codeBlock.code}
-      language={CODE_FENCE_LANGUAGE_REGEX.exec(codeBlock.className ?? "")?.[1]}
-    >
-      <CodeHighlightErrorBoundary fallback={plainBlock}>
-        <ChatCodeBlock className={codeBlock.className} code={codeBlock.code} plain={plainBlock} />
-      </CodeHighlightErrorBoundary>
+    <MarkdownCodeBlock code={codeBlock.code} language={language}>
+      {highlighted}
     </MarkdownCodeBlock>
   );
 }
@@ -1231,6 +1240,7 @@ function ChatMarkdownDocument({
     [cwd, inlineCodeChips, text],
   );
   const fileLinkKindByPath = useMarkdownFileLinkKinds(fileLinkMetaByKey, environmentId, cwd);
+  const streamingText = isStreaming ? text : null;
   const markdownUrlTransform = useCallback(
     (href: string) => chatMarkdownUrlTransform(href, cwd),
     [cwd],
@@ -1258,6 +1268,7 @@ function ChatMarkdownDocument({
       resolvedTheme,
       themeName: diffThemeName,
       isStreaming,
+      streamingText,
       searchHighlightQuery,
       inlineContext,
       markdownFileLinkMetaByHref,
@@ -1277,6 +1288,7 @@ function ChatMarkdownDocument({
       markdownFileLinkMetaByHref,
       resolvedTheme,
       searchHighlightQuery,
+      streamingText,
       threadRef,
     ],
   );
@@ -1316,10 +1328,12 @@ const MarkdownBlock = memo(function MarkdownBlock({
   // (older CPUs) instead of parsing every 50ms server flush. A settled block's
   // text never changes, so deferring it costs nothing.
   const deferredText = useDeferredValue(text);
-  const renderedText = useMemo(
-    () => (isStreaming ? repairStreamingMarkdownTail(deferredText) : deferredText),
-    [deferredText, isStreaming],
-  );
+  // Math in any of the forms models write it becomes the `$$` the parser
+  // reads (once per settled block); then a streaming tail's open markers close.
+  const renderedText = useMemo(() => {
+    const withMath = normalizeChatMath(deferredText, { streaming: isStreaming });
+    return isStreaming ? repairStreamingMarkdownTail(withMath) : withMath;
+  }, [deferredText, isStreaming]);
   return (
     <MemoChatMarkdownDocument
       text={renderedText}

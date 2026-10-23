@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { repairStreamingMarkdownTail, splitMarkdownBlocks } from "./chatMarkdownDocument";
+import { fencedBlockIsClosed } from "./markdownFences";
 import {
   parseCodexInlineVisualizations,
   stripCodexInlineVisualizationDirectives,
@@ -74,10 +75,31 @@ describe("splitMarkdownBlocks", () => {
     expect(splitMarkdownBlocks("```md\n# inside\n---\n```")).toEqual(["```md\n# inside\n---\n```"]);
   });
 
+  it("keeps display math whole across blank lines and headings", () => {
+    expect(splitMarkdownBlocks("$$\na\n\n# b\n$$\n\nafter")).toEqual(["$$\na\n\n# b\n$$", "after"]);
+    expect(splitMarkdownBlocks("\\[\na\n\nb\n\\]")).toEqual(["\\[\na\n\nb\n\\]"]);
+    expect(splitMarkdownBlocks("$$x=1\n\ny=2$$\n\nafter")).toEqual(["$$x=1\n\ny=2$$", "after"]);
+    expect(splitMarkdownBlocks("\\[\r\na\r\n\r\nb\r\n\\]")).toEqual(["\\[\r\na\r\n\r\nb\r\n\\]"]);
+    // A `$$` nothing closes is not a fence: the paragraphs after it still split.
+    expect(splitMarkdownBlocks("$$5 off\n\nnext\n\nlast")).toEqual(["$$5 off", "next", "last"]);
+  });
+
   it("does not treat a hashtag or a seventh hash as a heading", () => {
     expect(splitMarkdownBlocks("tag line\n#hashtag\n####### seven")).toEqual([
       "tag line\n#hashtag\n####### seven",
     ]);
+  });
+});
+
+describe("fencedBlockIsClosed", () => {
+  it("tells a fence that just closed from one still being written", () => {
+    expect(fencedBlockIsClosed("```mermaid\nflowchart LR\n```")).toBe(true);
+    expect(fencedBlockIsClosed("```mermaid\nflowchart LR")).toBe(false);
+    expect(fencedBlockIsClosed("````\ncode\n```")).toBe(false);
+    expect(fencedBlockIsClosed("$$\nx^2\n$$\n")).toBe(true);
+    expect(fencedBlockIsClosed("$$\nx^2")).toBe(false);
+    expect(fencedBlockIsClosed("- ```sh\n  ls\n  ```")).toBe(true);
+    expect(fencedBlockIsClosed("> ```\n> ls\n> ```")).toBe(true);
   });
 });
 
@@ -125,6 +147,11 @@ describe("repairStreamingMarkdownTail", () => {
     expect(repairStreamingMarkdownTail("width = 2 * height")).toBe("width = 2 * height");
     expect(repairStreamingMarkdownTail("call snake_case_name")).toBe("call snake_case_name");
     expect(repairStreamingMarkdownTail("escaped \\*star")).toBe("escaped \\*star");
+  });
+
+  it("adds no closer for markup inside math", () => {
+    expect(repairStreamingMarkdownTail("Result $$x_{i}$$")).toBe("Result $$x_{i}$$");
+    expect(repairStreamingMarkdownTail("so $$a_b and *c")).toBe("so $$a_b and *c");
   });
 
   it("ignores list and quote markers at the start of the line", () => {

@@ -32,6 +32,7 @@ import {
   resolveMarkdownDocumentFileLinks,
   splitMarkdownBlocks,
 } from "../../../lib/chatMarkdownDocument";
+import { normalizeChatMath } from "../../../lib/chatMarkdownMath";
 import { parseCodexInlineVisualizations } from "../../../lib/codexInlineVisualization";
 import { isImageFilePath } from "../../../lib/imageFilePaths";
 import { findInlineTokenSpans, type InlineSkill } from "../../../lib/inlineMarkdownTokens";
@@ -259,6 +260,8 @@ function walkImage(element: HastElement, context: WalkContext) {
 
 /** MarkdownCode, inline: a file reference wears its chip's label. */
 function walkInlineCode(element: HastElement, context: WalkContext) {
+  // A formula draws glyphs, not words (InlineMath reads past it too).
+  if (hasClass(element, "language-math")) return;
   const { document } = context;
   const only = element.children.length === 1 ? element.children[0] : undefined;
   if (only?.type !== "text") {
@@ -289,7 +292,18 @@ function walkElement(element: HastElement, context: WalkContext) {
     return;
   }
   if (tag === "pre") {
-    // A fenced block draws its code as written (ChatCodeBlock), chips and all.
+    // Display math and diagrams draw pictures, which find reads past
+    // (MarkdownMath, MarkdownDiagram); any other fenced block draws its code
+    // as written (ChatCodeBlock), chips and all.
+    // Only a `pre` holding just its `code` is drawn that way (MarkdownPre).
+    const code = element.children.length === 1 ? element.children[0] : undefined;
+    if (
+      code?.type === "element" &&
+      code.tagName === "code" &&
+      (hasClass(code, "language-math") || hasClass(code, "language-mermaid"))
+    ) {
+      return;
+    }
     context.document.collector.add(element, hastText(element.children));
     return;
   }
@@ -309,8 +323,10 @@ function collectMarkdownDocument(
     readonly root: object;
   },
 ) {
-  // MarkdownBlock: a streaming tail is drawn with its open markers closed.
-  const rendered = options.isStreaming ? repairStreamingMarkdownTail(text) : text;
+  // MarkdownBlock: math normalized, and a streaming tail drawn with its open
+  // markers closed.
+  const withMath = normalizeChatMath(text, { streaming: options.isStreaming });
+  const rendered = options.isStreaming ? repairStreamingMarkdownTail(withMath) : withMath;
   const processor = options.html === "github" ? githubHtmlProcessor : chatProcessor;
   const tree = processor.runSync(processor.parse(rendered)) as HastRoot;
   const document: DocumentContext = {

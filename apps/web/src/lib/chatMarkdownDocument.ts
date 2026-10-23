@@ -9,6 +9,7 @@ import { defaultUrlTransform } from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 
 import { parseChatFileReference } from "../fileViewerStore";
 import {
@@ -19,10 +20,16 @@ import {
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
+import { createFenceTracker, laterMathClosers } from "./markdownFences";
 
-/** The markdown dialect chat speaks: GitHub-flavored. */
+/**
+ * The markdown dialect chat speaks: GitHub-flavored, plus math. Only `$$`
+ * delimits math here; normalizeChatMath (chatMarkdownMath.ts) rewrites the
+ * other ways models write it into that form first, so a lone `$` stays a dollar.
+ */
 export const CHAT_MARKDOWN_REMARK_PLUGINS: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [
   remarkGfm,
+  [remarkMath, { singleDollarTextMath: false }],
 ];
 
 /**
@@ -134,36 +141,7 @@ export function buildFileLinkLabel(
   return labelParts.join(" · ");
 }
 
-const BLOCK_FENCE_MARKER_REGEX = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const INLINE_CODE_RUN_PATTERN = /(`+)([^`\n]+)\1/g;
-
-/**
- * Fenced-code state while walking a markdown document line by line. Every pass
- * over a document shares this bookkeeping: a fence marker line is never a block
- * boundary, and nothing between two markers is markup.
- */
-function createFenceTracker() {
-  let openFence: { char: string; length: number } | null = null;
-  return {
-    isOpen: () => openFence !== null,
-    /** Feeds one line; true when the line was itself a fence marker. */
-    feed(line: string): boolean {
-      const fenceMatch = BLOCK_FENCE_MARKER_REGEX.exec(line);
-      if (!fenceMatch) return false;
-      const marker = fenceMatch[1]!;
-      if (openFence === null) {
-        openFence = { char: marker[0]!, length: marker.length };
-      } else if (
-        marker[0] === openFence.char &&
-        marker.length >= openFence.length &&
-        (fenceMatch[2] ?? "").trim() === ""
-      ) {
-        openFence = null;
-      }
-      return true;
-    },
-  };
-}
 
 /**
  * Every inline code span in a markdown document, skipping fenced blocks.
@@ -177,7 +155,7 @@ function extractInlineCodeSpans(text: string): string[] {
   const fence = createFenceTracker();
 
   for (const line of text.split("\n")) {
-    if (fence.feed(line) || fence.isOpen()) continue;
+    if (fence.feed(line) !== "text") continue;
 
     for (const match of line.matchAll(INLINE_CODE_RUN_PATTERN)) {
       const span = match[2]?.trim();
@@ -217,8 +195,8 @@ const THEMATIC_BREAK_LINE_REGEX = /^(?:\*{3,}|_{3,}|-{3,})[ \t]*$/;
 
 /**
  * Splits markdown into top-level blocks at blank lines outside fenced code
- * blocks, plus at headings and thematic breaks, which never continue the block
- * above them. Every render goes through this: a streaming message re-parses
+ * and display math, plus at headings and thematic breaks, which never continue
+ * the block above them. Every render goes through this: a streaming message re-parses
  * only its growing tail, and a settled one keeps the same blocks so nothing
  * remounts when streaming stops.
  *
@@ -229,7 +207,8 @@ const THEMATIC_BREAK_LINE_REGEX = /^(?:\*{3,}|_{3,}|-{3,})[ \t]*$/;
  */
 export function splitMarkdownBlocks(text: string): string[] {
   const blocks: string[] = [];
-  const fence = createFenceTracker();
+  const lines = text.split("\n");
+  const fence = createFenceTracker({ closesLater: laterMathClosers(lines) });
   let current: string[] = [];
   const flushCurrent = () => {
     if (current.length > 0) {
@@ -238,8 +217,8 @@ export function splitMarkdownBlocks(text: string): string[] {
     }
   };
 
-  for (const line of text.split("\n")) {
-    if (fence.feed(line) || fence.isOpen()) {
+  for (const line of lines) {
+    if (fence.feed(line) !== "text") {
       current.push(line);
       continue;
     }
@@ -311,6 +290,14 @@ function unclosedInlineMarkerClosers(line: string): string {
       index += 1;
       continue;
     }
+    if (char === "$" && scanned[index + 1] === "$") {
+      // Math is not markup: `$$x_{i}$$` has no emphasis to close, and an
+      // unfinished formula holds everything after it.
+      const close = scanned.indexOf("$$", index + 2);
+      if (close === -1) break;
+      index = close + 2;
+      continue;
+    }
     if (char !== "*" && char !== "_" && char !== "~") {
       index += 1;
       continue;
@@ -368,7 +355,8 @@ export function repairStreamingMarkdownTail(text: string): string {
   const fence = createFenceTracker();
   let lastLineIsFenceMarker = false;
   for (const line of lines) {
-    lastLineIsFenceMarker = fence.feed(line);
+    const fenceLine = fence.feed(line);
+    lastLineIsFenceMarker = fenceLine === "open" || fenceLine === "close";
   }
   if (fence.isOpen() || lastLineIsFenceMarker) return text;
 
