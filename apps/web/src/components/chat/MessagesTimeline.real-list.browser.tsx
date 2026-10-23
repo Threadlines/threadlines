@@ -357,8 +357,11 @@ describe("MessagesTimeline with the real virtual list", () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
       const distanceFromEnd = () => list.scrollHeight - list.clientHeight - list.scrollTop;
+      // The list follows the stream once it has measured the new lines, which
+      // a busy runner takes more than two frames to do. Wait for it, as below.
+      const atBottom = () => expect(distanceFromEnd()).toBeLessThanOrEqual(1);
       await streamLines();
-      expect(distanceFromEnd()).toBeLessThanOrEqual(1);
+      await vi.waitFor(atBottom, { timeout: 1_500 });
 
       dispatchTouch(list, "touchstart", 200);
       dispatchTouch(list, "touchmove", 260);
@@ -377,7 +380,6 @@ describe("MessagesTimeline with the real virtual list", () => {
 
       // Once the list rests, it catches up and follows again. Wait for that
       // instead of timing the rest, which a slow machine reaches later.
-      const atBottom = () => expect(distanceFromEnd()).toBeLessThanOrEqual(1);
       await vi.waitFor(atBottom, { timeout: 1_500 });
       await streamLines();
       await vi.waitFor(atBottom, { timeout: 1_500 });
