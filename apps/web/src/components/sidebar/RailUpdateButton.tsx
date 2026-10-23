@@ -86,6 +86,7 @@ export function RailUpdateButton() {
       // the answer), so it stays up while the pointer does. Restarting opens
       // its confirmation instead.
       keepTooltipOnClick={kind !== "install"}
+      tooltipFollowsContent
       // Mid-check and mid-download the click does nothing, but the button
       // keeps full color: the ring and the turning icon are the point then.
       onClick={() => {

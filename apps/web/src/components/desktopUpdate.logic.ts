@@ -354,6 +354,18 @@ export interface RailUpdateCard {
   readonly changed: { readonly triple: boolean; readonly build: boolean };
   /** The second line: where things stand, and what a click does. */
   readonly line: string;
+  /**
+   * What the line is about. The line rolls when this changes; within one
+   * kind (a download's percent, the minutes since a check) it updates in place.
+   */
+  readonly lineKind:
+    | "idle"
+    | "fresh"
+    | "checking"
+    | "found"
+    | "downloading"
+    | "downloaded"
+    | "error";
   readonly lineTone: "muted" | "error";
   /** A check is running: the digits spin until its answer lands them. */
   readonly checking: boolean;
@@ -395,6 +407,7 @@ export function describeRailUpdateCard(input: {
         ? null
         : input.buildChannel;
   const current = (
+    lineKind: RailUpdateCard["lineKind"],
     line: string,
     lineTone: RailUpdateCard["lineTone"] = "muted",
   ): RailUpdateCard => ({
@@ -403,15 +416,17 @@ export function describeRailUpdateCard(input: {
     channel: channelOf(running),
     changed: { triple: false, build: false },
     line,
+    lineKind,
     lineTone,
     checking: state?.status === "checking",
   });
 
-  if (state?.status === "checking") return current("Checking for a newer version…");
+  if (state?.status === "checking") return current("checking", "Checking for a newer version…");
 
   const targetVersion = state?.downloadedVersion ?? state?.availableVersion ?? null;
   const target = targetVersion ? parseRailUpdateCardVersion(targetVersion) : null;
   const toTarget = (
+    lineKind: RailUpdateCard["lineKind"],
     line: string,
     lineTone: RailUpdateCard["lineTone"] = "muted",
   ): RailUpdateCard =>
@@ -425,22 +440,27 @@ export function describeRailUpdateCard(input: {
             build: target.build !== null && target.build !== running.build,
           },
           line,
+          lineKind,
           lineTone,
           checking: false,
         }
-      : current(line, lineTone);
+      : current(lineKind, line, lineTone);
 
   if (state?.status === "error") {
     const message = state.message ?? "Update failed";
     const line = runs ? `${message} · click to try again` : message;
     const aboutTarget = state.errorContext === "download" || state.errorContext === "install";
-    return aboutTarget ? toTarget(line, "error") : current(line, "error");
+    return aboutTarget ? toTarget("error", line, "error") : current("error", line, "error");
   }
   if (state && (state.downloadedVersion || state.status === "downloaded")) {
-    return toTarget(runs ? "Click to restart · running work is listed first" : "Downloaded");
+    return toTarget(
+      "downloaded",
+      runs ? "Click to restart · running work is listed first" : "Downloaded",
+    );
   }
   if (state?.status === "downloading") {
     return toTarget(
+      "downloading",
       typeof state.downloadPercent === "number"
         ? `Downloading · ${Math.floor(state.downloadPercent)}%`
         : "Downloading…",
@@ -453,7 +473,7 @@ export function describeRailUpdateCard(input: {
       target.build !== null && running.build !== null && target.triple === running.triple
         ? running.build
         : `v${running.triple}`;
-    return toTarget(runs ? `Click to download · you have ${have}` : "Ready to download");
+    return toTarget("found", runs ? `Click to download · you have ${have}` : "Ready to download");
   }
 
   const checkedAt = state?.checkedAt ? new Date(state.checkedAt).getTime() : null;
@@ -462,8 +482,8 @@ export function describeRailUpdateCard(input: {
     checkedAt !== null &&
     input.nowMs - checkedAt < RAIL_UPDATE_FRESH_CHECK_MS
   ) {
-    return current("Up to date · checked just now");
+    return current("fresh", "Up to date · checked just now");
   }
   const checked = input.checkedAgo ? `Checked ${input.checkedAgo}` : "Not checked yet";
-  return current(runs ? `${checked} · click to check` : checked);
+  return current("idle", runs ? `${checked} · click to check` : checked);
 }

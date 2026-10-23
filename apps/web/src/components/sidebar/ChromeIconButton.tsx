@@ -19,6 +19,7 @@ export function ChromeIconButton({
   disabled = false,
   side,
   keepTooltipOnClick = false,
+  tooltipFollowsContent = false,
   onClick,
   children,
   testId,
@@ -40,6 +41,11 @@ export function ChromeIconButton({
    * what the click started. Others close it: the click took the user on.
    */
   readonly keepTooltipOnClick?: boolean;
+  /**
+   * The tooltip follows its content's size while open, for a tooltip whose
+   * words change in place. Others keep the size they opened at.
+   */
+  readonly tooltipFollowsContent?: boolean;
   readonly onClick: () => void;
   readonly children: ReactNode;
   readonly testId?: string;
@@ -80,7 +86,14 @@ export function ChromeIconButton({
       >
         {children}
       </TooltipTrigger>
-      <TooltipPopup side={side} sideOffset={6} className="duration-[80ms]">
+      <TooltipPopup
+        side={side}
+        sideOffset={6}
+        className="duration-[80ms]"
+        // The positioner holds the size it measured on opening; max-content
+        // lets it widen with the words instead of clipping them.
+        positionerClassName={tooltipFollowsContent ? "w-max h-max" : undefined}
+      >
         {tooltip}
       </TooltipPopup>
     </Tooltip>

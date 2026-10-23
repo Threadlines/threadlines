@@ -151,18 +151,29 @@ function RollingNumber({
 }
 
 /**
- * Words that roll: a change slides the old words up and out while the new
- * ones come up from below. The newest words size the line; the leaving ones
- * float over it.
+ * Words that roll: a new `rollKey` slides the old words up and out while the
+ * new ones come up from below; new words under the same key (a percent
+ * ticking up) just replace the old. The newest words size the line; the
+ * leaving ones float over it.
  */
-function RollingText({ text, className }: { readonly text: string; readonly className?: string }) {
-  const [entries, setEntries] = useState([{ id: 0, text, leaving: false }]);
+function RollingText({
+  text,
+  rollKey = text,
+  className,
+}: {
+  readonly text: string;
+  readonly rollKey?: string;
+  readonly className?: string;
+}) {
+  const [entries, setEntries] = useState([{ id: 0, rollKey, text, leaving: false }]);
   const latest = entries[entries.length - 1]!;
-  if (latest.text !== text) {
+  if (latest.rollKey !== rollKey) {
     setEntries([
       ...entries.filter((entry) => !entry.leaving).map((entry) => ({ ...entry, leaving: true })),
-      { id: latest.id + 1, text, leaving: false },
+      { id: latest.id + 1, rollKey, text, leaving: false },
     ]);
+  } else if (latest.text !== text) {
+    setEntries(entries.map((entry) => (entry === latest ? { ...entry, text } : entry)));
   }
   const hasLeaving = entries.some((entry) => entry.leaving);
   useEffect(() => {
@@ -251,6 +262,7 @@ export function RailUpdateCard({ card }: { readonly card: RailUpdateCardModel })
         </span>
         <RollingText
           text={card.line}
+          rollKey={card.lineKind}
           className={cn(
             "text-[11px]",
             card.lineTone === "error" ? "text-destructive" : "text-muted-foreground",

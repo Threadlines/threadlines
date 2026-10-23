@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { DesktopUpdateInstallDialog } from "../desktop/DesktopUpdateInstallDialog";
+import { describeRailUpdateCard } from "../desktopUpdate.logic";
 import { RailUpdateButton } from "./RailUpdateButton";
+import { RailUpdateCard } from "./RailUpdateCard";
 
 const idleUpdateState: DesktopUpdateState = {
   enabled: true,
@@ -138,6 +140,36 @@ describe("RailUpdateButton", () => {
     await button().click();
     await vi.waitFor(() => expect(bridge.downloadUpdate).toHaveBeenCalledTimes(1));
     expect(bridge.installUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rolls its line when what it says changes, and ticks a download's percent in place", async () => {
+    const cardFor = (state: Partial<DesktopUpdateState>) =>
+      describeRailUpdateCard({
+        state: { ...idleUpdateState, ...state },
+        appVersion: "1.0.0",
+        buildChannel: "Stable",
+        checkedAgo: null,
+        nowMs: Date.now(),
+        runs: true,
+      });
+    const downloading = (percent: number) =>
+      cardFor({ status: "downloading", availableVersion: "1.0.1", downloadPercent: percent });
+    mounted = await render(
+      <RailUpdateCard card={cardFor({ status: "available", availableVersion: "1.0.1" })} />,
+    );
+    const lineEntries = () =>
+      [
+        ...document.querySelectorAll(
+          '[data-testid="rail-update-card"] > span > span:last-child > span',
+        ),
+      ].map((entry) => entry.textContent);
+
+    await mounted.rerender(<RailUpdateCard card={downloading(4)} />);
+    // A new kind of line rolls in over the old one.
+    expect(lineEntries()).toEqual(["Click to download · you have v1.0.0", "Downloading · 4%"]);
+    await vi.waitFor(() => expect(lineEntries()).toEqual(["Downloading · 4%"]));
+    await mounted.rerender(<RailUpdateCard card={downloading(8)} />);
+    expect(lineEntries()).toEqual(["Downloading · 8%"]);
   });
 
   it("asks before restarting into a downloaded update", async () => {
