@@ -800,7 +800,7 @@ describe("incremental orchestration updates", () => {
     ).toBe("/tmp/project/.worktrees/feature");
   });
 
-  it("records a linked pull request and its own merge switch, apart from the thread's", () => {
+  it("records a linked pull request and its own switches, apart from the thread's", () => {
     const threadId = ThreadId.make("thread-1");
     const url = "https://github.com/acme/widgets/pull/294";
     const linked = applyOrchestrationEvent(
@@ -824,12 +824,25 @@ describe("incremental orchestration updates", () => {
       localEnvironmentId,
     );
 
-    const expected = [{ number: 294, url, autoMerge: "squash" }];
-    expect(threadsOf(armed)[0]?.linkedPullRequests).toEqual(expected);
-    expect(threadsOf(armed)[0]?.pullRequestAutoMerge).toBeNull();
+    // Each switch is set on its own and leaves the other as it was.
+    const fixing = applyOrchestrationEvent(
+      armed,
+      makeEvent("thread.pull-request-automation-changed", {
+        threadId,
+        pullRequestNumber: 294,
+        autoFix: true,
+        updatedAt: "2026-02-27T00:00:03.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const expected = [{ number: 294, url, autoFix: true, autoMerge: "squash" }];
+    expect(threadsOf(fixing)[0]?.linkedPullRequests).toEqual(expected);
+    expect(threadsOf(fixing)[0]?.pullRequestAutoMerge).toBeNull();
+    expect(threadsOf(fixing)[0]?.pullRequestAutoFix).toBe(false);
     // The sidebar files a thread away only once these land too, so its summary carries them.
     expect(
-      localEnvironmentStateOf(armed).sidebarThreadSummaryById[threadId]?.linkedPullRequests,
+      localEnvironmentStateOf(fixing).sidebarThreadSummaryById[threadId]?.linkedPullRequests,
     ).toEqual(expected);
   });
 

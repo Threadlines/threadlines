@@ -251,6 +251,10 @@
       "types": "./src/pullRequestAutoMerge.ts",
       "import": "./src/pullRequestAutoMerge.ts"
     },
+    "./linkedPullRequests": {
+      "types": "./src/linkedPullRequests.ts",
+      "import": "./src/linkedPullRequests.ts"
+    },
     "./pullRequestDismissals": {
       "types": "./src/pullRequestDismissals.ts",
       "import": "./src/pullRequestDismissals.ts"

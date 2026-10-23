@@ -700,7 +700,9 @@ describe("resolveLinkedThreadPullRequests", () => {
 
   it("draws each from the open listing, or as the thread recorded it, and never the thread's own", () => {
     const resolved = resolveLinkedThreadPullRequests({
-      thread: thread({ linkedPullRequests: linked.map((pr) => ({ ...pr, autoMerge: null })) }),
+      thread: thread({
+        linkedPullRequests: linked.map((pr) => ({ ...pr, autoFix: false, autoMerge: null })),
+      }),
       ownNumber: 7,
       projects: PROJECTS,
       openEntries: [
@@ -729,7 +731,9 @@ describe("resolveLinkedThreadPullRequests", () => {
 
   it("reads one that has landed from the merged or closed listing", () => {
     const resolved = resolveLinkedThreadPullRequests({
-      thread: thread({ linkedPullRequests: linked.map((pr) => ({ ...pr, autoMerge: null })) }),
+      thread: thread({
+        linkedPullRequests: linked.map((pr) => ({ ...pr, autoFix: false, autoMerge: null })),
+      }),
       ownNumber: 7,
       projects: PROJECTS,
       openEntries: [entry({ number: 294, url: linked[1]!.url })],
@@ -746,7 +750,7 @@ describe("resolveLinkedThreadPullRequests", () => {
 
   it("looks up what the open listing does not carry, and believes whichever read is newer", () => {
     const subject = thread({
-      linkedPullRequests: linked.map((pr) => ({ ...pr, autoMerge: null })),
+      linkedPullRequests: linked.map((pr) => ({ ...pr, autoFix: false, autoMerge: null })),
     });
     const openEntries = [
       entry({ number: 294, headBranch: "docs/lighter-pr-rules", url: linked[1]!.url }),
@@ -900,7 +904,12 @@ describe("resolveThreadPullRequestsSettledAt", () => {
   };
   const linkedThread = thread({
     linkedPullRequests: [
-      { number: 294, url: "https://github.com/threadlines/threadlines/pull/294", autoMerge: null },
+      {
+        number: 294,
+        url: "https://github.com/threadlines/threadlines/pull/294",
+        autoFix: false,
+        autoMerge: null,
+      },
     ],
   });
   const settledAt = (input: {

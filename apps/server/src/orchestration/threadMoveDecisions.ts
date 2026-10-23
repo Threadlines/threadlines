@@ -16,6 +16,7 @@ import {
   type OrchestrationThread,
   type ThreadId,
 } from "@threadlines/contracts";
+import { threadPullRequestAutomationArmed } from "@threadlines/shared/linkedPullRequests";
 import { isRoomThread } from "@threadlines/shared/threadParticipants";
 
 import { childHasLiveWork } from "./childThreadDecisions.ts";
@@ -103,7 +104,7 @@ export function threadMoveRefusal(
   ) {
     return "A command in this thread is waiting for you to run or dismiss it. Do that first.";
   }
-  if (thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null) {
+  if (threadPullRequestAutomationArmed(thread)) {
     return "Turn off pull request auto-fix and auto-merge for this thread first.";
   }
   // Another thread at work in the same checkout could change the files while

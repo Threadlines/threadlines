@@ -87,14 +87,14 @@ export interface ComposerPullRequest {
   /** Closes the row for this pull request in this thread. */
   readonly onDismiss: () => void;
   /**
-   * The thread's auto-fix watch, which only the pull request on the thread's
-   * own branch has: the thread's checkout cannot push to another branch. Null
-   * for a linked one.
+   * "Fix failing checks and review comments" for this pull request. The
+   * server tells the agent which folder its branch is checked out in when it
+   * is not the thread's own.
    */
   readonly autoFix: {
     readonly checked: boolean;
     readonly onChange: (next: boolean) => void;
-  } | null;
+  };
   /**
    * How the server merges this pull request once its checks pass, for a host
    * that cannot hold that itself; null while the thread has not asked.
@@ -213,7 +213,7 @@ export function ComposerPullRequestRow({
           </span>
         ) : null}
       </div>
-      {pullRequest.autoFix?.checked ? (
+      {pullRequest.autoFix.checked ? (
         <Tooltip>
           <TooltipTrigger
             render={
@@ -459,7 +459,7 @@ function ComposerPullRequestChecksPopover({
           onOpenExternal={onOpenExternal}
         />
       ) : null}
-      {pullRequest.autoFix !== null && composerAutoFixOffered(detail) ? (
+      {composerAutoFixOffered(detail) ? (
         <ComposerPullRequestThreadSwitch
           checked={pullRequest.autoFix.checked}
           onCheckedChange={pullRequest.autoFix.onChange}
@@ -517,7 +517,7 @@ function ComposerPullRequestAutoMergeSection({
   const autoMergeControl = composerAutoMergeControl({
     detail,
     threadAutoMerge: pullRequest.autoMerge,
-    autoFix: pullRequest.autoFix?.checked ?? false,
+    autoFix: pullRequest.autoFix.checked,
     agentWorking: pullRequest.agentWorking,
     unpushedCommits: pullRequest.unpushedCommits,
     pushedHead: pullRequest.pushedHead,

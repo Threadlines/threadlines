@@ -748,12 +748,18 @@ function ChatThreadRouteView() {
       ) {
         return [];
       }
-      // A pull request linked from another branch keeps its own switch after
-      // the thread moves onto that branch and it becomes the thread's own, so
-      // the row reads either switch and turning it off turns off both.
-      const linkedAutoMerge =
-        threadLinkedPullRequests?.find((linked) => linked.number === reference.number)?.autoMerge ??
-        null;
+      // Every switch a row sets belongs to its pull request, so it stays with
+      // that one when the checkout moves to another branch; the thread takes
+      // on one it does not hold yet by number. The thread's own switches, for
+      // whatever pull request its checkout's branch has, are what a thread set
+      // before that. The row on that branch reads both, and a change moves
+      // the thread's own over to the pull request.
+      const linked = threadLinkedPullRequests?.find((entry) => entry.number === reference.number);
+      const linkedAutoFix = linked?.autoFix ?? false;
+      const linkedAutoMerge = linked?.autoMerge ?? null;
+      const ownAutoFix = own && threadPullRequestAutoFix;
+      const ownAutoMerge = own ? threadPullRequestAutoMerge : null;
+      const target = { number: reference.number, url: pullRequest.url };
       const row: ComposerPullRequest = {
         environmentId: threadRef.environmentId,
         reference,
@@ -765,21 +771,22 @@ function ChatThreadRouteView() {
         projectTitle: activeProjectTitle,
         onOpen: () => openPullRequestTab(reference.number),
         onDismiss: () => setComposerPullRequestDismissed(threadRef, reference.number, true),
-        autoFix: own
-          ? {
-              checked: threadPullRequestAutoFix,
-              onChange: (next: boolean) => {
-                void setThreadPullRequestAutoFix(threadRef, next);
-              },
+        // Each change is sent whatever the switch read before it: a click can
+        // come before the read model has caught up with the one before.
+        autoFix: {
+          checked: ownAutoFix || linkedAutoFix,
+          onChange: (next: boolean) => {
+            void setThreadPullRequestAutoFix(threadRef, next, target);
+            if (ownAutoFix) {
+              void setThreadPullRequestAutoFix(threadRef, false, null);
             }
-          : null,
-        autoMerge: own ? (threadPullRequestAutoMerge ?? linkedAutoMerge) : linkedAutoMerge,
+          },
+        },
+        autoMerge: ownAutoMerge ?? linkedAutoMerge,
         onAutoMergeChange: (next) => {
-          if (own) {
-            void setThreadPullRequestAutoMerge(threadRef, next);
-          }
-          if (!own || (next === null && linkedAutoMerge !== null)) {
-            void setThreadPullRequestAutoMerge(threadRef, next, reference.number);
+          void setThreadPullRequestAutoMerge(threadRef, next, target);
+          if (ownAutoMerge !== null) {
+            void setThreadPullRequestAutoMerge(threadRef, null, null);
           }
         },
         agentWorking: threadAgentWorking,

@@ -1,4 +1,8 @@
 import { replaceAgentCheckBacks, sameCheckBacks } from "@threadlines/shared/checkBacks";
+import {
+  applyLinkedPullRequestSwitches,
+  applyPullRequestLinked,
+} from "@threadlines/shared/linkedPullRequests";
 import { applyPullRequestDismissed } from "@threadlines/shared/pullRequestDismissals";
 import { sameAwaitedBackgroundTasks } from "@threadlines/shared/awaitedBackgroundTasks";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
@@ -1048,6 +1052,7 @@ function linkedPullRequestsEqual(
         other !== undefined &&
         linked.number === other.number &&
         linked.url === other.url &&
+        linked.autoFix === other.autoFix &&
         linked.autoMerge === other.autoMerge
       );
     })
@@ -2479,26 +2484,22 @@ function applyEnvironmentOrchestrationEvent(
       }));
 
     case "thread.pull-request-automation-changed": {
-      const { autoMerge, pullRequestNumber } = event.payload;
-      // A numbered change is the switch of one linked pull request.
+      const { autoFix, autoMerge, pullRequestNumber } = event.payload;
+      // A numbered change is the switches of one pull request held by number.
       if (pullRequestNumber !== undefined) {
-        return updateThreadState(state, event.payload.threadId, (thread) =>
-          autoMerge === undefined
-            ? thread
-            : {
-                ...thread,
-                linkedPullRequests: (thread.linkedPullRequests ?? []).map((linked) =>
-                  linked.number === pullRequestNumber ? { ...linked, autoMerge } : linked,
-                ),
-                updatedAt: event.payload.updatedAt,
-              },
-        );
+        return updateThreadState(state, event.payload.threadId, (thread) => ({
+          ...thread,
+          linkedPullRequests: applyLinkedPullRequestSwitches(thread.linkedPullRequests, {
+            pullRequestNumber,
+            autoFix,
+            autoMerge,
+          }),
+          updatedAt: event.payload.updatedAt,
+        }));
       }
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
-        ...(event.payload.autoFix === undefined
-          ? {}
-          : { pullRequestAutoFix: event.payload.autoFix }),
+        ...(autoFix === undefined ? {} : { pullRequestAutoFix: autoFix }),
         ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
         updatedAt: event.payload.updatedAt,
       }));
@@ -2543,17 +2544,10 @@ function applyEnvironmentOrchestrationEvent(
       }));
 
     case "thread.pull-request-linked":
-      return updateThreadState(state, event.payload.threadId, (thread) =>
-        (thread.linkedPullRequests ?? []).some((linked) => linked.number === event.payload.number)
-          ? thread
-          : {
-              ...thread,
-              linkedPullRequests: [
-                ...(thread.linkedPullRequests ?? []),
-                { number: event.payload.number, url: event.payload.url, autoMerge: null },
-              ],
-            },
-      );
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const linkedPullRequests = applyPullRequestLinked(thread.linkedPullRequests, event.payload);
+        return linkedPullRequests === null ? thread : { ...thread, linkedPullRequests };
+      });
 
     // Closing a row is not work on the thread: `updatedAt` stays.
     case "thread.pull-request-dismissed":

@@ -26,6 +26,10 @@ import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import { replaceAgentCheckBacks } from "@threadlines/shared/checkBacks";
 import { applyPullRequestDismissed } from "@threadlines/shared/pullRequestDismissals";
 import {
+  applyLinkedPullRequestSwitches,
+  applyPullRequestLinked,
+} from "@threadlines/shared/linkedPullRequests";
+import {
   agentRequestStateOn,
   withInviteChoice,
   withUnqueuedAgentMessage,
@@ -510,19 +514,21 @@ export function projectEvent(
         "payload",
       ).pipe(
         Effect.map((payload) => {
-          const { autoMerge, pullRequestNumber } = payload;
-          // A numbered change is the switch of one linked pull request.
+          const { autoFix, autoMerge, pullRequestNumber } = payload;
+          // A numbered change is the switches of one pull request held by number.
           if (pullRequestNumber !== undefined) {
             const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
-            if (thread === undefined || autoMerge === undefined) {
+            if (thread === undefined) {
               return nextBase;
             }
             return {
               ...nextBase,
               threads: updateThread(nextBase.threads, payload.threadId, {
-                linkedPullRequests: thread.linkedPullRequests.map((linked) =>
-                  linked.number === pullRequestNumber ? { ...linked, autoMerge } : linked,
-                ),
+                linkedPullRequests: applyLinkedPullRequestSwitches(thread.linkedPullRequests, {
+                  pullRequestNumber,
+                  autoFix,
+                  autoMerge,
+                }),
                 updatedAt: payload.updatedAt,
               }),
             };
@@ -530,7 +536,7 @@ export function projectEvent(
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
-              ...(payload.autoFix === undefined ? {} : { pullRequestAutoFix: payload.autoFix }),
+              ...(autoFix === undefined ? {} : { pullRequestAutoFix: autoFix }),
               ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
               updatedAt: payload.updatedAt,
             }),
@@ -539,7 +545,8 @@ export function projectEvent(
       );
 
     // Found in the conversation, not done to the thread, so it leaves
-    // `updatedAt` where the agent's message put it.
+    // `updatedAt` where the agent's message put it. One taken on with a switch
+    // comes with the switch's own event, which stamps it.
     case "thread.pull-request-linked":
       return decodeForEvent(
         ThreadPullRequestLinkedPayload,
@@ -549,21 +556,16 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) => {
           const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
-          if (
-            thread === undefined ||
-            thread.linkedPullRequests.some((linked) => linked.number === payload.number)
-          ) {
-            return nextBase;
-          }
-          return {
-            ...nextBase,
-            threads: updateThread(nextBase.threads, payload.threadId, {
-              linkedPullRequests: [
-                ...thread.linkedPullRequests,
-                { number: payload.number, url: payload.url, autoMerge: null },
-              ],
-            }),
-          };
+          const linkedPullRequests =
+            thread === undefined
+              ? null
+              : applyPullRequestLinked(thread.linkedPullRequests, payload);
+          return linkedPullRequests === null
+            ? nextBase
+            : {
+                ...nextBase,
+                threads: updateThread(nextBase.threads, payload.threadId, { linkedPullRequests }),
+              };
         }),
       );
 

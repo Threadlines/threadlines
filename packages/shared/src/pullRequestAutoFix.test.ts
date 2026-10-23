@@ -91,6 +91,37 @@ describe("buildPullRequestAutoFixPrompt", () => {
       ].join("\n"),
     );
   });
+
+  it("sends the agent to the folder a branch other than its own is checked out in", () => {
+    const failing = {
+      number: 294,
+      repository: "acme/widgets",
+      failingChecks: [{ name: "lint" }],
+      comments: [],
+    };
+
+    expect(
+      buildPullRequestAutoFixPrompt({
+        ...failing,
+        checkout: { kind: "folder", branch: "fix/lint", path: "/repos/widgets-lint" },
+      })
+        ?.split("\n\n")
+        .at(-1),
+    ).toBe(
+      "Its branch, `fix/lint`, is checked out at `/repos/widgets-lint`, not in this thread's folder. Work in that folder: fix what needs fixing, run the project's checks, commit on that branch, and push so the pull request updates.",
+    );
+    // With no checkout found, it must not switch the thread's own folder over.
+    expect(
+      buildPullRequestAutoFixPrompt({
+        ...failing,
+        checkout: { kind: "unknown", branch: "fix/lint" },
+      })
+        ?.split("\n\n")
+        .at(-1),
+    ).toBe(
+      "Its branch is `fix/lint`. Work in the folder it is checked out in (`git worktree list` shows where), or check it out in a new worktree, rather than switching this thread's folder to it. Then fix what needs fixing, run the project's checks, commit on that branch, and push so the pull request updates.",
+    );
+  });
 });
 
 describe("quotePullRequestBody", () => {

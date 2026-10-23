@@ -230,6 +230,15 @@ function resolveHeadRepositoryNameWithOwner(
   return `${ownerLogin}/${repositoryName}`;
 }
 
+/**
+ * How the local branch a pull request from a fork is checked out on begins
+ * (`threadlines/pr-42/…`): the fork's branch name may clash with one here, so
+ * it is not used as is. A pull request in the same repository keeps its name.
+ */
+export function forkPullRequestBranchPrefix(number: number): string {
+  return `threadlines/pr-${number}/`;
+}
+
 function resolvePullRequestWorktreeLocalBranchName(
   pullRequest: ResolvedPullRequest & PullRequestHeadRemoteInfo,
 ): string {
@@ -239,7 +248,7 @@ function resolvePullRequestWorktreeLocalBranchName(
 
   const sanitizedHeadBranch = sanitizeBranchFragment(pullRequest.headBranch).trim();
   const suffix = sanitizedHeadBranch.length > 0 ? sanitizedHeadBranch : "head";
-  return `threadlines/pr-${pullRequest.number}/${suffix}`;
+  return `${forkPullRequestBranchPrefix(pullRequest.number)}${suffix}`;
 }
 
 function parseGitHubRepositoryNameWithOwnerFromRemoteUrl(url: string | null): string | null {

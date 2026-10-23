@@ -1623,7 +1623,9 @@ describe("ChatView (full app): app shell", () => {
         threadIndex === 0
           ? {
               ...thread,
-              linkedPullRequests: [{ number: linkedNumber, url: linkedUrl, autoMerge: null }],
+              linkedPullRequests: [
+                { number: linkedNumber, url: linkedUrl, autoFix: false, autoMerge: null },
+              ],
               participants: [],
             }
           : thread,
@@ -1672,6 +1674,86 @@ describe("ChatView (full app): app shell", () => {
         pullRequest: "1",
         pullRequestNumber: PULL_REQUEST_NUMBER,
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers fixing on every pull request row, each switch set on its own pull request", async () => {
+    const linkedNumber = 294;
+    const linkedUrl = `https://github.com/${PULL_REQUEST_REPOSITORY}/pull/${linkedNumber}`;
+    const built = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-pull-request-fix-switches" as MessageId,
+      targetText: "pull request fix switches",
+    });
+    // Besides its own #234, the thread's agent opened #294 from another checkout.
+    const snapshot: OrchestrationReadModel = {
+      ...built,
+      threads: built.threads.map((thread, threadIndex) =>
+        threadIndex === 0
+          ? {
+              ...thread,
+              linkedPullRequests: [
+                { number: linkedNumber, url: linkedUrl, autoFix: false, autoMerge: null },
+              ],
+              participants: [],
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot,
+      configureFixture: withPullRequestFixture,
+      resolveRpc: (body) => {
+        const response = resolvePullRequestRpc(body);
+        return body._tag === WS_METHODS.pullRequestsDetail &&
+          (body as { number?: number }).number === linkedNumber
+          ? {
+              ...(response as object),
+              number: linkedNumber,
+              url: linkedUrl,
+              headBranch: "fix/lint",
+            }
+          : response;
+      },
+    });
+
+    try {
+      const rowFor = (number: number) =>
+        [...document.querySelectorAll<HTMLElement>('[data-composer-pull-request-row="true"]')].find(
+          (row) => row.textContent?.includes(`#${number}`),
+        ) ?? null;
+      // The thread does not hold its own by number yet, so its switch takes it
+      // on with its address.
+      for (const [number, url] of [
+        [linkedNumber, linkedUrl],
+        [PULL_REQUEST_NUMBER, PULL_REQUEST_URL],
+      ] as const) {
+        const row = await waitForElement(
+          () => rowFor(number),
+          `The composer had no row for #${number}.`,
+        );
+        row.querySelector<HTMLButtonElement>('button[aria-label="Checks"]')!.click();
+        const fix = page.getByRole("checkbox", { name: "Fix failing checks and review comments" });
+        const sent = (autoFix: boolean) =>
+          wsRequests.filter(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (request as { type?: string }).type === "thread.pull-request-automation.set" &&
+              (request as { pullRequestNumber?: number }).pullRequestNumber === number &&
+              (request as { pullRequestUrl?: string }).pullRequestUrl === url &&
+              (request as { autoFix?: boolean }).autoFix === autoFix,
+          ).length;
+        await fix.click();
+        await vi.waitFor(() => expect(sent(true)).toBe(1));
+        // Taken back before the thread has heard of the first click (it never
+        // does here): the second still reaches the server.
+        await fix.click();
+        await vi.waitFor(() => expect(sent(false)).toBe(1));
+        await userEvent.keyboard("{Escape}");
+        await expect.element(fix).not.toBeInTheDocument();
+      }
     } finally {
       await mounted.cleanup();
     }

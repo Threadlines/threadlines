@@ -3175,75 +3175,81 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
-  it.effect("keeps a linked pull request and its own merge switch on the thread row", () =>
-    Effect.gen(function* () {
-      const engine = yield* OrchestrationEngineService;
-      const sql = yield* SqlClient.SqlClient;
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const threadId = ThreadId.make("thread-linked-pull-request");
-      const url = "https://github.com/acme/widgets/pull/294";
+  it.effect(
+    "takes a pull request on by number with its first switch, and keeps its switches on the thread row",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const sql = yield* SqlClient.SqlClient;
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-linked-pull-request");
+        const url = "https://github.com/acme/widgets/pull/294";
 
-      yield* engine.dispatch({
-        type: "project.create",
-        commandId: CommandId.make("cmd-linked-project"),
-        projectId: ProjectId.make("project-linked"),
-        title: "Linked Project",
-        workspaceRoot: "/tmp/project-linked",
-        defaultModelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5-codex",
-        },
-        createdAt,
-      });
-      yield* engine.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make("cmd-linked-thread"),
-        threadId,
-        projectId: ProjectId.make("project-linked"),
-        title: "Linked Thread",
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5-codex",
-        },
-        interactionMode: "default",
-        runtimeMode: "approval-required",
-        branch: null,
-        worktreePath: null,
-        createdAt,
-      });
-      yield* engine.dispatch({
-        type: "thread.pull-request.link",
-        commandId: CommandId.make("cmd-linked-link"),
-        threadId,
-        number: 294,
-        url,
-        createdAt,
-      });
-      yield* engine.dispatch({
-        type: "thread.pull-request-automation.set",
-        commandId: CommandId.make("cmd-linked-merge"),
-        threadId,
-        pullRequestNumber: 294,
-        autoMerge: "squash",
-      });
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-linked-project"),
+          projectId: ProjectId.make("project-linked"),
+          title: "Linked Project",
+          workspaceRoot: "/tmp/project-linked",
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-linked-thread"),
+          threadId,
+          projectId: ProjectId.make("project-linked"),
+          title: "Linked Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        });
+        // The first switch set on a pull request the thread does not hold by
+        // number yet takes it on; the next one finds it there.
+        yield* engine.dispatch({
+          type: "thread.pull-request-automation.set",
+          commandId: CommandId.make("cmd-linked-merge"),
+          threadId,
+          pullRequestNumber: 294,
+          pullRequestUrl: url,
+          autoMerge: "squash",
+        });
+        yield* engine.dispatch({
+          type: "thread.pull-request-automation.set",
+          commandId: CommandId.make("cmd-linked-fix"),
+          threadId,
+          pullRequestNumber: 294,
+          autoFix: true,
+        });
 
-      const threadRows = yield* sql<{
-        readonly linkedPullRequests: string;
-        readonly pullRequestAutoMerge: string | null;
-      }>`
+        const threadRows = yield* sql<{
+          readonly linkedPullRequests: string;
+          readonly pullRequestAutoMerge: string | null;
+        }>`
         SELECT
           linked_pull_requests AS "linkedPullRequests",
           pull_request_auto_merge AS "pullRequestAutoMerge"
         FROM projection_threads
         WHERE thread_id = ${threadId}
       `;
-      assert.deepEqual(threadRows, [
-        {
-          linkedPullRequests: JSON.stringify([{ number: 294, url, autoMerge: "squash" }]),
-          pullRequestAutoMerge: null,
-        },
-      ]);
-    }),
+        assert.deepEqual(threadRows, [
+          {
+            linkedPullRequests: JSON.stringify([
+              { number: 294, url, autoFix: true, autoMerge: "squash" },
+            ]),
+            pullRequestAutoMerge: null,
+          },
+        ]);
+      }),
   );
 
   it.effect("keeps the pull request rows a user closed when the shell is read back", () =>

@@ -1344,14 +1344,18 @@ export const OrchestrationThreadDoneOverride = Schema.Struct({
 export type OrchestrationThreadDoneOverride = typeof OrchestrationThreadDoneOverride.Type;
 
 /**
- * A pull request this thread's agent opened on a branch other than the
- * thread's own, in the project's repository: made from another checkout, then
- * linked in the conversation. The pull request on the thread's own branch is
- * never one of these; it is found from the branch.
+ * A pull request of this thread's, in the project's repository, held by number
+ * so its switches stay with it wherever the thread's checkout moves: one its
+ * agent opened from another checkout and linked in the conversation, or any of
+ * the thread's pull requests, its own branch's included, once a switch was set
+ * on it. A pull request on the thread's own branch is otherwise found from the
+ * branch and is not one of these.
  */
 export const OrchestrationThreadLinkedPullRequest = Schema.Struct({
   number: PositiveInt,
   url: TrimmedNonEmptyString,
+  /** The same switch as `OrchestrationThreadShell.pullRequestAutoFix`, held for this pull request. */
+  autoFix: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** The same switch as `OrchestrationThreadShell.pullRequestAutoMerge`, held for this pull request. */
   autoMerge: Schema.NullOr(PullRequestMergeMethod).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -2211,26 +2215,32 @@ export const OrchestrationThreadShell = Schema.Struct({
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   pinnedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   /**
-   * While true, the server watches this thread's pull request and starts a turn
-   * asking the agent to fix a check that has just failed or a review comment
-   * that has just arrived. It only runs while the server does, so a closed
-   * desktop app watches nothing.
+   * While true, the server watches the pull request on the branch this
+   * thread's checkout is on and starts a turn asking the agent to fix a check
+   * that has just failed or a review comment that has just arrived. It only
+   * runs while the server does, so a closed desktop app watches nothing.
+   *
+   * Clients now set the switch on one pull request, in `linkedPullRequests`,
+   * since the checkout can move to another branch; this one still holds what
+   * a thread turned on before that, and is turned off along with it.
    */
   pullRequestAutoFix: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
-   * How the server merges this thread's pull request once its checks pass, or
-   * null while the thread has not asked. This stands in for a host that cannot
-   * arm the merge itself (GitHub with auto-merge off, or with no required
-   * checks), and like the auto-fix watch it only runs while the server does.
+   * How the server merges the pull request on the branch this thread's
+   * checkout is on once its checks pass, or null while the thread has not
+   * asked. This stands in for a host that cannot arm the merge itself (GitHub
+   * with auto-merge off, or with no required checks), and like the auto-fix
+   * watch it only runs while the server does. Held the way
+   * `pullRequestAutoFix` is.
    */
   pullRequestAutoMerge: Schema.NullOr(PullRequestMergeMethod).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   /**
-   * Pull requests the agent opened on other branches and linked in this
-   * thread, in the order they were found. Each can hold its own "Merge when
-   * checks pass"; the auto-fix watch stays with the thread's own pull request,
-   * the one its checkout can push to.
+   * The thread's pull requests held by number, in the order they were found:
+   * the ones its agent opened on other branches and linked, and any other it
+   * has set a switch on. Each holds its own "Fix failing checks" and "Merge
+   * when checks pass".
    */
   linkedPullRequests: Schema.Array(OrchestrationThreadLinkedPullRequest).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -2624,19 +2634,21 @@ const ThreadUnpinCommand = Schema.Struct({
 });
 
 /**
- * Arm or disarm the server's watches on this thread's pull request. See
- * `OrchestrationThreadShell.pullRequestAutoFix` and `pullRequestAutoMerge`.
- * A switch left out keeps the value it had.
+ * Arm or disarm the server's watches on this thread's pull requests. A switch
+ * left out keeps the value it had.
  *
- * With `pullRequestNumber`, `autoMerge` is the switch of that linked pull
- * request instead (see `linkedPullRequests`); the auto-fix watch has no such
- * form, so `autoFix` is refused alongside it.
+ * With `pullRequestNumber`, the switches are that pull request's (see
+ * `linkedPullRequests`). One the thread does not hold by number yet is added
+ * from `pullRequestUrl`, which must then name it. Without, they are the
+ * thread's own (`OrchestrationThreadShell.pullRequestAutoFix` and
+ * `pullRequestAutoMerge`), for whatever pull request its checkout's branch has.
  */
 const ThreadPullRequestAutomationSetCommand = Schema.Struct({
   type: Schema.Literal("thread.pull-request-automation.set"),
   commandId: CommandId,
   threadId: ThreadId,
   pullRequestNumber: Schema.optional(PositiveInt),
+  pullRequestUrl: Schema.optional(TrimmedNonEmptyString),
   autoFix: Schema.optional(Schema.Boolean),
   autoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
 });
@@ -4236,7 +4248,7 @@ export const ThreadUnpinnedPayload = Schema.Struct({
 /** A switch left out kept its value; events from before auto-merge carry only `autoFix`. */
 export const ThreadPullRequestAutomationChangedPayload = Schema.Struct({
   threadId: ThreadId,
-  /** Present when `autoMerge` belongs to this linked pull request. */
+  /** Present when the switches belong to this pull request in `linkedPullRequests`. */
   pullRequestNumber: Schema.optional(PositiveInt),
   autoFix: Schema.optional(Schema.Boolean),
   autoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),

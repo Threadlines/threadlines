@@ -613,7 +613,7 @@ describe("orchestration projector", () => {
     expect(mergeArmed.threads[0]?.pullRequestAutoMerge).toBe("squash");
     expect(mergeArmed.threads[0]?.pullRequestAutoFix).toBe(true);
 
-    // A linked pull request carries a switch of its own, apart from the thread's.
+    // A linked pull request carries switches of its own, apart from the thread's.
     const linked = await Effect.runPromise(
       projectEvent(
         mergeArmed,
@@ -652,10 +652,35 @@ describe("orchestration projector", () => {
         }),
       ),
     );
-    expect(linkedArmed.threads[0]?.linkedPullRequests).toEqual([
-      { number: 294, url: "https://github.com/acme/widgets/pull/294", autoMerge: "rebase" },
+    const linkedFixing = await Effect.runPromise(
+      projectEvent(
+        linkedArmed,
+        makeEvent({
+          sequence: 6,
+          type: "thread.pull-request-automation-changed",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: later,
+          commandId: "cmd-thread-linked-fix",
+          payload: {
+            threadId: "thread-1",
+            pullRequestNumber: 294,
+            autoFix: true,
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+    expect(linkedFixing.threads[0]?.linkedPullRequests).toEqual([
+      {
+        number: 294,
+        url: "https://github.com/acme/widgets/pull/294",
+        autoFix: true,
+        autoMerge: "rebase",
+      },
     ]);
-    expect(linkedArmed.threads[0]?.pullRequestAutoMerge).toBe("squash");
+    expect(linkedFixing.threads[0]?.pullRequestAutoMerge).toBe("squash");
+    expect(linkedFixing.threads[0]?.pullRequestAutoFix).toBe(true);
   });
 
   it("keeps projector forward-compatible for unhandled event types", async () => {

@@ -32,6 +32,16 @@ export interface PullRequestAutoFixMergeQueueFailure {
   readonly failedChecks: readonly PullRequestAutoFixCheck[];
 }
 
+/**
+ * Where the pull request's branch is checked out, when that is not known to be
+ * the folder the thread's agent works in: `folder` is another checkout the
+ * server found on it, and `unknown` is a branch it found no checkout of that
+ * it could vouch for.
+ */
+export type PullRequestAutoFixCheckout =
+  | { readonly kind: "folder"; readonly branch: string; readonly path: string }
+  | { readonly kind: "unknown"; readonly branch: string };
+
 export interface PullRequestAutoFixPromptInput {
   readonly number: number;
   /** `owner/name`, as the host spells it. */
@@ -39,6 +49,22 @@ export interface PullRequestAutoFixPromptInput {
   readonly failingChecks: readonly PullRequestAutoFixCheck[];
   readonly comments: readonly PullRequestAutoFixComment[];
   readonly mergeQueueFailure?: PullRequestAutoFixMergeQueueFailure | null;
+  /** Absent or null: the branch is the one the thread's own folder is on. */
+  readonly checkout?: PullRequestAutoFixCheckout | null;
+}
+
+const FIX_AND_PUSH =
+  "fix what needs fixing, run the project's checks, commit on that branch, and push so the pull request updates.";
+
+/** The closing instruction: what to do, and where. */
+function workLine(checkout: PullRequestAutoFixCheckout | null): string {
+  if (checkout === null) {
+    return "Fix what needs fixing, run the project's checks, commit on this branch, and push so the pull request updates.";
+  }
+  if (checkout.kind === "folder") {
+    return `Its branch, \`${checkout.branch}\`, is checked out at \`${checkout.path}\`, not in this thread's folder. Work in that folder: ${FIX_AND_PUSH}`;
+  }
+  return `Its branch is \`${checkout.branch}\`. Work in the folder it is checked out in (\`git worktree list\` shows where), or check it out in a new worktree, rather than switching this thread's folder to it. Then ${FIX_AND_PUSH}`;
 }
 
 function checkLines(checks: readonly PullRequestAutoFixCheck[]): string[] {
@@ -102,9 +128,7 @@ export function buildPullRequestAutoFixPrompt(input: PullRequestAutoFixPromptInp
     sections.push(`New review comments:\n${blocks.join("\n\n")}`);
   }
 
-  sections.push(
-    "Fix what needs fixing, run the project's checks, commit on this branch, and push so the pull request updates.",
-  );
+  sections.push(workLine(input.checkout ?? null));
 
   return sections.join("\n\n");
 }
