@@ -99,7 +99,11 @@ import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import { resetRightPanelTabsForTests } from "../rightPanelTabs";
 import { __resetComposerPullRequestDismissalsForTests } from "../lib/composerPullRequestDismissals";
-import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
+import {
+  selectBootstrapCompleteForActiveEnvironment,
+  selectThreadDetailLoaded,
+  useStore,
+} from "../store";
 import { dismissFirstRunSetup } from "./setup/firstRunGate";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -1430,6 +1434,22 @@ export async function waitForThreadDetailSubscription(threadId: ThreadId): Promi
             request.threadId === threadId,
         ),
       ).toBe(true);
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+}
+
+/**
+ * Waits for a local thread's first detail snapshot to land. A page subscribes
+ * to the details of the threads it shows, and that snapshot rewrites the
+ * thread's summary: a thread marked working with `setSidebarThreadWork`
+ * before then goes back to idle when the snapshot arrives, which on a slow
+ * machine can be after the test has started looking.
+ */
+export async function waitForThreadDetailLoaded(threadId: ThreadId): Promise<void> {
+  await vi.waitFor(
+    () => {
+      expect(selectThreadDetailLoaded(useStore.getState(), threadRefFor(threadId))).toBe(true);
     },
     { timeout: 8_000, interval: 16 },
   );
