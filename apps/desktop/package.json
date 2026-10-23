@@ -24,7 +24,7 @@
     "@threadlines/ssh": "workspace:*",
     "@threadlines/tailscale": "workspace:*",
     "effect": "catalog:",
-    "electron": "43.7.11",
+    "electron": "43.8.1",
     "electron-updater": "^6.8.10"
   },
   "devDependencies": {
