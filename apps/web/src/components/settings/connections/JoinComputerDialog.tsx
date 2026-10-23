@@ -10,6 +10,7 @@ import { create } from "zustand";
 import { RelayJoinError } from "~/environments/runtime";
 import { lazyWithPreload } from "~/lib/lazyWithPreload";
 import { RelayRequestError } from "~/relayDevice";
+import { Dialog } from "../../ui/dialog";
 
 const JoinComputerDialog = lazyWithPreload(() =>
   import("./JoinComputerDialogContent").then((module) => module.JoinComputerDialog),
@@ -61,14 +62,14 @@ export function closeConnectComputerDialog(): void {
 /** Mounted once with the app shell: the dialog, while it is open. */
 export function ConnectComputerDialogHost() {
   const open = useConnectComputerDialogStore((state) => state.open);
+  const onOpenChange = (next: boolean) => {
+    if (!next) closeConnectComputerDialog();
+  };
+  // The body brings its own root (its close also clears a finished join).
+  // Until it loads, a bare root keeps Escape and a click away closing it.
   return open ? (
-    <Suspense fallback={null}>
-      <JoinComputerDialog.Component
-        open
-        onOpenChange={(next) => {
-          if (!next) closeConnectComputerDialog();
-        }}
-      />
+    <Suspense fallback={<Dialog open onOpenChange={onOpenChange} />}>
+      <JoinComputerDialog.Component open onOpenChange={onOpenChange} />
     </Suspense>
   ) : null;
 }

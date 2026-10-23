@@ -4,7 +4,11 @@ import { lazy, type ComponentType } from "react";
  * A component whose code is a chunk of its own, so startup never downloads
  * it: React fetches it the first time it renders (under a Suspense boundary),
  * or `preload` fetches it earlier, so the first open can still be instant.
- * A failed preload is forgotten, so the first render fetches again.
+ * A failed preload is forgotten, so the first render fetches again. A failed
+ * render is not: React.lazy keeps that error, and the error screen's "Reload
+ * app" is the way back. (Swapping in a fresh lazy component on failure would
+ * have React's own retry of the render fetch again, and offline that never
+ * stops.) Preloading after first paint keeps that window small.
  *
  *   const Body = lazyWithPreload(() => import("./DialogBody").then((m) => m.DialogBody));
  *   <Suspense fallback={null}><Body.Component /></Suspense>
