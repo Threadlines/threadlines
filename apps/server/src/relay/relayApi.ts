@@ -2,6 +2,14 @@ import {
   type RelayCreateInviteInput,
   RelayCreateInviteResult,
   RelayDecisionResult,
+  RELAY_ERROR_BAD_HOST_SECRET,
+  RELAY_ERROR_UNKNOWN_HOST,
+  RelayHookDelivery,
+  type RelayHookMintInput,
+  RelayHookMintResult,
+  type RelayHookStateInput,
+  RelayHookStateResult,
+  RelayHookStatusResult,
   type RelayHostNonce,
   RelayErrorResponse,
   type RelayJoinInput,
@@ -33,6 +41,22 @@ const decodeRelayCreateInviteResult = Schema.decodeUnknownEffect(RelayCreateInvi
 const decodeRelayDecisionResult = Schema.decodeUnknownEffect(RelayDecisionResult);
 const decodeRelayJoinResult = Schema.decodeUnknownEffect(RelayJoinResult);
 const decodeRelayRequestStatusResult = Schema.decodeUnknownEffect(RelayRequestStatusResult);
+const decodeRelayHookMintResult = Schema.decodeUnknownEffect(RelayHookMintResult);
+const decodeRelayHookStateResult = Schema.decodeUnknownEffect(RelayHookStateResult);
+const decodeRelayHookStatusResult = Schema.decodeUnknownEffect(RelayHookStatusResult);
+const decodeRelayHookDelivery = Schema.decodeUnknownEffect(RelayHookDelivery);
+
+/**
+ * The relay answered that it no longer knows this computer (its host is gone
+ * or the secret doesn't match): not a network error, so registering again is
+ * the only way back.
+ */
+export function isRelayHostGone(error: RelayApiError): boolean {
+  return (
+    (error.status === 404 && error.code === RELAY_ERROR_UNKNOWN_HOST) ||
+    (error.status === 401 && error.code === RELAY_ERROR_BAD_HOST_SECRET)
+  );
+}
 
 /** Normalizes a relay URL to its origin (`https://host[:port]`). */
 export function relayOriginFrom(url: string): string {
@@ -41,7 +65,7 @@ export function relayOriginFrom(url: string): string {
 
 function request<A>(input: {
   readonly origin: string;
-  readonly method: "GET" | "POST" | "DELETE";
+  readonly method: "GET" | "POST" | "PUT" | "DELETE";
   readonly path: string;
   readonly bearer?: string;
   readonly body?: unknown;
@@ -179,6 +203,48 @@ export const relayApi = {
       path: `/v2/hosts/${hostId}/devices/${deviceId}/revoke`,
       bearer: hostSecret,
       decode: ignoreBody,
+    }),
+
+  /** Mints an event task hook; its full public address comes back. */
+  mintHook: (origin: string, hostId: string, hostSecret: string, body: RelayHookMintInput) =>
+    request({
+      origin,
+      method: "POST",
+      path: `/v2/hosts/${hostId}/hooks`,
+      bearer: hostSecret,
+      body,
+      decode: (value) => decodeRelayHookMintResult(value),
+    }),
+
+  /** Sends the whole wanted hook state; applied only if its revision is newer. */
+  setHooks: (origin: string, hostId: string, hostSecret: string, body: RelayHookStateInput) =>
+    request({
+      origin,
+      method: "PUT",
+      path: `/v2/hosts/${hostId}/hooks`,
+      bearer: hostSecret,
+      body,
+      decode: (value) => decodeRelayHookStateResult(value),
+    }),
+
+  /** The relay's last applied hook revision; also tells whether it still knows this computer. */
+  hookStatus: (origin: string, hostId: string, hostSecret: string) =>
+    request({
+      origin,
+      method: "GET",
+      path: `/v2/hosts/${hostId}/hooks`,
+      bearer: hostSecret,
+      decode: (value) => decodeRelayHookStatusResult(value),
+    }),
+
+  /** A delivery announced as too large for the control socket. */
+  hookDelivery: (origin: string, hostId: string, hostSecret: string, deliveryId: string) =>
+    request({
+      origin,
+      method: "GET",
+      path: `/v2/hosts/${hostId}/hooks/deliveries/${encodeURIComponent(deliveryId)}`,
+      bearer: hostSecret,
+      decode: (value) => decodeRelayHookDelivery(value),
     }),
 
   join: (origin: string, body: RelayJoinInput) =>
