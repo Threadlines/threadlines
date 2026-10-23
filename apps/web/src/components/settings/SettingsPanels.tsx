@@ -76,6 +76,13 @@ import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import {
+  NumberField,
+  NumberFieldDecrement,
+  NumberFieldGroup,
+  NumberFieldIncrement,
+  NumberFieldInput,
+} from "../ui/number-field";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import {
@@ -445,6 +452,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.newThreadModelSelection !== null ? ["New thread agent"] : []),
       ...(settings.newThreadRoomAgents.length > 0 ? ["New thread room"] : []),
       ...(settings.openLinksIn !== DEFAULT_UNIFIED_SETTINGS.openLinksIn ? ["Open links in"] : []),
+      ...(settings.terminalFontSize !== DEFAULT_UNIFIED_SETTINGS.terminalFontSize
+        ? ["Terminal text size"]
+        : []),
+      ...(settings.terminalScreenReaderMode !== DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode
+        ? ["Terminal screen reader support"]
+        : []),
       ...(settings.agentBrowserSitePolicy !== DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy
         ? ["Sites agents can visit"]
         : []),
@@ -492,6 +505,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.wrapUpChildThreadsOnFinish,
       settings.addProjectBaseDirectory,
       settings.openLinksIn,
+      settings.terminalFontSize,
+      settings.terminalScreenReaderMode,
       settings.agentBrowserSitePolicy,
       settings.defaultThreadEnvMode,
       settings.diffChangesOnly,
@@ -542,6 +557,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       newThreadModelSelection: DEFAULT_UNIFIED_SETTINGS.newThreadModelSelection,
       newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,
       openLinksIn: DEFAULT_UNIFIED_SETTINGS.openLinksIn,
+      terminalFontSize: DEFAULT_UNIFIED_SETTINGS.terminalFontSize,
+      terminalScreenReaderMode: DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode,
       agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
       enableRooms: true,
       enableAgentPages: true,
@@ -633,6 +650,76 @@ function PreventSleepRow() {
         />
       }
     />
+  );
+}
+
+/** How the terminal drawer reads on this device. */
+function TerminalSettingsSection() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsSection title="Terminal">
+      <SettingsRow
+        title="Text size"
+        description="The size of the terminal's text on this device."
+        resetAction={
+          settings.terminalFontSize !== DEFAULT_UNIFIED_SETTINGS.terminalFontSize ? (
+            <SettingResetButton
+              label="terminal text size"
+              onClick={() =>
+                updateSettings({ terminalFontSize: DEFAULT_UNIFIED_SETTINGS.terminalFontSize })
+              }
+            />
+          ) : null
+        }
+        control={
+          <NumberField
+            value={settings.terminalFontSize}
+            min={9}
+            max={24}
+            step={1}
+            size="sm"
+            className="w-28"
+            onValueChange={(value) => {
+              if (value === null || !Number.isFinite(value)) return;
+              updateSettings({ terminalFontSize: Math.min(24, Math.max(9, Math.round(value))) });
+            }}
+          >
+            <NumberFieldGroup>
+              <NumberFieldDecrement aria-label="Smaller terminal text" />
+              <NumberFieldInput aria-label="Terminal text size in pixels" />
+              <NumberFieldIncrement aria-label="Larger terminal text" />
+            </NumberFieldGroup>
+          </NumberField>
+        }
+      />
+      <SettingsRow
+        title="Screen reader support"
+        description="Lets a screen reader read what the terminal prints. Busy output draws a little slower."
+        resetAction={
+          settings.terminalScreenReaderMode !==
+          DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode ? (
+            <SettingResetButton
+              label="terminal screen reader support"
+              onClick={() =>
+                updateSettings({
+                  terminalScreenReaderMode: DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode,
+                })
+              }
+            />
+          ) : null
+        }
+        control={
+          <Switch
+            checked={settings.terminalScreenReaderMode}
+            onCheckedChange={(checked) =>
+              updateSettings({ terminalScreenReaderMode: Boolean(checked) })
+            }
+            aria-label="Terminal screen reader support"
+          />
+        }
+      />
+    </SettingsSection>
   );
 }
 
@@ -1023,6 +1110,8 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           }
         />
       </SettingsSection>
+
+      <TerminalSettingsSection />
 
       <DictationSettings />
 

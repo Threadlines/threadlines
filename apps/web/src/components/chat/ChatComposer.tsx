@@ -169,9 +169,11 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { isAppBackendEnvironment } from "../../environments/providerComputer";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { ProviderUsageSignIn } from "./providerSignIn";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
+import { usePinchToExpand } from "./usePinchToExpand";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { basenameOfPath } from "../../vscode-icons";
 import { cn, randomUUID } from "~/lib/utils";
@@ -728,6 +730,26 @@ export interface ChatComposerProps {
 // --------------------------------------------------------------------------
 // Component
 // --------------------------------------------------------------------------
+
+/** A picture attached to the draft; clicking or pinching it opens the viewer. */
+function ComposerImageAttachmentButton(props: {
+  readonly name: string;
+  readonly previewUrl: string;
+  readonly onExpand: () => void;
+}) {
+  const pinchRef = usePinchToExpand(props.onExpand);
+  return (
+    <button
+      ref={pinchRef}
+      type="button"
+      className="h-full w-full cursor-zoom-in"
+      aria-label={`Preview ${props.name}`}
+      onClick={props.onExpand}
+    >
+      <img src={props.previewUrl} alt={props.name} className="h-full w-full object-cover" />
+    </button>
+  );
+}
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
   const {
@@ -3965,11 +3987,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           title={attachment.name}
                         >
                           {attachment.previewUrl ? (
-                            <button
-                              type="button"
-                              className="h-full w-full cursor-zoom-in"
-                              aria-label={`Preview ${attachment.name}`}
-                              onClick={() => {
+                            <ComposerImageAttachmentButton
+                              name={attachment.name}
+                              previewUrl={attachment.previewUrl}
+                              onExpand={() => {
                                 const preview = buildExpandedImagePreview(
                                   composerAttachments,
                                   attachment.id,
@@ -3977,13 +3998,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                 if (!preview) return;
                                 onExpandImage(preview);
                               }}
-                            >
-                              <img
-                                src={attachment.previewUrl}
-                                alt={attachment.name}
-                                className="h-full w-full object-cover"
-                              />
-                            </button>
+                            />
                           ) : (
                             <button
                               type="button"
@@ -4206,6 +4221,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       keybindings={keybindings}
                       modelOptionsByInstance={modelOptionsByInstance}
                       terminalOpen={terminalOpen}
+                      providerSettingsShown={isAppBackendEnvironment(environmentId)}
                       side="top"
                       open={isComposerModelPickerOpen}
                       {...(composerProviderState.modelPickerIconClassName

@@ -15,7 +15,8 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       clear: (input) => rpcClient.terminal.clear(input as never),
       restart: (input) => rpcClient.terminal.restart(input as never),
       close: (input) => rpcClient.terminal.close(input as never),
-      onEvent: (callback) => rpcClient.terminal.onEvent(callback),
+      resolveInterrupted: (input) => rpcClient.terminal.resolveInterrupted(input as never),
+      onEvent: (input, callback) => rpcClient.terminal.onEvent(input, callback),
     },
     realtime: {
       appendAudio: rpcClient.realtime.appendAudio,
@@ -145,6 +146,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     },
     pullRequests: {
       list: rpcClient.pullRequests.list,
+      lookup: rpcClient.pullRequests.lookup,
       detail: rpcClient.pullRequests.detail,
       activity: rpcClient.pullRequests.activity,
       diff: rpcClient.pullRequests.diff,

@@ -162,6 +162,12 @@ export const ClientSettingsSchema = Schema.Struct({
   diffWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   // File viewer preferences. Code files default to horizontal scroll.
   fileViewerWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Terminal drawer text size in pixels, per device.
+  terminalFontSize: Schema.Int.check(Schema.isGreaterThanOrEqualTo(9))
+    .check(Schema.isLessThanOrEqualTo(24))
+    .pipe(Schema.withDecodingDefault(Effect.succeed(12))),
+  // xterm's screen reader mode: an accessible copy of the terminal's text.
+  terminalScreenReaderMode: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   // What the send button does with a message typed while a turn runs: add it
   // to that turn, or hold it for the next one. The last choice sticks.
   followUpDelivery: FollowUpDelivery.pipe(Schema.withDecodingDefault(Effect.succeed("steer"))),
@@ -1166,6 +1172,10 @@ export const ClientSettingsPatch = Schema.Struct({
   diffRenderMode: Schema.optionalKey(DiffRenderMode),
   diffWordWrap: Schema.optionalKey(Schema.Boolean),
   fileViewerWordWrap: Schema.optionalKey(Schema.Boolean),
+  terminalFontSize: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(9)).check(Schema.isLessThanOrEqualTo(24)),
+  ),
+  terminalScreenReaderMode: Schema.optionalKey(Schema.Boolean),
   followUpDelivery: Schema.optionalKey(FollowUpDelivery),
   favorites: Schema.optionalKey(
     Schema.Array(

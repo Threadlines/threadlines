@@ -77,8 +77,20 @@ import {
   buildAriaSnapshotScript,
   buildInjectedRuntimeScript,
   buildLocatorQueryScript,
+  buildFindScript,
+  VISIBLE_FRAME_OWNERS_SCRIPT,
   INJECTED_WORLD_NAME,
+  injectedRuntimeReadyExpression,
+  type NamedTarget,
 } from "./injectedRuntime.ts";
+import {
+  type Affine,
+  applyAffine,
+  composeAffine,
+  frameAffine,
+  frameToParentAffine,
+  IDENTITY_AFFINE,
+} from "./frameAffine.ts";
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
 import {
   buildDrawOverlayScript,
@@ -130,6 +142,48 @@ const PAGE_FOCUS_POLL = "4 millis";
  * animation, a fetch), so it gets nearly all of the broker's deadline.
  */
 const AGENT_SCRIPT_TIMEOUT = "18 seconds";
+/**
+ * CDP sessions of their own for a page's frames that run in other processes
+ * (another site's, or a sandboxed one), and for theirs in turn: agent input
+ * goes straight into them (`routePoint`). Nothing is enabled in them.
+ */
+const FRAME_AUTO_ATTACH = {
+  autoAttach: true,
+  waitForDebuggerOnStart: false,
+  flatten: true,
+  filter: [{ type: "iframe" }],
+};
+/** How deep `routePoint` and `snapshot` follow frames inside frames. */
+const MAX_FRAME_DEPTH = 8;
+/** A snapshot ref in a frame: `f2e7` is element 7 in frame 2. */
+const FRAME_REF = /^f(\d+)e\d+$/;
+/**
+ * A frame's line in a snapshot: indent, the line up to its attributes' end, and
+ * its ref. Fallback text an `<iframe>` carries (`: Loading…`) is dropped when
+ * the frame's own content goes under it; a browser never shows that text.
+ */
+const SNAPSHOT_FRAME_LINE = /^(\s*)(- iframe\b[^\n]*?\[ref=([^\]\s]+)\][^:\n]*)(?::.*)?$/;
+/** How many frames a snapshot reads, how long each may take, and how long they may take in all. */
+const MAX_SNAPSHOT_FRAMES = 40;
+const SNAPSHOT_FRAME_TIMEOUT = "2 seconds";
+const SNAPSHOT_FRAMES_BUDGET_MS = 8_000;
+/** How long a selector, locator or text may spend looking through frames. */
+const FRAME_SEARCH_BUDGET_MS = 5_000;
+/** Elements whose content is a frame of its own. */
+const FRAME_OWNER_NODE_NAMES = new Set(["IFRAME", "FRAME", "OBJECT", "EMBED", "FENCEDFRAME"]);
+/** The world `frameViewportSize` reads in. */
+const FRAME_METRICS_WORLD_NAME = "threadlines-frame-metrics";
+/** How long one frame gets to answer `routePoint`, and how long it may take in all. */
+const FRAME_ROUTE_TIMEOUT = "1 second";
+const FRAME_ROUTE_BUDGET = "3 seconds";
+
+/** The session agent input goes to (the page's when undefined) and the page→frame mapping. */
+interface FrameRoute {
+  readonly sessionId: string | undefined;
+  readonly toFrame: Affine;
+}
+
+const pageRoute: FrameRoute = { sessionId: undefined, toFrame: IDENTITY_AFFINE };
 
 export class PreviewTargetMissingError extends Schema.TaggedError<PreviewTargetMissingError>()(
   "PreviewTargetMissingError",
@@ -171,7 +225,65 @@ interface AttachedTab {
   expectedAgentInputs: Array<{ kind: "mouseDown" | "mouseWheel"; expiresAt: number }>;
   /** Until when the user's keys are kept out of the page; see `agentKeys`. */
   holdUserKeysUntil: number;
+  /** Frame id -> its own CDP session, for frames in other processes; see `routePoint`. */
+  frameSessions: Map<string, string>;
+  /**
+   * For each such session, the frame it is for and that frame's element in
+   * the session around it: how a point in the frame maps out to the page.
+   */
+  sessionOwners: Map<string, SessionOwner>;
+  /**
+   * The page's frames by the number their snapshot refs carry (`f2e7` is in
+   * frame 2), as the last snapshot found them; see `frameNumberingOf` for how
+   * numbers are given.
+   */
+  framesByOrdinal: Map<number, InjectedFrame>;
   dispose: () => void;
+}
+
+/**
+ * A frame the element engine runs in: its id, the session that reaches it (the
+ * page's when undefined), and the number its snapshot refs carry.
+ */
+interface InjectedFrame {
+  readonly sessionId: string | undefined;
+  readonly frameId: string;
+  readonly ordinal: number;
+}
+
+interface SessionOwner {
+  readonly frameId: string;
+  readonly parentSessionId: string | undefined;
+  readonly ownerBackendNodeId: number;
+}
+
+/** A frame element, and the frame in it with the session that reaches that frame. */
+interface FrameOwner {
+  readonly sessionId: string | undefined;
+  readonly frameId: string;
+  readonly ownerBackendNodeId: number;
+}
+
+/** What a named target that matched nothing says, in the page or its frames. */
+const namedTargetMissing = (target: NamedTarget): string =>
+  "selector" in target
+    ? `no element matches selector ${JSON.stringify(target.selector)} in the page or its frames; take a new snapshot or use a different selector`
+    : "locator" in target
+      ? `no element matches ${JSON.stringify(target.locator)} in the page or its frames; take a new snapshot or loosen the locator`
+      : target.text.trim() === ""
+        ? "an empty text target cannot identify an element; provide visible text, a selector, or a snapshot ref"
+        : `no visible element has text ${JSON.stringify(target.text)} in the page or its frames; take a new snapshot, use a selector, or try a shorter text`;
+
+/** What one snapshot may still spend on frames: until when, and how many it has read. */
+interface SnapshotBudget {
+  readonly deadline: number;
+  frames: number;
+}
+
+/** An element, and the session its node id belongs to (the page's when undefined). */
+interface NodeRef {
+  readonly backendNodeId: number;
+  readonly sessionId: string | undefined;
 }
 
 /**
@@ -675,18 +787,20 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     method: string,
     params?: Record<string, unknown>,
     options?: {
-      readonly timeout?: Duration.Input;
+      readonly timeout?: Duration.Input | undefined;
       /** Asked in the same synchronous step as the send; a reason refuses it. */
       readonly refusal?: () => string | null;
       /** Why the page did not answer, when the caller knows better. */
       readonly timedOut?: () => string;
+      /** A frame's own session (`routePoint`); the page's when absent. */
+      readonly sessionId?: string | undefined;
     },
   ) =>
     Effect.tryPromise({
       try: () => {
         const reason = options?.refusal?.() ?? null;
         return reason === null
-          ? contents.debugger.sendCommand(method, params ?? {})
+          ? contents.debugger.sendCommand(method, params ?? {}, options?.sessionId)
           : Promise.reject(reason);
       },
       catch: (cause) => new PreviewCommandError({ webContentsId: contents.id, method, cause }),
@@ -813,22 +927,30 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * old one. Tracking it ourselves would mean holding an id that goes stale
    * exactly when a page changes, which is the moment this gets used.
    */
+  /** The engine's world in a frame (the page's top one when none is given), built on first use. */
   const injectedWorld = Effect.fn("PreviewAutomation.injectedWorld")(function* (
     contents: WebContents,
+    frame?: InjectedFrame,
+    timeout?: Duration.Input,
   ) {
-    yield* sendCommand(contents, "Page.enable", {});
-    const tree = (yield* sendCommand(contents, "Page.getFrameTree", {})) as {
-      frameTree?: { frame?: { id?: string } };
-    };
-    const frameId = tree.frameTree?.frame?.id;
+    const sessionId = frame?.sessionId;
+    let frameId = frame?.frameId;
     if (frameId === undefined) {
-      return yield* failCommand(contents, "Page.getFrameTree", "the page has no main frame");
+      yield* sendCommand(contents, "Page.enable", {});
+      const tree = (yield* sendCommand(contents, "Page.getFrameTree", {})) as {
+        frameTree?: { frame?: { id?: string } };
+      };
+      frameId = tree.frameTree?.frame?.id;
+      if (frameId === undefined) {
+        return yield* failCommand(contents, "Page.getFrameTree", "the page has no main frame");
+      }
     }
-    const world = (yield* sendCommand(contents, "Page.createIsolatedWorld", {
-      frameId,
-      worldName: INJECTED_WORLD_NAME,
-      grantUniveralAccess: false,
-    })) as { executionContextId?: number };
+    const world = (yield* sendCommand(
+      contents,
+      "Page.createIsolatedWorld",
+      { frameId, worldName: INJECTED_WORLD_NAME, grantUniveralAccess: false },
+      { sessionId, timeout },
+    )) as { executionContextId?: number };
     const contextId = world.executionContextId;
     if (contextId === undefined) {
       return yield* failCommand(
@@ -837,11 +959,29 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         "could not create an isolated world for the element engine",
       );
     }
-    yield* sendCommand(contents, "Runtime.evaluate", {
-      expression: buildInjectedRuntimeScript(),
-      contextId,
-      returnByValue: true,
-    });
+    // The engine's source is large; it is sent only to a world without it.
+    const built = (yield* sendCommand(
+      contents,
+      "Runtime.evaluate",
+      {
+        expression: injectedRuntimeReadyExpression(frame?.ordinal ?? 0),
+        contextId,
+        returnByValue: true,
+      },
+      { sessionId, timeout },
+    )) as { result?: { value?: unknown } };
+    if (built.result?.value !== true) {
+      yield* sendCommand(
+        contents,
+        "Runtime.evaluate",
+        {
+          expression: buildInjectedRuntimeScript(undefined, frame?.ordinal ?? 0),
+          contextId,
+          returnByValue: true,
+        },
+        { sessionId, timeout },
+      );
+    }
     return contextId;
   });
 
@@ -849,15 +989,29 @@ export const make = Effect.sync(function PreviewAutomationMake() {
   const evaluateInjected = Effect.fn("PreviewAutomation.evaluateInjected")(function* (
     contents: WebContents,
     expression: string,
-    options?: { readonly returnByValue?: boolean },
+    options?: {
+      readonly returnByValue?: boolean;
+      /** A frame inside the page; its top one when absent. */
+      readonly frame?: InjectedFrame;
+      readonly timeout?: Duration.Input;
+      /** Puts the result, and objects read from it, in a group released together. */
+      readonly objectGroup?: string;
+    },
   ) {
-    const contextId = yield* injectedWorld(contents);
-    const result = (yield* sendCommand(contents, "Runtime.evaluate", {
-      expression,
-      contextId,
-      returnByValue: options?.returnByValue ?? false,
-      awaitPromise: true,
-    })) as {
+    const sessionId = options?.frame?.sessionId;
+    const contextId = yield* injectedWorld(contents, options?.frame, options?.timeout);
+    const result = (yield* sendCommand(
+      contents,
+      "Runtime.evaluate",
+      {
+        expression,
+        contextId,
+        returnByValue: options?.returnByValue ?? false,
+        awaitPromise: true,
+        ...(options?.objectGroup === undefined ? {} : { objectGroup: options.objectGroup }),
+      },
+      { sessionId, timeout: options?.timeout },
+    )) as {
       result?: { objectId?: string; value?: unknown };
       exceptionDetails?: { exception?: { description?: string; value?: unknown }; text?: string };
     };
@@ -875,6 +1029,7 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     return result.result ?? {};
   });
 
+  /** A point (refused: it names no element) or a snapshot ref in the page's top document. */
   const resolveTarget = Effect.fn("PreviewAutomation.resolveTarget")(function* (
     contents: WebContents,
     target: PreviewAutomationTarget,
@@ -889,31 +1044,6 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         "a point names a place, not an element; this needs a ref, locator, selector or text",
       );
     }
-    if ("locator" in target) {
-      const handle = yield* evaluateInjected(contents, buildLocatorQueryScript(target.locator));
-      const objectId = handle.objectId;
-      if (objectId === undefined) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `the locator ${JSON.stringify(target.locator)} did not resolve to an element`,
-        );
-      }
-      const described = (yield* sendCommand(contents, "DOM.describeNode", { objectId })) as {
-        node?: { backendNodeId?: number };
-      };
-      yield* sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
-      const backendNodeId = described.node?.backendNodeId;
-      if (backendNodeId === undefined) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `the element matching ${JSON.stringify(target.locator)} disappeared; take a new snapshot`,
-        );
-      }
-      return backendNodeId;
-    }
-
     if ("ref" in target) {
       // A ref is the `eN` from the aria snapshot, and Playwright's own
       // `aria-ref=` engine is what resolves it against the tree that issued it.
@@ -946,145 +1076,388 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       return backendNodeId;
     }
 
-    if ("selector" in target) {
-      const document = (yield* sendCommand(contents, "DOM.getDocument", {})) as {
-        root?: { nodeId?: number };
-      };
-      const nodeId = document.root?.nodeId;
-      if (nodeId === undefined) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `no element matches selector ${JSON.stringify(target.selector)}; take a new snapshot or use a different selector`,
-        );
-      }
+    // Named targets (a selector, a locator, text) are `findNamed`'s.
+    return yield* failCommand(
+      contents,
+      "resolveTarget",
+      "this target names an element; resolveNode looks for it in the page and its frames",
+    );
+  });
 
-      const match = (yield* sendCommand(contents, "DOM.querySelector", {
-        nodeId,
-        selector: target.selector,
-      }).pipe(
-        Effect.catch(() =>
-          failCommand(
-            contents,
-            "resolveTarget",
-            `no element matches selector ${JSON.stringify(target.selector)}; use a valid selector or take a new snapshot`,
-          ),
-        ),
-      )) as { nodeId?: number };
-      if (match.nodeId === undefined || match.nodeId === 0) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `no element matches selector ${JSON.stringify(target.selector)}; take a new snapshot or use a different selector`,
-        );
-      }
-
-      const described = (yield* sendCommand(contents, "DOM.describeNode", {
-        nodeId: match.nodeId,
-      }).pipe(
-        Effect.catch(() =>
-          failCommand(
-            contents,
-            "resolveTarget",
-            `the element matching selector ${JSON.stringify(target.selector)} disappeared; take a new snapshot and try again`,
-          ),
-        ),
-      )) as { node?: { backendNodeId?: number } };
-      const backendNodeId = described.node?.backendNodeId;
-      if (backendNodeId === undefined) {
-        return yield* failCommand(
-          contents,
-          "resolveTarget",
-          `no element matches selector ${JSON.stringify(target.selector)}; take a new snapshot or use a different selector`,
-        );
-      }
-      return backendNodeId;
+  /**
+   * The element a target names, with the session its node id belongs to. A
+   * snapshot ref inside a frame (`f2e7`) resolves in that frame, through the
+   * engine there that issued it; one in the page's top document, there. A
+   * selector, a locator or text is looked for in the top document and then in
+   * each frame (`findNamed`).
+   */
+  const resolveNode = Effect.fn("PreviewAutomation.resolveNode")(function* (
+    contents: WebContents,
+    target: PreviewAutomationTarget,
+    /** How long a search of the page's frames may take; see `findNamed`. */
+    frameBudgetMs = FRAME_SEARCH_BUDGET_MS,
+  ) {
+    if ("selector" in target || "locator" in target || "text" in target) {
+      return yield* findNamed(contents, target, frameBudgetMs);
     }
-
-    if (target.text.trim() === "") {
+    const frameRef = "ref" in target ? FRAME_REF.exec(target.ref) : null;
+    if (frameRef === null || !("ref" in target)) {
+      const backendNodeId = yield* resolveTarget(contents, target);
+      return { backendNodeId, sessionId: undefined } satisfies NodeRef;
+    }
+    const frame = attached.get(contents.id)?.framesByOrdinal.get(Number(frameRef[1]));
+    if (frame === undefined) {
       return yield* failCommand(
         contents,
         "resolveTarget",
-        "an empty text target cannot identify an element; provide visible text, a selector, or a snapshot ref",
+        `ref ${target.ref} no longer resolves; take a new snapshot and use its refs`,
       );
     }
-
-    const evaluated = (yield* sendCommand(contents, "Runtime.evaluate", {
-      expression: `(() => {
-        const wanted = ${JSON.stringify(target.text)};
-        const clickableSelector = 'button, a, [role="button"], input, summary';
-        const depth = (element) => {
-          let value = 0;
-          for (let current = element; current.parentElement; current = current.parentElement) {
-            value += 1;
-          }
-          return value;
-        };
-        const visible = (element) => {
-          const style = getComputedStyle(element);
-          if (
-            style.display === 'none' ||
-            style.visibility === 'hidden' ||
-            Number(style.opacity) === 0
-          ) {
-            return false;
-          }
-          const rect = element.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
-        };
-        const candidates = [...document.querySelectorAll('*')]
-          .filter(visible)
-          .map((element) => ({ element, text: (element.innerText || '').trim() }))
-          .filter((candidate) => candidate.text !== '');
-        const rank = (left, right) => {
-          const clickable =
-            Number(right.element.matches(clickableSelector)) -
-            Number(left.element.matches(clickableSelector));
-          return clickable !== 0 ? clickable : depth(left.element) - depth(right.element);
-        };
-        const exact = candidates.filter((candidate) => candidate.text === wanted).sort(rank);
-        if (exact.length > 0) {
-          return exact[0].element;
-        }
-        const containing = candidates
-          .filter((candidate) => candidate.text.includes(wanted))
-          .sort(rank);
-        return containing.length > 0 ? containing[0].element : null;
-      })()`,
-    })) as {
-      result?: { objectId?: string };
-      exceptionDetails?: { text?: string; exception?: { description?: string } };
-    };
-    const objectId = evaluated.result?.objectId;
+    const handle = yield* evaluateInjected(
+      contents,
+      buildLocatorQueryScript(`aria-ref=${target.ref}`),
+      { frame },
+    );
+    const objectId = handle.objectId;
     if (objectId === undefined) {
       return yield* failCommand(
         contents,
         "resolveTarget",
-        `no visible element has text ${JSON.stringify(target.text)}; take a new snapshot, use a selector, or try a shorter text`,
+        `ref ${target.ref} no longer resolves; take a new snapshot and use its refs`,
       );
     }
-
-    const described = (yield* sendCommand(contents, "DOM.describeNode", { objectId }).pipe(
-      Effect.ensuring(
-        sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore),
-      ),
-      Effect.catch(() =>
-        failCommand(
-          contents,
-          "resolveTarget",
-          `the element with text ${JSON.stringify(target.text)} disappeared; take a new snapshot and try again`,
-        ),
-      ),
-    )) as { node?: { backendNodeId?: number } };
+    const described = (yield* sendCommand(
+      contents,
+      "DOM.describeNode",
+      { objectId },
+      { sessionId: frame.sessionId },
+    ).pipe(Effect.ensuring(releaseInBackground(contents, objectId, frame.sessionId)))) as {
+      node?: { backendNodeId?: number };
+    };
     const backendNodeId = described.node?.backendNodeId;
     if (backendNodeId === undefined) {
       return yield* failCommand(
         contents,
         "resolveTarget",
-        `no visible element has text ${JSON.stringify(target.text)}; take a new snapshot or use a selector`,
+        `the element at ref ${target.ref} disappeared; take a new snapshot and try again`,
       );
     }
-    return backendNodeId;
+    return { backendNodeId, sessionId: frame.sessionId } satisfies NodeRef;
+  });
+
+  /**
+   * The page's content as text with refs, and its frames' content nested
+   * under each frame's line (see `snapshot`). Each frame is read in the
+   * engine there, under the number its refs carry. A frame that does not
+   * answer within what is left of the snapshot's budget, or past its frame
+   * count, stays a bare line.
+   */
+  const snapshotFrame = (
+    contents: WebContents,
+    tab: AttachedTab,
+    frame: InjectedFrame | undefined,
+    depth: number,
+    budget: SnapshotBudget,
+  ): Effect.Effect<string, PreviewCommandError | PreviewTargetMissingError> =>
+    Effect.gen(function* () {
+      const result = yield* evaluateInjected(contents, buildAriaSnapshotScript(), {
+        returnByValue: true,
+        ...(frame === undefined ? {} : { frame, timeout: SNAPSHOT_FRAME_TIMEOUT }),
+      });
+      const text = typeof result.value === "string" ? result.value : "";
+      if (depth >= MAX_FRAME_DEPTH) return text;
+      const lines: string[] = [];
+      for (const line of text.split("\n")) {
+        const match = SNAPSHOT_FRAME_LINE.exec(line);
+        const remaining = budget.deadline - Date.now();
+        if (match === null || remaining <= 0 || budget.frames >= MAX_SNAPSHOT_FRAMES) {
+          lines.push(line);
+          continue;
+        }
+        budget.frames += 1;
+        const [, indent = "", head = "", ref = ""] = match;
+        const inner = yield* frameContents(contents, tab, frame, ref, depth, budget).pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.millis(remaining),
+            orElse: () => Effect.succeed([] as ReadonlyArray<string>),
+          }),
+          Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
+        );
+        if (inner.length === 0) {
+          lines.push(line);
+          continue;
+        }
+        lines.push(`${indent}${head}:`);
+        for (const innerLine of inner) lines.push(`${indent}  ${innerLine}`);
+      }
+      return lines.join("\n");
+    });
+
+  /** The lines of the frame an `iframe` ref shows, numbered for its refs and recorded for them. */
+  const frameContents = (
+    contents: WebContents,
+    tab: AttachedTab,
+    frame: InjectedFrame | undefined,
+    ref: string,
+    depth: number,
+    budget: SnapshotBudget,
+  ): Effect.Effect<ReadonlyArray<string>, PreviewCommandError | PreviewTargetMissingError> =>
+    Effect.gen(function* () {
+      const child = yield* frameAtRef(contents, frame, ref);
+      if (child === null) return [];
+      const childFrame = recordFrame(contents, tab, frame, child);
+      const inner = yield* snapshotFrame(contents, tab, childFrame, depth + 1, budget);
+      return inner.split("\n").filter((line) => line.trim() !== "");
+    });
+
+  /**
+   * A frame found inside `parent` (by a snapshot or a search), numbered for
+   * its refs and recorded: its number, and for one in a process of its own,
+   * the element it sits in, which is how its points map out to the page.
+   */
+  const recordFrame = (
+    contents: WebContents,
+    tab: AttachedTab,
+    parent: InjectedFrame | undefined,
+    child: FrameOwner,
+  ): InjectedFrame => {
+    const numbering = frameNumberingOf(contents.id);
+    const ordinal = numbering.ordinals.get(child.frameId) ?? numbering.next++;
+    numbering.ordinals.set(child.frameId, ordinal);
+    const frame: InjectedFrame = { sessionId: child.sessionId, frameId: child.frameId, ordinal };
+    tab.framesByOrdinal.set(ordinal, frame);
+    if (child.sessionId !== undefined && child.sessionId !== parent?.sessionId) {
+      tab.sessionOwners.set(child.sessionId, {
+        frameId: child.frameId,
+        parentSessionId: parent?.sessionId,
+        ownerBackendNodeId: child.ownerBackendNodeId,
+      });
+    }
+    return frame;
+  };
+
+  /**
+   * The element a selector, a locator or visible text names: in the page's
+   * top document if it is there, which is what an agent naming it most likely
+   * meant, else in the first frame, in document order, that has it. A target
+   * that is wrong rather than absent (an invalid selector, a locator matching
+   * several elements) fails where it is found wrong. A frame that does not
+   * answer in time is passed over, and the frames get `frameBudgetMs` in all,
+   * so a lookup answers before the agent's call runs out.
+   */
+  const findNamed = Effect.fn("PreviewAutomation.findNamed")(function* (
+    contents: WebContents,
+    target: NamedTarget,
+    frameBudgetMs: number,
+  ) {
+    if ("text" in target && target.text.trim() === "") {
+      return yield* failCommand(contents, "resolveTarget", namedTargetMissing(target));
+    }
+    const script = buildFindScript(target);
+    const top = yield* evaluateInjected(contents, script);
+    if (top.objectId !== undefined) return yield* describeFound(contents, top.objectId, undefined);
+    const tab = attached.get(contents.id);
+    if (tab === undefined || frameBudgetMs <= 0) {
+      return yield* failCommand(contents, "resolveTarget", namedTargetMissing(target));
+    }
+    const deadline = Date.now() + frameBudgetMs;
+    const inFrames = Effect.gen(function* () {
+      const frames = yield* listFrames(contents, tab, deadline);
+      for (const frame of frames) {
+        const found = yield* evaluateInjected(contents, script, {
+          frame,
+          timeout: SNAPSHOT_FRAME_TIMEOUT,
+        }).pipe(
+          Effect.catchTag("PreviewCommandError", (error) =>
+            error.method === "injected.evaluate"
+              ? Effect.fail(error)
+              : Effect.succeed({} as { objectId?: string }),
+          ),
+        );
+        if (found.objectId !== undefined) {
+          return yield* describeFound(contents, found.objectId, frame.sessionId);
+        }
+      }
+      return null;
+    });
+    const found = yield* inFrames.pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(frameBudgetMs),
+        orElse: () => Effect.succeed("timed out" as const),
+      }),
+    );
+    if (found === "timed out") {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        `${namedTargetMissing(target)} (some of the page's frames did not answer in time)`,
+      );
+    }
+    return found ?? (yield* failCommand(contents, "resolveTarget", namedTargetMissing(target)));
+  });
+
+  /** A found element's node, in the session of the frame it was found in. */
+  const describeFound = Effect.fn("PreviewAutomation.describeFound")(function* (
+    contents: WebContents,
+    objectId: string,
+    sessionId: string | undefined,
+  ) {
+    const described = (yield* sendCommand(
+      contents,
+      "DOM.describeNode",
+      { objectId },
+      { sessionId },
+    ).pipe(Effect.ensuring(releaseInBackground(contents, objectId, sessionId)))) as {
+      node?: { backendNodeId?: number };
+    };
+    const backendNodeId = described.node?.backendNodeId;
+    if (backendNodeId === undefined) {
+      return yield* failCommand(
+        contents,
+        "resolveTarget",
+        "the element disappeared as it was found; take a new snapshot and try again",
+      );
+    }
+    return { backendNodeId, sessionId } satisfies NodeRef;
+  });
+
+  /**
+   * Every frame on show in the page, in document order with each frame's own
+   * frames right after it, within a snapshot's depth and count until `deadline`.
+   */
+  const listFrames = (contents: WebContents, tab: AttachedTab, deadline: number) =>
+    Effect.gen(function* () {
+      const frames: InjectedFrame[] = [];
+      const visit = (
+        frame: InjectedFrame | undefined,
+        depth: number,
+      ): Effect.Effect<void, PreviewTargetMissingError> =>
+        Effect.gen(function* () {
+          if (depth >= MAX_FRAME_DEPTH) return;
+          const owners = yield* frameOwnersIn(contents, frame).pipe(
+            Effect.catchTag("PreviewCommandError", () =>
+              Effect.succeed([] as ReadonlyArray<FrameOwner>),
+            ),
+          );
+          for (const owner of owners) {
+            if (frames.length >= MAX_SNAPSHOT_FRAMES || Date.now() > deadline) return;
+            const child = recordFrame(contents, tab, frame, owner);
+            frames.push(child);
+            yield* visit(child, depth + 1);
+          }
+        });
+      yield* visit(undefined, 0);
+      return frames;
+    });
+
+  /** The frame elements in one frame's document, in order, each with the frame it shows. */
+  const frameOwnersIn = Effect.fn("PreviewAutomation.frameOwnersIn")(function* (
+    contents: WebContents,
+    frame: InjectedFrame | undefined,
+  ) {
+    const sessionId = frame?.sessionId;
+    // Everything read here, down to the list's own prototype, is let go of
+    // together at the end.
+    const objectGroup = `threadlines-frame-owners-${++frameOwnerLookups}`;
+    return yield* Effect.gen(function* () {
+      const list = yield* evaluateInjected(contents, VISIBLE_FRAME_OWNERS_SCRIPT, {
+        ...(frame === undefined ? {} : { frame }),
+        timeout: SNAPSHOT_FRAME_TIMEOUT,
+        objectGroup,
+      });
+      if (list.objectId === undefined) return [];
+      const properties = (yield* sendCommand(
+        contents,
+        "Runtime.getProperties",
+        { objectId: list.objectId, ownProperties: true },
+        { sessionId, timeout: SNAPSHOT_FRAME_TIMEOUT },
+      )) as {
+        result?: ReadonlyArray<{ name?: string; value?: { objectId?: string } }>;
+      };
+      const elements = (properties.result ?? []).flatMap((property) =>
+        /^\d+$/.test(property.name ?? "") && property.value?.objectId !== undefined
+          ? [property.value.objectId]
+          : [],
+      );
+      const tab = attached.get(contents.id);
+      const owners: FrameOwner[] = [];
+      for (const objectId of elements) {
+        const described = (yield* sendCommand(
+          contents,
+          "DOM.describeNode",
+          { objectId },
+          { sessionId, timeout: SNAPSHOT_FRAME_TIMEOUT },
+        ).pipe(Effect.orElseSucceed(() => null))) as {
+          node?: { backendNodeId?: number; frameId?: string };
+        } | null;
+        const frameId = described?.node?.frameId;
+        const ownerBackendNodeId = described?.node?.backendNodeId;
+        // A frame element with no frame in it yet (not loaded, or emptied).
+        if (frameId === undefined || ownerBackendNodeId === undefined) continue;
+        owners.push({
+          sessionId: tab?.frameSessions.get(frameId) ?? sessionId,
+          frameId,
+          ownerBackendNodeId,
+        });
+      }
+      return owners;
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (contents.isDestroyed() || !contents.debugger.isAttached()) return;
+          contents.debugger
+            .sendCommand("Runtime.releaseObjectGroup", { objectGroup }, sessionId)
+            .catch(() => {});
+        }),
+      ),
+    );
+  });
+
+  /**
+   * Lets go of a page object without waiting on the page: a frame that stops
+   * answering must not hold up a snapshot past its budget.
+   */
+  const releaseInBackground = (
+    contents: WebContents,
+    objectId: string,
+    sessionId: string | undefined,
+  ) =>
+    Effect.sync(() => {
+      if (contents.isDestroyed() || !contents.debugger.isAttached()) return;
+      contents.debugger
+        .sendCommand("Runtime.releaseObject", { objectId }, sessionId)
+        .catch(() => {});
+    });
+
+  /** The frame an `iframe` ref in a snapshot of `frame` shows, and that frame's element. */
+  const frameAtRef = Effect.fn("PreviewAutomation.frameAtRef")(function* (
+    contents: WebContents,
+    frame: InjectedFrame | undefined,
+    ref: string,
+  ) {
+    const sessionId = frame?.sessionId;
+    const handle = yield* evaluateInjected(contents, buildLocatorQueryScript(`aria-ref=${ref}`), {
+      ...(frame === undefined ? {} : { frame }),
+      timeout: SNAPSHOT_FRAME_TIMEOUT,
+    });
+    const objectId = handle.objectId;
+    if (objectId === undefined) return null;
+    const described = (yield* sendCommand(
+      contents,
+      "DOM.describeNode",
+      { objectId },
+      { sessionId, timeout: SNAPSHOT_FRAME_TIMEOUT },
+    ).pipe(Effect.ensuring(releaseInBackground(contents, objectId, sessionId)))) as {
+      node?: { backendNodeId?: number; frameId?: string };
+    };
+    const frameId = described.node?.frameId;
+    const ownerBackendNodeId = described.node?.backendNodeId;
+    if (frameId === undefined || ownerBackendNodeId === undefined) return null;
+    const tab = attached.get(contents.id);
+    // A frame in a process of its own is reached through its own session;
+    // one in the same process, through the session around it.
+    const frameSession = tab?.frameSessions.get(frameId) ?? sessionId;
+    return { sessionId: frameSession, frameId, ownerBackendNodeId } satisfies FrameOwner;
   });
 
   /**
@@ -1284,6 +1657,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       controlEpoch: 0,
       expectedAgentInputs: [],
       holdUserKeysUntil: 0,
+      frameSessions: new Map(),
+      sessionOwners: new Map(),
+      framesByOrdinal: new Map(),
       dispose: () => {},
     };
 
@@ -1343,7 +1719,38 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     contents.on("before-input-event", onBeforeInput);
     contents.on("before-mouse-event", onBeforeMouse);
 
-    const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => {
+    const onMessage = (
+      _event: unknown,
+      method: string,
+      params: Record<string, unknown>,
+      sessionId?: string,
+    ) => {
+      if (method === "Target.attachedToTarget") {
+        const info = params.targetInfo as { targetId?: unknown; type?: unknown } | undefined;
+        const frameSession = params.sessionId;
+        if (
+          info?.type === "iframe" &&
+          typeof info.targetId === "string" &&
+          typeof frameSession === "string"
+        ) {
+          // An iframe target's id is its frame's id, as DOM.describeNode names it.
+          tab.frameSessions.set(info.targetId, frameSession);
+          contents.debugger
+            .sendCommand("Target.setAutoAttach", FRAME_AUTO_ATTACH, frameSession)
+            .catch(() => {});
+        }
+        return;
+      }
+      if (method === "Target.detachedFromTarget") {
+        for (const [frameId, frameSession] of tab.frameSessions) {
+          if (frameSession === params.sessionId) tab.frameSessions.delete(frameId);
+        }
+        if (typeof params.sessionId === "string") tab.sessionOwners.delete(params.sessionId);
+        return;
+      }
+      // A frame's own session reports nothing else this reads. The page's own
+      // messages come with an empty session id, not a missing one.
+      if (sessionId !== undefined && sessionId !== "") return;
       if (method === "Runtime.consoleAPICalled") {
         const args = (params.args as ReadonlyArray<{ value?: unknown }> | undefined) ?? [];
         pushConsole({
@@ -1418,12 +1825,17 @@ export const make = Effect.sync(function PreviewAutomationMake() {
           tab.console.length = 0;
           tab.networkFailures.length = 0;
           tab.requestUrls.clear();
+          // A new page's frames: refs into the old ones' stop resolving. The
+          // numbering runs on, so an old ref never matches a new frame.
+          tab.framesByOrdinal.clear();
+          frameNumbering.get(webContentsId)?.ordinals.clear();
         }
       }
     };
 
     contents.debugger.on("message", onMessage);
     const onDestroyed = () => {
+      frameNumbering.delete(webContentsId);
       attached.delete(webContentsId);
       lifecycles.delete(webContentsId);
     };
@@ -1454,6 +1866,9 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     ]) {
       yield* sendCommand(contents, method);
     }
+    // Best effort: without it, input meant for such a frame lands as it did
+    // before, on the frame's element.
+    yield* sendCommand(contents, "Target.setAutoAttach", FRAME_AUTO_ATTACH).pipe(Effect.ignore);
 
     // The guest believes it is focused even while the user's caret is
     // elsewhere in the embedding window. Agent input pulls focus onto the
@@ -1487,6 +1902,30 @@ export const make = Effect.sync(function PreviewAutomationMake() {
    * ignored. So a page sent to the background loses it, and gets it back when
    * it is next shown or acted on.
    */
+  /**
+   * Each guest's frame numbers (the `2` in a ref `f2e7`), by frame id, and the
+   * next number to give. Kept for the life of the guest, not of a debugger
+   * attachment: DevTools opening and closing would otherwise start the count
+   * again, and an old ref would name a new frame. A frame keeps its number
+   * across snapshots; on a new page the numbers given so far are forgotten
+   * and the count runs on.
+   */
+  /** Names each frame-owner lookup's object group apart. */
+  let frameOwnerLookups = 0;
+
+  const frameNumbering = new Map<
+    number,
+    { readonly ordinals: Map<string, number>; next: number }
+  >();
+  const frameNumberingOf = (webContentsId: number) => {
+    let numbering = frameNumbering.get(webContentsId);
+    if (numbering === undefined) {
+      numbering = { ordinals: new Map(), next: 1 };
+      frameNumbering.set(webContentsId, numbering);
+    }
+    return numbering;
+  };
+
   const lifecycles = new Map<
     number,
     { state: DesktopPreviewLifecycleState; readonly lock: Semaphore.Semaphore }
@@ -1540,11 +1979,18 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     return yield* resolve(webContentsId);
   });
 
+  /** The centre of an element, in the page's top viewport. */
   const centerOf = Effect.fn("PreviewAutomation.centerOf")(function* (
     contents: WebContents,
-    backendNodeId: number,
+    node: NodeRef,
   ) {
-    const box = (yield* sendCommand(contents, "DOM.getBoxModel", { backendNodeId })) as {
+    const { backendNodeId, sessionId } = node;
+    const box = (yield* sendCommand(
+      contents,
+      "DOM.getBoxModel",
+      { backendNodeId },
+      { sessionId },
+    )) as {
       model?: { content?: ReadonlyArray<number> };
     };
     const quad = box.model?.content;
@@ -1558,10 +2004,55 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       );
     }
     // Centre of the border box: the quad is four corner pairs, clockwise.
-    return {
+    const center = {
       x: (quad[0]! + quad[2]! + quad[4]! + quad[6]!) / 4,
       y: (quad[1]! + quad[3]! + quad[5]! + quad[7]!) / 4,
     };
+    return yield* toPagePoint(contents, sessionId, center);
+  });
+
+  /**
+   * A point in a frame's session out to the page's top viewport, frame by
+   * frame through the elements the frames sit in (recorded by `snapshot`).
+   * Input then goes through `routePoint`, as any point does, so it lands in
+   * the frame the way a person's click would.
+   */
+  const toPagePoint = Effect.fn("PreviewAutomation.toPagePoint")(function* (
+    contents: WebContents,
+    sessionId: string | undefined,
+    point: { readonly x: number; readonly y: number },
+  ) {
+    const owners = attached.get(contents.id)?.sessionOwners;
+    let current = sessionId;
+    let at = point;
+    for (let depth = 0; current !== undefined; depth += 1) {
+      const owner = owners?.get(current);
+      if (owner === undefined || depth >= MAX_FRAME_DEPTH) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          "the frame this element is in has gone; take a new snapshot and try again",
+        );
+      }
+      const box = (yield* sendCommand(
+        contents,
+        "DOM.getBoxModel",
+        { backendNodeId: owner.ownerBackendNodeId },
+        { sessionId: owner.parentSessionId },
+      )) as { model?: { content?: ReadonlyArray<number> } };
+      const quad = box.model?.content;
+      const size = yield* frameViewportSize(contents, owner.frameId, current);
+      if (quad === undefined || quad.length < 8 || size === null) {
+        return yield* failCommand(
+          contents,
+          "resolveTarget",
+          "the frame this element is in did not say where it is; try again",
+        );
+      }
+      at = applyAffine(frameToParentAffine(quad, size), at);
+      current = owner.parentSessionId;
+    }
+    return at;
   });
 
   const targetPoint = Effect.fn("PreviewAutomation.targetPoint")(function* (
@@ -1573,8 +2064,148 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     if ("point" in target) {
       return target.point;
     }
-    const backendNodeId = yield* resolveTarget(contents, target);
-    return yield* centerOf(contents, backendNodeId);
+    const node = yield* resolveNode(contents, target);
+    return yield* centerOf(contents, node);
+  });
+
+  /**
+   * A frame's own viewport size in its own CSS pixels, scrollbars included,
+   * read in a world of the panel's own so the page cannot misreport it; null
+   * when the frame does not answer promptly.
+   */
+  const frameViewportSize = Effect.fn("PreviewAutomation.frameViewportSize")(function* (
+    contents: WebContents,
+    frameId: string,
+    sessionId: string,
+  ) {
+    const world = (yield* sendCommand(
+      contents,
+      "Page.createIsolatedWorld",
+      { frameId, worldName: FRAME_METRICS_WORLD_NAME, grantUniveralAccess: false },
+      { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+    ).pipe(Effect.orElseSucceed(() => null))) as { executionContextId?: number } | null;
+    if (world?.executionContextId === undefined) return null;
+    const read = (yield* sendCommand(
+      contents,
+      "Runtime.evaluate",
+      {
+        expression: "[innerWidth, innerHeight]",
+        contextId: world.executionContextId,
+        returnByValue: true,
+      },
+      { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+    ).pipe(Effect.orElseSucceed(() => null))) as { result?: { value?: unknown } } | null;
+    const value = read?.result?.value;
+    if (!Array.isArray(value) || value.length !== 2) return null;
+    const [width, height] = value as ReadonlyArray<unknown>;
+    return typeof width === "number" && typeof height === "number" && width > 0 && height > 0
+      ? { width, height }
+      : null;
+  });
+
+  /**
+   * Where agent mouse input at a point in the page goes: the session of the
+   * frame under it, and how a page point maps into that frame.
+   *
+   * Chromium hands input sent to a page to the frame under the point by hit
+   * testing the window, and the panel takes a page the user is not looking at
+   * out of hit testing (`pointer-events: none` on its element, so the user's
+   * own clicks pass through it to the app). A frame running in another
+   * process is then out of reach: the input lands on the page's top document,
+   * on the frame's element. So the point is followed down through such frames
+   * here, and the input is sent straight into the innermost one through its
+   * own session. Frames in the page's own process need nothing; the page's
+   * input reaches them. Each frame's placement is followed whatever it is (an
+   * offset, a CSS zoom, any transform), from the corners Chromium reports for
+   * the frame's element and the frame's own size. Within a time budget: past
+   * it the input goes to the page, as it did before frames were followed.
+   */
+  const routePoint = (contents: WebContents, point: { readonly x: number; readonly y: number }) => {
+    // Hit test and input use the same pixel, so an overlay's edge cannot fall
+    // between them.
+    const at = { x: Math.round(point.x), y: Math.round(point.y) };
+    return followFrames(contents, at).pipe(
+      Effect.timeoutOrElse({
+        duration: FRAME_ROUTE_BUDGET,
+        orElse: () => Effect.succeed(pageRoute),
+      }),
+      Effect.map((route) => ({
+        sessionId: route.sessionId,
+        at: applyAffine(route.toFrame, at),
+        toFrame: (page: { readonly x: number; readonly y: number }) =>
+          applyAffine(route.toFrame, page),
+      })),
+    );
+  };
+
+  const followFrames = Effect.fn("PreviewAutomation.followFrames")(function* (
+    contents: WebContents,
+    point: { readonly x: number; readonly y: number },
+  ) {
+    const frameSessions = attached.get(contents.id)?.frameSessions;
+    // A page with no such frames needs no looking.
+    if (frameSessions === undefined || frameSessions.size === 0) return pageRoute;
+    let route: FrameRoute = pageRoute;
+    const visited = new Set<string>();
+    for (let depth = 0; depth < MAX_FRAME_DEPTH; depth += 1) {
+      const { sessionId } = route;
+      const local = applyAffine(route.toFrame, point);
+      // The hit test takes document coordinates: the viewport point plus how
+      // far the frame is scrolled.
+      const metrics = (yield* sendCommand(
+        contents,
+        "Page.getLayoutMetrics",
+        {},
+        { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+      ).pipe(Effect.orElseSucceed(() => null))) as {
+        cssLayoutViewport?: { pageX?: number; pageY?: number };
+      } | null;
+      const hit = (yield* sendCommand(
+        contents,
+        "DOM.getNodeForLocation",
+        {
+          x: Math.round(local.x + (metrics?.cssLayoutViewport?.pageX ?? 0)),
+          y: Math.round(local.y + (metrics?.cssLayoutViewport?.pageY ?? 0)),
+        },
+        { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+      ).pipe(Effect.orElseSucceed(() => null))) as { backendNodeId?: number } | null;
+      if (hit?.backendNodeId === undefined) break;
+      const backendNodeId = hit.backendNodeId;
+      const described = (yield* sendCommand(
+        contents,
+        "DOM.describeNode",
+        { backendNodeId },
+        { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+      ).pipe(Effect.orElseSucceed(() => null))) as {
+        node?: { nodeName?: string; frameId?: string };
+      } | null;
+      // Only a frame's element leads into it: a document's root element
+      // carries its own frame's id too.
+      const node = described?.node;
+      if (node?.frameId === undefined || !FRAME_OWNER_NODE_NAMES.has(node.nodeName ?? "")) break;
+      const frameId = node.frameId;
+      const frameSession = frameSessions.get(frameId);
+      if (frameSession === undefined || visited.has(frameSession)) break;
+      const box = (yield* sendCommand(
+        contents,
+        "DOM.getBoxModel",
+        { backendNodeId },
+        { sessionId, timeout: FRAME_ROUTE_TIMEOUT },
+      ).pipe(Effect.orElseSucceed(() => null))) as {
+        model?: { content?: ReadonlyArray<number> };
+      } | null;
+      const quad = box?.model?.content;
+      if (quad === undefined || quad.length < 8) break;
+      // Without the frame's own size its placement is unknown: the input
+      // stops at the frame mapped so far rather than guess.
+      const size = yield* frameViewportSize(contents, frameId, frameSession);
+      if (size === null) break;
+      const into = frameAffine(quad, size);
+      if (into === null) break;
+      route = { sessionId: frameSession, toFrame: composeAffine(into, route.toFrame) };
+      visited.add(frameSession);
+    }
+    return route;
   });
 
   const expectAgentInput = (webContentsId: number, kind: "mouseDown" | "mouseWheel") => {
@@ -1645,10 +2276,17 @@ export const make = Effect.sync(function PreviewAutomationMake() {
       // of what the page said -- asked what a paragraph read, it had to fall
       // back to running JavaScript. This carries the text, the structure and a
       // ref on everything, in one string that costs less than the array did.
-      const result = yield* evaluateInjected(contents, buildAriaSnapshotScript(), {
-        returnByValue: true,
-      });
-      const page = typeof result.value === "string" ? result.value : "";
+      //
+      // Frames are read too, each in the engine running inside it, and nested
+      // under the frame's own line; their refs carry the frame's number.
+      const tab = attached.get(contents.id);
+      const page =
+        tab === undefined
+          ? ""
+          : yield* snapshotFrame(contents, tab, undefined, 0, {
+              deadline: Date.now() + SNAPSHOT_FRAMES_BUDGET_MS,
+              frames: 0,
+            });
       return { ...buildStatus(webContentsId, contents), page };
     }),
     setViewport: Effect.fn("PreviewAutomation.setViewport")(function* (
@@ -2028,66 +2666,77 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     click: Effect.fn("PreviewAutomation.click")(function* (input: DesktopPreviewClickInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       const point = yield* targetPoint(contents, input.target);
+      const route = yield* routePoint(contents, point);
+      const at = route.at;
       const clickCount = input.doubleClick === true ? 2 : 1;
       expectAgentInput(contents.id, "mouseDown");
       // Real input events rather than element.click(): hover, focus and blur
       // fire as they would for a person, and a handler that checks isTrusted
       // behaves the same way too.
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x: point.x,
-        y: point.y,
-        button: "left",
-        clickCount,
-      });
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: point.x,
-        y: point.y,
-        button: "left",
-        clickCount,
-      });
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mousePressed", x: at.x, y: at.y, button: "left", clickCount },
+        { sessionId: route.sessionId },
+      );
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", x: at.x, y: at.y, button: "left", clickCount },
+        { sessionId: route.sessionId },
+      );
       return point;
     }),
     move: Effect.fn("PreviewAutomation.move")(function* (input: DesktopPreviewMoveInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       const point = yield* targetPoint(contents, input.target);
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: point.x,
-        y: point.y,
-      });
+      const route = yield* routePoint(contents, point);
+      const at = route.at;
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mouseMoved", x: at.x, y: at.y },
+        { sessionId: route.sessionId },
+      );
       return point;
     }),
     drag: Effect.fn("PreviewAutomation.drag")(function* (input: DesktopPreviewDragInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       const from = yield* targetPoint(contents, input.from);
       const to = yield* targetPoint(contents, input.to);
+      // The whole drag goes to the frame it starts in, as a held button
+      // keeps a person's drag there, even past its edge.
+      const route = yield* routePoint(contents, from);
+      const start = route.at;
+      const end = route.toFrame(to);
       expectAgentInput(contents.id, "mouseDown");
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x: from.x,
-        y: from.y,
-        button: "left",
-        clickCount: 1,
-      });
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mousePressed", x: start.x, y: start.y, button: "left", clickCount: 1 },
+        { sessionId: route.sessionId },
+      );
       for (let step = 1; step <= DRAG_MOVE_STEPS; step += 1) {
         const progress = step / DRAG_MOVE_STEPS;
-        yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          x: from.x + (to.x - from.x) * progress,
-          y: from.y + (to.y - from.y) * progress,
-          button: "left",
-          buttons: 1,
-        });
+        yield* sendCommand(
+          contents,
+          "Input.dispatchMouseEvent",
+          {
+            type: "mouseMoved",
+            x: start.x + (end.x - start.x) * progress,
+            y: start.y + (end.y - start.y) * progress,
+            button: "left",
+            buttons: 1,
+          },
+          { sessionId: route.sessionId },
+        );
       }
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: to.x,
-        y: to.y,
-        button: "left",
-        clickCount: 1,
-      });
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", x: end.x, y: end.y, button: "left", clickCount: 1 },
+        { sessionId: route.sessionId },
+      );
       return { from, to };
     }),
     // Into whatever the page has focused: the renderer clicks the field first,
@@ -2144,22 +2793,38 @@ export const make = Effect.sync(function PreviewAutomationMake() {
     scroll: Effect.fn("PreviewAutomation.scroll")(function* (input: DesktopPreviewScrollInput) {
       const contents = yield* resolveAttached(input.webContentsId);
       if (input.target !== undefined) {
-        const backendNodeId = yield* resolveTarget(contents, input.target);
-        yield* sendCommand(contents, "DOM.scrollIntoViewIfNeeded", { backendNodeId });
+        const node = yield* resolveNode(contents, input.target);
+        yield* sendCommand(
+          contents,
+          "DOM.scrollIntoViewIfNeeded",
+          { backendNodeId: node.backendNodeId },
+          { sessionId: node.sessionId },
+        );
         return;
       }
 
       const metrics = (yield* sendCommand(contents, "Page.getLayoutMetrics", {})) as {
         cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
       };
-      expectAgentInput(contents.id, "mouseWheel");
-      yield* sendCommand(contents, "Input.dispatchMouseEvent", {
-        type: "mouseWheel",
+      const center = {
         x: (metrics.cssVisualViewport?.clientWidth ?? 0) / 2,
         y: (metrics.cssVisualViewport?.clientHeight ?? 0) / 2,
-        deltaX: input.deltaX ?? 0,
-        deltaY: input.deltaY ?? 0,
-      });
+      };
+      const route = yield* routePoint(contents, center);
+      const at = route.at;
+      expectAgentInput(contents.id, "mouseWheel");
+      yield* sendCommand(
+        contents,
+        "Input.dispatchMouseEvent",
+        {
+          type: "mouseWheel",
+          x: at.x,
+          y: at.y,
+          deltaX: input.deltaX ?? 0,
+          deltaY: input.deltaY ?? 0,
+        },
+        { sessionId: route.sessionId },
+      );
     }),
     evaluate: Effect.fn("PreviewAutomation.evaluate")(function* (
       input: DesktopPreviewEvaluateInput,
@@ -2204,7 +2869,12 @@ export const make = Effect.sync(function PreviewAutomationMake() {
         unmet = [];
 
         if (input.target !== undefined) {
-          const found = yield* resolveTarget(contents, input.target).pipe(
+          const left = timeoutMs - (Date.now() - startedAt);
+          const found = yield* resolveNode(
+            contents,
+            input.target,
+            Math.min(FRAME_SEARCH_BUDGET_MS, left),
+          ).pipe(
             Effect.as(true),
             Effect.orElseSucceed(() => false),
           );

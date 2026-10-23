@@ -43,11 +43,19 @@ describe("scan cache round trip", () => {
       ["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:req_2", model: "claude-opus-5" })]],
       ["/b.jsonl", 200, [record({ sessionId: "session-b", reportedCostUsd: 1.5 })]],
     ]);
+    // Every provider's files are kept, not only Claude's and Codex's.
+    original.set("/c.jsonl", {
+      size: 10,
+      mtimeMs: 300,
+      provider: "muse",
+      records: [record({ provider: "muse", model: "muse-spark-1.3" })],
+    });
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
 
     expect(restored.get("/a.jsonl")).toEqual(original.get("/a.jsonl"));
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
+    expect(restored.get("/c.jsonl")).toEqual(original.get("/c.jsonl"));
   });
 
   it("interns repeated model and session strings", () => {

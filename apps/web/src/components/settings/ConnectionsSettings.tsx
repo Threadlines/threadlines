@@ -61,6 +61,7 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
+import { RestartWorkWarning, WithLocalWorkAtRisk } from "../desktop/RestartWorkWarning";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { QRCodeSvg } from "../ui/qr-code";
 import { Spinner } from "../ui/spinner";
@@ -1778,46 +1779,62 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         }}
       >
         <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {pendingDesktopServerExposureMode === "network-accessible"
-                ? "Let devices on this network connect?"
-                : "Stop same-network connections?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingDesktopServerExposureMode === "network-accessible"
-                ? "Threadlines will restart so devices on your network can reach this computer directly."
-                : "Threadlines will restart. Devices that joined with a code keep working."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose
-              disabled={isUpdatingDesktopServerExposure}
-              render={<Button variant="outline" disabled={isUpdatingDesktopServerExposure} />}
-            >
-              Cancel
-            </AlertDialogClose>
-            <Button
-              variant={
-                pendingDesktopServerExposureMode === "local-only" ? "destructive" : "default"
-              }
-              onClick={handleConfirmDesktopServerExposureChange}
-              disabled={
-                pendingDesktopServerExposureMode === null || isUpdatingDesktopServerExposure
-              }
-            >
-              {isUpdatingDesktopServerExposure ? (
-                <>
-                  <Spinner className="size-3.5" />
-                  Restarting...
-                </>
-              ) : pendingDesktopServerExposureMode === "network-accessible" ? (
-                "Restart and allow"
-              ) : (
-                "Restart and stop"
-              )}
-            </Button>
-          </AlertDialogFooter>
+          <WithLocalWorkAtRisk>
+            {(work) => (
+              <>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    {pendingDesktopServerExposureMode === "network-accessible"
+                      ? "Let devices on this network connect?"
+                      : "Stop same-network connections?"}
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {pendingDesktopServerExposureMode === "network-accessible"
+                      ? "Threadlines will restart so devices on your network can reach this computer directly."
+                      : "Threadlines will restart. Devices that joined with a code keep working."}{" "}
+                    <RestartWorkWarning work={work} />
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  {/* With work in flight, Enter must not be the key that stops it. */}
+                  <AlertDialogClose
+                    disabled={isUpdatingDesktopServerExposure}
+                    render={
+                      <Button
+                        data-alert-dialog-primary-action={work.count > 0 ? "true" : undefined}
+                        variant="outline"
+                        disabled={isUpdatingDesktopServerExposure}
+                      />
+                    }
+                  >
+                    Cancel
+                  </AlertDialogClose>
+                  <Button
+                    variant={
+                      pendingDesktopServerExposureMode === "local-only" || work.count > 0
+                        ? "destructive"
+                        : "default"
+                    }
+                    onClick={handleConfirmDesktopServerExposureChange}
+                    disabled={
+                      pendingDesktopServerExposureMode === null || isUpdatingDesktopServerExposure
+                    }
+                  >
+                    {isUpdatingDesktopServerExposure ? (
+                      <>
+                        <Spinner className="size-3.5" />
+                        Restarting...
+                      </>
+                    ) : pendingDesktopServerExposureMode === "network-accessible" ? (
+                      "Restart and allow"
+                    ) : (
+                      "Restart and stop"
+                    )}
+                  </Button>
+                </AlertDialogFooter>
+              </>
+            )}
+          </WithLocalWorkAtRisk>
         </AlertDialogPopup>
       </AlertDialog>
       <AlertDialog
@@ -1828,34 +1845,47 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         }}
       >
         <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Turn off Tailscale?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Threadlines will restart and stop using Tailscale for device access.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose
-              disabled={isUpdatingTailscaleServe}
-              render={<Button variant="outline" disabled={isUpdatingTailscaleServe} />}
-            >
-              Cancel
-            </AlertDialogClose>
-            <Button
-              variant="destructive"
-              onClick={() => void handleConfirmTailscaleServeDisable()}
-              disabled={isUpdatingTailscaleServe}
-            >
-              {isUpdatingTailscaleServe ? (
-                <>
-                  <Spinner className="size-3.5" />
-                  Restarting...
-                </>
-              ) : (
-                "Restart and turn off"
-              )}
-            </Button>
-          </AlertDialogFooter>
+          <WithLocalWorkAtRisk>
+            {(work) => (
+              <>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Turn off Tailscale?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Threadlines will restart and stop using Tailscale for device access.{" "}
+                    <RestartWorkWarning work={work} />
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogClose
+                    disabled={isUpdatingTailscaleServe}
+                    render={
+                      <Button
+                        data-alert-dialog-primary-action={work.count > 0 ? "true" : undefined}
+                        variant="outline"
+                        disabled={isUpdatingTailscaleServe}
+                      />
+                    }
+                  >
+                    Cancel
+                  </AlertDialogClose>
+                  <Button
+                    variant="destructive"
+                    onClick={() => void handleConfirmTailscaleServeDisable()}
+                    disabled={isUpdatingTailscaleServe}
+                  >
+                    {isUpdatingTailscaleServe ? (
+                      <>
+                        <Spinner className="size-3.5" />
+                        Restarting...
+                      </>
+                    ) : (
+                      "Restart and turn off"
+                    )}
+                  </Button>
+                </AlertDialogFooter>
+              </>
+            )}
+          </WithLocalWorkAtRisk>
         </AlertDialogPopup>
       </AlertDialog>
       <Dialog
@@ -1866,61 +1896,68 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
         }}
       >
         <DialogPopup className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Turn on Tailscale?</DialogTitle>
-            <DialogDescription>
-              Threadlines will restart and ask Tailscale to make this computer available on your
-              private Tailscale network.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogPanel className="space-y-4">
-            <label className="block">
-              <span className="text-sm font-medium text-foreground">HTTPS port</span>
-              <Input
-                className="mt-2"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={65_535}
-                step={1}
-                value={tailscaleServePortInput}
-                onChange={(event) => setTailscaleServePortInput(event.target.value)}
-                disabled={isUpdatingTailscaleServe}
-              />
-            </label>
-            {!isTailscaleServePortValid ? (
-              <p className="mt-2 text-xs text-destructive-foreground">
-                Enter a port from 1 to 65535.
-              </p>
-            ) : null}
-            <p
-              className="truncate text-xs text-muted-foreground"
-              title={pendingTailscaleServeBaseUrl ?? undefined}
-            >
-              Address: {pendingTailscaleServeBaseUrl ?? "Waiting for Tailscale"}
-            </p>
-          </DialogPanel>
-          <DialogFooter>
-            <DialogClose
-              disabled={isUpdatingTailscaleServe}
-              render={<Button variant="outline" disabled={isUpdatingTailscaleServe} />}
-            >
-              Cancel
-            </DialogClose>
-            <Button
-              onClick={() => void handleConfirmTailscaleServeSetup()}
-              disabled={isUpdatingTailscaleServe || !isTailscaleServePortValid}
-            >
-              {isUpdatingTailscaleServe ? (
-                <>
-                  <Spinner className="size-3.5" />
-                  Restarting...
-                </>
-              ) : (
-                "Turn on"
-              )}
-            </Button>
-          </DialogFooter>
+          <WithLocalWorkAtRisk>
+            {(work) => (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Turn on Tailscale?</DialogTitle>
+                  <DialogDescription>
+                    Threadlines will restart and ask Tailscale to make this computer available on
+                    your private Tailscale network. <RestartWorkWarning work={work} />
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogPanel className="space-y-4">
+                  <label className="block">
+                    <span className="text-sm font-medium text-foreground">HTTPS port</span>
+                    <Input
+                      className="mt-2"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={65_535}
+                      step={1}
+                      value={tailscaleServePortInput}
+                      onChange={(event) => setTailscaleServePortInput(event.target.value)}
+                      disabled={isUpdatingTailscaleServe}
+                    />
+                  </label>
+                  {!isTailscaleServePortValid ? (
+                    <p className="mt-2 text-xs text-destructive-foreground">
+                      Enter a port from 1 to 65535.
+                    </p>
+                  ) : null}
+                  <p
+                    className="truncate text-xs text-muted-foreground"
+                    title={pendingTailscaleServeBaseUrl ?? undefined}
+                  >
+                    Address: {pendingTailscaleServeBaseUrl ?? "Waiting for Tailscale"}
+                  </p>
+                </DialogPanel>
+                <DialogFooter>
+                  <DialogClose
+                    disabled={isUpdatingTailscaleServe}
+                    render={<Button variant="outline" disabled={isUpdatingTailscaleServe} />}
+                  >
+                    Cancel
+                  </DialogClose>
+                  <Button
+                    variant={work.count > 0 ? "destructive" : "default"}
+                    onClick={() => void handleConfirmTailscaleServeSetup()}
+                    disabled={isUpdatingTailscaleServe || !isTailscaleServePortValid}
+                  >
+                    {isUpdatingTailscaleServe ? (
+                      <>
+                        <Spinner className="size-3.5" />
+                        Restarting...
+                      </>
+                    ) : (
+                      "Turn on"
+                    )}
+                  </Button>
+                </DialogFooter>
+              </>
+            )}
+          </WithLocalWorkAtRisk>
         </DialogPopup>
       </Dialog>
     </SettingsPageContainer>

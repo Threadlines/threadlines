@@ -436,6 +436,8 @@ const fxUpdate = buildFxCommand(null, ["upgrade"]);
 
 export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
   driverKind: FX_DRIVER_KIND,
+  // fx stopped keeping usage on disk in 0.0.14; its prompt results still say.
+  usageLedger: { provider: "fx" },
   presentation: {
     displayName: "fx",
     planUpgradeUrl: "https://vercel.com/ai-gateway",

@@ -4,6 +4,8 @@ import {
   type TerminalOpenInput,
   type TerminalSessionSnapshot,
   type TerminalSessionStatus,
+  type TerminalStreamEvent,
+  type TerminalTab,
 } from "@threadlines/contracts";
 import { makeKeyedCoalescingWorker } from "@threadlines/shared/KeyedCoalescingWorker";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
@@ -37,6 +39,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   ProcessSnapshot,
@@ -52,6 +55,7 @@ import {
   TerminalCommandRunError,
   TerminalCwdError,
   TerminalHistoryError,
+  TerminalLineBusyError,
   TerminalManager,
   TerminalNotRunningError,
   TerminalSessionLookupError,
@@ -78,7 +82,16 @@ import {
 } from "../Services/PTY.ts";
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
-const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
+// Kept history is also bounded by size: a progress bar that redraws with a
+// carriage return and never prints a newline is one line that keeps growing.
+const DEFAULT_HISTORY_CHAR_LIMIT = 1_048_576;
+// History is trimmed once it is this share over a limit, so a busy terminal
+// doesn't rescan it on every chunk.
+const HISTORY_TRIM_SLACK = 0.1;
+// An escape sequence that never ends is dropped past this size rather than
+// held, and rescanned, forever.
+const MAX_PENDING_CONTROL_SEQUENCE_CHARS = 65_536;
+const DEFAULT_PERSIST_DEBOUNCE_MS = 750;
 const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 2_000;
 const SUBPROCESS_IDLE_CONFIRMATION_POLLS = 3;
 // A command that keeps running is checked less and less often, up to this
@@ -182,6 +195,8 @@ interface TerminalSessionState {
   status: TerminalSessionStatus;
   pid: number | null;
   history: string;
+  /** Newlines in `history`, kept as it changes so trimming needn't rescan it. */
+  historyLineBreaks: number;
   pendingHistoryControlSequence: PendingHistoryControlSequence | null;
   pendingProcessEvents: Array<PendingProcessEvent>;
   pendingProcessEventIndex: number;
@@ -200,6 +215,11 @@ interface TerminalSessionState {
    *  long it has been going, including after they reconnect. */
   runningSubprocessStartedAt: string | null;
   submittedCommand: string | null;
+  /**
+   * The same line exactly as typed, when the input tracker could follow every
+   * key: what "Run again" types after a restart. Null when it can't be sure.
+   */
+  submittedLine: string | null;
   commandGeneration: number;
   subprocessPollingArmed: boolean;
   consecutiveSubprocessIdlePolls: number;
@@ -234,6 +254,23 @@ interface TerminalSessionState {
   commandRanInShell: boolean;
   /** Where each `insert` went into this tab's history, for sending its output later. */
   insertMarks: Map<string, number>;
+  /**
+   * The viewer (one device's connection) using this tab: its size wins and
+   * only it answers the terminal's queries. Null until a viewer claims it.
+   */
+  controllerId: string | null;
+  /**
+   * The size each viewer showing the tab last asked for, so the one that
+   * takes control by typing gets its own size at once.
+   */
+  viewerSizes: Map<string, { readonly cols: number; readonly rows: number }>;
+  /** Clients were told a command was entered and not yet seen running or done. */
+  commandPendingPublished: boolean;
+  /**
+   * Part of the line being typed went in away from the shell's prompt (into
+   * a program, or before the shell was back): it is no command to show.
+   */
+  lineOffPrompt: boolean;
 }
 
 interface ActiveCommandRun {
@@ -270,7 +307,7 @@ interface PendingHistoryControlSequence {
 
 interface PersistHistoryRequest {
   history: string;
-  immediate: boolean;
+  version: number;
 }
 
 type PendingProcessEvent =
@@ -330,13 +367,16 @@ function appendRunOutput(run: ActiveCommandRun, text: string): void {
 
 /** A `run` is the tab's only activity while it lasts; clear it when the run ends. */
 function clearRunActivity(session: TerminalSessionState): void {
+  session.commandPendingPublished = false;
   session.hasRunningSubprocess = false;
   session.runningSubprocessCommand = null;
   session.runningSubprocessStartedAt = null;
   session.submittedCommand = null;
+  session.submittedLine = null;
   session.subprocessPollingArmed = false;
   session.consecutiveSubprocessIdlePolls = 0;
   session.terminalCommandInputState = createTerminalCommandInputState();
+  session.lineOffPrompt = false;
 }
 
 interface TerminalManagerState {
@@ -679,16 +719,61 @@ function isRetryableShellSpawnError(error: PtySpawnError): boolean {
   );
 }
 
-function capHistory(history: string, maxLines: number): string {
-  if (history.length === 0) return history;
-  const hasTrailingNewline = history.endsWith("\n");
-  const lines = history.split("\n");
-  if (hasTrailingNewline) {
-    lines.pop();
+function countLineBreaks(text: string): number {
+  let count = 0;
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    count += 1;
   }
-  if (lines.length <= maxLines) return history;
-  const capped = lines.slice(lines.length - maxLines).join("\n");
-  return hasTrailingNewline ? `${capped}\n` : capped;
+  return count;
+}
+
+/**
+ * Where kept history may start at or after `from` so it doesn't begin in the
+ * middle of something: after a newline, at a carriage return (a redraw starts
+ * there), or at an escape sequence. Plain text can be cut anywhere.
+ */
+function safeHistoryCut(history: string, from: number): number {
+  const end = Math.min(history.length, from + 65_536);
+  for (let index = from; index < end; index += 1) {
+    const codePoint = history.charCodeAt(index);
+    if (codePoint === 0x0a) return index + 1;
+    if (codePoint === 0x0d || codePoint === 0x1b) return index;
+  }
+  return from;
+}
+
+interface KeptHistory {
+  readonly history: string;
+  /** Newlines in `history`. */
+  readonly lineBreaks: number;
+}
+
+/** The end of `history` that fits in `maxLines` lines and `maxChars` characters. */
+function trimHistory(kept: KeptHistory, maxLines: number, maxChars: number): KeptHistory {
+  let { history, lineBreaks } = kept;
+  const lines = lineBreaks + (history.length > 0 && !history.endsWith("\n") ? 1 : 0);
+  if (lines > maxLines) {
+    let drop = lines - maxLines;
+    let start = 0;
+    while (drop > 0) {
+      const next = history.indexOf("\n", start);
+      if (next === -1) break;
+      start = next + 1;
+      drop -= 1;
+    }
+    lineBreaks -= countLineBreaks(history.slice(0, start));
+    history = history.slice(start);
+  }
+  if (history.length > maxChars) {
+    const start = safeHistoryCut(history, history.length - maxChars);
+    lineBreaks -= countLineBreaks(history.slice(0, start));
+    history = history.slice(start);
+  }
+  return { history, lineBreaks };
+}
+
+function capHistory(history: string, maxLines: number, maxChars: number): string {
+  return trimHistory({ history, lineBreaks: countLineBreaks(history) }, maxLines, maxChars).history;
 }
 
 function isCsiFinalByte(codePoint: number): boolean {
@@ -1141,6 +1226,7 @@ function createSessionState(input: {
     status: "starting",
     pid: null,
     history: input.history,
+    historyLineBreaks: countLineBreaks(input.history),
     pendingHistoryControlSequence: null,
     pendingProcessEvents: [],
     pendingProcessEventIndex: 0,
@@ -1157,6 +1243,7 @@ function createSessionState(input: {
     runningSubprocessCommand: null,
     runningSubprocessStartedAt: null,
     submittedCommand: null,
+    submittedLine: null,
     commandGeneration: 0,
     subprocessPollingArmed: false,
     consecutiveSubprocessIdlePolls: 0,
@@ -1173,6 +1260,10 @@ function createSessionState(input: {
     typedIn: false,
     scriptPending: false,
     commandRanInShell: false,
+    controllerId: null,
+    viewerSizes: new Map(),
+    commandPendingPublished: false,
+    lineOffPrompt: false,
   };
 }
 
@@ -1244,6 +1335,8 @@ const defaultProcessTreeControl: TerminalProcessTreeControl = {
 interface TerminalManagerOptions {
   logsDir: string;
   historyLineLimit?: number;
+  historyCharLimit?: number;
+  persistDebounceMs?: number;
   ptyAdapter: PtyAdapterShape;
   shellResolver?: () => string;
   platform?: NodeJS.Platform;
@@ -1256,6 +1349,126 @@ interface TerminalManagerOptions {
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
   processTree?: TerminalProcessTreeControl;
+}
+
+const LEGACY_TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "started",
+  "output",
+  "exited",
+  "error",
+  "cleared",
+  "restarted",
+  "activity",
+]);
+
+/** The events older clients understand (they subscribe without a mode). */
+function isLegacyTerminalEvent(event: TerminalStreamEvent): event is TerminalEvent {
+  return LEGACY_TERMINAL_EVENT_TYPES.has(event.type);
+}
+
+/**
+ * The `metadata` stream's view of an event: no output, and snapshots without
+ * their history (a `thread` stream carries those to the device showing it).
+ */
+function metadataView(event: TerminalStreamEvent): TerminalStreamEvent | null {
+  switch (event.type) {
+    case "output":
+    case "cleared":
+    case "subscribed":
+    case "resync":
+      return null;
+    case "started":
+    case "restarted":
+      return { ...event, snapshot: { ...event.snapshot, history: "" } };
+    default:
+      return event;
+  }
+}
+
+/** One tab in a thread's list (docs/terminal.md), as kept on disk. */
+interface CatalogTab {
+  readonly terminalId: string;
+  readonly number: number;
+  readonly createdAt: string;
+  /** The folder its shell last started in. */
+  cwd: string | null;
+  /**
+   * The line typed at its prompt that runs now. Saved as it changes, so a
+   * server that stops (even by crashing) leaves word of it behind.
+   */
+  runningCommand: string | null;
+  /** What `runningCommand` was when the server last stopped: offered to run again. */
+  interruptedCommand: string | null;
+}
+
+const TerminalCatalogFile = Schema.Struct({
+  version: Schema.Literal(1),
+  threadId: Schema.String,
+  tabs: Schema.Array(
+    Schema.Struct({
+      terminalId: Schema.String,
+      number: Schema.Int,
+      createdAt: Schema.String,
+      cwd: Schema.NullOr(Schema.String),
+      runningCommand: Schema.optional(Schema.NullOr(Schema.String)),
+      interruptedCommand: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
+  ),
+});
+const decodeTerminalCatalogFile = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(TerminalCatalogFile),
+);
+
+const CATALOG_FILE_SUFFIX = ".tabs.json";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function decodeSafeId(encoded: string): string | null {
+  if (encoded.length === 0) return null;
+  const decoded = Encoding.decodeBase64UrlString(encoded);
+  if (decoded._tag === "Failure") return null;
+  const value = decoded.success;
+  // Only a canonical encoding of printable text is an id we wrote.
+  if (Encoding.encodeBase64Url(value) !== encoded || !/^[\x20-\x7e]+$/.test(value)) return null;
+  return value;
+}
+
+/**
+ * The thread and tab a history file belongs to (`terminal_<thread>.log` for
+ * the first tab, `terminal_<thread>_<tab>.log` for others). Both parts are
+ * base64url, which can itself contain `_`; thread ids are UUIDs, so the split
+ * that gives one wins, else the first split that decodes.
+ */
+export function historyFileOwner(
+  fileName: string,
+): { readonly threadId: string; readonly terminalId: string } | null {
+  // The oldest name, `<thread>.log`, kept the first tab's history with other
+  // characters as `_`: a thread id (a UUID) comes through it unchanged.
+  const legacy = /^(.+)\.log$/.exec(fileName)?.[1];
+  if (legacy !== undefined && UUID_PATTERN.test(legacy)) {
+    return { threadId: legacy, terminalId: DEFAULT_TERMINAL_ID };
+  }
+  const match = /^terminal_(.+)\.log$/.exec(fileName);
+  if (!match) return null;
+  const rest = match[1]!;
+  const candidates: Array<{ threadId: string; terminalId: string }> = [];
+  const whole = decodeSafeId(rest);
+  if (whole !== null) candidates.push({ threadId: whole, terminalId: DEFAULT_TERMINAL_ID });
+  for (let index = rest.indexOf("_"); index !== -1; index = rest.indexOf("_", index + 1)) {
+    const threadId = decodeSafeId(rest.slice(0, index));
+    const terminalId = decodeSafeId(rest.slice(index + 1));
+    if (threadId !== null && terminalId !== null) candidates.push({ threadId, terminalId });
+  }
+  return (
+    candidates.find((candidate) => UUID_PATTERN.test(candidate.threadId)) ?? candidates[0] ?? null
+  );
+}
+
+/** The lowest number no tab of the list has. */
+function nextTabNumber(tabs: ReadonlyArray<CatalogTab>): number {
+  const taken = new Set(tabs.map((tab) => tab.number));
+  let number = 1;
+  while (taken.has(number)) number += 1;
+  return number;
 }
 
 const makeTerminalManager = Effect.fn("makeTerminalManager")(function* () {
@@ -1278,6 +1491,30 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
     const logsDir = options.logsDir;
     const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
+    const historyCharLimit = options.historyCharLimit ?? DEFAULT_HISTORY_CHAR_LIMIT;
+    const persistDebounceMs = options.persistDebounceMs ?? DEFAULT_PERSIST_DEBOUNCE_MS;
+    const setHistory = (session: TerminalSessionState, history: string) => {
+      session.history = history;
+      session.historyLineBreaks = countLineBreaks(history);
+    };
+    // Adds what a tab printed to its kept history, and trims it once it is
+    // well past a limit (not on every chunk: trimming scans the history).
+    const appendHistory = (session: TerminalSessionState, text: string) => {
+      session.history += text;
+      session.historyLineBreaks += countLineBreaks(text);
+      if (
+        session.historyLineBreaks + 1 > historyLineLimit * (1 + HISTORY_TRIM_SLACK) + 1 ||
+        session.history.length > historyCharLimit * (1 + HISTORY_TRIM_SLACK)
+      ) {
+        const kept = trimHistory(
+          { history: session.history, lineBreaks: session.historyLineBreaks },
+          historyLineLimit,
+          historyCharLimit,
+        );
+        session.history = kept.history;
+        session.historyLineBreaks = kept.lineBreaks;
+      }
+    };
     const platform = options.platform ?? process.platform;
     const baseEnv = options.env ?? process.env;
     const shellResolver = options.shellResolver ?? (() => defaultShellResolver(platform, baseEnv));
@@ -1328,11 +1565,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       killFibers: new Map(),
     });
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
-    const terminalEventListeners = new Set<(event: TerminalEvent) => Effect.Effect<void>>();
+    const terminalEventListeners = new Set<(event: TerminalStreamEvent) => Effect.Effect<void>>();
     const workerScope = yield* Scope.make("sequential");
     yield* Effect.addFinalizer(() => Scope.close(workerScope, Exit.void));
 
-    const publishEvent = (event: TerminalEvent) =>
+    const publishEvent = (event: TerminalStreamEvent) =>
       Effect.gen(function* () {
         for (const listener of terminalEventListeners) {
           yield* listener(event).pipe(Effect.ignoreCause({ log: true }));
@@ -1560,20 +1797,28 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       yield* registerKillFiber(process, fiber);
     });
 
+    // Saving history: each tab waits out its own debounce (so one busy tab
+    // never holds up the shared writer), then hands the newest copy to the
+    // writer. Every copy carries a version, and the writer skips one older
+    // than what it last wrote or deleted, so a save that lost a race never
+    // overwrites newer history or brings back a deleted file.
+    let persistVersion = 0;
+    const writtenVersions = new Map<string, number>();
+    const pendingPersists = new Map<
+      string,
+      { history: string; version: number; timer: Fiber.Fiber<void, never> | null }
+    >();
+
     const persistWorker = yield* makeKeyedCoalescingWorker<
       string,
       PersistHistoryRequest,
       never,
       never
     >({
-      merge: (current, next) => ({
-        history: next.history,
-        immediate: current.immediate || next.immediate,
-      }),
+      merge: (current, next) => (next.version >= current.version ? next : current),
       process: Effect.fn("terminal.persistHistoryWorker")(function* (sessionKey, request) {
-        if (!request.immediate) {
-          yield* Effect.sleep(DEFAULT_PERSIST_DEBOUNCE_MS);
-        }
+        if (request.version <= (writtenVersions.get(sessionKey) ?? -1)) return;
+        writtenVersions.set(sessionKey, request.version);
 
         const [threadId, terminalId] = sessionKey.split("\u0000");
         if (!threadId || !terminalId) {
@@ -1592,22 +1837,66 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       }),
     });
 
+    /** Drops a tab's waiting save; returns it so the caller can write it now. */
+    const takePendingPersist = (sessionKey: string) =>
+      Effect.gen(function* () {
+        const pending = pendingPersists.get(sessionKey);
+        if (pending === undefined) return null;
+        pendingPersists.delete(sessionKey);
+        if (pending.timer !== null) yield* Fiber.interrupt(pending.timer);
+        return pending;
+      });
+
     const queuePersist = Effect.fn("terminal.queuePersist")(function* (
       threadId: string,
       terminalId: string,
       history: string,
     ) {
-      yield* persistWorker.enqueue(toSessionKey(threadId, terminalId), {
+      const sessionKey = toSessionKey(threadId, terminalId);
+      persistVersion += 1;
+      const waiting = pendingPersists.get(sessionKey);
+      if (waiting !== undefined) {
+        waiting.history = history;
+        waiting.version = persistVersion;
+        return;
+      }
+      const pending = {
         history,
-        immediate: false,
-      });
+        version: persistVersion,
+        timer: null as Fiber.Fiber<void, never> | null,
+      };
+      pendingPersists.set(sessionKey, pending);
+      pending.timer = yield* Effect.sleep(persistDebounceMs).pipe(
+        Effect.andThen(
+          Effect.uninterruptible(
+            Effect.suspend(() => {
+              if (pendingPersists.get(sessionKey) !== pending) return Effect.void;
+              pendingPersists.delete(sessionKey);
+              return persistWorker.enqueue(sessionKey, {
+                history: pending.history,
+                version: pending.version,
+              });
+            }),
+          ),
+        ),
+        Effect.forkIn(workerScope),
+      );
     });
 
+    /** Writes a tab's waiting save now and waits for every save of it to land. */
     const flushPersist = Effect.fn("terminal.flushPersist")(function* (
       threadId: string,
       terminalId: string,
     ) {
-      yield* persistWorker.drainKey(toSessionKey(threadId, terminalId));
+      const sessionKey = toSessionKey(threadId, terminalId);
+      const pending = yield* takePendingPersist(sessionKey);
+      if (pending !== null) {
+        yield* persistWorker.enqueue(sessionKey, {
+          history: pending.history,
+          version: pending.version,
+        });
+      }
+      yield* persistWorker.drainKey(sessionKey);
     });
 
     const persistHistory = Effect.fn("terminal.persistHistory")(function* (
@@ -1615,11 +1904,19 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       terminalId: string,
       history: string,
     ) {
-      yield* persistWorker.enqueue(toSessionKey(threadId, terminalId), {
-        history,
-        immediate: true,
-      });
-      yield* flushPersist(threadId, terminalId);
+      const sessionKey = toSessionKey(threadId, terminalId);
+      yield* takePendingPersist(sessionKey);
+      persistVersion += 1;
+      yield* persistWorker.enqueue(sessionKey, { history, version: persistVersion });
+      yield* persistWorker.drainKey(sessionKey);
+    });
+
+    /** No save of this tab may land after this point (its file is about to go). */
+    const sealPersist = Effect.fn("terminal.sealPersist")(function* (sessionKey: string) {
+      yield* takePendingPersist(sessionKey);
+      persistVersion += 1;
+      writtenVersions.set(sessionKey, persistVersion);
+      yield* persistWorker.drainKey(sessionKey);
     });
 
     const readHistory = Effect.fn("terminal.readHistory")(function* (
@@ -1635,7 +1932,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         const raw = yield* fileSystem
           .readFileString(nextPath)
           .pipe(Effect.mapError(toTerminalHistoryError("read", threadId, terminalId)));
-        const capped = capHistory(raw, historyLineLimit);
+        const capped = capHistory(raw, historyLineLimit, historyCharLimit);
         if (capped !== raw) {
           yield* fileSystem
             .writeFileString(nextPath, capped)
@@ -1660,7 +1957,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       const raw = yield* fileSystem
         .readFileString(legacyPath)
         .pipe(Effect.mapError(toTerminalHistoryError("migrate", threadId, terminalId)));
-      const capped = capHistory(raw, historyLineLimit);
+      const capped = capHistory(raw, historyLineLimit, historyCharLimit);
       yield* fileSystem
         .writeFileString(nextPath, capped)
         .pipe(Effect.mapError(toTerminalHistoryError("migrate", threadId, terminalId)));
@@ -1679,6 +1976,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       threadId: string,
       terminalId: string,
     ) {
+      yield* sealPersist(toSessionKey(threadId, terminalId));
       yield* fileSystem.remove(historyPath(threadId, terminalId), { force: true }).pipe(
         Effect.catch((error) =>
           Effect.logWarning("failed to delete terminal history", {
@@ -1704,6 +2002,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     const deleteAllHistoryForThread = Effect.fn("terminal.deleteAllHistoryForThread")(function* (
       threadId: string,
     ) {
+      const keyPrefix = toSessionKey(threadId, "");
+      for (const sessionKey of new Set([...pendingPersists.keys(), ...writtenVersions.keys()])) {
+        if (sessionKey.startsWith(keyPrefix)) yield* sealPersist(sessionKey);
+      }
       const threadPrefix = `${toSafeThreadId(threadId)}_`;
       const entries = yield* fileSystem
         .readDirectory(logsDir, { recursive: false })
@@ -1727,6 +2029,254 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         { discard: true },
       );
     });
+
+    // Each thread's tab list (docs/terminal.md): which tabs exist, their
+    // numbers and folders, the same for every device. Read from disk the
+    // first time it is needed; a thread whose history files predate tab lists
+    // gets one built from them, so nobody loses a tab on upgrade. Changed only
+    // with the thread's lock held.
+    const catalogs = new Map<string, CatalogTab[]>();
+    /**
+     * How listed tabs ended whose sessions were let go to save memory (their
+     * history is on disk). Gone when the tab closes or gets a session again.
+     */
+    const endedTabs = new Map<
+      string,
+      {
+        readonly status: "exited" | "error";
+        readonly exitCode: number | null;
+        readonly exitSignal: number | null;
+        readonly cwd: string;
+        readonly worktreePath: string | null;
+      }
+    >();
+    const catalogPath = (threadId: string) =>
+      path.join(logsDir, `${toSafeThreadId(threadId)}${CATALOG_FILE_SUFFIX}`);
+
+    const writeCatalog = Effect.fn("terminal.writeCatalog")(function* (threadId: string) {
+      const tabs = catalogs.get(threadId) ?? [];
+      yield* writeFileStringAtomically({
+        filePath: catalogPath(threadId),
+        contents: JSON.stringify({ version: 1, threadId, tabs }),
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.catch((error) =>
+          Effect.logWarning("failed to save terminal tab list", { threadId, error }),
+        ),
+      );
+    });
+
+    const loadCatalogs = Effect.gen(function* () {
+      const entries = yield* fileSystem
+        .readDirectory(logsDir)
+        .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+      for (const name of entries) {
+        if (!name.endsWith(CATALOG_FILE_SUFFIX)) continue;
+        const parsed = yield* fileSystem
+          .readFileString(path.join(logsDir, name))
+          .pipe(Effect.flatMap(decodeTerminalCatalogFile), Effect.option);
+        if (Option.isNone(parsed)) continue;
+        // A command still running when the server stopped was stopped with it.
+        let interrupted = false;
+        catalogs.set(
+          parsed.value.threadId,
+          parsed.value.tabs.map((tab) => {
+            if (tab.runningCommand) interrupted = true;
+            return {
+              terminalId: tab.terminalId,
+              number: tab.number,
+              createdAt: tab.createdAt,
+              cwd: tab.cwd,
+              runningCommand: null,
+              interruptedCommand: tab.runningCommand || tab.interruptedCommand || null,
+            };
+          }),
+        );
+        if (interrupted) yield* writeCatalog(parsed.value.threadId);
+      }
+      const found = new Map<string, Array<{ terminalId: string; createdMs: number }>>();
+      for (const name of entries) {
+        const owner = historyFileOwner(name);
+        if (owner === null || catalogs.has(owner.threadId)) continue;
+        // The first tab can have an old file beside its new one.
+        if (found.get(owner.threadId)?.some((file) => file.terminalId === owner.terminalId)) {
+          continue;
+        }
+        const info = yield* fileSystem.stat(path.join(logsDir, name)).pipe(Effect.option);
+        const created = Option.isSome(info)
+          ? Option.orElse(info.value.birthtime, () => info.value.mtime)
+          : Option.none<Date>();
+        const files = found.get(owner.threadId) ?? [];
+        files.push({
+          terminalId: owner.terminalId,
+          createdMs: Option.match(created, { onNone: () => 0, onSome: (date) => date.getTime() }),
+        });
+        found.set(owner.threadId, files);
+      }
+      for (const [threadId, files] of found) {
+        files.sort((left, right) =>
+          left.terminalId === DEFAULT_TERMINAL_ID
+            ? -1
+            : right.terminalId === DEFAULT_TERMINAL_ID
+              ? 1
+              : left.createdMs - right.createdMs,
+        );
+        catalogs.set(
+          threadId,
+          files.map((file, index) => ({
+            terminalId: file.terminalId,
+            number: index + 1,
+            createdAt: new Date(file.createdMs).toISOString(),
+            cwd: null,
+            runningCommand: null,
+            interruptedCommand: null,
+          })),
+        );
+        yield* writeCatalog(threadId);
+      }
+    });
+    const ensureCatalogs = yield* Effect.cached(loadCatalogs);
+
+    const catalogTabs = (threadId: string): ReadonlyArray<CatalogTab> =>
+      catalogs.get(threadId) ?? [];
+
+    /** Lists a tab the first time its shell starts. */
+    const addCatalogTab = Effect.fn("terminal.addCatalogTab")(function* (
+      threadId: string,
+      terminalId: string,
+      cwd: string,
+    ) {
+      yield* ensureCatalogs;
+      const tabs = catalogTabs(threadId);
+      if (tabs.some((tab) => tab.terminalId === terminalId)) return;
+      catalogs.set(threadId, [
+        ...tabs,
+        {
+          terminalId,
+          number: nextTabNumber(tabs),
+          createdAt: yield* nowIso,
+          cwd,
+          runningCommand: null,
+          interruptedCommand: null,
+        },
+      ]);
+      yield* writeCatalog(threadId);
+    });
+
+    const removeCatalogTab = Effect.fn("terminal.removeCatalogTab")(function* (
+      threadId: string,
+      terminalId: string,
+    ) {
+      yield* ensureCatalogs;
+      endedTabs.delete(toSessionKey(threadId, terminalId));
+      const tabs = catalogTabs(threadId);
+      if (!tabs.some((tab) => tab.terminalId === terminalId)) return;
+      catalogs.set(
+        threadId,
+        tabs.filter((tab) => tab.terminalId !== terminalId),
+      );
+      yield* writeCatalog(threadId);
+    });
+
+    /** Remembers the folder a listed tab's shell started in, for after a restart. */
+    const noteCatalogCwd = Effect.fn("terminal.noteCatalogCwd")(function* (
+      threadId: string,
+      terminalId: string,
+      cwd: string,
+    ) {
+      yield* ensureCatalogs;
+      const tab = catalogTabs(threadId).find((entry) => entry.terminalId === terminalId);
+      if (tab === undefined || tab.cwd === cwd) return;
+      tab.cwd = cwd;
+      yield* writeCatalog(threadId);
+    });
+
+    const tabsOf = (threadId: string, state: TerminalManagerState): TerminalTab[] =>
+      catalogTabs(threadId).map((tab) => {
+        const key = toSessionKey(threadId, tab.terminalId);
+        const session = state.sessions.get(key);
+        const ended = session === undefined ? endedTabs.get(key) : undefined;
+        return {
+          terminalId: tab.terminalId,
+          number: tab.number,
+          createdAt: tab.createdAt,
+          cwd: session?.cwd ?? ended?.cwd ?? tab.cwd,
+          status: session?.status ?? ended?.status ?? "stopped",
+          exitCode: session?.exitCode ?? ended?.exitCode ?? null,
+          exitSignal: session?.exitSignal ?? ended?.exitSignal ?? null,
+          interruptedCommand: tab.interruptedCommand,
+        };
+      });
+
+    const publishTabs = Effect.fn("terminal.publishTabs")(function* (threadId: string) {
+      yield* ensureCatalogs;
+      const state = yield* readManagerState;
+      yield* publishEvent({
+        type: "tabs",
+        threadId,
+        createdAt: yield* nowIso,
+        tabs: tabsOf(threadId, state),
+      });
+    });
+
+    let shuttingDown = false;
+
+    /** The line typed at a tab's prompt that runs in it now, when known exactly. */
+    const runningLineOf = (session: TerminalSessionState | null): string | null =>
+      session !== null &&
+      session.status === "running" &&
+      session.hasRunningSubprocess &&
+      session.commandRun === null
+        ? session.submittedLine
+        : null;
+
+    /**
+     * Brings a listed tab's saved commands up to date: what runs in it now
+     * (read from the session when this runs, so updates that land out of
+     * order still end right) and, when asked, forgets the one a restart
+     * stopped.
+     */
+    const updateCatalogCommands = (
+      threadId: string,
+      terminalId: string,
+      options?: { readonly forgetInterrupted?: boolean },
+    ) =>
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
+          if (shuttingDown) return;
+          yield* ensureCatalogs;
+          const tab = catalogTabs(threadId).find((entry) => entry.terminalId === terminalId);
+          if (tab === undefined) return;
+          const running = runningLineOf(Option.getOrNull(yield* getSession(threadId, terminalId)));
+          const interrupted = options?.forgetInterrupted ? null : tab.interruptedCommand;
+          if (tab.runningCommand === running && tab.interruptedCommand === interrupted) return;
+          const interruptedChanged = tab.interruptedCommand !== interrupted;
+          tab.runningCommand = running;
+          tab.interruptedCommand = interrupted;
+          yield* writeCatalog(threadId);
+          if (interruptedChanged) yield* publishTabs(threadId);
+        }),
+      );
+
+    /** {@link updateCatalogCommands} on its own, for callers that may hold the thread's lock. */
+    const syncCatalogCommands = (
+      threadId: string,
+      terminalId: string,
+      options?: { readonly forgetInterrupted?: boolean },
+    ) =>
+      updateCatalogCommands(threadId, terminalId, options).pipe(
+        Effect.ignoreCause({ log: true }),
+        Effect.forkIn(workerScope),
+        Effect.asVoid,
+      );
+
+    /** Whether a listed tab still offers to run again what a restart stopped. */
+    const hasInterruptedCommand = (threadId: string, terminalId: string) =>
+      catalogTabs(threadId).some(
+        (tab) => tab.terminalId === terminalId && tab.interruptedCommand !== null,
+      );
 
     const assertValidCwd = Effect.fn("terminal.assertValidCwd")(function* (cwd: string) {
       const stats = yield* fileSystem.stat(cwd).pipe(
@@ -1784,12 +2334,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
     const evictInactiveSessionsIfNeeded = Effect.fn("terminal.evictInactiveSessionsIfNeeded")(
       function* () {
-        yield* modifyManagerState((state) => {
+        const evicted = yield* modifyManagerState((state) => {
           const inactiveSessions = [...state.sessions.values()].filter(
             (session) => session.status !== "running",
           );
           if (inactiveSessions.length <= maxRetainedInactiveSessions) {
-            return [undefined, state] as const;
+            return [[] as TerminalSessionState[], state] as const;
           }
 
           inactiveSessions.sort(
@@ -1801,14 +2351,32 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
           const sessions = new Map(state.sessions);
 
-          const toEvict = inactiveSessions.length - maxRetainedInactiveSessions;
-          for (const session of inactiveSessions.slice(0, toEvict)) {
+          const toEvict = inactiveSessions.slice(
+            0,
+            inactiveSessions.length - maxRetainedInactiveSessions,
+          );
+          for (const session of toEvict) {
             const key = toSessionKey(session.threadId, session.terminalId);
             sessions.delete(key);
           }
 
-          return [undefined, { ...state, sessions }] as const;
+          return [toEvict, { ...state, sessions }] as const;
         });
+        // A tab still listed keeps how its shell ended: it shows ended, not
+        // as a tab to start again.
+        for (const session of evicted) {
+          if (session.status !== "exited" && session.status !== "error") continue;
+          if (!catalogTabs(session.threadId).some((tab) => tab.terminalId === session.terminalId)) {
+            continue;
+          }
+          endedTabs.set(toSessionKey(session.threadId, session.terminalId), {
+            status: session.status,
+            exitCode: session.exitCode,
+            exitSignal: session.exitSignal,
+            cwd: session.cwd,
+            worktreePath: session.worktreePath,
+          });
+        }
       },
     );
 
@@ -1976,12 +2544,15 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               nextEvent.data,
               nextEvent.commandGeneration,
             );
-            session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
+            // A sequence that never ends (a broken program) is dropped
+            // rather than held and rescanned with every chunk.
+            session.pendingHistoryControlSequence =
+              sanitized.pendingControlSequence !== null &&
+              sanitized.pendingControlSequence.data.length > MAX_PENDING_CONTROL_SEQUENCE_CHARS
+                ? null
+                : sanitized.pendingControlSequence;
             if (sanitized.visibleText.length > 0) {
-              session.history = capHistory(
-                `${session.history}${sanitized.visibleText}`,
-                historyLineLimit,
-              );
+              appendHistory(session, sanitized.visibleText);
               session.historyAppendedTotal += sanitized.visibleText.length;
             }
             for (const signal of sanitized.lineEditorSignals) {
@@ -2052,6 +2623,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               session.runningSubprocessCommand = null;
               session.runningSubprocessStartedAt = null;
               session.submittedCommand = null;
+              session.submittedLine = null;
               session.subprocessPollingArmed = false;
               session.consecutiveSubprocessIdlePolls = 0;
               session.terminalCommandInputState = createTerminalCommandInputState();
@@ -2102,7 +2674,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.runningSubprocessCommand = null;
           session.runningSubprocessStartedAt = null;
           session.submittedCommand = null;
+          session.submittedLine = null;
           session.subprocessPollingArmed = false;
+          session.commandPendingPublished = false;
+          session.lineOffPrompt = false;
           session.consecutiveSubprocessIdlePolls = 0;
           session.commandCompletionMarkersEnabled = false;
           session.startupPromptMarkerSeen = false;
@@ -2157,6 +2732,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               hasRunningSubprocess: false,
               command: null,
             });
+            // A command that ended by itself is nothing a restart could stop.
+            yield* syncCatalogCommands(action.threadId, action.terminalId);
           }
           if (action.runEnd !== null) {
             yield* endCommandRun(action.runEnd);
@@ -2180,10 +2757,42 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           exitCode: action.exitCode,
           exitSignal: action.exitSignal,
         });
+        // A shell that ended by itself without an error (`exit`) closes its
+        // tab on every device; one that failed stays, output and all, until
+        // someone restarts or closes it.
+        if (action.exitCode === 0 && !action.exitSignal) {
+          yield* closeExitedTab(session).pipe(Effect.forkIn(workerScope));
+        } else {
+          yield* publishTabs(action.threadId);
+          // Nothing runs in an ended shell, so a later restart stops nothing.
+          yield* syncCatalogCommands(action.threadId, action.terminalId);
+        }
         yield* evictInactiveSessionsIfNeeded();
         return;
       }
     });
+
+    /** Closes a tab whose shell exited cleanly, unless it was restarted meanwhile. */
+    const closeExitedTab = (session: TerminalSessionState) =>
+      withThreadLock(
+        session.threadId,
+        Effect.gen(function* () {
+          const live = yield* getSession(session.threadId, session.terminalId);
+          // A restart meanwhile may have ended differently: a failure stays.
+          if (
+            Option.isNone(live) ||
+            live.value !== session ||
+            session.process !== null ||
+            session.status !== "exited" ||
+            session.exitCode !== 0 ||
+            Boolean(session.exitSignal)
+          ) {
+            return;
+          }
+          yield* closeSession(session.threadId, session.terminalId, true);
+          yield* publishTabs(session.threadId);
+        }),
+      ).pipe(Effect.ignoreCause({ log: true }));
 
     const stopProcess = Effect.fn("terminal.stopProcess")(function* (
       session: TerminalSessionState,
@@ -2203,7 +2812,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.runningSubprocessCommand = null;
         session.runningSubprocessStartedAt = null;
         session.submittedCommand = null;
+        session.submittedLine = null;
         session.subprocessPollingArmed = false;
+        session.commandPendingPublished = false;
+        session.lineOffPrompt = false;
         session.consecutiveSubprocessIdlePolls = 0;
         session.commandCompletionMarkersEnabled = false;
         session.startupPromptMarkerSeen = false;
@@ -2331,8 +2943,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.runningSubprocessCommand = null;
         session.runningSubprocessStartedAt = null;
         session.submittedCommand = null;
+        session.submittedLine = null;
         session.commandGeneration = 0;
         session.subprocessPollingArmed = false;
+        session.commandPendingPublished = false;
+        session.lineOffPrompt = false;
         session.consecutiveSubprocessIdlePolls = 0;
         session.commandCompletionMarkersEnabled = false;
         session.startupPromptMarkerSeen = false;
@@ -2435,6 +3050,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       );
 
       if (startResult._tag === "Success") {
+        yield* noteCatalogCwd(session.threadId, session.terminalId, session.cwd);
+        yield* publishTabs(session.threadId);
         return;
       }
 
@@ -2455,8 +3072,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.runningSubprocessCommand = null;
           session.runningSubprocessStartedAt = null;
           session.submittedCommand = null;
+          session.submittedLine = null;
           session.commandGeneration = 0;
           session.subprocessPollingArmed = false;
+          session.commandPendingPublished = false;
+          session.lineOffPrompt = false;
           session.consecutiveSubprocessIdlePolls = 0;
           session.commandCompletionMarkersEnabled = false;
           session.startupPromptMarkerSeen = false;
@@ -2486,6 +3106,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           error: message,
           ...(startedShell ? { shell: startedShell } : {}),
         });
+        yield* publishTabs(session.threadId);
       }
     });
 
@@ -2512,6 +3133,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         sessions.delete(key);
         return [undefined, { ...state, sessions }] as const;
       });
+      yield* removeCatalogTab(threadId, terminalId);
 
       if (deleteHistoryOnClose) {
         yield* deleteHistory(threadId, terminalId);
@@ -2570,7 +3192,13 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           liveSession.value.runningSubprocessCommand === command;
         const shouldClearSubmittedCommand =
           !activity.hasRunningSubprocess && liveSession.value.submittedCommand !== null;
-        if (activityUnchanged && !shouldClearSubmittedCommand) {
+        // A pending command is settled once it is seen running, or polling has
+        // seen the terminal idle long enough to stop looking.
+        const pendingSettled =
+          liveSession.value.commandPendingPublished &&
+          (activity.hasRunningSubprocess || !liveSession.value.subprocessPollingArmed);
+        if (pendingSettled) liveSession.value.commandPendingPublished = false;
+        if (activityUnchanged && !shouldClearSubmittedCommand && !pendingSettled) {
           return [Option.none(), state] as const;
         }
 
@@ -2589,11 +3217,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         liveSession.value.runningSubprocessCommand = command;
         if (!activity.hasRunningSubprocess) {
           liveSession.value.submittedCommand = null;
+          liveSession.value.submittedLine = null;
           liveSession.value.terminalCommandInputState = createTerminalCommandInputState();
         }
         liveSession.value.updatedAt = laterThan(liveSession.value.updatedAt, updatedAt);
 
-        if (activityUnchanged) {
+        if (activityUnchanged && !pendingSettled) {
           return [Option.none(), state] as const;
         }
 
@@ -2606,6 +3235,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             hasRunningSubprocess: activity.hasRunningSubprocess,
             command,
             startedAt: liveSession.value.runningSubprocessStartedAt,
+            commandPending: false,
           }),
           state,
         ] as const;
@@ -2613,7 +3243,26 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
       if (Option.isSome(event)) {
         yield* publishEvent(event.value);
+        yield* syncCatalogCommands(session.threadId, session.terminalId);
       }
+    });
+
+    /** Tells clients a command was entered and may be about to run. */
+    const publishCommandPending = Effect.fn("terminal.publishCommandPending")(function* (
+      session: TerminalSessionState & { pid: number },
+    ) {
+      if (session.commandPendingPublished) return;
+      session.commandPendingPublished = true;
+      yield* publishEvent({
+        type: "activity",
+        threadId: session.threadId,
+        terminalId: session.terminalId,
+        createdAt: yield* nowIso,
+        hasRunningSubprocess: false,
+        command: null,
+        startedAt: null,
+        commandPending: true,
+      });
     });
 
     // After a poll: back off while nothing changes, and stay quick while a
@@ -2771,6 +3420,22 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
+        // What runs as the server stops is what a restart offers to run
+        // again: saved once from the sessions as they are now, then left
+        // alone (an update still waiting would find the sessions gone).
+        shuttingDown = true;
+        const stopping = yield* readManagerState;
+        const changedThreads = new Set<string>();
+        for (const session of stopping.sessions.values()) {
+          const tab = catalogTabs(session.threadId).find(
+            (entry) => entry.terminalId === session.terminalId,
+          );
+          const running = runningLineOf(session);
+          if (tab === undefined || tab.runningCommand === running) continue;
+          tab.runningCommand = running;
+          changedThreads.add(session.threadId);
+        }
+        yield* Effect.forEach(changedThreads, writeCatalog, { discard: true });
         const sessions = yield* modifyManagerState(
           (state) =>
             [
@@ -2795,6 +3460,20 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           concurrency: "unbounded",
           discard: true,
         });
+        // Saves still waiting out their debounce, or handed to the writer and
+        // not yet written, land before the server goes.
+        const unsaved = new Set([
+          ...pendingPersists.keys(),
+          ...sessions.map((session) => toSessionKey(session.threadId, session.terminalId)),
+        ]);
+        yield* Effect.forEach(
+          unsaved,
+          (sessionKey) => {
+            const [threadId, terminalId] = sessionKey.split("\u0000");
+            return threadId && terminalId ? flushPersist(threadId, terminalId) : Effect.void;
+          },
+          { discard: true },
+        );
       }).pipe(Effect.ignoreCause({ log: true })),
     );
 
@@ -2852,15 +3531,69 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     });
 
     /** `open` for one tab, with the thread's lock held. */
+    /** Whether a folder is there to start a shell in. */
+    const isUsableCwd = (cwd: string) =>
+      assertValidCwd(cwd).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+
+    /**
+     * `open` for one tab, with the thread's lock held. A tab that exists is
+     * shown as it is: its shell is never stopped because the thread's folder
+     * or environment moved on (docs/terminal.md). The snapshot's cwd says
+     * where it really runs, and moving it is the user's call (`restart`).
+     */
     const openTab = Effect.fn("terminal.openTab")(function* (
       input: TerminalOpenInput,
       terminalId: string,
     ) {
-      yield* assertValidCwd(input.cwd);
-
+      const attach = input.attach === true;
+      yield* ensureCatalogs;
       const sessionKey = toSessionKey(input.threadId, terminalId);
       const existing = yield* getSession(input.threadId, terminalId);
       if (Option.isNone(existing)) {
+        const listed = catalogTabs(input.threadId).find((tab) => tab.terminalId === terminalId);
+        // Attaching never makes a tab: one closed on another device stays closed.
+        if (attach && listed === undefined) {
+          return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
+        }
+        const ended = endedTabs.get(sessionKey);
+        endedTabs.delete(sessionKey);
+        if (attach && ended !== undefined) {
+          // A shell that ended stays ended, as if it had been kept all along.
+          yield* flushPersist(input.threadId, terminalId);
+          const history = yield* readHistory(input.threadId, terminalId);
+          const session = createSessionState({
+            threadId: input.threadId,
+            terminalId,
+            cwd: ended.cwd,
+            worktreePath: ended.worktreePath,
+            history,
+            createdAt: yield* nowIso,
+            cols: input.cols ?? DEFAULT_OPEN_COLS,
+            rows: input.rows ?? DEFAULT_OPEN_ROWS,
+            env: input.env,
+            subprocessPoll: freshSubprocessPollSchedule(),
+          });
+          session.status = ended.status;
+          session.exitCode = ended.exitCode;
+          session.exitSignal = ended.exitSignal;
+          yield* modifyManagerState((state) => {
+            const sessions = new Map(state.sessions);
+            sessions.set(sessionKey, session);
+            return [undefined, { ...state, sessions }] as const;
+          });
+          yield* evictInactiveSessionsIfNeeded();
+          return snapshot(session);
+        }
+        // A listed tab without a shell (the server restarted) comes back in
+        // the folder it was in, while that folder is still there.
+        const cwd =
+          attach && listed?.cwd != null && (yield* isUsableCwd(listed.cwd))
+            ? listed.cwd
+            : input.cwd;
+        yield* assertValidCwd(cwd);
         yield* flushPersist(input.threadId, terminalId);
         const history = yield* readHistory(input.threadId, terminalId);
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
@@ -2869,7 +3602,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         const session: TerminalSessionState = createSessionState({
           threadId: input.threadId,
           terminalId,
-          cwd: input.cwd,
+          cwd,
           worktreePath: input.worktreePath ?? null,
           history,
           createdAt,
@@ -2887,12 +3620,13 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         });
 
         yield* evictInactiveSessionsIfNeeded();
+        yield* addCatalogTab(input.threadId, terminalId, cwd);
         yield* startSession(
           session,
           {
             threadId: input.threadId,
             terminalId,
-            cwd: input.cwd,
+            cwd,
             ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
             cols,
             rows,
@@ -2904,44 +3638,22 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       }
 
       const liveSession = existing.value;
-      const nextRuntimeEnv = normalizedRuntimeEnv(input.env);
-      const currentRuntimeEnv = liveSession.runtimeEnv;
-      const targetCols = input.cols ?? liveSession.cols;
-      const targetRows = input.rows ?? liveSession.rows;
-      const runtimeEnvChanged = !Equal.equals(currentRuntimeEnv, nextRuntimeEnv);
-      // A tab carrying out a suggested command is only attached to: the
-      // drawer opening it must not respawn the command's shell.
-      const carryingCommand = liveSession.commandRun !== null;
-
-      if (!carryingCommand && (liveSession.cwd !== input.cwd || runtimeEnvChanged)) {
-        yield* stopProcess(liveSession);
-        liveSession.cwd = input.cwd;
-        liveSession.worktreePath = input.worktreePath ?? null;
-        liveSession.runtimeEnv = nextRuntimeEnv;
-        liveSession.history = "";
-        liveSession.pendingHistoryControlSequence = null;
-        liveSession.pendingProcessEvents = [];
-        liveSession.pendingProcessEventIndex = 0;
-        liveSession.processEventDrainRunning = false;
-        liveSession.runningSubprocessCommand = null;
-        liveSession.submittedCommand = null;
-        liveSession.terminalCommandInputState = createTerminalCommandInputState();
-        yield* persistHistory(liveSession.threadId, liveSession.terminalId, liveSession.history);
-      } else if (liveSession.status === "exited" || liveSession.status === "error") {
-        liveSession.runtimeEnv = nextRuntimeEnv;
-        liveSession.worktreePath = input.worktreePath ?? null;
-        liveSession.history = "";
-        liveSession.pendingHistoryControlSequence = null;
-        liveSession.pendingProcessEvents = [];
-        liveSession.pendingProcessEventIndex = 0;
-        liveSession.processEventDrainRunning = false;
-        liveSession.runningSubprocessCommand = null;
-        liveSession.submittedCommand = null;
-        liveSession.terminalCommandInputState = createTerminalCommandInputState();
-        yield* persistHistory(liveSession.threadId, liveSession.terminalId, liveSession.history);
-      }
-
       if (!liveSession.process) {
+        // A shell that ended stays ended for a client that attaches: it shows
+        // the output and how it ended, and the user restarts it.
+        if (attach) return snapshot(liveSession);
+        // Older clients reopen an ended tab: a new shell, below the old output.
+        yield* assertValidCwd(input.cwd);
+        liveSession.runtimeEnv = normalizedRuntimeEnv(input.env);
+        liveSession.worktreePath = input.worktreePath ?? null;
+        if (liveSession.history.length > 0 && !liveSession.history.endsWith("\n")) {
+          appendHistory(liveSession, "\r\n");
+          liveSession.historyAppendedTotal += 2;
+        }
+        liveSession.runningSubprocessCommand = null;
+        liveSession.submittedCommand = null;
+        liveSession.submittedLine = null;
+        liveSession.terminalCommandInputState = createTerminalCommandInputState();
         yield* startSession(
           liveSession,
           {
@@ -2949,8 +3661,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             terminalId,
             cwd: input.cwd,
             worktreePath: liveSession.worktreePath,
-            cols: targetCols,
-            rows: targetRows,
+            cols: input.cols ?? liveSession.cols,
+            rows: input.rows ?? liveSession.rows,
             ...(input.env ? { env: input.env } : {}),
           },
           "started",
@@ -2958,7 +3670,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         return snapshot(liveSession);
       }
 
-      if (liveSession.cols !== targetCols || liveSession.rows !== targetRows) {
+      // Older clients size the tab when they open it; newer ones send a
+      // resize that says whether they are the one using it.
+      const targetCols = input.cols ?? liveSession.cols;
+      const targetRows = input.rows ?? liveSession.rows;
+      if (!attach && (liveSession.cols !== targetCols || liveSession.rows !== targetRows)) {
         liveSession.cols = targetCols;
         liveSession.rows = targetRows;
         liveSession.updatedAt = laterThan(liveSession.updatedAt, yield* nowIso);
@@ -2995,91 +3711,189 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         }),
       );
 
-    const write: TerminalManagerShape["write"] = Effect.fn("terminal.write")(function* (input) {
-      const terminalId = input.terminalId ?? DEFAULT_TERMINAL_ID;
-      const session = yield* requireSession(input.threadId, terminalId);
-      const process = session.process;
-      if (!process || session.status !== "running") {
-        if (session.status === "exited") return;
-        return yield* new TerminalNotRunningError({
-          threadId: input.threadId,
-          terminalId,
-        });
-      }
-      if (input.origin === "script") {
-        session.scriptPending = false;
-      } else if (!session.typedIn && !isTerminalReplyOnly(input.data)) {
-        // Also while a command runs: keys typed ahead reach the shell after it.
-        session.typedIn = true;
-      }
-      if (session.commandRun?.mode === "run") {
-        // Keys typed into a running command (an answer, a password) are not a
-        // shell command line: nothing to track or show as the tab's activity.
-        session.terminalCommandInputState = createTerminalCommandInputState();
-        yield* Effect.sync(() => process.write(input.data));
-        return;
-      }
-      const result = applyTerminalInputData(session.terminalCommandInputState, input.data);
-      session.terminalCommandInputState = result.state;
-      // Input (Ctrl+C included) may end or start a command: look again soon.
-      session.subprocessPoll.delayMs = subprocessPollIntervalMs;
-      session.subprocessPoll.nextPollAtMs = 0;
-      const waitingInsert =
-        session.commandRun?.mode === "insert" && session.commandRun.phase === "waiting"
-          ? session.commandRun
-          : null;
-      if (waitingInsert !== null && (result.didSubmit || input.data.includes("\u0003"))) {
-        // The user ran the command they were given (or cleared it); from here
-        // the tab is theirs, so the insert is no longer followed.
-        session.commandRun = null;
-        yield* publishRunUpdate({
-          type: result.didSubmit ? "submitted" : "cancelled",
-          runId: waitingInsert.runId,
-          at: yield* nowIso,
-        });
-      }
-      if (result.submittedCommand !== null) {
-        session.submittedCommand = result.submittedCommand;
-      }
-      if (result.didSubmit) {
-        // Keep checking this PTY after a submitted command even if an early
-        // process snapshot misses its child. This also covers commands recalled
-        // through shell history, whose text cannot be reconstructed here.
-        session.commandGeneration += 1;
-        session.subprocessPollingArmed = true;
-        session.consecutiveSubprocessIdlePolls = 0;
-        session.subprocessPoll = freshSubprocessPollSchedule();
-        if (session.commandCompletionMarkersEnabled && session.pid !== null) {
-          // PowerShell runs cmdlets and pipelines inside the shell process, so
-          // there may never be a child process to discover. Treat submission as
-          // active and let the injected prompt marker end the activity.
-          yield* publishSubprocessActivityIfChanged(
-            session as TerminalSessionState & { pid: number },
-            {
-              hasRunningSubprocess: true,
-              command: result.submittedCommand,
-            },
-          );
+    const write: TerminalManagerShape["write"] = Effect.fn("terminal.write")(
+      function* (input, viewerId) {
+        const terminalId = input.terminalId ?? DEFAULT_TERMINAL_ID;
+        const session = yield* requireSession(input.threadId, terminalId);
+        const process = session.process;
+        if (!process || session.status !== "running") {
+          if (session.status === "exited") return;
+          return yield* new TerminalNotRunningError({
+            threadId: input.threadId,
+            terminalId,
+          });
         }
-      }
-      yield* Effect.sync(() => process.write(input.data));
-    });
+        const replyOnly = isTerminalReplyOnly(input.data);
+        // Every device showing the tab answers the terminal's queries; only the
+        // answer of the one using it goes on, or the shell would read the second
+        // answer as typing.
+        if (
+          replyOnly &&
+          viewerId !== undefined &&
+          session.controllerId !== null &&
+          session.controllerId !== viewerId
+        ) {
+          return;
+        }
+        if (input.origin === "script") {
+          session.scriptPending = false;
+        } else if (!replyOnly) {
+          // Also while a command runs: keys typed ahead reach the shell after it.
+          session.typedIn = true;
+          if (viewerId !== undefined && session.controllerId !== viewerId) {
+            // Typing takes the tab over, size and all.
+            session.controllerId = viewerId;
+            const size = session.viewerSizes.get(viewerId);
+            if (size !== undefined && (size.cols !== session.cols || size.rows !== session.rows)) {
+              session.cols = size.cols;
+              session.rows = size.rows;
+              session.updatedAt = laterThan(session.updatedAt, yield* nowIso);
+              yield* Effect.sync(() => process.resize(size.cols, size.rows));
+            }
+          }
+        }
+        if (session.commandRun?.mode === "run") {
+          // Keys typed into a running command (an answer, a password) are not a
+          // shell command line: nothing to track or show as the tab's activity.
+          session.terminalCommandInputState = createTerminalCommandInputState();
+          yield* Effect.sync(() => process.write(input.data));
+          return;
+        }
+        // Only a line typed at the shell's own prompt is a command. Anything
+        // else (a password for sudo or ssh, an answer to a program) must never
+        // become the tab's label. The line editor's bracketed paste switch says
+        // when a POSIX shell is reading a line, while no command of it runs or
+        // is starting: a program in the shell (a REPL, a shell over ssh) can
+        // turn the same switch on. PowerShell reads one whenever no command of
+        // it is running (its prompt marker ends each one). When nothing tells,
+        // the label comes from the process table instead. A script Threadlines
+        // types is its own text either way.
+        const atPrompt =
+          input.origin === "script" ||
+          (session.commandCompletionMarkersEnabled
+            ? !session.hasRunningSubprocess
+            : session.lineEditorActive === true &&
+              !session.hasRunningSubprocess &&
+              !session.commandPendingPublished);
+        // The terminal's own replies are no keys: the line stays as it was.
+        const result = replyOnly
+          ? {
+              state: session.terminalCommandInputState,
+              submittedCommand: null,
+              submittedLine: null,
+              didSubmit: false,
+            }
+          : applyTerminalInputData(session.terminalCommandInputState, input.data);
+        if (!replyOnly) {
+          session.terminalCommandInputState = atPrompt
+            ? result.state
+            : createTerminalCommandInputState();
+        }
+        // A line begun away from the prompt and finished at it would show
+        // only its end.
+        const lineOffPrompt = session.lineOffPrompt || (!atPrompt && !replyOnly);
+        session.lineOffPrompt = result.didSubmit ? false : lineOffPrompt;
+        const submittedCommand = atPrompt && !lineOffPrompt ? result.submittedCommand : null;
+        const submittedLine = submittedCommand !== null ? result.submittedLine : null;
+        // Input (Ctrl+C included) may end or start a command: look again soon.
+        session.subprocessPoll.delayMs = subprocessPollIntervalMs;
+        session.subprocessPoll.nextPollAtMs = 0;
+        const waitingInsert =
+          session.commandRun?.mode === "insert" && session.commandRun.phase === "waiting"
+            ? session.commandRun
+            : null;
+        if (waitingInsert !== null && (result.didSubmit || input.data.includes("\u0003"))) {
+          // The user ran the command they were given (or cleared it); from here
+          // the tab is theirs, so the insert is no longer followed.
+          session.commandRun = null;
+          yield* publishRunUpdate({
+            type: result.didSubmit ? "submitted" : "cancelled",
+            runId: waitingInsert.runId,
+            at: yield* nowIso,
+          });
+        }
+        if (submittedCommand !== null) {
+          session.submittedCommand = submittedCommand;
+          session.submittedLine = submittedLine;
+        }
+        // A line entered in the tab (the stopped command run again, or anything
+        // else) means it is in use: the offer to run it again has done its job.
+        if (result.didSubmit && !replyOnly && hasInterruptedCommand(input.threadId, terminalId)) {
+          yield* syncCatalogCommands(input.threadId, terminalId, { forgetInterrupted: true });
+        }
+        if (result.didSubmit) {
+          const markers = session.commandCompletionMarkersEnabled;
+          if (!markers || atPrompt) {
+            // Keep checking this PTY after a submitted command even if an early
+            // process snapshot misses its child. This also covers commands
+            // recalled through shell history, whose text cannot be reconstructed.
+            session.commandGeneration += 1;
+            session.subprocessPollingArmed = true;
+            session.consecutiveSubprocessIdlePolls = 0;
+            session.subprocessPoll = freshSubprocessPollSchedule();
+          }
+          if (markers && atPrompt && session.pid !== null) {
+            // PowerShell runs cmdlets and pipelines inside the shell process, so
+            // there may never be a child process to discover. Treat submission as
+            // active and let the injected prompt marker end the activity.
+            yield* publishSubprocessActivityIfChanged(
+              session as TerminalSessionState & { pid: number },
+              {
+                hasRunningSubprocess: true,
+                command: submittedCommand,
+              },
+            );
+          } else if (
+            !markers &&
+            !session.hasRunningSubprocess &&
+            session.lineEditorActive !== false &&
+            session.pid !== null
+          ) {
+            // Busy until polling sees the command run or end: stopping the tab
+            // asks first in between.
+            yield* publishCommandPending(session as TerminalSessionState & { pid: number });
+          }
+        }
+        yield* Effect.sync(() => process.write(input.data));
+      },
+    );
 
-    const resize: TerminalManagerShape["resize"] = Effect.fn("terminal.resize")(function* (input) {
-      const terminalId = input.terminalId ?? DEFAULT_TERMINAL_ID;
-      const session = yield* requireSession(input.threadId, terminalId);
-      const process = session.process;
-      if (!process || session.status !== "running") {
-        return yield* new TerminalNotRunningError({
-          threadId: input.threadId,
-          terminalId,
-        });
-      }
-      session.cols = input.cols;
-      session.rows = input.rows;
-      session.updatedAt = laterThan(session.updatedAt, yield* nowIso);
-      yield* Effect.sync(() => process.resize(input.cols, input.rows));
-    });
+    const resize: TerminalManagerShape["resize"] = Effect.fn("terminal.resize")(
+      function* (input, viewerId) {
+        const terminalId = input.terminalId ?? DEFAULT_TERMINAL_ID;
+        const session = yield* requireSession(input.threadId, terminalId);
+        const process = session.process;
+        if (!process || session.status !== "running") {
+          return yield* new TerminalNotRunningError({
+            threadId: input.threadId,
+            terminalId,
+          });
+        }
+        // The device someone is using sets the size; another one showing the
+        // same tab doesn't shrink it under them.
+        if (viewerId !== undefined) {
+          session.viewerSizes.set(viewerId, { cols: input.cols, rows: input.rows });
+          if (input.claim === true) {
+            session.controllerId = viewerId;
+          } else if (session.controllerId !== null && session.controllerId !== viewerId) {
+            return;
+          }
+        }
+        if (session.cols === input.cols && session.rows === input.rows) return;
+        session.cols = input.cols;
+        session.rows = input.rows;
+        session.updatedAt = laterThan(session.updatedAt, yield* nowIso);
+        yield* Effect.sync(() => process.resize(input.cols, input.rows));
+      },
+    );
+
+    const releaseViewer: TerminalManagerShape["releaseViewer"] = (viewerId) =>
+      Effect.map(readManagerState, (state) => {
+        for (const session of state.sessions.values()) {
+          if (session.controllerId === viewerId) session.controllerId = null;
+          session.viewerSizes.delete(viewerId);
+        }
+      });
 
     const clear: TerminalManagerShape["clear"] = (input) =>
       withThreadLock(
@@ -3087,21 +3901,26 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         Effect.gen(function* () {
           const terminalId = input.terminalId ?? DEFAULT_TERMINAL_ID;
           const session = yield* requireSession(input.threadId, terminalId);
-          const updatedAt = yield* nowIso;
-          session.history = "";
-          session.pendingHistoryControlSequence = null;
-          session.pendingProcessEvents = [];
-          session.pendingProcessEventIndex = 0;
-          session.processEventDrainRunning = false;
-          session.updatedAt = laterThan(session.updatedAt, updatedAt);
-          yield* persistHistory(input.threadId, terminalId, session.history);
-          const createdAt = yield* nowIso;
+          const now = yield* nowIso;
+          // Clients hear of it before anything printed after it (output
+          // drains while the save below waits), or they would wipe that too.
+          // Output read but not yet drained was printed before: it goes. A
+          // drain under way finds nothing left and stops by itself.
+          const createdAt = yield* Effect.sync(() => {
+            setHistory(session, "");
+            session.pendingHistoryControlSequence = null;
+            session.pendingProcessEvents = [];
+            session.pendingProcessEventIndex = 0;
+            session.updatedAt = laterThan(session.updatedAt, now);
+            return session.updatedAt;
+          });
           yield* publishEvent({
             type: "cleared",
             threadId: input.threadId,
             terminalId,
             createdAt,
           });
+          yield* persistHistory(input.threadId, terminalId, session.history);
         }),
       );
 
@@ -3117,15 +3936,18 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           const existingSession = yield* getSession(input.threadId, terminalId);
           let session: TerminalSessionState;
           if (Option.isNone(existingSession)) {
+            endedTabs.delete(sessionKey);
             const cols = input.cols ?? DEFAULT_OPEN_COLS;
             const rows = input.rows ?? DEFAULT_OPEN_ROWS;
             const createdAt = yield* nowIso;
+            yield* flushPersist(input.threadId, terminalId);
+            const history = yield* readHistory(input.threadId, terminalId);
             session = createSessionState({
               threadId: input.threadId,
               terminalId,
               cwd: input.cwd,
               worktreePath: input.worktreePath ?? null,
-              history: "",
+              history,
               createdAt,
               cols,
               rows,
@@ -3139,6 +3961,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               return [undefined, { ...state, sessions }] as const;
             });
             yield* evictInactiveSessionsIfNeeded();
+            yield* addCatalogTab(input.threadId, terminalId, input.cwd);
           } else {
             session = existingSession.value;
             yield* stopProcess(session);
@@ -3150,12 +3973,16 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           const cols = input.cols ?? session.cols;
           const rows = input.rows ?? session.rows;
 
-          session.history = "";
+          // The new shell starts below what the old one printed; clearing the
+          // output is its own action.
+          if (session.history.length > 0 && !session.history.endsWith("\n")) {
+            appendHistory(session, "\r\n");
+            session.historyAppendedTotal += 2;
+          }
           session.pendingHistoryControlSequence = null;
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;
           session.processEventDrainRunning = false;
-          yield* persistHistory(input.threadId, terminalId, session.history);
           yield* startSession(
             session,
             {
@@ -3169,9 +3996,55 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             },
             "restarted",
           );
+          // Whatever ran in the old shell is gone; the new one runs nothing yet.
+          yield* syncCatalogCommands(input.threadId, terminalId);
           return snapshot(session);
         }),
       );
+
+    const resolveInterrupted: TerminalManagerShape["resolveInterrupted"] = Effect.fn(
+      "terminal.resolveInterrupted",
+    )(function* (input, viewerId) {
+      const terminalId = input.terminalId ?? DEFAULT_TERMINAL_ID;
+      if (!input.run) {
+        return yield* updateCatalogCommands(input.threadId, terminalId, {
+          forgetInterrupted: true,
+        });
+      }
+      yield* ensureCatalogs;
+      const command =
+        catalogTabs(input.threadId).find((tab) => tab.terminalId === terminalId)
+          ?.interruptedCommand ?? null;
+      // Settled meanwhile, maybe on another device.
+      if (command === null) return;
+      const session = yield* requireSession(input.threadId, terminalId);
+      if (!session.process || session.status !== "running") {
+        return yield* new TerminalNotRunningError({ threadId: input.threadId, terminalId });
+      }
+      // Typed onto a line that already holds text, or into a running program,
+      // the command would become something else.
+      if (
+        session.hasRunningSubprocess ||
+        session.commandPendingPublished ||
+        session.commandRun !== null
+      ) {
+        return yield* new TerminalLineBusyError({
+          threadId: input.threadId,
+          terminalId,
+          reason: "running",
+        });
+      }
+      const line = session.terminalCommandInputState;
+      if (line.draft.length > 0 || line.inexact === true || session.lineOffPrompt) {
+        return yield* new TerminalLineBusyError({
+          threadId: input.threadId,
+          terminalId,
+          reason: "typing",
+        });
+      }
+      // As if typed: the entered line settles the offer and names the tab.
+      yield* write({ threadId: input.threadId, terminalId, data: `${command}\r` }, viewerId);
+    });
 
     const startCommandRun: TerminalManagerShape["startCommandRun"] = <E = never>(
       input: TerminalCommandRunInput,
@@ -3188,6 +4061,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             });
           }
           if (onTabChosen !== undefined) yield* onTabChosen(terminalId);
+          // A suggested command takes the tab: what a restart stopped there
+          // is no longer the thing to run in it.
+          if (hasInterruptedCommand(input.threadId, terminalId)) {
+            yield* syncCatalogCommands(input.threadId, terminalId, { forgetInterrupted: true });
+          }
 
           yield* assertValidCwd(input.cwd);
           let runCandidates: ShellCandidate[] | undefined;
@@ -3222,7 +4100,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             yield* stopProcess(taken);
             // What the tab showed stays above; the command starts on a line of its own.
             if (taken.history.length > 0 && !taken.history.endsWith("\n")) {
-              taken.history = capHistory(`${taken.history}\r\n`, historyLineLimit);
+              appendHistory(taken, "\r\n");
               taken.historyAppendedTotal += 2;
               yield* queuePersist(input.threadId, terminalId, taken.history);
             }
@@ -3241,12 +4119,14 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               env: input.env,
               subprocessPoll: freshSubprocessPollSchedule(),
             });
+            endedTabs.delete(toSessionKey(input.threadId, terminalId));
             yield* modifyManagerState((state) => {
               const sessions = new Map(state.sessions);
               sessions.set(toSessionKey(input.threadId, terminalId), created);
               return [undefined, { ...state, sessions }] as const;
             });
             yield* evictInactiveSessionsIfNeeded();
+            yield* addCatalogTab(input.threadId, terminalId, input.cwd);
             session = created;
           }
           session.commandRun = {
@@ -3355,6 +4235,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         Effect.gen(function* () {
           if (input.terminalId) {
             yield* closeSession(input.threadId, input.terminalId, input.deleteHistory === true);
+            yield* publishTabs(input.threadId);
             return;
           }
 
@@ -3365,9 +4246,98 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             { discard: true },
           );
 
-          if (input.deleteHistory) {
-            yield* deleteAllHistoryForThread(input.threadId);
+          // Every tab goes, listed ones without a shell too. An empty list is
+          // kept (rather than none) so the tabs aren't rebuilt from history.
+          yield* ensureCatalogs;
+          for (const tab of catalogTabs(input.threadId)) {
+            endedTabs.delete(toSessionKey(input.threadId, tab.terminalId));
           }
+          if (input.deleteHistory) {
+            catalogs.delete(input.threadId);
+            yield* fileSystem.remove(catalogPath(input.threadId), { force: true }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("failed to delete terminal tab list", {
+                  threadId: input.threadId,
+                  error,
+                }),
+              ),
+            );
+            yield* deleteAllHistoryForThread(input.threadId);
+          } else {
+            catalogs.set(input.threadId, []);
+            yield* writeCatalog(input.threadId);
+          }
+          yield* publishTabs(input.threadId);
+        }),
+      );
+
+    /** What each live tab is doing, for a new subscriber to start from. */
+    const activityReplay = (state: TerminalManagerState): TerminalEvent[] =>
+      [...state.sessions.values()].map((session) => {
+        const running = session.status === "running" && session.hasRunningSubprocess;
+        return {
+          type: "activity",
+          threadId: session.threadId,
+          terminalId: session.terminalId,
+          createdAt: session.updatedAt,
+          hasRunningSubprocess: running,
+          command: running ? session.runningSubprocessCommand : null,
+          startedAt: running ? session.runningSubprocessStartedAt : null,
+          commandPending: session.status === "running" && session.commandPendingPublished,
+        };
+      });
+
+    /**
+     * Registers a listener for the events `view` lets through, after first
+     * sending `initial`, which is built in the same step as the registration:
+     * nothing published around it is missed or sent twice.
+     */
+    const subscribeStream = (
+      listener: (event: TerminalStreamEvent) => Effect.Effect<void>,
+      view: (event: TerminalStreamEvent) => TerminalStreamEvent | null,
+      initial: (
+        state: TerminalManagerState,
+        createdAt: string,
+      ) => ReadonlyArray<TerminalStreamEvent>,
+    ) =>
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          const createdAt = yield* nowIso;
+          let bufferedEvents: TerminalStreamEvent[] | null = [];
+          const deliver = (event: TerminalStreamEvent) => {
+            const shown = view(event);
+            return shown === null ? Effect.void : listener(shown);
+          };
+          const bufferedListener = (event: TerminalStreamEvent) => {
+            if (bufferedEvents !== null) {
+              bufferedEvents.push(event);
+              return Effect.void;
+            }
+            return deliver(event);
+          };
+          const firstEvents = yield* modifyManagerState((state) => {
+            terminalEventListeners.add(bufferedListener);
+            return [initial(state, createdAt), state] as const;
+          });
+
+          yield* Effect.forEach(firstEvents, listener, { discard: true });
+          while (true) {
+            const nextEvents = yield* Effect.sync(() => {
+              if (bufferedEvents === null || bufferedEvents.length === 0) {
+                bufferedEvents = null;
+                return null;
+              }
+              const pending = bufferedEvents;
+              bufferedEvents = [];
+              return pending;
+            });
+            if (nextEvents === null) break;
+            yield* Effect.forEach(nextEvents, deliver, { discard: true });
+          }
+
+          return () => {
+            terminalEventListeners.delete(bufferedListener);
+          };
         }),
       );
 
@@ -3378,6 +4348,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       clear,
       restart,
       close,
+      resolveInterrupted,
       startCommandRun,
       readCommandRunOutput,
       subscribeCommandRuns: (listener) =>
@@ -3388,59 +4359,35 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           };
         }),
       subscribe: (listener) =>
-        Effect.uninterruptible(
-          Effect.gen(function* () {
-            let bufferedEvents: TerminalEvent[] | null = [];
-            const bufferedListener = (event: TerminalEvent) => {
-              if (bufferedEvents !== null) {
-                bufferedEvents.push(event);
-                return Effect.void;
-              }
-              return listener(event);
-            };
-            const currentActivityEvents = yield* modifyManagerState((state) => {
-              terminalEventListeners.add(bufferedListener);
-              return [
-                [...state.sessions.values()].map((session): TerminalEvent => ({
-                  type: "activity",
-                  threadId: session.threadId,
-                  terminalId: session.terminalId,
-                  createdAt: session.updatedAt,
-                  hasRunningSubprocess:
-                    session.status === "running" && session.hasRunningSubprocess,
-                  command:
-                    session.status === "running" && session.hasRunningSubprocess
-                      ? session.runningSubprocessCommand
-                      : null,
-                  startedAt:
-                    session.status === "running" && session.hasRunningSubprocess
-                      ? session.runningSubprocessStartedAt
-                      : null,
-                })),
-                state,
-              ] as const;
-            });
-
-            yield* Effect.forEach(currentActivityEvents, listener, { discard: true });
-            while (true) {
-              const nextEvents = yield* Effect.sync(() => {
-                if (bufferedEvents === null || bufferedEvents.length === 0) {
-                  bufferedEvents = null;
-                  return null;
-                }
-                const pending = bufferedEvents;
-                bufferedEvents = [];
-                return pending;
-              });
-              if (nextEvents === null) break;
-              yield* Effect.forEach(nextEvents, listener, { discard: true });
-            }
-
-            return () => {
-              terminalEventListeners.delete(bufferedListener);
-            };
-          }),
+        subscribeStream(
+          (event) => (isLegacyTerminalEvent(event) ? listener(event) : Effect.void),
+          (event) => event,
+          (state) => activityReplay(state),
         ),
+      subscribeMetadata: (listener) =>
+        Effect.flatMap(ensureCatalogs, () =>
+          subscribeStream(listener, metadataView, (state, createdAt) => [
+            {
+              type: "catalog",
+              createdAt,
+              threads: [...catalogs.keys()].map((threadId) => ({
+                threadId,
+                tabs: tabsOf(threadId, state),
+              })),
+            },
+            ...activityReplay(state),
+          ]),
+        ),
+      subscribeThread: (threadId, listener) =>
+        subscribeStream(
+          listener,
+          (event) =>
+            "threadId" in event && event.threadId === threadId && event.type !== "tabs"
+              ? event
+              : null,
+          (_state, createdAt) => [{ type: "subscribed", threadId, createdAt }],
+        ),
+      releaseViewer,
     } satisfies TerminalManagerShape;
   },
 );

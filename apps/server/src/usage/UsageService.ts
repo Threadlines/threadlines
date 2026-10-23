@@ -4,10 +4,13 @@
  * The scan reads the provider CLIs' own session files rather than Threadlines'
  * orchestration projections, so usage covers turns driven from the CLI, an
  * editor extension, or any other tool sharing the same provider home. This is
- * the approach `ccusage` takes.
+ * the approach `ccusage` takes. OpenCode keeps its sessions in a database
+ * instead, and agents that keep nothing are read from the usage ledger
+ * Threadlines writes for them (`usageLedger`).
  *
  * Transcripts are append-only, so parsed records are memoised per file by
- * `(size, mtime)`; warm scans only reparse files that changed.
+ * `(size, mtime)`; warm scans only reparse files that changed. A database is
+ * queried for the window on every scan.
  *
  * Cost figures are API list-price equivalents, never billed spend. Subscription
  * plans bill on their own terms and the transcripts carry no invoice.
@@ -18,7 +21,9 @@
 import * as NodeOS from "node:os";
 
 import {
+  OpenCodeSettings,
   USAGE_CONTRACT_VERSION,
+  USAGE_LEGACY_PROVIDER_KINDS,
   USAGE_MAX_WINDOW_DAYS,
   USAGE_RECENT_HOURS,
   type UsageProviderKind,
@@ -37,19 +42,31 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import { writeFileStringAtomically } from "../atomicWrite.ts";
 import { ServerConfig } from "../config.ts";
+import { expandHomePath } from "../pathExpansion.ts";
 import {
   resolveClaudeHomePath,
   resolveClaudeMainConfigDir,
 } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { grokMainHome } from "../provider/grok/GrokAccountFolder.ts";
+import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
+import { museHostEnvironment } from "../provider/muse/MuseLaunch.ts";
+import { museSessionsDir } from "../provider/muse/MuseSettingsFile.ts";
+import {
+  OPENCODE_DATABASE_FILE_NAME,
+  openCodeDatabaseLocation,
+} from "../provider/opencode/OpenCodeDataPaths.ts";
+import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { piAgentDir } from "../provider/pi/PiBinary.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { hourStartOf, UsageAggregator } from "./usageAggregation.ts";
+import { USAGE_LEDGER_PROVIDERS, usageLedgerDir } from "./usageLedger.ts";
+import { readOpenCodeUsage } from "./usageOpenCode.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   decodeScanCache,
@@ -84,6 +101,28 @@ const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 
 /** Longest window the UI offers, plus slack. Older entries are pruned. */
 const CACHE_RETENTION_DAYS = USAGE_MAX_WINDOW_DAYS;
+
+const decodeOpenCodeSettings = Schema.decodeUnknownOption(OpenCodeSettings);
+
+/**
+ * Where one provider keeps its usage: a folder of append-only transcripts,
+ * cached per file, or a database queried for the window on every scan.
+ */
+type UsageScanSource =
+  | {
+      readonly kind: "files";
+      readonly provider: UsageProviderKind;
+      readonly dir: string;
+      /** Only files with this name (Grok keeps usage in `updates.jsonl` beside other logs). */
+      readonly fileName?: string;
+    }
+  | {
+      readonly kind: "database";
+      readonly provider: UsageProviderKind;
+      readonly path: string;
+      /** The records since `sinceMs`, or `null` when the database could not be read. */
+      readonly read: (sinceMs: number) => readonly UsageRecord[] | null;
+    };
 
 interface RatesCacheFile {
   readonly fetchedAtMs: number;
@@ -241,8 +280,8 @@ export const make = Effect.gen(function* () {
       return nestedExists ? nested : path.join(homePath, "projects");
     });
 
-  /** Resolves the transcript directory for each provider. */
-  const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* () {
+  /** Resolves where each provider keeps its usage: transcript folders and databases. */
+  const resolveSources = Effect.fn("UsageService.resolveSources")(function* () {
     // A settings failure must surface as an error: swallowing it here would
     // present "zero usage from every provider" as a valid answer.
     const settings = yield* settingsService.getSettings.pipe(
@@ -290,11 +329,80 @@ export const make = Effect.gen(function* () {
       .exists(piSessions)
       .pipe(Effect.catchCause(() => Effect.succeed(false)));
 
+    const instances = Object.values(deriveProviderInstanceConfigMap(settings));
+    const existing = (candidates: Iterable<string>) =>
+      Effect.filter([...new Set(candidates)], (candidate) =>
+        fileSystem.exists(candidate).pipe(Effect.catchCause(() => Effect.succeed(false))),
+      );
+
+    // Muse's own folder, which the terminal and Threadlines' Muse share, plus
+    // any folder an instance's own environment moves it to.
+    const museFolders = yield* existing([
+      museSessionsDir(process.env),
+      ...instances
+        .filter((instance) => String(instance.driver) === "muse")
+        .map((instance) => museSessionsDir(museHostEnvironment(instance.environment))),
+    ]);
+
+    // Every OpenCode database: the terminal's own, and the one each instance
+    // uses (an account folder gives it its own). A data folder holds one per
+    // release channel. A server-URL instance keeps its data on that server.
+    const openCodeLocations = [
+      openCodeDatabaseLocation({ accountFolder: "", environment: process.env }),
+      ...instances.flatMap((instance) => {
+        if (String(instance.driver) !== "opencode") return [];
+        const openCode = decodeOpenCodeSettings(instance.config ?? {});
+        if (Option.isNone(openCode) || openCode.value.serverUrl.trim()) return [];
+        const accountFolder = openCode.value.accountFolder.trim();
+        return [
+          openCodeDatabaseLocation({
+            accountFolder: accountFolder ? path.resolve(expandHomePath(accountFolder)) : "",
+            environment: mergeProviderInstanceEnvironment(instance.environment ?? []),
+          }),
+        ];
+      }),
+    ];
+    const openCodeDatabases = yield* existing(
+      (yield* Effect.forEach(openCodeLocations, (location) =>
+        "file" in location
+          ? Effect.succeed([location.file])
+          : fileSystem.readDirectory(location.folder).pipe(
+              Effect.map((names) =>
+                names
+                  .filter((name) => OPENCODE_DATABASE_FILE_NAME.test(name))
+                  .map((name) => path.join(location.folder, name)),
+              ),
+              Effect.catchCause(() => Effect.succeed([])),
+            ),
+      )).flat(),
+    );
+
+    // The turn usage Threadlines records for agents that keep none on disk.
+    const ledgerFolders = yield* Effect.filter(USAGE_LEDGER_PROVIDERS, (provider) =>
+      fileSystem
+        .exists(usageLedgerDir(config.stateDir, provider))
+        .pipe(Effect.catchCause(() => Effect.succeed(false))),
+    );
+
+    const files = (provider: UsageProviderKind, dir: string, fileName?: string): UsageScanSource =>
+      fileName === undefined
+        ? { kind: "files", provider, dir }
+        : { kind: "files", provider, dir, fileName };
     return [
-      { provider: "claude" as const, dir: claudeDir },
-      { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
-      ...(grokUsed ? [{ provider: "grok" as const, dir: grokSessions }] : []),
-      ...(piUsed ? [{ provider: "pi" as const, dir: piSessions }] : []),
+      files("claude", claudeDir),
+      files("codex", path.join(codexLayout.sharedHomePath, "sessions")),
+      ...(grokUsed ? [files("grok", grokSessions, "updates.jsonl")] : []),
+      ...(piUsed ? [files("pi", piSessions)] : []),
+      ...museFolders.map((dir) => files("muse", dir)),
+      ...openCodeDatabases.map((databasePath): UsageScanSource => ({
+        kind: "database",
+        provider: "opencode",
+        path: databasePath,
+        read: (sinceMs) => readOpenCodeUsage(databasePath, sinceMs),
+      })),
+      ...ledgerFolders.map((provider) =>
+        files(provider, usageLedgerDir(config.stateDir, provider)),
+      ),
     ];
   });
 
@@ -347,7 +455,9 @@ export const make = Effect.gen(function* () {
         return cached.records;
       }
 
-      const parsed = yield* Effect.promise(() => readTranscriptRecords(filePath, provider));
+      const parsed = yield* Effect.promise(() =>
+        readTranscriptRecords(filePath, provider, mtimeMs),
+      );
       // A read failure is not an empty transcript: caching it under this
       // (size, mtime) would silently drop the file's usage until it changes.
       if (parsed === null) return [];
@@ -395,7 +505,12 @@ export const make = Effect.gen(function* () {
     const hostId = NodeOS.hostname();
     // The home resolvers ask for `Path` themselves; satisfy them from the
     // instance we already hold so `readSummary` stays context-free.
-    const dirs = yield* resolveTranscriptDirs().pipe(Effect.provideService(Path.Path, path));
+    // Only the providers the client can show: one built before a provider
+    // existed would fail to decode the whole summary over it.
+    const shownProviders = new Set<string>(input.providers ?? USAGE_LEGACY_PROVIDER_KINDS);
+    const scanSources = (yield* resolveSources().pipe(
+      Effect.provideService(Path.Path, path),
+    )).filter((source) => shownProviders.has(source.provider));
     const windowStartMs = sinceMs - MTIME_SLACK_MS;
 
     const aggregator = new UsageAggregator({
@@ -412,12 +527,36 @@ export const make = Effect.gen(function* () {
     const livePaths = new Set<string>();
     const walkedRoots: string[] = [];
 
-    for (const { provider, dir } of dirs) {
+    for (const source of scanSources) {
+      const { provider } = source;
+      // The index this source's summary entry will have; buckets carry it.
+      const sourceIndex = sources.length;
+      const dir = source.kind === "files" ? source.dir : source.path;
       const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
       const exists = yield* fileSystem
         .exists(dir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
       const scannedAt = yield* DateTime.now;
+
+      if (exists && source.kind === "database") {
+        const records = yield* Effect.sync(() => source.read(windowStartMs));
+        const sessionIds = new Set<string>();
+        for (const record of records ?? []) {
+          if (aggregator.add(record, sourceIndex) && record.sessionId.length > 0) {
+            sessionIds.add(record.sessionId);
+          }
+        }
+        sources.push({
+          fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
+          status: records === null ? "failed" : "ok",
+          lastScannedAt: DateTime.formatIso(scannedAt),
+          scannedFiles: records === null ? 0 : 1,
+          skippedFiles: records === null ? 1 : 0,
+          distinctSessions: sessionIds.size,
+          message: records === null ? "The database could not be read." : null,
+        });
+        continue;
+      }
 
       if (!exists) {
         sources.push({
@@ -434,7 +573,11 @@ export const make = Effect.gen(function* () {
 
       walkedRoots.push(dir);
       const files = yield* Effect.promise(() =>
-        listTranscriptFiles(dir, windowStartMs, provider === "grok" ? "updates.jsonl" : undefined),
+        listTranscriptFiles(
+          dir,
+          windowStartMs,
+          source.kind === "files" ? source.fileName : undefined,
+        ),
       );
       let scannedFiles = 0;
       let skippedFiles = 0;
@@ -453,7 +596,7 @@ export const make = Effect.gen(function* () {
         for (const record of records) {
           // Only sessions that contributed in-window count: the mtime slack
           // admits boundary files whose records fall outside the range.
-          if (aggregator.add(record) && record.sessionId.length > 0) {
+          if (aggregator.add(record, sourceIndex) && record.sessionId.length > 0) {
             sessionIds.add(record.sessionId);
           }
         }

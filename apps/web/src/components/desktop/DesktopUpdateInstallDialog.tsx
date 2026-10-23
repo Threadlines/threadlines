@@ -17,8 +17,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import { describeAgentWorkElsewhere, describeRunningAgentSessions } from "./agentSessionCopy";
-import { useRunningAgentWork } from "./useRunningAgentWork";
+import { RestartWorkWarning, useLocalWorkAtRisk } from "./RestartWorkWarning";
 
 function DesktopUpdateInstallDialogBody({
   state,
@@ -27,12 +26,10 @@ function DesktopUpdateInstallDialogBody({
   state: DesktopUpdateState;
   onConfirm: () => void;
 }) {
-  // Live count: a session that finishes while the prompt is open turns the
-  // warning off, so the user never restarts against stale advice. Only this
-  // computer's threads count; the restart leaves other computers' work alone.
-  const { localCount: runningCount, remoteMachineLabels } = useRunningAgentWork();
-  const hasRunningSessions = runningCount > 0;
-  const elsewhere = describeAgentWorkElsewhere(remoteMachineLabels);
+  // Only this computer's threads and terminals count; the restart leaves
+  // other computers' work alone.
+  const work = useLocalWorkAtRisk();
+  const hasRunningSessions = work.count > 0;
   const version = state.downloadedVersion ?? state.availableVersion;
 
   return (
@@ -49,12 +46,7 @@ function DesktopUpdateInstallDialogBody({
           ) : (
             "the downloaded update"
           )}{" "}
-          and reopen when it's done.{" "}
-          {describeRunningAgentSessions(runningCount, elsewhere !== null)}
-          {hasRunningSessions
-            ? ` Restarting now will stop ${runningCount === 1 ? "it" : "them"}.`
-            : null}
-          {elsewhere ? ` ${elsewhere}` : null}
+          and reopen when it's done. <RestartWorkWarning work={work} sayWhenIdle />
         </AlertDialogDescription>
       </AlertDialogHeader>
       <AlertDialogFooter>

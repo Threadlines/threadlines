@@ -8,7 +8,7 @@ import {
   type OrchestrationShellStreamEvent,
   type ScopedThreadRef,
   type ServerConfig,
-  type TerminalEvent,
+  type TerminalStreamEvent,
   ThreadId,
 } from "@threadlines/contracts";
 import {
@@ -49,7 +49,7 @@ import {
 import { projectQueryKeys } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { pullRequestQueryKeys } from "~/lib/pullRequestsReactQuery";
-import { getPrimaryKnownEnvironment } from "../primary";
+import { getPrimaryKnownEnvironment, readPrimaryEnvironmentDescriptor } from "../primary";
 import { isLoopbackHostname } from "../primary/target";
 import {
   bootstrapRemoteBearerSession,
@@ -1133,15 +1133,23 @@ function reconcileSnapshotDerivedState() {
   useTerminalStateStore.getState().removeOrphanedTerminalStates(activeThreadKeys);
 }
 
+/**
+ * Whether a terminal event is for a thread this client shows. Before the
+ * environment's threads have loaded nothing is known yet, and what a server
+ * sends on connect (every thread's tabs and what runs in them) must not be
+ * lost; threads that turn out archived or gone are cleaned up when the
+ * threads load (reconcileSnapshotDerivedState).
+ */
 export function shouldApplyTerminalEvent(input: {
   serverThreadArchivedAt: string | null | undefined;
   hasDraftThread: boolean;
+  threadsLoaded?: boolean;
 }): boolean {
   if (input.serverThreadArchivedAt !== undefined) {
     return input.serverThreadArchivedAt === null;
   }
 
-  return input.hasDraftThread;
+  return input.hasDraftThread || input.threadsLoaded === false;
 }
 
 function applyRecoveredEventBatch(
@@ -1325,7 +1333,20 @@ function createEnvironmentConnectionHandlers() {
       // that carries nothing new after a reconnect.
       resendUndeliveredThreadSeen(environmentId);
     },
-    applyTerminalEvent: (event: TerminalEvent, environmentId: EnvironmentId) => {
+    applyTerminalEvent: (event: TerminalStreamEvent, environmentId: EnvironmentId) => {
+      if (event.type === "catalog") {
+        useTerminalStateStore.getState().applyTerminalCatalog(environmentId, event.threads);
+        return;
+      }
+      // Output and stream markers are for the drawer (terminalStreams.ts).
+      if (
+        event.type === "output" ||
+        event.type === "cleared" ||
+        event.type === "subscribed" ||
+        event.type === "resync"
+      ) {
+        return;
+      }
       const threadRef = scopeThreadRef(environmentId, ThreadId.make(event.threadId));
       const serverThread = selectThreadByRef(useStore.getState(), threadRef);
       const hasDraftThread =
@@ -1334,8 +1355,14 @@ function createEnvironmentConnectionHandlers() {
         !shouldApplyTerminalEvent({
           serverThreadArchivedAt: serverThread?.archivedAt,
           hasDraftThread,
+          threadsLoaded:
+            useStore.getState().environmentStateById[environmentId]?.bootstrapComplete === true,
         })
       ) {
+        return;
+      }
+      if (event.type === "tabs") {
+        useTerminalStateStore.getState().applyTerminalTabs(threadRef, event.tabs);
         return;
       }
       useTerminalStateStore.getState().applyTerminalEvent(threadRef, event);
@@ -1607,6 +1634,7 @@ function createPrimaryEnvironmentConnection(): EnvironmentConnection {
     createEnvironmentConnection({
       kind: "primary",
       knownEnvironment,
+      descriptor: readPrimaryEnvironmentDescriptor(),
       client: createPrimaryEnvironmentClient(knownEnvironment),
       ...createEnvironmentConnectionHandlers(),
     }),

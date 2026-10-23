@@ -95,7 +95,8 @@ export interface WsRpcClient {
     readonly clear: RpcUnaryMethod<typeof WS_METHODS.terminalClear>;
     readonly restart: RpcUnaryMethod<typeof WS_METHODS.terminalRestart>;
     readonly close: RpcUnaryMethod<typeof WS_METHODS.terminalClose>;
-    readonly onEvent: RpcStreamMethod<typeof WS_METHODS.subscribeTerminalEvents>;
+    readonly resolveInterrupted: RpcUnaryMethod<typeof WS_METHODS.terminalResolveInterrupted>;
+    readonly onEvent: RpcInputStreamMethod<typeof WS_METHODS.subscribeTerminalEvents>;
   };
   /** Settings-owned provider sign-in, run in an ephemeral server-side PTY. */
   readonly providerAuth: {
@@ -229,6 +230,7 @@ export interface WsRpcClient {
    */
   readonly pullRequests: {
     readonly list: RpcUnaryMethod<typeof WS_METHODS.pullRequestsList>;
+    readonly lookup: RpcUnaryMethod<typeof WS_METHODS.pullRequestsLookup>;
     readonly detail: RpcUnaryMethod<typeof WS_METHODS.pullRequestsDetail>;
     readonly activity: RpcUnaryMethod<typeof WS_METHODS.pullRequestsActivity>;
     readonly diff: RpcUnaryMethod<typeof WS_METHODS.pullRequestsDiff>;
@@ -552,11 +554,17 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       clear: (input) => transport.request((client) => client[WS_METHODS.terminalClear](input)),
       restart: (input) => transport.request((client) => client[WS_METHODS.terminalRestart](input)),
       close: (input) => transport.request((client) => client[WS_METHODS.terminalClose](input)),
-      onEvent: (listener, options) =>
-        transport.subscribe((client) => client[WS_METHODS.subscribeTerminalEvents]({}), listener, {
-          ...options,
-          tag: WS_METHODS.subscribeTerminalEvents,
-        }),
+      resolveInterrupted: (input) =>
+        transport.request((client) => client[WS_METHODS.terminalResolveInterrupted](input)),
+      onEvent: (input, listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.subscribeTerminalEvents](input),
+          listener,
+          {
+            ...options,
+            tag: WS_METHODS.subscribeTerminalEvents,
+          },
+        ),
     },
     providerAuth: {
       start: (input) => transport.request((client) => client[WS_METHODS.providerAuthStart](input)),
@@ -805,6 +813,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     },
     pullRequests: {
       list: (input) => transport.request((client) => client[WS_METHODS.pullRequestsList](input)),
+      lookup: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestsLookup](input)),
       detail: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestsDetail](input)),
       activity: (input) =>

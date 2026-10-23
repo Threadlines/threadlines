@@ -56,6 +56,12 @@ export const ProviderAuthWriteInput = Schema.Struct({
   instanceId: ProviderInstanceId,
   data: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(65_536)),
   flowId: Schema.optional(Schema.String),
+  /**
+   * `data` is the address a sign-in page ended on in a browser on another
+   * device, for the computer to replay to its own loopback listener; never
+   * typed into the run's terminal. A browser sign-in takes every write so.
+   */
+  redirect: Schema.optional(Schema.Boolean),
 });
 export type ProviderAuthWriteInput = Schema.Codec.Encoded<typeof ProviderAuthWriteInput>;
 
@@ -123,6 +129,17 @@ const ProviderAuthCommandEvent = Schema.Struct({
   requestId: Schema.optional(Schema.String),
   /** `browser`: no terminal; the flow opens a sign-in page and accepts its final address. */
   surface: Schema.optional(Schema.Literals(["terminal", "browser"])),
+  /**
+   * Whether the command or agent opens its sign-in page in a browser itself,
+   * on the server's computer (`codex login`, Grok). The client that started
+   * the run decides from it whether to open the page too:
+   * - terminal run: only when this is `false`. Absent (an older server, a
+   *   community agent) means open nothing.
+   * - browser sign-in: its page works from any device, so it opens unless
+   *   this is `true` and the client knows it runs on the server's computer
+   *   (the desktop app with its own server).
+   */
+  opensPageItself: Schema.optional(Schema.Boolean),
 });
 
 const ProviderAuthOutputEvent = Schema.Struct({

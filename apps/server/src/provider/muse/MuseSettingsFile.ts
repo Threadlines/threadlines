@@ -52,6 +52,19 @@ export function museSettingsPath(environment: NodeJS.ProcessEnv): string {
   return NodePath.join(root, "muse", "settings.json");
 }
 
+/**
+ * Where Muse keeps its session logs: `$XDG_DATA_HOME/muse/sessions`, else
+ * `~/.local/share/muse/sessions` (all platforms). Threadlines' Muse writes
+ * there too.
+ */
+export function museSessionsDir(environment: NodeJS.ProcessEnv): string {
+  const dataHome = environment.XDG_DATA_HOME?.trim();
+  const root = dataHome
+    ? dataHome
+    : NodePath.join(environment.HOME?.trim() || homedir(), ".local", "share");
+  return NodePath.join(root, "muse", "sessions");
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 

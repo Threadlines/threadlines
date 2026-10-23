@@ -80,8 +80,9 @@ export interface TurnSummary {
  * running on below; `through` carries the line past, including side exchanges
  * the agent worked through; `end` bends the line into the answer or working
  * line; `single` is a stretch of one row: the logo and name, and no line.
- * A finished answer that opens with a page bends into the page (`end`), and
- * the rest of the answer, more pages and the reply, sits `past` the bend.
+ * A finished answer that opens with a page or a command card bends into it
+ * (`end`), and the rest of the answer, more panels and the reply, sits `past`
+ * the bend.
  */
 export type AgentLinePlacement = "start" | "through" | "end" | "past" | "single";
 
@@ -973,6 +974,12 @@ function isAgentRow(row: MessagesTimelineRow): boolean {
   );
 }
 
+/** A page or a command card: part of the agent's answer, on a quiet panel of
+ *  its own between the steps and the reply. */
+function isAnswerPanel(row: MessagesTimelineRow): boolean {
+  return row.kind === "page" || row.kind === "command-request";
+}
+
 /** A step group with nothing to draw (only running steps, which the working
  *  row names, or agent plumbing whose tracker moved to the footer) takes no
  *  room, so it cannot end an agent's line or set the room above the row after
@@ -995,12 +1002,12 @@ function drawsNothing(row: MessagesTimelineRow, isWorking: boolean): boolean {
 /**
  * Places each row: on its agent's line (placeAgentLines), and with or without
  * room above it. Messages always keep that room, so whichever message turns
- * out to be the answer has space above it, and so do pages, whose panels keep
- * half a gap on each side. Other rows keep it where the agent's work meets
- * your side of the chat: the first step after your message, or your next
- * message after the agent's work or a page. Rows that draw nothing are
- * skipped, so right after you send, the working row keeps its room even with
- * the turn request's empty group above it.
+ * out to be the answer has space above it, and so do pages and command cards,
+ * whose panels keep half a gap on each side. Other rows keep it where the
+ * agent's work meets your side of the chat: the first step after your message,
+ * or your next message after the agent's work or a panel. Rows that draw
+ * nothing are skipped, so right after you send, the working row keeps its room
+ * even with the turn request's empty group above it.
  */
 function placeRows(
   rows: ReadonlyArray<MessagesTimelineRow>,
@@ -1022,13 +1029,13 @@ function placeRows(
       return withAgentLine(row, agentLine);
     }
     const padTop =
-      (row.kind === "message" && row.message.role === "assistant") || row.kind === "page"
+      (row.kind === "message" && row.message.role === "assistant") || isAnswerPanel(row)
         ? true
         : agentsOwn(row)
           ? above === undefined ||
             !agentsOwn(above) ||
             (above.kind === "message" && above.turnSummary !== null)
-          : above !== undefined && (agentsOwn(above) || above.kind === "page");
+          : above !== undefined && (agentsOwn(above) || isAnswerPanel(above));
     if (visible[index]) {
       above = row;
     }
@@ -1087,14 +1094,19 @@ function placeAgentLines(
               ? row.app.turnId
               : row.kind === "page"
                 ? row.page.turnId
-                : null;
+                : row.kind === "command-request"
+                  ? row.request.turnId
+                  : null;
   // The agent whose own row this is; undefined for rows that are not one
-  // agent's own work (your messages, side exchanges, plans). A page is the
-  // agent's that showed it. A turn no message names yet is the working
-  // agent's; null names the thread's own.
+  // agent's own work (your messages, side exchanges, plans). A page or a
+  // command card is the agent's that showed it. A turn no message names yet is
+  // the working agent's; null names the thread's own.
   const agentOf = (row: MessagesTimelineRow): ThreadParticipantId | null | undefined => {
     if (row.kind === "page") {
       return row.page.participantId;
+    }
+    if (row.kind === "command-request") {
+      return row.request.participantId;
     }
     if (isSideRow(row) || !isAgentRow(row)) {
       return undefined;
@@ -1227,26 +1239,22 @@ function placeAgentLines(
 
   // One agent's stretch from `first` to `last`. The line bends into the last
   // row when it is the agent's own, and stops under a side exchange it ends on.
-  // An answer opens at the first of its turn's pages right above it (settled
-  // there by settleTurnsAboveResponse), as does a turn that ended on pages
-  // with no reply: the line bends into that page, or, when the stretch starts
-  // there (its steps are gone), the page carries the name.
+  // An answer opens at the first of its turn's pages and command cards right
+  // above it (settled there by settleTurnsAboveResponse), as does a turn that
+  // ended on them with no reply: the line bends into that panel, or, when the
+  // stretch starts there (its steps are gone), the panel carries the name.
   const placeStretch = (first: number, last: number, agent: ThreadParticipantId | null) => {
     const nested = placeNested(first, last, agent);
     const closing = rows[last]!;
-    const answerTurn = isAnswer(closing)
-      ? turnOf(closing)
-      : closing.kind === "page"
-        ? closing.page.turnId
-        : null;
+    const answerTurn = isAnswer(closing) || isAnswerPanel(closing) ? turnOf(closing) : null;
     let bend = last;
-    for (let index = last - 1; answerTurn !== null && index >= first; index -= 1) {
+    // A panel always names its turn, so with no answer the walk stops at once.
+    for (let index = last - 1; index >= first; index -= 1) {
       const row = rows[index]!;
-      if (row.kind === "page" && row.page.turnId === answerTurn) {
-        bend = index;
-      } else if (row.kind !== "command-request" || row.request.turnId !== answerTurn) {
+      if (!isAnswerPanel(row) || turnOf(row) !== answerTurn) {
         break;
       }
+      bend = index;
     }
     let turnId: TurnId | null = null;
     for (let index = first; index <= last && turnId === null; index += 1) {

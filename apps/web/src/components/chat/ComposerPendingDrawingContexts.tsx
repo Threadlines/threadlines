@@ -7,6 +7,8 @@ import { formatPickedElementDescriptor } from "~/lib/pickedElementContext";
 import { COMPOSER_INLINE_CHIP_DISMISS_BUTTON_CLASS_NAME } from "../composerInlineChip";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { openExpandedImagePreview } from "./ExpandedImagePreview";
+import { usePinchToExpand } from "./usePinchToExpand";
 
 interface ComposerPendingDrawingContextsProps {
   contexts: ReadonlyArray<DrawingContextDraft>;
@@ -70,6 +72,13 @@ function DrawingChip({
   const [open, setOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState(context.note ?? "");
   const descriptor = formatDrawingDescriptor(context);
+  const expandDrawing = () => {
+    openExpandedImagePreview({
+      images: [{ src: context.imageDataUrl, name: descriptor }],
+      index: 0,
+    });
+  };
+  const pinchRef = usePinchToExpand(expandDrawing);
 
   useEffect(() => {
     setNoteDraft(context.note ?? "");
@@ -149,13 +158,22 @@ function DrawingChip({
         align="start"
       >
         {/* The drawing itself, small: enough to recognise which one this is,
-            not a second copy of the browser panel. */}
-        <img
-          src={context.imageDataUrl}
-          alt="The page with your drawing on it"
-          data-testid={`drawing-preview-${context.id}`}
-          className="mb-1.5 max-h-40 w-full rounded-sm border border-border object-contain object-top"
-        />
+            not a second copy of the browser panel. A click or a pinch opens
+            it in the image viewer. */}
+        <button
+          ref={pinchRef}
+          type="button"
+          aria-label="Preview the drawing"
+          className="mb-1.5 block w-full cursor-zoom-in"
+          onClick={expandDrawing}
+        >
+          <img
+            src={context.imageDataUrl}
+            alt="The page with your drawing on it"
+            data-testid={`drawing-preview-${context.id}`}
+            className="max-h-40 w-full rounded-sm border border-border object-contain object-top"
+          />
+        </button>
         {context.elements.length === 0 ? null : (
           <ul
             className="mb-1.5 flex flex-col gap-0.5"

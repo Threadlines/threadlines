@@ -44,6 +44,7 @@ interface SourceSpec {
   readonly volumeId?: string;
   readonly distinctSessions?: number;
   readonly lastScannedAt?: string;
+  readonly status?: "ok" | "failed";
 }
 
 function summary(
@@ -65,7 +66,7 @@ function summary(
         resolvedHomePath: source.homePath,
         volumeId: source.volumeId ?? `vol-${source.hostId}`,
       },
-      status: "ok" as const,
+      status: source.status ?? "ok",
       lastScannedAt: source.lastScannedAt ?? "2026-08-07T00:00:00.000Z",
       scannedFiles: 1,
       skippedFiles: 0,
@@ -162,6 +163,37 @@ describe("mergeUsage", () => {
 
     expect(merged.costUsd).toBe(13);
     expect(merged.providers.map((provider) => provider.provider)).toEqual(["claude", "codex"]);
+  });
+
+  it("counts a shared source once when environments share only some of a provider's", () => {
+    // Both servers read the terminal's OpenCode database; one also reads an
+    // account's own. Buckets name their source, so only the shared one drops.
+    const shared: SourceSpec = { provider: "opencode", hostId: "mac", homePath: "/d/opencode.db" };
+    const account: SourceSpec = { provider: "opencode", hostId: "mac", homePath: "/a/opencode.db" };
+    const openCode = (source: number, costUsd: number) =>
+      bucket({ provider: "opencode", model: "opencode/big-pickle", costUsd, source });
+    const merged = mergeUsage(
+      [
+        environment("env-a", summary([openCode(0, 5)], [shared])),
+        environment("env-b", summary([openCode(0, 5), openCode(1, 2)], [shared, account])),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(7);
+  });
+
+  it("lets another environment's read count when one could not read the source", () => {
+    const merged = mergeUsage(
+      [
+        environment("env-a", summary([], [{ ...claudeSource("mac"), status: "failed" }])),
+        environment("env-b", summary([bucket({ source: 0 })], [claudeSource("mac")])),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(10);
+    expect(merged.duplicateSources).toEqual([]);
   });
 
   it("excludes an environment on an older contract instead of failing", () => {

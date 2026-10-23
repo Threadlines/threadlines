@@ -18,12 +18,15 @@ import * as NodeReadline from "node:readline";
 
 import type { UsageProviderKind } from "@threadlines/contracts";
 
+import { isUsageLedgerProvider, parseUsageLedgerLine } from "./usageLedger.ts";
 import {
   initialCodexScanState,
+  initialMuseScanState,
   mightCarryUsage,
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parseMuseLine,
   parsePiLine,
   piSessionIdFromFileName,
   type UsageRecord,
@@ -108,13 +111,17 @@ export async function readDirectoryVolumeId(path: string): Promise<string> {
  * Codex carries the active model on `turn_context` lines and its fork marker on
  * `session_meta`, neither of which holds usage of its own, so those still have
  * to pass through the reducer to keep attribution and fork suppression correct.
+ *
+ * `mtimeMs` dates the Muse records that carry no real time of their own.
  */
 export async function readTranscriptRecords(
   filePath: string,
   provider: UsageProviderKind,
+  mtimeMs: number,
 ): Promise<readonly UsageRecord[] | null> {
   const records: UsageRecord[] = [];
   const codexState = initialCodexScanState();
+  const museState = initialMuseScanState();
   const piSessionId = provider === "pi" ? piSessionIdFromFileName(NodePath.basename(filePath)) : "";
 
   try {
@@ -144,6 +151,16 @@ export async function readTranscriptRecords(
       }
       if (provider === "pi") {
         const record = parsePiLine(line, piSessionId);
+        if (record !== null) records.push(record);
+        continue;
+      }
+      if (provider === "muse") {
+        const record = parseMuseLine(line, museState, mtimeMs);
+        if (record !== null) records.push(record);
+        continue;
+      }
+      if (isUsageLedgerProvider(provider)) {
+        const record = parseUsageLedgerLine(line, provider);
         if (record !== null) records.push(record);
         continue;
       }

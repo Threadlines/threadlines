@@ -178,7 +178,7 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
               ? cached.records
               : undefined;
           if (!records) {
-            const parsed = await readTranscriptRecords(file.path, "claude");
+            const parsed = await readTranscriptRecords(file.path, "claude", file.mtimeMs);
             if (parsed === null) {
               complete = false;
               continue;

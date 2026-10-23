@@ -14,6 +14,9 @@
  *     the PTY — no intermediate shell — so process exit means "the flow
  *     finished" and the exit code is meaningful.
  *   - Starting a flow for an instance stops any flow already running for it.
+ *   - A run says whether its command or agent opens the sign-in page itself
+ *     (`opensPageItself`), so the client that started it knows whether to
+ *     open the page too.
  *   - `claude setup-token` output is scanned for the long-lived OAuth token.
  *     On a match the token is stored as a sensitive instance environment
  *     variable and *masked before fanout*, so no client ever receives it.
@@ -40,6 +43,7 @@ import {
   CLAUDE_DRIVER_KIND,
   CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
   CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
+  SELF_OPENING_SIGN_IN_DRIVERS,
   upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "@threadlines/shared/providerAuthCommands";
 import { randomUUID } from "node:crypto";
@@ -54,6 +58,11 @@ import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 
 import { expandHomePath } from "../../pathExpansion.ts";
+import {
+  matchPrintedRedirect,
+  PrintedRedirects,
+  replayLoopbackRedirect,
+} from "./loopbackRedirect.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "../../serverSettings.ts";
 import { throwawayClaudeSpawnViolation } from "../claudeThrowawayIsolation.ts";
 import { resolveMuseBinary } from "../muse/MuseBinary.ts";
@@ -266,6 +275,8 @@ interface SessionState {
   readonly instanceFlows: ProviderInstanceAuthFlows | null;
   /** `terminal`: a command in the PTY. `browser`: the instance's own `run`. */
   readonly surface: "terminal" | "browser";
+  /** The command or agent opens its sign-in page itself; undefined when unknown. */
+  readonly opensPageItself: boolean | undefined;
   /** An instance's terminal command: told once how it ended. */
   terminalFinished: ((exitCode: number | null) => Effect.Effect<void>) | null;
   /**
@@ -286,6 +297,10 @@ interface SessionState {
   scrollback: string;
   /** Raw output kept solely for token capture; independent of flush timing. */
   captureBuffer: string;
+  /** The loopback redirects of the sign-in pages this run printed. */
+  readonly printedRedirects: PrintedRedirects;
+  /** The `state`s of the redirects this run already replayed: each goes once. */
+  readonly replayedRedirectStates: Set<string>;
   flushFiber: Fiber.Fiber<void, never> | null;
   tokenCaptured: boolean;
 }
@@ -378,6 +393,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
     Effect.gen(function* () {
       if (data.length === 0) return;
       session.scrollback = `${session.scrollback}${data}`.slice(-scrollbackChars);
+      session.printedRedirects.push(data);
       const createdAt = yield* nowIso;
       yield* publish(instanceId, { type: "output", instanceId, createdAt, data });
     });
@@ -650,6 +666,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         requestId,
         instanceFlows,
         surface: "browser",
+        opensPageItself: instanceFlows.opensPageItself,
         terminalFinished: null,
         pageRequests: new Map(),
         questions: new Map(),
@@ -663,6 +680,8 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         buffer: "",
         scrollback: "",
         captureBuffer: "",
+        printedRedirects: new PrintedRedirects(),
+        replayedRedirectStates: new Set(),
         flushFiber: null,
         tokenCaptured: false,
       };
@@ -677,6 +696,9 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         flowId: session.flowId,
         ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
         surface: "browser",
+        ...(session.opensPageItself !== undefined
+          ? { opensPageItself: session.opensPageItself }
+          : {}),
       });
       yield* publishStatus(instanceId, session, "starting");
       session.runFiber = runFork(
@@ -868,6 +890,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
                   display: instanceTerminal.display,
                 },
                 spawnEnv: instanceTerminal.env,
+                opensPageItself: instanceTerminal.opensPageItself,
                 instanceFlows,
                 terminalFinished: instanceTerminal.finished,
               });
@@ -930,6 +953,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         return yield* startTerminal(instanceId, input, {
           command,
           spawnEnv,
+          opensPageItself: SELF_OPENING_SIGN_IN_DRIVERS.has(String(instance.driver)),
           instanceFlows: null,
           terminalFinished: null,
         });
@@ -947,6 +971,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
         readonly display: string;
       };
       readonly spawnEnv: NodeJS.ProcessEnv;
+      readonly opensPageItself: boolean | undefined;
       readonly instanceFlows: ProviderInstanceAuthFlows | null;
       readonly terminalFinished: ProviderAuthTerminalCommand["finished"] | null;
     },
@@ -961,6 +986,7 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           requestId: input.requestId,
           instanceFlows: prepared.instanceFlows,
           surface: "terminal",
+          opensPageItself: prepared.opensPageItself,
           terminalFinished: prepared.terminalFinished,
           pageRequests: new Map(),
           questions: new Map(),
@@ -974,6 +1000,8 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           buffer: "",
           scrollback: "",
           captureBuffer: "",
+          printedRedirects: new PrintedRedirects(),
+          replayedRedirectStates: new Set(),
           flushFiber: null,
           tokenCaptured: false,
         };
@@ -989,6 +1017,9 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           flowId: session.flowId,
           ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
           surface: "terminal",
+          ...(session.opensPageItself !== undefined
+            ? { opensPageItself: session.opensPageItself }
+            : {}),
         });
         yield* publishStatus(instanceId, session, "starting");
 
@@ -1051,6 +1082,34 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
       }
     });
 
+  /**
+   * Finishes a terminal sign-in whose page waits on a loopback redirect
+   * (`codex login`): a page this run printed names it, and only such a
+   * redirect, each once, is replayed to the listener on this computer.
+   */
+  const completeTerminalRedirect = (
+    instanceId: ProviderInstanceId,
+    session: SessionState,
+    raw: string,
+  ) =>
+    Effect.gen(function* () {
+      const rejected = (detail: string) =>
+        new ProviderAuthError({ instanceId: String(instanceId), reason: "inputRejected", detail });
+      const matched = matchPrintedRedirect(raw, session.printedRedirects.all);
+      if (typeof matched === "string") return yield* rejected(matched);
+      if (session.replayedRedirectStates.has(matched.redirect.state)) {
+        return yield* rejected("This sign-in already received its address.");
+      }
+      session.replayedRedirectStates.add(matched.redirect.state);
+      const status = yield* Effect.tryPromise({
+        try: () => replayLoopbackRedirect(matched.url),
+        catch: () => rejected("The sign-in stopped listening. Start sign-in again."),
+      });
+      if (status >= 400) {
+        return yield* rejected("The sign-in didn't accept that address.");
+      }
+    });
+
   const shape: ProviderAuthSessionsShape = {
     start,
     write: (input) =>
@@ -1084,6 +1143,11 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
           return;
         }
         const process = yield* requireRunning(instanceId);
+        if (input.redirect === true && session) {
+          // A terminal command's page ended on this computer's loopback, in a
+          // browser on another device: replay it here, never type it in.
+          return yield* completeTerminalRedirect(instanceId, session, input.data);
+        }
         yield* Effect.sync(() => process.write(input.data));
       }),
     resize: (input) =>
@@ -1175,6 +1239,9 @@ export const makeProviderAuthSessions = Effect.fn("makeProviderAuthSessions")(fu
             flowId: session.flowId,
             ...(session.requestId !== undefined ? { requestId: session.requestId } : {}),
             surface: session.surface,
+            ...(session.opensPageItself !== undefined
+              ? { opensPageItself: session.opensPageItself }
+              : {}),
           }).pipe(Effect.ignoreCause({ log: true }));
           if (session.scrollback.length > 0) {
             yield* listener({

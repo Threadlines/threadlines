@@ -25,6 +25,11 @@ export interface DesktopStateShape {
    * quitting (Settings › General, "Keep running in the background").
    */
   readonly runInBackground: Ref.Ref<boolean>;
+  /**
+   * Terminals on this computer's own server running a command, as the page
+   * last reported. Quitting stops them too, so they also make it ask.
+   */
+  readonly localBusyTerminalCount: Ref.Ref<number>;
 }
 
 export class DesktopState extends Context.Service<DesktopState, DesktopStateShape>()(
@@ -40,5 +45,6 @@ export const layer = Layer.effect(
     activeScheduledTaskCount: Ref.make(0),
     workingScheduledRunCount: Ref.make(0),
     runInBackground: Ref.make(false),
+    localBusyTerminalCount: Ref.make(0),
   }),
 );

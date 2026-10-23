@@ -42,6 +42,21 @@ export const BROWSER_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([
  */
 export const GUIDED_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([PI_DRIVER_KIND]);
 
+/**
+ * Drivers whose sign-in commands open the sign-in page in the browser
+ * themselves and print its address only for when the browser didn't open
+ * (`codex login`, `claude auth login` and `claude setup-token`, `cursor-agent
+ * login`, `opencode auth login`, `/login` in `pi`). Threadlines offers that
+ * address as a link instead of opening the page a second time.
+ */
+export const SELF_OPENING_SIGN_IN_DRIVERS: ReadonlySet<string> = new Set([
+  CODEX_DRIVER_KIND,
+  CLAUDE_DRIVER_KIND,
+  CURSOR_DRIVER_KIND,
+  OPENCODE_DRIVER_KIND,
+  PI_DRIVER_KIND,
+]);
+
 /** What a driver's browser sign-in is called where a command would be shown. */
 export function browserSignInLabel(driver: string): string {
   return driver === GROK_DRIVER_KIND ? "Sign in with Grok" : "Sign in with Google";

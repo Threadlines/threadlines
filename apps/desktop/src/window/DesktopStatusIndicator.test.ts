@@ -360,6 +360,10 @@ describe("DesktopStatusIndicator", () => {
           localRunningThreadCount: 1,
         });
         assert.equal(yield* Ref.get(state.localRunningThreadCount), 1);
+        // A busy terminal makes quitting ask too, even with no thread working.
+        yield* indicator.setStatus({ status: "idle", localBusyTerminalCount: 2 });
+        assert.equal(yield* Ref.get(state.localRunningThreadCount), 0);
+        assert.equal(yield* Ref.get(state.localBusyTerminalCount), 2);
       }).pipe(Effect.provide(makeTestLayer({ appCalls, trayCalls, window, platform: "win32" })));
     }),
   );

@@ -59,6 +59,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   compact?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
+  /** Settings shows the computer these providers run on (see ModelPickerContent). */
+  providerSettingsShown?: boolean;
   open?: boolean;
   /**
    * Preferred popup side. The composer passes "top" so the picker opens into
@@ -371,6 +373,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             lockedProvider === null ? null : (props.lockedContinuationGroupKey ?? null)
           }
           {...(adding ? { openOnFavorites: true } : {})}
+          {...(props.providerSettingsShown === false ? { providerSettingsShown: false } : {})}
           rowAction={rowAction}
           rowsDisabledReason={rowsDisabledReason}
           footer={

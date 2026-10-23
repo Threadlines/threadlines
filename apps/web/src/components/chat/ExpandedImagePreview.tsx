@@ -1,3 +1,5 @@
+import { create } from "zustand";
+
 export interface ExpandedImageItem {
   src: string;
   name: string;
@@ -31,27 +33,40 @@ export function buildExpandedImagePreview(
   };
 }
 
-let activeExpandedImageOpener: ((preview: ExpandedImagePreview) => void) | null = null;
+// The picture the full-screen viewer shows, if any, and how many viewer
+// hosts are mounted (ExpandedImageViewerHost, once, in the app's root).
+const useExpandedImageStore = create<{ readonly preview: ExpandedImagePreview | null }>(() => ({
+  preview: null,
+}));
+let mountedHosts = 0;
 
 /**
- * Registered by the view that owns the full-screen image dialog.
- *
- * Same reasoning as `setActiveFileViewerContext`: a picture can be rendered
- * far below the dialog's owner (a chat markdown thumbnail inside a subagent
- * excerpt), and prop-drilling the opener through every renderer in between
- * buys nothing.
+ * Opens the full-screen viewer from anywhere: a picture can be rendered far
+ * below anything that could own the dialog (a chat markdown thumbnail inside a
+ * subagent excerpt, a pull request description, a page's frame), and
+ * prop-drilling an opener through every renderer in between buys nothing.
+ * False when no viewer host is mounted.
  */
-export function setActiveExpandedImageOpener(
-  opener: ((preview: ExpandedImagePreview) => void) | null,
-): void {
-  activeExpandedImageOpener = opener;
-}
-
-/** Opens the full-screen viewer; false when no view owns one right now. */
 export function openExpandedImagePreview(preview: ExpandedImagePreview): boolean {
-  if (!activeExpandedImageOpener) {
+  if (mountedHosts === 0) {
     return false;
   }
-  activeExpandedImageOpener(preview);
+  useExpandedImageStore.setState({ preview });
   return true;
+}
+
+export function closeExpandedImagePreview(): void {
+  useExpandedImageStore.setState({ preview: null });
+}
+
+/** The picture the viewer shows; read by the viewer host. */
+export const useExpandedImagePreview = () => useExpandedImageStore((state) => state.preview);
+
+/** Marks a viewer host mounted; the returned function marks it gone. */
+export function registerExpandedImageHost(): () => void {
+  mountedHosts += 1;
+  return () => {
+    mountedHosts -= 1;
+    if (mountedHosts === 0) closeExpandedImagePreview();
+  };
 }

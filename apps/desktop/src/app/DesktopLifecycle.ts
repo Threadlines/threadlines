@@ -108,28 +108,40 @@ const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdo
 
 /** Threads on other computers run on their own servers and keep going. */
 const QUIT_STOPS_LOCAL_WORK_DETAIL =
-  "Quitting now will stop the local Threadlines server and the agent work running on it.";
+  "Quitting now will stop the local Threadlines server and the work running on it.";
 
 /**
- * The count comes from the open window and covers only threads on this
- * computer. With every window closed (the app keeps running on macOS) it is
- * what the last window saw, which can be long out of date, so the dialog says
- * what it knows rather than what it guesses.
+ * The counts come from the open window and cover only this computer's
+ * threads and terminals. With every window closed (the app keeps running on
+ * macOS) they are what the last window saw, which can be long out of date, so
+ * the dialog says what it knows rather than what it guesses.
  */
-function describeRunningSessionsForNativeQuit(count: number, windowOpen: boolean): string {
-  if (!windowOpen) {
-    return count === 1
-      ? "An agent session may still be running."
-      : `${count} agent sessions may still be running.`;
+export function describeRunningWorkForNativeQuit(
+  work: { readonly threadCount: number; readonly terminalCount: number },
+  windowOpen: boolean,
+): string {
+  const parts: string[] = [];
+  if (work.threadCount > 0) {
+    parts.push(work.threadCount === 1 ? "an agent session" : `${work.threadCount} agent sessions`);
   }
-  return count === 1
-    ? "An agent session is still running."
-    : `${count} agent sessions are still running.`;
+  if (work.terminalCount > 0) {
+    parts.push(
+      work.terminalCount === 1 ? "a terminal command" : `${work.terminalCount} terminal commands`,
+    );
+  }
+  const single = work.threadCount + work.terminalCount === 1;
+  const verb = windowOpen ? (single ? "is still" : "are still") : "may still be";
+  const sentence = `${parts.join(" and ")} ${verb} running.`;
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+}
+
+function countOrZero(count: number): number {
+  return Number.isFinite(count) && count > 0 ? count : 0;
 }
 
 /** What quitting does to this computer's scheduled tasks, or null when it has none. */
 function describeScheduledTasksForNativeQuit(count: number): string | null {
-  if (!Number.isFinite(count) || count <= 0) return null;
+  if (count <= 0) return null;
   return count === 1
     ? "A scheduled task won't run until you open Threadlines again."
     : `${count} scheduled tasks won't run until you open Threadlines again.`;
@@ -150,22 +162,21 @@ export const confirmQuitWithRunningAgentSessions = Effect.fn(
     return true;
   }
 
-  // Only this computer's work: quitting leaves threads on other computers
-  // running, so they are no reason to ask.
-  const reportedRunning = yield* Ref.get(state.localRunningThreadCount);
-  const runningThreadCount =
-    Number.isFinite(reportedRunning) && reportedRunning > 0 ? reportedRunning : 0;
+  // Only this computer's work: quitting leaves threads and terminals on other
+  // computers running, so they are no reason to ask.
+  const runningThreadCount = countOrZero(yield* Ref.get(state.localRunningThreadCount));
+  const busyTerminalCount = countOrZero(yield* Ref.get(state.localBusyTerminalCount));
   // Scheduled tasks stop running while the app is closed. That alone asks
   // only where the user chose to keep the app running in the background
   // (Windows and Linux): there quitting is a deliberate stop; elsewhere the
   // question would come at every quit.
-  const activeScheduledTaskCount = yield* Ref.get(state.activeScheduledTaskCount);
+  const activeScheduledTaskCount = countOrZero(yield* Ref.get(state.activeScheduledTaskCount));
   const schedulesAsk = (yield* Ref.get(state.runInBackground)) && activeScheduledTaskCount > 0;
-  if (runningThreadCount <= 0 && !schedulesAsk) return true;
+  if (runningThreadCount <= 0 && busyTerminalCount <= 0 && !schedulesAsk) return true;
 
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   return yield* desktopWindow
-    .requestQuitConfirmation(runningThreadCount, activeScheduledTaskCount)
+    .requestQuitConfirmation({ runningThreadCount, busyTerminalCount, activeScheduledTaskCount })
     .pipe(
       Effect.catch((error) =>
         Effect.gen(function* () {
@@ -178,8 +189,11 @@ export const confirmQuitWithRunningAgentSessions = Effect.fn(
           // where a dialog with no window would open unseen.
           yield* electronApp.focus;
           const message = [
-            runningThreadCount > 0
-              ? describeRunningSessionsForNativeQuit(runningThreadCount, error.windowOpen)
+            runningThreadCount > 0 || busyTerminalCount > 0
+              ? describeRunningWorkForNativeQuit(
+                  { threadCount: runningThreadCount, terminalCount: busyTerminalCount },
+                  error.windowOpen,
+                )
               : null,
             describeScheduledTasksForNativeQuit(activeScheduledTaskCount),
           ]

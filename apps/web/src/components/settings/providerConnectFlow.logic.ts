@@ -5,6 +5,7 @@ import type {
   ProviderAuthQuestionOption,
   ProviderAuthStatus,
 } from "@threadlines/contracts";
+import { signInScanTail } from "@threadlines/shared/signInRedirect";
 
 /**
  * Everything the sign-in panel renders, derived only from the server's
@@ -21,6 +22,12 @@ export interface ProviderConnectFlowState {
   readonly flowId: string | null;
   /** `browser`: no terminal; the panel opens the sign-in page and takes its final address. */
   readonly surface: "terminal" | "browser";
+  /**
+   * The run's command or agent opens its sign-in page itself, on the
+   * server's computer (`true`), or leaves that to the client (`false`). Null
+   * when the server didn't say. See `shouldOpenPrintedPage`.
+   */
+  readonly opensPageItself: boolean | null;
   /** Last non-empty output line, shown as a one-line live preview. */
   readonly lastLine: string;
   /**
@@ -31,13 +38,13 @@ export interface ProviderConnectFlowState {
   /**
    * First sign-in URL the command printed this run. CLIs that cannot open a
    * browser themselves (fx inside WSL, headless hosts) print a device-code
-   * URL and wait; the panel opens it for the user instead.
+   * URL and wait; the client that started the run opens it instead.
    */
   readonly signInUrl: string | null;
   /**
-   * Recent output not yet holding a finished URL. Terminal output arrives in
-   * arbitrary chunks, so a device-code URL can be split mid-code; it is only
-   * taken once something follows it.
+   * Recent raw output not yet holding a finished URL. Terminal output arrives
+   * in arbitrary chunks, so a device-code URL (or the code around a link) can
+   * be split mid-way; it is only taken once something follows it.
    */
   readonly urlScanTail: string;
   /**
@@ -69,6 +76,7 @@ export const initialProviderConnectFlowState: ProviderConnectFlowState = {
   command: null,
   flowId: null,
   surface: "terminal",
+  opensPageItself: null,
   lastLine: "",
   openLine: "",
   signInUrl: null,
@@ -83,24 +91,74 @@ const SIGN_IN_URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/gu;
 const URL_SCAN_TAIL_CHARS = 2048;
 
 /**
+ * Whether `url` is a page to open: it parses, and its host is not the machine
+ * the CLI runs on. A local address (`codex login`'s `localhost:1455`) is where
+ * the CLI waits for the browser to come back.
+ */
+function isOpenablePage(url: string): boolean {
+  let hostname: string;
+  try {
+    // WHATWG parsing writes every IPv4 form (`127.1`, `2130706433`) as dotted.
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    // Cut short, like `http://[::1` where the pattern stops at `]`.
+    return false;
+  }
+  return !(
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname === "0.0.0.0" ||
+    /^127\.\d+\.\d+\.\d+$/u.test(hostname)
+  );
+}
+
+/**
  * The first http(s) URL in `text` that something follows (so it cannot still
- * be streaming in), minus trailing punctuation.
+ * be streaming in), minus trailing punctuation, skipping any that is not a
+ * page to open.
  */
 export function extractSignInUrl(text: string): string | null {
   for (const match of text.matchAll(SIGN_IN_URL_PATTERN)) {
-    if (match.index + match[0].length < text.length) {
-      return match[0].replace(/[.,;:!?]+$/u, "");
-    }
+    if (match.index + match[0].length >= text.length) continue;
+    const url = match[0].replace(/[.,;:!?]+$/u, "");
+    if (isOpenablePage(url)) return url;
   }
   return null;
 }
 
 const ANSI_ESCAPE_PATTERN =
   /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|\u001B[@-Z\\-_]/gu;
+/**
+ * Cursor moves to another row. Windows terminals (ConPTY) draw blank lines as
+ * such a jump instead of line breaks, so dropping it would run a printed URL
+ * into the words of the next line.
+ */
+// oxlint-disable-next-line no-control-regex -- matching escape sequences is the point
+const CURSOR_ROW_MOVE_PATTERN = /\u001B\[[0-9;]*[ABEFHdf]/gu;
 const OTHER_CONTROL_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu;
 
+/** Terminal output as plain text: a jump to another row reads as a line break. */
 export function stripTerminalControlSequences(value: string): string {
-  return value.replace(ANSI_ESCAPE_PATTERN, "").replace(OTHER_CONTROL_PATTERN, "");
+  return value
+    .replace(CURSOR_ROW_MOVE_PATTERN, "\n")
+    .replace(ANSI_ESCAPE_PATTERN, "")
+    .replace(OTHER_CONTROL_PATTERN, "");
+}
+
+/**
+ * A hyperlink's opening code (OSC 8) and its target. A TUI that wraps a long
+ * link (`/login` in Pi) cuts the visible address into rows, but each row's
+ * link still carries the whole address.
+ */
+const HYPERLINK_TARGET_PATTERN =
+  // oxlint-disable-next-line no-control-regex -- matching escape sequences is the point
+  /\u001B\]8;[^;\u0007\u001B]*;([^\u0007\u001B]*)(?:\u0007|\u001B\\)/gu;
+
+/** Output as the URL scan reads it: each hyperlink's target on a line of its own. */
+function urlScanText(raw: string): string {
+  return stripTerminalControlSequences(
+    raw.replace(HYPERLINK_TARGET_PATTERN, (_, target: string) => (target ? `\n${target}\n` : "")),
+  );
 }
 
 /**
@@ -131,6 +189,7 @@ export function applyProviderAuthEvent(
         command: event.command,
         flowId: event.flowId ?? null,
         surface: event.surface ?? "terminal",
+        opensPageItself: event.opensPageItself ?? null,
       };
     case "output": {
       const preview = appendOutputPreview(state.openLine, event.data);
@@ -140,14 +199,14 @@ export function applyProviderAuthEvent(
       if (state.signInUrl !== null) {
         return { ...state, lastLine, openLine };
       }
-      const scanned = `${state.urlScanTail}${stripTerminalControlSequences(event.data)}`;
-      const signInUrl = extractSignInUrl(scanned);
+      const scanned = `${state.urlScanTail}${event.data}`;
+      const signInUrl = extractSignInUrl(urlScanText(scanned));
       return {
         ...state,
         lastLine,
         openLine,
         signInUrl,
-        urlScanTail: signInUrl === null ? scanned.slice(-URL_SCAN_TAIL_CHARS) : "",
+        urlScanTail: signInUrl === null ? signInScanTail(scanned, URL_SCAN_TAIL_CHARS) : "",
       };
     }
     case "status":
@@ -192,6 +251,28 @@ export function applyProviderAuthEvent(
         },
       };
   }
+}
+
+/**
+ * Whether the client that started a run opens the sign-in page it prints.
+ * A browser sign-in's page works from any device, so it opens, unless the
+ * agent already opened it on this very computer (Grok). A terminal
+ * command's page may need the server's computer (a local callback), so it
+ * opens only when the server says the command leaves it to the client,
+ * never on a guess, or, away from that computer, when its callback can be
+ * pasted back (`finishesByPaste`): the command opened it on a screen the
+ * user isn't at.
+ */
+export function shouldOpenPrintedPage(input: {
+  readonly surface: ProviderConnectFlowState["surface"];
+  readonly opensPageItself: boolean | null;
+  readonly onServerComputer: boolean;
+  readonly finishesByPaste: boolean;
+}): boolean {
+  if (input.surface === "browser") {
+    return !(input.opensPageItself === true && input.onServerComputer);
+  }
+  return input.opensPageItself === false || (!input.onServerComputer && input.finishesByPaste);
 }
 
 export function isProviderConnectFlowActive(status: ProviderAuthStatus): boolean {

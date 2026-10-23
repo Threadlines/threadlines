@@ -10,6 +10,8 @@ import type {
   PullRequestListProjectError,
   PullRequestListResult,
   PullRequestListState,
+  PullRequestLookupEntry,
+  PullRequestLookupItem,
   PullRequestMergeMethod,
   PullRequestReaction,
   PullRequestReactionContent,
@@ -749,6 +751,8 @@ export function resolveThreadPullRequest(input: {
   readonly openEntries: readonly PullRequestEntry[];
   /** Merged and closed rows, consulted only when the open ones say nothing. */
   readonly settledEntries?: readonly PullRequestEntry[];
+  /** What lookups found for branches the open listing does not carry; see `newerSettledAnswer`. */
+  readonly lookups?: PullRequestLookupAnswers;
   readonly projects: readonly Project[];
 }): ThreadPullRequest | null {
   const { thread } = input;
@@ -770,10 +774,16 @@ export function resolveThreadPullRequest(input: {
     return null;
   }
 
-  const entry =
-    findThreadListEntry(thread, scope, input.openEntries) ??
-    findThreadListEntry(thread, scope, input.settledEntries ?? []);
-  return entry ? threadPullRequestFromEntry(entry) : null;
+  const open = findThreadListEntry(thread, scope, input.openEntries);
+  if (open) {
+    return threadPullRequestFromEntry(open);
+  }
+  return (
+    newerSettledAnswer(
+      findThreadListEntry(thread, scope, input.settledEntries ?? []),
+      input.lookups?.get(pullRequestLookupKey(scope, { branch: thread.branch })),
+    ) ?? null
+  );
 }
 
 /** The project a thread belongs to, unless it is one with no pull requests (a general chat). */
@@ -806,6 +816,150 @@ function threadPullRequestFromEntry(entry: PullRequestEntry): ThreadPullRequest 
   };
 }
 
+/** A thread's pull request as a lookup reads it, on the repository it was asked about. */
+export function threadPullRequestFromLookup(
+  entry: PullRequestLookupEntry,
+  repository: string,
+): ThreadPullRequest {
+  return {
+    number: entry.number,
+    state: entry.state,
+    isDraft: entry.isDraft,
+    title: entry.title,
+    url: entry.url,
+    repository,
+    settledAt: entry.settledAt ?? (entry.state === "open" ? null : entry.updatedAt),
+    autoMergeEnabled: entry.autoMergeEnabled,
+    headBranch: entry.headBranch,
+    diffStat: { additions: entry.additions, deletions: entry.deletions },
+  };
+}
+
+/** What a lookup found for one pull request a thread points at. Null is the host saying there is none. */
+export interface PullRequestLookupAnswer {
+  readonly pullRequest: ThreadPullRequest | null;
+  /** When the host last changed that pull request; null for a none. */
+  readonly updatedAt: number | null;
+  /** When the lookup was answered. */
+  readonly answeredAt: number;
+}
+
+/** By {@link pullRequestLookupKey}. Absent: not asked, or not answered yet. */
+export type PullRequestLookupAnswers = ReadonlyMap<string, PullRequestLookupAnswer>;
+
+/**
+ * One item on one repository, whichever computer asked: the same branch or
+ * number on the same remote is the same pull request.
+ */
+export function pullRequestLookupKey(scope: string, item: PullRequestLookupItem): string {
+  return "number" in item
+    ? `${scope}\u0000n\u0000${item.number}`
+    : `${scope}\u0000b\u0000${item.branch}`;
+}
+
+/** One lookup a surface keeps going: what it asks, and where. */
+export interface PullRequestLookupRequest {
+  /** {@link pullRequestLookupKey}, which its answer is filed under. */
+  readonly key: string;
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly repository: string;
+  readonly item: PullRequestLookupItem;
+}
+
+/**
+ * The lookups a set of threads needs: each one's own branch, and each pull
+ * request its agent opened elsewhere, wherever the open listing does not carry
+ * it. The merged and closed listings keep only the newest few, so on a busy
+ * repository a thread's merge falls off them within a day; the lookup is what
+ * still knows. A pull request leaving the open listing is also the moment it
+ * may have just landed, and starting its lookup then is what reads it at once.
+ */
+export function threadPullRequestLookupRequests(input: {
+  readonly threads: ReadonlyArray<
+    ThreadPullRequestSubject & {
+      readonly linkedPullRequests?: ReadonlyArray<
+        Pick<OrchestrationThreadLinkedPullRequest, "number">
+      >;
+    }
+  >;
+  readonly projects: readonly Project[];
+  readonly openEntries: readonly PullRequestEntry[];
+}): PullRequestLookupRequest[] {
+  const requests = new Map<string, PullRequestLookupRequest>();
+  for (const thread of input.threads) {
+    if (thread.archivedAt !== null) {
+      continue;
+    }
+    const project = findThreadProject(thread, input.projects);
+    const repository = project ? projectRepository(project) : null;
+    const scope = project ? projectRepositoryScope(project) : null;
+    if (project === undefined || repository === null || scope === null) {
+      continue;
+    }
+    const add = (item: PullRequestLookupItem) => {
+      const key = pullRequestLookupKey(scope, item);
+      if (!requests.has(key)) {
+        requests.set(key, {
+          key,
+          environmentId: thread.environmentId,
+          projectId: project.id,
+          repository,
+          item,
+        });
+      }
+    };
+    if (thread.branch !== null && !findThreadListEntry(thread, scope, input.openEntries)) {
+      add({ branch: thread.branch });
+    }
+    for (const linked of thread.linkedPullRequests ?? []) {
+      if (!findNumberedListEntry(scope, linked.number, input.openEntries)) {
+        add({ number: linked.number });
+      }
+    }
+  }
+  return [...requests.values()];
+}
+
+/**
+ * What the merged and closed listings and a lookup say about one pull request
+ * or branch, each read on its own schedule. About the same pull request,
+ * whichever saw it change last. Otherwise the lookup, which chose by the
+ * branch's own rule (open first, from this repository, never history on the
+ * default branch), stands against any row the listings matched by name; a
+ * row only outranks it by being opened after the lookup answered. Undefined
+ * when neither knows anything.
+ */
+function newerSettledAnswer(
+  listed: PullRequestEntry | undefined,
+  looked: PullRequestLookupAnswer | undefined,
+): ThreadPullRequest | null | undefined {
+  if (looked === undefined) {
+    return listed ? threadPullRequestFromEntry(listed) : undefined;
+  }
+  if (listed === undefined) {
+    return looked.pullRequest;
+  }
+  const listedWins =
+    looked.pullRequest?.number === listed.number
+      ? updatedAtMs(listed.updatedAt) > (looked.updatedAt ?? 0)
+      : updatedAtMs(listed.createdAt) > looked.answeredAt;
+  return listedWins ? threadPullRequestFromEntry(listed) : looked.pullRequest;
+}
+
+/**
+ * A lookup's answer for a number the thread recorded. The thread saw that
+ * pull request, so a lookup finding none says nothing new and is left out.
+ */
+function lookedUpNumber(
+  lookups: PullRequestLookupAnswers | undefined,
+  scope: string,
+  number: number,
+): PullRequestLookupAnswer | undefined {
+  const answer = lookups?.get(pullRequestLookupKey(scope, { number }));
+  return answer?.pullRequest === null ? undefined : answer;
+}
+
 /** The listing row for one pull request number on a project's own repository. */
 function findNumberedListEntry(
   scope: string,
@@ -823,10 +977,10 @@ function findNumberedListEntry(
 /**
  * The pull requests a thread's agent opened on other branches (its
  * `linkedPullRequests`), as the composer rows, the Pull request tab and the
- * sidebar tag draw them: what the listings know about each, or until they know
- * anything, the number and address the thread recorded, read as open. The
- * thread's own pull request is left out however it came to be linked; it is
- * found from the branch.
+ * sidebar tag draw them: what the listings and lookups know about each, or
+ * until they know anything, the number and address the thread recorded, read
+ * as open. The thread's own pull request is left out however it came to be
+ * linked; it is found from the branch.
  */
 export function resolveLinkedThreadPullRequests(input: {
   readonly thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId"> & {
@@ -839,6 +993,8 @@ export function resolveLinkedThreadPullRequests(input: {
   readonly openEntries: readonly PullRequestEntry[];
   /** Merged and closed rows, consulted only when the open ones say nothing. */
   readonly settledEntries?: readonly PullRequestEntry[];
+  /** What lookups found for numbers the open listing does not carry; see `newerSettledAnswer`. */
+  readonly lookups?: PullRequestLookupAnswers;
 }): ThreadPullRequest[] {
   const linked = (input.thread.linkedPullRequests ?? []).filter(
     (candidate) => candidate.number !== input.ownNumber,
@@ -850,41 +1006,54 @@ export function resolveLinkedThreadPullRequests(input: {
   const repository = projectRepository(project);
   const scope = projectRepositoryScope(project);
   return linked.map((candidate) => {
-    const entry =
+    const open =
       scope === null
         ? undefined
-        : (findNumberedListEntry(scope, candidate.number, input.openEntries) ??
-          findNumberedListEntry(scope, candidate.number, input.settledEntries ?? []));
-    return entry
-      ? threadPullRequestFromEntry(entry)
-      : {
-          number: candidate.number,
-          state: "open",
-          isDraft: false,
-          title: `#${candidate.number}`,
-          url: candidate.url,
-          repository,
-          settledAt: null,
-          autoMergeEnabled: false,
-          headBranch: null,
-          diffStat: null,
-        };
+        : findNumberedListEntry(scope, candidate.number, input.openEntries);
+    const known = open
+      ? threadPullRequestFromEntry(open)
+      : scope === null
+        ? undefined
+        : newerSettledAnswer(
+            findNumberedListEntry(scope, candidate.number, input.settledEntries ?? []),
+            lookedUpNumber(input.lookups, scope, candidate.number),
+          );
+    return (
+      known ?? {
+        number: candidate.number,
+        state: "open",
+        isDraft: false,
+        title: `#${candidate.number}`,
+        url: candidate.url,
+        repository,
+        settledAt: null,
+        autoMergeEnabled: false,
+        headBranch: null,
+        diffStat: null,
+      }
+    );
   });
 }
 
 /**
  * A thread's pull request as its checkout's status reads it, with the landing
- * date a listing row for the same pull request has. The status is first to see
- * a merge but carries no dates, and `leadThreadPullRequest` ranks by landing.
+ * date a listing row for the same pull request has. The status is usually
+ * first to see a merge but carries no dates, and `leadThreadPullRequest` ranks
+ * by landing. A merge is final, so where a listing or lookup saw this pull
+ * request merge, a status still calling it open or closed is the older read
+ * (one remembered through a failed refresh, say) and the merge stands.
  */
 export function withListedLanding(
   pullRequest: ThreadPullRequest,
   listed: ThreadPullRequest | null,
 ): ThreadPullRequest {
-  return pullRequest.state !== "open" &&
-    pullRequest.settledAt === null &&
-    listed?.number === pullRequest.number &&
-    listed.settledAt !== null
+  if (listed?.number !== pullRequest.number) {
+    return pullRequest;
+  }
+  if (listed.state === "merged" && pullRequest.state !== "merged") {
+    return listed;
+  }
+  return pullRequest.state !== "open" && pullRequest.settledAt === null && listed.settledAt !== null
     ? { ...pullRequest, settledAt: listed.settledAt }
     : pullRequest;
 }
@@ -919,44 +1088,28 @@ export function leadThreadPullRequest<T extends Pick<ThreadPullRequest, "state" 
 /**
  * When every pull request a thread has is merged or closed, the moment the
  * last one settled; null while any is still open, or while it has none. The
- * thread's own pull request counts the way it always has. A linked one is
- * settled once a merged or closed listing carries it; until then it holds the
- * thread open, whether the open listing carries it or has simply not caught
- * up with one that was opened a moment ago.
+ * thread's own pull request counts the way it always has. A linked one counts
+ * as `resolveLinkedThreadPullRequests` reads it: settled once a merged or
+ * closed listing or a lookup says so, and holding the thread open until then,
+ * whether it is open or simply not known yet.
  */
 export function resolveThreadPullRequestsSettledAt(input: {
-  readonly thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId"> & {
-    readonly linkedPullRequests?: ReadonlyArray<
-      Pick<OrchestrationThreadLinkedPullRequest, "number">
-    >;
-  };
   readonly own: ThreadPullRequest | undefined;
-  readonly projects: readonly Project[];
-  readonly settledEntries: readonly PullRequestEntry[];
+  /** The pull requests the thread's agent opened elsewhere, own one left out. */
+  readonly linked: readonly ThreadPullRequest[];
   /** Stands in for a landing the host did not date. */
   readonly now: string;
 }): string | null {
-  const settledAt: string[] = [];
-  if (input.own !== undefined) {
-    if (input.own.state === "open") {
-      return null;
-    }
-    settledAt.push(input.own.settledAt ?? input.now);
+  const pullRequests = input.own === undefined ? input.linked : [input.own, ...input.linked];
+  if (pullRequests.length === 0) {
+    return null;
   }
-  const linked = (input.thread.linkedPullRequests ?? []).filter(
-    (candidate) => candidate.number !== input.own?.number,
-  );
-  const project = linked.length === 0 ? undefined : findThreadProject(input.thread, input.projects);
-  const scope = project ? projectRepositoryScope(project) : null;
-  for (const candidate of linked) {
-    const settled =
-      scope === null
-        ? undefined
-        : findNumberedListEntry(scope, candidate.number, input.settledEntries);
-    if (!settled) {
+  const settledAt: string[] = [];
+  for (const pullRequest of pullRequests) {
+    if (pullRequest.state === "open") {
       return null;
     }
-    settledAt.push(settled.settledAt ?? settled.updatedAt);
+    settledAt.push(pullRequest.settledAt ?? input.now);
   }
   return settledAt.reduce<string | null>(
     (latest, at) => (latest === null || updatedAtMs(at) > updatedAtMs(latest) ? at : latest),

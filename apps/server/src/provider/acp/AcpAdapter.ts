@@ -34,6 +34,7 @@ import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/s
 import { countTextReplacementStats } from "@threadlines/shared/diffStats";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -55,6 +56,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import type { UsageLedgerEntry } from "../../usage/usageLedger.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpEndpointUrl,
@@ -108,6 +110,7 @@ import {
   type AcpSessionMode,
   type AcpSessionModeState,
   type AcpToolCallState,
+  acpTurnUsageTotals,
   parsePermissionRequest,
 } from "./AcpRuntimeModel.ts";
 import { type AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
@@ -154,6 +157,11 @@ export interface AcpAdapterOptions<Settings extends AcpProviderSettings> {
    * change); tests that swap `binaryPath` mid-suite pass a live resolver.
    */
   readonly resolveSettings?: Effect.Effect<Settings>;
+  /**
+   * Writes down a finished turn's usage for the Usage page (the usage
+   * ledger), for agents that keep no usage of their own on disk. Never fails.
+   */
+  readonly recordTurnUsage?: (entry: UsageLedgerEntry) => Effect.Effect<void>;
 }
 
 interface PendingApproval {
@@ -186,6 +194,21 @@ interface AcpSessionContext {
   lastProviderStatus: string | undefined;
   /** Last context fill reported, so repeated identical `usage_update`s stay quiet. */
   lastContextUsageKey: string | undefined;
+  /** The agent's session id, as its usage is recorded under. */
+  readonly acpSessionId: string;
+  /**
+   * The session's running cost at the last turn boundary, when it is known
+   * exactly: zero for a session opened here, or a report between turns. A turn
+   * that ends without a report leaves it unknown, since later totals include
+   * a turn whose cost was estimated instead.
+   */
+  costBaselineUsd: number | undefined;
+  /** The running cost the agent last reported. */
+  latestCostUsd: number | undefined;
+  /** A prompt is open whose cost isn't settled yet; reports outside one mark the boundary. */
+  costTurnOpen: boolean;
+  /** The agent reported its running cost during the open turn. */
+  costReportedThisTurn: boolean;
   /** The thought being streamed; closes when reply text, a tool call, or the turn end arrives. */
   activeReasoning: { readonly itemId: string; readonly turnId: TurnId; text: string } | undefined;
   /** The session cwd and its real path: agents report real paths (macOS `/private/tmp`). */
@@ -760,7 +783,52 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       ctx.cancelledTurnId = undefined;
       ctx.planMarkdown = undefined;
       ctx.promptOutcome = undefined;
+      ctx.costTurnOpen = true;
+      ctx.costReportedThisTurn = false;
     };
+
+    /**
+     * Writes down what a finished prompt spent: the tokens on its result and
+     * the change in the session's running cost across it, when the cost is
+     * known at both ends. Settles the cost boundary for the next turn either
+     * way. A prompt the cancel deadline cut off records nothing: it returned
+     * no tokens, and the session is gone.
+     */
+    const settleTurnUsage = (
+      ctx: AcpSessionContext,
+      turnId: TurnId,
+      model: string | undefined,
+      usage: EffectAcpSchema.Usage | null | undefined,
+    ) =>
+      Effect.gen(function* () {
+        const costUsd =
+          ctx.costReportedThisTurn &&
+          ctx.costBaselineUsd !== undefined &&
+          ctx.latestCostUsd !== undefined
+            ? Math.max(0, ctx.latestCostUsd - ctx.costBaselineUsd)
+            : null;
+        ctx.costBaselineUsd = ctx.costReportedThisTurn ? ctx.latestCostUsd : undefined;
+        // Settled: a report from here on (one landing while this line is
+        // written included) is the next turn's starting point.
+        ctx.costTurnOpen = false;
+        const totals = acpTurnUsageTotals(usage);
+        const record = options?.recordTurnUsage;
+        if (!record || (totals === null && costUsd === null)) return;
+        yield* record({
+          atMs: yield* Clock.currentTimeMillis,
+          sessionId: ctx.acpSessionId,
+          turnId,
+          model: model ?? ctx.session.model ?? "default",
+          totals: totals ?? {
+            uncachedInputTokens: 0,
+            cachedInputTokens: 0,
+            cacheCreationTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+          },
+          costUsd,
+        });
+      });
 
     /**
      * Opens a turn the agent started itself (`agentTurns`): its wake-up
@@ -1554,6 +1622,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             activeTurnText: "",
             lastProviderStatus: undefined,
             lastContextUsageKey: undefined,
+            acpSessionId: started.sessionId,
+            // A session reopened from elsewhere has spent an unknown amount.
+            costBaselineUsd:
+              (resumeSessionId !== undefined || forkSession !== undefined) &&
+              started.resumeFailure === undefined
+                ? undefined
+                : 0,
+            latestCostUsd: undefined,
+            costTurnOpen: false,
+            costReportedThisTurn: false,
             activeReasoning: undefined,
             cwdRoots: realCwd === cwd ? [cwd] : [cwd, realCwd],
             cancelledTurnId: undefined,
@@ -1632,6 +1710,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     });
                     return;
                   }
+                  case "SessionCost":
+                    ctx.latestCostUsd = event.totalUsd;
+                    // A report between turns marks the boundary exactly.
+                    if (ctx.costTurnOpen) ctx.costReportedThisTurn = true;
+                    else ctx.costBaselineUsd = event.totalUsd;
+                    return;
                   case "ModeChanged":
                     return;
                   case "ReasoningDelta":
@@ -2037,6 +2121,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       stopReason: result.stopReason ?? null,
                     },
             });
+            yield* settleTurnUsage(ctx, turnId, resolvedModel, result.usage);
             return;
           }
           if (Cause.hasInterruptsOnly(exit.cause)) {
@@ -2075,6 +2160,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               ...withFailureCategory(failureCategory),
             },
           });
+          // No result, so no tokens; a running cost the agent reported still counts.
+          yield* settleTurnUsage(ctx, turnId, resolvedModel, undefined);
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {

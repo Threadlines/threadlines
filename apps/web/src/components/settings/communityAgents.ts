@@ -4,23 +4,35 @@
  *
  * @module communityAgents
  */
-import type { ProviderInstanceId, ServerProviderCommunity } from "@threadlines/contracts";
+import type {
+  EnvironmentId,
+  ProviderInstanceId,
+  ServerProviderCommunity,
+} from "@threadlines/contracts";
 
-import { useServerProviders } from "../../rpc/serverState";
+import { useComputerProviders } from "../../environments/providerComputer";
 
-/** What the server says about a community agent, or undefined for any other instance. */
+/**
+ * What the server says about a community agent, or undefined for any other
+ * instance. `environmentId` names the computer that runs it; null is the
+ * app's own backend.
+ */
 export function useCommunityAgent(
   instanceId: ProviderInstanceId | null,
+  environmentId: EnvironmentId | null = null,
 ): ServerProviderCommunity | undefined {
-  const providers = useServerProviders();
+  const providers = useComputerProviders(environmentId);
   return instanceId === null
     ? undefined
     : providers.find((provider) => provider.instanceId === instanceId)?.community;
 }
 
 /** Whether the instance is a community agent: one Threadlines runs but hasn't tested. */
-export function useIsCommunityAgent(instanceId: ProviderInstanceId | null): boolean {
-  return useCommunityAgent(instanceId) !== undefined;
+export function useIsCommunityAgent(
+  instanceId: ProviderInstanceId | null,
+  environmentId: EnvironmentId | null = null,
+): boolean {
+  return useCommunityAgent(instanceId, environmentId) !== undefined;
 }
 
 /**

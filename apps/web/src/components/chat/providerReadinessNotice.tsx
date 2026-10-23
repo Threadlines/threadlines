@@ -23,6 +23,7 @@ import {
   isProviderSignInInFlight,
   providerSignInStatusText,
   ProviderSignInButton,
+  type ProviderSignInElsewhere,
   type ProviderSignInFlowView,
 } from "./providerSignIn";
 
@@ -75,18 +76,22 @@ export function buildProviderSignInNotice({
 /**
  * Same shape for a provider whose CLI is missing. There is nothing to sign in
  * to yet, so the action routes to the place that lists install and sign-in
- * steps.
+ * steps. On a computer Settings doesn't show (`elsewhere`), that place is
+ * the computer itself, so the row says so instead of linking to the wrong
+ * computer's settings.
  */
 export function buildProviderNotInstalledNotice({
   id,
   severity = "error",
   providerLabel,
+  elsewhere = null,
   extraActions,
   onDismiss,
 }: {
   id: string;
   severity?: ComposerNotice["severity"];
   providerLabel: string;
+  elsewhere?: ProviderSignInElsewhere | null;
   extraActions?: ReactNode;
   onDismiss?: (() => void) | undefined;
 }): ComposerNotice {
@@ -94,13 +99,17 @@ export function buildProviderNotInstalledNotice({
     id,
     severity,
     lead: `${providerLabel} isn't installed.`,
-    detail: "Install it and sign in from Settings.",
+    detail: elsewhere
+      ? `Install it and sign in on ${elsewhere.computerLabel ?? "the computer this thread runs on"}.`
+      : "Install it and sign in from Settings.",
     actions: (
       <>
-        <Button size="xs" render={<Link to="/settings/providers" />}>
-          <SettingsIcon className="size-3" />
-          Open Settings
-        </Button>
+        {elsewhere ? null : (
+          <Button size="xs" render={<Link to="/settings/providers" />}>
+            <SettingsIcon className="size-3" />
+            Open Settings
+          </Button>
+        )}
         {extraActions}
       </>
     ),
@@ -135,11 +144,13 @@ export function buildProviderSendPreflightNotice({
   onConfirmSignedIn: () => void;
   onDismiss: () => void;
 }): ComposerNotice {
-  const setupAction = offerSetup ? (
-    <Button size="xs" variant="ghost" className="h-6 px-1.5" render={<Link to="/setup" />}>
-      Open setup
-    </Button>
-  ) : null;
+  // Setup sets up the computer Settings shows, not the thread's elsewhere.
+  const setupAction =
+    offerSetup && signIn.elsewhere === null ? (
+      <Button size="xs" variant="ghost" className="h-6 px-1.5" render={<Link to="/setup" />}>
+        Open setup
+      </Button>
+    ) : null;
   // A provider that isn't installed has nothing to sign in to yet, and one
   // whose sign-in Threadlines can't run has no flow we can start, so both fall
   // back to the install-and-connect notice.
@@ -148,6 +159,7 @@ export function buildProviderSendPreflightNotice({
       id: "provider-send-preflight",
       severity: "warning",
       providerLabel: prompt.providerLabel,
+      elsewhere: signIn.elsewhere,
       extraActions: setupAction,
       onDismiss,
     });

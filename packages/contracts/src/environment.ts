@@ -74,6 +74,18 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * (docs/design/event-tasks.md). Without it, clients offer clock tasks only.
    */
   eventTasks: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server keeps each thread's terminal tabs and streams their output per
+   * thread (`TerminalSubscribeInput`, docs/terminal.md). Older servers omit
+   * it and send every terminal event on one stream.
+   */
+  terminalTabLists: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server takes the address a terminal sign-in's page ended on in a
+   * browser elsewhere and replays it itself (`ProviderAuthWriteInput.redirect`).
+   * Older servers omit it and would type the address into the command.
+   */
+  signInAddressReplay: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

@@ -369,7 +369,8 @@ function SetupSignInAgentRow({
             </Button>
           </div>
         </div>
-      ) : isBrowserFlow && controller.isActive && controller.state.signInUrl ? (
+      ) : (isBrowserFlow && controller.isActive && controller.state.signInUrl) ||
+        (controller.state.surface === "terminal" && controller.takesPastedAddress) ? (
         <div className="pb-3 pl-9 pr-1">
           <BrowserRedirectField onSubmit={controller.submitRedirect} />
         </div>

@@ -23,7 +23,6 @@
  *
  * @module provider/antigravity/AntigravityAuth
  */
-import { request as httpRequest } from "node:http";
 
 import type { AntigravitySettings } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
@@ -36,6 +35,8 @@ import type { AcpProviderDescriptor } from "../acp/AcpProviderDescriptor.ts";
 import { makeAcpProviderRuntime } from "../acp/AcpProviderRuntime.ts";
 import { type LaunchGate, withLaunchGateClosed } from "../managedRuntime/LaunchGate.ts";
 import type { ProviderInstanceAuthFlows } from "../ProviderDriver.ts";
+import type { LoopbackRedirect } from "@threadlines/shared/signInRedirect";
+import { checkLoopbackRedirect, replayLoopbackRedirect } from "../auth/loopbackRedirect.ts";
 import {
   antigravityCredentialFingerprint,
   antigravityMissingSetup,
@@ -49,7 +50,6 @@ import { ProviderSetupError } from "../Errors.ts";
 
 const SIGN_IN_TIMEOUT = Duration.minutes(5);
 const SIGN_OUT_TIMEOUT = Duration.seconds(90);
-const REDIRECT_REPLAY_TIMEOUT_MS = 10_000;
 
 interface PendingSignIn {
   readonly redirect: URL;
@@ -70,59 +70,15 @@ function friendlySignInError(error: unknown): string {
   return text || "Sign-in failed.";
 }
 
-/** One GET to the agent's loopback listener: no proxy, no redirects. */
-function replayRedirect(url: URL): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const request = httpRequest(
-      url,
-      { method: "GET", agent: false, timeout: REDIRECT_REPLAY_TIMEOUT_MS },
-      (response) => {
-        response.resume();
-        resolve(response.statusCode ?? 0);
-      },
-    );
-    request.on("timeout", () => request.destroy(new Error("The sign-in did not answer.")));
-    request.on("error", reject);
-    request.end();
-  });
-}
-
 /**
- * The pasted address, if it is this sign-in's redirect: the same loopback
- * origin and path as the pending `redirect_uri`, its exact `state`, one
- * `code` or `error`, and Google as the issuer when one is named. Otherwise
- * the reason, worded for the user.
+ * The pasted address, if it is this sign-in's redirect (see
+ * `checkLoopbackRedirect`), with Google as the issuer when one is named.
+ * Otherwise the reason, worded for the user.
  */
-export function checkAntigravityRedirect(
-  raw: string,
-  pending: { readonly redirect: URL; readonly state: string },
-): URL | string {
-  let url: URL;
-  try {
-    url = new URL(raw.trim());
-  } catch {
-    return "That isn't a web address.";
-  }
-  if (
-    url.protocol !== "http:" ||
-    url.hostname !== "127.0.0.1" ||
-    url.port !== pending.redirect.port ||
-    url.pathname !== pending.redirect.pathname
-  ) {
-    return `That address isn't this sign-in's. Paste the full address your browser shows after you approve, starting with ${pending.redirect.origin}.`;
-  }
-  const states = url.searchParams.getAll("state");
-  if (states.length !== 1 || states[0] !== pending.state) {
-    return "That address belongs to a different sign-in attempt.";
-  }
-  const codes = url.searchParams.getAll("code");
-  const errors = url.searchParams.getAll("error");
-  if (codes.length + errors.length !== 1) return "That address has no sign-in result in it.";
-  const issuer = url.searchParams.get("iss");
-  if (issuer !== null && issuer !== "https://accounts.google.com") {
-    return "That address didn't come from Google.";
-  }
-  return url;
+export function checkAntigravityRedirect(raw: string, pending: LoopbackRedirect): URL | string {
+  return checkLoopbackRedirect(raw, pending, {
+    issuer: { url: "https://accounts.google.com", name: "Google" },
+  });
 }
 
 export function makeAntigravityAuthFlows(input: {
@@ -349,7 +305,7 @@ export function makeAntigravityAuthFlows(input: {
         const url = checked;
         current.consumed = true;
         const status = yield* Effect.tryPromise({
-          try: () => replayRedirect(url),
+          try: () => replayLoopbackRedirect(url),
           catch: () => failure("The sign-in stopped listening. Start sign-in again."),
         });
         if (status < 200 || status >= 300) {

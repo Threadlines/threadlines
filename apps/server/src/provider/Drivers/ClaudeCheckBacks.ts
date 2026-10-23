@@ -86,6 +86,19 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+const CHECK_BACK_TOOLS: ReadonlySet<string> = new Set([
+  "ScheduleWakeup",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+]);
+
+/** Whether a Claude tool sets, cancels or lists check-backs. These schedule
+ *  Claude's own return, never change a file, whatever their names say. */
+export function isClaudeCheckBackTool(toolName: string): boolean {
+  return CHECK_BACK_TOOLS.has(toolName);
+}
+
 /**
  * Remember what a scheduling tool call set, from its input and its
  * structured result (`tool_use_result`). Other tools are ignored.

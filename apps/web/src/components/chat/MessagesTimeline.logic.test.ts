@@ -708,7 +708,7 @@ describe("deriveMessagesTimelineRows", () => {
     expect(answered.map((row) => row.agentLine?.heads)).toEqual([true, false, false, false]);
   });
 
-  it("bends the line into a page that ends a turn, and names the agent on a page that starts one", () => {
+  it("bends the line into a page or command card that ends a turn, and names the agent on a page that starts one", () => {
     const at = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
     const step = {
       id: "step",
@@ -789,6 +789,41 @@ describe("deriveMessagesTimelineRows", () => {
     expect(lines([shown, reply])).toEqual([
       ["page", "single", true],
       ["message", "past", false],
+    ]);
+
+    // A command card is part of the answer too: the line bends into it, and
+    // into the first of a card and a page shown together.
+    const card = {
+      id: "command-request:request-1",
+      kind: "command-request" as const,
+      createdAt: at(2),
+      request: {
+        requestId: "request-1" as never,
+        turnId: "turn-1" as never,
+        participantId: null,
+        command: "pnpm install",
+        reason: "It needs your password.",
+        dialect: "posix" as const,
+        dismissedAt: null,
+        createdAt: at(2),
+        updatedAt: at(2),
+      },
+    };
+    expect(lines([step, card, reply])).toEqual([
+      ["work", "start", true],
+      ["command-request", "end", false],
+      ["message", "past", false],
+    ]);
+    expect(lines([step, card, { ...shown, createdAt: at(2) }, reply])).toEqual([
+      ["work", "start", true],
+      ["command-request", "end", false],
+      ["page", "past", false],
+      ["message", "past", false],
+    ]);
+    // The turn ended on its card, with no reply.
+    expect(lines([step, card])).toEqual([
+      ["work", "start", true],
+      ["command-request", "end", false],
     ]);
   });
 

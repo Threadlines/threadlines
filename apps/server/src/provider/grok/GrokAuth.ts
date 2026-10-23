@@ -9,7 +9,8 @@
  * on the machine Grok runs on. xAI can force the loopback flow remotely; its
  * page then ends on an unreachable `127.0.0.1` address, which the user pastes
  * back (`_x.ai/auth/submit_code`). Grok opens a browser on its own machine in
- * either flow; nothing turns that off on macOS or Windows.
+ * either flow; nothing turns that off on macOS or Windows. So the flows say
+ * `opensPageItself`, and a client on that machine doesn't open a second copy.
  *
  * Grok's sessions re-read `auth.json` when it changes, so neither flow stops
  * them. Sign-out is offered only for an instance with its own Grok folder: the
@@ -270,6 +271,8 @@ export function makeGrokAuthFlows(input: {
         : apiKey
           ? "Check the xAI API key"
           : "Sign in with Grok",
+    // Grok opens its sign-in page on this computer too: a client here leaves it at that.
+    opensPageItself: !apiKey,
     run: ({ flow, report: emit }) => {
       if (flow === "logout" && ownFolder && !apiKey) return signOut(emit);
       if (flow !== "login") return Effect.fail(failure("Grok has no such sign-in flow."));

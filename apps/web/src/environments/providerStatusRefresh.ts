@@ -13,7 +13,8 @@ import type {
 
 import { ensureLocalApi } from "../localApi";
 import { applyProvidersUpdated } from "../rpc/serverState";
-import { readBackendEnvironmentConnection, readEnvironmentConnection } from "./runtime/service";
+import { isAppBackendEnvironment } from "./providerComputer";
+import { readEnvironmentConnection } from "./runtime/service";
 
 /**
  * A thread on another computer asks that computer, not the one the app's
@@ -27,10 +28,7 @@ export async function refreshProviderStatus(input: {
   readonly instanceId: ProviderInstanceId;
 }): Promise<ServerProviderUpdatedPayload> {
   const { environmentId, instanceId } = input;
-  if (
-    environmentId === null ||
-    environmentId === readBackendEnvironmentConnection()?.environmentId
-  ) {
+  if (environmentId === null || isAppBackendEnvironment(environmentId)) {
     const payload = await ensureLocalApi().server.refreshProviders({ instanceId });
     applyProvidersUpdated(payload);
     return payload;

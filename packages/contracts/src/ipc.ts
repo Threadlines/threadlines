@@ -67,6 +67,8 @@ import type {
   PullRequestDiffResult,
   PullRequestListInput,
   PullRequestListResult,
+  PullRequestLookupInput,
+  PullRequestLookupResult,
   PullRequestReactionInput,
   PullRequestRef,
   PullRequestReviewerCandidateList,
@@ -179,11 +181,13 @@ import type {
 import type {
   TerminalClearInput,
   TerminalCloseInput,
-  TerminalEvent,
+  TerminalResolveInterruptedInput,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
   TerminalSessionSnapshot,
+  TerminalStreamEvent,
+  TerminalSubscribeInput,
   TerminalWriteInput,
 } from "./terminal.ts";
 import type { ServerRemoveKeybindingInput, ServerUpsertKeybindingInput } from "./server.ts";
@@ -462,6 +466,11 @@ export interface DesktopTaskbarStatusInput {
    */
   localRunningThreadCount?: number;
   /**
+   * Terminals on this computer's own server running a command. Quitting
+   * stops those too, so they also make quitting ask first.
+   */
+  localBusyTerminalCount?: number;
+  /**
    * Finished threads the user has not opened yet, the inbox's unread finished
    * work. Sent with every status: the macOS Dock badge shows it throughout,
    * the Windows taskbar once nothing runs.
@@ -489,12 +498,15 @@ export interface DesktopQuitConfirmationRequest {
   runningThreadCount: number;
   /** This computer's active scheduled tasks, which don't run while Threadlines is closed. */
   activeScheduledTaskCount?: number;
+  /** Terminals on this computer running a command, which quitting stops too. */
+  busyTerminalCount?: number;
 }
 
 export const DesktopQuitConfirmationRequestSchema = Schema.Struct({
   requestId: Schema.String,
   runningThreadCount: Schema.Number,
   activeScheduledTaskCount: Schema.optionalKey(Schema.Number),
+  busyTerminalCount: Schema.optionalKey(Schema.Number),
 });
 
 /**
@@ -522,6 +534,7 @@ export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   description: Schema.optionalKey(Schema.String),
   runningThreadCount: Schema.optionalKey(Schema.Number),
   localRunningThreadCount: Schema.optionalKey(Schema.Number),
+  localBusyTerminalCount: Schema.optionalKey(Schema.Number),
   completedThreadCount: Schema.optionalKey(Schema.Number),
   threads: Schema.optionalKey(Schema.Array(DesktopTaskbarThreadSummarySchema)),
   activeScheduledTaskCount: Schema.optionalKey(Schema.Number),
@@ -1687,7 +1700,11 @@ export interface EnvironmentApi {
     clear: (input: typeof TerminalClearInput.Encoded) => Promise<void>;
     restart: (input: typeof TerminalRestartInput.Encoded) => Promise<TerminalSessionSnapshot>;
     close: (input: typeof TerminalCloseInput.Encoded) => Promise<void>;
-    onEvent: (callback: (event: TerminalEvent) => void) => () => void;
+    resolveInterrupted: (input: typeof TerminalResolveInterruptedInput.Encoded) => Promise<void>;
+    onEvent: (
+      input: TerminalSubscribeInput,
+      callback: (event: TerminalStreamEvent) => void,
+    ) => () => void;
   };
   realtime: {
     appendAudio: (input: ProviderRealtimeAppendAudioInput) => Promise<void>;
@@ -1891,6 +1908,7 @@ export interface EnvironmentApi {
   };
   pullRequests: {
     list: (input: PullRequestListInput) => Promise<PullRequestListResult>;
+    lookup: (input: PullRequestLookupInput) => Promise<PullRequestLookupResult>;
     detail: (input: PullRequestDetailInput) => Promise<PullRequestDetail>;
     activity: (input: PullRequestActivityInput) => Promise<PullRequestActivity>;
     diff: (input: PullRequestDiffInput) => Promise<PullRequestDiffResult>;

@@ -3323,11 +3323,11 @@ export function registerChatViewSuiteHooks(): void {
     useTerminalStateStore.persist.clearStorage();
     useTerminalStateStore.setState({
       terminalStateByThreadKey: {},
-      terminalLaunchContextByThreadKey: {},
-      terminalEventEntriesByKey: {},
-      terminalSubmittedCommandByKey: {},
+      terminalTabsByThreadKey: {},
+      pendingTerminalIdsByThreadKey: {},
       terminalActivityCommandByKey: {},
-      nextTerminalEventId: 1,
+      terminalActivityStartedAtByKey: {},
+      terminalCommandPendingByKey: {},
     });
   });
 
