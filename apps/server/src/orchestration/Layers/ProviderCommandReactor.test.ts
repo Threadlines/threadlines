@@ -2873,6 +2873,76 @@ describe("ProviderCommandReactor", () => {
       expect(sent.input).toContain("Make the test pass");
     });
 
+    it("restarts a runtime still above the ceiling before it takes the agent's turn", async () => {
+      // The user raised the thread to Full access and ran a turn there, then
+      // lowered it. The agent sends before the reactor applies the lower
+      // mode; the slot already says Supervised, the runtime doesn't.
+      const threadId = ThreadId.make("lowered-thread");
+      let hold: Deferred.Deferred<void> | null = null;
+      const harness = await createHarness({
+        beforeThreadRead: (id) =>
+          id === threadId && hold !== null ? Deferred.await(hold) : Effect.void,
+      });
+      const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      const setMode = (runtimeMode: "approval-required" | "full-access", at: string) =>
+        dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make(`cmd-mode-${runtimeMode}-${at}`),
+          threadId,
+          runtimeMode,
+          createdAt: at,
+        });
+      const settle = (status: "interrupted" | "ready", at: string) =>
+        dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-settle-${status}`),
+          threadId,
+          session: {
+            threadId,
+            status,
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: at,
+          },
+          createdAt: at,
+        });
+      await createOutsideThread(harness, "lowered-thread");
+      await setMode("full-access", "2026-01-01T00:00:01.000Z");
+      await dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-user-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message"),
+          role: "user",
+          text: "Do it with full access",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({ runtimeMode: "full-access" });
+      await settle("interrupted", "2026-01-01T00:00:03.000Z");
+      await settle("ready", "2026-01-01T00:00:04.000Z");
+
+      hold = Effect.runSync(Deferred.make<void>());
+      await setMode("approval-required", "2026-01-01T00:00:05.000Z");
+      await outsideTurn(harness, "lowered-thread");
+      Effect.runSync(Deferred.succeed(hold, undefined));
+      hold = null;
+
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      expect(harness.startSession.mock.calls.at(-1)?.[1]).toMatchObject({
+        runtimeMode: "approval-required",
+      });
+    });
+
     it("doesn't start an agent's turn the user raised above its ceiling after it was accepted", async () => {
       // The reactor's first read of the thread waits until the test lets it
       // go: the user's raise lands after the decider took the turn, before

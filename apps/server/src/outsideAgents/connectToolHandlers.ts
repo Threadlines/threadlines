@@ -23,7 +23,11 @@
  *
  * Starts and sends are idempotent by the caller's `requestId`
  * (OutsideAgentRequests): a retry in flight joins the first call, one after
- * answers from its row, and the same id with other input is a `conflict`.
+ * answers from its row, and the same id with other input is a `conflict`,
+ * in flight or after. A claimed row keeps the fresh ids its call dispatches
+ * with, so an id reused after its row was pruned is new work under new ids,
+ * never a write over an old message. A replay answers only while the
+ * thread it names is still in the connection's projects.
  */
 import {
   CommandId,
@@ -31,10 +35,11 @@ import {
   MessageId,
   type ModelSelection,
   ORCHESTRATION_THREAD_SEARCH_MAX_LIMIT,
+  ORCHESTRATION_THREAD_SEARCH_MAX_PROJECTS,
   ORCHESTRATION_THREAD_SEARCH_MAX_QUERY_CHARS,
   type OrchestrationCommand,
+  type OrchestrationProjectCatalogEntry,
   type OrchestrationProjectShell,
-  type OrchestrationShellSnapshot,
   type OrchestrationThread,
   type OrchestrationThreadShell,
   type OrchestrationThreadSearchInput,
@@ -131,13 +136,28 @@ const SEE_ONLY =
 const THREAD_NOT_FOUND = "No thread with that id is in your projects. threads_list shows them.";
 const NOT_YOURS = "You can only send to or stop threads you started.";
 const NO_STORE = "Threadlines couldn't keep track of this call. Try again.";
+const CONFLICT = {
+  outcome: "conflict" as const,
+  detail: "That requestId was already used for a different call. Use a new requestId for new work.",
+};
 
 export interface ConnectToolDeps {
   readonly connections: Pick<OutsideAgentConnectionsShape, "grant">;
   readonly engine: Pick<OrchestrationEngineShape, "dispatch" | "getCommandReceipt">;
   readonly bootstrap: Pick<ThreadBootstrapShape, "runTurnStart">;
-  /** The sidebar's snapshot: open projects and threads. */
-  readonly shellSnapshot: Effect.Effect<Pick<OrchestrationShellSnapshot, "projects" | "threads">>;
+  /** The open projects, read without any thread (the project catalog). */
+  readonly projects: Effect.Effect<ReadonlyArray<ConnectProject>>;
+  /**
+   * Thread shells by project or by the connection that started them
+   * (ProjectionSnapshotQuery.listThreadShells): never the whole sidebar.
+   */
+  readonly listThreads: (input: {
+    readonly projectIds?: ReadonlyArray<ProjectId>;
+    readonly outsideConnectionId?: OutsideAgentConnectionId;
+    readonly includeArchived?: boolean;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadShell>>;
+  /** A thread's project, archived threads included; undefined once deleted. */
+  readonly threadProject: (threadId: ThreadId) => Effect.Effect<ProjectId | undefined>;
   readonly readProject: (
     projectId: ProjectId,
   ) => Effect.Effect<OrchestrationProjectShell | undefined>;
@@ -156,6 +176,12 @@ export interface ConnectToolDeps {
   readonly limits: ConnectLimits;
 }
 
+/** A project as these tools see it. */
+type ConnectProject = Pick<
+  OrchestrationProjectCatalogEntry,
+  "id" | "kind" | "title" | "workspaceRoot"
+>;
+
 type Refusal = {
   readonly outcome: "limit" | "not_allowed";
   readonly detail: string;
@@ -170,16 +196,16 @@ const isoOf = (millis: number) => new Date(millis).toISOString();
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
-/** The ids one start or send dispatches with, derived from the connection and its request id. */
-const outsideRequestIds = (connectionId: OutsideAgentConnectionId, requestId: string) => ({
-  threadId: ThreadId.make(derivedUuid("outside-thread", connectionId, requestId)),
-  messageId: MessageId.make(derivedUuid("outside-message", connectionId, requestId)),
-  /**
-   * One per attempt: a refused attempt (busy, above the ceiling) leaves a
-   * rejected receipt under its command id, and a later try must not find it.
-   */
-  commandId: (attempt: string) =>
-    CommandId.make(`server:outside:${derivedUuid(connectionId, requestId, attempt)}`),
+/**
+ * Fresh ids for one start or send, kept on its request row: never derived
+ * from the caller's request id alone, which may come back once its row is
+ * pruned, and new for each attempt, since a refused one leaves a rejected
+ * receipt under its command id.
+ */
+const freshRequestIds = () => ({
+  threadId: ThreadId.make(crypto.randomUUID()),
+  messageId: MessageId.make(crypto.randomUUID()),
+  commandId: CommandId.make(`server:outside:${crypto.randomUUID()}`),
 });
 
 /** What makes two calls under one request id the same call. */
@@ -195,17 +221,17 @@ const grantsProject = (grant: OutsideAgentLiveGrant, projectId: ProjectId) =>
  * of those threads has a scratch folder of its own, and is the user's own
  * conversation, not a project's work).
  */
-const projectsIn = (
-  projects: ReadonlyArray<OrchestrationProjectShell>,
+const projectsIn = <Project extends ConnectProject>(
+  projects: ReadonlyArray<Project>,
   grant: OutsideAgentLiveGrant,
 ) =>
   projects.filter((project) => project.kind !== "general-chat" && grantsProject(grant, project.id));
 
 /** The project a call names, by id or by name (case ignored), among the ones it sees. */
-const findProject = (
-  projects: ReadonlyArray<OrchestrationProjectShell>,
+const findProject = <Project extends ConnectProject>(
+  projects: ReadonlyArray<Project>,
   wanted: string,
-): { readonly project: OrchestrationProjectShell } | { readonly detail: string } => {
+): { readonly project: Project } | { readonly detail: string } => {
   const trimmed = wanted.trim();
   const byId = projects.find((project) => project.id === trimmed);
   if (byId !== undefined) return { project: byId };
@@ -247,8 +273,32 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
      * it goes away.
      */
     const runs = yield* makeSingleFlight<string, unknown, never>();
-    const once = <A>(key: string, effect: Effect.Effect<A>) =>
-      runs.run(key, effect) as Effect.Effect<A>;
+    /** What each call in flight is (its tool and input hash), by its key. */
+    const flights = new Map<string, string>();
+    const once = <A>(input: {
+      readonly key: string;
+      readonly signature: string;
+      readonly run: Effect.Effect<A>;
+      /** The answer to a call under the same key with other input. */
+      readonly conflict: A;
+    }): Effect.Effect<A> =>
+      Effect.suspend(() => {
+        const inFlight = flights.get(input.key);
+        if (inFlight !== undefined && inFlight !== input.signature) {
+          return Effect.succeed(input.conflict);
+        }
+        flights.set(input.key, input.signature);
+        return runs.run(
+          input.key,
+          input.run.pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (flights.get(input.key) === input.signature) flights.delete(input.key);
+              }),
+            ),
+          ),
+        ) as Effect.Effect<A>;
+      });
 
     /** Steps 1 and 2 of every call: the limit, then the live grant. */
     const gate = (
@@ -318,18 +368,19 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
     };
 
     /**
-     * The connection's threads running now, by name: live state, plus its
-     * starts and sends still in flight (`inFlight`).
+     * The connection's threads running now, by name: live state, archived
+     * threads included, plus its starts and sends still in flight (`inFlight`).
      */
     const runningThreads = (caller: OutsideAgentCaller, inFlight: ReadonlySet<ThreadId>) =>
       Effect.gen(function* () {
-        const snapshot = yield* deps.shellSnapshot;
+        // Archived ones too: archiving a thread doesn't stop its turn.
+        const own = yield* deps.listThreads({
+          outsideConnectionId: caller.connectionId,
+          includeArchived: true,
+        });
         const titles = new Map<string, string>();
-        for (const thread of snapshot.threads) {
-          if (
-            thread.outsideOrigin?.connectionId === caller.connectionId &&
-            (countsAsRunning(thread) || inFlight.has(thread.id))
-          ) {
+        for (const thread of own) {
+          if (countsAsRunning(thread) || inFlight.has(thread.id)) {
             titles.set(thread.id, thread.title);
           }
         }
@@ -352,10 +403,9 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
       Effect.gen(function* () {
         const gated = yield* gate(caller, "see");
         if ("refusal" in gated) return { ...gated.refusal, projects: [] };
-        const snapshot = yield* deps.shellSnapshot;
         return {
           outcome: "ok",
-          projects: projectsIn(snapshot.projects, gated.grant).map((project) => ({
+          projects: projectsIn(yield* deps.projects, gated.grant).map((project) => ({
             projectId: project.id,
             name: project.title,
             folder: project.workspaceRoot,
@@ -399,8 +449,7 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
       Effect.gen(function* () {
         const gated = yield* gate(caller, "see");
         if ("refusal" in gated) return { ...gated.refusal, threads: [] };
-        const snapshot = yield* deps.shellSnapshot;
-        let visible = projectsIn(snapshot.projects, gated.grant);
+        let visible = projectsIn(yield* deps.projects, gated.grant);
         if (input.project !== undefined) {
           const found = findProject(visible, input.project);
           if ("detail" in found) {
@@ -411,16 +460,23 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
         const projectNames = new Map<string, string>(
           visible.map((project) => [project.id, project.title]),
         );
-        const titles = new Map<string, string>(
-          snapshot.threads.map((thread) => [thread.id, thread.title]),
-        );
+        const projectIds = visible.map((project) => project.id);
+        const listed = yield* deps.listThreads({
+          projectIds,
+          ...(input.mine === true ? { outsideConnectionId: caller.connectionId } : {}),
+        });
+        const titles = new Map<string, string>(listed.map((thread) => [thread.id, thread.title]));
         const scheduleAnswerWaiting = yield* deps.status.scheduleAnswerWaiting;
         const query = input.query?.trim() ?? "";
         const matched =
-          query.length > 0 && deps.searchThreads !== undefined
+          query.length > 0 && deps.searchThreads !== undefined && projectIds.length > 0
             ? new Set<string>(
                 yield* deps.searchThreads({
                   query: query.slice(0, ORCHESTRATION_THREAD_SEARCH_MAX_QUERY_CHARS),
+                  // Only the visible projects' threads compete for the limit.
+                  ...(projectIds.length <= ORCHESTRATION_THREAD_SEARCH_MAX_PROJECTS
+                    ? { projectIds }
+                    : {}),
                   limit: ORCHESTRATION_THREAD_SEARCH_MAX_LIMIT,
                 }),
               )
@@ -430,12 +486,7 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
           Math.min(THREADS_LIST_LIMIT, Math.floor(input.limit ?? THREADS_LIST_LIMIT) || 1),
         );
         const providers = yield* deps.providers;
-        const threads = snapshot.threads
-          .filter((thread) => projectNames.has(thread.projectId))
-          .filter(
-            (thread) =>
-              input.mine !== true || thread.outsideOrigin?.connectionId === caller.connectionId,
-          )
+        const threads = listed
           .filter(
             (thread) =>
               input.status === undefined ||
@@ -554,16 +605,32 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
 
     /**
      * The answer an earlier call under the same request id stands for: its
-     * own when it finished; when a restart cut it off, what it left.
+     * own when it finished; when a restart cut it off, what it left. Only
+     * while its thread is still in the connection's projects: one the user
+     * took out of the grant since reads as not found, like any other.
      */
-    const earlierAnswer = (row: OutsideAgentRequestRow, inputHash: string) =>
+    const earlierAnswer = (
+      grant: OutsideAgentLiveGrant,
+      row: OutsideAgentRequestRow,
+      inputHash: string,
+    ) =>
       Effect.gen(function* () {
-        if (row.inputHash !== inputHash) {
-          return {
-            outcome: "conflict" as const,
-            detail:
-              "That requestId was already used for a different call. Use a new requestId for new work.",
-          };
+        if (row.inputHash !== inputHash) return CONFLICT;
+        if (row.threadId !== null) {
+          const projectId = yield* deps.threadProject(row.threadId);
+          const project = projectId === undefined ? undefined : yield* deps.readProject(projectId);
+          if (
+            projectId !== undefined &&
+            (!grantsProject(grant, projectId) || project?.kind === "general-chat")
+          ) {
+            return {
+              outcome: "not_found" as const,
+              detail:
+                row.tool === "thread_start"
+                  ? "The thread that request started isn't in your projects any more."
+                  : THREAD_NOT_FOUND,
+            };
+          }
         }
         if (row.state === "done" && row.resultJson !== null) {
           return JSON.parse(row.resultJson) as { readonly outcome: string };
@@ -730,10 +797,13 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
           workspace: input.workspace ?? null,
           access: input.access ?? null,
         };
-        return yield* once(
-          `${caller.connectionId}\u0000${id.requestId}`,
-          startOnce(caller, gated.grant, id.requestId, normalized),
-        );
+        const inputHash = inputHashOf("thread_start", normalized);
+        return yield* once({
+          key: `${caller.connectionId}\u0000${id.requestId}`,
+          signature: inputHash,
+          run: startOnce(caller, gated.grant, id.requestId, normalized, inputHash),
+          conflict: CONFLICT,
+        });
       });
 
     const startOnce = (
@@ -748,24 +818,29 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
         readonly workspace: StartInput["workspace"] | null;
         readonly access: StartInput["access"] | null;
       },
+      inputHash: string,
     ): Effect.Effect<OutsideThreadStartResult> =>
       Effect.gen(function* () {
-        const inputHash = inputHashOf("thread_start", input);
         const earlier = yield* deps.requests
           .get({ connectionId: caller.connectionId, requestId })
           .pipe(Effect.result);
         if (earlier._tag === "Failure") return { outcome: "failed", detail: NO_STORE };
         if (Option.isSome(earlier.success)) {
           return (yield* earlierAnswer(
+            grant,
             earlier.success.value,
             inputHash,
           )) as OutsideThreadStartResult;
         }
 
-        const snapshot = yield* deps.shellSnapshot;
-        const found = findProject(projectsIn(snapshot.projects, grant), input.project);
-        if ("detail" in found) return { outcome: "not_found", detail: found.detail };
-        const { project } = found;
+        const found = findProject(projectsIn(yield* deps.projects, grant), input.project);
+        const project = "detail" in found ? undefined : yield* deps.readProject(found.project.id);
+        if ("detail" in found || project === undefined) {
+          return {
+            outcome: "not_found",
+            detail: "detail" in found ? found.detail : "That project is gone.",
+          };
+        }
         const providers = yield* deps.providers;
         let modelSelection: ModelSelection;
         if (input.agent !== null && input.agent !== undefined) {
@@ -806,10 +881,10 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
         const placement = yield* placeThread(project, input.workspace ?? undefined);
         if ("failed" in placement) return { outcome: "failed", detail: placement.failed };
 
-        const ids = outsideRequestIds(caller.connectionId, requestId);
+        const ids = freshRequestIds();
+        const { commandId } = ids;
         const now = yield* nowMillis;
         const createdAt = isoOf(now);
-        const commandId = ids.commandId(createdAt);
         const title = input.title.length > 0 ? input.title : truncate(input.prompt);
         const command: ThreadTurnStartCommand = {
           type: "thread.turn.start",
@@ -972,10 +1047,14 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
         }
         const id = requestIdOf(input.requestId);
         if ("detail" in id) return { outcome: "failed", detail: id.detail };
-        return yield* once(
-          `${caller.connectionId}\u0000${id.requestId}`,
-          sendOnce(caller, gated.grant, id.requestId, { threadId: input.threadId.trim(), text }),
-        );
+        const normalized = { threadId: input.threadId.trim(), text };
+        const inputHash = inputHashOf("thread_send", normalized);
+        return yield* once({
+          key: `${caller.connectionId}\u0000${id.requestId}`,
+          signature: inputHash,
+          run: sendOnce(caller, gated.grant, id.requestId, normalized, inputHash),
+          conflict: CONFLICT,
+        });
       });
 
     const sendOnce = (
@@ -983,15 +1062,16 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
       grant: OutsideAgentLiveGrant,
       requestId: string,
       input: { readonly threadId: string; readonly text: string },
+      inputHash: string,
     ): Effect.Effect<OutsideThreadSendResult> =>
       Effect.gen(function* () {
-        const inputHash = inputHashOf("thread_send", input);
         const earlier = yield* deps.requests
           .get({ connectionId: caller.connectionId, requestId })
           .pipe(Effect.result);
         if (earlier._tag === "Failure") return { outcome: "failed", detail: NO_STORE };
         if (Option.isSome(earlier.success)) {
           return (yield* earlierAnswer(
+            grant,
             earlier.success.value,
             inputHash,
           )) as OutsideThreadSendResult;
@@ -1023,10 +1103,10 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
           };
         }
 
-        const ids = outsideRequestIds(caller.connectionId, requestId);
+        const ids = freshRequestIds();
+        const { commandId } = ids;
         const now = yield* nowMillis;
         const createdAt = isoOf(now);
-        const commandId = ids.commandId(createdAt);
         const command: OrchestrationCommand = {
           type: "thread.turn.start",
           commandId,
@@ -1104,6 +1184,15 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
         const owned = yield* ownThread(caller, gated.grant, input.threadId);
         if ("refusal" in owned) return owned.refusal;
         const { thread } = owned;
+        // A thread the user raised above the ceiling is out of the agent's
+        // reach, Stop included; the decider checks again, in order.
+        if (exceedsRuntimeMode(thread.runtimeMode, gated.grant.maxRuntimeMode)) {
+          return {
+            outcome: "not_allowed",
+            detail: outsideCeilingDetail(caller.name),
+            threadId: thread.id,
+          };
+        }
         if (!hasRunningTurn(thread)) {
           return {
             outcome: "not_running",
@@ -1118,18 +1207,27 @@ export const makeConnectToolHandlers = (deps: ConnectToolDeps) =>
             commandId: CommandId.make(`server:outside-stop:${crypto.randomUUID()}`),
             threadId: thread.id,
             ...(turnId !== undefined ? { turnId } : {}),
+            fromOutside: {
+              connectionId: caller.connectionId,
+              name: caller.name,
+              maxRuntimeMode: gated.grant.maxRuntimeMode,
+            },
             createdAt: isoOf(yield* nowMillis),
           })
           .pipe(Effect.result);
-        return stopped._tag === "Success"
-          ? {
-              outcome: "stopped",
-              detail: "Stopped. A later thread_send starts it again.",
-              threadId: thread.id,
-            }
+        if (stopped._tag === "Success") {
+          return {
+            outcome: "stopped",
+            detail: "Stopped. A later thread_send starts it again.",
+            threadId: thread.id,
+          };
+        }
+        const error = stopped.failure;
+        return "refusal" in error && error.refusal === "above_ceiling"
+          ? { outcome: "not_allowed", detail: error.detail, threadId: thread.id }
           : {
               outcome: "failed",
-              detail: `It couldn't be stopped: ${stopped.failure.message}`,
+              detail: `It couldn't be stopped: ${error.message}`,
               threadId: thread.id,
             };
       });

@@ -388,6 +388,7 @@ function makeSnapshotQuery(input: {
     listThreadDiffStatBaselines: () => Effect.succeed([]),
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
     listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
+    listThreadShells: () => Effect.succeed([]),
     getThreadShellById: (threadId) =>
       Effect.sync(() => {
         input.onThreadRead();

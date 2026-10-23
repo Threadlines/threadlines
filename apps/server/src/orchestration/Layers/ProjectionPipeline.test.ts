@@ -3152,6 +3152,26 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         detail._tag === "Some" ? detail.value.messages[0]?.fromOutside : undefined,
         agent,
       );
+
+      // The agent's own threads, read on their own: archived ones only when asked.
+      const own = (includeArchived: boolean) =>
+        query
+          .listThreadShells({ outsideConnectionId: agent.connectionId, includeArchived })
+          .pipe(Effect.map((shells) => shells.map((shell) => shell.id)));
+      assert.deepEqual(yield* own(false), [threadId]);
+      assert.deepEqual(
+        yield* query.listThreadShells({
+          outsideConnectionId: OutsideAgentConnectionId.make("connection-2"),
+        }),
+        [],
+      );
+      yield* engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("cmd-outside-archive"),
+        threadId,
+      });
+      assert.deepEqual(yield* own(false), []);
+      assert.deepEqual(yield* own(true), [threadId]);
     }),
   );
 

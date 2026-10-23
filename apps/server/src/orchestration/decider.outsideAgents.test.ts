@@ -146,6 +146,30 @@ describe("decider outside agents", () => {
     expect(after.model.threads[0]?.runtimeMode).toBe("full-access");
   });
 
+  it("refuses the agent's Stop, by type, in a thread the user raised above its ceiling", async () => {
+    const created = await outsideThread();
+    const turn = await run(created.model, outsideTurn("first"));
+    const stop = (raised: OrchestrationReadModel) =>
+      refusal(raised, {
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("stop"),
+        threadId: THREAD,
+        fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+        createdAt: at(4),
+      });
+    const raised = await run(turn.model, raiseTo("full-access"));
+    expect((await stop(raised.model)).refusal).toBe("above_ceiling");
+    // Within the ceiling, it stops like the Stop button.
+    const stopped = await run(turn.model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-ok"),
+      threadId: THREAD,
+      fromOutside: { ...AGENT, maxRuntimeMode: "approval-required" },
+      createdAt: at(4),
+    });
+    expect(stopped.events.map((event) => event.type)).toContain("thread.turn-interrupt-requested");
+  });
+
   it("refuses the agent's turn as busy while a turn runs or waits on an approval", async () => {
     const created = await outsideThread();
     const running = await run(created.model, outsideTurn("first"));
