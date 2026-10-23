@@ -3,12 +3,20 @@ import { useRender } from "@base-ui/react/use-render";
 import { cva, type VariantProps } from "class-variance-authority";
 import { PanelLeftCloseIcon, PanelLeftIcon } from "lucide-react";
 import * as React from "react";
+import { isIosHomeScreenApp } from "~/env";
+import { useScreenEdgeClaimed } from "~/screenEdgeClaims";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Separator } from "~/components/ui/separator";
-import { Drawer, DrawerDescription, DrawerPopup, DrawerTitle } from "~/components/ui/drawer";
+import {
+  Drawer,
+  DrawerDescription,
+  DrawerPopup,
+  DrawerSwipeArea,
+  DrawerTitle,
+} from "~/components/ui/drawer";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -195,6 +203,7 @@ function Sidebar({
   resizable?: boolean | SidebarResizableOptions;
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
+  const screenEdgeClaimed = useScreenEdgeClaimed();
   const animateLayout = motion === "animated";
   const resolvedResizable = React.useMemo<SidebarResolvedResizableOptions | null>(() => {
     if (isMobile || collapsible === "none" || !resizable) {
@@ -241,6 +250,13 @@ function Sidebar({
         {/* A drawer rather than a sheet: on a phone the panel can be swiped
             back toward its edge to close it, the way it slid in. */}
         <Drawer onOpenChange={setOpenMobile} open={openMobile} swipeDirection={side}>
+          {/* In the home-screen app nothing else owns the screen edge, so a
+              swipe in from it opens the list. It starts below the header,
+              whose menu button sits in that corner, and steps aside while
+              something on screen claims the edge (see screenEdgeClaims). */}
+          {isIosHomeScreenApp() && !screenEdgeClaimed ? (
+            <DrawerSwipeArea side={side} className="top-[var(--chat-header-bottom,4rem)]" />
+          ) : null}
           <DrawerPopup
             className={cn("w-(--sidebar-width) bg-sidebar p-0 text-sidebar-foreground", className)}
             data-mobile="true"

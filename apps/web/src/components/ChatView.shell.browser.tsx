@@ -9,12 +9,14 @@ import {
   type ThreadId,
   WS_METHODS,
 } from "@threadlines/contracts";
-import { page } from "vite-plus/test/browser";
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { useComposerDraftStore } from "../composerDraftStore";
 import { isMacPlatform } from "../lib/utils";
 import { useOptimisticThreadMessagesStore } from "../optimisticThreadMessages";
+import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 
 import {
@@ -1118,6 +1120,63 @@ describe("ChatView (full app): app shell", () => {
       await vi.waitFor(() => expect(sheet()).toBeNull(), { timeout: 4_000, interval: 16 });
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("opens the list with a swipe in from the left edge in the iPhone home-screen app, and not in a browser tab", async () => {
+    const sheet = () => document.querySelector('[data-slot="sidebar"][data-mobile="true"]');
+    const edge = () => document.querySelector('[data-slot="drawer-swipe-area"]');
+
+    // In a browser tab Safari's back swipe owns the edge: no strip there.
+    const inTab = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-edge-tab" as MessageId,
+        targetText: "phone edge tab",
+      }),
+    });
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "Unable to find mobile sidebar trigger.",
+      );
+      expect(edge()).toBeNull();
+    } finally {
+      await inTab.cleanup();
+    }
+
+    // Opened from the home screen, iOS says so on the navigator, on a touch screen.
+    Object.defineProperty(navigator, "standalone", { value: true, configurable: true });
+    Object.defineProperty(navigator, "maxTouchPoints", { value: 5, configurable: true });
+    const installed = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-edge-app" as MessageId,
+        targetText: "phone edge app",
+      }),
+    });
+    try {
+      const strip = await waitForElement(
+        () => edge() as HTMLElement | null,
+        "The home-screen app has no edge strip.",
+      );
+      expect(sheet()).toBeNull();
+      touchSwipe(strip, 240);
+      await vi.waitFor(() => expect(sheet()).not.toBeNull(), { timeout: 4_000, interval: 16 });
+
+      // The terminal's text runs to 4px from the edge: while it is open, the
+      // edge is the terminal's, and the strip comes back once it closes.
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(sheet()).toBeNull(), { timeout: 4_000, interval: 16 });
+      const threadRef = scopeThreadRef(LOCAL_ENVIRONMENT_ID, THREAD_ID);
+      useTerminalStateStore.getState().setTerminalOpen(threadRef, true);
+      await vi.waitFor(() => expect(edge()).toBeNull(), { timeout: 4_000, interval: 16 });
+      useTerminalStateStore.getState().setTerminalOpen(threadRef, false);
+      await vi.waitFor(() => expect(edge()).not.toBeNull(), { timeout: 4_000, interval: 16 });
+    } finally {
+      Reflect.deleteProperty(navigator, "standalone");
+      Reflect.deleteProperty(navigator, "maxTouchPoints");
+      await installed.cleanup();
     }
   });
 

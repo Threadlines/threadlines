@@ -69,6 +69,7 @@ import {
 } from "../types";
 import { readEnvironmentApi } from "~/environmentApi";
 import { readLocalApi } from "~/localApi";
+import { useClaimScreenEdge } from "../screenEdgeClaims";
 import { selectTerminalEventEntries, useTerminalStateStore } from "../terminalStateStore";
 
 const MIN_DRAWER_HEIGHT = DEFAULT_THREAD_TERMINAL_HEIGHT;
@@ -1184,6 +1185,8 @@ export default function ThreadTerminalDrawer({
 }: ThreadTerminalDrawerProps) {
   const [drawerHeight, setDrawerHeight] = useState(() => clampDrawerHeight(height));
   const [resizeEpoch, setResizeEpoch] = useState(0);
+  // Its text starts 4px from the screen edge: on screen, the edge is its own.
+  useClaimScreenEdge(visible);
   const drawerHeightRef = useRef(drawerHeight);
   const lastSyncedHeightRef = useRef(clampDrawerHeight(height));
   const onHeightChangeRef = useRef(onHeightChange);

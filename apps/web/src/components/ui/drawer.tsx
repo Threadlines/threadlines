@@ -80,4 +80,27 @@ function DrawerPopup({
   );
 }
 
-export { Drawer, DrawerDescription, DrawerPopup, DrawerTitle };
+/**
+ * A thin invisible strip along the screen edge a closed drawer slides in
+ * from: a finger swiping in from it pulls the drawer open, following along.
+ * 12px, inside the page's own margin, so it never covers text or a button.
+ * Render it inside `Drawer`, and only where nothing else owns that edge (a
+ * browser's back swipe does, in a tab).
+ */
+function DrawerSwipeArea({
+  className,
+  side = "left",
+  ...props
+}: DrawerPrimitive.SwipeArea.Props & {
+  side?: "left" | "right";
+}) {
+  return (
+    <DrawerPrimitive.SwipeArea
+      className={cn("fixed inset-y-0 z-40 w-3", side === "left" ? "left-0" : "right-0", className)}
+      data-slot="drawer-swipe-area"
+      {...props}
+    />
+  );
+}
+
+export { Drawer, DrawerDescription, DrawerPopup, DrawerSwipeArea, DrawerTitle };

@@ -11,6 +11,12 @@
     <meta name="theme-color" content="#161616" />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- Installable: "Add to Home Screen" opens it as its own full-screen app.
+         The manifest names it after its channel; the status bar follows the
+         theme-color above. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <script>
       (() => {
         const LIGHT_BACKGROUND = "#ffffff";
