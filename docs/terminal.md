@@ -100,8 +100,9 @@ lists it as `interruptedCommand`, and the drawer offers "Run again"
 (`terminal.resolveInterrupted`). The server types it in only on an empty line
 with nothing running, and otherwise says why not. The offer goes, on every
 device, once it is run, dismissed, a line is entered in the tab, or a
-suggested command takes the tab. Before an update restart or a quit, the
-desktop app's question names the terminals still running something.
+suggested command takes the tab. Every desktop question before Threadlines
+restarts or quits (installing an update, quitting, changing how devices
+connect in Settings) names the terminals still running something.
 
 ## History
 
