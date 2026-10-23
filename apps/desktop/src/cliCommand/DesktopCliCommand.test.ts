@@ -2,14 +2,17 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import * as NodePath from "node:path";
 import { join } from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -17,10 +20,17 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import { appImageCommandArgs } from "./appImageCommand.ts";
-import { type CliCommandLaunch, renderCliCommandScript } from "./cliCommandScript.ts";
 import {
+  type CliCommandLaunch,
+  cliCommandDevCommand,
+  renderCliCommandScript,
+} from "./cliCommandScript.ts";
+import {
+  administratorInstallCommand,
   type CliCommandSetup,
   type CliCommandSystem,
+  decodeWindowsUserPath,
+  doShellScript,
   make,
   type WindowsUserPath,
 } from "./DesktopCliCommand.ts";
@@ -160,13 +170,49 @@ describe("DesktopCliCommand", () => {
         chmodSync(directory, 0o755);
         assert.equal(result.outcome, "cancelled");
         assert.equal(result.status.state, "not_installed");
-        assert.equal(calls.administrator.length, 1);
-        assert.match(
-          calls.administrator[0] ?? "",
-          /\/bin\/cp '.+' '.+\/threadlines' && \/bin\/chmod 755/u,
-        );
+        // The script travels inside the root command; nothing is copied from a user's file.
+        assert.deepEqual(calls.administrator, [
+          administratorInstallCommand({
+            directory,
+            target: join(directory, "threadlines"),
+            script: renderCliCommandScript(setupIn(directory).launch),
+          }),
+        ]);
       }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it("installs as root by writing the script itself, replacing a link instead of following it", () => {
+    const root = temp("root-command");
+    const directory = join(root, "bin");
+    mkdirSync(directory);
+    const secret = join(root, "root-only");
+    writeFileSync(secret, "secret\n", { mode: 0o600 });
+    const target = join(directory, "threadlines");
+    symlinkSync(secret, target);
+    const script = renderCliCommandScript({
+      platform: "darwin",
+      executablePath: "/Applications/Threadlines.app/Contents/MacOS/Threadlines",
+      entryPath:
+        "/Applications/Threadlines.app/Contents/Resources/app.asar/apps/server/dist/bin.mjs",
+      threadlinesHome: `${root}/it's "home" \\ $HOME 100%`,
+      appImagePath: null,
+    });
+    const command = administratorInstallCommand({ directory, target, script });
+    // Run as this user here: the same shell command `do shell script` hands to root.
+    execFileSync("/bin/sh", ["-c", command]);
+    assert.equal(readFileSync(target, "utf8"), script);
+    assert.equal(statSync(target).mode & 0o777, 0o755);
+    assert.isFalse(lstatSync(target).isSymbolicLink());
+    assert.equal(readFileSync(secret, "utf8"), "secret\n");
+    assert.equal(statSync(secret).mode & 0o777, 0o600);
+
+    if (process.platform === "darwin") {
+      // And through AppleScript's own quoting, minus the password prompt.
+      rmSync(target);
+      execFileSync("/usr/bin/osascript", ["-e", doShellScript(command, false)]);
+      assert.equal(readFileSync(target, "utf8"), script);
+    }
+  });
 
   it.effect(
     "on Windows, writes threadlines.cmd and adds its folder to the user's PATH, keeping the rest",
@@ -200,6 +246,8 @@ describe("DesktopCliCommand", () => {
           kind: "ExpandString",
         });
         const script = readFileSync(join(directory, "threadlines.cmd"), "utf8");
+        assert.include(script, "\r\nsetlocal DisableDelayedExpansion\r\n");
+        assert.notInclude(script, "chcp");
         assert.include(script, "\r\nset ELECTRON_RUN_AS_NODE=1\r\nset THREADLINES_CLI_ONLY=1\r\n");
         assert.include(script, 'set "THREADLINES_HOME=C:\\Data\\100%% mine"');
         assert.include(script, '\\Threadlines.exe" "C:\\Users\\a\\');
@@ -227,6 +275,81 @@ describe("DesktopCliCommand", () => {
       assert.isFalse(existsSync(join(directory, "threadlines")));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+});
+
+describe("the Windows command", () => {
+  it("switches to UTF-8 for its own lines when a path isn't ASCII, and puts the code page back", () => {
+    const script = renderCliCommandScript({
+      platform: "win32",
+      executablePath: "C:\\Users\\João\\AppData\\Local\\Programs\\Threadlines\\Threadlines.exe",
+      entryPath:
+        "C:\\Users\\João\\AppData\\Local\\Programs\\Threadlines\\resources\\app.asar\\apps\\server\\dist\\bin.mjs",
+      threadlinesHome: null,
+      appImagePath: null,
+    });
+    const lines = script.split("\r\n");
+    const launch = lines.findIndex((line) => line.includes("Threadlines.exe"));
+    assert.isAbove(launch, lines.indexOf("chcp 65001 >nul"));
+    assert.isAbove(
+      lines.indexOf("chcp 65001 >nul"),
+      lines.indexOf("setlocal DisableDelayedExpansion"),
+    );
+    // Every line cmd reads before the switch is ASCII.
+    assert.isTrue(
+      lines
+        .slice(0, lines.indexOf("chcp 65001 >nul") + 1)
+        .every((line) => [...line].every((char) => char.charCodeAt(0) < 0x80)),
+    );
+    assert.deepEqual(lines.slice(launch + 1), [
+      'set "THREADLINES_EXIT=%ERRORLEVEL%"',
+      "chcp %THREADLINES_CODE_PAGE% >nul",
+      "exit /b %THREADLINES_EXIT%",
+      "",
+    ]);
+  });
+
+  it("reads the user's PATH from PowerShell's base64 answer without losing what isn't ASCII", () =>
+    Effect.gen(function* () {
+      const answer = Buffer.from(
+        JSON.stringify({ value: "C:\\Tools\\café;%USERPROFILE%\\bin", kind: "ExpandString" }),
+        "utf8",
+      ).toString("base64");
+      assert.deepEqual(yield* decodeWindowsUserPath(`${answer}\r\n`), {
+        value: "C:\\Tools\\café;%USERPROFILE%\\bin",
+        kind: "ExpandString",
+      });
+    }).pipe(Effect.runPromise));
+});
+
+describe("the dev build's command", () => {
+  it("quotes a repo path for the shell, taking it literally", () => {
+    const posix = cliCommandDevCommand({
+      platform: "darwin",
+      rootDir: "/Users/a/it's $HOME",
+      threadlinesHome: null,
+      path: NodePath.posix as never,
+    });
+    assert.equal(posix, `node '/Users/a/it'\\''s $HOME/apps/server/src/bin.ts' connect --dev`);
+    assert.equal(
+      execFileSync(
+        "/bin/sh",
+        ["-c", `printf '%s' ${posix.slice("node ".length, posix.indexOf(" connect"))}`],
+        {
+          encoding: "utf8",
+        },
+      ),
+      "/Users/a/it's $HOME/apps/server/src/bin.ts",
+    );
+    assert.equal(
+      cliCommandDevCommand({
+        platform: "win32",
+        rootDir: "C:\\src\\my repo",
+        threadlinesHome: "D:\\data",
+        path: NodePath.win32 as never,
+      }),
+      'node "C:\\src\\my repo\\apps\\server\\src\\bin.ts" connect --dev --base-dir D:\\data',
+    );
+  });
 });
 
 describe("the AppImage's command", () => {

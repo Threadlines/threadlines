@@ -19,8 +19,9 @@ export const APPIMAGE_COMMAND_ENV = "THREADLINES_APPIMAGE_COMMAND";
 /** Comes before the command's own arguments, after anything the AppImage launcher adds. */
 export const APPIMAGE_COMMAND_FLAG = "--threadlines-command";
 
+// Plain words only: cmd still reads a batch file's `rem` line.
 const HEADER =
-  "The threadlines command, put here by the Threadlines app (Settings > Connections > Agents).";
+  "The threadlines command, put here by the Threadlines app (Settings, Connections, Agents).";
 
 /** How the app runs: what the script starts. */
 export interface CliCommandLaunch {
@@ -62,27 +63,54 @@ export function cliCommandDirectory(input: {
   return join(input.homeDirectory, ".local", "bin");
 }
 
-const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+/** A POSIX shell word for `value`, taken literally. */
+export const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
 /** A path inside a batch file: `%` would start a variable. Windows paths hold no `"`. */
 const batchQuote = (value: string) => `"${value.replaceAll("%", "%%")}"`;
 
+const isAscii = (value: string) => [...value].every((char) => char.charCodeAt(0) < 0x80);
+
+/**
+ * The Windows script. cmd reads a batch file in the console's code page, so
+ * when a path in it isn't plain ASCII (`C:\Users\João`) the script switches
+ * to UTF-8 (65001) for its own lines and puts the old code page back after.
+ * Delayed expansion is turned off, where a user turned it on, so a `!` in a
+ * path stays a `!`.
+ */
+function renderWindowsScript(launch: CliCommandLaunch): string {
+  const unicode = ![launch.executablePath, launch.entryPath, launch.threadlinesHome ?? ""].every(
+    isAscii,
+  );
+  return [
+    "@echo off",
+    `rem ${HEADER}`,
+    "setlocal DisableDelayedExpansion",
+    ...(unicode
+      ? [
+          `for /f "tokens=2 delims=:." %%p in ('chcp') do set "THREADLINES_CODE_PAGE=%%p"`,
+          "chcp 65001 >nul",
+        ]
+      : []),
+    "set ELECTRON_RUN_AS_NODE=1",
+    "set THREADLINES_CLI_ONLY=1",
+    ...(launch.threadlinesHome === null
+      ? []
+      : [`set "THREADLINES_HOME=${launch.threadlinesHome.replaceAll("%", "%%")}"`]),
+    `${batchQuote(launch.executablePath)} ${batchQuote(launch.entryPath)} %*`,
+    ...(unicode
+      ? [
+          `set "THREADLINES_EXIT=%ERRORLEVEL%"`,
+          "chcp %THREADLINES_CODE_PAGE% >nul",
+          "exit /b %THREADLINES_EXIT%",
+        ]
+      : ["exit /b %ERRORLEVEL%"]),
+    "",
+  ].join("\r\n");
+}
+
 export function renderCliCommandScript(launch: CliCommandLaunch): string {
-  if (launch.platform === "win32") {
-    return [
-      "@echo off",
-      `rem ${HEADER}`,
-      "setlocal",
-      "set ELECTRON_RUN_AS_NODE=1",
-      "set THREADLINES_CLI_ONLY=1",
-      ...(launch.threadlinesHome === null
-        ? []
-        : [`set "THREADLINES_HOME=${launch.threadlinesHome.replaceAll("%", "%%")}"`]),
-      `${batchQuote(launch.executablePath)} ${batchQuote(launch.entryPath)} %*`,
-      "exit /b %ERRORLEVEL%",
-      "",
-    ].join("\r\n");
-  }
+  if (launch.platform === "win32") return renderWindowsScript(launch);
   const home =
     launch.threadlinesHome === null
       ? []
@@ -168,15 +196,27 @@ export function cliCommandUnavailableReason(input: {
   return null;
 }
 
+/**
+ * A path as a shell takes it literally: as it is when nothing in it is
+ * special, else in single quotes (POSIX) or double quotes (Windows, whose
+ * paths can't hold one).
+ */
+const shellLiteral = (value: string, platform: NodeJS.Platform) => {
+  if (/^[\w@%+=:,./\\-]+$/u.test(value)) return value;
+  return platform === "win32" ? `"${value}"` : shellQuote(value);
+};
+
 /** Dev builds: how to run the command from the repo instead of installing it. */
 export function cliCommandDevCommand(input: {
+  readonly platform: NodeJS.Platform;
   readonly rootDir: string;
   /** Null when it's the default `~/.threadlines`. */
   readonly threadlinesHome: string | null;
   readonly path: Path.Path;
 }): string {
-  const quote = (value: string) => (/\s/u.test(value) ? `"${value}"` : value);
+  const literal = (value: string) => shellLiteral(value, input.platform);
   const entry = input.path.join(input.rootDir, "apps", "server", "src", "bin.ts");
-  const home = input.threadlinesHome === null ? "" : ` --base-dir ${quote(input.threadlinesHome)}`;
-  return `node ${quote(entry)} connect --dev${home}`;
+  const home =
+    input.threadlinesHome === null ? "" : ` --base-dir ${literal(input.threadlinesHome)}`;
+  return `node ${literal(entry)} connect --dev${home}`;
 }

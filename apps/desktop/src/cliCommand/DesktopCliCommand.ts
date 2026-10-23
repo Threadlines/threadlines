@@ -42,6 +42,7 @@ import {
   editWindowsPath,
   isFolderOnPath,
   renderCliCommandScript,
+  shellQuote,
 } from "./cliCommandScript.ts";
 
 export class CliCommandFailure extends Data.TaggedError("CliCommandFailure")<{
@@ -95,7 +96,27 @@ const isPermissionDenied = (error: PlatformError.PlatformError) =>
 const describe = (error: PlatformError.PlatformError | CliCommandFailure) =>
   error._tag === "CliCommandFailure" ? error.message : error.reason.message;
 
-const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+/**
+ * The shell command that installs `script` at `target` as root. The script
+ * travels inside the command: copying it from a file the user can write
+ * would let another process of theirs swap that file, while the password
+ * prompt is up, for a link to a file only root may read. Root writes a new
+ * file in the target folder and renames it into place, which replaces a
+ * link (npm's `threadlines`) rather than writing through it.
+ */
+export function administratorInstallCommand(input: {
+  readonly directory: string;
+  readonly target: string;
+  readonly script: string;
+}): string {
+  return [
+    `/bin/mkdir -p ${shellQuote(input.directory)}`,
+    `staged=$(/usr/bin/mktemp ${shellQuote(`${input.directory}/.threadlines.XXXXXX`)})`,
+    `/usr/bin/printf '%s' ${shellQuote(input.script)} > "$staged"`,
+    `/bin/chmod 755 "$staged"`,
+    `/bin/mv -f "$staged" ${shellQuote(input.target)}`,
+  ].join(" && ");
+}
 
 export const make = Effect.fn("desktop.cliCommand.make")(function* (
   setup: CliCommandSetup,
@@ -165,19 +186,8 @@ export const make = Effect.fn("desktop.cliCommand.make")(function* (
     yield* fs.chmod(target, 0o755);
   });
 
-  const writeAsAdministrator = Effect.scoped(
-    Effect.gen(function* () {
-      const staged = yield* fs.makeTempFileScoped({ prefix: "threadlines-command-" });
-      yield* fs.writeFileString(staged, script);
-      return yield* system.runAsAdministrator(
-        [
-          `/bin/mkdir -p ${shellQuote(setup.directory)}`,
-          `/bin/rm -f ${shellQuote(target)}`,
-          `/bin/cp ${shellQuote(staged)} ${shellQuote(target)}`,
-          `/bin/chmod 755 ${shellQuote(target)}`,
-        ].join(" && "),
-      );
-    }),
+  const writeAsAdministrator = system.runAsAdministrator(
+    administratorInstallCommand({ directory: setup.directory, target, script }),
   );
 
   const finish = (outcome: DesktopCliCommandResult["outcome"], detail: string | null) =>
@@ -276,13 +286,22 @@ const runProgram = (
 
 /** An AppleScript string literal. */
 const appleScriptString = (value: string) =>
-  `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n")}"`;
 
 /** macOS's administrator prompt names who asks with this line. */
 const ADMINISTRATOR_PROMPT =
   "Threadlines wants to change the threadlines command in /usr/local/bin.";
 
-const decodeWindowsUserPath = Schema.decodeUnknownEffect(
+/**
+ * The AppleScript that runs `shellCommand` through `/bin/sh`: as root,
+ * behind the system's password prompt, when `administrator`.
+ */
+export const doShellScript = (shellCommand: string, administrator: boolean) =>
+  administrator
+    ? `do shell script ${appleScriptString(shellCommand)} with prompt ${appleScriptString(ADMINISTRATOR_PROMPT)} with administrator privileges`
+    : `do shell script ${appleScriptString(shellCommand)}`;
+
+const decodeWindowsUserPathJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
       value: Schema.NullOr(Schema.String),
@@ -290,6 +309,30 @@ const decodeWindowsUserPath = Schema.decodeUnknownEffect(
     }),
   ),
 );
+
+/**
+ * READ_USER_PATH's answer. It comes as base64 of UTF-8: PowerShell writes
+ * to a pipe in the console's code page, which would turn `C:\Tools\café`
+ * into something else, and the edit would save that back.
+ */
+export const decodeWindowsUserPath = (stdout: string) =>
+  decodeWindowsUserPathJson(Buffer.from(stdout.trim(), "base64").toString("utf8")).pipe(
+    Effect.mapError(
+      () => new CliCommandFailure({ message: "Couldn't read your PATH from Windows." }),
+    ),
+    Effect.flatMap((saved) => {
+      if (saved.kind !== "String" && saved.kind !== "ExpandString") {
+        return Effect.fail(
+          new CliCommandFailure({
+            message: "Your PATH is saved in a form Threadlines won't edit.",
+          }),
+        );
+      }
+      return Effect.succeed(
+        saved.value === null ? null : ({ value: saved.value, kind: saved.kind } as const),
+      );
+    }),
+  );
 
 /** PowerShell from System32, given its script encoded so nothing in it needs quoting. */
 const runPowerShell = (
@@ -321,7 +364,8 @@ if ($key -ne $null -and ($key.GetValueNames() -contains 'Path')) {
   $value = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
   $kind = [string]$key.GetValueKind('Path')
 }
-[Console]::Out.Write((@{ value = $value; kind = $kind } | ConvertTo-Json -Compress))
+$json = @{ value = $value; kind = $kind } | ConvertTo-Json -Compress
+[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)))
 `;
 
 // Setting any user variable through .NET broadcasts WM_SETTINGCHANGE, so
@@ -339,10 +383,7 @@ export const makeSystem = (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
 ): CliCommandSystem => ({
   runAsAdministrator: (shellCommand) =>
-    runProgram(spawner, "/usr/bin/osascript", [
-      "-e",
-      `do shell script ${appleScriptString(shellCommand)} with prompt ${appleScriptString(ADMINISTRATOR_PROMPT)} with administrator privileges`,
-    ]).pipe(
+    runProgram(spawner, "/usr/bin/osascript", ["-e", doShellScript(shellCommand, true)]).pipe(
       Effect.flatMap(({ exitCode, stderr }) => {
         if (exitCode === 0) return Effect.succeed("done" as const);
         // -128 is AppleScript's "User canceled."
@@ -355,27 +396,11 @@ export const makeSystem = (
   readUserPath: runPowerShell(spawner, READ_USER_PATH).pipe(
     Effect.flatMap(({ exitCode, stdout, stderr }) =>
       exitCode === 0
-        ? decodeWindowsUserPath(stdout.trim()).pipe(
-            Effect.mapError(
-              () => new CliCommandFailure({ message: "Couldn't read your PATH from Windows." }),
-            ),
-          )
+        ? decodeWindowsUserPath(stdout)
         : Effect.fail(
             new CliCommandFailure({ message: stderr.trim() || "Couldn't read your PATH." }),
           ),
     ),
-    Effect.flatMap((saved) => {
-      if (saved.kind !== "String" && saved.kind !== "ExpandString") {
-        return Effect.fail(
-          new CliCommandFailure({
-            message: "Your PATH is saved in a form Threadlines won't edit.",
-          }),
-        );
-      }
-      return Effect.succeed(
-        saved.value === null ? null : ({ value: saved.value, kind: saved.kind } as const),
-      );
-    }),
   ),
   writeUserPath: (userPath) =>
     runPowerShell(spawner, WRITE_USER_PATH, {
@@ -419,7 +444,12 @@ export const layer = Layer.effect(
           appImagePath: platform === "linux" ? process.env.APPIMAGE?.trim() || null : null,
         },
         devCommand: environment.isDevelopment
-          ? cliCommandDevCommand({ rootDir: environment.rootDir, threadlinesHome, path })
+          ? cliCommandDevCommand({
+              platform,
+              rootDir: environment.rootDir,
+              threadlinesHome,
+              path,
+            })
           : null,
         unavailableReason: cliCommandUnavailableReason({ platform, executablePath }),
         processPath: () => process.env.PATH ?? process.env.Path,
