@@ -953,6 +953,7 @@ describe("ChatView (full app): sidebar", () => {
     });
 
     try {
+      await page.getByTestId("inbox-done-toggle").click();
       await expect.element(page.getByTestId(`done-row-${idleThreadId}`)).toBeInTheDocument();
 
       await page.getByTestId("rail-settings").click();
@@ -1468,7 +1469,9 @@ describe("ChatView (full app): sidebar", () => {
         );
       }
 
-      // Thirteen wrapped threads, ten previewed, the rest behind the reveal.
+      // The shelf starts closed: open it. Thirteen wrapped threads, ten
+      // previewed, the rest behind the reveal.
+      await page.getByTestId("inbox-done-toggle").click();
       await expectDoneRows(10, "Show 3 more");
       expect(document.querySelector('[data-testid="inbox-done-show-fewer"]')).toBeNull();
 
@@ -1484,7 +1487,112 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
-  it("keeps the thread you are reading on the shelf when Done collapses", async () => {
+  it("parks Wrapped closed at the column's foot and opens it to half the column", async () => {
+    const liveThreadIds = Array.from(
+      { length: 16 },
+      (_, index) => `thread-live-${index}` as ThreadId,
+    );
+    const todayThreadIds = Array.from(
+      { length: 3 },
+      (_, index) => `thread-wrapped-today-${index}` as ThreadId,
+    );
+    const idleThreadIds = Array.from(
+      { length: 9 },
+      (_, index) => `thread-wrapped-idle-${index}` as ThreadId,
+    );
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString();
+    const base = [...liveThreadIds, ...todayThreadIds, ...idleThreadIds].reduce(
+      (current, threadId) => addThreadToSnapshot(current, threadId),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-wrapped-shelf" as MessageId,
+        targetText: "wrapped shelf target",
+      }),
+    );
+    const idle = new Set<string>(idleThreadIds);
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, name: "short", height: 720 },
+      snapshot: {
+        ...base,
+        // Quiet for days, so they wrap up on their own, dated then.
+        threads: base.threads.map((thread) =>
+          idle.has(thread.id)
+            ? {
+                ...thread,
+                createdAt: threeDaysAgo,
+                updatedAt: threeDaysAgo,
+                lastSeenAt: threeDaysAgo,
+              }
+            : thread,
+        ),
+      },
+    });
+    const shelfAndColumn = () => {
+      const shelf = document.querySelector<HTMLElement>('[data-testid="inbox-wrapped-shelf"]');
+      expect(shelf).not.toBeNull();
+      return {
+        shelf: shelf!.getBoundingClientRect(),
+        column: shelf!.parentElement!.getBoundingClientRect(),
+      };
+    };
+
+    try {
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+      const doneAt = new Date().toISOString();
+      for (const threadId of todayThreadIds) {
+        markThreadDoneInTest(
+          scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId)),
+          doneAt,
+        );
+      }
+
+      // Closed: one line at the column's foot that says what wrapped today.
+      await vi.waitFor(
+        () => {
+          const toggle = document.querySelector('[data-testid="inbox-done-toggle"]');
+          expect(toggle?.textContent).toContain("Wrapped (12)");
+          expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+          expect(document.querySelector('[data-testid="inbox-done-today"]')?.textContent).toBe(
+            "· 3 today",
+          );
+          expect(document.querySelectorAll('[data-testid^="done-row-"]').length).toBe(0);
+          const { shelf, column } = shelfAndColumn();
+          expect(Math.abs(shelf.bottom - column.bottom)).toBeLessThanOrEqual(1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await page.getByTestId("inbox-done-toggle").click();
+
+      // Open: rows under their days, and the shelf takes half the column
+      // while the live list has more than the other half to show.
+      await vi.waitFor(
+        () => {
+          expect(
+            [...document.querySelectorAll('[data-testid="inbox-done-day"]')].map(
+              (label) => label.textContent,
+            ),
+          ).toEqual(["Today", "Last 7 days"]);
+          expect(document.querySelector('[data-testid="inbox-done-today"]')).toBeNull();
+          const { shelf, column } = shelfAndColumn();
+          expect(Math.abs(shelf.height - column.height / 2)).toBeLessThanOrEqual(1);
+          expect(Math.abs(shelf.bottom - column.bottom)).toBeLessThanOrEqual(1);
+          expect(useUiStateStore.getState().inboxWrappedOpen).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      // What the shelf can't fit scrolls inside it.
+      const shelfViewport = document.querySelector<HTMLElement>(
+        '[data-testid="inbox-wrapped-shelf"] [data-slot="scroll-area-viewport"]',
+      )!;
+      expect(shelfViewport.scrollHeight).toBeGreaterThan(shelfViewport.clientHeight);
+      shelfViewport.scrollTop = shelfViewport.scrollHeight;
+      expect(shelfViewport.scrollTop).toBeGreaterThan(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the thread you are reading on the shelf while Wrapped is closed", async () => {
     const otherDoneThreadId = "thread-done-collapse" as ThreadId;
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -1506,28 +1614,24 @@ describe("ChatView (full app): sidebar", () => {
       markThreadDoneInTest(THREAD_KEY, doneAt);
       markThreadDoneInTest(otherThreadKey, doneAt);
 
-      await vi.waitFor(
-        () => {
-          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
-          expect(
-            document.querySelector(`[data-testid="done-row-${otherDoneThreadId}"]`),
-          ).not.toBeNull();
-        },
-        { timeout: 8_000, interval: 16 },
-      );
+      const expectShown = async (other: boolean) => {
+        await vi.waitFor(
+          () => {
+            // A closed shelf must not hide the thread open in the chat.
+            expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
+            expect(
+              document.querySelector(`[data-testid="done-row-${otherDoneThreadId}"]`) !== null,
+            ).toBe(other);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      };
 
+      await expectShown(false);
       await page.getByTestId("inbox-done-toggle").click();
-
-      await vi.waitFor(
-        () => {
-          // Collapsing a section must not close the thread open inside it.
-          expect(document.querySelector(`[data-testid="done-row-${THREAD_ID}"]`)).not.toBeNull();
-          expect(
-            document.querySelector(`[data-testid="done-row-${otherDoneThreadId}"]`),
-          ).toBeNull();
-        },
-        { timeout: 8_000, interval: 16 },
-      );
+      await expectShown(true);
+      await page.getByTestId("inbox-done-toggle").click();
+      await expectShown(false);
     } finally {
       await mounted.cleanup();
     }

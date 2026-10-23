@@ -44,6 +44,8 @@ import {
 } from "../environments/runtime/service";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useThreadRowSwipes } from "../hooks/useThreadRowSwipes";
+import { useInboxColumnLayout } from "../hooks/useInboxColumnLayout";
+import { useLocalDayStartMs } from "../hooks/useLocalDayStartMs";
 import {
   buildThreadRouteParams,
   resolveThreadRouteRef,
@@ -51,6 +53,7 @@ import {
 } from "../threadRoutes";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Kbd } from "./ui/kbd";
+import { ScrollArea } from "./ui/scroll-area";
 import { Skeleton } from "./ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import {
@@ -73,11 +76,14 @@ import {
   getSidebarIdlePrewarmThreadIds,
   groupInboxLiveRows,
   inboxLiveRowHasAttention,
+  inboxLiveRowHolds,
   inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
   isNeedsUserStatus,
+  labelWrappedRowsByDay,
   mergeThreadDoneOverride,
   resolveAdjacentThreadId,
+  resolveInboxLiveFoldLimit,
   resolveScopedComposeTarget,
   resolveScopedProjectKeys,
   shouldClearThreadSelectionOnMouseDown,
@@ -88,9 +94,12 @@ import {
   toggleProjectScopeKey,
   windowInboxDoneRows,
   windowInboxThreads,
+  wrappedDayGroupOf,
   useThreadJumpHintVisibility,
+  WRAPPED_DAY_GROUP_LABELS,
   type InboxLiveRow,
   type InboxRemoteChild,
+  type WrappedDayGroup,
 } from "./Sidebar.logic";
 import type { SidebarGrouping } from "@threadlines/contracts/settings";
 import {
@@ -147,8 +156,16 @@ const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
 /** One empty list for every row with no linked pull requests, so it never reads as a change. */
 const NO_PULL_REQUESTS: readonly ThreadPullRequest[] = [];
 const NO_PROJECT_KEYS: readonly string[] = [];
-/** How many quiet live rows rest unfolded; pinned rows and rows needing you are never folded. */
+/**
+ * The fewest quiet live rows that rest unfolded; a column with room for more
+ * shows as many as fit. Pinned rows and rows needing you are never folded.
+ */
 const LIVE_PREVIEW_COUNT = 10;
+/**
+ * A live row's height until one is measured: a list that opens with every
+ * row in a folded group draws none to measure, and must still fill.
+ */
+const ESTIMATED_LIVE_ROW_PX = 48;
 /** Each click on the reveal row uncovers this many more. */
 const LIVE_REVEAL_STEP = 5;
 /** The Done tail opens short and reveals in bigger steps: it is history. */
@@ -268,69 +285,127 @@ function buildThreadJumpLabelMap(input: {
   return mapping.size > 0 ? mapping : EMPTY_THREAD_JUMP_LABELS;
 }
 
-/** Section voice for the inbox: mono, quiet, with the count on the right. */
+/** The group a live row sits in while the inbox is grouped by project or computer. */
+function inboxLiveGroupKey(
+  grouping: Exclude<SidebarGrouping, "none">,
+  row: { readonly entry: InboxEntry },
+): string {
+  return grouping === "project"
+    ? `project:${row.entry.projectKey}`
+    : `computer:${row.entry.thread.environmentId}`;
+}
+
 /**
- * Section voice for the inbox, and the list's only structural rule: with rows
- * separated by spacing rather than borders, the hairline belongs to the
- * boundary between sections.
- */
-/**
- * A section's name, then a hairline running out to the edge.
+ * The Wrapped shelf, parked at the foot of the inbox column: finished work
+ * kept out of the way of the threads still going.
  *
- * The rule doubles as the divider between sections, so the boundary and the
- * label are one gesture rather than two stacked ones. Sentence case: these are
- * names for parts of a list, not shouted headings.
+ * Closed, it is one line (plus the row of a wrapped thread open in the
+ * chat): a section's name, its count, how many wrapped today, then a hairline
+ * running out to the chevron. The whole line is the control. Open, it rises
+ * with its own scroll: as tall as its rows, and no taller than leaves the
+ * live list room for all of its rows or half the column, whichever is more.
+ * The live list above keeps its place and scrolls in what is left.
  */
-/**
- * A section's name, then a hairline running out to the edge, then the state
- * chevron -- and the whole row is the control. A header that collapses only
- * from its glyph makes the user aim at a 14px target for a row-sized idea.
- *
- * Sticky with an opaque surface so rows slide under it rather than through it
- * while the list scrolls.
- */
-function InboxSectionHeader({
-  label,
+function InboxWrappedShelf({
+  open,
   count,
-  collapsed,
-  onToggleCollapsed,
-  testId,
+  todayCount,
+  liveContentHeight,
+  shelfRef,
+  onToggle,
+  foldLine,
+  children,
 }: {
-  label: string;
+  open: boolean;
   count: number;
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
-  testId?: string;
+  todayCount: number;
+  /** See InboxColumnLayout.liveContentHeight. */
+  liveContentHeight: number | null;
+  shelfRef: (element: HTMLElement | null) => void;
+  onToggle: () => void;
+  /** The "Show N more…" line under the rows; open only. */
+  foldLine: React.ReactNode;
+  /** The rows: every shown one open, only the thread open in the chat closed. */
+  children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      data-thread-selection-safe
-      data-testid={testId}
-      aria-expanded={!collapsed}
-      className="group/section-header sticky top-0 z-10 mt-1.5 flex w-full cursor-pointer items-center gap-2 bg-sidebar px-3 pb-1.5 text-left select-none focus-ring"
-      onClick={onToggleCollapsed}
+    <div
+      ref={shelfRef}
+      data-testid="inbox-wrapped-shelf"
+      className="flex min-h-0 shrink-0 flex-col"
+      style={
+        open
+          ? {
+              maxHeight:
+                liveContentHeight === null
+                  ? "50%"
+                  : `max(50%, calc(100% - ${liveContentHeight}px))`,
+            }
+          : undefined
+      }
     >
-      <span className="shrink-0 text-[11px] font-medium text-muted-foreground/70 transition-colors group-hover/section-header:text-foreground">
-        {label} ({count})
-      </span>
-      <span aria-hidden="true" className="h-px min-w-3 flex-1 bg-sidebar-border" />
-      <ChevronDownIcon
-        aria-hidden="true"
-        className={cn(
-          "size-3.5 shrink-0 text-muted-foreground/50 transition-transform duration-150 group-hover/section-header:text-foreground",
-          collapsed && "-rotate-90",
-        )}
-      />
-    </button>
+      <button
+        type="button"
+        data-thread-selection-safe
+        data-inbox-shelf-header
+        data-testid="inbox-done-toggle"
+        aria-expanded={open}
+        className="group/section-header flex w-full shrink-0 cursor-pointer items-center gap-2 px-3 py-2 text-left select-none focus-ring"
+        onClick={onToggle}
+      >
+        <span className="shrink-0 text-[11px] font-medium text-muted-foreground transition-colors group-hover/section-header:text-foreground">
+          Wrapped ({count})
+        </span>
+        {/* Closed, the shelf still says what is fresh in it, by the same
+          time its rows show: some threads wrap up on their own. */}
+        {!open && todayCount > 0 ? (
+          <span
+            data-testid="inbox-done-today"
+            className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
+          >
+            · {todayCount} today
+          </span>
+        ) : null}
+        <span aria-hidden="true" className="h-px min-w-3 flex-1 bg-sidebar-border" />
+        <ChevronDownIcon
+          aria-hidden="true"
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground/50 transition-transform duration-150 group-hover/section-header:text-foreground",
+            !open && "rotate-180",
+          )}
+        />
+      </button>
+      {open ? (
+        <ScrollArea hideScrollbars className="h-auto min-h-0 flex-initial">
+          {children}
+          {foldLine}
+        </ScrollArea>
+      ) : (
+        children
+      )}
+    </div>
+  );
+}
+
+/** A day's label over the first of its rows in the open Wrapped shelf. */
+function InboxWrappedDayLabel({ group }: { group: WrappedDayGroup }) {
+  return (
+    // The rows say their own times; the label only groups them for the eye.
+    <li
+      aria-hidden="true"
+      data-testid="inbox-done-day"
+      className="px-3 pt-2 pb-0.5 text-[10.5px] text-muted-foreground select-none"
+    >
+      {WRAPPED_DAY_GROUP_LABELS[group]}
+    </li>
   );
 }
 
 /**
  * A group's header while the inbox is grouped by project or computer: what
  * the group is, what in it needs the user or is working, and the fold
- * chevron. The whole row folds the group. Not sticky: the Wrapped header
- * below is the list's one sticky rule.
+ * chevron. The whole row folds the group. Not sticky: a group's rows
+ * scroll away with it.
  */
 function InboxGroupHeader({
   groupKey,
@@ -350,13 +425,15 @@ function InboxGroupHeader({
   onToggleCollapsed: (groupKey: string) => void;
 }) {
   return (
-    <li className="list-none">
+    // Padding, not the button's margin, spaces it: the column measures the
+    // item's height as a header's whole footprint.
+    <li className="list-none pt-1.5" data-inbox-group-header>
       <button
         type="button"
         data-thread-selection-safe
         data-testid={`inbox-group-${groupKey}`}
         aria-expanded={!collapsed}
-        className="group/inbox-group mt-1.5 flex w-full cursor-pointer items-center gap-1.5 px-3 pt-1 pb-1 text-left select-none focus-ring"
+        className="group/inbox-group flex w-full cursor-pointer items-center gap-1.5 px-3 pt-1 pb-1 text-left select-none focus-ring"
         onClick={() => onToggleCollapsed(groupKey)}
       >
         <span aria-hidden="true" className="flex size-3.5 shrink-0 items-center justify-center">
@@ -452,6 +529,8 @@ export default function Sidebar() {
   const setInboxEnvironmentScope = useUiStateStore((store) => store.setInboxEnvironmentScope);
   const collapsedInboxGroups = useUiStateStore((store) => store.collapsedInboxGroups);
   const setInboxGroupCollapsed = useUiStateStore((store) => store.setInboxGroupCollapsed);
+  const wrappedOpen = useUiStateStore((store) => store.inboxWrappedOpen);
+  const setInboxWrappedOpen = useUiStateStore((store) => store.setInboxWrappedOpen);
   const navigate = useNavigate();
   const selectedDestination = useSelectedDestination();
   const sidebarGroupingSetting = useSettings((s) => s.sidebarGrouping);
@@ -501,8 +580,21 @@ export default function Sidebar() {
   const [renamingTitle, setRenamingTitle] = useState("");
   const [confirmingArchiveThreadKey, setConfirmingArchiveThreadKey] = useState<string | null>(null);
   const [revealedLiveCount, setRevealedLiveCount] = useState(0);
-  const [doneCollapsed, setDoneCollapsed] = useState(false);
   const [revealedDoneCount, setRevealedDoneCount] = useState(0);
+  const {
+    liveContentHeight,
+    liveRoomPx,
+    plainRowPx,
+    familyRowPx,
+    localChildRowPx,
+    remoteChildRowPx,
+    groupHeaderPx,
+    doneRowPx,
+    columnRef: inboxColumnRef,
+    liveContentRef: inboxLiveContentRef,
+    shelfRef: wrappedShelfRef,
+  } = useInboxColumnLayout();
+  const todayStartMs = useLocalDayStartMs();
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
   const confirmArchiveButtonRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -732,39 +824,126 @@ export default function Sidebar() {
     scopedProjectKeys,
   ]);
 
+  // Grouping by computer needs a second computer to mean anything.
+  const sidebarGrouping: SidebarGrouping =
+    sidebarGroupingSetting === "computer" && environmentScopeOptions.length <= 1
+      ? "none"
+      : sidebarGroupingSetting;
+  // What a closed Wrapped shelf keeps under its header: the thread open in
+  // the chat, and the wrapped thread it sits under. The live list's fill
+  // leaves room for it.
+  const keptDoneRowCount = useMemo(
+    () =>
+      doneEntries.reduce(
+        (count, row) =>
+          count + (row.openChild !== null ? 2 : row.entry.threadKey === routeThreadKey ? 1 : 0),
+        0,
+      ),
+    [doneEntries, routeThreadKey],
+  );
   // Volume is managed by folding, not by flattening rows: quiet threads past
   // the limit fold away, and pins and anything with a status stay put. A
   // family takes one seat, and has a status when its parent or any live child
-  // does. A family holding the thread open in the chat never folds away.
+  // does. The limit fills the column, so it moves as the window resizes: the
+  // row holding the thread open in the chat, or the one being renamed, never
+  // folds away with it. The fill charges every row what it draws, priced by
+  // its kind (heights the column remembers), never by what the fold shows.
+  const liveFoldLimit = useMemo(() => {
+    const plainPx = plainRowPx ?? familyRowPx ?? ESTIMATED_LIVE_ROW_PX;
+    const familyPx = familyRowPx ?? plainPx;
+    const localChildPx = localChildRowPx ?? remoteChildRowPx ?? plainPx;
+    const remoteChildPx = remoteChildRowPx ?? localChildPx;
+    return resolveInboxLiveFoldLimit({
+      rows: liveEntries.map((row) => {
+        const groupKey =
+          sidebarGrouping === "none" ? null : inboxLiveGroupKey(sidebarGrouping, row);
+        // A folded group draws its header and only the row holding the
+        // thread open in the chat.
+        const hiddenByGroup =
+          groupKey !== null &&
+          collapsedInboxGroups[groupKey] === true &&
+          !inboxLiveRowHolds(row, routeThreadKey);
+        const isFamily = row.children.length > 0 || row.remoteChildren.length > 0;
+        return {
+          pinned: row.entry.thread.pinnedAt !== null,
+          alwaysShown:
+            inboxLiveRowHasAttention(row) ||
+            inboxLiveRowHolds(row, routeThreadKey) ||
+            inboxLiveRowHolds(row, renamingThreadKey),
+          costPx: hiddenByGroup ? 0 : isFamily ? familyPx : plainPx,
+          childrenPx: hiddenByGroup
+            ? 0
+            : row.shownChildren.length * localChildPx +
+              row.shownRemoteChildren.length * remoteChildPx,
+          groupKey,
+        };
+      }),
+      roomPx: liveRoomPx,
+      groupHeaderPx: groupHeaderPx ?? 0,
+      reservedPx: keptDoneRowCount * (doneRowPx ?? 0),
+      minimum: LIVE_PREVIEW_COUNT,
+    });
+  }, [
+    collapsedInboxGroups,
+    doneRowPx,
+    familyRowPx,
+    groupHeaderPx,
+    keptDoneRowCount,
+    liveEntries,
+    liveRoomPx,
+    localChildRowPx,
+    plainRowPx,
+    remoteChildRowPx,
+    renamingThreadKey,
+    routeThreadKey,
+    sidebarGrouping,
+  ]);
   const { visible: visibleLiveEntries, hiddenCount: hiddenLiveCount } = useMemo(
     () =>
       windowInboxThreads({
         rows: liveEntries,
         hasAttention: (row) =>
-          inboxLiveRowHasAttention(row) || inboxLiveRowHoldsOpenChild(row, routeThreadKey),
+          inboxLiveRowHasAttention(row) ||
+          inboxLiveRowHolds(row, routeThreadKey) ||
+          inboxLiveRowHolds(row, renamingThreadKey),
         isPinned: (row) => row.entry.thread.pinnedAt !== null,
-        limit: LIVE_PREVIEW_COUNT + revealedLiveCount,
+        limit: liveFoldLimit + revealedLiveCount,
         expanded: false,
       }),
-    [liveEntries, revealedLiveCount, routeThreadKey],
+    [liveEntries, liveFoldLimit, renamingThreadKey, revealedLiveCount, routeThreadKey],
   );
   const nextLiveRevealCount = Math.min(LIVE_REVEAL_STEP, hiddenLiveCount);
   const visibleDoneEntries = useMemo(
-    () => windowInboxDoneRows(doneEntries, DONE_PREVIEW_COUNT + revealedDoneCount),
-    [doneEntries, revealedDoneCount],
+    () => windowInboxDoneRows(doneEntries, DONE_PREVIEW_COUNT + revealedDoneCount, routeThreadKey),
+    [doneEntries, revealedDoneCount, routeThreadKey],
   );
   const nextDoneRevealCount = Math.min(
     DONE_REVEAL_STEP,
     doneEntries.length - visibleDoneEntries.length,
   );
-  // Collapsed, the shelf still holds the thread you are reading: closing a
+  // Closed, the shelf still holds the thread you are reading: closing a
   // section should not close the thing you have open in it.
   const renderedDoneEntries = useMemo(
     () =>
-      doneCollapsed
-        ? doneEntries.filter((row) => row.entry.threadKey === routeThreadKey || row.openChild)
-        : visibleDoneEntries,
-    [doneCollapsed, doneEntries, routeThreadKey, visibleDoneEntries],
+      wrappedOpen
+        ? visibleDoneEntries
+        : doneEntries.filter((row) => row.entry.threadKey === routeThreadKey || row.openChild),
+    [doneEntries, routeThreadKey, visibleDoneEntries, wrappedOpen],
+  );
+  // Open, the shelf sorts its rows under days; closed, its header says how
+  // many wrapped today, so a thread filed away on its own is not lost.
+  const doneDayLabels = useMemo(
+    () =>
+      wrappedOpen
+        ? labelWrappedRowsByDay(renderedDoneEntries, (row) => row.entry.doneAt, todayStartMs)
+        : null,
+    [renderedDoneEntries, todayStartMs, wrappedOpen],
+  );
+  const wrappedTodayCount = useMemo(
+    () =>
+      doneEntries.filter((row) => wrappedDayGroupOf(row.entry.doneAt, todayStartMs) === "today")
+        .length,
+    [doneEntries, todayStartMs],
   );
   // What a family's rows show: the parent's summary line, and the hover
   // cards' "Started by" and "Threads" lines.
@@ -860,9 +1039,9 @@ export default function Sidebar() {
     },
     [setChildThreadFamilyOpen],
   );
-  const toggleDoneCollapsed = useCallback(() => {
-    setDoneCollapsed((collapsed) => !collapsed);
-  }, []);
+  const toggleWrappedOpen = useCallback(() => {
+    setInboxWrappedOpen(!useUiStateStore.getState().inboxWrappedOpen);
+  }, [setInboxWrappedOpen]);
 
   // A new scope is a new list; the reveals from the old one mean nothing here.
   useEffect(() => {
@@ -870,11 +1049,6 @@ export default function Sidebar() {
     setRevealedDoneCount(0);
   }, [scopedEnvironmentIdValue, scopedProjectKeyList]);
 
-  // Grouping by computer needs a second computer to mean anything.
-  const sidebarGrouping: SidebarGrouping =
-    sidebarGroupingSetting === "computer" && environmentScopeOptions.length <= 1
-      ? "none"
-      : sidebarGroupingSetting;
   // The live list as drawn: one section, or a section per project or
   // computer. Groups take the families as built (a family goes where its
   // parent goes) and the rows the fold left showing, in list order, so pins
@@ -885,9 +1059,7 @@ export default function Sidebar() {
       return [{ group: null, rows: visibleLiveEntries }];
     }
     const groupKeyOf = (row: (typeof liveEntries)[number]) =>
-      sidebarGrouping === "project"
-        ? `project:${row.entry.projectKey}`
-        : `computer:${row.entry.thread.environmentId}`;
+      inboxLiveGroupKey(sidebarGrouping, row);
     const countsByKey = new Map(
       groupInboxLiveRows(liveEntries, groupKeyOf).map(
         (group) => [group.key, countInboxRowAttention(group.rows)] as const,
@@ -1588,165 +1760,129 @@ export default function Sidebar() {
                 </CommandDialogTrigger>
               </SidebarGroup>
               {/* No rule under the search: the boundary is the opaque chrome
-                above and a short fade the rows pass into. The Wrapped header
-                keeps its own hairline -- that one is a section rule. */}
-              <div className="relative flex min-h-0 flex-1 flex-col">
+                above and a short fade the rows pass into. The Wrapped shelf
+                parks at the column's foot behind the same kind of fade; its
+                header keeps its own hairline -- that one is a section rule. */}
+              <div ref={inboxColumnRef} className="relative flex min-h-0 flex-1 flex-col">
                 <span
                   aria-hidden="true"
                   className="pointer-events-none absolute inset-x-0 top-0 z-20 h-3 bg-linear-to-b from-sidebar to-transparent"
                 />
-                <SidebarContent className="gap-0">
-                  <ProjectScopeMenu
-                    options={scopeOptions}
-                    projectByKey={sidebarProjectByKey}
-                    scopedProjectKeys={scopedProjectKeys}
-                    onScopeChange={handleScopeChange}
-                    onToggleScopeProject={handleToggleScopeProject}
-                    environmentOptions={environmentScopeOptions}
-                    scopedEnvironmentId={scopedEnvironmentIdValue}
-                    onEnvironmentScopeChange={handleEnvironmentScopeChange}
-                    roomsOnly={roomsEnabled ? roomsOnly : null}
-                    onRoomsOnlyChange={setRoomsOnly}
-                    grouping={sidebarGrouping}
-                    onGroupingChange={handleGroupingChange}
-                    onAddProject={() => openAddProjectCommandPalette()}
-                    onNewThread={isMobile ? handleComposeClick : null}
-                    newThreadShortcutLabel={newThreadShortcutLabel}
-                  />
+                {/* The live list takes what the shelf leaves. The undo bar
+                  floats over its foot, so it never covers the shelf. */}
+                <div className="relative flex min-h-0 flex-1 flex-col">
+                  <SidebarContent ref={inboxLiveContentRef} className="gap-0 pb-3">
+                    <ProjectScopeMenu
+                      options={scopeOptions}
+                      projectByKey={sidebarProjectByKey}
+                      scopedProjectKeys={scopedProjectKeys}
+                      onScopeChange={handleScopeChange}
+                      onToggleScopeProject={handleToggleScopeProject}
+                      environmentOptions={environmentScopeOptions}
+                      scopedEnvironmentId={scopedEnvironmentIdValue}
+                      onEnvironmentScopeChange={handleEnvironmentScopeChange}
+                      roomsOnly={roomsEnabled ? roomsOnly : null}
+                      onRoomsOnlyChange={setRoomsOnly}
+                      grouping={sidebarGrouping}
+                      onGroupingChange={handleGroupingChange}
+                      onAddProject={() => openAddProjectCommandPalette()}
+                      onNewThread={isMobile ? handleComposeClick : null}
+                      newThreadShortcutLabel={newThreadShortcutLabel}
+                    />
 
-                  {/* Threads another computer asked to start lead the list:
+                    {/* Threads another computer asked to start lead the list:
                       each waits for the user's Allow, and expires unanswered. */}
-                  {shownLinkRequests.length > 0 ? (
-                    <ul data-testid="inbox-link-requests">
-                      {shownLinkRequests.map(({ environmentId, request }) => (
-                        <InboxLinkRequestRow
-                          key={`${environmentId}:${request.deviceId}:${request.requestId}`}
-                          environmentId={environmentId}
-                          computerLabel={computerLabel(environmentId, environmentId)}
-                          askerLabel={computerLabel(request.parentEnvironmentId, request.fromLabel)}
-                          request={request}
-                          onOpen={() => openLinkRequest(environmentId, request)}
-                        />
-                      ))}
-                    </ul>
-                  ) : null}
+                    {shownLinkRequests.length > 0 ? (
+                      <ul data-testid="inbox-link-requests">
+                        {shownLinkRequests.map(({ environmentId, request }) => (
+                          <InboxLinkRequestRow
+                            key={`${environmentId}:${request.deviceId}:${request.requestId}`}
+                            environmentId={environmentId}
+                            computerLabel={computerLabel(environmentId, environmentId)}
+                            askerLabel={computerLabel(
+                              request.parentEnvironmentId,
+                              request.fromLabel,
+                            )}
+                            request={request}
+                            onOpen={() => openLinkRequest(environmentId, request)}
+                          />
+                        ))}
+                      </ul>
+                    ) : null}
 
-                  {/* Unsent drafts sit above the inbox: an interrupted "new
+                    {/* Unsent drafts sit above the inbox: an interrupted "new
                       thread" is the one row you want back in one click. */}
-                  <SidebarDraftBlock
-                    projectInfoByScopedRef={draftProjectInfoByScopedRef}
-                    scopedProjectKeys={scopedProjectKeys}
-                    scopedEnvironmentId={scopedEnvironmentIdValue}
-                    routeDraftId={routeDraftId}
-                    frozenOpenDraftRow={frozenOpenDraftRow}
-                    onNavigateToDraft={navigateToDraft}
-                  />
+                    <SidebarDraftBlock
+                      projectInfoByScopedRef={draftProjectInfoByScopedRef}
+                      scopedProjectKeys={scopedProjectKeys}
+                      scopedEnvironmentId={scopedEnvironmentIdValue}
+                      routeDraftId={routeDraftId}
+                      frozenOpenDraftRow={frozenOpenDraftRow}
+                      onNavigateToDraft={navigateToDraft}
+                    />
 
-                  {liveEntries.length === 0 && visibleDraftSessionCount === 0 ? (
-                    !bootstrapComplete ? (
-                      <SidebarInboxLoadingSkeleton />
+                    {liveEntries.length === 0 && visibleDraftSessionCount === 0 ? (
+                      !bootstrapComplete ? (
+                        <SidebarInboxLoadingSkeleton />
+                      ) : (
+                        <div className="flex flex-col items-start gap-1.5 px-3 py-2">
+                          <span className="text-[11px] text-muted-foreground/60">
+                            {!hasWorkspaceProjects
+                              ? "No projects yet"
+                              : roomsFilterActive
+                                ? // Wrapped rooms may still list below, so
+                                  // this speaks only for the active ones.
+                                  "No active rooms"
+                                : "No threads yet"}
+                          </span>
+                          {hasWorkspaceProjects ? null : (
+                            <button
+                              type="button"
+                              data-testid="inbox-empty-add-project"
+                              className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
+                              onClick={() => openAddProjectCommandPalette()}
+                            >
+                              Add a project
+                            </button>
+                          )}
+                        </div>
+                      )
                     ) : (
-                      <div className="flex flex-col items-start gap-1.5 px-3 py-2">
-                        <span className="text-[11px] text-muted-foreground/60">
-                          {!hasWorkspaceProjects
-                            ? "No projects yet"
-                            : roomsFilterActive
-                              ? // Wrapped rooms may still list below, so
-                                // this speaks only for the active ones.
-                                "No active rooms"
-                              : "No threads yet"}
-                        </span>
-                        {hasWorkspaceProjects ? null : (
-                          <button
-                            type="button"
-                            data-testid="inbox-empty-add-project"
-                            className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
-                            onClick={() => openAddProjectCommandPalette()}
-                          >
-                            Add a project
-                          </button>
-                        )}
-                      </div>
-                    )
-                  ) : (
-                    <ul data-testid="inbox-thread-list">
-                      {liveSections.map((section) => (
-                        <React.Fragment key={section.group?.key ?? "inbox"}>
-                          {section.group ? (
-                            <InboxGroupHeader
-                              groupKey={section.group.key}
-                              label={section.group.label}
-                              icon={section.group.icon}
-                              needsYou={section.group.needsYou}
-                              working={section.group.working}
-                              collapsed={section.group.collapsed}
-                              onToggleCollapsed={toggleInboxGroup}
-                            />
-                          ) : null}
-                          {section.rows.map(
-                            ({ entry, shownChildren, shownRemoteChildren, wrappedParent }) => (
-                              <React.Fragment key={entry.threadKey}>
-                                <InboxThreadRow
-                                  thread={entry.thread}
-                                  status={entry.status}
-                                  // A row names its project unless a project group's
-                                  // header right above it already does. Scoped
-                                  // to projects, it still names it: the menu that
-                                  // says so is out of sight.
-                                  projectLabel={
-                                    sidebarGrouping !== "project" ? entry.projectLabel : null
-                                  }
-                                  // Under a project group's header the project's
-                                  // mark is said once, there.
-                                  showProjectMark={sidebarGrouping !== "project"}
-                                  isActive={routeThreadKey === entry.threadKey}
-                                  jumpLabel={
-                                    visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null
-                                  }
-                                  canMarkDone={entry.canMarkDone}
-                                  orderedThreadKeys={orderedThreadKeys}
-                                  renamingThreadKey={renamingThreadKey}
-                                  renamingTitle={renamingTitle}
-                                  setRenamingTitle={setRenamingTitle}
-                                  renamingInputRef={renamingInputRef}
-                                  renamingCommittedRef={renamingCommittedRef}
-                                  handleThreadClick={handleThreadClick}
-                                  navigateToThread={navigateToThread}
-                                  handleMultiSelectContextMenu={handleMultiSelectContextMenu}
-                                  handleThreadContextMenu={handleThreadContextMenu}
-                                  clearSelection={clearSelection}
-                                  commitRename={commitRename}
-                                  cancelRename={cancelRename}
-                                  markThreadDone={markThreadDone}
-                                  listPullRequest={
-                                    pullRequestByThreadKey.get(entry.threadKey) ?? null
-                                  }
-                                  linkedPullRequests={
-                                    linkedPullRequestsByThreadKey.get(entry.threadKey) ??
-                                    NO_PULL_REQUESTS
-                                  }
-                                  openPrLink={openPrLink}
-                                  family={familyByThreadKey.get(entry.threadKey) ?? null}
-                                  onToggleFamily={toggleChildThreadFamily}
-                                  wrappedParentTitle={wrappedParent?.thread.title ?? null}
-                                  remoteParent={
-                                    remoteParentByThreadKey.get(entry.threadKey) ?? null
-                                  }
-                                  lineage={lineageByThreadKey.get(entry.threadKey)}
-                                  onSwipeAction={handleRowSwipe}
-                                />
-                                {shownChildren.map((child) => (
-                                  <InboxChildRow
-                                    key={child.threadKey}
-                                    thread={child.thread}
-                                    status={child.status}
-                                    isDone={child.isDone}
-                                    doneAt={child.doneAt}
-                                    isActive={routeThreadKey === child.threadKey}
-                                    jumpLabel={
-                                      visibleThreadJumpLabelByKey.get(child.threadKey) ?? null
+                      <ul data-testid="inbox-thread-list" data-inbox-live-list>
+                        {liveSections.map((section) => (
+                          <React.Fragment key={section.group?.key ?? "inbox"}>
+                            {section.group ? (
+                              <InboxGroupHeader
+                                groupKey={section.group.key}
+                                label={section.group.label}
+                                icon={section.group.icon}
+                                needsYou={section.group.needsYou}
+                                working={section.group.working}
+                                collapsed={section.group.collapsed}
+                                onToggleCollapsed={toggleInboxGroup}
+                              />
+                            ) : null}
+                            {section.rows.map(
+                              ({ entry, shownChildren, shownRemoteChildren, wrappedParent }) => (
+                                <React.Fragment key={entry.threadKey}>
+                                  <InboxThreadRow
+                                    thread={entry.thread}
+                                    status={entry.status}
+                                    // A row names its project unless a project group's
+                                    // header right above it already does. Scoped
+                                    // to projects, it still names it: the menu that
+                                    // says so is out of sight.
+                                    projectLabel={
+                                      sidebarGrouping !== "project" ? entry.projectLabel : null
                                     }
-                                    canMarkDone={child.canMarkDone}
+                                    // Under a project group's header the project's
+                                    // mark is said once, there.
+                                    showProjectMark={sidebarGrouping !== "project"}
+                                    isActive={routeThreadKey === entry.threadKey}
+                                    jumpLabel={
+                                      visibleThreadJumpLabelByKey.get(entry.threadKey) ?? null
+                                    }
+                                    canMarkDone={entry.canMarkDone}
                                     orderedThreadKeys={orderedThreadKeys}
                                     renamingThreadKey={renamingThreadKey}
                                     renamingTitle={renamingTitle}
@@ -1761,98 +1897,200 @@ export default function Sidebar() {
                                     commitRename={commitRename}
                                     cancelRename={cancelRename}
                                     markThreadDone={markThreadDone}
-                                    reopenThread={reopenThread}
-                                    lineage={lineageByThreadKey.get(child.threadKey)}
-                                    onSwipeAction={handleRowSwipe}
-                                    computerLabel={
-                                      child.thread.environmentId === entry.thread.environmentId
-                                        ? null
-                                        : computerLabel(
-                                            child.thread.environmentId,
-                                            "another computer",
-                                          )
+                                    listPullRequest={
+                                      pullRequestByThreadKey.get(entry.threadKey) ?? null
                                     }
+                                    linkedPullRequests={
+                                      linkedPullRequestsByThreadKey.get(entry.threadKey) ??
+                                      NO_PULL_REQUESTS
+                                    }
+                                    openPrLink={openPrLink}
+                                    family={familyByThreadKey.get(entry.threadKey) ?? null}
+                                    onToggleFamily={toggleChildThreadFamily}
+                                    wrappedParentTitle={wrappedParent?.thread.title ?? null}
+                                    remoteParent={
+                                      remoteParentByThreadKey.get(entry.threadKey) ?? null
+                                    }
+                                    lineage={lineageByThreadKey.get(entry.threadKey)}
+                                    onSwipeAction={handleRowSwipe}
                                   />
-                                ))}
-                                {shownRemoteChildren.map((child) => (
-                                  <InboxRemoteChildRow key={child.threadKey} child={child} />
-                                ))}
-                              </React.Fragment>
-                            ),
-                          )}
-                        </React.Fragment>
-                      ))}
-                    </ul>
-                  )}
+                                  {shownChildren.map((child) => (
+                                    <InboxChildRow
+                                      key={child.threadKey}
+                                      thread={child.thread}
+                                      status={child.status}
+                                      isDone={child.isDone}
+                                      doneAt={child.doneAt}
+                                      isActive={routeThreadKey === child.threadKey}
+                                      jumpLabel={
+                                        visibleThreadJumpLabelByKey.get(child.threadKey) ?? null
+                                      }
+                                      canMarkDone={child.canMarkDone}
+                                      orderedThreadKeys={orderedThreadKeys}
+                                      renamingThreadKey={renamingThreadKey}
+                                      renamingTitle={renamingTitle}
+                                      setRenamingTitle={setRenamingTitle}
+                                      renamingInputRef={renamingInputRef}
+                                      renamingCommittedRef={renamingCommittedRef}
+                                      handleThreadClick={handleThreadClick}
+                                      navigateToThread={navigateToThread}
+                                      handleMultiSelectContextMenu={handleMultiSelectContextMenu}
+                                      handleThreadContextMenu={handleThreadContextMenu}
+                                      clearSelection={clearSelection}
+                                      commitRename={commitRename}
+                                      cancelRename={cancelRename}
+                                      markThreadDone={markThreadDone}
+                                      reopenThread={reopenThread}
+                                      lineage={lineageByThreadKey.get(child.threadKey)}
+                                      onSwipeAction={handleRowSwipe}
+                                      computerLabel={
+                                        child.thread.environmentId === entry.thread.environmentId
+                                          ? null
+                                          : computerLabel(
+                                              child.thread.environmentId,
+                                              "another computer",
+                                            )
+                                      }
+                                    />
+                                  ))}
+                                  {shownRemoteChildren.map((child) => (
+                                    <InboxRemoteChildRow key={child.threadKey} child={child} />
+                                  ))}
+                                </React.Fragment>
+                              ),
+                            )}
+                          </React.Fragment>
+                        ))}
+                      </ul>
+                    )}
 
-                  {hiddenLiveCount > 0 || revealedLiveCount > 0 ? (
-                    <div className="flex items-center gap-1 px-3 pt-1 pb-1.5">
-                      {nextLiveRevealCount > 0 ? (
-                        <button
-                          type="button"
-                          data-thread-selection-safe
-                          data-testid="inbox-live-show-more"
-                          className="min-w-0 flex-1 cursor-pointer text-left text-[11px] text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring"
-                          onClick={() => {
-                            setRevealedLiveCount((count) => count + nextLiveRevealCount);
-                          }}
-                        >
-                          Show {nextLiveRevealCount} more…
-                        </button>
-                      ) : (
-                        <span className="min-w-0 flex-1" aria-hidden="true" />
-                      )}
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <CommandDialogTrigger
-                              data-testid="inbox-live-search"
-                              aria-label="Search threads"
-                              className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
-                            />
-                          }
-                        >
-                          <SearchIcon className="size-3.5" />
-                        </TooltipTrigger>
-                        <TooltipPopup side="top">Search threads</TooltipPopup>
-                      </Tooltip>
-                      {revealedLiveCount > 0 ? (
+                    {hiddenLiveCount > 0 || revealedLiveCount > 0 ? (
+                      <div className="flex items-center gap-1 px-3 pt-1 pb-1.5">
+                        {nextLiveRevealCount > 0 ? (
+                          <button
+                            type="button"
+                            data-thread-selection-safe
+                            data-testid="inbox-live-show-more"
+                            className="min-w-0 flex-1 cursor-pointer text-left text-[11px] text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring"
+                            onClick={() => {
+                              setRevealedLiveCount((count) => count + nextLiveRevealCount);
+                            }}
+                          >
+                            Show {nextLiveRevealCount} more…
+                          </button>
+                        ) : (
+                          <span className="min-w-0 flex-1" aria-hidden="true" />
+                        )}
                         <Tooltip>
                           <TooltipTrigger
                             render={
-                              <button
-                                type="button"
-                                data-thread-selection-safe
-                                data-testid="inbox-live-show-fewer"
-                                aria-label="Show fewer threads"
+                              <CommandDialogTrigger
+                                data-testid="inbox-live-search"
+                                aria-label="Search threads"
                                 className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
-                                onClick={() => {
-                                  setRevealedLiveCount(0);
-                                }}
                               />
                             }
                           >
-                            <ChevronsUpIcon className="size-3.5" />
+                            <SearchIcon className="size-3.5" />
                           </TooltipTrigger>
-                          <TooltipPopup side="top">Show fewer</TooltipPopup>
+                          <TooltipPopup side="top">Search threads</TooltipPopup>
                         </Tooltip>
-                      ) : null}
-                    </div>
-                  ) : null}
-
+                        {revealedLiveCount > 0 ? (
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <button
+                                  type="button"
+                                  data-thread-selection-safe
+                                  data-testid="inbox-live-show-fewer"
+                                  aria-label="Show fewer threads"
+                                  className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
+                                  onClick={() => {
+                                    setRevealedLiveCount(0);
+                                  }}
+                                />
+                              }
+                            >
+                              <ChevronsUpIcon className="size-3.5" />
+                            </TooltipTrigger>
+                            <TooltipPopup side="top">Show fewer</TooltipPopup>
+                          </Tooltip>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </SidebarContent>
                   {doneEntries.length > 0 ? (
-                    <>
-                      <InboxSectionHeader
-                        label="Wrapped"
-                        count={doneEntries.length}
-                        collapsed={doneCollapsed}
-                        onToggleCollapsed={toggleDoneCollapsed}
-                        testId="inbox-done-toggle"
-                      />
-                      <ul data-testid="inbox-done-list">
-                        {renderedDoneEntries.map(
-                          ({ entry, children, remoteChildren, openChild }) => (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-3 bg-linear-to-t from-sidebar to-transparent"
+                    />
+                  ) : null}
+                  {swipeUndo ? (
+                    <SwipeUndoBar
+                      key={swipeUndo.id}
+                      undo={swipeUndo}
+                      onDismiss={dismissSwipeUndo}
+                    />
+                  ) : null}
+                </div>
+                {doneEntries.length > 0 ? (
+                  <InboxWrappedShelf
+                    open={wrappedOpen}
+                    count={doneEntries.length}
+                    todayCount={wrappedTodayCount}
+                    liveContentHeight={liveContentHeight}
+                    shelfRef={wrappedShelfRef}
+                    onToggle={toggleWrappedOpen}
+                    foldLine={
+                      wrappedOpen && (nextDoneRevealCount > 0 || revealedDoneCount > 0) ? (
+                        <div className="flex items-center gap-1 px-3 pt-2 pb-3">
+                          {nextDoneRevealCount > 0 ? (
+                            <button
+                              type="button"
+                              data-thread-selection-safe
+                              data-testid="inbox-done-show-more"
+                              className="min-w-0 flex-1 cursor-pointer text-left text-[11px] text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring"
+                              onClick={() => {
+                                setRevealedDoneCount((current) => current + DONE_REVEAL_STEP);
+                              }}
+                            >
+                              Show {nextDoneRevealCount} more…
+                            </button>
+                          ) : (
+                            <span className="min-w-0 flex-1" aria-hidden="true" />
+                          )}
+                          {revealedDoneCount > 0 ? (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <button
+                                    type="button"
+                                    data-thread-selection-safe
+                                    data-testid="inbox-done-show-fewer"
+                                    aria-label="Show fewer wrapped threads"
+                                    className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
+                                    onClick={() => {
+                                      setRevealedDoneCount(0);
+                                    }}
+                                  />
+                                }
+                              >
+                                <ChevronsUpIcon className="size-3.5" />
+                              </TooltipTrigger>
+                              <TooltipPopup side="top">Show fewer</TooltipPopup>
+                            </Tooltip>
+                          ) : null}
+                        </div>
+                      ) : null
+                    }
+                  >
+                    <ul data-testid="inbox-done-list">
+                      {renderedDoneEntries.map(
+                        ({ entry, children, remoteChildren, openChild }, index) => {
+                          const dayGroup = doneDayLabels?.[index] ?? null;
+                          return (
                             <React.Fragment key={entry.threadKey}>
+                              {dayGroup !== null ? <InboxWrappedDayLabel group={dayGroup} /> : null}
                               <InboxDoneRow
                                 thread={entry.thread}
                                 projectLabel={entry.projectLabel}
@@ -1911,54 +2149,11 @@ export default function Sidebar() {
                                 />
                               ) : null}
                             </React.Fragment>
-                          ),
-                        )}
-                      </ul>
-                      {!doneCollapsed && (nextDoneRevealCount > 0 || revealedDoneCount > 0) ? (
-                        <div className="flex items-center gap-1 px-3 pt-2 pb-3">
-                          {nextDoneRevealCount > 0 ? (
-                            <button
-                              type="button"
-                              data-thread-selection-safe
-                              data-testid="inbox-done-show-more"
-                              className="min-w-0 flex-1 cursor-pointer text-left text-[11px] text-muted-foreground/45 transition-colors hover:text-muted-foreground focus-ring"
-                              onClick={() => {
-                                setRevealedDoneCount((current) => current + DONE_REVEAL_STEP);
-                              }}
-                            >
-                              Show {nextDoneRevealCount} more…
-                            </button>
-                          ) : (
-                            <span className="min-w-0 flex-1" aria-hidden="true" />
-                          )}
-                          {revealedDoneCount > 0 ? (
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={
-                                  <button
-                                    type="button"
-                                    data-thread-selection-safe
-                                    data-testid="inbox-done-show-fewer"
-                                    aria-label="Show fewer wrapped threads"
-                                    className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/50 transition-colors hover:text-foreground focus-ring"
-                                    onClick={() => {
-                                      setRevealedDoneCount(0);
-                                    }}
-                                  />
-                                }
-                              >
-                                <ChevronsUpIcon className="size-3.5" />
-                              </TooltipTrigger>
-                              <TooltipPopup side="top">Show fewer</TooltipPopup>
-                            </Tooltip>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </>
-                  ) : null}
-                </SidebarContent>
-                {swipeUndo ? (
-                  <SwipeUndoBar key={swipeUndo.id} undo={swipeUndo} onDismiss={dismissSwipeUndo} />
+                          );
+                        },
+                      )}
+                    </ul>
+                  </InboxWrappedShelf>
                 ) : null}
               </div>
             </ThreadHoverCardProvider>

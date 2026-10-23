@@ -41,6 +41,8 @@ export interface PersistedUiState {
   childThreadFamilyOpenById?: Record<string, boolean>;
   /** See `UiInboxState.collapsedInboxGroups`. */
   collapsedInboxGroups?: Record<string, boolean>;
+  /** See `UiInboxState.inboxWrappedOpen`. */
+  inboxWrappedOpen?: boolean;
   /** See `UiLayoutState.sidebarListOpen`. */
   sidebarListOpen?: boolean;
 }
@@ -132,6 +134,12 @@ export interface UiInboxState {
    * device, like the families above.
    */
   collapsedInboxGroups: Record<string, boolean>;
+  /**
+   * Whether the Wrapped shelf at the bottom of the inbox is open. Closed is
+   * the default: finished work is history, and the column belongs to the
+   * threads still going. Kept on this device, like the folds above.
+   */
+  inboxWrappedOpen: boolean;
 }
 
 export interface UiLayoutState {
@@ -178,6 +186,7 @@ const initialState: UiState = {
   inboxProjectScopeKeys: [],
   inboxEnvironmentScopeId: null,
   collapsedInboxGroups: {},
+  inboxWrappedOpen: false,
   sidebarListOpen: true,
   defaultAdvertisedEndpointKey: null,
 };
@@ -235,6 +244,7 @@ export function readPersistedState(): UiState {
       ),
       childThreadFamilyOpenById: sanitizePersistedBooleanRecord(parsed.childThreadFamilyOpenById),
       collapsedInboxGroups: sanitizePersistedBooleanRecord(parsed.collapsedInboxGroups),
+      inboxWrappedOpen: parsed.inboxWrappedOpen === true,
       sidebarListOpen: parsed.sidebarListOpen !== false,
     };
   } catch {
@@ -471,6 +481,7 @@ export function persistState(state: UiState): void {
         threadWrapUpOnPullRequestSettledById: state.threadWrapUpOnPullRequestSettledById,
         childThreadFamilyOpenById: state.childThreadFamilyOpenById,
         collapsedInboxGroups: state.collapsedInboxGroups,
+        inboxWrappedOpen: state.inboxWrappedOpen,
         sidebarListOpen: state.sidebarListOpen,
       } satisfies PersistedUiState),
     );
@@ -1125,6 +1136,7 @@ interface UiStateStore extends UiState {
   setThreadWrapUpOnPullRequestSettled: (threadKey: string, wrapUp: boolean) => void;
   setChildThreadFamilyOpen: (parentThreadKey: string, open: boolean) => void;
   setInboxGroupCollapsed: (groupKey: string, collapsed: boolean) => void;
+  setInboxWrappedOpen: (open: boolean) => void;
   setSidebarListOpen: (open: boolean) => void;
   toggleSidebarListOpen: () => void;
   setThreadChangedFilesExpanded: (
@@ -1172,6 +1184,10 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setChildThreadFamilyOpen(state, parentThreadKey, open)),
   setInboxGroupCollapsed: (groupKey, collapsed) =>
     set((state) => setInboxGroupCollapsed(state, groupKey, collapsed)),
+  setInboxWrappedOpen: (open) =>
+    set((state) =>
+      state.inboxWrappedOpen === open ? state : { ...state, inboxWrappedOpen: open },
+    ),
   setSidebarListOpen: (open) =>
     set((state) => (state.sidebarListOpen === open ? state : { ...state, sidebarListOpen: open })),
   toggleSidebarListOpen: () =>
