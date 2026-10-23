@@ -2897,10 +2897,7 @@ export function SourceControlPanel({
       }
       const requestTarget: PullRequestTarget = { environmentId, cwd };
       const promise = pullMutation.mutateAsync(options);
-      void toastManager.promise<
-        Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
-        ThreadToastData
-      >(promise, {
+      void toastManager.promise<Awaited<ReturnType<typeof pullMutation.mutateAsync>>>(promise, {
         loading: {
           title: options?.historyReconciliation
             ? "Updating from rewritten upstream..."
