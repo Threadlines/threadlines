@@ -13,6 +13,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useComputerLinksStore } from "../../environments/links/computerLinks";
+import { useComputerStallsStore } from "../../environments/stalls/computerStalls";
 import {
   usePrimaryEnvironmentDescriptor,
   usePrimaryEnvironmentId,
@@ -153,6 +154,7 @@ export function useFleetModel(): FleetData {
   const primaryDescriptor = usePrimaryEnvironmentDescriptor();
   const savedRecords = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedRuntime = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const stalls = useComputerStallsStore((state) => state.byEnvironmentId);
   const links = useComputerLinksStore((state) => state.byEnvironmentId);
   const { role } = usePrimarySessionAccess(primaryEnvironmentId !== null);
   const isOwner = role === "owner";
@@ -301,6 +303,7 @@ export function useFleetModel(): FleetData {
             connection: primaryConnection,
             route: null,
             lastSeenAt: primaryConnection === "connected" ? null : primaryLastSeenAt,
+            recentStall: stalls[primaryEnvironmentId] ?? null,
           }
         : {
             // The phone app has no server of its own: it is the device in
@@ -316,7 +319,13 @@ export function useFleetModel(): FleetData {
           };
     const savedComputers = Object.values(savedRecords)
       .filter((record) => record.environmentId !== primaryEnvironmentId)
-      .map((record) => savedComputerInput(record, savedRuntime[record.environmentId]));
+      .map((record) =>
+        savedComputerInput(
+          record,
+          savedRuntime[record.environmentId],
+          stalls[record.environmentId] ?? null,
+        ),
+      );
     const linkedComputers = directory
       .filter((entry) => entry.kind === "linked")
       .map((entry) => linkedComputerInput(entry, links));
@@ -344,6 +353,7 @@ export function useFleetModel(): FleetData {
     savedRecords,
     savedRuntime,
     seenSources,
+    stalls,
     threads,
   ]);
 

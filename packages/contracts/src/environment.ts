@@ -67,6 +67,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadMove: Schema.optionalKey(Schema.Boolean),
   /** The server sets up projects copied from another computer (`projectSetups.*`). */
   projectSetup: Schema.optionalKey(Schema.Boolean),
+  /** The server reports when it froze (`subscribeServerStalls`). */
+  stallReports: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

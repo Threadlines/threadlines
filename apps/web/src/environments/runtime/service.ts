@@ -220,7 +220,7 @@ export function prewarmThreadJumpTargets(refs: ReadonlyArray<ScopedThreadRef>): 
  * browser. A primary environment reached by hostname is remote like any
  * saved one.
  */
-function readLocalEnvironmentId(): EnvironmentId | null {
+export function readLocalEnvironmentId(): EnvironmentId | null {
   const primary = getPrimaryKnownEnvironment();
   if (!primary?.environmentId) {
     return null;

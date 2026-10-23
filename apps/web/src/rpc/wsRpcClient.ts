@@ -372,6 +372,8 @@ export interface WsRpcClient {
     >;
     readonly subscribeConfig: RpcStreamMethod<typeof WS_METHODS.subscribeServerConfig>;
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
+    /** Only on servers reporting the `stallReports` capability. */
+    readonly subscribeStalls: RpcStreamMethod<typeof WS_METHODS.subscribeServerStalls>;
     readonly subscribeAuthAccess: RpcStreamMethod<typeof WS_METHODS.subscribeAuthAccess>;
   };
   /** "Connect a device". Host methods are owner-only on the server. */
@@ -1064,6 +1066,11 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.subscribe((client) => client[WS_METHODS.subscribeServerLifecycle]({}), listener, {
           ...options,
           tag: WS_METHODS.subscribeServerLifecycle,
+        }),
+      subscribeStalls: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.subscribeServerStalls]({}), listener, {
+          ...options,
+          tag: WS_METHODS.subscribeServerStalls,
         }),
       subscribeAuthAccess: (listener, options) =>
         transport.subscribe((client) => client[WS_METHODS.subscribeAuthAccess]({}), listener, {

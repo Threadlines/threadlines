@@ -150,6 +150,7 @@ import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput
 import { makeWorkflowRunRequests } from "./orchestration/workflowRunRequests.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlToolMaintenance from "./sourceControl/SourceControlToolMaintenance.ts";
@@ -435,6 +436,7 @@ const makeWsRpcLayer = (currentSession: {
         providerService,
       });
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
+      const stallMonitor = yield* StallMonitor.StallMonitor;
 
       const loadAuthAccessSnapshot = () =>
         Effect.all({
@@ -2546,6 +2548,12 @@ const makeWsRpcLayer = (currentSession: {
                 liveUpdates,
               );
             }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.subscribeServerStalls]: (_input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.subscribeServerStalls,
+            Effect.succeed(stallMonitor.stalls),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.subscribeServerLifecycle]: (_input) =>

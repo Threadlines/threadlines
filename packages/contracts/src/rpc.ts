@@ -342,6 +342,7 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  ServerStall,
   ServerProviderDataSharingError,
   ServerProviderDataSharingSetInput,
   ServerProviderDataSharingSetResult,
@@ -590,6 +591,7 @@ export const WS_METHODS = {
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeServerConfig: "subscribeServerConfig",
+  subscribeServerStalls: "subscribeServerStalls",
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeRelayAccess: "subscribeRelayAccess",
@@ -1739,6 +1741,16 @@ export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerCon
   stream: true,
 });
 
+/**
+ * The server's latest stall if it ended within ten minutes, then each new one.
+ * Only servers reporting the `stallReports` capability answer it.
+ */
+export const WsSubscribeServerStallsRpc = Rpc.make(WS_METHODS.subscribeServerStalls, {
+  payload: Schema.Struct({}),
+  success: ServerStall,
+  stream: true,
+});
+
 export const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecycle, {
   payload: Schema.Struct({}),
   success: ServerLifecycleStreamEvent,
@@ -2100,6 +2112,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsDictationTranscribeRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
+  WsSubscribeServerStallsRpc,
   WsSubscribeAuthAccessRpc,
   WsSubscribeRelayAccessRpc,
   WsRelayCreateInviteRpc,

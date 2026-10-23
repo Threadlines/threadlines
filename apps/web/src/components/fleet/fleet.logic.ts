@@ -4,6 +4,11 @@
  * Pure: the page's hook gathers the inputs from the stores, this decides what
  * they say.
  */
+import {
+  describeComputerStallNote,
+  isComputerStallRecent,
+  type ReceivedComputerStall,
+} from "@threadlines/client-runtime";
 import type {
   EnvironmentId,
   ExecutionEnvironmentDescriptor,
@@ -50,6 +55,8 @@ export interface FleetComputerInput {
   readonly route: FleetRoute;
   /** When it was last connected, for "Offline · 2h ago". */
   readonly lastSeenAt: string | null;
+  /** Its latest freeze or sleep, for "Froze 3 min ago" while it is recent. */
+  readonly recentStall?: ReceivedComputerStall | null;
 }
 
 /** One thread as Fleet reads it. */
@@ -149,6 +156,7 @@ export function glyphForPlatform(descriptor: ExecutionEnvironmentDescriptor | nu
 export function savedComputerInput(
   record: SavedEnvironmentRecord,
   runtime: SavedEnvironmentRuntimeState | undefined,
+  recentStall: ReceivedComputerStall | null = null,
 ): FleetComputerInput {
   const connectionState = runtime?.connectionState ?? "disconnected";
   const connection: FleetConnection =
@@ -173,6 +181,7 @@ export function savedComputerInput(
             ? "ssh"
             : null,
     lastSeenAt: runtime?.disconnectedAt ?? record.lastConnectedAt,
+    recentStall,
   };
 }
 
@@ -319,8 +328,21 @@ export function describeComputerCounts(
     .join(" · ");
 }
 
-/** The mono line under a computer's name: where it is, or how long it has been gone. */
+/**
+ * The mono line under a computer's name: where it is, or how long it has been
+ * gone, and for a while after it froze or slept, "Froze 3 min ago".
+ */
 export function describeComputerLocation(computer: FleetComputerInput, nowMs: number): string {
+  const location = describeComputerPlace(computer, nowMs);
+  const stall = computer.recentStall;
+  if (computer.connection !== "connected" || !stall || !isComputerStallRecent(stall, nowMs)) {
+    return location;
+  }
+  const note = describeComputerStallNote(stall, nowMs);
+  return location ? `${location} · ${note}` : note;
+}
+
+function describeComputerPlace(computer: FleetComputerInput, nowMs: number): string {
   if (computer.kind === "this") {
     // The phone app's center is the device in hand, whose name says so already.
     if (computer.environmentId === null) return "";

@@ -29,6 +29,7 @@ export {
   markRelaySavedEnvironmentLinkExpired,
   readBackendEnvironmentConnection,
   readEnvironmentConnection,
+  readLocalEnvironmentId,
   reconnectSavedEnvironment,
   RELAY_LINK_EXPIRED_MESSAGE,
   removeSavedEnvironment,

@@ -103,6 +103,8 @@ import {
 } from "../environments/runtime";
 import { startComputerLinksSync } from "../environments/links/computerLinks";
 import { startProjectSetupsSync } from "../environments/projectSetups/projectSetups";
+import { startComputerStallsSync } from "../environments/stalls/computerStalls";
+import { ComputerStallNotices } from "../components/ComputerStallNotices";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
   ensurePrimaryEnvironmentReady,
@@ -227,6 +229,7 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
         {primaryEnvironmentAuthenticated ? <SourceControlToolUpdateLaunchNotification /> : null}
         {primaryEnvironmentAuthenticated ? <WebSocketConnectionCoordinator /> : null}
+        <ComputerStallNotices />
         {primaryEnvironmentAuthenticated ? (
           <WebSocketConnectionSurface>{appShell}</WebSocketConnectionSurface>
         ) : (
@@ -631,12 +634,15 @@ function EnvironmentConnectionManagerBootstrap() {
     // Each connected computer's project setups, for the setup dialog, its
     // toasts and Fleet.
     const stopProjectSetups = startProjectSetupsSync();
+    // Each connected computer's latest freeze or sleep, for its notice and Fleet.
+    const stopComputerStalls = startComputerStallsSync();
     // Thread rows anywhere in the shell carry `data-thread-key`. Bound here
     // rather than by the sidebar, which on a phone unmounts the moment a tap
     // closes it, mid-prewarm.
     const unbindRowIntent = bindThreadRowIntentPrewarm(document);
     return () => {
       unbindRowIntent();
+      stopComputerStalls();
       stopProjectSetups();
       stopComputerLinks();
       stopRelayJoins();

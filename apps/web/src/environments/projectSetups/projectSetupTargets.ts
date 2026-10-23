@@ -23,6 +23,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { deriveRepositoryRelativeProjectPath } from "../../logicalProject";
+import { readConnectedComputerCapability } from "../computerCapabilities";
 import { getServerConfig } from "../../rpc/serverState";
 import { selectProjectsAcrossEnvironments, useStore } from "../../store";
 import type { Project } from "../../types";
@@ -179,15 +180,7 @@ export function useProjectSetupTargets(
  * takes setups: the computers whose setups this app can watch and act on.
  */
 export function readProjectSetupComputerReady(environmentId: EnvironmentId): boolean {
-  const primary = readPrimaryEnvironmentDescriptor();
-  if (primary?.environmentId === environmentId) {
-    return primary.capabilities.projectSetup === true;
-  }
-  const runtime = useSavedEnvironmentRuntimeStore.getState().byId[environmentId];
-  return (
-    runtime?.connectionState === "connected" &&
-    runtime.descriptor?.capabilities.projectSetup === true
-  );
+  return readConnectedComputerCapability(environmentId, "projectSetup");
 }
 
 /** Whether a computer is connected to this app now and takes setups, kept current. */

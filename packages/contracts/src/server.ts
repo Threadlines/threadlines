@@ -725,6 +725,32 @@ export const ServerSignalProcessResult = Schema.Struct({
 });
 export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
 
+/**
+ * A stretch when a server froze and couldn't answer anyone: Threadlines there
+ * was busy with its own work, the computer's CPU was overloaded, or it stopped
+ * answering for a reason the server can't tell. Reported once it is answering
+ * again, for ten minutes. A computer's sleep is not a freeze.
+ */
+export const ServerStallCause = Schema.Literals(["busy", "overloaded", "unknown"]);
+export type ServerStallCause = typeof ServerStallCause.Type;
+
+export const ServerStall = Schema.Struct({
+  /** Unique per stall on a server run, so a client tells each one once. */
+  id: TrimmedNonEmptyString,
+  cause: ServerStallCause,
+  durationMs: NonNegativeInt,
+  /** How long ago it ended when the server sent it, so clients need no clock of its. */
+  agoMs: NonNegativeInt,
+  /** The computer's 1-minute load and core count, for an overloaded CPU (not on Windows). */
+  load: Schema.optionalKey(
+    Schema.Struct({
+      average1m: Schema.Number,
+      cpuCount: PositiveInt,
+    }),
+  ),
+});
+export type ServerStall = typeof ServerStall.Type;
+
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,

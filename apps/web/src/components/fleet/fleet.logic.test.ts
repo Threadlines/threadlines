@@ -135,6 +135,22 @@ describe("buildFleetModel", () => {
     expect(describeComputerLocation(model.center, NOW_MS)).toBe("This computer");
   });
 
+  it("notes a recent freeze or sleep beside a connected computer, for ten minutes", () => {
+    const froze = {
+      ...model.center,
+      recentStall: {
+        stall: { id: "a-1", cause: "busy" as const, durationMs: 7_000, agoMs: 0 },
+        endedAtMs: NOW_MS - 3 * 60_000,
+      },
+    };
+    expect(describeComputerLocation(froze, NOW_MS)).toBe("This computer · Froze 3 min ago");
+    expect(describeComputerLocation(froze, NOW_MS + 8 * 60_000)).toBe("This computer");
+    // Gone again: how long it has been gone says more.
+    expect(describeComputerLocation({ ...froze, connection: "offline" }, NOW_MS)).not.toMatch(
+      /Froze/,
+    );
+  });
+
   it("draws a line by its connection first, then by the work at its end", () => {
     const [phone, mini, windows] = model.others;
     expect(resolveConnectionLineState(windows!)).toBe("working");

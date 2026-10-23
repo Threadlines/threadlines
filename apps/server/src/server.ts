@@ -147,6 +147,7 @@ import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { ThreadSearchLive } from "./orchestration/Layers/ThreadSearch.ts";
@@ -422,6 +423,7 @@ const TerminalLayerLive = TerminalManagerLive.pipe(
 const ProcessDiagnosticsLayerLive = Layer.mergeAll(
   ProcessDiagnostics.layer,
   ProcessResourceMonitor.layer,
+  StallMonitor.layer,
 ).pipe(Layer.provideMerge(ProcessSnapshotLayerLive));
 
 const WorkspaceEntriesLayerLive = WorkspaceEntriesLive.pipe(
