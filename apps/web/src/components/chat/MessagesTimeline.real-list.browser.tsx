@@ -1715,7 +1715,30 @@ async function scrollPelicanIntoView(list: HTMLElement, step: number) {
   }
   const listTop = list.getBoundingClientRect().top;
   wheelScroll(list, wordRect("message-51", "pelican")!.top - listTop - 180);
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await waitForPelicanToSettle(list);
+}
+
+// The list keeps working after a scroll: it measures rows as they come into
+// view, and finishes the scroll on its own timers (up to 200 ms), each of
+// which can move the word. Selecting it before it holds still in view can
+// leave the actions hidden with the word out of view, or gone with a redrawn
+// row; a test that then stops the clock stops the list's fix-up with it.
+async function waitForPelicanToSettle(list: HTMLElement) {
+  await vi.waitFor(
+    async () => {
+      const before = wordRect("message-51", "pelican");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await nextFrame();
+      const after = wordRect("message-51", "pelican");
+      const listRect = list.getBoundingClientRect();
+      expect(before).not.toBeNull();
+      expect(after).not.toBeNull();
+      expect(after!.top).toBe(before!.top);
+      expect(after!.top).toBeGreaterThanOrEqual(listRect.top);
+      expect(after!.bottom).toBeLessThanOrEqual(listRect.bottom);
+    },
+    { timeout: 10_000 },
+  );
 }
 
 function selectionPopover(): HTMLElement | null {
@@ -1805,6 +1828,10 @@ describe("text selection popover with the real virtual list", () => {
     const { screen, list } = await renderLongChat(onAddTranscriptHighlightContext);
     try {
       dragSelectWord("message-51", "pelican");
+      // The actions show before the clock stops: with it stopped, nothing that
+      // waits on a timer could bring them back, and the click below would wait
+      // out its whole timeout for a button that never shows.
+      await vi.waitFor(() => expect(isShown(selectionPopover())).toBe(true), { timeout: 5_000 });
       // A copy closes the actions a moment later; a note opened in that
       // moment must outlive it. The clock holds still until the note is open:
       // each click is a round trip to the browser driver, which on a busy
