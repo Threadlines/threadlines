@@ -66,6 +66,8 @@ overrides:
   yaml: "catalog:"
   vite@*: "catalog:"
   vitest@*: "catalog:"
+  # @github/copilot-sdk pins zod 4.3.6 exactly (GHSA-mrhx-c7xc-m3w5, fixed in 4.6.6).
+  zod@4.3.6: ^4.6.7
 
 packageExtensions:
   vite-plus@*:

@@ -12,7 +12,7 @@ A Remotion project for the launch videos: silent, 30 fps edits in three formats,
 | `RoomsSiteClip`       | 1600x934  | ~46 s  | homepage hero      |
 | `RoomsSiteClipTall`   | 800x1000  | ~45 s  | homepage on phones |
 
-This folder is its own npm package, outside the pnpm workspace. Remotion is pinned to 4.0.530: the published 4.0.531 ships an empty `@remotion/cli/dist/render-queue/queue.js`, which breaks the Studio.
+This folder is its own npm package, outside the pnpm workspace. Remotion is pinned to 4.0.530: the published 4.0.531 ships an empty `@remotion/cli/dist/render-queue/queue.js`, which breaks the Studio. Remotion pins zod 4.5.4 exactly, and `overrides` lifts it to ^4.6.7 for GHSA-mrhx-c7xc-m3w5, so the Studio prints a zod version-mismatch warning on start. That warning is expected.
 
 ## Preview and render
 
