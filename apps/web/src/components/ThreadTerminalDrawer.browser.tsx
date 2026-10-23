@@ -5,6 +5,7 @@ import {
   ProjectId,
   ThreadId,
   type TerminalEvent,
+  type TerminalPortInUse,
   type TerminalSessionSnapshot,
   type TerminalStreamEvent,
   type TerminalSubscribeInput,
@@ -54,7 +55,9 @@ const {
   pendingTerminalWriteCallbacks,
   deferTerminalWriteCallbacksRef,
   terminalSelectionStateRef,
+  navigateSpy,
 } = vi.hoisted(() => ({
+  navigateSpy: vi.fn(),
   terminalConstructorSpy: vi.fn(),
   terminalDisposeSpy: vi.fn(),
   terminalWriteSpy: vi.fn(),
@@ -228,9 +231,16 @@ vi.mock("~/localApi", () => ({
 // The link-into-browser-panel route only exists inside the desktop app.
 vi.mock("../env", () => ({ isElectron: true }));
 
+// A port notice's Show goes to another chat through the router, which these
+// tests don't mount.
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useNavigate: () => navigateSpy,
+}));
+
 import { TerminalViewport } from "./ThreadTerminalDrawer";
 import { updateSettings } from "../hooks/useSettings";
-import { useTerminalStateStore } from "../terminalStateStore";
+import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import {
   connectTerminalStreams,
   resetTerminalStreamsForTests,
@@ -303,6 +313,7 @@ function createEnvironmentApi(snapshot?: Partial<TerminalSessionSnapshot>) {
       write: vi.fn(async () => undefined),
       resize: vi.fn(async () => undefined),
       resolveInterrupted: vi.fn(async () => undefined),
+      resolvePortInUse: vi.fn(async (_input: unknown) => undefined),
     },
   };
 }
@@ -341,6 +352,19 @@ function connectFakeTerminalServer(environmentId: string) {
   };
 }
 
+/** A tab as the server lists it. */
+function serverTab(terminalId: string, number: number) {
+  return {
+    terminalId,
+    number,
+    cwd: "/repo/project",
+    status: "running" as const,
+    exitCode: null,
+    exitSignal: null,
+    createdAt: "2026-10-23T09:00:00.000Z",
+  };
+}
+
 function terminalOutputEvent(data: string, createdAt: string): TerminalEvent {
   return {
     threadId: THREAD_ID,
@@ -357,6 +381,7 @@ type ViewportOverrides = Partial<
     | "cwd"
     | "launchCwd"
     | "interruptedCommand"
+    | "portInUse"
     | "onRestart"
     | "onClose"
     | "onGone"
@@ -383,6 +408,7 @@ function ViewportUnderTest(
       cwd={props.cwd ?? "/repo/project"}
       launchCwd={props.launchCwd ?? null}
       interruptedCommand={props.interruptedCommand ?? null}
+      portInUse={props.portInUse ?? null}
       stream={stream}
       onSessionExited={props.onSessionExited ?? (() => undefined)}
       onGone={props.onGone ?? (() => undefined)}
@@ -1165,6 +1191,139 @@ describe("TerminalViewport", () => {
       await page.getByRole("button", { name: "Run again" }).click();
       await expect.element(page.getByRole("button", { name: "Run again" })).toBeInTheDocument();
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("names the tab holding a taken port, shows it, and stops its job", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    useTerminalStateStore
+      .getState()
+      .applyTerminalTabs(threadRef, [serverTab("default", 1), serverTab("server", 2)]);
+    const portInUse: TerminalPortInUse = {
+      id: "notice-1",
+      port: 3000,
+      holders: [
+        {
+          kind: "terminal",
+          threadId: THREAD_ID,
+          terminalId: "server",
+          pid: 7002,
+          name: "node",
+          command: "npm run dev",
+        },
+      ],
+      canStop: true,
+      seenAt: "2026-10-23T10:00:00.000Z",
+    };
+    const mounted = await mountTerminalViewport({ threadRef, portInUse });
+
+    try {
+      await expect
+        .element(page.getByText("Port 3000 is in use by npm run dev in Terminal 2."))
+        .toBeInTheDocument();
+
+      await page.getByRole("button", { name: "Show" }).click();
+      expect(
+        selectThreadTerminalState(
+          useTerminalStateStore.getState().terminalStateByThreadKey,
+          threadRef,
+        ),
+      ).toMatchObject({ activeTerminalId: "server", terminalOpen: true });
+      expect(navigateSpy).not.toHaveBeenCalled();
+
+      // Stop didn't free the port: the tab says so.
+      environment.terminal.resolvePortInUse.mockImplementationOnce(async () => {
+        throw new Error("Port 3000 is still in use.");
+      });
+      await page.getByRole("button", { name: "Stop it" }).click();
+      expect(environment.terminal.resolvePortInUse).toHaveBeenCalledWith({
+        threadId: THREAD_ID,
+        terminalId: "default",
+        noticeId: "notice-1",
+        stop: true,
+      });
+      await vi.waitFor(() => {
+        expect(terminalWriteSpy).toHaveBeenCalledWith(
+          "\r\n[terminal] Port 3000 is still in use.\r\n",
+        );
+      });
+
+      await page.getByRole("button", { name: "Dismiss" }).click();
+      expect(environment.terminal.resolvePortInUse).toHaveBeenLastCalledWith({
+        threadId: THREAD_ID,
+        terminalId: "default",
+        noticeId: "notice-1",
+        stop: false,
+      });
+      await expect.element(page.getByRole("button", { name: "Stop it" })).not.toBeInTheDocument();
+    } finally {
+      navigateSpy.mockClear();
+      await mounted.cleanup();
+    }
+  });
+
+  it("goes to a holder in another chat, and names a program outside Threadlines", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    const otherRef = scopeThreadRef("environment-a" as never, ThreadId.make("thread-other"));
+    environmentApiById.set("environment-a", environment);
+    useTerminalStateStore.getState().applyTerminalTabs(otherRef, [serverTab("default", 1)]);
+    const mounted = await mountTerminalViewport({
+      threadRef,
+      portInUse: {
+        id: "notice-2",
+        port: 5173,
+        holders: [
+          {
+            kind: "terminal",
+            threadId: "thread-other",
+            terminalId: "default",
+            pid: 7002,
+            name: "node",
+            command: "vite",
+          },
+        ],
+        canStop: true,
+        seenAt: "2026-10-23T10:00:00.000Z",
+      },
+    });
+
+    try {
+      await expect
+        .element(page.getByText("Port 5173 is in use by vite in Terminal 1 of another chat."))
+        .toBeInTheDocument();
+      await page.getByRole("button", { name: "Show" }).click();
+      expect(navigateSpy).toHaveBeenCalledWith({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: "environment-a", threadId: "thread-other" },
+      });
+      expect(
+        selectThreadTerminalState(
+          useTerminalStateStore.getState().terminalStateByThreadKey,
+          otherRef,
+        ),
+      ).toMatchObject({ activeTerminalId: "default", terminalOpen: true });
+
+      await mounted.rerender({
+        threadRef,
+        portInUse: {
+          id: "notice-3",
+          port: 5000,
+          holders: [{ kind: "process", pid: 512, name: "ControlCenter", command: "ControlCenter" }],
+          canStop: false,
+          seenAt: "2026-10-23T10:00:00.000Z",
+        },
+      });
+      await expect
+        .element(page.getByText("Port 5000 is in use by ControlCenter (PID 512)."))
+        .toBeInTheDocument();
+      await expect.element(page.getByRole("button", { name: "Show" })).not.toBeInTheDocument();
+      await expect.element(page.getByRole("button", { name: "Stop it" })).not.toBeInTheDocument();
+    } finally {
+      navigateSpy.mockClear();
       await mounted.cleanup();
     }
   });

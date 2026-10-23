@@ -2423,6 +2423,12 @@ const makeWsRpcLayer = (
             terminalManager.resolveInterrupted(input, viewerId),
             { "rpc.aggregate": "terminal" },
           ),
+        [WS_METHODS.terminalResolvePortInUse]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.terminalResolvePortInUse,
+            terminalManager.resolvePortInUse(input),
+            { "rpc.aggregate": "terminal" },
+          ),
         [WS_METHODS.subscribeTerminalEvents]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalEvents,

@@ -217,6 +217,73 @@ export const TerminalEvent = Schema.Union([
 ]);
 export type TerminalEvent = typeof TerminalEvent.Type;
 
+/**
+ * Who listens on a port a tab's command found taken: a terminal tab of this
+ * server (perhaps the same one), a process an agent started, Threadlines
+ * itself, or another program. `name` is the listening program's file name
+ * and `command` its job as typed ("npm run dev"), when known.
+ */
+export const TerminalPortHolder = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("terminal"),
+    threadId: Schema.String.check(Schema.isNonEmpty()),
+    terminalId: Schema.String.check(Schema.isNonEmpty()),
+    pid: Schema.Int,
+    name: Schema.NullOr(Schema.String),
+    command: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("agent"),
+    pid: Schema.Int,
+    name: Schema.NullOr(Schema.String),
+    command: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("threadlines"),
+    pid: Schema.Int,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("process"),
+    pid: Schema.Int,
+    name: Schema.NullOr(Schema.String),
+    command: Schema.NullOr(Schema.String),
+  }),
+]);
+export type TerminalPortHolder = typeof TerminalPortHolder.Type;
+
+/**
+ * A port a tab's command said is taken, and who holds it now
+ * (`TerminalTab.portInUse`). `id` changes whenever the holders do, so a
+ * click on what a device showed never acts on something else.
+ */
+export const TerminalPortInUse = Schema.Struct({
+  id: Schema.String.check(Schema.isNonEmpty()),
+  port: Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(65_535)),
+  /** Everyone listening on it (one per address family at most), a terminal tab first. */
+  holders: Schema.Array(TerminalPortHolder).check(Schema.isMinLength(1)),
+  /** One job of one other tab holds it all, so Stop can interrupt that job. */
+  canStop: Schema.Boolean,
+  /** When the command said so. */
+  seenAt: Schema.String,
+});
+export type TerminalPortInUse = typeof TerminalPortInUse.Type;
+
+/**
+ * Settle a tab's `portInUse` notice `noticeId`: stop the job holding the
+ * port (as Ctrl+C would, in the tab running it), or dismiss the notice. Does
+ * nothing once the tab shows another notice or none. Stopping fails with
+ * `TerminalPortStillInUseError` when the port is still taken a few seconds
+ * later.
+ */
+export const TerminalResolvePortInUseInput = Schema.Struct({
+  ...TerminalSessionInput.fields,
+  noticeId: Schema.String.check(Schema.isNonEmpty()),
+  stop: Schema.Boolean,
+});
+export type TerminalResolvePortInUseInput = Schema.Codec.Encoded<
+  typeof TerminalResolvePortInUseInput
+>;
+
 /** Whether a tab's shell runs; `stopped` is a listed tab with none (the server restarted). */
 export const TerminalTabStatus = Schema.Literals([
   "starting",
@@ -247,6 +314,12 @@ export const TerminalTab = Schema.Struct({
    * older servers.
    */
   interruptedCommand: Schema.optional(Schema.NullOr(Schema.String)),
+  /**
+   * A port the tab's last command said is taken, while something still
+   * listens on it. Gone once a line is entered in the tab, the shell ends or
+   * restarts, the port is free, or it is dismissed. Absent from older servers.
+   */
+  portInUse: Schema.optional(Schema.NullOr(TerminalPortInUse)),
 });
 export type TerminalTab = typeof TerminalTab.Type;
 
@@ -397,11 +470,33 @@ export class TerminalLineBusyError extends Schema.TaggedError<TerminalLineBusyEr
   }
 }
 
+/**
+ * Stop left a tab's port taken: the job kept listening (`stillListening`),
+ * or what holds the port couldn't be checked, so nothing was stopped
+ * (`unverified`).
+ */
+export class TerminalPortStillInUseError extends Schema.TaggedError<TerminalPortStillInUseError>()(
+  "TerminalPortStillInUseError",
+  {
+    threadId: Schema.String,
+    terminalId: Schema.String,
+    port: Schema.Int,
+    reason: Schema.Literals(["stillListening", "unverified"]),
+  },
+) {
+  override get message() {
+    return this.reason === "unverified"
+      ? `Couldn't check what holds port ${this.port}, so nothing was stopped.`
+      : `Port ${this.port} is still in use.`;
+  }
+}
+
 export const TerminalError = Schema.Union([
   TerminalCwdError,
   TerminalHistoryError,
   TerminalSessionLookupError,
   TerminalNotRunningError,
   TerminalLineBusyError,
+  TerminalPortStillInUseError,
 ]);
 export type TerminalError = typeof TerminalError.Type;

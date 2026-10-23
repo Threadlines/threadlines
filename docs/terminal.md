@@ -104,6 +104,42 @@ suggested command takes the tab. Every desktop question before Threadlines
 restarts or quits (installing an update, quitting, changing how devices
 connect in Settings) names the terminals still running something.
 
+## When a port is taken
+
+When a command in a tab says the port it wanted is taken ("Port 5173 is in
+use", "listen EADDRINUSE :::3000", "bind: address already in use"), the tab
+says who holds it, on every device: another tab ("`npm run dev` in Terminal
+2", "of <chat>" when it is in another chat), a job started in this same tab,
+a process an agent started, Threadlines itself, or another program by name
+and PID (`terminal/portInUse.ts` reads the messages and works out the holder,
+`terminal/portNotices.ts` keeps the notice).
+
+Only a message that names its port counts, and only once something really
+listens there, so a log that mentions an old conflict shows nothing. Output
+from inside an ssh session or a container is skipped: its ports aren't this
+computer's (Docker failing to publish a port is, and counts). The holder is
+read from the process table: a listener under a tab's shell belongs to that
+tab, and its command is its job's (its process group's first process). Port
+queries go one at a time, batched, and a query that fails changes nothing.
+
+The notice stays while it is true. It goes once a line is entered in the tab,
+its shell exits or restarts, Clear output, the port is free, or someone
+dismisses it; a lookup that was under way then can't bring it back. While one
+is up, the server looks again every few seconds, backing off to 30, and right
+away when a tab's shell ends or a command in it finishes.
+
+Show goes to the holding tab (opening its chat when it is another one); it
+never makes a tab. Stop it is offered when one job of one other tab holds the
+port, on macOS and Linux: the server checks again that the same job of the
+same shell still holds it, sends SIGINT to that job's process group (what
+Ctrl+C in that tab does to the job in front, but also right for one left in
+the background), and waits a few seconds for the port to come free. A
+suggested command shares its wrapper shell's group, and the wrapper ignores
+Ctrl+C, so that group is the command. Each notice has an id that changes when
+its holders do, and Stop or dismiss names it, so a click on what one device
+showed never acts on something newer. Windows has no process groups, so it
+offers Show only.
+
 ## History
 
 Each tab keeps its last 5,000 lines and at most 1 MiB, so a progress bar that

@@ -425,6 +425,45 @@ describe("ProcessDiagnostics", () => {
     ]);
   });
 
+  it("never assigns PowerShell's read-only $PID in the Windows port query", () => {
+    // PowerShell names ignore case: `$pid = ...` would stop the whole script.
+    expect(ProcessDiagnostics.buildWindowsListeningPortQueryCommand([3000])).not.toMatch(
+      /\$pid\s*=/i,
+    );
+  });
+
+  it("reads a Windows program's name from tasklist", () => {
+    expect(
+      ProcessDiagnostics.parseTasklistProcessName(
+        '"node.exe","4242","Console","1","52,120 K"\r\n',
+        4242,
+      ),
+    ).toBe("node.exe");
+    expect(
+      ProcessDiagnostics.parseTasklistProcessName(
+        "INFO: No tasks are running which match the specified criteria.\r\n",
+        4242,
+      ),
+    ).toBeNull();
+  });
+
+  it("parses Linux ss listening rows, one per process on the port", () => {
+    const rows = ProcessDiagnostics.parseSsListeningPortRows(
+      [
+        "State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process",
+        'LISTEN 0      511          0.0.0.0:3000      0.0.0.0:*    users:(("node",pid=4242,fd=21),("node",pid=4243,fd=21))',
+        'LISTEN 0      4096           [::1]:5432         [::]:*    users:(("postgres",pid=900,fd=7))',
+        "LISTEN 0      128          0.0.0.0:22        0.0.0.0:*",
+      ].join("\n"),
+    );
+
+    expect(rows).toEqual([
+      { port: 3000, pid: 4242, command: "node" },
+      { port: 3000, pid: 4243, command: "node" },
+      { port: 5432, pid: 900, command: "postgres" },
+    ]);
+  });
+
   it("resolves mentioned localhost URLs to detected background runs", () => {
     const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
       urls: ["http://localhost:5953", "http://127.0.0.1:5953/api", "http://localhost:9999"],
