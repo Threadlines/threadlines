@@ -88,9 +88,10 @@ const scriptJson = (value: unknown): string =>
     .replaceAll(" ", "\\u2029");
 
 const STYLE = `
-:root { color-scheme: light dark; --fg: #1d1d1f; --muted: #6e6e73; --fill: #f2f2f4; }
-@media (prefers-color-scheme: dark) { :root { --fg: #f2f2f4; --muted: #a1a1a6; --fill: #232327; } }
-body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); }
+:root { color-scheme: light dark; --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --fill: #f2f2f4; }
+@media (prefers-color-scheme: dark) { :root { --bg: #1c1c1e; --fg: #f2f2f4; --muted: #a1a1a6; --fill: #2c2c30; } }
+html { background: var(--bg); }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
 main { max-width: 420px; margin: 18vh auto 0; padding: 0 24px; }
 h1 { font-size: 17px; font-weight: 600; margin: 0 0 6px; }
 p { margin: 0 0 10px; color: var(--muted); }
