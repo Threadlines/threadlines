@@ -101,8 +101,12 @@ const decodeRegistrationBody = Schema.decodeUnknownOption(RegistrationBody);
 
 /**
  * A registration request's body (RFC 7591), read into what the client id
- * will carry. The name is trimmed and cut to 60 characters; the callbacks
- * must all be on this computer.
+ * will carry. The name is trimmed and cut to 60 characters.
+ *
+ * Only callbacks on this computer are kept: a client may register others
+ * too (Cursor's desktop app also registers its web callback), and RFC 7591
+ * lets the server register less than was asked, so the answer lists what was
+ * kept. A registration with no callback on this computer is refused.
  */
 export const readRegistration = (
   body: unknown,
@@ -117,16 +121,14 @@ export const readRegistration = (
           `Register between 1 and ${MAX_REDIRECT_URIS} redirect_uris.`,
         );
       }
-      const redirectUris: Array<string> = [];
-      for (const raw of request.redirect_uris) {
-        const url = parseLoopbackRedirect(raw);
-        if (url === null) {
-          return failure(
-            "invalid_redirect_uri",
-            "Callbacks must be http on this computer: 127.0.0.1, localhost or [::1].",
-          );
-        }
-        redirectUris.push(url.href);
+      const redirectUris = [
+        ...new Set(request.redirect_uris.flatMap((raw) => parseLoopbackRedirect(raw)?.href ?? [])),
+      ];
+      if (redirectUris.length === 0) {
+        return failure(
+          "invalid_redirect_uri",
+          "Register a callback on this computer: http on 127.0.0.1, localhost or [::1].",
+        );
       }
       if (
         request.grant_types !== undefined &&

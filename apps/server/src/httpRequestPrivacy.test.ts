@@ -2,6 +2,8 @@ import * as NodeHttp from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { assert, describe, it } from "@effect/vitest";
+import * as Arr from "effect/Array";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -103,12 +105,16 @@ describe("request privacy", () => {
       const AGENT_TOKEN = `tlc1.connection-1.1.${"a".repeat(43)}`;
       const POLL_SECRET = "poll-secret-that-must-never-be-traced-000000";
       const lines: Array<string> = [];
-      const capture = Logger.make(({ message, fiber }) => {
+      // As the server's own logger prints them: a cause logged as the
+      // message is printed with its error's message.
+      const capture = Logger.make((options) => {
+        const causes = Arr.ensure(options.message).filter(Cause.isCause).map(Cause.pretty);
         lines.push(
-          JSON.stringify({
-            message,
-            annotations: fiber.getRef(References.CurrentLogAnnotations),
-          }),
+          [
+            Logger.formatLogFmt.log(options),
+            ...causes,
+            JSON.stringify(options.fiber.getRef(References.CurrentLogAnnotations)),
+          ].join("\n"),
         );
       });
       const spans: Array<Tracer.NativeSpan> = [];
@@ -155,6 +161,17 @@ describe("request privacy", () => {
         fetch(`${origin}/oauth/authorize/status?request=r&poll=${POLL_SECRET}`),
       );
       assert.equal(poll.status, 200);
+      // Methods no route takes fail with an error whose message holds the
+      // whole URL, poll secret included.
+      for (const method of ["POST", "OPTIONS"]) {
+        const refused = yield* Effect.promise(() =>
+          fetch(`${origin}/oauth/authorize/status?request=r&poll=${POLL_SECRET}`, {
+            method,
+            headers: { origin: "https://example.com", "access-control-request-method": "GET" },
+          }),
+        );
+        assert.equal(refused.status, 404);
+      }
       // The tracer ends a request's span just after the response goes out.
       for (let attempt = 0; attempt < 50 && spans.length === 0; attempt++) {
         yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
@@ -169,6 +186,8 @@ describe("request privacy", () => {
       assert.isFalse(
         spans.some((span) => String(span.attributes.get("url.path")).startsWith("/oauth")),
       );
+      // Still logged, with the query left out.
+      assert.isTrue(lines.some((line) => line.includes('"http.url":"/oauth/authorize/status"')));
       const recorded = [
         ...lines,
         ...spans.map((span) =>

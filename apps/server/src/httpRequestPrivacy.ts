@@ -10,8 +10,10 @@
  *
  * Outside agents' sign-in routes (docs/design/outside-agents.md) carry the
  * client id, `state` and the waiting page's secret in their query strings.
- * The request logger never records a query, so they are only kept out of
- * traces.
+ * The request logger drops a query from the path it records, but a failed
+ * request (a method no route takes) is logged with its error, whose message
+ * holds the whole URL. So these are handled the same way: logged here
+ * without their query or error, and never traced.
  */
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -38,6 +40,10 @@ const secretPrefixOf = makeRoutePatternMatcher(
 /** Whether a request URL's path carries a credential. */
 export const hasSecretPath = (url: string): boolean => secretPrefixOf(url) !== undefined;
 
+/** Whether a request URL's path or query carries a credential. */
+const carriesCredential = (url: string): boolean =>
+  hasSecretPath(url) || isOutsideAgentSignInPath(url);
+
 /** A request URL's path as logs may show it: a credential-carrying one cut to its prefix. */
 export const redactedRequestPath = (url: string): string => {
   const prefix = secretPrefixOf(url);
@@ -46,9 +52,10 @@ export const redactedRequestPath = (url: string): string => {
 
 /**
  * Wraps everything the server answers (`HttpRouter.serve`'s middleware, so
- * inside its request logger): a request whose path carries a credential is
- * left out of that logger, and logged here instead, with the path cut,
- * when `logRequests` (the logger is on).
+ * inside its request logger): a request whose path or query carries a
+ * credential is left out of that logger, and logged here instead, with the
+ * path cut, the query dropped and no error, when `logRequests` (the logger
+ * is on).
  */
 export const requestPrivacy =
   (logRequests: boolean) =>
@@ -61,7 +68,7 @@ export const requestPrivacy =
   > =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequestTag.HttpServerRequest;
-      if (!hasSecretPath(request.url)) return yield* httpApp;
+      if (!carriesCredential(request.url)) return yield* httpApp;
       const exit = yield* httpApp.pipe(HttpMiddleware.withLoggerDisabled, Effect.exit);
       if (logRequests) {
         yield* Effect.log("Sent HTTP response").pipe(
@@ -80,6 +87,5 @@ export const requestPrivacy =
  * tracing, whose spans record both.
  */
 export const requestTracingPrivacyLayer = Layer.succeed(HttpMiddleware.TracerDisabledWhen)(
-  (request: HttpServerRequest.HttpServerRequest) =>
-    hasSecretPath(request.url) || isOutsideAgentSignInPath(request.url),
+  (request: HttpServerRequest.HttpServerRequest) => carriesCredential(request.url),
 );

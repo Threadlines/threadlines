@@ -96,7 +96,7 @@ export const makeOutsideAgentSigner = (serverSigningKey: Uint8Array): OutsideAge
       const parts = clientId.split(".");
       if (parts.length !== 3 || parts[0] !== CLIENT_ID_PREFIX) return null;
       const [, payload = "", mac = ""] = parts;
-      if (!timingSafeEqualBase64Url(mac, signPayload(`${CLIENT_ID_CONTEXT}|${payload}`, key))) {
+      if (!secretsMatch(mac, signPayload(`${CLIENT_ID_CONTEXT}|${payload}`, key))) {
         return null;
       }
       return Option.match(decodeClientIdPayload(base64UrlDecodeUtf8(payload)), {
@@ -116,7 +116,7 @@ export const makeOutsideAgentSigner = (serverSigningKey: Uint8Array): OutsideAge
       if (match === null) return null;
       const [, connectionId = "", generationText = "", mac = ""] = match;
       const generation = Number(generationText);
-      if (!timingSafeEqualBase64Url(mac, tokenMac(connectionId, generation, resource))) {
+      if (!secretsMatch(mac, tokenMac(connectionId, generation, resource))) {
         return null;
       }
       return { connectionId, generation };
@@ -150,7 +150,12 @@ export const randomMatchCode = (): string => {
   return `${pick()}${pick()}${pick()}-${pick()}${pick()}${pick()}`;
 };
 
-/** Compares two secrets without leaking where they differ. */
+/**
+ * Compares two secrets as written, without leaking where they differ. Macs
+ * are compared this way too, not as decoded bytes: base64url decoding
+ * forgives padding and a last character's spare bits, so one mac has several
+ * spellings, and a client id or token must have exactly one.
+ */
 export const secretsMatch = (left: string, right: string): boolean => {
   const leftBuffer = Buffer.from(left, "utf8");
   const rightBuffer = Buffer.from(right, "utf8");
