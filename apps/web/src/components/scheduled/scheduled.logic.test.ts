@@ -10,17 +10,22 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  DEFAULT_WEBHOOK_FORM,
   describeNextRun,
   describeScheduleCall,
   describeTaskSchedule,
+  describeWebhookEventOutcome,
   emptyTaskForm,
+  eventTaskAccessWarning,
   formDraft,
   formProblems,
   formatWhen,
+  githubEventFields,
   parseScheduleCallResult,
   parseScheduledSearch,
   scheduledTaskEnvironmentsOf,
   taskForm,
+  webhookFormWithContext,
 } from "./scheduled.logic";
 
 const ENVIRONMENT = EnvironmentId.make("environment-mac");
@@ -85,6 +90,21 @@ describe("scheduledTaskEnvironmentsOf", () => {
     });
     expect(listed.map((environment) => environment.label)).toEqual(["Studio Mac", "Basement PC"]);
     expect(listed[0]?.isPrimary).toBe(true);
+  });
+
+  it("says which computers run event tasks, from their own capability", () => {
+    const listed = scheduledTaskEnvironmentsOf({
+      primaryEnvironmentId: ENVIRONMENT,
+      primaryDescriptor: { label: "Studio Mac", capabilities: { ...runs, eventTasks: true } },
+      runtimeById: {
+        [EnvironmentId.make("environment-pc")]: {
+          connectionState: "connected",
+          descriptor: { label: "Basement PC", capabilities: runs },
+        },
+      },
+      savedLabelOf: () => null,
+    });
+    expect(listed.map((environment) => environment.eventTasks)).toEqual([true, false]);
   });
 
   it("lists nothing when no server runs them, so Scheduled stays hidden", () => {
@@ -264,5 +284,148 @@ describe("the task form", () => {
       participantId: ThreadParticipantId.make("room-claude"),
     } as const;
     expect(formDraft(taskForm(task({ target: forAgent }), ENVIRONMENT))?.target).toEqual(forAgent);
+  });
+});
+
+describe("event tasks", () => {
+  const CONTEXT = { repository: "acme/app", login: "badcuban", canConnect: true };
+  const eventForm = (patch: Partial<ReturnType<typeof form>["webhook"]> = {}) => ({
+    ...form(),
+    name: "Triage",
+    prompt: "Read the issue.",
+    cadenceKind: "webhook" as const,
+    webhook: webhookFormWithContext({ ...DEFAULT_WEBHOOK_FORM, ...patch }, CONTEXT),
+  });
+
+  it("starts from the project's repository and the signed-in user until they're set", () => {
+    const filled = webhookFormWithContext(DEFAULT_WEBHOOK_FORM, CONTEXT);
+    expect(filled).toMatchObject({
+      source: "github",
+      repository: "acme/app",
+      logins: ["badcuban"],
+    });
+    // A project with no GitHub repository listens to any service instead.
+    expect(
+      webhookFormWithContext(DEFAULT_WEBHOOK_FORM, { ...CONTEXT, repository: null }).source,
+    ).toBe("any");
+    // What the user set stays.
+    const chosen = { ...DEFAULT_WEBHOOK_FORM, repository: "me/fork", repositoryChosen: true };
+    expect(webhookFormWithContext(chosen, CONTEXT).repository).toBe("me/fork");
+  });
+
+  it("saves the GitHub trigger the form makes, and opens it again the same", () => {
+    const draft = formDraft({
+      ...eventForm({ label: " agent ", onePerSubject: true }),
+      target: "thread",
+      threadId: ThreadId.make("thread-7"),
+    });
+    // A thread every event goes to has no per-issue threads.
+    expect(draft?.cadence).toEqual({
+      kind: "webhook",
+      source: "github",
+      github: {
+        repository: "acme/app",
+        when: "issue_labeled",
+        label: "agent",
+        from: { kind: "people", logins: ["badcuban"] },
+        ignoreBots: true,
+        onePerSubject: false,
+      },
+      filters: [],
+      includeEvent: true,
+      maxLateMinutes: 1440,
+      dailyRunLimit: 20,
+    });
+    const saved = task({ cadence: draft!.cadence });
+    expect(formDraft(taskForm(saved, ENVIRONMENT))?.cadence).toEqual(draft!.cadence);
+  });
+
+  it("names what keeps an event task from saving", () => {
+    expect(formProblems(eventForm({ label: "agent" }), NOW)).toEqual({});
+    expect(formProblems(eventForm(), NOW).schedule).toBe("Name the label to wait for.");
+    expect(
+      formProblems(eventForm({ label: "agent", logins: [], loginsChosen: true }), NOW).schedule,
+    ).toBe("Add at least one GitHub username, or choose Anyone.");
+    expect(
+      formProblems(
+        eventForm({
+          label: "agent",
+          filters: [{ path: "issue..title", op: "equals", value: "x" }],
+        }),
+        NOW,
+      ).schedule,
+    ).toMatch(/^Filter 1/);
+    expect(
+      formProblems({ ...eventForm({ label: "agent" }), prompt: "Look at {{headers.cookie}}" }, NOW)
+        .schedule,
+    ).toMatch(/cookie/);
+  });
+
+  it("warns before full access reaches anyone who can send an event", () => {
+    const full = (patch: Parameters<typeof eventForm>[0]) => ({
+      ...eventForm({ label: "agent", ...patch }),
+      runtimeMode: "full-access" as const,
+    });
+    expect(eventTaskAccessWarning(full({ anyone: true }))).toBe(
+      "Anyone who can comment on acme/app can start a run with full access.",
+    );
+    expect(eventTaskAccessWarning(full({ sourceChosen: true, source: "any" }))).toBe(
+      "Anyone who has this task's address can start a run with full access.",
+    );
+    expect(eventTaskAccessWarning(full({}))).toBeNull();
+    expect(
+      eventTaskAccessWarning({ ...eventForm({ anyone: true }), runtimeMode: "approval-required" }),
+    ).toBeNull();
+  });
+
+  it("reads as what starts it and when its last event came", () => {
+    const eventTask = task({
+      cadence: formDraft(eventForm({ label: "agent" }))!.cadence,
+      timeZone: "Asia/Tokyo",
+      nextRunAt: null,
+    });
+    expect(describeTaskSchedule(eventTask, "UTC")).toBe(
+      "When an issue in acme/app gets the label agent",
+    );
+    expect(describeNextRun(eventTask, NOW.getTime(), "UTC")).toBe("No events yet");
+    const heard = {
+      ...eventTask,
+      webhook: {
+        address: "ready" as const,
+        addressChanged: false,
+        github: true,
+        signingSecretSet: true,
+        lastEventAt: "2026-10-21T07:30:00.000Z",
+      },
+    };
+    expect(describeNextRun(heard, NOW.getTime(), "UTC")).toMatch(/^Last event today at 7:30/);
+  });
+
+  it("says how an event ended in words", () => {
+    expect(
+      describeWebhookEventOutcome({
+        status: "skipped",
+        reason: "The task is paused.",
+        eventName: "issues.labeled",
+      }),
+    ).toBe("Skipped. The task is paused.");
+    expect(describeWebhookEventOutcome({ status: "ran", reason: null, eventName: null })).toBe(
+      "Started a run",
+    );
+    expect(
+      describeWebhookEventOutcome({
+        status: "skipped",
+        reason: "GitHub connected",
+        eventName: "ping",
+      }),
+    ).toBe("GitHub checked the address. Nothing to run.");
+  });
+
+  it("offers each chosen event's fields to filter on, once each", () => {
+    const fields = githubEventFields(["issues", "issue_comment"]);
+    expect(fields).toContain("issue.labels[].name");
+    expect(fields).toContain("comment.body");
+    expect(fields.filter((field) => field === "action")).toHaveLength(1);
+    expect(fields.at(-1)).toBe("repository.full_name");
   });
 });
