@@ -58,7 +58,11 @@ import {
   type ThreadAttentionCounts,
 } from "../Sidebar.logic";
 import { ChromeIconButton, ChromeTooltip } from "./ChromeIconButton";
-import { destinationHasList } from "./destinationLists";
+import {
+  DESTINATION_LISTS,
+  destinationHasList,
+  resolveShownDestinationList,
+} from "./destinationLists";
 import { usePendingLinkRequests } from "./linkedComputers";
 import { useListNewThreadStore } from "./listNewThreadStore";
 import { RailUpdateButton } from "./RailUpdateButton";
@@ -106,13 +110,17 @@ export interface NavigationDestination {
   readonly needsYou: number;
   /**
    * General chats only: a result nobody has looked at yet (a finished turn, a
-   * ready plan). A blue dot beside the count, since chats have no list here
-   * to show it.
+   * ready plan). A blue dot beside the count, unless `ownListShowing`.
    */
   readonly unread: boolean;
-  /** Threads at work: a blue dot and count under the icon, while `showWorking`. */
+  /** Threads at work: a blue dot and count under the icon, unless `ownListShowing`. */
   readonly working: number;
-  readonly showWorking: boolean;
+  /**
+   * Its own list is beside the rail (or in a phone's sheet), saying what is
+   * working and unread, so the icon leaves those to it. What waits on the
+   * user stays on the icon.
+   */
+  readonly ownListShowing: boolean;
   readonly shortcutLabel: string | null;
   /** A short mono line in the tooltip ("3 working", "1.2M today"). */
   readonly detail: string | null;
@@ -297,9 +305,9 @@ function joinDetails(...parts: Array<string | null>): string | null {
 
 /**
  * Every destination with what the rail says about it, and what choosing one
- * does. `listOpen` is whether the thread list beside the rail is showing: the
- * Threads icon carries the working count only while the list is hidden, since
- * the list says it otherwise.
+ * does. `listOpen` is whether the list beside the rail is showing: the Threads
+ * and General Chats icons carry their work unless that list is their own,
+ * which says it otherwise.
  *
  * `select` takes the click's place in a run of quick clicks (its `detail`: 1
  * for a single click, 2 for a double-click's second, 0 from a key). Choosing
@@ -336,6 +344,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     const platform = typeof navigator === "undefined" ? "" : navigator.platform;
     const shortcutOptions = { platform, context: shortcutContext };
     const workingEverywhere = attention.threads.working + attention.chats.working;
+    const shownList = options.listOpen ? resolveShownDestinationList(selected, isMobile) : null;
     return NAVIGATION_DESTINATION_ORDER.flatMap((id): NavigationDestination[] => {
       // A destination that would only ever say "unsupported" is not offered.
       if (id === "pull-requests" && !hasPullRequests) return [];
@@ -355,8 +364,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           needsYou: id === "pull-requests" ? pullRequestsNeedingYou : (counts?.needsYou ?? 0),
           unread: id === "chats" && attention.chatsUnread,
           working: counts?.working ?? 0,
-          // General chats have no list beside the rail, so their work always shows.
-          showWorking: id === "chats" || (id === "threads" && !options.listOpen),
+          ownListShowing: shownList !== null && shownList === DESTINATION_LISTS[id],
           shortcutLabel: command
             ? shortcutLabelForCommand(keybindings, command, shortcutOptions)
             : // Settings opens from the desktop app's own menu shortcut.
@@ -527,12 +535,13 @@ function DestinationButton({
   readonly onSelect: (id: NavigationDestinationId, clickCount: number) => void;
 }) {
   const Icon = destination.icon;
-  const working = destination.showWorking ? destination.working : 0;
+  const working = destination.ownListShowing ? 0 : destination.working;
+  const unread = destination.unread && !destination.ownListShowing;
   // The corner marks are drawn for the eye; the name says them for a reader.
   const label = [
     destination.label,
     destination.needsYou > 0 ? describeNeedsYou(destination.needsYou) : null,
-    destination.unread ? "unread" : null,
+    unread ? "unread" : null,
   ]
     .filter((part): part is string => part !== null)
     .join(", ");
@@ -550,7 +559,7 @@ function DestinationButton({
         onClick={(event) => onSelect(destination.id, event.detail)}
       >
         <Icon aria-hidden="true" />
-        <CornerMarks needsYou={destination.needsYou} unread={destination.unread} />
+        <CornerMarks needsYou={destination.needsYou} unread={unread} />
       </ChromeIconButton>
       {named ? (
         // The button already says its full name to a screen reader.
@@ -718,8 +727,7 @@ export function NavigationRail() {
  */
 export function SidebarDestinationRow() {
   const { setOpenMobile } = useSidebar();
-  // The list is the sheet itself here, so the Threads icon never carries the
-  // working count it would show beside a hidden list.
+  // The row is in the sheet, so its list is showing.
   const { destinations, select } = useNavigationDestinations({ listOpen: true });
   const onSelect = useCallback(
     (id: NavigationDestinationId) => {
