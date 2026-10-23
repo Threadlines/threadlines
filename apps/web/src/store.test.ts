@@ -1736,6 +1736,7 @@ describe("incremental orchestration updates", () => {
         messageId,
         role: "user",
         text: "steer the running work",
+        sentFrom: { kind: "phone", name: "iPhone", os: "iOS" },
         createdAt: "2026-02-27T00:00:02.000Z",
       }),
       localEnvironmentId,
@@ -1751,6 +1752,8 @@ describe("incremental orchestration updates", () => {
       streaming: false,
       createdAt: "2026-02-27T00:00:02.000Z",
       completedAt: "2026-02-27T00:00:02.000Z",
+      // Shown live, not only after a reload.
+      sentFrom: { kind: "phone", name: "iPhone", os: "iOS" },
     });
   });
 

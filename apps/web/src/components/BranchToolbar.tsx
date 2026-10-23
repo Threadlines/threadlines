@@ -51,7 +51,12 @@ interface BranchToolbarProps {
   onEnvModeChange: (mode: EnvMode) => void;
   effectiveEnvModeOverride?: EnvMode;
   activeThreadBranchOverride?: string | null;
-  onActiveThreadBranchOverrideChange?: (branch: string | null) => void;
+  /** The override is the base the "New worktrees from" setting gave, not a pick. */
+  activeThreadBranchOverrideFromSetting?: boolean;
+  onActiveThreadBranchOverrideChange?: (
+    branch: string | null,
+    options?: { readonly fromSetting?: boolean },
+  ) => void;
   envLocked: boolean;
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
@@ -217,6 +222,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   onEnvModeChange,
   effectiveEnvModeOverride,
   activeThreadBranchOverride,
+  activeThreadBranchOverrideFromSetting,
   onActiveThreadBranchOverrideChange,
   envLocked,
   onCheckoutPullRequestRequest,
@@ -326,6 +332,9 @@ export const BranchToolbar = memo(function BranchToolbar({
           envLocked={envLocked}
           {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
           {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
+          {...(activeThreadBranchOverrideFromSetting
+            ? { activeThreadBranchOverrideFromSetting }
+            : {})}
           {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
           {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
           {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
@@ -393,6 +402,9 @@ export const BranchToolbar = memo(function BranchToolbar({
         envLocked={envLocked}
         {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
         {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
+        {...(activeThreadBranchOverrideFromSetting
+          ? { activeThreadBranchOverrideFromSetting }
+          : {})}
         {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
         {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
         {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}

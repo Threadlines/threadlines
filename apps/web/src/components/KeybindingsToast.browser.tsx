@@ -654,6 +654,9 @@ describe("Keybindings update toast", () => {
         { kind: "keybindings.malformed-config", message: "Expected JSON array" },
       ]);
       await waitForToast("Invalid keybindings configuration");
+      // A warning with a next step stays until closed, so close it the way a
+      // user would; the store outlives the remount below.
+      document.querySelector<HTMLButtonElement>('[data-slot="toast-close"]')?.click();
       await waitForNoToast("Invalid keybindings configuration");
 
       // Remount the app — onServerConfigUpdated replays the cached value

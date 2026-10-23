@@ -43,7 +43,10 @@ import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   ProcessSnapshot,
+  readListeningPortRows,
   readProcessRows,
+  readWindowsProcessName,
+  type ListeningPortRow,
   type ProcessRow,
 } from "../../diagnostics/ProcessDiagnostics.ts";
 import {
@@ -73,6 +76,8 @@ import {
   POWERSHELL_COMMAND_RUN_WRAPPER,
   renderTerminalText,
 } from "../commandRunShell.ts";
+import { scanPortsInUse, type PortInUseMention } from "../portInUse.ts";
+import { dropPortNotice, makePortNotices, portInUseView, type PortNotice } from "../portNotices.ts";
 import {
   PtyAdapter,
   PtySpawnError,
@@ -271,6 +276,15 @@ interface TerminalSessionState {
    * a program, or before the shell was back): it is no command to show.
    */
   lineOffPrompt: boolean;
+  /** The unfinished line of output, read for a port that is taken (see portInUse.ts). */
+  portScan: { tail: string };
+  /** Ports already looked up for the command of `portsSeenGeneration`. */
+  portsSeen: Set<number>;
+  portsSeenGeneration: number;
+  /** Bumped whenever the tab's port notice stops applying (portNotices.ts). */
+  portRevision: number;
+  /** A port the tab's last command said is taken, while something holds it. */
+  portInUse: PortNotice | null;
 }
 
 interface ActiveCommandRun {
@@ -336,6 +350,12 @@ type DrainProcessEventAction =
       runEnd: CommandRunEnd | null;
       /** An `insert` whose shell just reached its prompt. */
       insertReady: string | null;
+      /** Ports this chunk says are taken, not yet looked up for this command. */
+      portsInUse: ReadonlyArray<PortInUseMention>;
+      commandGeneration: number;
+      portRevision: number;
+      /** The line typed for the command running now, when known. */
+      typedCommand: string | null;
     }
   | {
       type: "exit";
@@ -1264,6 +1284,11 @@ function createSessionState(input: {
     viewerSizes: new Map(),
     commandPendingPublished: false,
     lineOffPrompt: false,
+    portScan: { tail: "" },
+    portsSeen: new Set(),
+    portsSeenGeneration: 0,
+    portRevision: 0,
+    portInUse: null,
   };
 }
 
@@ -1322,6 +1347,8 @@ export interface TerminalProcessTreeControl {
   /** What else stopping this shell would touch; null when that can't be known. */
   readonly listTerminalProcesses: (shellPid: number) => ReadonlyArray<number> | null;
   readonly signal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
+  /** SIGINT to a whole process group, as Ctrl+C sends the job in front. */
+  readonly interruptGroup: (pgid: number) => void;
   readonly isAlive: (pid: number) => boolean;
 }
 
@@ -1329,6 +1356,7 @@ const defaultProcessTreeControl: TerminalProcessTreeControl = {
   listDescendants: listDescendantProcessIds,
   listTerminalProcesses: listTerminalProcessIds,
   signal: signalProcessSilently,
+  interruptGroup: (pgid) => signalProcessSilently(-pgid, "SIGINT"),
   isAlive: isProcessAlive,
 };
 
@@ -1345,6 +1373,20 @@ interface TerminalManagerOptions {
   processRowsReader?: (
     platform: NodeJS.Platform,
   ) => Effect.Effect<ReadonlyArray<ProcessRow>, Error>;
+  /** What listens on these TCP ports (see readListeningPortRows). */
+  listeningPortReader?: (
+    ports: ReadonlyArray<number>,
+  ) => Effect.Effect<ReadonlyArray<ListeningPortRow>, Error>;
+  /**
+   * The process table, read afresh: who holds a port is worked out from it,
+   * and a listener seconds old isn't in a cached copy. `processRowsReader`
+   * may be cached.
+   */
+  freshProcessRowsReader?: (
+    platform: NodeJS.Platform,
+  ) => Effect.Effect<ReadonlyArray<ProcessRow>, Error>;
+  /** This server's pid: a port it holds is named as Threadlines. */
+  serverPid?: number;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
@@ -1526,6 +1568,19 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         readProcessRows(targetPlatform).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
         ));
+    const listeningPortReader =
+      options.listeningPortReader ??
+      ((ports: ReadonlyArray<number>) =>
+        readListeningPortRows(ports, undefined, platform).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        ));
+    const freshProcessRowsReader =
+      options.freshProcessRowsReader ??
+      ((targetPlatform: NodeJS.Platform) =>
+        readProcessRows(targetPlatform).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        ));
+    const serverPid = options.serverPid ?? process.pid;
     const subprocessPollIntervalMs =
       options.subprocessPollIntervalMs ?? DEFAULT_SUBPROCESS_POLL_INTERVAL_MS;
     const subprocessPollMaxDelayMs = subprocessPollIntervalMs * SUBPROCESS_POLL_BACKOFF_MAX_FACTOR;
@@ -1569,10 +1624,19 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     const workerScope = yield* Scope.make("sequential");
     yield* Effect.addFinalizer(() => Scope.close(workerScope, Exit.void));
 
-    const publishEvent = (event: TerminalStreamEvent) =>
+    const publishEvent = (event: TerminalStreamEvent): Effect.Effect<void> =>
       Effect.gen(function* () {
         for (const listener of terminalEventListeners) {
           yield* listener(event).pipe(Effect.ignoreCause({ log: true }));
+        }
+        // A shell started, ended or finished a command: a port it held may be free.
+        if (
+          event.type === "started" ||
+          event.type === "restarted" ||
+          event.type === "exited" ||
+          (event.type === "activity" && !event.hasRunningSubprocess)
+        ) {
+          yield* portNotices.recheckSoon;
         }
       });
 
@@ -1602,6 +1666,22 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     const modifyManagerState = <A>(
       f: (state: TerminalManagerState) => readonly [A, TerminalManagerState],
     ) => SynchronizedRef.modify(managerStateRef, f);
+
+    const portNotices = yield* makePortNotices<TerminalSessionState>({
+      sessions: readManagerState.pipe(Effect.map((state) => [...state.sessions.values()])),
+      publishTabs: (threadId) => Effect.suspend(() => publishTabs(threadId)),
+      listeningPortReader,
+      processRowsReader: freshProcessRowsReader(platform),
+      processNameReader: (pid) =>
+        platform === "win32"
+          ? readWindowsProcessName(pid).pipe(
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+            )
+          : Effect.succeed(null),
+      interruptGroup: processTree.interruptGroup,
+      serverPid,
+      scope: workerScope,
+    });
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -2206,6 +2286,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           exitCode: session?.exitCode ?? ended?.exitCode ?? null,
           exitSignal: session?.exitSignal ?? ended?.exitSignal ?? null,
           interruptedCommand: tab.interruptedCommand,
+          portInUse: session === undefined ? null : portInUseView(session),
         };
       });
 
@@ -2551,9 +2632,31 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               sanitized.pendingControlSequence.data.length > MAX_PENDING_CONTROL_SEQUENCE_CHARS
                 ? null
                 : sanitized.pendingControlSequence;
+            let portsInUse: PortInUseMention[] = [];
+            // Read before this chunk's end of a command clears it below.
+            const typedCommand =
+              session.commandRun?.command ??
+              session.submittedCommand ??
+              session.runningSubprocessCommand;
             if (sanitized.visibleText.length > 0) {
               appendHistory(session, sanitized.visibleText);
               session.historyAppendedTotal += sanitized.visibleText.length;
+              // Output printed before the latest line was entered is the last
+              // command's: no news about the one running now.
+              if (nextEvent.commandGeneration !== session.commandGeneration) {
+                session.portScan = { tail: "" };
+              } else {
+                if (session.portsSeenGeneration !== session.commandGeneration) {
+                  // A new command: the last one's unfinished line is no part of it.
+                  session.portsSeen.clear();
+                  session.portScan = { tail: "" };
+                  session.portsSeenGeneration = session.commandGeneration;
+                }
+                portsInUse = scanPortsInUse(session.portScan, sanitized.visibleText).filter(
+                  (mention) => !session.portsSeen.has(mention.port),
+                );
+                for (const mention of portsInUse) session.portsSeen.add(mention.port);
+              }
             }
             for (const signal of sanitized.lineEditorSignals) {
               session.lineEditorActive = signal;
@@ -2644,6 +2747,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               commandFinished: commandFinished || (runEnd !== null && runEnd.run.mode === "run"),
               runEnd,
               insertReady,
+              portsInUse,
+              commandGeneration: session.commandGeneration,
+              portRevision: session.portRevision,
+              typedCommand,
             } as const;
           }
 
@@ -2682,6 +2789,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.commandCompletionMarkersEnabled = false;
           session.startupPromptMarkerSeen = false;
           session.terminalCommandInputState = createTerminalCommandInputState();
+          dropPortNotice(session);
           session.status = "exited";
           session.pendingHistoryControlSequence = null;
           session.pendingProcessEvents = [];
@@ -2740,6 +2848,17 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           }
           if (action.insertReady !== null) {
             yield* insertCommand(session, action.insertReady, expectedPid);
+          }
+          if (action.portsInUse.length > 0) {
+            yield* portNotices.check({
+              session,
+              pid: expectedPid,
+              generation: action.commandGeneration,
+              revision: action.portRevision,
+              mentions: action.portsInUse,
+              seenAt: createdAt,
+              typedCommand: action.typedCommand,
+            });
           }
           continue;
         }
@@ -2820,6 +2939,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.commandCompletionMarkersEnabled = false;
         session.startupPromptMarkerSeen = false;
         session.terminalCommandInputState = createTerminalCommandInputState();
+        // A stopped shell's notice is moot, also while its tab is still closing.
+        dropPortNotice(session);
         session.status = "exited";
         session.pendingHistoryControlSequence = null;
         session.pendingProcessEvents = [];
@@ -2956,6 +3077,9 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.pendingProcessEvents = [];
         session.pendingProcessEventIndex = 0;
         session.processEventDrainRunning = false;
+        session.portScan = { tail: "" };
+        session.portsSeen.clear();
+        dropPortNotice(session);
         session.updatedAt = laterThan(session.updatedAt, startingAt);
         return [undefined, state] as const;
       });
@@ -3138,6 +3262,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       if (deleteHistoryOnClose) {
         yield* deleteHistory(threadId, terminalId);
       }
+      // A port this tab held is free now, or held by what it left running.
+      yield* portNotices.recheckSoon;
     });
 
     const publishSubprocessActivityIfChanged = Effect.fn(
@@ -3757,6 +3883,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           // shell command line: nothing to track or show as the tab's activity.
           session.terminalCommandInputState = createTerminalCommandInputState();
           yield* Effect.sync(() => process.write(input.data));
+          // An answer entered (say, to "use another port?") moves past a port notice.
+          if (!replyOnly && /[\r\n]/.test(input.data) && dropPortNotice(session)) {
+            yield* publishTabs(input.threadId);
+          }
           return;
         }
         // Only a line typed at the shell's own prompt is a command. Anything
@@ -3820,6 +3950,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         // else) means it is in use: the offer to run it again has done its job.
         if (result.didSubmit && !replyOnly && hasInterruptedCommand(input.threadId, terminalId)) {
           yield* syncCatalogCommands(input.threadId, terminalId, { forgetInterrupted: true });
+        }
+        // So does a port notice: it was about the command before.
+        if (result.didSubmit && !replyOnly && dropPortNotice(session)) {
+          yield* publishTabs(input.threadId);
         }
         if (result.didSubmit) {
           const markers = session.commandCompletionMarkersEnabled;
@@ -3906,11 +4040,15 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           // drains while the save below waits), or they would wipe that too.
           // Output read but not yet drained was printed before: it goes. A
           // drain under way finds nothing left and stops by itself.
+          let hadPortNotice = false;
           const createdAt = yield* Effect.sync(() => {
             setHistory(session, "");
             session.pendingHistoryControlSequence = null;
             session.pendingProcessEvents = [];
             session.pendingProcessEventIndex = 0;
+            // The message it was about is gone with the rest.
+            session.portScan = { tail: "" };
+            hadPortNotice = dropPortNotice(session);
             session.updatedAt = laterThan(session.updatedAt, now);
             return session.updatedAt;
           });
@@ -3920,6 +4058,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             terminalId,
             createdAt,
           });
+          if (hadPortNotice) yield* publishTabs(input.threadId);
           yield* persistHistory(input.threadId, terminalId, session.history);
         }),
       );
@@ -4044,6 +4183,16 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       }
       // As if typed: the entered line settles the offer and names the tab.
       yield* write({ threadId: input.threadId, terminalId, data: `${command}\r` }, viewerId);
+    });
+
+    const resolvePortInUse: TerminalManagerShape["resolvePortInUse"] = Effect.fn(
+      "terminal.resolvePortInUse",
+    )(function* (input) {
+      const session = yield* requireSession(
+        input.threadId,
+        input.terminalId ?? DEFAULT_TERMINAL_ID,
+      );
+      yield* portNotices.resolve(session, input);
     });
 
     const startCommandRun: TerminalManagerShape["startCommandRun"] = <E = never>(
@@ -4349,6 +4498,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       restart,
       close,
       resolveInterrupted,
+      resolvePortInUse,
       startCommandRun,
       readCommandRunOutput,
       subscribeCommandRuns: (listener) =>

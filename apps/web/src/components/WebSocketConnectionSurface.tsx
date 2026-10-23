@@ -422,7 +422,7 @@ export function WebSocketConnectionCoordinator() {
         description: describeRecoveredToast(previousDisconnectedAt, status.connectedAt),
         title: buildRecoveredTitle(status),
         type: "success" as const,
-        timeout: 0,
+        timeout: 0 as const,
         data: {
           dismissAfterVisibleMs: 8_000,
           hideCopyButton: true,

@@ -151,6 +151,41 @@ function invalidateGitBranchQueries(
 }
 
 /**
+ * The first page of one checkout's branches, for a picker that gathers
+ * several checkouts (Settings › Threads › New worktrees from): one query per
+ * checkout, so a slow repository holds up only its own branches. A search
+ * narrows the page and leads it with the branch of exactly that name.
+ */
+export function gitBranchPageQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string;
+  query: string;
+  enabled?: boolean;
+}) {
+  const normalizedQuery = input.query.trim();
+  return queryOptions({
+    queryKey: [
+      "git",
+      "refs-page",
+      input.environmentId ?? null,
+      input.cwd,
+      normalizedQuery,
+    ] as const,
+    queryFn: async () => {
+      if (!input.environmentId) throw new Error("Git refs are unavailable.");
+      const page = await ensureEnvironmentApi(input.environmentId).vcs.listRefs({
+        cwd: input.cwd,
+        ...(normalizedQuery.length > 0 ? { query: normalizedQuery } : {}),
+        limit: GIT_BRANCHES_PAGE_SIZE,
+      });
+      return { refs: page.refs, hasMore: page.nextCursor !== null };
+    },
+    enabled: input.environmentId !== null && (input.enabled ?? true),
+    staleTime: GIT_BRANCHES_STALE_TIME_MS,
+  });
+}
+
+/**
  * @deprecated Use a VCS-named query helper once the UI naming migration lands.
  */
 export function gitBranchSearchInfiniteQueryOptions(input: {

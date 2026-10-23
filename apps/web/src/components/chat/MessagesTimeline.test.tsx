@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   MessageId,
+  type MessageSentFrom,
   ProviderDriverKind,
   RoomAgentRequestId,
   SideTurnId,
@@ -126,7 +127,7 @@ function buildLongUserMessageText(tail = "deep hidden detail only after expand")
   ).join("\n");
 }
 
-function buildUserTimelineEntry(text: string) {
+function buildUserTimelineEntry(text: string, sentFrom?: MessageSentFrom) {
   return {
     id: "entry-1",
     kind: "message" as const,
@@ -137,6 +138,7 @@ function buildUserTimelineEntry(text: string) {
       text,
       createdAt: MESSAGE_CREATED_AT,
       streaming: false,
+      ...(sentFrom !== undefined ? { sentFrom } : {}),
     },
   };
 }
@@ -168,6 +170,27 @@ describe("MessagesTimeline", () => {
 
     expect(markup).not.toContain("Show full message");
     expect(markup).toContain('data-user-message-collapsible="false"');
+  });
+
+  it("marks a message sent from a phone, and none sent from a computer", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const fromPhone = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          buildUserTimelineEntry("On my way.", { kind: "phone", name: "iPhone", os: "iOS" }),
+        ]}
+      />,
+    );
+    const fromComputer = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry("At my desk.", { kind: "computer", os: "macOS" })]}
+      />,
+    );
+
+    expect(fromPhone).toContain('aria-label="Sent from iPhone"');
+    expect(fromComputer).not.toContain("Sent from");
   });
 
   it("renders inline terminal labels with the composer chip UI", async () => {

@@ -182,6 +182,7 @@ import type {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalResolveInterruptedInput,
+  TerminalResolvePortInUseInput,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
@@ -1701,6 +1702,7 @@ export interface EnvironmentApi {
     restart: (input: typeof TerminalRestartInput.Encoded) => Promise<TerminalSessionSnapshot>;
     close: (input: typeof TerminalCloseInput.Encoded) => Promise<void>;
     resolveInterrupted: (input: typeof TerminalResolveInterruptedInput.Encoded) => Promise<void>;
+    resolvePortInUse: (input: typeof TerminalResolvePortInUseInput.Encoded) => Promise<void>;
     onEvent: (
       input: TerminalSubscribeInput,
       callback: (event: TerminalStreamEvent) => void,

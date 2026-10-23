@@ -321,6 +321,8 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       threadGoals: provider === CODEX_DRIVER ? "supported" : "unsupported",
       earlySessionStart: provider === CODEX_DRIVER ? "supported" : "unsupported",
     },
+    // Like the real Claude adapter: it places the device note itself.
+    ...(provider === CODEX_DRIVER ? {} : { sendsDeviceNote: true as const }),
     startSession,
     ...(provider === CODEX_DRIVER ? { listExternalThreads, readExternalThread } : {}),
     sendTurn,
@@ -2164,6 +2166,42 @@ routing.layer("ProviderServiceLive routing", (it) => {
         | { readonly roomTools?: boolean }
         | undefined;
       assert.equal(resumed?.roomTools, true);
+    }),
+  );
+
+  it.effect("puts the device note in front for a driver without its own way to send it", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const start = (id: string, driver: "codex" | "claudeAgent") =>
+        provider.startSession(asThreadId(id), {
+          provider: ProviderDriverKind.make(driver),
+          providerInstanceId: driver === "codex" ? codexInstanceId : claudeAgentInstanceId,
+          threadId: asThreadId(id),
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+        });
+      const codexSession = yield* start("thread-device-codex", "codex");
+      const claudeSession = yield* start("thread-device-claude", "claudeAgent");
+      routing.codex.sendTurn.mockClear();
+      routing.claude.sendTurn.mockClear();
+
+      for (const threadId of [codexSession.threadId, claudeSession.threadId]) {
+        yield* provider.sendTurn({
+          threadId,
+          input: "hello",
+          typed: { text: "hello" },
+          deviceNote: "Sent from their phone.",
+          attachments: [],
+        });
+      }
+
+      const codexTurn = routing.codex.sendTurn.mock.calls[0]?.[0];
+      assert.equal(codexTurn?.input, "Sent from their phone.\n\n---\n\nhello");
+      assert.deepEqual(codexTurn?.typed, { text: "hello", context: "Sent from their phone." });
+      assert.isUndefined(codexTurn?.deviceNote);
+      const claudeTurn = routing.claude.sendTurn.mock.calls[0]?.[0];
+      assert.equal(claudeTurn?.input, "hello");
+      assert.equal(claudeTurn?.deviceNote, "Sent from their phone.");
     }),
   );
 

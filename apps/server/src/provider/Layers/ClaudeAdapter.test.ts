@@ -136,6 +136,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
     readonly workflowSizeGuideline?: string | null;
+    readonly env?: Readonly<Record<string, string>> | null;
   }> = [];
   public readonly getContextUsageCalls: Array<void> = [];
   public readonly rewindFilesCalls: Array<{
@@ -260,6 +261,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly fastMode?: boolean | null;
     readonly ultracode?: boolean | null;
     readonly workflowSizeGuideline?: string | null;
+    readonly env?: Readonly<Record<string, string>> | null;
   }): Promise<void> => {
     this.applyFlagSettingsCalls.push(settings);
   };
@@ -367,6 +369,8 @@ function makeHarness(config?: {
   readonly onChatAuthStateChanged?: ClaudeAdapterLiveOptions["onChatAuthStateChanged"];
   readonly resolveModelMetadata?: ClaudeAdapterLiveOptions["resolveModelMetadata"];
   readonly workflowSize?: ClaudeAdapterLiveOptions["workflowSize"];
+  readonly installedCliVersion?: string;
+  readonly suggestionsWhenUsageRunsFast?: ClaudeAdapterLiveOptions["suggestionsWhenUsageRunsFast"];
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -398,6 +402,12 @@ function makeHarness(config?: {
       : {}),
     ...(config?.resolveModelMetadata ? { resolveModelMetadata: config.resolveModelMetadata } : {}),
     ...(config?.workflowSize ? { workflowSize: config.workflowSize } : {}),
+    ...(config?.installedCliVersion
+      ? { installedCliVersion: Effect.succeed(config.installedCliVersion) }
+      : {}),
+    ...(config?.suggestionsWhenUsageRunsFast
+      ? { suggestionsWhenUsageRunsFast: config.suggestionsWhenUsageRunsFast }
+      : {}),
   };
 
   return {
@@ -1435,6 +1445,53 @@ describe("ClaudeAdapterLive", () => {
     },
   );
 
+  it.effect(
+    "keeps suggestions while usage runs fast as Settings says, from the next message both ways",
+    () => {
+      let keepSuggestions = true;
+      const harness = makeHarness({
+        suggestionsWhenUsageRunsFast: Effect.sync(() => keepSuggestions),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-opus-5-5",
+            [],
+          ),
+          runtimeMode: "full-access",
+        });
+        assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
+          env: { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true" },
+        });
+
+        // Claude keeps a flag `env` value after the key is cleared, so off
+        // writes an empty value (read as unset), then clears the key so a
+        // value from Claude's settings files comes back.
+        keepSuggestions = false;
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "one", attachments: [] });
+        keepSuggestions = true;
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "two", attachments: [] });
+        // Unchanged: the env is left alone.
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "three", attachments: [] });
+        assert.deepEqual(
+          harness.query.applyFlagSettingsCalls.map((call) => call.env),
+          [
+            { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "" },
+            null,
+            { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true" },
+          ],
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("ignores claude fast mode for non-opus models", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1599,6 +1656,128 @@ describe("ClaudeAdapterLive", () => {
           shouldQuery: undefined,
           text: "Report from a child thread: ultracode",
         },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("sends the device note on its own to a CLI known to take it", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit(claudeInitMessage("2.1.226"));
+      yield* Fiber.join(configuredFiber);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "ultracode do X",
+        typed: { text: "ultracode do X" },
+        deviceNote: "Sent from their phone.",
+        attachments: [],
+      });
+      // A side question: nobody's words are marked, the note still goes apart.
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "do Y",
+        deviceNote: "Sent from their phone.",
+        attachments: [],
+      });
+
+      const messages = yield* Effect.promise(() =>
+        readPromptMessages(harness.getLastCreateQueryInput(), 4),
+      );
+      assert.deepEqual(messages.map(promptMessageShape), [
+        { origin: undefined, shouldQuery: false, text: "Sent from their phone." },
+        { origin: { kind: "human" }, shouldQuery: undefined, text: "ultracode do X" },
+        { origin: undefined, shouldQuery: false, text: "Sent from their phone." },
+        { origin: undefined, shouldQuery: undefined, text: "do Y" },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("never unmarks the user's words for the device note before the CLI is known", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      // A cold session's first sends: the CLI has not said which version it
+      // is, and no check found the installed one either.
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "ultracode do X",
+        typed: { text: "ultracode do X" },
+        deviceNote: "Sent from their phone.",
+        attachments: [],
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "do Y",
+        deviceNote: "Sent from their phone.",
+        attachments: [],
+      });
+
+      const messages = yield* Effect.promise(() =>
+        readPromptMessages(harness.getLastCreateQueryInput(), 2),
+      );
+      assert.deepEqual(messages.map(promptMessageShape), [
+        // Left out: sending it would take the mark off the user's words.
+        { origin: { kind: "human" }, shouldQuery: undefined, text: "ultracode do X" },
+        // Nobody's words are marked: it leads them.
+        {
+          origin: undefined,
+          shouldQuery: undefined,
+          text: "Sent from their phone.\n\n---\n\ndo Y",
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("sends a cold session's device note on its own when the installed CLI takes it", () => {
+    const harness = makeHarness({ installedCliVersion: "2.1.226" });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "ultracode do X",
+        typed: { text: "ultracode do X" },
+        deviceNote: "Sent from their phone.",
+        attachments: [],
+      });
+
+      const messages = yield* Effect.promise(() =>
+        readPromptMessages(harness.getLastCreateQueryInput(), 2),
+      );
+      assert.deepEqual(messages.map(promptMessageShape), [
+        { origin: undefined, shouldQuery: false, text: "Sent from their phone." },
+        { origin: { kind: "human" }, shouldQuery: undefined, text: "ultracode do X" },
       ]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

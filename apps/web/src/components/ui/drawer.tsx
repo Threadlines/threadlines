@@ -3,6 +3,7 @@
 import { Drawer as DrawerPrimitive } from "@base-ui/react/drawer";
 
 import { cn } from "~/lib/utils";
+import { CoveringBackdrop } from "~/components/ui/noticeLayer";
 
 /**
  * A panel that slides in from one side of the screen and that a finger can
@@ -51,6 +52,7 @@ function DrawerPopup({
           typeof backdropProps?.className === "string" ? backdropProps.className : undefined,
         )}
         data-slot="drawer-backdrop"
+        render={(renderProps, state) => <CoveringBackdrop {...renderProps} open={state.open} />}
       />
       <DrawerPrimitive.Viewport
         className={cn(

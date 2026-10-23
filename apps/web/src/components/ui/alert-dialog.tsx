@@ -4,6 +4,7 @@ import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog
 import { useCallback, useRef } from "react";
 
 import { cn } from "~/lib/utils";
+import { CoveringBackdrop } from "~/components/ui/noticeLayer";
 
 const AlertDialogCreateHandle = AlertDialogPrimitive.createHandle;
 
@@ -56,6 +57,7 @@ function AlertDialogBackdrop({ className, ...props }: AlertDialogPrimitive.Backd
       )}
       data-slot="alert-dialog-backdrop"
       {...props}
+      render={(renderProps, state) => <CoveringBackdrop {...renderProps} open={state.open} />}
     />
   );
 }

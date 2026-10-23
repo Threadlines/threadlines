@@ -32,6 +32,7 @@ import {
   type ThreadEffectiveCwdSource,
   MessageAgentModel,
   MessageComposer,
+  MessageSentFrom,
   ModelSelection,
   OrchestrationCheckBack,
   OrchestrationThreadGoal,
@@ -233,6 +234,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
       Schema.fromJsonString(Schema.Record(Schema.String, MessageAgentModel)),
     ),
     composer: Schema.NullOr(MessageComposer),
+    sentFrom: Schema.NullOr(Schema.fromJsonString(MessageSentFrom)),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -534,6 +536,7 @@ function mapThreadMessageRow(
     ...(row.imported === 1 ? { imported: true as const } : {}),
     ...(row.agentModels !== null ? { agentModels: row.agentModels } : {}),
     ...(row.composer !== null ? { composer: row.composer } : {}),
+    ...(row.sentFrom !== null ? { sentFrom: row.sentFrom } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -1009,6 +1012,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           invite,
           agent_models AS "agentModels",
           composer,
+          sent_from AS "sentFrom",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1066,6 +1070,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           invite,
           agent_models AS "agentModels",
           composer,
+          sent_from AS "sentFrom",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1798,6 +1803,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           invite,
           agent_models AS "agentModels",
           composer,
+          sent_from AS "sentFrom",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

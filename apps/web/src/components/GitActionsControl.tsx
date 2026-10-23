@@ -1651,10 +1651,7 @@ export default function GitActionsControl({
     if (quickAction.kind === "run_pull") {
       const runPullWithToast = () => {
         const promise = pullMutation.mutateAsync(undefined);
-        void toastManager.promise<
-          Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
-          ThreadToastData
-        >(promise, {
+        void toastManager.promise<Awaited<ReturnType<typeof pullMutation.mutateAsync>>>(promise, {
           loading: { title: "Pulling...", data: threadToastData },
           success: (result) => {
             switch (result.status) {

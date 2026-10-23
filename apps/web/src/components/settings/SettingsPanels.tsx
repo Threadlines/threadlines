@@ -433,6 +433,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
         ? ["Start in"]
         : []),
+      ...(settings.newWorktreeBase.from !== DEFAULT_UNIFIED_SETTINGS.newWorktreeBase.from
+        ? ["New worktrees from"]
+        : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
@@ -467,6 +470,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.claudeWorkflowSize !== DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize
         ? ["Claude workflow size"]
         : []),
+      ...(settings.claudeSuggestionsWhenUsageRunsFast !==
+      DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast
+        ? ["Keep Claude's suggestions when you're using a lot"]
+        : []),
       ...(settings.enableCommandRequests === false ? ["Command requests"] : []),
       ...(settings.startAgentsWhileTyping === false ? ["Start agents while you type"] : []),
       ...(agentInvitesChoice(settings) !== "ask" ? ["Agents bringing in other agents"] : []),
@@ -498,6 +505,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableAgentPages,
       settings.enableClaudeArtifacts,
       settings.claudeWorkflowSize,
+      settings.claudeSuggestionsWhenUsageRunsFast,
       settings.enableCommandRequests,
       settings.startAgentsWhileTyping,
       settings.agentInvites,
@@ -509,6 +517,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.terminalScreenReaderMode,
       settings.agentBrowserSitePolicy,
       settings.defaultThreadEnvMode,
+      settings.newWorktreeBase.from,
       settings.diffChangesOnly,
       settings.diffIgnoreWhitespace,
       settings.diffWordWrap,
@@ -549,6 +558,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       sourceControlPanelDefaultOpen: DEFAULT_UNIFIED_SETTINGS.sourceControlPanelDefaultOpen,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+      newWorktreeBase: DEFAULT_UNIFIED_SETTINGS.newWorktreeBase,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
@@ -564,6 +574,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       enableAgentPages: true,
       enableClaudeArtifacts: false,
       claudeWorkflowSize: DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize,
+      claudeSuggestionsWhenUsageRunsFast:
+        DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast,
       enableCommandRequests: true,
       startAgentsWhileTyping: true,
       agentInvites: "ask",

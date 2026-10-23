@@ -3,6 +3,7 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
+import { CoveringBackdrop } from "~/components/ui/noticeLayer";
 import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
 
@@ -29,6 +30,7 @@ function DialogBackdrop({ className, ...props }: DialogPrimitive.Backdrop.Props)
       )}
       data-slot="dialog-backdrop"
       {...props}
+      render={(renderProps, state) => <CoveringBackdrop {...renderProps} open={state.open} />}
     />
   );
 }

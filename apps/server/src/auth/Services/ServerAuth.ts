@@ -24,6 +24,8 @@ export interface AuthenticatedSession {
   readonly subject: string;
   readonly method: ServerAuthSessionMethod;
   readonly role: SessionRole;
+  /** The device the session was issued to, as recorded then (see MessageSentFrom). */
+  readonly client: AuthClientMetadata;
   readonly expiresAt?: DateTime.DateTime;
 }
 

@@ -5,6 +5,7 @@ import {
   type ClaudeWorkflowSize,
   type ModelSelection,
   type NewThreadRoomAgent,
+  type NewWorktreeBaseFrom,
   ProviderDriverKind,
   ProviderInstanceId,
   ROOM_AGENT_ROLE_MAX_LENGTH,
@@ -13,6 +14,7 @@ import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { createModelSelection } from "@threadlines/shared/model";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import * as Equal from "effect/Equal";
+import { useState } from "react";
 
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { roomsEnabledFor } from "../../hooks/useRoomsEnabled";
@@ -37,6 +39,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { NewWorktreeBranchPicker } from "./NewWorktreeBranchPicker";
 import {
   ModelSelectionControl,
   TextGenerationModelControl,
@@ -62,10 +65,12 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <NewThreadAgentRow />
         <NewThreadRoomRow />
         <DefaultThreadEnvModeRow />
+        <NewWorktreeBaseRow />
         <AgentThreadsRow />
         <AgentPagesRow />
         <ClaudeArtifactsRow />
         <ClaudeWorkflowSizeRow />
+        <ClaudeSuggestionsRow />
         <CommandRequestsRow />
         <StartAgentsWhileTypingRow />
       </SettingsSection>
@@ -347,6 +352,96 @@ function DefaultThreadEnvModeRow() {
   );
 }
 
+const NEW_WORKTREE_BASE_OPTIONS = [
+  {
+    value: "default",
+    label: "Default branch",
+    description: "Each new worktree starts from the project's default branch, usually main.",
+  },
+  {
+    value: "current",
+    label: "Current branch",
+    description: "Each new worktree starts from the branch your project folder is on.",
+  },
+  {
+    value: "named",
+    label: "Another branch",
+    description:
+      "Each new worktree starts from this branch, or the default branch where it's missing.",
+  },
+] as const satisfies ReadonlyArray<{
+  value: NewWorktreeBaseFrom;
+  label: string;
+  description: string;
+}>;
+
+/** Where a new worktree starts when the thread's branch picker is left alone. */
+function NewWorktreeBaseRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const [branchPickerOpen, setBranchPickerOpen] = useState(false);
+  const base = settings.newWorktreeBase;
+  const selected =
+    NEW_WORKTREE_BASE_OPTIONS.find((option) => option.value === base.from) ??
+    NEW_WORKTREE_BASE_OPTIONS[0];
+  return (
+    <SettingsRow
+      title="New worktrees from"
+      description={
+        base.from === "named" && base.branch.length === 0
+          ? "Pick a branch. Until you do, new worktrees start from the default branch."
+          : selected.description
+      }
+      resetAction={
+        base.from !== DEFAULT_UNIFIED_SETTINGS.newWorktreeBase.from ? (
+          <SettingResetButton
+            label="new worktrees from"
+            onClick={() =>
+              updateSettings({ newWorktreeBase: DEFAULT_UNIFIED_SETTINGS.newWorktreeBase })
+            }
+          />
+        ) : null
+      }
+      control={
+        <>
+          {base.from === "named" ? (
+            <NewWorktreeBranchPicker
+              className="w-full sm:w-44"
+              value={base.branch}
+              open={branchPickerOpen}
+              onOpenChange={setBranchPickerOpen}
+              onChange={(branch) => updateSettings({ newWorktreeBase: { ...base, branch } })}
+            />
+          ) : null}
+          <Select
+            value={base.from}
+            onValueChange={(value) => {
+              const option = NEW_WORKTREE_BASE_OPTIONS.find((entry) => entry.value === value);
+              if (!option) return;
+              updateSettings({ newWorktreeBase: { ...base, from: option.value } });
+              // Another branch means nothing until one is picked.
+              if (option.value === "named" && base.branch.length === 0) {
+                setBranchPickerOpen(true);
+              }
+            }}
+          >
+            <SelectTrigger className="w-full sm:w-44" aria-label="New worktrees start from">
+              <SelectValue>{selected.label}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {NEW_WORKTREE_BASE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </>
+      }
+    />
+  );
+}
+
 function RoomsRow() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -556,6 +651,40 @@ function ClaudeWorkflowSizeRow() {
             ))}
           </SelectPopup>
         </Select>
+      }
+    />
+  );
+}
+
+/**
+ * Claude skips suggesting the user's next message while the user is on track
+ * to run out of usage early; on keeps the suggestions coming. For every Claude
+ * account, read before each message, so running threads follow it from their
+ * next message.
+ */
+function ClaudeSuggestionsRow() {
+  const on = useSettings((settings) => settings.claudeSuggestionsWhenUsageRunsFast);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Keep Claude's suggestions when you're using a lot"
+      description="Claude stops suggesting your next message (the gray text you can take with Tab) when you're on track to run out of usage early. Turn this on to keep them. Each one uses a little usage."
+      resetAction={
+        on ? (
+          <SettingResetButton
+            label="Keep Claude's suggestions when you're using a lot"
+            onClick={() => updateSettings({ claudeSuggestionsWhenUsageRunsFast: false })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={on}
+          onCheckedChange={(checked) =>
+            updateSettings({ claudeSuggestionsWhenUsageRunsFast: Boolean(checked) })
+          }
+          aria-label="Keep Claude's suggestions when you're using a lot"
+        />
       }
     />
   );
