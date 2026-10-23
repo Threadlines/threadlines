@@ -141,18 +141,19 @@ const withClient = <A, E, R>(
     const location = yield* resolveConnectLocation(flags);
     const target = yield* findThreadlines(location);
     const credential = yield* readConnectCredential(location.credentialsPath, target.resource);
-    if (credential?.accessToken === undefined) {
+    const token = credential?.accessToken;
+    if (token === undefined) {
       return yield* new ConnectError({ reason: "signed_out", message: SIGNED_OUT_MESSAGE });
     }
     const client = yield* makeConnectClient({
       resource: target.resource,
-      token: credential.accessToken,
+      token,
       clientVersion: CLIENT_VERSION,
     });
     return yield* use(client).pipe(
       Effect.tapError((error) =>
         error instanceof ConnectError && error.reason === "signed_out"
-          ? forgetConnectToken(location.credentialsPath, target.resource).pipe(Effect.ignore)
+          ? forgetConnectToken(location.credentialsPath, target.resource, token).pipe(Effect.ignore)
           : Effect.void,
       ),
     );
@@ -209,9 +210,10 @@ const MIN_WAIT_GAP_MS = 1_000;
 
 /**
  * Waits for a thread to stop working: `thread_wait` again and again until
- * it's done, or `timeoutSeconds` runs out (none: never). A call refused for
- * the call rate waits and tries again. Once Threadlines has answered, a
- * moment when it doesn't (a restart) is waited out for half a minute.
+ * it's done, or `timeoutSeconds` runs out (none: never), however far a call
+ * has got. A call refused for the call rate waits and tries again. Once
+ * Threadlines has answered, a moment when it doesn't (a restart) is waited
+ * out for half a minute.
  */
 const waitForThread = (
   client: ConnectClient,
@@ -222,45 +224,49 @@ const waitForThread = (
   Effect.gen(function* () {
     const startedAt = yield* Clock.currentTimeMillis;
     const deadline = Option.map(timeoutSeconds, (seconds) => startedAt + seconds * 1_000);
+    const remainingMs = Effect.map(Clock.currentTimeMillis, (now) =>
+      Option.match(deadline, { onNone: () => Number.POSITIVE_INFINITY, onSome: (at) => at - now }),
+    );
     let last: ThreadWaitResult | null = null;
+    const timedOut = Effect.gen(function* () {
+      if (last !== null) yield* show(flags, last, formatWait(last));
+      return yield* exitWith(EXIT.timedOut, flags.json ? undefined : "Stopped waiting.");
+    });
     while (true) {
-      const now = yield* Clock.currentTimeMillis;
-      const remainingMs = Option.match(deadline, {
-        onNone: () => Number.POSITIVE_INFINITY,
-        onSome: (at) => at - now,
-      });
-      if (remainingMs <= 0) {
-        if (last !== null) yield* show(flags, last, formatWait(last));
-        return yield* exitWith(EXIT.timedOut, flags.json ? undefined : "Stopped waiting.");
-      }
-      const seconds = Math.max(
-        1,
-        Math.min(THREAD_WAIT_MAX_SECONDS, Math.ceil(remainingMs / 1_000)),
-      );
+      const callStartedAt = yield* Clock.currentTimeMillis;
+      const remaining = yield* remainingMs;
+      if (remaining <= 0) return yield* timedOut;
+      const seconds = Math.max(1, Math.min(THREAD_WAIT_MAX_SECONDS, Math.ceil(remaining / 1_000)));
       const call = client.call(ThreadWaitTool, { threadId, seconds });
-      const result: ThreadWaitResult = yield* last === null
-        ? call
-        : call.pipe(
-            Effect.retry({
-              schedule: Schedule.spaced("2 seconds"),
-              times: 15,
-              while: (error) => error.reason === "not_running",
-            }),
-          );
-      if (result.outcome === "still_working") {
-        last = result;
-        const took = (yield* Clock.currentTimeMillis) - now;
-        if (took < MIN_WAIT_GAP_MS) yield* Effect.sleep(MIN_WAIT_GAP_MS - took);
+      const answered =
+        last === null
+          ? call
+          : call.pipe(
+              Effect.retry({
+                schedule: Schedule.spaced("2 seconds"),
+                times: 15,
+                while: (error) => error.reason === "not_running",
+              }),
+            );
+      // The deadline bounds the whole call: a new session, the retries and the reply.
+      const result: Option.Option<ThreadWaitResult> = yield* Number.isFinite(remaining)
+        ? Effect.timeoutOption(answered, remaining)
+        : Effect.asSome(answered);
+      if (Option.isNone(result)) return yield* timedOut;
+      const reply: ThreadWaitResult = result.value;
+      if (reply.outcome === "still_working" || reply.outcome === "limit") {
+        if (reply.outcome === "still_working") last = reply;
+        const pauseMs =
+          reply.outcome === "limit"
+            ? Math.max(1, reply.retryAfterSeconds ?? 5) * 1_000
+            : MIN_WAIT_GAP_MS - ((yield* Clock.currentTimeMillis) - callStartedAt);
+        const pause = Math.min(pauseMs, yield* remainingMs);
+        if (pause > 0) yield* Effect.sleep(pause);
         continue;
       }
-      if (result.outcome === "limit") {
-        const backOffMs = Math.max(1, result.retryAfterSeconds ?? 5) * 1_000;
-        yield* Effect.sleep(Math.min(backOffMs, remainingMs));
-        continue;
-      }
-      if (result.outcome !== "done") return yield* answer(flags, result, formatWait);
-      yield* show(flags, result, formatWait(result));
-      const code = exitCodeForThread(result.thread);
+      if (reply.outcome !== "done") return yield* answer(flags, reply, formatWait);
+      yield* show(flags, reply, formatWait(reply));
+      const code = exitCodeForThread(reply.thread);
       if (code !== EXIT.done) return yield* new CommandExit({ code });
       return;
     }

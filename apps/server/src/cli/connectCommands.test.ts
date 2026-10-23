@@ -57,7 +57,7 @@ import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
-import { findJsonRpcReply, makeConnectClient } from "./connectClient.ts";
+import { makeConnectClient } from "./connectClient.ts";
 import { CommandExit, EXIT } from "./connectExit.ts";
 import { signIn } from "./connectSignIn.ts";
 
@@ -72,6 +72,8 @@ interface Script {
   token: string;
   /** Forget the session after this many tool calls (a restart). */
   forgetSessionAfterCalls: number | null;
+  /** How long thread_wait takes to answer. */
+  waitDelayMs: number;
 }
 
 /** What the stand-in saw. */
@@ -126,6 +128,7 @@ const defaultScript = (): Script => ({
   waits: [done()],
   token: TOKEN,
   forgetSessionAfterCalls: null,
+  waitDelayMs: 0,
 });
 
 /**
@@ -195,9 +198,14 @@ const standIn = (script: Script, seen: Seen) => {
       next: null,
       more: false,
     })),
-    thread_wait: record("thread_wait", () =>
-      script.waits.length > 1 ? script.waits.shift()! : script.waits[0]!,
-    ),
+    thread_wait: (params) =>
+      Effect.sleep(script.waitDelayMs).pipe(
+        Effect.andThen(
+          record("thread_wait", () =>
+            script.waits.length > 1 ? script.waits.shift()! : script.waits[0]!,
+          )(params),
+        ),
+      ),
     thread_start: record("thread_start", () => script.start),
     thread_send: record("thread_send", () => ({ outcome: "sent" as const, threadId: "thread-1" })),
     thread_stop: record("thread_stop", () => ({
@@ -530,14 +538,81 @@ describe("threadlines thread", () => {
     );
   });
 
-  it("reads a reply sent as server-sent events, after a notification", () => {
-    const body = [
-      'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}',
-      'event: message\ndata: {"jsonrpc":"2.0","id":7,"result":{"ok":true}}',
-      "",
-    ].join("\n\n");
-    assert.deepEqual(findJsonRpcReply(body, "text/event-stream", 7)?.result, { ok: true });
-    assert.isNull(findJsonRpcReply(body, "text/event-stream", 8));
+  it.live(
+    "takes a reply sent as server-sent events as it comes, though the stream stays open",
+    () =>
+      Effect.gen(function* () {
+        // A server that answers tools/call over SSE, a notification first, and
+        // then keeps the stream open.
+        const server = NodeHttp.createServer((request, response) => {
+          let body = "";
+          request.on("data", (chunk) => (body += chunk));
+          request.on("end", () => {
+            const message = JSON.parse(body) as { readonly id?: number; readonly method: string };
+            if (message.id === undefined) return void response.writeHead(202).end();
+            if (message.method === "initialize") {
+              response.writeHead(200, {
+                "content-type": "application/json",
+                "mcp-session-id": "s",
+              });
+              return void response.end(
+                JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} }),
+              );
+            }
+            response.writeHead(200, { "content-type": "text/event-stream" });
+            response.write(
+              'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}\r\n\r\n',
+            );
+            const result = { structuredContent: { outcome: "ok", projects: [] } };
+            response.write(
+              `event: message\r\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\r\n\r\n`,
+            );
+          });
+        });
+        const port = yield* Effect.acquireRelease(
+          Effect.promise(
+            () =>
+              new Promise<number>((resolve) =>
+                server.listen(0, "127.0.0.1", () =>
+                  resolve((server.address() as { readonly port: number }).port),
+                ),
+              ),
+          ),
+          () =>
+            Effect.sync(() => {
+              server.closeAllConnections();
+              server.close();
+            }),
+        );
+        const client = yield* makeConnectClient({
+          resource: `http://127.0.0.1:${port}/mcp/connect`,
+          token: TOKEN,
+          clientVersion: "0.0.0",
+        }).pipe(Effect.provide(FetchHttpClient.layer));
+        const result = yield* client.call(ProjectsTool, {}).pipe(Effect.timeout("5 seconds"));
+        assert.deepEqual(result, { outcome: "ok", projects: [] });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("gives up at --timeout even when a call hasn't answered", () => {
+    const script = defaultScript();
+    return withStandIn(script, newSeen(), (port) =>
+      Effect.gen(function* () {
+        script.waitDelayMs = 20_000;
+        const startedAt = Date.now();
+        const result = yield* run([
+          "thread",
+          "wait",
+          "thread-1",
+          "--base-dir",
+          dataFolder(port, TOKEN),
+          "--timeout",
+          "1",
+        ]);
+        assert.equal(result.code, EXIT.timedOut);
+        assert.isBelow(Date.now() - startedAt, 5_000);
+      }),
+    );
   });
 
   it.live("says Threadlines isn't running when nothing answers", () =>

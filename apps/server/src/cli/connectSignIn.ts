@@ -36,7 +36,11 @@ import {
 } from "effect/unstable/http";
 
 import { OUTSIDE_AGENT_SCOPES } from "../outsideAgents/OutsideAgentConnections.ts";
-import { readConnectCredential, writeConnectCredential } from "./connectCredentials.ts";
+import {
+  keepConnectRegistration,
+  readConnectCredential,
+  writeConnectCredential,
+} from "./connectCredentials.ts";
 import { ConnectError, NOT_RUNNING_MESSAGE } from "./connectExit.ts";
 import type { ConnectTarget } from "./connectLocation.ts";
 
@@ -267,7 +271,7 @@ export const signIn = Effect.fn("cli.connect.signIn")(function* (input: {
     );
     clientId = registration.client_id;
     // Kept at once: an abandoned sign-in still leaves this the same agent.
-    yield* writeConnectCredential(input.credentialsPath, resource, { clientId });
+    yield* keepConnectRegistration(input.credentialsPath, resource, clientId);
   }
 
   const authorizeUrl = new URL(server.authorization_endpoint);

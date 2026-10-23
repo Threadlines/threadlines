@@ -6,7 +6,7 @@
  *
  * - `initialize`, then `notifications/initialized`, then `tools/call`.
  * - It keeps the `mcp-session-id` the server gives, and takes a JSON or an
- *   SSE reply.
+ *   SSE reply (read only up to the event that answers).
  * - A 404 on its session (the server restarted) means it initializes again,
  *   once per call. The call is sent again: a 404 comes before the server
  *   looks at it.
@@ -16,8 +16,10 @@
  */
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http";
 
@@ -64,35 +66,53 @@ class SessionLost extends Data.TaggedError("SessionLost")<{}> {}
 
 const failed = (message: string) => new ConnectError({ reason: "failed", message });
 
+/** The JSON-RPC reply to request `id` in one message (a JSON body, or an SSE event's data). */
+const replyTo = (message: string, id: number): JsonRpcReply | null => {
+  const reply = decodeReply(message);
+  if (reply._tag === "None" || reply.value.id !== id) return null;
+  return reply.value.result !== undefined || reply.value.error !== undefined ? reply.value : null;
+};
+
+/** One server-sent event's data: its `data:` lines, joined. */
+const sseEventData = (event: string) =>
+  event
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).replace(/^ /u, ""))
+    .join("\n");
+
 /**
- * The JSON-RPC reply to request `id` in a JSON body, or in an SSE body's
- * `data:` events (a server may stream notifications before the reply).
+ * Server-sent events' data, each as soon as its event is complete; the last
+ * one too when the stream ends without a blank line after it.
  */
-export function findJsonRpcReply(
-  body: string,
-  contentType: string,
-  id: number,
-): JsonRpcReply | null {
-  const candidates: Array<string> = [];
-  if (contentType.includes("text/event-stream")) {
-    for (const event of body.split(/\r?\n\r?\n/u)) {
-      const data = event
-        .split(/\r?\n/u)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice("data:".length).replace(/^ /u, ""))
-        .join("\n");
-      if (data.length > 0) candidates.push(data);
-    }
-  } else {
-    candidates.push(body);
-  }
-  for (const candidate of candidates) {
-    const reply = decodeReply(candidate);
-    if (reply._tag === "None" || reply.value.id !== id) continue;
-    if (reply.value.result !== undefined || reply.value.error !== undefined) return reply.value;
-  }
-  return null;
-}
+export const sseEventsData = <E, R>(text: Stream.Stream<string, E, R>) =>
+  text.pipe(
+    Stream.mapAccum(
+      () => "",
+      (buffer, chunk) => {
+        const events = `${buffer}${chunk}`.split(/\r?\n\r?\n/u);
+        const rest = events.pop() ?? "";
+        return [rest, events.map(sseEventData)] as const;
+      },
+      { onHalt: (rest) => [sseEventData(rest)] },
+    ),
+    Stream.filter((data) => data.length > 0),
+  );
+
+/**
+ * The reply to request `id`: a JSON body, read whole, or server-sent events,
+ * read until the one that answers it. A server may keep an event stream open
+ * after its reply (to send more), and the call must not wait for it to close.
+ */
+const readReply = (response: HttpClientResponse.HttpClientResponse, id: number) =>
+  (response.headers["content-type"] ?? "").includes("text/event-stream")
+    ? sseEventsData(response.stream.pipe(Stream.decodeText())).pipe(
+        Stream.map((data) => replyTo(data, id)),
+        Stream.filter((reply): reply is JsonRpcReply => reply !== null),
+        Stream.runHead,
+        Effect.map(Option.getOrNull),
+      )
+    : response.text.pipe(Effect.map((body) => replyTo(body, id)));
 
 export interface ConnectClient {
   /** Calls one of connectTools.ts's tools and decodes its result. */
@@ -155,10 +175,9 @@ export const makeConnectClient = Effect.fn("cli.connect.makeClient")(function* (
       const sessionId = yield* Ref.get(session);
       const response = yield* post({ jsonrpc: "2.0", id, method, params }, sessionId);
       yield* checkStatus(response, sessionId);
-      const body = yield* response.text.pipe(
+      const reply = yield* readReply(response, id).pipe(
         Effect.mapError(() => failed("Threadlines stopped answering in the middle of a reply.")),
       );
-      const reply = findJsonRpcReply(body, response.headers["content-type"] ?? "", id);
       if (reply === null) {
         return yield* failed(`Threadlines sent no answer to ${method}.`);
       }

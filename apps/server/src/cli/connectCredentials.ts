@@ -8,11 +8,17 @@
  * token. Every `connect` signs in again with the same registration, which
  * Threadlines treats as the same agent: the new approval replaces the old
  * connection instead of adding one. Disconnecting or a 401 forgets only the
- * token. The token is never printed.
+ * token. The token is never printed. Every change is made under a lock, so
+ * commands running at once never undo each other's.
  */
+import { randomBytes } from "node:crypto";
+
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "../atomicWrite.ts";
@@ -51,52 +57,127 @@ export const readConnectCredential = Effect.fn("cli.connect.readCredential")(fun
   return file.resources[resource] ?? null;
 });
 
+/** A lock left by a process that died in the milliseconds it holds one. */
+const STALE_LOCK_MS = 5_000;
+
+const isAlreadyExists = (error: PlatformError.PlatformError) =>
+  error.reason._tag === "AlreadyExists";
+
 /**
- * Sets (or with null, deletes) one resource's entry. The folder is made, or
- * tightened, to 0700 first, so the token never sits in a folder others can
- * list.
+ * Runs `effect` with the file to itself. Two commands changing it at once
+ * (a `connect` finishing while an older command forgets its refused token)
+ * would each write back what they read and lose the other's change. The lock
+ * is a file created exclusively beside it, holding a token so only its owner
+ * removes it; one older than STALE_LOCK_MS is broken.
  */
-export const writeConnectCredential = Effect.fn("cli.connect.writeCredential")(function* (
+const withFileLock = <A, E, R>(filePath: string, effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const lockPath = `${filePath}.lock`;
+    const token = randomBytes(8).toString("hex");
+    const acquire = Effect.gen(function* () {
+      while (true) {
+        const created = yield* fs
+          .writeFileString(lockPath, token, { flag: "wx", mode: 0o600 })
+          .pipe(
+            Effect.as(true),
+            Effect.catchIf(isAlreadyExists, () => Effect.succeed(false)),
+          );
+        if (created) return;
+        const info = yield* fs.stat(lockPath).pipe(Effect.option);
+        const now = yield* Clock.currentTimeMillis;
+        const madeAt = Option.flatMap(info, (stat) => stat.mtime);
+        if (Option.isSome(madeAt) && now - madeAt.value.getTime() > STALE_LOCK_MS) {
+          yield* fs.remove(lockPath, { force: true }).pipe(Effect.ignore);
+        } else {
+          yield* Effect.sleep("20 millis");
+        }
+      }
+    });
+    const release = fs.readFileString(lockPath).pipe(
+      Effect.flatMap((held) =>
+        held === token ? fs.remove(lockPath, { force: true }) : Effect.void,
+      ),
+      Effect.ignore,
+    );
+    return yield* Effect.acquireUseRelease(
+      acquire,
+      () => effect,
+      () => release,
+    );
+  });
+
+/**
+ * Changes the stored entries under the lock: `change` gets what is stored
+ * now and returns what to store. The folder is made, or tightened, to 0700
+ * first, so a token never sits in a folder others can list.
+ */
+const updateCredentials = Effect.fn("cli.connect.updateCredentials")(function* (
   filePath: string,
-  resource: string,
-  credential: ConnectCredential | null,
+  change: (resources: ConnectCredentialsFile["resources"]) => ConnectCredentialsFile["resources"],
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const folder = path.dirname(filePath);
   yield* fs.makeDirectory(folder, { recursive: true, mode: 0o700 });
   yield* fs.chmod(folder, 0o700);
-  const file = yield* readFile(filePath);
-  const { [resource]: _previous, ...others } = file.resources;
-  const resources = credential === null ? others : { ...others, [resource]: credential };
-  yield* writeFileStringAtomically({
+  yield* withFileLock(
     filePath,
-    contents: `${JSON.stringify({ version: 1, resources } satisfies ConnectCredentialsFile, null, 2)}\n`,
-    mode: 0o600,
-  });
+    Effect.gen(function* () {
+      const current = (yield* readFile(filePath)).resources;
+      const resources = change(current);
+      if (resources === current) return;
+      yield* writeFileStringAtomically({
+        filePath,
+        contents: `${JSON.stringify({ version: 1, resources } satisfies ConnectCredentialsFile, null, 2)}\n`,
+        mode: 0o600,
+      });
+    }),
+  );
 });
 
-/** Forgets the token and keeps the registration, so the next sign-in is the same agent. */
-export const forgetConnectToken = Effect.fn("cli.connect.forgetToken")(function* (
+/** Stores one resource's sign-in. */
+export const writeConnectCredential = (
   filePath: string,
   resource: string,
-) {
-  const existing = yield* readConnectCredential(filePath, resource);
-  if (existing === null || existing.accessToken === undefined) return false;
-  yield* writeConnectCredential(filePath, resource, { clientId: existing.clientId });
-  return true;
-});
+  credential: ConnectCredential,
+) => updateCredentials(filePath, (resources) => ({ ...resources, [resource]: credential }));
+
+/** Keeps a new registration for `resource`, unless one is already kept there. */
+export const keepConnectRegistration = (filePath: string, resource: string, clientId: string) =>
+  updateCredentials(filePath, (resources) =>
+    resources[resource] === undefined ? { ...resources, [resource]: { clientId } } : resources,
+  );
+
+/**
+ * After a 401: forgets `token`, keeping the registration so the next
+ * sign-in is the same agent. Only that token: a newer one a later `connect`
+ * stored stays.
+ */
+export const forgetConnectToken = (filePath: string, resource: string, token: string) =>
+  updateCredentials(filePath, (resources) => {
+    const existing = resources[resource];
+    if (existing?.accessToken !== token) return resources;
+    return { ...resources, [resource]: { clientId: existing.clientId } };
+  });
 
 /** `disconnect`: forgets every token kept here, whichever port it was for; true when there was one. */
 export const forgetAllConnectTokens = Effect.fn("cli.connect.forgetAllTokens")(function* (
   filePath: string,
 ) {
-  const file = yield* readFile(filePath);
-  const signedIn = Object.entries(file.resources).filter(
-    ([, credential]) => credential.accessToken !== undefined,
-  );
-  for (const [resource, credential] of signedIn) {
-    yield* writeConnectCredential(filePath, resource, { clientId: credential.clientId });
-  }
-  return signedIn.length > 0;
+  let forgot = false;
+  yield* updateCredentials(filePath, (resources) => {
+    const signedIn = Object.values(resources).some(
+      (credential) => credential.accessToken !== undefined,
+    );
+    if (!signedIn) return resources;
+    forgot = true;
+    return Object.fromEntries(
+      Object.entries(resources).map(([resource, credential]) => [
+        resource,
+        { clientId: credential.clientId },
+      ]),
+    );
+  });
+  return forgot;
 });
