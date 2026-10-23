@@ -1599,11 +1599,14 @@ const make = Effect.gen(function* () {
     if (existingSessionThreadId) {
       // In a room the slot is re-stamped on every handover, so it can not
       // vouch for the mode this agent's runtime actually started in.
-      // Nor does it for a runtime started early, which the slot never saw.
+      // Nor does it for a runtime started early, which the slot never saw,
+      // nor for an outside agent's turn: the decider stamps the slot with
+      // the thread's mode before the runtime has it, and a runtime still at
+      // a higher mode must not take that turn.
       const inRoom = isRoomThread(thread);
       const runtimeModeChanged =
         thread.runtimeMode !==
-        (inRoom || adoptedEarlySession !== undefined
+        (inRoom || adoptedEarlySession !== undefined || outsideCeiling !== undefined
           ? (activeSession?.runtimeMode ?? projectedSession?.runtimeMode)
           : (projectedSession?.runtimeMode ?? activeSession?.runtimeMode));
       const cwdChanged =
@@ -1988,6 +1991,20 @@ const make = Effect.gen(function* () {
     const activeSession = yield* providerService
       .listSessions()
       .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === sessionKey)));
+    // An outside agent's turn goes only to a runtime within its ceiling,
+    // whatever the thread's setting says: one that couldn't be restarted
+    // lower (background work it won't drop) leaves the turn unsent.
+    if (
+      input.fromOutside !== undefined &&
+      activeSession !== undefined &&
+      exceedsRuntimeMode(activeSession.runtimeMode, input.fromOutside.maxRuntimeMode)
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession.provider),
+        method: "thread.turn.start",
+        detail: `This message from ${input.fromOutside.name} wasn't sent: the agent here still runs with more access than it may use.`,
+      });
+    }
     // In a room, what the other agents said and changed since this agent's
     // conversation was last caught up. Built now, from the thread as it stands
     // when the turn is sent; the cursor is only kept for the conversation it

@@ -20,7 +20,8 @@ import { exceedsRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { hasActionableProposedPlan } from "./proposedPlans.ts";
 
 export interface OutsideTurnRefusal {
-  readonly refusal: OrchestrationCommandRefusal;
+  /** Absent for a refusal no caller acts on by type (a thread it didn't start). */
+  readonly refusal?: OrchestrationCommandRefusal;
   readonly detail: string;
 }
 
@@ -60,20 +61,37 @@ export function outsideTurnBusy(
   return null;
 }
 
-/** Why the decider refuses an outside agent's turn in `thread`, or null when it may start. */
+/**
+ * Why the decider refuses an outside agent's Stop in `thread`, or null: a
+ * thread it didn't start, or one the user raised above its ceiling, which is
+ * out of the agent's reach.
+ */
+export function outsideStopRefusal(
+  thread: Pick<OrchestrationThread, "runtimeMode" | "outsideOrigin">,
+  origin: OutsideTurnOrigin,
+): OutsideTurnRefusal | null {
+  if (thread.outsideOrigin?.connectionId !== origin.connectionId) {
+    return { detail: `${origin.name} didn't start this thread.` };
+  }
+  if (exceedsRuntimeMode(thread.runtimeMode, origin.maxRuntimeMode)) {
+    return { refusal: "above_ceiling", detail: outsideCeilingDetail(origin.name) };
+  }
+  return null;
+}
+
+/**
+ * Why the decider refuses an outside agent's turn in `thread`, or null when
+ * it may start: the Stop rules, and a thread that is busy.
+ */
 export function outsideTurnRefusal(
   thread: Pick<
     OrchestrationThread,
-    "runtimeMode" | "session" | "latestTurn" | "activities" | "proposedPlans"
+    "runtimeMode" | "outsideOrigin" | "session" | "latestTurn" | "activities" | "proposedPlans"
   >,
   origin: OutsideTurnOrigin,
 ): OutsideTurnRefusal | null {
-  if (exceedsRuntimeMode(thread.runtimeMode, origin.maxRuntimeMode)) {
-    return {
-      refusal: "above_ceiling",
-      detail: outsideCeilingDetail(origin.name),
-    };
-  }
+  const stop = outsideStopRefusal(thread, origin);
+  if (stop !== null) return stop;
   const busy = outsideTurnBusy(thread);
   return busy === null ? null : { refusal: "thread_busy", detail: busy };
 }

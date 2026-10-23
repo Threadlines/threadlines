@@ -181,7 +181,16 @@ const ConnectToolHandlersLive = ConnectToolkit.toLayer(
       connections,
       engine,
       bootstrap,
-      shellSnapshot: snapshots.getShellSnapshot().pipe(Effect.orDie),
+      projects: snapshots.getProjectCatalog().pipe(
+        Effect.map((catalog) => catalog.projects.filter((project) => project.deletedAt === null)),
+        Effect.orDie,
+      ),
+      listThreads: (input) => snapshots.listThreadShells(input).pipe(Effect.orDie),
+      threadProject: (threadId) =>
+        snapshots.listThreadShells({ threadIds: [threadId], includeArchived: true }).pipe(
+          Effect.map((shells) => shells[0]?.projectId),
+          Effect.orDie,
+        ),
       readProject: (projectId) =>
         snapshots
           .getProjectShellById(projectId)

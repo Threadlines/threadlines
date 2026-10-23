@@ -109,7 +109,7 @@ import {
   threadMoveGuardRefusal,
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
-import { outsideTurnRefusal } from "./outsideTurns.ts";
+import { outsideStopRefusal, outsideTurnRefusal } from "./outsideTurns.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -2256,18 +2256,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // thread it started, never above its ceiling, never into a busy thread.
       // Checked here, in order with the user's own sends and access changes.
       if (command.fromOutside !== undefined) {
-        if (targetThread.outsideOrigin?.connectionId !== command.fromOutside.connectionId) {
-          return yield* new OrchestrationCommandInvariantError({
-            commandType: command.type,
-            detail: `${command.fromOutside.name} didn't start this thread.`,
-          });
-        }
         const outsideRefusal = outsideTurnRefusal(targetThread, command.fromOutside);
         if (outsideRefusal !== null) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
             detail: outsideRefusal.detail,
-            refusal: outsideRefusal.refusal,
+            ...(outsideRefusal.refusal !== undefined ? { refusal: outsideRefusal.refusal } : {}),
           });
         }
       }
@@ -3043,6 +3037,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // An outside agent's Stop: only in a thread it started, and only while
+      // the thread's access is within its ceiling (docs/design/outside-agents.md).
+      if (command.fromOutside !== undefined) {
+        const refusal = outsideStopRefusal(thread, command.fromOutside);
+        if (refusal !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: refusal.detail,
+            ...(refusal.refusal !== undefined ? { refusal: refusal.refusal } : {}),
+          });
+        }
+      }
       const base = () =>
         withEventBase({
           aggregateKind: "thread",

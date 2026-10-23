@@ -58,8 +58,8 @@ const stubs = Layer.mergeAll(
     subscribeDomainEvents: Effect.succeed(Stream.empty),
   } as never),
   Layer.succeed(ProjectionSnapshotQuery, {
-    getShellSnapshot: () =>
-      Effect.succeed({ snapshotSequence: 0, projects: [], threads: [], updatedAt: "" }),
+    getProjectCatalog: () => Effect.succeed({ snapshotSequence: 0, projects: [], updatedAt: "" }),
+    listThreadShells: () => Effect.succeed([]),
     getThreadShellById: () => Effect.succeed(Option.none()),
   } as never),
   Layer.succeed(ThreadBootstrap, { runTurnStart: unused, startChild: unused } as never),
