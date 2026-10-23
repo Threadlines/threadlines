@@ -164,9 +164,10 @@ export interface DesktopWindowShape {
    * natively, when no window is open or the page does not take the question
    * within {@link QUIT_CONFIRMATION_SHOWN_TIMEOUT}.
    */
-  readonly requestQuitConfirmation: (
-    runningThreadCount: number,
-  ) => Effect.Effect<boolean, DesktopWindowQuitConfirmationError>;
+  readonly requestQuitConfirmation: (work: {
+    readonly runningThreadCount: number;
+    readonly busyTerminalCount: number;
+  }) => Effect.Effect<boolean, DesktopWindowQuitConfirmationError>;
   /** The page has the question it was sent. */
   readonly quitConfirmationShown: (requestId: string) => Effect.Effect<void>;
   readonly resolveQuitConfirmation: (confirmed: boolean) => Effect.Effect<void>;
@@ -1271,90 +1272,91 @@ const make = Effect.gen(function* () {
   // Never opens a window to ask: a fresh page needs seconds to load and sign
   // in, and a question sent before it listens is lost. With no window the
   // caller asks natively.
-  const requestQuitConfirmation = Effect.fn("desktop.window.requestQuitConfirmation")(function* (
-    runningThreadCount: number,
-  ) {
-    const existingWindow = yield* electronWindow.currentMainOrFirst;
-    if (Option.isNone(existingWindow) || existingWindow.value.isDestroyed()) {
-      return yield* new DesktopWindowQuitConfirmationError({
-        cause: "no window is open",
-        windowOpen: false,
-      });
-    }
-    const window = existingWindow.value;
-    const answer = yield* Deferred.make<boolean>();
+  const requestQuitConfirmation = Effect.fn("desktop.window.requestQuitConfirmation")(
+    function* (work: { readonly runningThreadCount: number; readonly busyTerminalCount: number }) {
+      const existingWindow = yield* electronWindow.currentMainOrFirst;
+      if (Option.isNone(existingWindow) || existingWindow.value.isDestroyed()) {
+        return yield* new DesktopWindowQuitConfirmationError({
+          cause: "no window is open",
+          windowOpen: false,
+        });
+      }
+      const window = existingWindow.value;
+      const answer = yield* Deferred.make<boolean>();
 
-    // Closing the window while it asks keeps the app running; on macOS
-    // closing hides it.
-    const cancelOnWindowClosed = () => {
-      void runPromise(Deferred.succeed(answer, false));
-    };
-    window.on("closed", cancelOnWindowClosed);
-    window.on("hide", cancelOnWindowClosed);
-    const cleanup = Ref.set(pendingQuitConfirmation, Option.none()).pipe(
-      Effect.andThen(
-        Effect.try({
+      // Closing the window while it asks keeps the app running; on macOS
+      // closing hides it.
+      const cancelOnWindowClosed = () => {
+        void runPromise(Deferred.succeed(answer, false));
+      };
+      window.on("closed", cancelOnWindowClosed);
+      window.on("hide", cancelOnWindowClosed);
+      const cleanup = Ref.set(pendingQuitConfirmation, Option.none()).pipe(
+        Effect.andThen(
+          Effect.try({
+            try: () => {
+              if (window.isDestroyed()) return;
+              window.removeListener("closed", cancelOnWindowClosed);
+              window.removeListener("hide", cancelOnWindowClosed);
+              // Take the question back, so a page that took it late does not
+              // keep showing a dialog whose answer nobody waits for.
+              window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, null);
+            },
+            catch: (cause) => new DesktopWindowQuitConfirmationError({ cause, windowOpen: true }),
+          }),
+        ),
+        Effect.ignore,
+      );
+
+      // Each pass sends the question once. It ends with the answer, or loops
+      // when quit is asked for again, so a page that lost the dialog gets it back.
+      const askOnce = Effect.gen(function* () {
+        const delivery: QuitConfirmationDelivery = {
+          requestId: yield* randomUUIDv4,
+          shown: yield* Deferred.make<void>(),
+          askedAgain: yield* Deferred.make<void>(),
+          answer,
+        };
+        yield* Ref.set(pendingQuitConfirmation, Option.some(delivery));
+        yield* electronWindow.reveal(window);
+        yield* Effect.try({
           try: () => {
-            if (window.isDestroyed()) return;
-            window.removeListener("closed", cancelOnWindowClosed);
-            window.removeListener("hide", cancelOnWindowClosed);
-            // Take the question back, so a page that took it late does not
-            // keep showing a dialog whose answer nobody waits for.
-            window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, null);
+            window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, {
+              requestId: delivery.requestId,
+              runningThreadCount: work.runningThreadCount,
+              busyTerminalCount: work.busyTerminalCount,
+            });
           },
           catch: (cause) => new DesktopWindowQuitConfirmationError({ cause, windowOpen: true }),
-        }),
-      ),
-      Effect.ignore,
-    );
-
-    // Each pass sends the question once. It ends with the answer, or loops
-    // when quit is asked for again, so a page that lost the dialog gets it back.
-    const askOnce = Effect.gen(function* () {
-      const delivery: QuitConfirmationDelivery = {
-        requestId: yield* randomUUIDv4,
-        shown: yield* Deferred.make<void>(),
-        askedAgain: yield* Deferred.make<void>(),
-        answer,
-      };
-      yield* Ref.set(pendingQuitConfirmation, Option.some(delivery));
-      yield* electronWindow.reveal(window);
-      yield* Effect.try({
-        try: () => {
-          window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, {
-            requestId: delivery.requestId,
-            runningThreadCount,
-          });
-        },
-        catch: (cause) => new DesktopWindowQuitConfirmationError({ cause, windowOpen: true }),
+        });
+        const heldByPage = Deferred.await(delivery.shown).pipe(
+          Effect.timeoutOrElse({
+            duration: QUIT_CONFIRMATION_SHOWN_TIMEOUT,
+            orElse: () =>
+              Effect.fail(
+                new DesktopWindowQuitConfirmationError({
+                  cause: "the window did not show the quit question in time",
+                  windowOpen: true,
+                }),
+              ),
+          }),
+          Effect.andThen(Deferred.await(delivery.askedAgain)),
+          Effect.as(Option.none<boolean>()),
+        );
+        return yield* Effect.raceFirst(
+          Deferred.await(answer).pipe(Effect.map(Option.some)),
+          heldByPage,
+        );
       });
-      const heldByPage = Deferred.await(delivery.shown).pipe(
-        Effect.timeoutOrElse({
-          duration: QUIT_CONFIRMATION_SHOWN_TIMEOUT,
-          orElse: () =>
-            Effect.fail(
-              new DesktopWindowQuitConfirmationError({
-                cause: "the window did not show the quit question in time",
-                windowOpen: true,
-              }),
-            ),
-        }),
-        Effect.andThen(Deferred.await(delivery.askedAgain)),
-        Effect.as(Option.none<boolean>()),
-      );
-      return yield* Effect.raceFirst(
-        Deferred.await(answer).pipe(Effect.map(Option.some)),
-        heldByPage,
-      );
-    });
 
-    return yield* Effect.gen(function* () {
-      while (true) {
-        const outcome = yield* askOnce;
-        if (Option.isSome(outcome)) return outcome.value;
-      }
-    }).pipe(Effect.ensuring(cleanup));
-  });
+      return yield* Effect.gen(function* () {
+        while (true) {
+          const outcome = yield* askOnce;
+          if (Option.isSome(outcome)) return outcome.value;
+        }
+      }).pipe(Effect.ensuring(cleanup));
+    },
+  );
 
   return DesktopWindow.of({
     createMain,

@@ -425,6 +425,7 @@ describe("DesktopBackendManager", () => {
       const backendReady = yield* Ref.make(false);
       const quitting = yield* Ref.make(false);
       const runningThreadCount = yield* Ref.make(0);
+      const busyTerminalCount = yield* Ref.make(0);
 
       const spawnerLayer = Layer.succeed(
         ChildProcessSpawner.ChildProcessSpawner,
@@ -453,6 +454,7 @@ describe("DesktopBackendManager", () => {
           backendReady,
           quitting,
           localRunningThreadCount: runningThreadCount,
+          localBusyTerminalCount: busyTerminalCount,
         },
         desktopWindow: {
           handleBackendReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),

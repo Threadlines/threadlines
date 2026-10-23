@@ -6,11 +6,24 @@ export interface TerminalCommandInputState {
    * submit. Kept across writes, since a paste can arrive in pieces.
    */
   readonly pasting?: boolean;
+  /**
+   * A key the tracker can't follow changed the line in the shell (completion,
+   * history, a control it doesn't know, a line too long to keep): the draft
+   * may not be what the shell runs.
+   */
+  readonly inexact?: boolean;
 }
 
 export interface TerminalCommandInputResult {
   readonly state: TerminalCommandInputState;
+  /** The submitted line tidied for showing as a label (whitespace folded, long ones cut). */
   readonly submittedCommand: string | null;
+  /**
+   * The submitted line exactly as typed, when the draft is known to match
+   * what the shell got: what running it again would type. Null for a line
+   * that spans several lines.
+   */
+  readonly submittedLine: string | null;
   readonly didSubmit: boolean;
 }
 
@@ -80,14 +93,28 @@ function clampCursor(cursor: number, draft: string): number {
 
 function insertText(draft: string, cursor: number, text: string): TerminalCommandInputState {
   if (text.length === 0) return { draft, cursor };
-  const nextDraft = `${draft.slice(0, cursor)}${text}${draft.slice(cursor)}`.slice(
-    0,
-    MAX_TRACKED_COMMAND_LENGTH,
-  );
+  const fullDraft = `${draft.slice(0, cursor)}${text}${draft.slice(cursor)}`;
+  const nextDraft = fullDraft.slice(0, MAX_TRACKED_COMMAND_LENGTH);
   return {
     draft: nextDraft,
     cursor: clampCursor(cursor + text.length, nextDraft),
+    ...(nextDraft.length < fullDraft.length ? { inexact: true } : {}),
   };
+}
+
+/** Keeps a line's inexact mark through an edit the tracker does follow. */
+function keepInexact(
+  previous: TerminalCommandInputState,
+  next: TerminalCommandInputState,
+): TerminalCommandInputState {
+  return previous.inexact === true && next.inexact !== true ? { ...next, inexact: true } : next;
+}
+
+function exactLine(state: TerminalCommandInputState): string | null {
+  if (state.inexact === true) return null;
+  // Kept as typed: even a trailing space can matter (`echo x\ `).
+  const line = state.draft;
+  return line.trim().length > 0 && !line.includes("\n") ? line : null;
 }
 
 function deleteBeforeCursor(draft: string, cursor: number): TerminalCommandInputState {
@@ -157,21 +184,39 @@ function isCsiSequenceWithFinal(sequence: string, final: "C" | "D"): boolean {
   return /^[0-9;]*$/.test(sequence.slice(2, -1));
 }
 
+/** An arrow with a modifier (Ctrl+Left, Alt+Right) moves by words, each shell its own way. */
+function isModifiedCsi(sequence: string): boolean {
+  return sequence.slice(2, -1).includes(";");
+}
+
+/**
+ * What the terminal says by itself (a cursor position or device report, a
+ * focus change), never a key: it leaves the line alone.
+ */
+function isTerminalReport(sequence: string): boolean {
+  return sequence.startsWith(`${ESC}[`) && /^[0-9;?>=]*[RcnIOty]$/.test(sequence.slice(2));
+}
+
 function applyEscapeSequence(
   state: TerminalCommandInputState,
   sequence: string,
 ): TerminalCommandInputState {
+  if (isTerminalReport(sequence)) return state;
+  // Words end in different places in each shell: good enough for a label,
+  // not for typing the line again.
   if (sequence === `${ESC}b`) {
-    return { ...state, cursor: moveWordLeft(state.draft, state.cursor) };
+    return { ...state, cursor: moveWordLeft(state.draft, state.cursor), inexact: true };
   }
   if (sequence === `${ESC}f`) {
-    return { ...state, cursor: moveWordRight(state.draft, state.cursor) };
+    return { ...state, cursor: moveWordRight(state.draft, state.cursor), inexact: true };
   }
   if (isCsiSequenceWithFinal(sequence, "D") || sequence === `${ESC}OD`) {
-    return { ...state, cursor: clampCursor(state.cursor - 1, state.draft) };
+    const moved = { ...state, cursor: clampCursor(state.cursor - 1, state.draft) };
+    return isModifiedCsi(sequence) ? { ...moved, inexact: true } : moved;
   }
   if (isCsiSequenceWithFinal(sequence, "C") || sequence === `${ESC}OC`) {
-    return { ...state, cursor: clampCursor(state.cursor + 1, state.draft) };
+    const moved = { ...state, cursor: clampCursor(state.cursor + 1, state.draft) };
+    return isModifiedCsi(sequence) ? { ...moved, inexact: true } : moved;
   }
   if (
     sequence === `${ESC}[H` ||
@@ -192,7 +237,8 @@ function applyEscapeSequence(
   if (sequence === `${ESC}[3~`) {
     return deleteAtCursor(state.draft, state.cursor);
   }
-  return state;
+  // History (up and down), and anything else the line editor may act on.
+  return { ...state, inexact: true };
 }
 
 export function applyTerminalInputData(
@@ -203,16 +249,27 @@ export function applyTerminalInputData(
     draft: state.draft,
     cursor: clampCursor(state.cursor, state.draft),
     ...(state.pasting === true ? { pasting: true } : {}),
+    ...(state.inexact === true ? { inexact: true } : {}),
   };
   let submittedCommand: string | null = null;
+  let submittedLine: string | null = null;
   let didSubmit = false;
+  const submit = () => {
+    didSubmit = true;
+    const command = normalizeSubmittedTerminalCommand(nextState.draft);
+    if (command !== null) {
+      submittedCommand = command;
+      submittedLine = exactLine(nextState);
+    }
+    nextState = createTerminalCommandInputState();
+  };
 
   for (let index = 0; index < data.length;) {
     if (nextState.pasting === true) {
       // Pasted text goes into the draft as typed, line breaks included; only
       // the end marker leaves the paste.
       if (data.startsWith(BRACKETED_PASTE_END, index)) {
-        nextState = { draft: nextState.draft, cursor: nextState.cursor };
+        nextState = keepInexact(nextState, { draft: nextState.draft, cursor: nextState.cursor });
         index += BRACKETED_PASTE_END.length;
         continue;
       }
@@ -230,7 +287,7 @@ export function applyTerminalInputData(
           nextState.cursor,
           pastedChar === "\r" ? "\n" : pastedChar,
         );
-        nextState = { ...inserted, pasting: true };
+        nextState = keepInexact(nextState, { ...inserted, pasting: true });
       }
       index += pastedChar.length;
       continue;
@@ -243,9 +300,7 @@ export function applyTerminalInputData(
     }
 
     if (data.startsWith("\r\n", index)) {
-      didSubmit = true;
-      submittedCommand = normalizeSubmittedTerminalCommand(nextState.draft) ?? submittedCommand;
-      nextState = createTerminalCommandInputState();
+      submit();
       index += 2;
       continue;
     }
@@ -255,20 +310,19 @@ export function applyTerminalInputData(
     const char = String.fromCodePoint(codePoint);
 
     if (char === "\r" || char === "\n") {
-      didSubmit = true;
-      submittedCommand = normalizeSubmittedTerminalCommand(nextState.draft) ?? submittedCommand;
-      nextState = createTerminalCommandInputState();
+      submit();
       index += char.length;
       continue;
     }
 
     if (char === ESC) {
       const sequence = readEscapeSequence(data, index);
-      nextState = applyEscapeSequence(nextState, sequence);
+      nextState = keepInexact(nextState, applyEscapeSequence(nextState, sequence));
       index += Math.max(sequence.length, char.length);
       continue;
     }
 
+    const before = nextState;
     switch (char) {
       case "\u0001":
         nextState = { ...nextState, cursor: 0 };
@@ -298,17 +352,23 @@ export function applyTerminalInputData(
         };
         break;
       case "\u0017":
-        nextState = deleteWordBeforeCursor(nextState.draft, nextState.cursor);
+        nextState = { ...deleteWordBeforeCursor(nextState.draft, nextState.cursor), inexact: true };
         break;
       default:
         if (codePoint >= 0x20 && codePoint !== 0x7f) {
           nextState = insertText(nextState.draft, nextState.cursor, char);
+        } else {
+          // Tab completion, history search and the like: the shell's line
+          // changes in ways the draft can't follow.
+          nextState = { ...nextState, inexact: true };
         }
         break;
     }
+    // Ctrl+C starts a fresh line, the only edit that makes it exact again.
+    if (char !== "\u0003") nextState = keepInexact(before, nextState);
 
     index += char.length;
   }
 
-  return { state: nextState, submittedCommand, didSubmit };
+  return { state: nextState, submittedCommand, submittedLine, didSubmit };
 }

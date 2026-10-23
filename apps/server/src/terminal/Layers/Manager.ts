@@ -55,6 +55,7 @@ import {
   TerminalCommandRunError,
   TerminalCwdError,
   TerminalHistoryError,
+  TerminalLineBusyError,
   TerminalManager,
   TerminalNotRunningError,
   TerminalSessionLookupError,
@@ -214,6 +215,11 @@ interface TerminalSessionState {
    *  long it has been going, including after they reconnect. */
   runningSubprocessStartedAt: string | null;
   submittedCommand: string | null;
+  /**
+   * The same line exactly as typed, when the input tracker could follow every
+   * key: what "Run again" types after a restart. Null when it can't be sure.
+   */
+  submittedLine: string | null;
   commandGeneration: number;
   subprocessPollingArmed: boolean;
   consecutiveSubprocessIdlePolls: number;
@@ -366,6 +372,7 @@ function clearRunActivity(session: TerminalSessionState): void {
   session.runningSubprocessCommand = null;
   session.runningSubprocessStartedAt = null;
   session.submittedCommand = null;
+  session.submittedLine = null;
   session.subprocessPollingArmed = false;
   session.consecutiveSubprocessIdlePolls = 0;
   session.terminalCommandInputState = createTerminalCommandInputState();
@@ -1236,6 +1243,7 @@ function createSessionState(input: {
     runningSubprocessCommand: null,
     runningSubprocessStartedAt: null,
     submittedCommand: null,
+    submittedLine: null,
     commandGeneration: 0,
     subprocessPollingArmed: false,
     consecutiveSubprocessIdlePolls: 0,
@@ -1384,6 +1392,13 @@ interface CatalogTab {
   readonly createdAt: string;
   /** The folder its shell last started in. */
   cwd: string | null;
+  /**
+   * The line typed at its prompt that runs now. Saved as it changes, so a
+   * server that stops (even by crashing) leaves word of it behind.
+   */
+  runningCommand: string | null;
+  /** What `runningCommand` was when the server last stopped: offered to run again. */
+  interruptedCommand: string | null;
 }
 
 const TerminalCatalogFile = Schema.Struct({
@@ -1395,6 +1410,8 @@ const TerminalCatalogFile = Schema.Struct({
       number: Schema.Int,
       createdAt: Schema.String,
       cwd: Schema.NullOr(Schema.String),
+      runningCommand: Schema.optional(Schema.NullOr(Schema.String)),
+      interruptedCommand: Schema.optional(Schema.NullOr(Schema.String)),
     }),
   ),
 });
@@ -2060,10 +2077,23 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           .readFileString(path.join(logsDir, name))
           .pipe(Effect.flatMap(decodeTerminalCatalogFile), Effect.option);
         if (Option.isNone(parsed)) continue;
+        // A command still running when the server stopped was stopped with it.
+        let interrupted = false;
         catalogs.set(
           parsed.value.threadId,
-          parsed.value.tabs.map((tab) => ({ ...tab })),
+          parsed.value.tabs.map((tab) => {
+            if (tab.runningCommand) interrupted = true;
+            return {
+              terminalId: tab.terminalId,
+              number: tab.number,
+              createdAt: tab.createdAt,
+              cwd: tab.cwd,
+              runningCommand: null,
+              interruptedCommand: tab.runningCommand || tab.interruptedCommand || null,
+            };
+          }),
         );
+        if (interrupted) yield* writeCatalog(parsed.value.threadId);
       }
       const found = new Map<string, Array<{ terminalId: string; createdMs: number }>>();
       for (const name of entries) {
@@ -2099,6 +2129,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             number: index + 1,
             createdAt: new Date(file.createdMs).toISOString(),
             cwd: null,
+            runningCommand: null,
+            interruptedCommand: null,
           })),
         );
         yield* writeCatalog(threadId);
@@ -2120,7 +2152,14 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       if (tabs.some((tab) => tab.terminalId === terminalId)) return;
       catalogs.set(threadId, [
         ...tabs,
-        { terminalId, number: nextTabNumber(tabs), createdAt: yield* nowIso, cwd },
+        {
+          terminalId,
+          number: nextTabNumber(tabs),
+          createdAt: yield* nowIso,
+          cwd,
+          runningCommand: null,
+          interruptedCommand: null,
+        },
       ]);
       yield* writeCatalog(threadId);
     });
@@ -2166,6 +2205,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           status: session?.status ?? ended?.status ?? "stopped",
           exitCode: session?.exitCode ?? ended?.exitCode ?? null,
           exitSignal: session?.exitSignal ?? ended?.exitSignal ?? null,
+          interruptedCommand: tab.interruptedCommand,
         };
       });
 
@@ -2179,6 +2219,64 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         tabs: tabsOf(threadId, state),
       });
     });
+
+    let shuttingDown = false;
+
+    /** The line typed at a tab's prompt that runs in it now, when known exactly. */
+    const runningLineOf = (session: TerminalSessionState | null): string | null =>
+      session !== null &&
+      session.status === "running" &&
+      session.hasRunningSubprocess &&
+      session.commandRun === null
+        ? session.submittedLine
+        : null;
+
+    /**
+     * Brings a listed tab's saved commands up to date: what runs in it now
+     * (read from the session when this runs, so updates that land out of
+     * order still end right) and, when asked, forgets the one a restart
+     * stopped.
+     */
+    const updateCatalogCommands = (
+      threadId: string,
+      terminalId: string,
+      options?: { readonly forgetInterrupted?: boolean },
+    ) =>
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
+          if (shuttingDown) return;
+          yield* ensureCatalogs;
+          const tab = catalogTabs(threadId).find((entry) => entry.terminalId === terminalId);
+          if (tab === undefined) return;
+          const running = runningLineOf(Option.getOrNull(yield* getSession(threadId, terminalId)));
+          const interrupted = options?.forgetInterrupted ? null : tab.interruptedCommand;
+          if (tab.runningCommand === running && tab.interruptedCommand === interrupted) return;
+          const interruptedChanged = tab.interruptedCommand !== interrupted;
+          tab.runningCommand = running;
+          tab.interruptedCommand = interrupted;
+          yield* writeCatalog(threadId);
+          if (interruptedChanged) yield* publishTabs(threadId);
+        }),
+      );
+
+    /** {@link updateCatalogCommands} on its own, for callers that may hold the thread's lock. */
+    const syncCatalogCommands = (
+      threadId: string,
+      terminalId: string,
+      options?: { readonly forgetInterrupted?: boolean },
+    ) =>
+      updateCatalogCommands(threadId, terminalId, options).pipe(
+        Effect.ignoreCause({ log: true }),
+        Effect.forkIn(workerScope),
+        Effect.asVoid,
+      );
+
+    /** Whether a listed tab still offers to run again what a restart stopped. */
+    const hasInterruptedCommand = (threadId: string, terminalId: string) =>
+      catalogTabs(threadId).some(
+        (tab) => tab.terminalId === terminalId && tab.interruptedCommand !== null,
+      );
 
     const assertValidCwd = Effect.fn("terminal.assertValidCwd")(function* (cwd: string) {
       const stats = yield* fileSystem.stat(cwd).pipe(
@@ -2525,6 +2623,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               session.runningSubprocessCommand = null;
               session.runningSubprocessStartedAt = null;
               session.submittedCommand = null;
+              session.submittedLine = null;
               session.subprocessPollingArmed = false;
               session.consecutiveSubprocessIdlePolls = 0;
               session.terminalCommandInputState = createTerminalCommandInputState();
@@ -2575,6 +2674,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.runningSubprocessCommand = null;
           session.runningSubprocessStartedAt = null;
           session.submittedCommand = null;
+          session.submittedLine = null;
           session.subprocessPollingArmed = false;
           session.commandPendingPublished = false;
           session.lineOffPrompt = false;
@@ -2632,6 +2732,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               hasRunningSubprocess: false,
               command: null,
             });
+            // A command that ended by itself is nothing a restart could stop.
+            yield* syncCatalogCommands(action.threadId, action.terminalId);
           }
           if (action.runEnd !== null) {
             yield* endCommandRun(action.runEnd);
@@ -2662,6 +2764,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           yield* closeExitedTab(session).pipe(Effect.forkIn(workerScope));
         } else {
           yield* publishTabs(action.threadId);
+          // Nothing runs in an ended shell, so a later restart stops nothing.
+          yield* syncCatalogCommands(action.threadId, action.terminalId);
         }
         yield* evictInactiveSessionsIfNeeded();
         return;
@@ -2708,6 +2812,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.runningSubprocessCommand = null;
         session.runningSubprocessStartedAt = null;
         session.submittedCommand = null;
+        session.submittedLine = null;
         session.subprocessPollingArmed = false;
         session.commandPendingPublished = false;
         session.lineOffPrompt = false;
@@ -2838,6 +2943,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         session.runningSubprocessCommand = null;
         session.runningSubprocessStartedAt = null;
         session.submittedCommand = null;
+        session.submittedLine = null;
         session.commandGeneration = 0;
         session.subprocessPollingArmed = false;
         session.commandPendingPublished = false;
@@ -2966,6 +3072,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           session.runningSubprocessCommand = null;
           session.runningSubprocessStartedAt = null;
           session.submittedCommand = null;
+          session.submittedLine = null;
           session.commandGeneration = 0;
           session.subprocessPollingArmed = false;
           session.commandPendingPublished = false;
@@ -3110,6 +3217,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         liveSession.value.runningSubprocessCommand = command;
         if (!activity.hasRunningSubprocess) {
           liveSession.value.submittedCommand = null;
+          liveSession.value.submittedLine = null;
           liveSession.value.terminalCommandInputState = createTerminalCommandInputState();
         }
         liveSession.value.updatedAt = laterThan(liveSession.value.updatedAt, updatedAt);
@@ -3135,6 +3243,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
       if (Option.isSome(event)) {
         yield* publishEvent(event.value);
+        yield* syncCatalogCommands(session.threadId, session.terminalId);
       }
     });
 
@@ -3311,6 +3420,22 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
+        // What runs as the server stops is what a restart offers to run
+        // again: saved once from the sessions as they are now, then left
+        // alone (an update still waiting would find the sessions gone).
+        shuttingDown = true;
+        const stopping = yield* readManagerState;
+        const changedThreads = new Set<string>();
+        for (const session of stopping.sessions.values()) {
+          const tab = catalogTabs(session.threadId).find(
+            (entry) => entry.terminalId === session.terminalId,
+          );
+          const running = runningLineOf(session);
+          if (tab === undefined || tab.runningCommand === running) continue;
+          tab.runningCommand = running;
+          changedThreads.add(session.threadId);
+        }
+        yield* Effect.forEach(changedThreads, writeCatalog, { discard: true });
         const sessions = yield* modifyManagerState(
           (state) =>
             [
@@ -3527,6 +3652,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         }
         liveSession.runningSubprocessCommand = null;
         liveSession.submittedCommand = null;
+        liveSession.submittedLine = null;
         liveSession.terminalCommandInputState = createTerminalCommandInputState();
         yield* startSession(
           liveSession,
@@ -3649,15 +3775,26 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             : session.lineEditorActive === true &&
               !session.hasRunningSubprocess &&
               !session.commandPendingPublished);
-        const result = applyTerminalInputData(session.terminalCommandInputState, input.data);
-        session.terminalCommandInputState = atPrompt
-          ? result.state
-          : createTerminalCommandInputState();
+        // The terminal's own replies are no keys: the line stays as it was.
+        const result = replyOnly
+          ? {
+              state: session.terminalCommandInputState,
+              submittedCommand: null,
+              submittedLine: null,
+              didSubmit: false,
+            }
+          : applyTerminalInputData(session.terminalCommandInputState, input.data);
+        if (!replyOnly) {
+          session.terminalCommandInputState = atPrompt
+            ? result.state
+            : createTerminalCommandInputState();
+        }
         // A line begun away from the prompt and finished at it would show
         // only its end.
         const lineOffPrompt = session.lineOffPrompt || (!atPrompt && !replyOnly);
         session.lineOffPrompt = result.didSubmit ? false : lineOffPrompt;
         const submittedCommand = atPrompt && !lineOffPrompt ? result.submittedCommand : null;
+        const submittedLine = submittedCommand !== null ? result.submittedLine : null;
         // Input (Ctrl+C included) may end or start a command: look again soon.
         session.subprocessPoll.delayMs = subprocessPollIntervalMs;
         session.subprocessPoll.nextPollAtMs = 0;
@@ -3677,6 +3814,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         }
         if (submittedCommand !== null) {
           session.submittedCommand = submittedCommand;
+          session.submittedLine = submittedLine;
+        }
+        // A line entered in the tab (the stopped command run again, or anything
+        // else) means it is in use: the offer to run it again has done its job.
+        if (result.didSubmit && !replyOnly && hasInterruptedCommand(input.threadId, terminalId)) {
+          yield* syncCatalogCommands(input.threadId, terminalId, { forgetInterrupted: true });
         }
         if (result.didSubmit) {
           const markers = session.commandCompletionMarkersEnabled;
@@ -3853,9 +3996,55 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             },
             "restarted",
           );
+          // Whatever ran in the old shell is gone; the new one runs nothing yet.
+          yield* syncCatalogCommands(input.threadId, terminalId);
           return snapshot(session);
         }),
       );
+
+    const resolveInterrupted: TerminalManagerShape["resolveInterrupted"] = Effect.fn(
+      "terminal.resolveInterrupted",
+    )(function* (input, viewerId) {
+      const terminalId = input.terminalId ?? DEFAULT_TERMINAL_ID;
+      if (!input.run) {
+        return yield* updateCatalogCommands(input.threadId, terminalId, {
+          forgetInterrupted: true,
+        });
+      }
+      yield* ensureCatalogs;
+      const command =
+        catalogTabs(input.threadId).find((tab) => tab.terminalId === terminalId)
+          ?.interruptedCommand ?? null;
+      // Settled meanwhile, maybe on another device.
+      if (command === null) return;
+      const session = yield* requireSession(input.threadId, terminalId);
+      if (!session.process || session.status !== "running") {
+        return yield* new TerminalNotRunningError({ threadId: input.threadId, terminalId });
+      }
+      // Typed onto a line that already holds text, or into a running program,
+      // the command would become something else.
+      if (
+        session.hasRunningSubprocess ||
+        session.commandPendingPublished ||
+        session.commandRun !== null
+      ) {
+        return yield* new TerminalLineBusyError({
+          threadId: input.threadId,
+          terminalId,
+          reason: "running",
+        });
+      }
+      const line = session.terminalCommandInputState;
+      if (line.draft.length > 0 || line.inexact === true || session.lineOffPrompt) {
+        return yield* new TerminalLineBusyError({
+          threadId: input.threadId,
+          terminalId,
+          reason: "typing",
+        });
+      }
+      // As if typed: the entered line settles the offer and names the tab.
+      yield* write({ threadId: input.threadId, terminalId, data: `${command}\r` }, viewerId);
+    });
 
     const startCommandRun: TerminalManagerShape["startCommandRun"] = <E = never>(
       input: TerminalCommandRunInput,
@@ -3872,6 +4061,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             });
           }
           if (onTabChosen !== undefined) yield* onTabChosen(terminalId);
+          // A suggested command takes the tab: what a restart stopped there
+          // is no longer the thing to run in it.
+          if (hasInterruptedCommand(input.threadId, terminalId)) {
+            yield* syncCatalogCommands(input.threadId, terminalId, { forgetInterrupted: true });
+          }
 
           yield* assertValidCwd(input.cwd);
           let runCandidates: ShellCandidate[] | undefined;
@@ -4154,6 +4348,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       clear,
       restart,
       close,
+      resolveInterrupted,
       startCommandRun,
       readCommandRunOutput,
       subscribeCommandRuns: (listener) =>

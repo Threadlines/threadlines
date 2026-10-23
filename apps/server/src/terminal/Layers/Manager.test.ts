@@ -759,7 +759,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
 
   it.effect("tracks PowerShell commands until its prompt reports completion", () =>
     Effect.gen(function* () {
-      const { manager, getEvents, ptyAdapter } = yield* createManager(5, {
+      const { manager, getEvents, ptyAdapter, logsDir } = yield* createManager(5, {
         platform: "win32",
         shellResolver: () => "powershell.exe",
         subprocessChecker: () => Effect.succeed(false),
@@ -787,6 +787,13 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         ),
       );
 
+      // Kept with the tab list while it runs, so a restart can offer it again.
+      const fileSystem = yield* FileSystem.FileSystem;
+      const savedCatalog = fileSystem
+        .readFileString(`${logsDir}/terminal_${Encoding.encodeBase64Url("thread-1")}.tabs.json`)
+        .pipe(Effect.orElseSucceed(() => ""));
+      yield* waitFor(Effect.map(savedCatalog, (text) => text.includes("Start-Sleep")));
+
       yield* Effect.sleep("100 millis");
       expect(
         (yield* getEvents).some(
@@ -807,6 +814,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
 
       const reopened = yield* manager.open(openInput());
       expect(reopened.history).not.toContain("633;D");
+      // Ended by itself: nothing a later restart could cut off.
+      yield* waitFor(Effect.map(savedCatalog, (text) => !text.includes("Start-Sleep")));
     }),
   );
 
@@ -1908,6 +1917,105 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       assert.equal(process.killSignals[0], "SIGTERM");
       expect(process.killSignals).toContain("SIGKILL");
     }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("offers to run again the command a server stop cut off, until it is used", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const logsDir = path.join(
+        yield* fileSystem.makeTempDirectoryScoped({ prefix: "threadlines-terminal-" }),
+        "terminals",
+      );
+      let running = false;
+      const firstRun = yield* Scope.make("sequential");
+      const first = yield* createManager(5, {
+        logsDir,
+        platform: "linux",
+        subprocessChecker: () => Effect.sync(() => running),
+        subprocessPollIntervalMs: 20,
+      }).pipe(Effect.provideService(Scope.Scope, firstRun));
+      yield* first.manager.open(openInput());
+      const shell = first.ptyAdapter.processes[0];
+      if (!shell) return;
+      const target = { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID };
+      const catalogFile = path.join(
+        logsDir,
+        `terminal_${Encoding.encodeBase64Url("thread-1")}.tabs.json`,
+      );
+      const savedCatalog = fileSystem
+        .readFileString(catalogFile)
+        .pipe(Effect.orElseSucceed(() => ""));
+      yield* showPrompt(first.manager, shell);
+
+      // A command that ends by itself is nothing to offer later.
+      running = true;
+      yield* first.manager.write({ ...target, data: "make build\r" });
+      yield* waitFor(
+        Effect.map(savedCatalog, (text) => text.includes("make build")),
+        "2 seconds",
+      );
+      running = false;
+      yield* waitFor(
+        Effect.map(savedCatalog, (text) => !text.includes("make build")),
+        "2 seconds",
+      );
+
+      running = true;
+      yield* first.manager.write({ ...target, data: "npm run dev\r" });
+      yield* waitFor(
+        Effect.map(savedCatalog, (text) => text.includes("npm run dev")),
+        "2 seconds",
+      );
+      yield* Scope.close(firstRun, Exit.void);
+
+      const secondRun = yield* Scope.make("sequential");
+      const second = yield* createManager(5, { logsDir, platform: "linux" }).pipe(
+        Effect.provideService(Scope.Scope, secondRun),
+      );
+      const streamed = yield* Ref.make<ReadonlyArray<TerminalStreamEvent>>([]);
+      const unsubscribe = yield* second.manager.subscribeMetadata((event) =>
+        Ref.update(streamed, (events) => [...events, event]),
+      );
+      const offered = Effect.map(
+        Ref.get(streamed),
+        (events) =>
+          events
+            .flatMap((event) =>
+              event.type === "catalog"
+                ? event.threads.flatMap((thread) => thread.tabs)
+                : event.type === "tabs"
+                  ? event.tabs
+                  : [],
+            )
+            .at(-1)?.interruptedCommand,
+      );
+      expect(yield* offered).toBe("npm run dev");
+
+      const restarted = yield* second.manager.open(openInput({ attach: true }));
+      expect(restarted.status).toBe("running");
+      const newShell = second.ptyAdapter.processes[0];
+      if (!newShell) return;
+      yield* showPrompt(second.manager, newShell);
+      // Typed after what's on the line, it would run something else.
+      yield* second.manager.write({ ...target, data: "echo " });
+      const refused = yield* Effect.flip(
+        second.manager.resolveInterrupted({ ...target, run: true }),
+      );
+      expect(refused._tag).toBe("TerminalLineBusyError");
+      expect(yield* offered).toBe("npm run dev");
+
+      // On an empty line it runs as if typed, and the offer goes on every device.
+      yield* second.manager.write({ ...target, data: "\u0015" });
+      yield* second.manager.resolveInterrupted({ ...target, run: true });
+      expect(newShell.writes.at(-1)).toBe("npm run dev\r");
+      yield* waitFor(Effect.map(offered, (command) => command === null));
+      yield* waitFor(
+        Effect.map(savedCatalog, (text) => !text.includes('"interruptedCommand":"npm run dev"')),
+      );
+      unsubscribe();
+      yield* Scope.close(secondRun, Exit.void);
+    }),
   );
 
   it.effect("saves output still waiting to be saved when the server shuts down", () =>

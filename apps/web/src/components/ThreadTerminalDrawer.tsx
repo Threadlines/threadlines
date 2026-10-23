@@ -6,6 +6,7 @@ import {
   Plus,
   Search,
   SquareSplitHorizontal,
+  XIcon,
 } from "lucide-react";
 import {
   type ResolvedKeybindingsConfig,
@@ -424,6 +425,8 @@ interface TerminalViewportProps {
   cwd: string;
   /** Where this tab's shell last started, when the server keeps tab lists. */
   launchCwd: string | null;
+  /** The command a restart stopped in this tab, offered to run again. */
+  interruptedCommand: string | null;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
   stream: TerminalThreadStreamState;
@@ -452,6 +455,7 @@ export function TerminalViewport({
   terminalLabel,
   cwd,
   launchCwd,
+  interruptedCommand,
   worktreePath,
   runtimeEnv,
   stream,
@@ -1237,12 +1241,50 @@ export function TerminalViewport({
     terminalRef.current?.focus();
   }, []);
 
+  // Hidden here at once; the server forgets it for every device (entering
+  // the line does that too) and the tab list catches up. Once it has, the
+  // next command a restart stops is news again, even the same one.
+  const [settledInterrupted, setSettledInterrupted] = useState<string | null>(null);
+  if (interruptedCommand === null && settledInterrupted !== null) {
+    setSettledInterrupted(null);
+  }
+  // The server types it only onto an empty line with nothing running, and
+  // says why not otherwise. A request that fails brings the offer back.
+  const resolveInterrupted = useCallback(
+    (command: string, run: boolean) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api) return;
+      setSettledInterrupted(command);
+      if (run) noteTerminalLineEntered(threadRef, terminalId);
+      void api.terminal
+        .resolveInterrupted({ threadId, terminalId, run })
+        .catch((error: unknown) => {
+          setSettledInterrupted(null);
+          const terminal = terminalRef.current;
+          if (run && terminal) {
+            writeSystemMessage(
+              terminal,
+              error instanceof Error ? error.message : "Couldn't run it again",
+            );
+          }
+        });
+      if (run) terminalRef.current?.focus();
+    },
+    [environmentId, terminalId, threadId, threadRef],
+  );
+
   const ended = session !== null && (session.status === "exited" || session.status === "error");
   const movedFrom =
     session !== null &&
     !ended &&
     trimTrailingSeparators(session.cwd) !== trimTrailingSeparators(cwd)
       ? session.cwd
+      : null;
+  const stoppedCommand =
+    session?.status === "running" &&
+    interruptedCommand !== null &&
+    interruptedCommand !== settledInterrupted
+      ? interruptedCommand
       : null;
 
   return (
@@ -1265,17 +1307,51 @@ export function TerminalViewport({
             </>
           }
         />
-      ) : movedFrom !== null ? (
-        <TerminalNotice
-          message={`Started in ${folderName(movedFrom)}. The thread is now in ${folderName(cwd)}.`}
-          title={`Started in ${movedFrom}`}
-          actions={
-            <Button size="xs" variant="outline" onClick={onRestart}>
-              Restart here
-            </Button>
-          }
-        />
-      ) : null}
+      ) : (
+        <>
+          {stoppedCommand !== null ? (
+            <TerminalNotice
+              message={
+                <>
+                  <code className="font-mono whitespace-pre text-foreground">{stoppedCommand}</code>{" "}
+                  stopped when Threadlines restarted.
+                </>
+              }
+              title={stoppedCommand}
+              actions={
+                <>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => resolveInterrupted(stoppedCommand, true)}
+                  >
+                    Run again
+                  </Button>
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label="Dismiss"
+                    onClick={() => resolveInterrupted(stoppedCommand, false)}
+                  >
+                    <XIcon />
+                  </Button>
+                </>
+              }
+            />
+          ) : null}
+          {movedFrom !== null ? (
+            <TerminalNotice
+              message={`Started in ${folderName(movedFrom)}. The thread is now in ${folderName(cwd)}.`}
+              title={`Started in ${movedFrom}`}
+              actions={
+                <Button size="xs" variant="outline" onClick={onRestart}>
+                  Restart here
+                </Button>
+              }
+            />
+          ) : null}
+        </>
+      )}
       <div className="relative min-h-0 flex-1 px-1 pt-1">
         <div ref={terminalMountRef} className="h-full w-full" data-terminal-viewport-mount="true" />
         {findOpen && searchAddon ? (
@@ -1316,7 +1392,7 @@ function TerminalNotice({
   title,
   actions,
 }: {
-  message: string;
+  message: ReactNode;
   title?: string;
   actions: ReactNode;
 }) {
@@ -1727,6 +1803,7 @@ export default function ThreadTerminalDrawer({
         terminalLabel={labelById.get(terminalId) ?? "Terminal"}
         cwd={cwd}
         launchCwd={tab?.cwd ?? null}
+        interruptedCommand={tab?.interruptedCommand ?? null}
         {...(worktreePath !== undefined ? { worktreePath } : {})}
         {...(runtimeEnv ? { runtimeEnv } : {})}
         stream={stream}

@@ -239,6 +239,7 @@ function makeTestLayer(input: {
             backendReady: Ref.make(false),
             quitting: Ref.make(false),
             localRunningThreadCount: Ref.make(input.initialRunningThreadCount),
+            localBusyTerminalCount: Ref.make(0),
           }),
         );
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
@@ -1081,7 +1082,9 @@ describe("DesktopWindow", () => {
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
         yield* desktopWindow.handleBackendReady;
-        const confirmation = yield* Effect.forkChild(desktopWindow.requestQuitConfirmation(2));
+        const confirmation = yield* Effect.forkChild(
+          desktopWindow.requestQuitConfirmation({ runningThreadCount: 2, busyTerminalCount: 0 }),
+        );
         yield* waitForMockCallCount(fakeWindow.send, 1);
 
         const question = quitQuestionAt(fakeWindow.send, 0);
@@ -1191,7 +1194,9 @@ describe("DesktopWindow", () => {
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
         yield* desktopWindow.handleBackendReady;
-        const confirmation = yield* Effect.forkChild(desktopWindow.requestQuitConfirmation(1));
+        const confirmation = yield* Effect.forkChild(
+          desktopWindow.requestQuitConfirmation({ runningThreadCount: 1, busyTerminalCount: 0 }),
+        );
         yield* waitForMockCallCount(fakeWindow.send, 1);
         yield* desktopWindow.quitConfirmationShown(quitQuestionAt(fakeWindow.send, 0).requestId);
 
@@ -1210,7 +1215,9 @@ describe("DesktopWindow", () => {
 
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
-        const error = yield* Effect.flip(desktopWindow.requestQuitConfirmation(1));
+        const error = yield* Effect.flip(
+          desktopWindow.requestQuitConfirmation({ runningThreadCount: 1, busyTerminalCount: 0 }),
+        );
 
         assert.equal(error.windowOpen, false);
         assert.equal(yield* Ref.get(createCount), 0);
@@ -1230,7 +1237,9 @@ describe("DesktopWindow", () => {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
         yield* desktopWindow.handleBackendReady;
         const confirmation = yield* Effect.forkChild(
-          Effect.flip(desktopWindow.requestQuitConfirmation(1)),
+          Effect.flip(
+            desktopWindow.requestQuitConfirmation({ runningThreadCount: 1, busyTerminalCount: 0 }),
+          ),
         );
         yield* waitForMockCallCount(fakeWindow.send, 1);
 
@@ -1256,7 +1265,9 @@ describe("DesktopWindow", () => {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
         yield* desktopWindow.handleBackendReady;
         const confirmation = yield* Effect.forkChild(
-          Effect.flip(desktopWindow.requestQuitConfirmation(1)),
+          Effect.flip(
+            desktopWindow.requestQuitConfirmation({ runningThreadCount: 1, busyTerminalCount: 0 }),
+          ),
         );
         yield* waitForMockCallCount(fakeWindow.send, 1);
         const first = quitQuestionAt(fakeWindow.send, 0);

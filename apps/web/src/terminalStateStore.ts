@@ -622,6 +622,46 @@ export function terminalTabNumbers(
   return numbers;
 }
 
+export interface BusyTerminal {
+  readonly threadKey: string;
+  readonly terminalId: string;
+  /** What it runs, when known (the line typed, or the process's name). */
+  readonly command: string | null;
+}
+
+/**
+ * Terminals on one server that run something, or just had a command entered:
+ * the work stopping that server stops. In thread order, then tab order.
+ */
+export function selectBusyTerminals(
+  state: Pick<
+    TerminalStateStoreState,
+    "terminalStateByThreadKey" | "terminalActivityCommandByKey" | "terminalCommandPendingByKey"
+  >,
+  environmentId: EnvironmentId | null,
+): BusyTerminal[] {
+  if (environmentId === null) return [];
+  const busy: BusyTerminal[] = [];
+  for (const [threadKey, thread] of Object.entries(state.terminalStateByThreadKey)) {
+    if (parseScopedThreadKey(threadKey)?.environmentId !== environmentId) continue;
+    for (const terminalId of thread.terminalIds) {
+      const key = `${threadKey}\u0000${terminalId}`;
+      if (
+        !thread.runningTerminalIds.includes(terminalId) &&
+        state.terminalCommandPendingByKey[key] !== true
+      ) {
+        continue;
+      }
+      busy.push({
+        threadKey,
+        terminalId,
+        command: state.terminalActivityCommandByKey[key] ?? null,
+      });
+    }
+  }
+  return busy;
+}
+
 export function selectTerminalTabs(
   terminalTabsByThreadKey: Record<string, ReadonlyArray<TerminalTab>>,
   threadRef: ScopedThreadRef | null | undefined,

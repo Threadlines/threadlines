@@ -87,6 +87,22 @@ entered and not yet seen running or done marks the tab `commandPending`, so
 killing or restarting it asks first; the device it was typed on asks from the
 moment Enter is pressed, before the server has answered.
 
+## After a restart
+
+A shell never outlives the server, so a server that stops (an update, a crash,
+a quit) stops whatever ran in it. The tab list keeps the line typed at the
+prompt that is running in each tab, saved as it changes (`runningCommand`), so
+even a crash leaves it behind. It is the line exactly as typed, and only when
+every key could be followed: a line finished with Tab completion or taken
+from history isn't kept, since running it again could run something else.
+Nothing changes it once the server starts shutting down. When the server starts, a tab that had one
+lists it as `interruptedCommand`, and the drawer offers "Run again"
+(`terminal.resolveInterrupted`). The server types it in only on an empty line
+with nothing running, and otherwise says why not. The offer goes, on every
+device, once it is run, dismissed, a line is entered in the tab, or a
+suggested command takes the tab. Before an update restart or a quit, the
+desktop app's question names the terminals still running something.
+
 ## History
 
 Each tab keeps its last 5,000 lines and at most 1 MiB, so a progress bar that

@@ -18,7 +18,10 @@ import {
   resetSavedEnvironmentRegistryStoreForTests,
   useSavedEnvironmentRegistryStore,
 } from "../../environments/runtime";
+import { scopeThreadRef, scopedThreadKey } from "@threadlines/client-runtime";
+
 import { useStore, type EnvironmentState } from "../../store";
+import { useTerminalStateStore } from "../../terminalStateStore";
 import { QuitConfirmationDialog } from "./QuitConfirmationDialog";
 
 const THIS_COMPUTER_ID = EnvironmentId.make("env-windows");
@@ -65,6 +68,11 @@ afterEach(async () => {
   mounted = null;
   Reflect.deleteProperty(window, "desktopBridge");
   useStore.setState({ activeEnvironmentId: null, environmentStateById: {} });
+  useTerminalStateStore.setState({
+    terminalStateByThreadKey: {},
+    terminalActivityCommandByKey: {},
+    terminalCommandPendingByKey: {},
+  });
   resetSavedEnvironmentRegistryStoreForTests();
   resetPrimaryEnvironmentDescriptorForTests();
 });
@@ -111,5 +119,51 @@ describe("QuitConfirmationDialog", () => {
 
     await dialog.getByRole("button", { name: "Quit Anyway" }).click();
     expect(bridge.resolveQuitConfirmation).toHaveBeenCalledWith(true);
+  });
+
+  it("names what this computer's terminals are running", async () => {
+    writePrimaryEnvironmentDescriptor({
+      environmentId: THIS_COMPUTER_ID,
+      label: "Gaming PC",
+      platform: { os: "windows", arch: "x64" },
+      serverVersion: "0.1.0",
+      capabilities: { repositoryIdentity: false },
+    });
+    const busyTerminal = (environmentId: EnvironmentId, command: string) => {
+      const threadKey = scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make("thread-1")));
+      return {
+        threadKey,
+        state: {
+          terminalOpen: false,
+          terminalHeight: 280,
+          terminalIds: ["default"],
+          runningTerminalIds: ["default"],
+          activeTerminalId: "default",
+          terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
+          activeTerminalGroupId: "group-default",
+        },
+        commandKey: `${threadKey}\u0000default`,
+        command,
+      };
+    };
+    const local = busyTerminal(THIS_COMPUTER_ID, "npm run dev");
+    // The Mac's terminal runs on the Mac and keeps running.
+    const mac = busyTerminal(MAC_ID, "cargo watch");
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: { [local.threadKey]: local.state, [mac.threadKey]: mac.state },
+      terminalActivityCommandByKey: {
+        [local.commandKey]: local.command,
+        [mac.commandKey]: mac.command,
+      },
+    });
+    const bridge = stubQuitBridge();
+    mounted = await render(<QuitConfirmationDialog />);
+
+    bridge.ask({ requestId: "quit-2", runningThreadCount: 0, busyTerminalCount: 1 });
+    await expect
+      .element(page.getByRole("alertdialog"))
+      .toMatchTextContent(
+        "npm run dev is still running in a terminal. Quitting now will stop it and the local Threadlines server.",
+      );
   });
 });

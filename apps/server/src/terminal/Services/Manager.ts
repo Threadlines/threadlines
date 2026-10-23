@@ -9,10 +9,12 @@
 import {
   TerminalClearInput,
   TerminalCloseInput,
+  TerminalResolveInterruptedInput,
   TerminalEvent,
   TerminalCwdError,
   TerminalError,
   TerminalHistoryError,
+  TerminalLineBusyError,
   TerminalNotRunningError,
   TerminalOpenInput,
   TerminalResizeInput,
@@ -33,6 +35,7 @@ export {
   TerminalCwdError,
   TerminalError,
   TerminalHistoryError,
+  TerminalLineBusyError,
   TerminalNotRunningError,
   TerminalSessionLookupError,
 };
@@ -195,6 +198,16 @@ export interface TerminalManagerShape {
    * When `terminalId` is omitted, closes all sessions for the thread.
    */
   readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
+
+  /**
+   * Settle the command a restart stopped in a tab, on every device: type it
+   * into the tab's shell (only on an empty line with nothing running), or
+   * forget it.
+   */
+  readonly resolveInterrupted: (
+    input: TerminalResolveInterruptedInput,
+    viewerId?: string,
+  ) => Effect.Effect<void, TerminalError>;
 
   /**
    * Subscribe to terminal runtime events with a direct callback.

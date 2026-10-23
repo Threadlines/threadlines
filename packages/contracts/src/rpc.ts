@@ -286,6 +286,7 @@ import {
 import {
   TerminalClearInput,
   TerminalCloseInput,
+  TerminalResolveInterruptedInput,
   TerminalError,
   TerminalOpenInput,
   TerminalResizeInput,
@@ -441,6 +442,7 @@ export const WS_METHODS = {
   terminalClear: "terminal.clear",
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
+  terminalResolveInterrupted: "terminal.resolveInterrupted",
 
   // Provider sign-in methods (settings-owned, ephemeral PTY)
   providerAuthStart: "providerAuth.start",
@@ -1492,6 +1494,11 @@ export const WsTerminalCloseRpc = Rpc.make(WS_METHODS.terminalClose, {
   error: TerminalError,
 });
 
+export const WsTerminalResolveInterruptedRpc = Rpc.make(WS_METHODS.terminalResolveInterrupted, {
+  payload: TerminalResolveInterruptedInput,
+  error: TerminalError,
+});
+
 export const WsOrchestrationDispatchCommandRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.dispatchCommand,
   {
@@ -1859,6 +1866,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsTerminalClearRpc,
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
+  WsTerminalResolveInterruptedRpc,
   WsSubscribeTerminalEventsRpc,
   WsProviderAuthStartRpc,
   WsProviderAuthWriteRpc,
