@@ -17,6 +17,10 @@ steps. When the turn finishes it settles right above the reply, after the
 steps, and the agent's line ends at it: the page opens the answer. A page
 never folds away with the steps around it.
 
+A page gets the height it needs, up to 6,000 pixels. A longer one scrolls
+inside its panel, and the panel's edge fades wherever there is more above or
+below.
+
 ## What you can do with a page
 
 - Click its title to fold it to one line, and again to open it.

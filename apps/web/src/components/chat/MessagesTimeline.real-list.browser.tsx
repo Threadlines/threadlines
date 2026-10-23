@@ -10,7 +10,8 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createRef, type ReactElement, type ReactNode } from "react";
+import { createRef, type ReactElement, type ReactNode, useLayoutEffect, useState } from "react";
+import { flushSync } from "react-dom";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -727,6 +728,70 @@ describe("MessagesTimeline with the real virtual list", () => {
       });
     } finally {
       restorePaddingAccessor?.();
+      await screen.unmount();
+    }
+  });
+
+  // A row can change size and change back before the browser draws, as an
+  // agent page did while its pictures loaded. If the list measures the row in
+  // a commit between the two, its resize observer later finds the size it last
+  // reported and stays quiet, and the row below sat over the row's bottom
+  // until the thread was opened again. patches/@legendapp__list re-arms the
+  // observer whenever a commit records a new size.
+  it("keeps the next row clear of a row that shrank and grew back before the frame", async () => {
+    const controls = { resizePage: (_height: number) => {}, changeData: () => {} };
+    function Row({ item }: { item: { id: string; height: number; version: number } }) {
+      const [height, setHeight] = useState(item.height);
+      useLayoutEffect(() => {
+        if (item.id === "page") controls.resizePage = setHeight;
+      });
+      return (
+        <div data-row={item.id} style={{ height }}>
+          {item.id}
+        </div>
+      );
+    }
+    function List() {
+      const [version, setVersion] = useState(1);
+      useLayoutEffect(() => {
+        controls.changeData = () => setVersion((value) => value + 1);
+      });
+      return (
+        <div style={{ height: 400, width: 600 }}>
+          <LegendList
+            data={[
+              { id: "page", height: 600, version },
+              { id: "reply", height: 100, version: 1 },
+            ]}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => <Row item={item} />}
+            estimatedItemSize={200}
+            initialScrollAtEnd
+            maintainScrollAtEnd={{ animated: false }}
+            maintainVisibleContentPosition
+            style={{ height: "100%" }}
+          />
+        </div>
+      );
+    }
+    const gapBelowPage = () =>
+      document.querySelector('[data-row="reply"]')!.getBoundingClientRect().top -
+      document.querySelector('[data-row="page"]')!.getBoundingClientRect().bottom;
+    const screen = await renderTimeline(<List />);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(gapBelowPage()).toBe(0);
+
+      // One task, no frame between: the list lays out the page's row while it
+      // is short, then the row grows back on its own.
+      flushSync(() => {
+        controls.resizePage(500);
+        controls.changeData();
+      });
+      flushSync(() => controls.resizePage(600));
+      for (let frame = 0; frame < 3; frame++) await nextFrame();
+      expect(gapBelowPage()).toBe(0);
+    } finally {
       await screen.unmount();
     }
   });
