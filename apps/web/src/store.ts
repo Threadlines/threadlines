@@ -1162,7 +1162,10 @@ function scheduledRunsEqual(
   const b = right ?? null;
   return a === null || b === null
     ? a === b
-    : a.taskId === b.taskId && a.taskName === b.taskName && a.slotUtc === b.slotUtc;
+    : a.taskId === b.taskId &&
+        a.taskName === b.taskName &&
+        a.slotUtc === b.slotUtc &&
+        (a.event ?? false) === (b.event ?? false);
 }
 
 function sideTurnsEqual(

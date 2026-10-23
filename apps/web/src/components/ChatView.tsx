@@ -210,6 +210,7 @@ import {
   getAppModelOptionsForInstance,
   resolveAppModelSelectionForInstance,
 } from "../modelSelection";
+import { useScheduledRunLabel } from "../lib/scheduledTasksState";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { stopThreadSession } from "../lib/threadSessionCommands";
 import {
@@ -1427,6 +1428,11 @@ export default function ChatView(props: ChatViewProps) {
   const activeThread = isServerThread
     ? serverThread
     : mergeLocalDraftThreadWithServerThread(localDraftThread, serverThread);
+  // A scheduled task's run thread: its first message folds to this line.
+  const scheduledRunLabel = useScheduledRunLabel(
+    activeThread?.environmentId,
+    activeThread?.scheduledRun,
+  );
   const runtimeMode =
     composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_COMPOSER_RUNTIME_MODE;
   const interactionMode =
@@ -8019,6 +8025,8 @@ export default function ChatView(props: ChatViewProps) {
                 onOpenAgentsPanel={onOpenAgentsPanel}
                 workflowRunActions={workflowRunActions}
                 onOpenThread={onOpenForkSourceThread}
+                scheduledRunLabel={scheduledRunLabel}
+                scheduledRunEvent={activeThread.scheduledRun?.event === true}
               />
             </CommandRunActionsContext>
             {/* An MCP app open beside the chat: outside the timeline, so it keeps

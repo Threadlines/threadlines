@@ -92,6 +92,7 @@ import {
   setAgentMessageOpened,
   useAgentMessageOpened,
 } from "./agentMessageFolds";
+import { ScheduledRunIcon } from "../scheduled/ScheduledRunIcon";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -161,6 +162,7 @@ import {
   estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
   foldsAgentMessage,
+  scheduledRunMessageId,
   shouldCollapseUserMessage,
   stretchDurationMs,
   timelineMessageView,
@@ -327,6 +329,8 @@ interface TimelineRowSharedState {
   onOpenThread: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null;
   /** Every finished `thread_start` call, by turn: a call's record reads its turn's. */
   threadStartCallsByTurn: ReadonlyMap<string, ReadonlyArray<ThreadStartCall>>;
+  /** A run thread's own first message and the line it folds to (MessagesTimelineProps.scheduledRunLabel). */
+  runMessage: RunMessageFoldState | null;
   /** True while the working anchor at the tail is mounted. The per-agent live
    *  status rows render there and only there; a receipt keeps its compact
    *  tracker chip but must not repeat those rows above the exchange. */
@@ -362,6 +366,12 @@ interface FailedTurnRetryAction {
 interface TimelineRowActivityState {
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
+}
+
+interface RunMessageFoldState {
+  readonly messageId: MessageId;
+  readonly label: string;
+  readonly event: boolean;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -834,6 +844,14 @@ interface MessagesTimelineProps {
    * computer it lives on when that is another one; absent, this thread's.
    */
   onOpenThread?: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null | undefined;
+  /**
+   * The thread was started by a scheduled task's run: its first message, the
+   * run's own, folds to this line ("Event · <task>", "Scheduled · <task>")
+   * until the reader opens it. Absent or null: not a run thread.
+   */
+  scheduledRunLabel?: string | null | undefined;
+  /** The run was an event task's (a webhook glyph on the line, not a clock). */
+  scheduledRunEvent?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +914,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenAgentsPanel: onOpenAgentsPanelProp = null,
   workflowRunActions: workflowRunActionsProp = null,
   onOpenThread: onOpenThreadProp = null,
+  scheduledRunLabel = null,
+  scheduledRunEvent = false,
 }: MessagesTimelineProps) {
   // What every row reads changes only when something rows show changes: the
   // chat rebuilds its callbacks and some of its lookups on every update to
@@ -1805,6 +1825,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, [clearTouchSettleTimer, clearUserScrollLockTimer]);
 
+  const runMessageId = useMemo(
+    () => (scheduledRunLabel === null ? null : scheduledRunMessageId(timelineEntries)),
+    [scheduledRunLabel, timelineEntries],
+  );
+  const runMessage = useMemo<RunMessageFoldState | null>(
+    () =>
+      scheduledRunLabel === null || runMessageId === null
+        ? null
+        : { messageId: runMessageId, label: scheduledRunLabel, event: scheduledRunEvent },
+    [runMessageId, scheduledRunEvent, scheduledRunLabel],
+  );
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
       timestampFormat,
@@ -1849,6 +1880,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onCancelCheckBack,
       onPutMcpAppMessage,
       threadStartCallsByTurn,
+      runMessage,
       anchorOwnsLiveAgents,
     }),
     [
@@ -1894,6 +1926,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onCancelCheckBack,
       onPutMcpAppMessage,
       threadStartCallsByTurn,
+      runMessage,
       anchorOwnsLiveAgents,
     ],
   );
@@ -2421,12 +2454,54 @@ function CommandOutputTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
   );
 }
 
+/**
+ * A run's first message folds and opens the way a message agents send each
+ * other does (agentMessageFolds.ts): kept per thread and row, opened by find
+ * in chat and by a jump from search. The control pressed goes away either
+ * way, so focus moves to what replaced it: the message's start, or the line
+ * that opens it again.
+ */
+function useRunMessageFold(rowId: string, foldable: boolean) {
+  const ctx = use(TimelineRowCtx);
+  const threadKey = ctx.routeThreadKey;
+  const opened = useAgentMessageOpened(threadKey, rowId);
+  const folded = foldable && !opened;
+  const focusAfterToggleRef = useRef<"message" | "fold" | null>(null);
+  const foldRef = useRef<HTMLButtonElement>(null);
+  const messageRef = useRef<HTMLDivElement>(null);
+  // After the toggle's render (no dependencies: it waits on the ref, not a value).
+  useLayoutEffect(() => {
+    const target = focusAfterToggleRef.current;
+    if (target === null) return;
+    focusAfterToggleRef.current = null;
+    const element = target === "message" ? messageRef.current : foldRef.current;
+    element?.focus({ preventScroll: true });
+  });
+  const setOpened = useCallback(
+    (next: boolean) => {
+      focusAfterToggleRef.current = next ? "message" : "fold";
+      setAgentMessageOpened(threadKey, rowId, next);
+    },
+    [rowId, threadKey],
+  );
+  return { folded, setOpened, foldRef, messageRef };
+}
+
 function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageAttachments = row.message.attachments ?? [];
   const userImages = useResolvedAttachmentPreviews(
     messageAttachments.filter((attachment) => attachment.type === "image"),
   );
+  // A scheduled task's run started the thread with this message: it folds
+  // to the line naming the task, kept as the reader left it.
+  const runMessage = ctx.runMessage?.messageId === row.message.id ? ctx.runMessage : null;
+  const {
+    folded: runFolded,
+    setOpened: setRunOpened,
+    foldRef: runFoldRef,
+    messageRef: runMessageRef,
+  } = useRunMessageFold(row.id, runMessage !== null);
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const transcriptHighlights = displayedUserMessage.transcriptHighlights;
@@ -2443,6 +2518,34 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
   }));
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
   const canRetryFailedTurn = ctx.failedTurnRetry?.messageId === row.message.id;
+
+  if (runMessage !== null && runFolded && ctx.searchTargetMessageId !== row.message.id) {
+    return (
+      <div className="flex flex-col items-end">
+        <div className="flex w-full justify-end">
+          <div className="relative max-w-[80%] min-w-0 rounded-4xl bg-secondary px-3.5 py-2.5">
+            <button
+              ref={runFoldRef}
+              type="button"
+              aria-expanded={false}
+              data-scroll-anchor-ignore
+              // All of the message is counted (chatFindRows): a match in it opens it.
+              data-chat-find-folded=""
+              data-run-message-fold=""
+              className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 text-left text-sm leading-relaxed text-muted-foreground transition-colors hover:text-foreground"
+              onClick={() => setRunOpened(true)}
+            >
+              <ChevronRightIcon aria-hidden className="size-3.5 shrink-0" />
+              <ScheduledRunIcon event={runMessage.event} className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate" data-chat-find-ignore="">
+                {runMessage.label}
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const onTheSide = row.message.sideTurnId !== undefined;
   const addressee =
@@ -2461,7 +2564,12 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
         </div>
       ) : null}
       <div className="flex w-full justify-end">
-        <div className="group relative max-w-[80%] rounded-4xl bg-secondary px-3.5 py-2.5">
+        <div
+          ref={runMessageRef}
+          // A run's message, just opened, takes focus from the line that opened it.
+          tabIndex={runMessage !== null ? -1 : undefined}
+          className="group relative max-w-[80%] rounded-4xl bg-secondary px-3.5 py-2.5 outline-none"
+        >
           <TimelineFileAttachmentChips attachments={messageAttachments} className="mb-2" />
           <TimelineImagePreviewGrid
             images={userImages}
@@ -2479,6 +2587,7 @@ function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "me
               role: "user",
             }}
             skills={ctx.skills}
+            onFold={runMessage !== null ? () => setRunOpened(false) : undefined}
             forceExpanded={ctx.searchTargetMessageId === row.message.id}
             findOpenRequest={ctx.findOpenRequests.get(row.id) ?? 0}
             searchHighlightQuery={
@@ -5106,6 +5215,11 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   findOpenRequest?: number | undefined;
   searchHighlightQuery?: string | undefined;
   footer?: ReactNode;
+  /**
+   * A run's first message, opened from its one-line fold: drawn whole (no
+   * fade of its own), with Show less folding it back to that line.
+   */
+  onFold?: (() => void) | undefined;
 }) {
   const findOpenRequest = props.findOpenRequest ?? 0;
   const [expanded, setExpanded] = useState(findOpenRequest > 0);
@@ -5119,8 +5233,10 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
     props.terminalContexts.length > 0 ||
     props.transcriptHighlights.length > 0;
   const hasAttachedContextChips = props.pickedElements.length > 0 || props.drawings.length > 0;
-  const canCollapse = hasVisibleBody && shouldCollapseUserMessage(props.text);
+  const canCollapse =
+    props.onFold === undefined && hasVisibleBody && shouldCollapseUserMessage(props.text);
   const isCollapsed = canCollapse && !expanded && !props.forceExpanded;
+  const onFold = props.onFold;
 
   return (
     <div>
@@ -5178,11 +5294,11 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           ))}
         </div>
       ) : null}
-      {canCollapse || props.footer ? (
+      {canCollapse || onFold || props.footer ? (
         <div
           className={cn(
             "mt-1.5 flex items-center gap-2",
-            canCollapse && props.footer ? "justify-between" : "justify-end",
+            (canCollapse || onFold) && props.footer ? "justify-between" : "justify-end",
           )}
           data-user-message-footer="true"
         >
@@ -5191,6 +5307,8 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
               expanded={expanded}
               onToggle={() => setExpanded((value) => !value)}
             />
+          ) : onFold ? (
+            <MessageFoldButton expanded onToggle={onFold} />
           ) : null}
           {props.footer ? (
             <div className="ml-auto flex items-center gap-2">{props.footer}</div>
