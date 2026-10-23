@@ -1,6 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - NodeHttpServer.layer takes `NodeHttp.createServer` as arg
 import * as NodeHttp from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,10 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@threadlines/shared/Net";
 import { assert, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
@@ -17,6 +20,7 @@ import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/unstable/cli";
 
 import { cli } from "./bin.ts";
+import { CommandExit } from "./cli/connectExit.ts";
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "./config.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
@@ -174,6 +178,24 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
       }
       assert.equal(error.option, "log-level");
       assert.equal(error.value, "Debug");
+    }),
+  );
+
+  it.effect("starts no server from the command the desktop app installs", () =>
+    Effect.gen(function* () {
+      const baseDir = mkdtempSync(join(tmpdir(), "threadlines-cli-only-test-"));
+      for (const command of [[], ["start"], ["serve"]]) {
+        const exit = yield* runCliWithRuntime([...command, "--base-dir", baseDir]).pipe(
+          Effect.provide(
+            ConfigProvider.layer(ConfigProvider.fromEnv({ env: { THREADLINES_CLI_ONLY: "1" } })),
+          ),
+          Effect.exit,
+        );
+        const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : null;
+        assert.isTrue(error instanceof CommandExit && error.code === 1, `${command.join(" ")}`);
+      }
+      // Nothing was opened or written in the data folder.
+      assert.deepEqual(readdirSync(baseDir), []);
     }),
   );
 

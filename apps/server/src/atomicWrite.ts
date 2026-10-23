@@ -4,9 +4,15 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 
+/**
+ * Replaces `filePath` with `contents` in one step: readers see the old file or
+ * the new one, never a part. `mode` sets the new file's permissions (0o600
+ * for a secret).
+ */
 export const writeFileStringAtomically = (input: {
   readonly filePath: string;
   readonly contents: string;
+  readonly mode?: number;
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -22,7 +28,11 @@ export const writeFileStringAtomically = (input: {
       });
       const tempPath = path.join(tempDirectory, `${tempFileId}.tmp`);
 
-      yield* fs.writeFileString(tempPath, input.contents);
+      yield* fs.writeFileString(
+        tempPath,
+        input.contents,
+        input.mode === undefined ? undefined : { mode: input.mode },
+      );
       // Windows readers and virus scanners can briefly block replacement.
       // Retry the rename while keeping both the old file and completed temp file.
       yield* fs.rename(tempPath, input.filePath).pipe(

@@ -1,8 +1,9 @@
 /**
  * Settings › Connections › Agents (docs/design/outside-agents.md, "What the
  * user does"): agents running outside Threadlines that use this computer.
- * This computer's address for agents, how each client connects to it, every
- * connection with what it may do and when it last called (Change, Remove),
+ * This computer's address for agents, how each client connects to it, the
+ * `threadlines` command the desktop app puts on PATH (ThreadlinesCommandRow),
+ * every connection with what it may do and when it last called (Change, Remove),
  * and after Deny all how long new sign-ins stay turned away, with the way
  * back. Owner only: ConnectionsSettings shows it to the computer's owner.
  */
@@ -44,6 +45,7 @@ import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control"
 import { Skeleton } from "../ui/skeleton";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { OutsideAgentDialog } from "./outsideAgentDialog";
+import { ThreadlinesCommandRow } from "./ThreadlinesCommandRow";
 
 const ROW_CLASS = cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5");
 
@@ -157,6 +159,7 @@ export function OutsideAgentsSection({ revealOnArrival }: { readonly revealOnArr
               control={<CopyButton value={snapshot.address} label="Copy the address for agents" />}
             />
             <ConnectGuideRow address={snapshot.address} />
+            <ThreadlinesCommandRow />
             {snapshot.connections.map((connection) => (
               <div
                 key={connection.connectionId}

@@ -58,6 +58,8 @@ import * as DesktopSshRemoteApi from "./ssh/DesktopSshRemoteApi.ts";
 import * as DesktopRelayRetirement from "./relay/DesktopRelayRetirement.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopBackground from "./app/DesktopBackground.ts";
+import { runAppImageCommandIfAsked } from "./cliCommand/appImageCommand.ts";
+import * as DesktopCliCommand from "./cliCommand/DesktopCliCommand.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopStartupFailurePrompt from "./window/DesktopStartupFailurePrompt.ts";
@@ -73,6 +75,16 @@ import {
   resolveServerRuntimeStatePath,
   shouldRequestSingleInstanceLock,
 } from "./app/singleInstanceGate.ts";
+
+// An AppImage's `threadlines` command comes in through the app itself
+// (cliCommand/appImageCommand.ts): it runs the command and exits, before the
+// app claims its data folder or its single-instance lock.
+runAppImageCommandIfAsked({
+  env: process.env,
+  argv: process.argv,
+  executablePath: process.execPath,
+  appPath: Electron.app.getAppPath(),
+});
 
 // userData must be final before Electron's "ready" event: Chromium spawns its
 // sandboxed helper processes (GPU, network service) at ready with sandbox
@@ -294,6 +306,7 @@ const desktopApplicationLayer = Layer.mergeAll(
   DesktopScreenCapture.layer,
   PreviewProfiles.layer,
   DesktopRelayRetirement.layer,
+  DesktopCliCommand.layer,
   desktopSshLayer,
 ).pipe(Layer.provideMerge(DesktopUpdates.layer), Layer.provideMerge(desktopBackendLayer));
 

@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 
 import * as DesktopIpc from "./DesktopIpc.ts";
 import { getBackgroundOptions, setBackgroundOptions } from "./methods/background.ts";
+import { getCliCommandStatus, installCliCommand, removeCliCommand } from "./methods/cliCommand.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import {
   getSavedEnvironmentRegistry,
@@ -152,6 +153,9 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(setTaskbarStatus);
   yield* ipc.handle(getBackgroundOptions);
   yield* ipc.handle(setBackgroundOptions);
+  yield* ipc.handle(getCliCommandStatus);
+  yield* ipc.handle(installCliCommand);
+  yield* ipc.handle(removeCliCommand);
   yield* ipc.handle(quitConfirmationShown);
   yield* ipc.handle(resolveQuitConfirmation);
   yield* ipc.handle(showContextMenu);

@@ -9,6 +9,8 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   type DesktopBridge,
+  type DesktopCliCommandResult,
+  type DesktopCliCommandStatus,
   type DesktopUpdateChannel,
   type DesktopUpdateState,
   type LocalApi,
@@ -5243,6 +5245,50 @@ describe("Agents outside Threadlines", () => {
     await expect
       .element(page.getByTestId(`outside-agent-row-${claude.connectionId}`))
       .not.toBeInTheDocument();
+  });
+
+  it("installs the desktop app's threadlines command over another copy, and Cancel on Remove keeps it", async () => {
+    const path = "/usr/local/bin/threadlines";
+    let status: DesktopCliCommandStatus = {
+      state: "other_copy",
+      path,
+      folderOnPath: true,
+      reason: null,
+      devCommand: null,
+    };
+    const installCliCommand = vi.fn(async (): Promise<DesktopCliCommandResult> => {
+      status = { ...status, state: "installed" };
+      return { outcome: "done", detail: null, status };
+    });
+    // The system's administrator prompt, cancelled: nothing changes.
+    const removeCliCommand = vi.fn(async (): Promise<DesktopCliCommandResult> => ({
+      outcome: "cancelled",
+      detail: null,
+      status,
+    }));
+    window.desktopBridge = {
+      ...createDesktopBridgeStub(),
+      getCliCommandStatus: async () => status,
+      installCliCommand,
+      removeCliCommand,
+    };
+    outsideAgentsHarness.emit(snapshot());
+    await mountConnectionsWithHost();
+
+    const row = page.getByTestId("threadlines-command");
+    await expect.element(row).toMatchTextContent(`${path} points at another copy of Threadlines.`);
+    await row.getByRole("button", { name: "Install again" }).click();
+    await expect
+      .element(row)
+      .toMatchTextContent(`Installed at ${path}. Run threadlines connect in a new terminal`);
+    expect(installCliCommand).toHaveBeenCalledTimes(1);
+
+    await row.getByRole("button", { name: "Remove" }).click();
+    await vi.waitFor(() => {
+      expect(removeCliCommand).toHaveBeenCalledTimes(1);
+    });
+    await expect.element(row.getByRole("button", { name: "Remove" })).toBeEnabled();
+    await expect.element(row).toMatchTextContent(`Installed at ${path}`);
   });
 
   it("shows a device that isn't the computer's owner neither the group nor a sign-in", async () => {

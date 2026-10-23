@@ -101,6 +101,17 @@ const aliasedConfigWithDefault = <A>(
     Config.map((value) => value ?? defaultValue),
   );
 
+/**
+ * The data folder the environment names, if any (`resolveBaseDir` falls back
+ * to `~/.threadlines`). T3CODE_HOME is T3 Code's own live setting, not an old
+ * name of ours: honoring it would open T3 Code's database and upgrade it as
+ * ours.
+ */
+export const threadlinesHomeConfig = aliasedConfigOption(
+  Config.string("THREADLINES_HOME"),
+  Config.string("BADCODE_HOME"),
+);
+
 const EnvServerConfig = Config.all({
   // Only the namespaced aliases are honored. A bare `APP_VERSION` is a
   // common ambient variable that any unrelated tool can set, and trusting
@@ -196,12 +207,7 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
-  // T3CODE_HOME is T3 Code's own live setting, not an old name of ours:
-  // honoring it would open T3 Code's database and upgrade it as ours.
-  threadlinesHome: aliasedConfigOption(
-    Config.string("THREADLINES_HOME"),
-    Config.string("BADCODE_HOME"),
-  ),
+  threadlinesHome: threadlinesHomeConfig,
   devUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
   noBrowser: aliasedConfigOption(
     Config.boolean("THREADLINES_NO_BROWSER"),
