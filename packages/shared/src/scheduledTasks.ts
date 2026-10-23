@@ -26,6 +26,8 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 
+import { describeWebhookCadence } from "./webhookTasks.ts";
+
 /** A schedule must run within this long of being saved. */
 export const SCHEDULED_TASK_SAVE_HORIZON_MS = 366 * 24 * 60 * 60_000;
 /** Missed slots older than this never get a catch-up run. */
@@ -79,12 +81,15 @@ function dateParts(date: string): { year: number; month: number; day: number } |
 }
 
 /**
- * The 5-field cron expression a cadence runs on; null for `manual`. A `once`
- * cadence's expression recurs every year; only its date's instance counts.
+ * The 5-field cron expression a cadence runs on; null for `manual` and
+ * `webhook` (an event task runs when an event arrives, never on a clock). A
+ * `once` cadence's expression recurs every year; only its date's instance
+ * counts.
  */
 export function cadenceCronExpression(cadence: ScheduledTaskCadence): string | null {
   switch (cadence.kind) {
     case "manual":
+    case "webhook":
       return null;
     case "once": {
       const parts = dateParts(cadence.date);
@@ -113,7 +118,9 @@ export function sameCadence(left: ScheduledTaskCadence, right: ScheduledTaskCade
   const key = (cadence: ScheduledTaskCadence) =>
     cadence.kind === "once"
       ? `once ${cadence.date} ${cadence.time.hour}:${cadence.time.minute}`
-      : `${cadence.kind} ${cadenceCronExpression(cadence) ?? ""}`;
+      : cadence.kind === "webhook"
+        ? `webhook ${JSON.stringify(cadence)}`
+        : `${cadence.kind} ${cadenceCronExpression(cadence) ?? ""}`;
   return key(left) === key(right);
 }
 
@@ -317,7 +324,8 @@ export function compileCadence(
   if (!isKnownTimeZone(timeZone)) {
     return Result.fail(`"${timeZone}" isn't a time zone this computer knows.`);
   }
-  if (cadence.kind === "manual") return Result.succeed(null);
+  // An event task runs when an event arrives: like manual, it has no clock.
+  if (cadence.kind === "manual" || cadence.kind === "webhook") return Result.succeed(null);
   if (cadence.kind === "once") return compileOnce(cadence, timeZone);
   const expression = cadenceCronExpression(cadence) ?? "";
   const fields = expression.split(/\s+/u).filter((field) => field.length > 0);
@@ -394,8 +402,9 @@ export function upcomingSlots(
 }
 
 /**
- * Whether a cadence can be saved: it parses, and (unless manual) runs within
- * a year of `now`. Null when it can; otherwise why not, in one sentence.
+ * Whether a cadence can be saved: it parses, and (unless manual or an event
+ * task) runs within a year of `now`. Null when it can; otherwise why not, in
+ * one sentence.
  */
 export function cadenceSaveRefusal(
   cadence: ScheduledTaskCadence,
@@ -404,7 +413,9 @@ export function cadenceSaveRefusal(
 ): string | null {
   const next = upcomingSlots(cadence, timeZone, now, 1);
   if (Result.isFailure(next)) return next.failure;
-  if (cadence.kind === "manual") return null;
+  // No clock to check; an event task's own settings are checked with its
+  // instructions (webhookTasks.ts webhookCadenceProblem).
+  if (cadence.kind === "manual" || cadence.kind === "webhook") return null;
   const first = next.success[0];
   if (first === undefined && cadence.kind === "once") return "That time has already passed.";
   if (first === undefined || first.getTime() - now.getTime() > SCHEDULED_TASK_SAVE_HORIZON_MS) {
@@ -512,5 +523,7 @@ export function describeCadence(
       return `${WEEKDAY_NAMES[cadence.weekday] ?? "Weekly"} at ${formatClock(cadence.time)}`;
     case "custom":
       return `Custom (${cadence.cron.trim()})`;
+    case "webhook":
+      return describeWebhookCadence(cadence);
   }
 }

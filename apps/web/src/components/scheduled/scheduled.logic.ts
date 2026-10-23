@@ -17,6 +17,7 @@ import type {
   ScheduledTaskClock,
   ScheduledTaskDraft,
   ScheduledTaskId,
+  ScheduledTaskWebhookCadence,
   ThreadId,
   ThreadParticipantId,
 } from "@threadlines/contracts";
@@ -152,6 +153,7 @@ export const RUN_TRIGGER_LABELS: Record<ScheduledRunTrigger, string | null> = {
   schedule: null,
   catch_up: "Catch-up",
   manual: "Run now",
+  webhook: "Event",
 };
 
 export const isWorkingRunStatus = (status: ScheduledRunStatus) =>
@@ -413,6 +415,7 @@ export const CADENCE_KIND_LABELS: Record<CadenceKind, string> = {
   weekdays: "Weekdays",
   weekly: "Weekly",
   custom: "Custom",
+  webhook: "When something happens",
 };
 
 export const WEEKDAY_LABELS = [
@@ -441,6 +444,8 @@ export interface ScheduledTaskForm {
   readonly minute: number;
   readonly weekday: number;
   readonly cron: string;
+  /** An event task's start (docs/design/event-tasks.md), kept while another kind is picked. */
+  readonly webhook: ScheduledTaskWebhookCadence;
   readonly timeZone: string;
   /**
    * The user picked the zone (or the task already had one): until then a
@@ -489,6 +494,7 @@ export function emptyTaskForm(input: {
     minute: 0,
     weekday: 1,
     cron: "0 9 * * 1-5",
+    webhook: DEFAULT_WEBHOOK_CADENCE,
     timeZone: input.timeZone,
     timeZoneChosen: false,
     target: "new_thread",
@@ -496,6 +502,22 @@ export function emptyTaskForm(input: {
     threadParticipantId: null,
   };
 }
+
+/**
+ * A new event task's start before the form knows its project: any service,
+ * at most 20 runs a day, events up to a day late. The form switches it to
+ * GitHub, with the project's repository and the user's login as the only
+ * sender, once `scheduledTasks.gitHubContext` has them.
+ */
+export const DEFAULT_WEBHOOK_CADENCE: ScheduledTaskWebhookCadence = {
+  kind: "webhook",
+  source: "any",
+  signature: null,
+  filters: [],
+  includeEvent: true,
+  maxLateMinutes: 1440,
+  dailyRunLimit: 20,
+};
 
 /** The form opened on an existing task. */
 export function taskForm(task: ScheduledTask, environmentId: EnvironmentId): ScheduledTaskForm {
@@ -523,6 +545,7 @@ export function taskForm(task: ScheduledTask, environmentId: EnvironmentId): Sch
     ...(cadence.kind === "hourly" ? { minute: cadence.minute } : {}),
     ...(cadence.kind === "weekly" ? { weekday: cadence.weekday } : {}),
     ...(cadence.kind === "custom" ? { cron: cadence.cron } : {}),
+    ...(cadence.kind === "webhook" ? { webhook: cadence } : {}),
     timeZoneChosen: true,
     target: task.target.kind,
     threadId: task.target.kind === "thread" ? task.target.threadId : null,
@@ -546,6 +569,8 @@ export function formCadence(form: ScheduledTaskForm): ScheduledTaskCadence {
       return { kind: "weekly", weekday: form.weekday, time: form.time };
     case "custom":
       return { kind: "custom", cron: form.cron.trim() };
+    case "webhook":
+      return form.webhook;
   }
 }
 

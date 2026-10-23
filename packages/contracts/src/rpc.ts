@@ -28,6 +28,19 @@ import {
   ScheduledTaskRespondRequestInput,
   ScheduledTaskRunNowInput,
   ScheduledTasksSnapshot,
+  ScheduledTasksSubscribeInput,
+  ScheduledTaskIdInput,
+  ScheduledTaskWebhookAddress,
+  ScheduledTaskSetSigningSecretInput,
+  ScheduledTaskSigningSecret,
+  ScheduledTaskGitHubContext,
+  ScheduledTaskGitHubContextInput,
+  ScheduledTaskListWebhookEventsInput,
+  ScheduledTaskListWebhookEventsResult,
+  ScheduledTaskWebhookEventInput,
+  WebhookEventDetail,
+  WebhookEventRecord,
+  ScheduledTaskTestWebhookInput,
   ScheduledTaskUpdateInput,
 } from "./scheduledTasks.ts";
 import {
@@ -620,6 +633,17 @@ export const WS_METHODS = {
   scheduledTasksDelete: "scheduledTasks.delete",
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRespondRequest: "scheduledTasks.respondRequest",
+  scheduledTasksWebhookAddress: "scheduledTasks.webhookAddress",
+  scheduledTasksRotateWebhookAddress: "scheduledTasks.rotateWebhookAddress",
+  scheduledTasksSetWebhookSigningSecret: "scheduledTasks.setWebhookSigningSecret",
+  scheduledTasksRevealWebhookSigningSecret: "scheduledTasks.revealWebhookSigningSecret",
+  scheduledTasksGitHubContext: "scheduledTasks.gitHubContext",
+  scheduledTasksConnectGitHub: "scheduledTasks.connectGitHub",
+  scheduledTasksDisconnectGitHub: "scheduledTasks.disconnectGitHub",
+  scheduledTasksListWebhookEvents: "scheduledTasks.listWebhookEvents",
+  scheduledTasksWebhookEvent: "scheduledTasks.webhookEvent",
+  scheduledTasksTestWebhook: "scheduledTasks.testWebhook",
+  scheduledTasksRunWithWebhookEvent: "scheduledTasks.runWithWebhookEvent",
   // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
   movesPreview: "moves.preview",
   movesStart: "moves.start",
@@ -1840,7 +1864,7 @@ export const WsLinksRespondRequestRpc = Rpc.make(WS_METHODS.linksRespondRequest,
 
 /** This computer's scheduled tasks, each with its last run; again on every change. */
 export const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
-  payload: Schema.Struct({}),
+  payload: ScheduledTasksSubscribeInput,
   success: ScheduledTasksSnapshot,
   error: ScheduledTaskError,
   stream: true,
@@ -1881,6 +1905,101 @@ export const WsScheduledTasksRespondRequestRpc = Rpc.make(WS_METHODS.scheduledTa
   payload: ScheduledTaskRespondRequestInput,
   error: ScheduledTaskError,
 });
+
+/** An event task's addresses (docs/design/event-tasks.md). */
+export const WsScheduledTasksWebhookAddressRpc = Rpc.make(WS_METHODS.scheduledTasksWebhookAddress, {
+  payload: ScheduledTaskIdInput,
+  success: ScheduledTaskWebhookAddress,
+  error: ScheduledTaskError,
+});
+
+/** A new address for an event task; the old one stops taking events at once. */
+export const WsScheduledTasksRotateWebhookAddressRpc = Rpc.make(
+  WS_METHODS.scheduledTasksRotateWebhookAddress,
+  {
+    payload: ScheduledTaskIdInput,
+    success: ScheduledTaskWebhookAddress,
+    error: ScheduledTaskError,
+  },
+);
+
+/** Sets an event task's signing secret; a generated one comes back once. */
+export const WsScheduledTasksSetWebhookSigningSecretRpc = Rpc.make(
+  WS_METHODS.scheduledTasksSetWebhookSigningSecret,
+  {
+    payload: ScheduledTaskSetSigningSecretInput,
+    success: ScheduledTaskSigningSecret,
+    error: ScheduledTaskError,
+  },
+);
+
+/** Shows an event task's signing secret, when the user asks to see it. */
+export const WsScheduledTasksRevealWebhookSigningSecretRpc = Rpc.make(
+  WS_METHODS.scheduledTasksRevealWebhookSigningSecret,
+  {
+    payload: ScheduledTaskIdInput,
+    success: ScheduledTaskSigningSecret,
+    error: ScheduledTaskError,
+  },
+);
+
+/** A project's GitHub repository and who `gh` is signed in as, for the form. */
+export const WsScheduledTasksGitHubContextRpc = Rpc.make(WS_METHODS.scheduledTasksGitHubContext, {
+  payload: ScheduledTaskGitHubContextInput,
+  success: ScheduledTaskGitHubContext,
+  error: ScheduledTaskError,
+});
+
+/** "Add to GitHub": sets the event task's webhook up on its repository. */
+export const WsScheduledTasksConnectGitHubRpc = Rpc.make(WS_METHODS.scheduledTasksConnectGitHub, {
+  payload: ScheduledTaskIdInput,
+  success: ScheduledTask,
+  error: ScheduledTaskError,
+});
+
+/** Removes the webhook Threadlines set up on GitHub; the task keeps its address. */
+export const WsScheduledTasksDisconnectGitHubRpc = Rpc.make(
+  WS_METHODS.scheduledTasksDisconnectGitHub,
+  {
+    payload: ScheduledTaskIdInput,
+    success: ScheduledTask,
+    error: ScheduledTaskError,
+  },
+);
+
+/** An event task's events, newest first. */
+export const WsScheduledTasksListWebhookEventsRpc = Rpc.make(
+  WS_METHODS.scheduledTasksListWebhookEvents,
+  {
+    payload: ScheduledTaskListWebhookEventsInput,
+    success: ScheduledTaskListWebhookEventsResult,
+    error: ScheduledTaskError,
+  },
+);
+
+/** One event opened up: its headers, body and the message it made. */
+export const WsScheduledTasksWebhookEventRpc = Rpc.make(WS_METHODS.scheduledTasksWebhookEvent, {
+  payload: ScheduledTaskWebhookEventInput,
+  success: WebhookEventDetail,
+  error: ScheduledTaskError,
+});
+
+/** "Send a test event": a sample event through every check; a dry run unless asked. */
+export const WsScheduledTasksTestWebhookRpc = Rpc.make(WS_METHODS.scheduledTasksTestWebhook, {
+  payload: ScheduledTaskTestWebhookInput,
+  success: WebhookEventDetail,
+  error: ScheduledTaskError,
+});
+
+/** "Run with this event": the event again, as a new one past the duplicate check. */
+export const WsScheduledTasksRunWithWebhookEventRpc = Rpc.make(
+  WS_METHODS.scheduledTasksRunWithWebhookEvent,
+  {
+    payload: ScheduledTaskWebhookEventInput,
+    success: WebhookEventRecord,
+    error: ScheduledTaskError,
+  },
+);
 
 /** Where this thread could move, and what would go with it. */
 export const WsMovesPreviewRpc = Rpc.make(WS_METHODS.movesPreview, {
@@ -2134,6 +2253,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksDeleteRpc,
   WsScheduledTasksRunNowRpc,
   WsScheduledTasksRespondRequestRpc,
+  WsScheduledTasksWebhookAddressRpc,
+  WsScheduledTasksRotateWebhookAddressRpc,
+  WsScheduledTasksSetWebhookSigningSecretRpc,
+  WsScheduledTasksRevealWebhookSigningSecretRpc,
+  WsScheduledTasksGitHubContextRpc,
+  WsScheduledTasksConnectGitHubRpc,
+  WsScheduledTasksDisconnectGitHubRpc,
+  WsScheduledTasksListWebhookEventsRpc,
+  WsScheduledTasksWebhookEventRpc,
+  WsScheduledTasksTestWebhookRpc,
+  WsScheduledTasksRunWithWebhookEventRpc,
   WsMovesPreviewRpc,
   WsMovesStartRpc,
   WsMovesCancelRpc,

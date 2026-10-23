@@ -13,6 +13,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
+  ScheduledTaskError,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   type AuthAccessStreamEvent,
   AuthSessionId,
@@ -179,6 +180,11 @@ import { respondToAuthError } from "./auth/http.ts";
 import { shareRepeatedPayloadValues } from "@threadlines/shared/activityPayloadRefs";
 import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { isInternalClientSession } from "./auth/utils.ts";
+
+/** Event tasks' calls until the server side lands (docs/design/event-tasks.md). */
+const eventTasksNotReady = Effect.fail(
+  new ScheduledTaskError({ detail: "Event tasks aren't ready on this computer yet." }),
+);
 
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -2693,6 +2699,19 @@ const makeWsRpcLayer = (currentSession: {
             scheduledTasks.respondRequest(input),
             { "rpc.aggregate": "scheduledTasks" },
           ),
+        // Event tasks (docs/design/event-tasks.md): placeholders until the
+        // server side lands; every call says so.
+        [WS_METHODS.scheduledTasksWebhookAddress]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksRotateWebhookAddress]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksSetWebhookSigningSecret]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksRevealWebhookSigningSecret]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksGitHubContext]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksConnectGitHub]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksDisconnectGitHub]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksListWebhookEvents]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksWebhookEvent]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksTestWebhook]: () => eventTasksNotReady,
+        [WS_METHODS.scheduledTasksRunWithWebhookEvent]: () => eventTasksNotReady,
         // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
         [WS_METHODS.movesPreview]: (input) =>
           observeRpcEffect(WS_METHODS.movesPreview, threadMoves.preview(input.threadId), {
