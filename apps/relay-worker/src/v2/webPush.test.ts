@@ -150,8 +150,10 @@ describe("push request bodies", () => {
       endpoint: "https://web.push.apple.com/QGuQyavXutnMsuIk8Z0f",
       keyId: "key-nightly",
       kinds,
+      revision: 1_766_000_000_000,
     };
     expect(parseDevicePushBody(body)?.endpoint.hostname).toBe("web.push.apple.com");
+    expect(parseDevicePushBody({ ...body, revision: 0 })).toBeNull();
     expect(parseDevicePushBody({ ...body, endpoint: "https://example.com/push" })).toBeNull();
     expect(parseDevicePushBody({ ...body, kinds: { ...kinds, failed: "no" } })).toBeNull();
     expect(parseDevicePushBody({ ...body, registrationId: "short" })).toBeNull();

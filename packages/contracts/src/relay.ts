@@ -327,8 +327,20 @@ export const RelayDevicePushInput = Schema.Struct({
   endpoint: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
   keyId: PushVapidKeyId,
   kinds: PushAlertKinds,
+  /**
+   * Rises with every change the phone makes (a PUT or a DELETE): the relay
+   * ignores one older than the last it took, so a late request can't undo a
+   * newer switch.
+   */
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
 });
 export type RelayDevicePushInput = typeof RelayDevicePushInput.Type;
+
+/** `DELETE /v2/hosts/{h}/devices/{d}/push`, with the device's secret. */
+export const RelayDevicePushRemoveInput = Schema.Struct({
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+});
+export type RelayDevicePushRemoveInput = typeof RelayDevicePushRemoveInput.Type;
 
 /** What a send may be: one of the three alerts, or the test alert from Settings. */
 export const RelayAlertKind = Schema.Literals(["needs_you", "finished", "failed", "test"]);

@@ -83,12 +83,39 @@ function readStored(): Pick<PushAlertsState, "enabled" | "kinds"> {
   return readStoredIfAny() ?? { enabled: false, kinds: DEFAULT_ALERT_KINDS };
 }
 
+/** Off once a save failed: what's on disk is then older than what's in memory. */
+let storageCurrent = true;
+
 function writeStored(enabled: boolean, kinds: PushAlertKinds) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ enabled, kinds }));
   } catch {
     // Private mode and the like: alerts still work until the app reloads.
+    storageCurrent = false;
   }
+}
+
+const REVISION_KEY = "threadlines:push-alerts:revision";
+let lastRevision = 0;
+
+/**
+ * Numbers each change sent to a relay host, rising across reloads and this
+ * app's windows (they share storage), even if the clock steps back.
+ */
+function nextRevision(): number {
+  let stored = 0;
+  try {
+    stored = Number(localStorage.getItem(REVISION_KEY)) || 0;
+  } catch {
+    // Read below from memory alone.
+  }
+  lastRevision = Math.max(Date.now(), stored + 1, lastRevision + 1);
+  try {
+    localStorage.setItem(REVISION_KEY, String(lastRevision));
+  } catch {
+    // Still rises within this window.
+  }
+  return lastRevision;
 }
 
 function readPermission(): PushAlertsState["permission"] {
@@ -226,11 +253,17 @@ function setStatus(environmentId: EnvironmentId, status: ComputerAlertStatus) {
 const errorText = (error: unknown, fallback: string) =>
   error instanceof Error && error.message ? error.message : fallback;
 
+/**
+ * One change to this phone's row on a computer's relay host. Its revision is
+ * taken when the change is made, so the relay can ignore one that arrives
+ * after a newer change.
+ */
 async function relayDeviceRequest(
   environmentId: EnvironmentId,
   method: "PUT" | "DELETE",
-  body?: object,
+  fields?: object,
 ): Promise<void> {
+  const body = { ...fields, revision: nextRevision() };
   const relay = relayLinkOf(getSavedEnvironmentRecord(environmentId));
   const credentials = await readRelayDeviceCredentials(environmentId);
   if (!relay || !credentials) throw new Error("This computer isn't paired.");
@@ -243,9 +276,9 @@ async function relayDeviceRequest(
       method,
       headers: {
         authorization: `Bearer ${credentials.deviceSecret}`,
-        ...(body ? { "content-type": "application/json" } : {}),
+        "content-type": "application/json",
       },
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(RELAY_REQUEST_TIMEOUT_MS),
     },
   );
@@ -262,6 +295,7 @@ async function relayDeviceRequest(
  * browser subscription, so one window turning alerts off turns them off here.
  */
 function syncFromStorage() {
+  if (!storageCurrent) return;
   const stored = readStoredIfAny();
   if (!stored) return;
   const { enabled, kinds } = usePushAlertsStore.getState();
@@ -408,6 +442,7 @@ export async function enablePushAlerts(): Promise<void> {
     usePushAlertsStore.setState({ error: "Alerts are blocked for this app in Settings." });
     return;
   }
+  syncFromStorage();
   const { kinds } = usePushAlertsStore.getState();
   writeStored(true, kinds);
   usePushAlertsStore.setState({ enabled: true, busy: true, error: null });
@@ -420,6 +455,7 @@ export async function enablePushAlerts(): Promise<void> {
 
 /** Turns alerts off: every computer forgets this phone, and the browser drops the subscription. */
 export async function disablePushAlerts(): Promise<void> {
+  syncFromStorage();
   const { kinds } = usePushAlertsStore.getState();
   writeStored(false, kinds);
   usePushAlertsStore.setState({ enabled: false, busy: true, error: null });
@@ -437,9 +473,15 @@ export async function disablePushAlerts(): Promise<void> {
     await Promise.all(
       pairedComputers().map(async ({ record }) => {
         await relayDeviceRequest(record.environmentId, "DELETE").catch(() => undefined);
-        await readEnvironmentConnection(record.environmentId)
-          ?.client.push.unregister()
-          .catch(() => undefined);
+        const connection = readEnvironmentConnection(record.environmentId);
+        if (!connection) return;
+        // Bounded: a computer that never answers forgets the phone when it
+        // next sends, since its relay host no longer has it.
+        await withTimeout(
+          connection.client.push.unregister(),
+          REGISTER_TIMEOUT_MS,
+          "That computer didn't answer.",
+        ).catch(() => undefined);
       }),
     );
     lastPhone = null;
@@ -453,6 +495,8 @@ export async function disablePushAlerts(): Promise<void> {
 
 /** Switches one kind of alert on or off on every computer. */
 export async function setPushAlertKind(kind: keyof PushAlertKinds, on: boolean): Promise<void> {
+  // Another window may have turned alerts off: don't save its old "on" back.
+  syncFromStorage();
   const kinds = { ...usePushAlertsStore.getState().kinds, [kind]: on };
   writeStored(usePushAlertsStore.getState().enabled, kinds);
   usePushAlertsStore.setState({ kinds });

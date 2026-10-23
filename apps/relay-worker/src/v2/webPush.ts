@@ -224,6 +224,7 @@ export interface DevicePushBody {
   readonly registrationId: string;
   readonly endpoint: URL;
   readonly keyId: string;
+  readonly revision: number;
   readonly kinds: {
     readonly needs_you: boolean;
     readonly finished: boolean;
@@ -239,7 +240,15 @@ export function parseDevicePushBody(body: unknown): DevicePushBody | null {
   const keyId = textField(fields.keyId, 1, 32);
   const endpoint = typeof fields.endpoint === "string" ? checkPushEndpoint(fields.endpoint) : null;
   const kinds = fields.kinds as Record<string, unknown> | null | undefined;
-  if (!registrationId || !keyId || !endpoint || typeof kinds !== "object" || kinds === null) {
+  const revision = revisionField(fields.revision);
+  if (
+    !registrationId ||
+    !keyId ||
+    !endpoint ||
+    revision === null ||
+    typeof kinds !== "object" ||
+    kinds === null
+  ) {
     return null;
   }
   const { needs_you, finished, failed } = kinds;
@@ -250,7 +259,16 @@ export function parseDevicePushBody(body: unknown): DevicePushBody | null {
   ) {
     return null;
   }
-  return { registrationId, endpoint, keyId, kinds: { needs_you, finished, failed } };
+  return { registrationId, endpoint, keyId, revision, kinds: { needs_you, finished, failed } };
+}
+
+const revisionField = (value: unknown): number | null =>
+  Number.isSafeInteger(value) && (value as number) >= 1 ? (value as number) : null;
+
+/** A DELETE's revision; null when it sent none. */
+export function parseDevicePushRemoveBody(body: unknown): number | null {
+  if (typeof body !== "object" || body === null) return null;
+  return revisionField((body as Record<string, unknown>).revision);
 }
 
 export interface DeviceAlertBody {

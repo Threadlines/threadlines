@@ -537,6 +537,7 @@ describe("push alerts", () => {
       endpoint: "https://web.push.apple.com/QGuQyavXutnMsuIk8Z0f",
       keyId: "key-nightly",
       kinds,
+      revision: 1,
       now: T0 + 3 * MINUTE,
     });
     return { core, deviceId };
@@ -562,11 +563,46 @@ describe("push alerts", () => {
       endpoint: "https://web.push.apple.com/a-new-subscription",
       keyId: "key-nightly",
       kinds: { ...kinds, finished: true },
+      revision: 2,
       now: T0 + 5 * MINUTE,
     });
     // An alert sealed for the old subscription can't reach the new one.
     expect(admit("failed", "registration-1")).toEqual({ decision: "stale" });
     expect(admit("finished", "registration-2").decision).toBe("send");
+  });
+
+  it("never lets an older switch change undo a newer one", () => {
+    const { core, deviceId } = phoneWithPush();
+    const put = (revision: number, finished: boolean) =>
+      core.setDevicePush({
+        deviceId,
+        registrationId: "registration-1",
+        endpoint: "https://web.push.apple.com/QGuQyavXutnMsuIk8Z0f",
+        keyId: "key-nightly",
+        kinds: { ...kinds, finished },
+        revision,
+        now: T0 + 4 * MINUTE,
+      });
+    const admit = () =>
+      core.admitAlert({
+        deviceId,
+        registrationId: "registration-1",
+        kind: "finished",
+        now: T0 + 5 * MINUTE,
+      }).decision;
+
+    // "Finished" turned on (revision 3), then a PUT from before it arrives late.
+    expect(put(3, true)).toBe(true);
+    expect(put(2, false)).toBe(false);
+    expect(admit()).toBe("send");
+    // Turned off, then an older PUT can't bring the subscription back.
+    expect(core.removeDevicePush(deviceId, 4)).toBe(true);
+    expect(put(3, true)).toBe(false);
+    expect(admit()).toBe("unavailable");
+    // A DELETE from before alerts were turned on again is ignored too.
+    expect(put(6, true)).toBe(true);
+    expect(core.removeDevicePush(deviceId, 5)).toBe(false);
+    expect(admit()).toBe("send");
   });
 
   it("stops a removed phone's alerts and won't take its subscription again", () => {
@@ -589,6 +625,7 @@ describe("push alerts", () => {
           endpoint: "https://web.push.apple.com/QGuQyavXutnMsuIk8Z0f",
           keyId: "key-nightly",
           kinds,
+          revision: 2,
           now: T0 + 12 * MINUTE,
         }),
       "forbidden",
@@ -632,6 +669,7 @@ describe("push alerts", () => {
       endpoint: "https://web.push.apple.com/QGuQyavXutnMsuIk8Z0f",
       keyId: "key-nightly",
       kinds: { needs_you: false, finished: false, failed: true },
+      revision: 2,
       now: T0 + 4 * MINUTE,
     });
     expect(core.checkAlert(check)).toEqual({ decision: "muted" });

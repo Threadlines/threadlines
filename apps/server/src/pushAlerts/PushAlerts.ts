@@ -46,7 +46,7 @@ import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts"
 import { childHasLiveWork } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { LinkRequestRepository } from "../links/LinkRequestRepository.ts";
+import { LinkRequestRepository, type LinkRequestRow } from "../links/LinkRequestRepository.ts";
 import { RelayHost } from "../relay/RelayHost.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
 import {
@@ -100,10 +100,31 @@ const ALERT_BATCH = 20;
 const LIVE_WORK_RECHECK_MS = 10_000;
 /** A thread read that failed, or a schedule alert before the first snapshot, is tried again after this. */
 const READ_RETRY_MS = 5_000;
-/** How far a report's settling may come before the outcome it answers (they are written apart). */
+/** How far apart a turnless report and the outcome it answers may be written. */
 const LINK_REPORT_SLACK_MS = 60_000;
 /** How long a child's alert waits for its report to reach the asking computer. */
 const LINK_DELIVERY_WAIT_MS = 60_000;
+/** Alerts that ask the user for something: no report to another agent stands in for them. */
+const ASKS_THE_USER: ReadonlySet<string> = new Set(["approval", "question", "schedule"]);
+
+/** Whether a link request's report tells the asking agent about this alert's outcome. */
+function reportCovers(row: LinkRequestRow, alert: PushAlertRow): boolean {
+  if (row.reportTurnId === alert.subjectId || row.turnId === alert.subjectId) return true;
+  if (row.reportTurnId !== null || row.settledAt === null) return false;
+  // A report naming no turn: a start that failed, or a restart that cut
+  // whatever ran off (a background continuation too). It answers an outcome
+  // of that kind written about the same moment.
+  const near =
+    Math.abs(Date.parse(row.settledAt) - Date.parse(alert.occurredAt)) <= LINK_REPORT_SLACK_MS;
+  switch (alert.reason) {
+    case "start-failed":
+      return near && row.turnId === null;
+    case "restart":
+      return near;
+    default:
+      return false;
+  }
+}
 /** Attempts per phone before an alert gives up on it. */
 const MAX_DELIVERY_ATTEMPTS = 6;
 /** Finished alerts are forgotten after this. */
@@ -386,19 +407,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (!thread.remoteOrigin || Option.isNone(linkRequests)) return "no" as const;
       const rows = yield* linkRequests.value.listByThread(thread.id);
-      const occurredAt = Date.parse(alert.occurredAt);
-      const reports = rows.filter(
-        (row) =>
-          row.reportId !== null &&
-          (row.reportTurnId === alert.subjectId ||
-            row.turnId === alert.subjectId ||
-            // Cut off before its turn had an id (a start that failed, a
-            // restart in the turn): settled by this outcome, not before it.
-            (row.turnId === null &&
-              row.reportTurnId === null &&
-              row.settledAt !== null &&
-              Date.parse(row.settledAt) >= occurredAt - LINK_REPORT_SLACK_MS)),
-      );
+      const reports = rows.filter((row) => row.reportId !== null && reportCovers(row, alert));
       if (reports.some((row) => row.deliveredAt !== null)) return "answered" as const;
       return reports.some(
         (row) => row.settledAt !== null && now - Date.parse(row.settledAt) < LINK_DELIVERY_WAIT_MS,
@@ -420,7 +429,7 @@ const make = Effect.gen(function* () {
       // Archived or deleted: nothing to say.
       if (Option.isNone(read.found)) return DROP;
       const thread = read.found.value;
-      if (alert.kind !== "needs_you") {
+      if (!ASKS_THE_USER.has(alert.reason)) {
         const answered = yield* answeredOverLink(thread, alert, now).pipe(
           Effect.orElseSucceed(() => "unread" as const),
         );

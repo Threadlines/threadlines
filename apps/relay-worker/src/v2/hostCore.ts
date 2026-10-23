@@ -315,6 +315,12 @@ const SCHEMA = [
      kinds TEXT NOT NULL,
      updated_at INTEGER NOT NULL
    )`,
+  // The newest change each phone made to its push row (a PUT or a DELETE),
+  // kept past a DELETE so an older PUT arriving late can't bring it back.
+  `CREATE TABLE IF NOT EXISTS push_revision (
+     device_id TEXT PRIMARY KEY,
+     revision INTEGER NOT NULL
+   )`,
   // Alerts the push service took, by their key, so a retry isn't sent twice.
   `CREATE TABLE IF NOT EXISTS push_sent (
      device_id TEXT NOT NULL,
@@ -913,6 +919,7 @@ export class HostCore {
     }
     // A removed phone gets no more alerts from this host.
     this.sql.exec("DELETE FROM device_push WHERE device_id = ?", deviceId);
+    this.sql.exec("DELETE FROM push_revision WHERE device_id = ?", deviceId);
     this.sql.exec("DELETE FROM push_sent WHERE device_id = ?", deviceId);
     return {
       result: { revoked: true },
@@ -1073,11 +1080,13 @@ export class HostCore {
     readonly endpoint: string;
     readonly keyId: string;
     readonly kinds: PushAlertKinds;
+    readonly revision: number;
     readonly now: number;
-  }): void {
+  }): boolean {
     if (this.device(input.deviceId)?.state !== "active") {
       throw new HostCoreError("forbidden", "This device no longer has access.");
     }
+    if (!this.takeRevision(input.deviceId, input.revision)) return false;
     this.sql.exec(
       `INSERT INTO device_push (device_id, registration_id, endpoint, key_id, kinds, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
@@ -1091,11 +1100,34 @@ export class HostCore {
       JSON.stringify(input.kinds),
       input.now,
     );
+    return true;
   }
 
-  /** The phone turned alerts off: forget its subscription. */
-  removeDevicePush(deviceId: string): void {
+  /**
+   * The phone turned alerts off: forget its subscription. With a revision,
+   * only if no newer change came first (alerts turned back on meanwhile).
+   */
+  removeDevicePush(deviceId: string, revision: number | null): boolean {
+    if (revision !== null && !this.takeRevision(deviceId, revision)) return false;
     this.sql.exec("DELETE FROM device_push WHERE device_id = ?", deviceId);
+    return true;
+  }
+
+  /** Records `revision` as the phone's newest change; false when a newer (or the same) one came first. */
+  private takeRevision(deviceId: string, revision: number): boolean {
+    const [current] = sqlRows<{ revision: number }>(
+      this.sql,
+      "SELECT revision FROM push_revision WHERE device_id = ?",
+      deviceId,
+    );
+    if (current !== undefined && current.revision >= revision) return false;
+    this.sql.exec(
+      `INSERT INTO push_revision (device_id, revision) VALUES (?, ?)
+       ON CONFLICT(device_id) DO UPDATE SET revision = excluded.revision`,
+      deviceId,
+      revision,
+    );
+    return true;
   }
 
   /**

@@ -65,6 +65,7 @@ import {
   MAX_PUSH_REQUEST_BYTES,
   parseDeviceAlertBody,
   parseDevicePushBody,
+  parseDevicePushRemoveBody,
   pushRequestInit,
   readCappedJson,
 } from "./webPush.ts";
@@ -626,8 +627,10 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     const state = await this.deviceState(request, deviceId, false);
     if (state === null) return json({ error: "Unknown device." }, 401);
     if (request.method === "DELETE") {
-      this.core.removeDevicePush(deviceId);
-      return json({ removed: true });
+      const revision = parseDevicePushRemoveBody(
+        await readCappedJson(request, MAX_PUSH_REQUEST_BYTES).catch(() => null),
+      );
+      return json({ removed: this.core.removeDevicePush(deviceId, revision) });
     }
     if (state !== "active") return json({ error: "This device no longer has access." }, 403);
     const keyring = isPushEnabled(this.env)
@@ -645,8 +648,10 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       endpoint: body.endpoint.href,
       keyId: body.keyId,
       kinds: body.kinds,
+      revision: body.revision,
       now: Date.now(),
     });
+    // An older change than one already taken is ignored, not an error.
     return json({ registered: true });
   }
 
@@ -704,11 +709,12 @@ export class RelayHost extends DurableObject<RelayV2Env> {
         redirect: "manual",
         signal: AbortSignal.timeout(10_000),
       });
-      await response.body?.cancel();
       const outcome = classifyPushResponse(response.status);
+      // Recorded first: the push service took it, whatever the clean-up does.
       if (outcome === "sent" && body.alertKey) {
         this.core.recordAlertSent(deviceId, body.alertKey, Date.now());
       }
+      await response.body?.cancel().catch(() => undefined);
       if (outcome === "gone") this.core.forgetDevicePush(deviceId, body.registrationId);
       if (outcome !== "sent") {
         log("info", "push alert not delivered", { status: response.status, outcome });
