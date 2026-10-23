@@ -463,7 +463,14 @@ describe("ChatView (full app): app shell", () => {
       );
       await vi.waitFor(() => {
         expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+        expect(document.querySelector('[data-testid="rail-threads-working"]')).toBeNull();
       });
+
+      // Another page's list says nothing of the threads, so the rail does.
+      await mounted.router.navigate({ to: "/chats" });
+      await expect.element(page.getByTestId("chats-view-new-chat")).toBeVisible();
+      expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+      await expect.element(page.getByTestId("rail-threads-working")).toMatchTextContent("1");
 
       // Usage has no list: it takes the panel, and the toggle stays, disabled,
       // with the user's choice kept for the pages that have one.

@@ -74,6 +74,7 @@ import {
   waitForComposerEditor,
   waitForServerConfigToApply,
   mountChatView,
+  fixture,
   clickProjectMenuItem,
   registerChatViewSuiteHooks,
   openCommandPaletteFromTrigger,
@@ -580,7 +581,7 @@ describe("ChatView (full app): sidebar", () => {
       setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingChatId, "working");
       setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingChatId, "needs-you");
       const chatsButton = page.getByTestId("rail-chats");
-      // Chats have no list beside the rail, so their work always shows on it.
+      // Beside the threads list, the chats' work shows on the rail.
       await expect.element(chatsButton.getByTestId("rail-needs-you-badge")).toMatchTextContent("1");
       await expect.element(page.getByTestId("rail-chats-working")).toMatchTextContent("1");
       // The inbox's own counts leave them out.
@@ -605,6 +606,8 @@ describe("ChatView (full app): sidebar", () => {
             .getByTestId("chats-list-row-status"),
         )
         .toMatchTextContent(/^working/);
+      // The list says what is working, so the rail stops saying it.
+      expect(document.querySelector('[data-testid="rail-chats-working"]')).toBeNull();
 
       await page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }).click();
       await waitForURL(
@@ -795,19 +798,41 @@ describe("ChatView (full app): sidebar", () => {
     try {
       await waitForServerConfigToApply();
       // An answer finishes on a chat that is not open, after the app loaded.
+      const answer = {
+        turnId: "turn-chat-traverse-c" as TurnId,
+        state: "completed",
+        requestedAt: NOW_ISO,
+        startedAt: NOW_ISO,
+        completedAt: new Date(Date.now() + 60_000).toISOString(),
+        assistantMessageId: null,
+      } as const;
       setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, chatC, "working", {
         session: null,
-        latestTurn: {
-          turnId: "turn-chat-traverse-c" as TurnId,
-          state: "completed",
-          requestedAt: NOW_ISO,
-          startedAt: NOW_ISO,
-          completedAt: new Date(Date.now() + 60_000).toISOString(),
-          assistantMessageId: null,
-        },
+        latestTurn: answer,
       });
+      // Opening the chat loads the same answer, so only reading it clears the dot.
+      fixture.snapshot = {
+        ...fixture.snapshot,
+        threads: fixture.snapshot.threads.map((thread) =>
+          thread.id === chatC ? { ...thread, latestTurn: answer } : thread,
+        ),
+      };
       const chatsButton = page.getByTestId("rail-chats");
-      // An unread answer is a blue dot, not a count: nothing waits on the user.
+      // The chats list beside the open chat marks the answer, so the rail leaves it be.
+      await vi.waitFor(() => {
+        expect(
+          document.querySelectorAll('[data-testid="chats-list-row"][data-unread]'),
+        ).toHaveLength(1);
+      });
+      expect(
+        document.querySelector('[data-testid="rail-chats"] [data-testid="rail-unread-dot"]'),
+      ).toBeNull();
+      // With the list hidden, an unread answer is a blue dot, not a count:
+      // nothing waits on the user.
+      await page.getByTestId("titlebar-sidebar-toggle").click();
+      await vi.waitFor(() => {
+        expect(useUiStateStore.getState().sidebarListOpen).toBe(false);
+      });
       await expect.element(chatsButton.getByTestId("rail-unread-dot")).toBeVisible();
       expect(
         document.querySelector('[data-testid="rail-chats"] [data-testid="rail-needs-you-badge"]'),

@@ -129,7 +129,7 @@ import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { SidebarDestinationRow, useSelectedDestination } from "./sidebar/NavigationRail";
 import { AppWordmark } from "./sidebar/AppWordmark";
-import { DESTINATION_LISTS } from "./sidebar/destinationLists";
+import { resolveShownDestinationList } from "./sidebar/destinationLists";
 import { useListNewThreadStore } from "./sidebar/listNewThreadStore";
 import { useGeneralChats } from "./chats/useGeneralChats";
 import { AttentionCounts } from "./sidebar/AttentionCounts";
@@ -1700,14 +1700,9 @@ export default function Sidebar() {
     };
   }, [clearSelection]);
 
-  // What the list shows: the destination's own list on a wide screen (see
-  // destinationLists), the threads in a phone's sheet unless the page's list
-  // belongs there (Fleet's computers). This component stays mounted either
-  // way, so the thread shortcuts work on every page.
-  const destinationList =
-    isMobile && DESTINATION_LISTS[selectedDestination]?.inPhoneSheet !== true
-      ? DESTINATION_LISTS.threads
-      : DESTINATION_LISTS[selectedDestination];
+  // What the list shows (see destinationLists). This component stays mounted
+  // either way, so the thread shortcuts work on every page.
+  const destinationList = resolveShownDestinationList(selectedDestination, isMobile);
   const PageListBody =
     destinationList !== null && destinationList.body !== "inbox" ? destinationList.body : null;
 
