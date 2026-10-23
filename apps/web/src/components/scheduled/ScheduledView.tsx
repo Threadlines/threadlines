@@ -279,7 +279,14 @@ export function ScheduledView() {
   } else if (selected !== null && search.view === "edit") {
     body = <ScheduledTaskForm key={`edit-${selected.task.id}`} editing={selected} />;
   } else if (selected !== null) {
-    body = <ScheduledTaskDetail located={selected} />;
+    // Keyed by task: what one task's detail showed (a revealed secret, a test
+    // event's result) never carries over to the next one opened.
+    body = (
+      <ScheduledTaskDetail
+        key={`${selected.environment.environmentId}:${selected.task.id}`}
+        located={selected}
+      />
+    );
   } else if (search.task !== undefined && !waitingForTask) {
     body = (
       <div className="flex flex-col items-start gap-3 px-1">

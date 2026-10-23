@@ -364,8 +364,14 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
   );
   const queryClient = useQueryClient();
   const address = useQuery({
-    // Read again when the relay gives the task an address or a new one.
-    queryKey: [...eventKeys.address(located), state?.address, state?.addressChanged],
+    // Read again whenever the address may have changed: the relay gave the
+    // task one, or a new one, or someone rotated it (here or on another client).
+    queryKey: [
+      ...eventKeys.address(located),
+      state?.address,
+      state?.addressChanged,
+      state?.addressVersion,
+    ],
     queryFn: async () => {
       const connection = readEnvironmentConnection(environment.environmentId);
       if (!connection) throw new Error(`${environment.label} isn't connected.`);
@@ -480,7 +486,7 @@ export function EventAddressSection({ located }: { readonly located: LocatedTask
 
       {state?.githubProblem ? (
         <AddressRow
-          label="Its old GitHub webhook is still there"
+          label="Its GitHub webhook needs a look"
           hint={state.githubProblem}
           testId="scheduled-event-github-problem"
           warning
@@ -1019,8 +1025,9 @@ export function EventHistory({ located }: { readonly located: LocatedTask }) {
   const nowMs = useRelativeTimeTick(30_000);
   const navigate = useNavigate();
   const { environment, task } = located;
-  // Read again when an event arrives or a run starts or ends.
-  const version = `${task.webhook?.lastEventAt ?? ""}:${task.lastRun?.slotUtc ?? ""}:${task.lastRun?.status ?? ""}:${task.workingRuns}`;
+  // Read again when an event arrives or moves on (one turned away included),
+  // or a run starts or ends.
+  const version = `${task.webhook?.eventsChangedAt ?? ""}:${task.webhook?.lastEventAt ?? ""}:${task.lastRun?.slotUtc ?? ""}:${task.lastRun?.status ?? ""}:${task.workingRuns}`;
   const events = useInfiniteQuery({
     queryKey: [...eventKeys.events(located), version],
     queryFn: async ({ pageParam }) => {
@@ -1029,11 +1036,20 @@ export function EventHistory({ located }: { readonly located: LocatedTask }) {
       return connection.client.scheduledTasks.listWebhookEvents({
         id: task.id,
         limit: EVENT_PAGE,
-        ...(pageParam !== null ? { before: pageParam } : {}),
+        ...(pageParam !== null
+          ? { before: pageParam.receivedAt, beforeEventId: pageParam.eventId }
+          : {}),
       });
     },
-    initialPageParam: null as string | null,
-    getNextPageParam: (page) => (page.hasMore ? (page.events.at(-1)?.receivedAt ?? null) : null),
+    // A page goes on from the last event shown, so events that share its
+    // receive time are never skipped.
+    initialPageParam: null as { readonly receivedAt: string; readonly eventId: string } | null,
+    getNextPageParam: (page) => {
+      const last = page.events.at(-1);
+      return page.hasMore && last !== undefined
+        ? { receivedAt: last.receivedAt, eventId: last.eventId }
+        : null;
+    },
     placeholderData: keepPreviousData,
   });
   const list = events.data?.pages.flatMap((page) => page.events) ?? [];

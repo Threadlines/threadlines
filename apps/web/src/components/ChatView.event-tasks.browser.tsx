@@ -558,6 +558,134 @@ describe("ChatView (full app): event tasks", () => {
     }
   });
 
+  it("keeps a revealed secret and a test result to the task they came from", async () => {
+    const OTHER_ID = "task-deploys" as ScheduledTaskId;
+    const tested = eventRecord({ eventId: "event-test", source: "test" });
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: snapshot(),
+      initialPath: detailPath,
+      configureFixture: withScheduledCapabilities(true),
+      resolveRpc: (body) => {
+        switch (body._tag) {
+          case WS_METHODS.scheduledTasksWebhookAddress:
+            return { relayUrl: RELAY_URL, localUrl: LOCAL_URL };
+          case WS_METHODS.scheduledTasksGitHubContext:
+            return { repository: "acme/app", login: "badcuban", canConnect: false };
+          case WS_METHODS.scheduledTasksRevealWebhookSigningSecret:
+            return { secret: "secret-of-triage" };
+          case WS_METHODS.scheduledTasksTestWebhook:
+            return eventDetail(tested, "Event task: Triage labeled issues.");
+          case WS_METHODS.scheduledTasksListWebhookEvents:
+            return { events: [], hasMore: false };
+          case WS_METHODS.scheduledTasksListRuns:
+            return { runs: [], hasMore: false };
+          default:
+            return undefined;
+        }
+      },
+    });
+    try {
+      await sendTasks([
+        eventTask(),
+        { ...eventTask(), id: OTHER_ID, name: "Deploy previews" } as ScheduledTask,
+      ]);
+      await page.getByRole("button", { name: "Reveal" }).click();
+      await expect
+        .element(page.getByTestId("scheduled-event-secret-value"))
+        .toHaveTextContent("secret-of-triage");
+      await page.getByTestId("scheduled-send-test-event").click();
+      await expect.element(page.getByTestId("scheduled-event-test")).toBeVisible();
+
+      await mounted.router.navigate({
+        to: "/scheduled",
+        search: { environment: "environment-local", task: OTHER_ID },
+      });
+      await vi.waitFor(() =>
+        expect(byTestId("scheduled-task-detail")?.textContent).toContain("Deploy previews"),
+      );
+      expect(byTestId("scheduled-event-secret-value")).toBeNull();
+      expect(byTestId("scheduled-event-test")).toBeNull();
+      expect(byTestId("scheduled-event-test-start")).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("reads the address and the events again when they change elsewhere, and pages by event", async () => {
+    const SECOND_LOCAL_URL = "http://127.0.0.1:3773/api/hooks/task-triage/rotated-token";
+    let localUrl = LOCAL_URL;
+    const older = eventRecord({ eventId: "event-older", status: "skipped" });
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: snapshot(),
+      initialPath: detailPath,
+      configureFixture: withScheduledCapabilities(true),
+      resolveRpc: (body) => {
+        switch (body._tag) {
+          case WS_METHODS.scheduledTasksWebhookAddress:
+            return { relayUrl: RELAY_URL, localUrl };
+          case WS_METHODS.scheduledTasksGitHubContext:
+            return { repository: "acme/app", login: "badcuban", canConnect: false };
+          case WS_METHODS.scheduledTasksListWebhookEvents:
+            return body.before === undefined
+              ? {
+                  events: [
+                    eventRecord({ eventId: "event-b", status: "skipped" }),
+                    eventRecord({ eventId: "event-a", status: "skipped" }),
+                  ],
+                  hasMore: true,
+                }
+              : { events: [older], hasMore: false };
+          case WS_METHODS.scheduledTasksListRuns:
+            return { runs: [], hasMore: false };
+          default:
+            return undefined;
+        }
+      },
+    });
+    const emit = (webhook: Partial<ScheduledTaskWebhookState>) =>
+      rpcHarness.emitStreamValue(WS_METHODS.scheduledTasksSubscribe, {
+        tasks: [eventTask(webhook)],
+        requests: [],
+        timeZone: "UTC",
+      });
+    try {
+      await sendTasks([eventTask({ addressVersion: "v1", eventsChangedAt: NOW_ISO })]);
+      await expect
+        .element(page.getByTestId("scheduled-event-local-url"))
+        .toHaveTextContent(LOCAL_URL);
+
+      // Rotated from another client: the snapshot's address version moves on.
+      localUrl = SECOND_LOCAL_URL;
+      emit({ addressVersion: "v2", eventsChangedAt: NOW_ISO });
+      await expect
+        .element(page.getByTestId("scheduled-event-local-url"))
+        .toHaveTextContent(SECOND_LOCAL_URL);
+
+      // An event turned away (it touches no run, nor lastEventAt) still shows.
+      const listed = requestsOf(WS_METHODS.scheduledTasksListWebhookEvents).length;
+      emit({ addressVersion: "v2", eventsChangedAt: "2026-10-23T12:00:00.000Z" });
+      await vi.waitFor(() =>
+        expect(requestsOf(WS_METHODS.scheduledTasksListWebhookEvents).length).toBeGreaterThan(
+          listed,
+        ),
+      );
+
+      // The next page goes on from the last event shown, ties included.
+      await page.getByTestId("scheduled-event-history-more").click();
+      await vi.waitFor(() =>
+        expect(requestsOf(WS_METHODS.scheduledTasksListWebhookEvents).at(-1)).toMatchObject({
+          before: NOW_ISO,
+          beforeEventId: "event-a",
+        }),
+      );
+      await expect.element(page.getByTestId("scheduled-event-event-older")).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("fits an event task's page and form on a phone", async () => {
     const mounted = await mountChatView({
       viewport: PHONE_VIEWPORT,
